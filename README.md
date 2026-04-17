@@ -1,249 +1,134 @@
 # Archive Storage MVP
 
-Minimal, self-hosted archive backend for large file sets that need to move from
-an online hot buffer into partitioned offline media, with strong cataloging and
-re-hydration behavior throughout the lifecycle.
+A small self-hosted archive service for people with a home server, NAS, or other
+shared storage box who want to move older files onto offline optical discs
+without losing track of what they saved.
 
-This README is written to make the product surface easy to understand and easy
-to test rigorously.
+The main use case is very specific: a family, household, or small group with a
+large pile of photos, videos, and other files that should not stay on expensive
+always-online storage forever, but that still need to stay organized and
+recoverable.
 
-## What This Service Does
+This project does **not** make offline disc archiving effortless. That process
+is still a little awkward. The goal is to make it more manageable, less messy,
+and safer than copying folders around by hand and hoping the notes you wrote
+last year still make sense.
 
-The service accepts resumable uploads for archive jobs, validates and catalogs
-them, feeds them into a partition planner, emits partition roots suitable for
-offline archival media, optionally authors downloadable ISOs for those
-partitions, and lets known partition roots be cached back into hot storage
-later so archived files become online again.
+## Who this is for
 
-The core product promise is:
+This project is mainly for:
 
-- uploads are resumable and validated
-- the catalog always knows what a job contains
-- offline files stay visible in the API even when their bytes are unavailable
-- partition roots are deterministic enough to be verified by content hash
-- cached partition roots are accepted only when they exactly match what was
-  archived
-- hot-buffer retention is explicit and conservative
+- families with a home server or NAS
+- small shared households or friend groups storing files on one machine
+- home lab users who want long-term offline archives
+- people with growing photo and video libraries
+- anyone who wants more structure than “drag files onto a disc and write the date on it”
 
-## Key Features
+## Why someone would want it
 
-### 1. Minimal auth for a private deployment
+A lot of personal archive workflows break down in familiar ways:
 
-- All public `/v1/...` endpoints require a shared bearer token.
-- Internal tus hook callbacks require a separate shared hook secret.
-- The design stays intentionally small because the service is expected to run on
-  a trusted self-hosted network behind VPN.
+- uploads fail halfway through
+- the list of what was archived drifts away from what was actually saved
+- once files go offline, nobody remembers what is on which disc
+- bringing old files back later takes guesswork
+- original files get deleted too early
 
-### 2. Resumable job uploads through `tusd`
+This service is meant to help with that.
 
-- Jobs are created first, then individual file upload slots are reserved.
-- Each upload slot binds a path, size, and optional expected SHA-256.
-- `tusd` hook validation rejects uploads whose metadata does not match the
-  reserved slot.
-- Upload completion computes SHA-256 and records the finished file into hot
-  storage.
+It gives you:
 
-### 3. Catalog-first job model
+- resumable uploads so large transfers are less fragile
+- a record of what each archive batch contains
+- a way to still browse archived files even when the data is offline
+- a way to verify that returned archive data matches what was originally saved
+- cautious cleanup rules so online originals are not removed too soon
 
-- Jobs can contain explicit directories plus uploaded files.
-- Paths are normalized and prevented from escaping the job root.
-- A job tree endpoint lists the full logical structure of the job, including
-  files that are offline on archived discs.
-- File access endpoints return content when online and a structured offline
-  explanation when not.
+## What this project does
 
-### 4. Real-time progress streams
+At a high level, the service helps you do this:
 
-- Upload progress is streamed per upload.
-- Aggregate upload progress is streamed per job.
-- Cache-session upload progress is streamed per cache session.
-- ISO download progress is streamed per download session.
-- Streams are replayable SSE feeds backed by Redis streams.
+1. create an archive batch
+2. upload files into it
+3. organize those files into disc-sized groups
+4. prepare those groups for offline storage
+5. optionally create ISO images for burning
+6. keep a record of what ended up in the archive
+7. later bring a known archived disc back online when you need something from it
 
-### 5. Planner-driven partition closure
+The important idea is that files do not become invisible just because their data
+is no longer sitting on your server. The catalog still knows they exist and can
+explain what you need to restore them.
 
-- Sealing a job ingests its hot-buffer files into the planner state.
-- Jobs may close zero, one, or multiple partitions depending on fill rules.
-- Large files may be split across partitions when necessary.
-- Closed partitions are emitted as rooted directory trees under
-  `partitions/roots/<disc_id>/`.
-- Closed partitions are also imported back into the catalog as discs, entries,
-  and archive-piece mappings.
+## What it is trying to be
 
-### 6. Archive metadata and sidecars
+This is a small backend for a narrow self-hosted workflow. It is meant to be:
 
-- Every closed partition contains an encrypted `MANIFEST.jsonl`.
-- Every closed partition also contains a plaintext `README.txt` with manual
-  recovery instructions for that specific disc.
-- Payload files live under `files/...`.
-- Each payload has an encrypted YAML sidecar using the requested
-  `sidecar/v1` schema.
-- Split files carry part metadata so they can be reconstructed later.
-- Except for `README.txt`, every leaf file emitted into a partition root is
-  encrypted individually with `age` plus `age-plugin-batchpass`.
-- The batchpass scrypt work factor can be tuned with
-  `AGE_BATCHPASS_WORK_FACTOR` and `AGE_BATCHPASS_MAX_WORK_FACTOR`; tests use a
-  lower factor so encrypted-disc coverage stays fast enough to run routinely.
+- understandable
+- testable
+- practical for home or small-group use
+- honest about the rough edges of offline media
 
-### 7. Offline-aware file access
+## What it is not
 
-- If a job file is still in hot buffer, it is directly available.
-- If a whole archived payload is cached back online, it is directly available.
-- If a split file has all required chunks online across cached partitions, the
-  service materializes it on demand and serves the reconstructed file.
-- If required disc data is unavailable, the API responds with a clear offline
-  error that includes candidate disc IDs.
+This project is probably not the right fit if you need:
 
-### 8. Verified partition-root cache uploads
+- cloud-scale storage
+- enterprise access control
+- a polished consumer backup app
+- a full records-management system
+- an all-in-one hardware appliance
+- a one-click magic archive experience
 
-- A cache session can be created only for a known disc.
-- Upload slots can be created only for paths already known to belong to that
-  partition root.
-- Completing a cache session computes a canonical hash over the uploaded tree.
-- The uploaded root is accepted only if hash, file set, file sizes, and file
-  digests all exactly match the archived partition contents.
-- Once accepted, that cached root can satisfy job and disc content reads again.
+## Main capabilities
 
-### 9. Disc browsing and content access
+### Upload files reliably
 
-- Disc tree endpoints expose the logical file tree of a closed partition.
-- Disc content endpoints serve bytes directly from a cached partition root when
-  online.
-- Disc reads remain catalogable even when the partition is offline.
+Files are uploaded in a resumable way, which helps when transfers are large or
+connections are interrupted.
 
-### 10. ISO authoring and download
+### Keep a clear catalog
 
-- The service can author an ISO directly from a closed partition root.
-- It uses `xorriso` with ISO9660, Joliet, Rock Ridge, and UDF options to favor
-  broad cross-platform compatibility for file-based Blu-ray workflows.
-- An external ISO can also be registered instead of authored internally.
-- Download sessions are tracked separately from the ISO file itself.
-- ISO content downloads emit their own progress stream.
+The system keeps a structured record of what each archive batch contains,
+including folders and files that are no longer online.
 
-### 11. Conservative hot-buffer retention
+### Prepare files for disc storage
 
-- By default, hot-buffer originals are removed only after all archived bytes for
-  a job are represented on discs and every related disc has been
-  burn-confirmed.
-- Jobs can opt out of that cleanup at creation time with
-  `keep_buffer_after_archive=true`.
-- A manual buffer-release endpoint also exists for explicit operator control.
+When a batch is finalized, the service groups files into disc-sized sets and
+writes them into archive output folders that are ready for offline storage.
 
-### 12. Online export tree for local mounts
+### Keep offline files visible
 
-- The service maintains `exports/jobs/<job_id>/...` as an online-only view.
-- Only currently available files appear there.
-- This makes it safe to bind mount exported jobs into other local workflows
-  without pretending offline bytes still exist.
+Even after files are moved off the server, you can still browse the archive and
+see what exists. If a file is offline, the system tells you that clearly instead
+of pretending it is still available.
 
-## Stack
+### Bring archived data back online safely
 
-- FastAPI for the API
-- `tusd` for resumable uploads and hook callbacks
-- Redis for replayable SSE progress streams
-- SQLite for the catalog
-- NumPy and SciPy for the partition MILP logic
-- plain local files for hot buffer, partition roots, cached discs, materialized
-  reconstructions, exports, and cold ISOs
+When you reconnect or re-upload a known archived disc set, the service checks
+that it matches what was originally archived before accepting it.
 
-## Filesystem Layout
+### Avoid deleting originals too early
 
-```text
-/var/lib/archive/
-  catalog/
-    catalog.sqlite3
+Online originals are kept until archive conditions are satisfied, unless you
+explicitly choose a different behavior.
 
-  tusd/
-    incoming/
+## How the workflow feels
 
-  hot/
-    buffer/jobs/<job_id>/...
-    cache/staging/<session_id>/...
-    cache/discs/<disc_id>/...
-    materialized/jobs/<job_id>/...
+A typical flow looks like this:
 
-  exports/
-    jobs/<job_id>/...
+1. Create an archive batch.
+2. Reserve upload slots for files.
+3. Upload files.
+4. Finalize the batch.
+5. Let the service group the files into disc-sized archive sets.
+6. Create an ISO if you want one.
+7. Burn or store the archive offline.
+8. Later, bring that archive set back online if you need to recover files.
 
-  partitions/
-    state/state.json
-    state/pool/<job_id>/...
-    roots/<disc_id>/
-      README.txt
-      MANIFEST.jsonl
-      files/...
-      files/...meta.yaml
+## Quick example
 
-  cold/
-    isos/<disc_id>.iso
-```
-
-## API Surface
-
-### Jobs
-
-- `POST /v1/jobs`
-  Creates a job. Supports the retention override
-  `keep_buffer_after_archive`.
-- `POST /v1/jobs/{job_id}/directories`
-  Registers an explicit directory entry for a job.
-- `POST /v1/jobs/{job_id}/uploads`
-  Reserves a file upload slot and returns tus metadata plus progress URLs.
-- `POST /v1/jobs/{job_id}/seal`
-  Verifies uploaded files are present, ingests the job into planner state, and
-  imports any newly closed discs.
-- `GET /v1/jobs/{job_id}/tree`
-  Returns the full logical job tree, including offline files.
-- `GET /v1/jobs/{job_id}/content/{relative_path}`
-  Serves file bytes when online, otherwise returns a structured offline error.
-- `POST /v1/jobs/{job_id}/buffer/release`
-  Explicitly removes hot-buffer originals for the job.
-
-### Discs
-
-- `POST /v1/discs/flush`
-  Forces pending planner state to close discs when requested.
-- `GET /v1/discs/{disc_id}/tree`
-  Returns the logical tree of a closed partition.
-- `GET /v1/discs/{disc_id}/content/{disc_relative_path}`
-  Serves bytes from a cached partition root.
-- `POST /v1/discs/{disc_id}/cache/sessions`
-  Starts a verified cache-upload session for a known partition.
-- `GET /v1/discs/{disc_id}/cache/sessions/{session_id}/expected`
-  Lists the exact expected files for that cache session.
-- `POST /v1/discs/{disc_id}/cache/sessions/{session_id}/uploads`
-  Reserves an upload slot for one expected cache file.
-- `POST /v1/discs/{disc_id}/cache/sessions/{session_id}/complete`
-  Verifies and activates the uploaded partition root.
-- `DELETE /v1/discs/{disc_id}/cache`
-  Evicts an active cached partition root.
-- `POST /v1/discs/{disc_id}/iso/create`
-  Authors an ISO from the partition root.
-- `POST /v1/discs/{disc_id}/iso/register`
-  Registers an externally created ISO file.
-- `POST /v1/discs/{disc_id}/burn/confirm`
-  Confirms successful burn and triggers eligible hot-buffer cleanup.
-- `POST /v1/discs/{disc_id}/download-sessions`
-  Creates a tracked ISO download session.
-- `GET /v1/discs/downloads/{session_id}/content`
-  Streams ISO bytes.
-
-### Progress streams
-
-- `GET /v1/progress/uploads/{upload_id}/stream`
-- `GET /v1/progress/jobs/{job_id}/stream`
-- `GET /v1/progress/cache-sessions/{session_id}/stream`
-- `GET /v1/progress/downloads/{session_id}/stream`
-
-### Internal upload hooks
-
-- `POST /internal/tusd-hooks`
-  Handles tus pre-create, post-create, post-receive, post-finish, and
-  post-terminate events.
-
-## Core Flow
-
-### 1. Create a job
+Create an archive batch:
 
 ```bash
 curl -X POST http://localhost:8080/v1/jobs \
@@ -255,7 +140,7 @@ curl -X POST http://localhost:8080/v1/jobs \
   }'
 ```
 
-### 2. Reserve file uploads
+Reserve an upload slot:
 
 ```bash
 curl -X POST http://localhost:8080/v1/jobs/20260417T060811Z/uploads \
@@ -270,38 +155,14 @@ curl -X POST http://localhost:8080/v1/jobs/20260417T060811Z/uploads \
   }'
 ```
 
-Upload the file through tus using the returned metadata.
-
-### 3. Watch upload progress
-
-```bash
-curl -N http://localhost:8080/v1/progress/uploads/<upload_id>/stream \
-  -H "Authorization: Bearer $API_TOKEN"
-
-curl -N http://localhost:8080/v1/progress/jobs/20260417T060811Z/stream \
-  -H "Authorization: Bearer $API_TOKEN"
-```
-
-### 4. Seal the job
+Finalize the batch:
 
 ```bash
 curl -X POST http://localhost:8080/v1/jobs/20260417T060811Z/seal \
   -H "Authorization: Bearer $API_TOKEN"
 ```
 
-This moves the job into planner state, may close new partitions, and imports any
-closed partitions into the catalog.
-
-### 5. Browse the job tree
-
-```bash
-curl http://localhost:8080/v1/jobs/20260417T060811Z/tree \
-  -H "Authorization: Bearer $API_TOKEN"
-```
-
-### 6. Author or register an ISO
-
-Author directly from a partition root:
+Create an ISO from a finished archive set:
 
 ```bash
 curl -X POST http://localhost:8080/v1/discs/20260417T091500Z/iso/create \
@@ -310,48 +171,59 @@ curl -X POST http://localhost:8080/v1/discs/20260417T091500Z/iso/create \
   -d '{"volume_label":"ARCHIVE_20260417"}'
 ```
 
-Or register an externally produced ISO:
+## A few project terms
 
-```bash
-curl -X POST http://localhost:8080/v1/discs/20260417T091500Z/iso/register \
-  -H "Authorization: Bearer $API_TOKEN" \
-  -H "content-type: application/json" \
-  -d '{"server_path":"/var/lib/archive/somewhere/20260417T091500Z.iso"}'
-```
+Some internal names are still a little technical. In plain language, they mean:
 
-### 7. Track ISO download progress
+- **job**: one archive batch
+- **disc**: one finished archive set meant for offline storage
+- **cache**: bringing archived data back onto online storage
+- **seal**: finalize a batch so it can be turned into archive sets
+- **buffer**: the temporary online storage area before files are fully archived
 
-```bash
-curl -X POST http://localhost:8080/v1/discs/20260417T091500Z/download-sessions \
-  -H "Authorization: Bearer $API_TOKEN"
+## API summary
 
-curl -N http://localhost:8080/v1/progress/downloads/<session_id>/stream \
-  -H "Authorization: Bearer $API_TOKEN"
-```
+### Archive batches
+- `POST /v1/jobs`
+- `POST /v1/jobs/{job_id}/directories`
+- `POST /v1/jobs/{job_id}/uploads`
+- `POST /v1/jobs/{job_id}/seal`
+- `GET /v1/jobs/{job_id}/tree`
+- `GET /v1/jobs/{job_id}/content/{relative_path}`
+- `POST /v1/jobs/{job_id}/buffer/release`
 
-### 8. Confirm a successful burn
+### Archived disc sets
+- `POST /v1/discs/flush`
+- `GET /v1/discs/{disc_id}/tree`
+- `GET /v1/discs/{disc_id}/content/{disc_relative_path}`
+- `POST /v1/discs/{disc_id}/cache/sessions`
+- `GET /v1/discs/{disc_id}/cache/sessions/{session_id}/expected`
+- `POST /v1/discs/{disc_id}/cache/sessions/{session_id}/uploads`
+- `POST /v1/discs/{disc_id}/cache/sessions/{session_id}/complete`
+- `DELETE /v1/discs/{disc_id}/cache`
+- `POST /v1/discs/{disc_id}/iso/create`
+- `POST /v1/discs/{disc_id}/iso/register`
+- `POST /v1/discs/{disc_id}/burn/confirm`
+- `POST /v1/discs/{disc_id}/download-sessions`
+- `GET /v1/discs/downloads/{session_id}/content`
 
-```bash
-curl -X POST http://localhost:8080/v1/discs/20260417T091500Z/burn/confirm \
-  -H "Authorization: Bearer $API_TOKEN"
-```
+### Progress streams
+- `GET /v1/progress/uploads/{upload_id}/stream`
+- `GET /v1/progress/jobs/{job_id}/stream`
+- `GET /v1/progress/cache-sessions/{session_id}/stream`
+- `GET /v1/progress/downloads/{session_id}/stream`
 
-### 9. Cache a known partition root
+## Technical notes
 
-```bash
-curl -X POST http://localhost:8080/v1/discs/20260417T091500Z/cache/sessions \
-  -H "Authorization: Bearer $API_TOKEN"
-```
+Under the hood, the project currently uses:
 
-Then reserve cache upload slots for expected files and finish the session:
+- FastAPI for the API
+- `tusd` for resumable uploads
+- Redis for progress streams
+- SQLite for the catalog
+- local filesystem storage for uploaded files, archive output, restored archive data, and ISOs
 
-```bash
-curl -X POST \
-  http://localhost:8080/v1/discs/20260417T091500Z/cache/sessions/<session_id>/complete \
-  -H "Authorization: Bearer $API_TOKEN"
-```
-
-## Running Locally
+## Running locally
 
 ```bash
 cp .env.example .env
@@ -368,94 +240,3 @@ Primary local endpoints:
 
 - OpenAPI: `http://localhost:8080/docs`
 - tusd: `http://localhost:1080/files`
-
-## Coverage Map
-
-These are the major areas a rigorous test suite should cover.
-
-### Auth and request boundary
-
-- missing bearer token
-- wrong bearer token
-- missing hook secret
-- wrong hook secret
-- public route allowed with correct token
-- internal hook route allowed with correct secret
-
-### Path and metadata validation
-
-- invalid relative paths
-- duplicate file path reservation within a job
-- invalid file mode format
-- invalid timestamp format
-- mismatched upload size
-- upload metadata path not matching reserved slot
-
-### Upload lifecycle
-
-- happy path from slot reservation to completed file
-- post-receive progress updates
-- SHA-256 mismatch failure
-- terminated upload failure
-- missing incoming tusd file on finish
-
-### Job sealing and planner ingestion
-
-- sealing nonexistent job
-- sealing already sealed job
-- sealing with missing uploads
-- sealing empty job
-- sealing job that closes no discs
-- sealing job that closes one or more discs
-- planner output imported into catalog
-
-### Job and disc read semantics
-
-- online job file read from hot buffer
-- online job file read from cached disc
-- split-file reconstruction from cached chunks
-- offline job file response with disc IDs
-- online disc file read from cache
-- offline disc file response
-
-### Cache-session verification
-
-- cache session creation for known disc
-- cache session creation for unknown disc
-- cache upload slot for known path
-- cache upload slot rejection for unknown path
-- cache completion hash mismatch
-- cache completion file-set mismatch
-- cache completion success
-- cache eviction success
-
-### ISO flow
-
-- ISO authoring success
-- ISO authoring failure when tool is unavailable or root is missing
-- ISO overwrite guard
-- external ISO registration success
-- download session creation for registered/authored ISO
-- ISO streaming progress transitions
-
-### Retention and cleanup
-
-- default cleanup after all related discs are burn-confirmed
-- no cleanup before burn confirmation
-- no cleanup when archived bytes are incomplete
-- no cleanup when job opted into keeping hot buffer
-- manual buffer release
-
-### Export tree behavior
-
-- exports tree includes online files only
-- exports tree updates after upload completion
-- exports tree updates after cache activation
-- exports tree updates after cache eviction
-- exports tree updates after buffer release
-
-## Current Non-Goal
-
-Still not implemented:
-
-- ingesting entire jobs as tar streams instead of file-by-file tus uploads
