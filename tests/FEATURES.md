@@ -172,10 +172,11 @@ Offline media must carry enough metadata to support integrity, recovery, and
 manual handling without depending entirely on the live service.
 
 ### Core behaviors
-- Each partition contains encrypted `MANIFEST.jsonl`.
+- Each partition contains encrypted `MANIFEST.yml`.
 - Each partition contains plaintext `README.txt` with manual recovery guidance.
 - Payload files live under `files/...`.
 - Each payload has an encrypted YAML sidecar using `sidecar/v1`.
+- Each decrypted manifest conforms to `manifest/v1`.
 - Split files carry part metadata for reconstruction.
 - Every emitted leaf file except `README.txt` is encrypted with `age` plus
   `age-plugin-batchpass`.
@@ -374,7 +375,7 @@ These behaviors are implied by the feature set but are not as explicitly called
 out in the current coverage map as the others:
 
 - encrypted partition contents are emitted for all non-README leaf files
-- `MANIFEST.jsonl` and `README.txt` are present in every closed partition
+- `MANIFEST.yml` and `README.txt` are present in every closed partition
 - sidecar files conform to the expected schema version
 - replayability semantics for SSE streams, not just progress emission
 - job tree correctness when a mix of online and offline files exists

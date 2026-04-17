@@ -19,14 +19,18 @@ from .crypto import encrypt_bytes_to_file, encrypt_file_span, encrypted_size_for
 from .models import Disc, DiscEntry, ArchivePiece, Job, JobFile
 from .storage import canonical_tree_hash
 
-MANIFEST = "MANIFEST.jsonl"
+MANIFEST = "MANIFEST.yml"
 README = "README.txt"
 STORE = "files"
 STATE = "state.json"
+MANIFEST_SCHEMA = "manifest/v1"
 # Reserve space for the encrypted manifest envelope plus the plaintext
 # per-disc README so planner-selected piece sets still fit when emitted.
 META_PAD = 2048
-j = lambda x: (json.dumps(x, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+MANIFEST_PLACEHOLDER_PARTITION = "00000000T000000Z"
+MANIFEST_PLACEHOLDER_CHUNK_COUNT = 999999
+MANIFEST_PLACEHOLDER_ARCHIVE = "files/999999999999.999999"
+_MISSING = object()
 
 
 def atomic_json(path: Path, obj):
@@ -109,6 +113,70 @@ def sidecar_bytes(f: dict, i: int = 0, n: int = 1):
     return yaml.safe_dump(sidecar_dict(f, i, n), sort_keys=False, allow_unicode=True).encode()
 
 
+def yaml_bytes(obj) -> bytes:
+    return yaml.safe_dump(obj, sort_keys=False, allow_unicode=True).encode()
+
+
+def manifest_file_entry(path: str, sha256: str, archive=_MISSING) -> dict:
+    entry = {
+        "path": path,
+        "sha256": sha256,
+    }
+    if archive is not _MISSING:
+        entry["archive"] = archive
+    return entry
+
+
+def manifest_dump(partition: str, jobs_payload: list[dict]) -> bytes:
+    return yaml_bytes(
+        {
+            "schema": MANIFEST_SCHEMA,
+            "partition": partition,
+            "jobs": jobs_payload,
+        }
+    )
+
+
+EMPTY_MANIFEST_SIZE = len(manifest_dump(MANIFEST_PLACEHOLDER_PARTITION, []))
+_BASELINE_FILE_ENTRY = manifest_file_entry(
+    "placeholder",
+    "0" * 64,
+    {"count": MANIFEST_PLACEHOLDER_CHUNK_COUNT, "chunks": []},
+)
+_ONE_CHUNK_FILE_ENTRY = manifest_file_entry(
+    "placeholder",
+    "0" * 64,
+    {"count": MANIFEST_PLACEHOLDER_CHUNK_COUNT, "chunks": [MANIFEST_PLACEHOLDER_ARCHIVE]},
+)
+_UNSPLIT_FILE_ENTRY = manifest_file_entry(
+    "placeholder",
+    "0" * 64,
+    MANIFEST_PLACEHOLDER_ARCHIVE,
+)
+_BASELINE_FILE_SIZE = len(
+    manifest_dump(
+        MANIFEST_PLACEHOLDER_PARTITION,
+        [{"name": MANIFEST_PLACEHOLDER_PARTITION, "files": [_BASELINE_FILE_ENTRY]}],
+    )
+)
+_SPLIT_CHUNK_BUDGET = len(
+    manifest_dump(
+        MANIFEST_PLACEHOLDER_PARTITION,
+        [{"name": MANIFEST_PLACEHOLDER_PARTITION, "files": [_ONE_CHUNK_FILE_ENTRY]}],
+    )
+) - _BASELINE_FILE_SIZE
+_UNSPLIT_ARCHIVE_BUDGET = max(
+    0,
+    len(
+        manifest_dump(
+            MANIFEST_PLACEHOLDER_PARTITION,
+            [{"name": MANIFEST_PLACEHOLDER_PARTITION, "files": [_UNSPLIT_FILE_ENTRY]}],
+        )
+    )
+    - _BASELINE_FILE_SIZE,
+)
+
+
 def tree_plan(kids: dict, sizes: dict, cap: int):
     free, parts, stack = [cap], {}, [("", "dir")]
     while stack:
@@ -127,33 +195,29 @@ def tree_plan(kids: dict, sizes: dict, cap: int):
     return [parts[i] for i in sorted(parts)]
 
 
-def job_lines(job: str, root: str, files: list[dict]):
-    head = {"t": "job", "job": job, "root": root, "bytes": sum(f["raw"] for f in files), "files": len(files)}
-    alls = [
-        {
-            "t": "all",
-            "job": job,
-            "id": f["id"],
-            "src": f["rel"],
-            "sha256": f["sha256"],
-            "size": f["raw"],
-            "mode": f["mode"],
-            "mtime": f["mtime"],
-            "uid": f["uid"],
-            "gid": f["gid"],
-        }
-        for f in files
-    ]
-    return head, alls, len(j(head)) + sum(len(j(x)) for x in alls)
+def manifest_job_budget(job: str, files: list[dict]) -> int:
+    return len(
+        manifest_dump(
+            MANIFEST_PLACEHOLDER_PARTITION,
+            [
+                {
+                    "name": job,
+                    "files": [
+                        manifest_file_entry(
+                            f["rel"],
+                            f["sha256"],
+                            {"count": MANIFEST_PLACEHOLDER_CHUNK_COUNT, "chunks": []},
+                        )
+                        for f in sorted(files, key=lambda x: x["rel"])
+                    ],
+                }
+            ],
+        )
+    ) - EMPTY_MANIFEST_SIZE
 
 
 def put_len(job: str, rel: str, i: int, n: int, why: str = "___"):
-    name = f"{STORE}/999999" + ("" if n == 1 else f".{i + 1:03d}")
-    row = {"t": "put", "part": "00000000T000000Z", "job": job, "src": rel, "f": name, "m": name + ".meta.yaml", "b": 0, "why": why}
-    if n > 1:
-        w = max(3, len(str(n)))
-        row["chunk"] = f"{i + 1:0{w}d}/{n:0{w}d}"
-    return len(j(row))
+    return _SPLIT_CHUNK_BUDGET if n > 1 else _UNSPLIT_ARCHIVE_BUDGET
 
 
 def stage_pieces(state_dir: Path, job: str, files: list[dict], target: int, fixed: int):
@@ -424,18 +488,38 @@ def assign_paths(pieces: list[dict]):
 
 
 def manifest_bytes(part: str, cfg: dict, jobs: dict, items: list[dict], fmap: dict):
-    lines = [j({"t": "meta", "v": 11, "part": part, "target": cfg["target"], "fill": cfg["fill"], "spill_fill": cfg["spill_fill"], "store": STORE, "how": "files are raw; concat split files/N.001.. in lexical order to restore"})]
+    pieces_by_file: dict[tuple[str, int], list[dict]] = {}
+    for item in items:
+        for piece in item["pieces"]:
+            pieces_by_file.setdefault((piece["job"], piece["file"]), []).append(piece)
+
+    manifest_jobs: list[dict] = []
     for job in sorted({x["job"] for x in items}):
-        lines += [j(jobs[job]["job_line"])] + [j(x) for x in jobs[job]["all_lines"]]
-    for it in items:
-        for p in it["pieces"]:
-            f, m = fmap[(p["job"], p["file"], p["i"])]
-            row = {"t": "put", "part": part, "job": p["job"], "src": p["rel"], "f": f, "m": m, "b": p["data"], "why": "vol" if p["n"] > 1 else it["why"]}
-            if p["n"] > 1:
-                w = max(3, len(str(p["n"])))
-                row["chunk"] = f"{p['i'] + 1:0{w}d}/{p['n']:0{w}d}"
-            lines.append(j(row))
-    return b"".join(lines)
+        job_files = []
+        for file_meta in sorted(jobs[job]["files"], key=lambda x: x["rel"]):
+            present = sorted(
+                pieces_by_file.get((job, file_meta["id"]), []),
+                key=lambda x: x["i"],
+            )
+            if file_meta["piece_count"] > 1:
+                archive = {
+                    "count": file_meta["piece_count"],
+                    "chunks": [fmap[(job, file_meta["id"], piece["i"])][0] for piece in present],
+                }
+                job_files.append(manifest_file_entry(file_meta["rel"], file_meta["sha256"], archive))
+            elif present:
+                job_files.append(
+                    manifest_file_entry(
+                        file_meta["rel"],
+                        file_meta["sha256"],
+                        fmap[(job, file_meta["id"], 0)][0],
+                    )
+                )
+            else:
+                job_files.append(manifest_file_entry(file_meta["rel"], file_meta["sha256"]))
+        manifest_jobs.append({"name": job, "files": job_files})
+
+    return manifest_dump(part, manifest_jobs)
 
 
 def recovery_readme_bytes(part: str) -> bytes:
@@ -452,26 +536,21 @@ def recovery_readme_bytes(part: str) -> bytes:
         "  export AGE_PASSPHRASE='your-passphrase'",
         "",
         "Decrypt the manifest for this disc:",
-        "  age -d -j batchpass MANIFEST.jsonl > MANIFEST.dec.jsonl",
+        "  age -d -j batchpass MANIFEST.yml > MANIFEST.dec.yml",
         "",
-        "Decrypt a sidecar:",
-        "  age -d -j batchpass files/<entry>.meta.yaml > files/<entry>.meta.dec.yaml",
+        "The decrypted manifest is manifest/v1 YAML:",
+        "- schema: manifest/v1",
+        "- jobs[*].files[*].archive is omitted when an unsplit file has no payload on this disc",
+        "- archive is a string for an unsplit payload on this disc",
+        "- archive.count and archive.chunks describe split payloads present on this disc",
         "",
         "Decrypt a payload:",
         "  age -d -j batchpass files/<entry> > recovered.bin",
         "",
-        "How to recover files manually:",
-        f"- Inspect MANIFEST.dec.jsonl for put records whose \"part\" is \"{part}\".",
-        "- Each put record maps the original logical path in \"src\" to an encrypted payload path in \"f\" and an encrypted sidecar path in \"m\".",
-        "- Decrypt the payload path from \"f\" to recover that file or file chunk.",
-        "- Decrypt the sidecar path from \"m\" for metadata such as sha256, size, and split part numbering.",
-        "- If a put record has a \"chunk\" field, recover every chunk for the same source path from every required disc and concatenate them in chunk order.",
+        "Decrypt a sidecar for any payload listed above:",
+        "  age -d -j batchpass files/<entry>.meta.yaml > files/<entry>.meta.dec.yaml",
         "",
-        "Integrity checks:",
-        "- The decrypted sidecar includes the original plaintext sha256 and size.",
-        "- The manifest records the payload path and chunk ordering exactly as archived.",
-        "",
-        "This disc can be recovered without the web service as long as you have the passphrase and the age tools above.",
+        "For split files, gather every chunk from every required disc and concatenate them in chunk-index order.",
         "",
     ]
     return "\n".join(lines).encode("utf-8")
@@ -608,9 +687,18 @@ def ingest_job(session: Session, job_id: str):
         save_state(state_dir, s)
         return {"job": job_id, "closed": [], "buffer_bytes": sum(x["bytes"] for x in s["items"])}
 
-    jl, alls, fixed = job_lines(job_id, job.id, files)
+    fixed = manifest_job_budget(job_id, files)
     stage_pieces(state_dir, job_id, files, s["cfg"]["target"], fixed)
-    s["jobs"][job_id] = {"root": job.id, "files": [{k: f[k] for k in ("id", "rel", "raw", "mode", "mtime", "uid", "gid", "sha256")} for f in files], "job_line": jl, "all_lines": alls, "fixed": fixed}
+    s["jobs"][job_id] = {
+        "files": [
+            {
+                **{k: f[k] for k in ("id", "rel", "raw", "mode", "mtime", "uid", "gid", "sha256")},
+                "piece_count": len(f["pieces"]),
+            }
+            for f in files
+        ],
+        "fixed": fixed,
+    }
 
     def add_item(kind, hot, why, pieces, b):
         s["next_item"] += 1

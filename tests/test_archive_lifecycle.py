@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 from .helpers import cache_disc_from_root, closed_disc_roots, create_job, force_flush, register_iso, seal_job, upload_job_file
 from .mock_data import document_archive_files, family_archive_files, oversized_master_reel
 
@@ -47,27 +49,33 @@ def test_closed_disc_can_be_cached_back_and_restore_job_reads(app_factory):
             headers=harness.auth_headers(),
         )
         assert disc_tree.status_code == 200
-        assert any(node["path"] == "MANIFEST.jsonl" for node in disc_tree.json()["nodes"])
+        assert any(node["path"] == "MANIFEST.yml" for node in disc_tree.json()["nodes"])
         assert any(node["path"] == "README.txt" for node in disc_tree.json()["nodes"])
 
         disc_roots = closed_disc_roots(harness, disc_ids)
-        manifest_path = disc_roots[disc_id] / "MANIFEST.jsonl"
+        manifest_path = disc_roots[disc_id] / "MANIFEST.yml"
         sidecar_path = next((disc_roots[disc_id] / "files").glob("*.meta.yaml"))
         readme_path = disc_roots[disc_id] / "README.txt"
         assert manifest_path.exists()
         assert manifest_path.read_bytes().startswith(b"age-encryption.org/")
         assert sidecar_path.read_bytes().startswith(b"age-encryption.org/")
         assert readme_path.read_text().startswith(f"Archive disc: {disc_id}")
-        assert "age -d -j batchpass MANIFEST.jsonl" in readme_path.read_text()
+        assert "age -d -j batchpass MANIFEST.yml" in readme_path.read_text()
 
         with harness.session() as session:
             disc = session.get(harness.models.Disc, disc_id)
             assert disc is not None
             assert disc.cached_root_abs_path is not None
-            cached_manifest = Path(disc.cached_root_abs_path) / "MANIFEST.jsonl"
+            cached_manifest = Path(disc.cached_root_abs_path) / "MANIFEST.yml"
             cached_sidecar = next((Path(disc.cached_root_abs_path) / "files").glob("*.meta.yaml"))
             cached_readme = Path(disc.cached_root_abs_path) / "README.txt"
-            assert cached_manifest.read_text().startswith('{"t":"meta"')
+            manifest = yaml.safe_load(cached_manifest.read_text())
+            assert manifest["schema"] == "manifest/v1"
+            assert manifest["partition"] == disc_id
+            assert len(manifest["jobs"]) == 1
+            assert manifest["jobs"][0]["name"] == job_id
+            assert all("path" in file_entry and "sha256" in file_entry for file_entry in manifest["jobs"][0]["files"])
+            assert any(isinstance(file_entry.get("archive"), str) for file_entry in manifest["jobs"][0]["files"])
             assert cached_sidecar.read_text().startswith("schema: sidecar/v1")
             assert cached_readme.read_text().startswith(f"Archive disc: {disc_id}")
 
