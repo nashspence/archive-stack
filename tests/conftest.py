@@ -49,6 +49,7 @@ class LoadedModules:
     db: ModuleType
     main: ModuleType
     models: ModuleType
+    notifications: ModuleType
     progress: ModuleType
     storage: ModuleType
     archive_root: Path
@@ -84,6 +85,10 @@ class AppHarness:
     @property
     def progress(self) -> ModuleType:
         return self.modules.progress
+
+    @property
+    def notifications(self) -> ModuleType:
+        return self.modules.notifications
 
     @property
     def storage(self) -> ModuleType:
@@ -164,6 +169,7 @@ def _load_modules_with_env(
             db=importlib.import_module("app.db"),
             main=importlib.import_module("app.main"),
             models=importlib.import_module("app.models"),
+            notifications=importlib.import_module("app.notifications"),
             progress=importlib.import_module("app.progress"),
             storage=importlib.import_module("app.storage"),
             archive_root=Path(env["ARCHIVE_ROOT"]),

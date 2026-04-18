@@ -15,7 +15,19 @@ from ..config import DOWNLOAD_CHUNK_SIZE, TUSD_BASE_URL
 from ..crypto import AgeEncryptionError, decrypt_tree
 from ..db import SessionLocal
 from ..iso import create_iso_from_partition_root
-from ..models import ArchivePiece, CacheSession, Disc, DiscEntry, DownloadSession, UploadSlot
+from ..models import (
+    ArchivePiece,
+    CacheSession,
+    Disc,
+    DiscEntry,
+    DiscFinalizationWebhookSubscription,
+    DownloadSession,
+    UploadSlot,
+)
+from ..notifications import (
+    backfill_disc_finalization_notifications_for_subscription,
+    complete_disc_finalization_notifications,
+)
 from ..planner import force_close_pending, import_closed_discs
 from ..progress import download_stream_name, publish_progress
 from ..schemas import (
@@ -23,6 +35,8 @@ from ..schemas import (
     CacheSessionCompleteResponse,
     CacheSessionCreateResponse,
     CacheUploadSlotRequest,
+    DiscFinalizationWebhookCreateRequest,
+    DiscFinalizationWebhookCreateResponse,
     DownloadSessionCreateResponse,
     IsoCreateRequest,
     IsoCreateResponse,
@@ -46,6 +60,27 @@ def get_db():
 
 
 Db = Annotated[Session, Depends(get_db)]
+
+
+@router.post("/finalization-webhooks", response_model=DiscFinalizationWebhookCreateResponse)
+def create_disc_finalization_webhook_subscription(
+    body: DiscFinalizationWebhookCreateRequest,
+    db: Db,
+) -> DiscFinalizationWebhookCreateResponse:
+    subscription = DiscFinalizationWebhookSubscription(
+        webhook_url=str(body.webhook_url),
+        reminder_interval_seconds=body.reminder_interval_seconds,
+    )
+    db.add(subscription)
+    db.flush()
+    pending_disc_count = backfill_disc_finalization_notifications_for_subscription(db, subscription.id)
+    db.commit()
+    return DiscFinalizationWebhookCreateResponse(
+        subscription_id=subscription.id,
+        webhook_url=subscription.webhook_url,
+        reminder_interval_seconds=subscription.reminder_interval_seconds,
+        pending_disc_count=pending_disc_count,
+    )
 
 
 @router.post("/flush")
@@ -281,6 +316,21 @@ def author_iso(disc_id: str, body: IsoCreateRequest, db: Db) -> IsoCreateRespons
     )
 
 
+@router.get("/{disc_id}/iso/content")
+def download_registered_iso(disc_id: str, db: Db):
+    disc = db.get(Disc, disc_id)
+    if disc is None:
+        raise HTTPException(status_code=404, detail="disc not found")
+    if not disc.iso_abs_path or not Path(disc.iso_abs_path).exists():
+        raise HTTPException(status_code=409, detail="iso not registered or not online")
+    iso_path = Path(disc.iso_abs_path)
+    return FileResponse(
+        path=str(iso_path),
+        filename=iso_path.name,
+        media_type="application/octet-stream",
+    )
+
+
 @router.post("/{disc_id}/burn/confirm", response_model=BurnConfirmResponse)
 def confirm_burn(disc_id: str, db: Db) -> BurnConfirmResponse:
     disc = db.execute(
@@ -295,6 +345,7 @@ def confirm_burn(disc_id: str, db: Db) -> BurnConfirmResponse:
 
     if disc.burn_confirmed_at is None:
         disc.burn_confirmed_at = datetime.now(timezone.utc)
+        complete_disc_finalization_notifications(db, disc_id)
         db.commit()
 
     released_job_ids: list[str] = []

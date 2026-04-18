@@ -753,6 +753,8 @@ def force_close_pending(session: Session):
 
 
 def import_closed_discs(session: Session, closed: list[dict]) -> list[str]:
+    from .notifications import create_disc_finalization_notifications_for_disc
+
     disc_ids: list[str] = []
     for item in closed:
         disc_id = item["name"]
@@ -796,6 +798,7 @@ def import_closed_discs(session: Session, closed: list[dict]) -> list[str]:
             )
         for p in item.get("pieces", []):
             session.add(ArchivePiece(disc_id=disc_id, job_file_id=p["job_file_id"], payload_relpath=p["payload_relpath"], sidecar_relpath=p["sidecar_relpath"], payload_size_bytes=p["payload_size_bytes"], chunk_index=p["chunk_index"], chunk_count=p["chunk_count"]))
+        create_disc_finalization_notifications_for_disc(session, disc_id)
         disc_ids.append(disc_id)
     session.commit()
     return disc_ids

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
+from contextlib import suppress
 
 from fastapi import FastAPI, Depends
 from fastapi.responses import JSONResponse
@@ -9,6 +11,7 @@ from .config import ensure_directories
 from .auth import require_api_auth
 from .db import Base, engine, migrate_schema
 from .hooks import router as hooks_router
+from .notifications import run_disc_finalization_notifier
 from .routes.discs import router as discs_router
 from .routes.jobs import router as jobs_router
 from .routes.progress import router as progress_router
@@ -19,7 +22,13 @@ async def lifespan(_app: FastAPI):
     ensure_directories()
     Base.metadata.create_all(bind=engine)
     migrate_schema()
-    yield
+    notifier_task = asyncio.create_task(run_disc_finalization_notifier())
+    try:
+        yield
+    finally:
+        notifier_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await notifier_task
 
 
 app = FastAPI(title="Archive Storage MVP", version="0.4.0", lifespan=lifespan)

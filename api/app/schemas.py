@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, HttpUrl
 
 
 class JobCreateRequest(BaseModel):
@@ -116,3 +116,15 @@ class DownloadSessionCreateResponse(BaseModel):
     total_bytes: int
     progress_stream_url: str
     content_url: str
+
+
+class DiscFinalizationWebhookCreateRequest(BaseModel):
+    webhook_url: HttpUrl
+    reminder_interval_seconds: int | None = Field(default=None, gt=0)
+
+
+class DiscFinalizationWebhookCreateResponse(BaseModel):
+    subscription_id: str
+    webhook_url: str
+    reminder_interval_seconds: int | None = None
+    pending_disc_count: int

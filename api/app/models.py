@@ -97,6 +97,10 @@ class Disc(Base):
     entries: Mapped[list["DiscEntry"]] = relationship(back_populates="disc", cascade="all, delete-orphan")
     archive_pieces: Mapped[list["ArchivePiece"]] = relationship(back_populates="disc", cascade="all, delete-orphan")
     cache_sessions: Mapped[list["CacheSession"]] = relationship(back_populates="disc", cascade="all, delete-orphan")
+    finalization_notifications: Mapped[list["DiscFinalizationNotification"]] = relationship(
+        back_populates="disc",
+        cascade="all, delete-orphan",
+    )
 
 
 class DiscEntry(Base):
@@ -191,3 +195,50 @@ class DownloadSession(Base):
     bytes_sent: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class DiscFinalizationWebhookSubscription(Base):
+    __tablename__ = "disc_finalization_webhook_subscriptions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    webhook_url: Mapped[str] = mapped_column(String, nullable=False)
+    reminder_interval_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    notifications: Mapped[list["DiscFinalizationNotification"]] = relationship(
+        back_populates="subscription",
+        cascade="all, delete-orphan",
+    )
+
+
+class DiscFinalizationNotification(Base):
+    __tablename__ = "disc_finalization_notifications"
+    __table_args__ = (
+        UniqueConstraint(
+            "subscription_id",
+            "disc_id",
+            name="uq_disc_finalization_notifications_subscription_disc",
+        ),
+        Index("ix_disc_finalization_notifications_next_attempt_at", "next_attempt_at"),
+        Index("ix_disc_finalization_notifications_disc_id", "disc_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    subscription_id: Mapped[str] = mapped_column(
+        ForeignKey("disc_finalization_webhook_subscriptions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    disc_id: Mapped[str] = mapped_column(ForeignKey("discs.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
+    reminder_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    initial_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    subscription: Mapped[DiscFinalizationWebhookSubscription] = relationship(back_populates="notifications")
+    disc: Mapped[Disc] = relationship(back_populates="finalization_notifications")

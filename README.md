@@ -172,6 +172,18 @@ curl -X POST http://localhost:8080/v1/discs/20260417T091500Z/iso/create \
   -d '{"volume_label":"ARCHIVE_20260417"}'
 ```
 
+Subscribe a webhook for newly finalized discs and optional reminders:
+
+```bash
+curl -X POST http://localhost:8080/v1/discs/finalization-webhooks \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{
+    "webhook_url": "https://example.com/archive-hooks/disc-finalized",
+    "reminder_interval_seconds": 86400
+  }'
+```
+
 ## A few project terms
 
 Some internal names are still a little technical. In plain language, they mean:
@@ -196,6 +208,7 @@ Some internal names are still a little technical. In plain language, they mean:
 
 ### Archived disc sets
 - `POST /v1/discs/flush`
+- `POST /v1/discs/finalization-webhooks`
 - `GET /v1/discs/{disc_id}/tree`
 - `GET /v1/discs/{disc_id}/content/{disc_relative_path}`
 - `POST /v1/discs/{disc_id}/cache/sessions`
@@ -205,9 +218,20 @@ Some internal names are still a little technical. In plain language, they mean:
 - `DELETE /v1/discs/{disc_id}/cache`
 - `POST /v1/discs/{disc_id}/iso/create`
 - `POST /v1/discs/{disc_id}/iso/register`
+- `GET /v1/discs/{disc_id}/iso/content`
 - `POST /v1/discs/{disc_id}/burn/confirm`
 - `POST /v1/discs/{disc_id}/download-sessions`
 - `GET /v1/discs/downloads/{session_id}/content`
+
+Finalized-disc webhook payloads include:
+
+- `disc_id`
+- `download_url` for `GET /v1/discs/{disc_id}/iso/content`
+- `request_burn_image_url` for `POST /v1/discs/{disc_id}/iso/create`
+- `iso_available` so callers can tell whether the ISO is already present
+- `reminder_interval_seconds` and `reminder_count` when reminders are enabled
+
+Reminder deliveries repeat until the disc is burn-confirmed.
 
 ### Progress streams
 - `GET /v1/progress/uploads/{upload_id}/stream`
