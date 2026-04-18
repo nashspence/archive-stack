@@ -140,27 +140,30 @@ def _upload_to_tusd(slot: dict[str, Any], payload: bytes) -> None:
         "Upload-Length": str(len(payload)),
         "Upload-Metadata": _tus_metadata_header(slot["tus_metadata"]),
     }
-    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, follow_redirects=True) as client:
-        create_response = client.post(slot["tus_create_url"], headers=headers)
-        if create_response.status_code >= 400:
-            raise ApiError(create_response.status_code, _error_message(create_response))
+    try:
+        with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, follow_redirects=True) as client:
+            create_response = client.post(slot["tus_create_url"], headers=headers)
+            if create_response.status_code >= 400:
+                raise ApiError(create_response.status_code, _error_message(create_response))
 
-        location = create_response.headers.get("Location")
-        if not location:
-            raise ApiError(502, "tusd did not return an upload location")
-        upload_url = urljoin(slot["tus_create_url"], location)
+            location = create_response.headers.get("Location")
+            if not location:
+                raise ApiError(502, "tusd did not return an upload location")
+            upload_url = urljoin(slot["tus_create_url"], location)
 
-        patch_response = client.patch(
-            upload_url,
-            headers={
-                "Tus-Resumable": "1.0.0",
-                "Content-Type": "application/offset+octet-stream",
-                "Upload-Offset": "0",
-            },
-            content=payload,
-        )
-        if patch_response.status_code >= 400:
-            raise ApiError(patch_response.status_code, _error_message(patch_response))
+            patch_response = client.patch(
+                upload_url,
+                headers={
+                    "Tus-Resumable": "1.0.0",
+                    "Content-Type": "application/offset+octet-stream",
+                    "Upload-Offset": "0",
+                },
+                content=payload,
+            )
+            if patch_response.status_code >= 400:
+                raise ApiError(patch_response.status_code, _error_message(patch_response))
+    except httpx.HTTPError as exc:
+        raise ApiError(502, f"could not reach tusd upload service at {slot['tus_create_url']}") from exc
 
 
 def _proxy_stream(path: str) -> StreamingResponse:

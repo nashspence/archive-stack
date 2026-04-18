@@ -164,3 +164,44 @@ def test_upload_hooks_publish_progress_and_export_active_bytes(app_factory):
         assert f"path: {sample.relative_path}" in manifest
         assert f"sha256: {sample.sha256}" in manifest
         assert "OpenTimestamps stub proof v1" in proof
+
+
+def test_upload_hooks_accept_tusd_v2_http_payload_shape(app_factory):
+    with app_factory() as harness:
+        sample = family_archive_files()[0]
+        collection_id = create_collection(harness, description="real tusd http hooks")
+        slot = reserve_collection_upload(harness, collection_id, sample)
+
+        precreate = harness.client.post(
+            harness.hook_url(),
+            json={
+                "Type": "pre-create",
+                "Event": {
+                    "Upload": {
+                        "Size": sample.size_bytes,
+                        "MetaData": slot["tus_metadata"],
+                    }
+                },
+            },
+        )
+        assert precreate.status_code == 200, precreate.text
+        incoming_path = Path(precreate.json()["ChangeFileInfo"]["Storage"]["Path"])
+        incoming_path.parent.mkdir(parents=True, exist_ok=True)
+        incoming_path.write_bytes(sample.content)
+
+        for body in [
+            {"Type": "post-create", "Event": {"Upload": {"ID": slot["upload_id"]}}},
+            {"Type": "post-receive", "Event": {"Upload": {"ID": slot["upload_id"], "Offset": sample.size_bytes}}},
+            {"Type": "post-finish", "Event": {"Upload": {"ID": slot["upload_id"]}}},
+        ]:
+            response = harness.client.post(harness.hook_url(), json=body)
+            assert response.status_code == 200, response.text
+
+        with harness.session() as session:
+            collection_file = session.query(harness.models.CollectionFile).filter_by(collection_id=collection_id).one()
+            slot_row = session.query(harness.models.UploadSlot).filter_by(upload_id=slot["upload_id"]).one()
+            assert collection_file.status == "active"
+            assert collection_file.actual_sha256 == sample.sha256
+            assert Path(collection_file.buffer_abs_path).read_bytes() == sample.content
+            assert slot_row.status == "completed"
+            assert Path(slot_row.final_abs_path).read_bytes() == sample.content

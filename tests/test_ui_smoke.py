@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import httpx
 from fastapi.testclient import TestClient
 
 from ui.app import main as ui_main
@@ -84,3 +85,42 @@ def test_dashboard_and_detail_pages_render_with_api_data(monkeypatch):
         assert container_page.status_code == 200
         assert "README.txt" in container_page.text
         assert "Create activation session" in container_page.text
+
+
+def test_collection_upload_returns_502_when_tusd_is_unreachable(monkeypatch):
+    monkeypatch.setattr(
+        ui_main,
+        "_api_json",
+        lambda method, path, **kwargs: {
+            "tus_create_url": "http://tusd:1080/files",
+            "tus_metadata": {"upload_id": "demo-upload", "upload_token": "demo-token"},
+        },
+    )
+
+    class FailingTusClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, *args, **kwargs):
+            request = httpx.Request("POST", args[0])
+            raise httpx.ConnectError("connection refused", request=request)
+
+    monkeypatch.setattr(ui_main.httpx, "Client", lambda *args, **kwargs: FailingTusClient())
+
+    with TestClient(ui_main.app) as client:
+        response = client.post(
+            "/collections/demo-collection/upload-files",
+            files={"file": ("notes.txt", b"hello riverhog", "text/plain")},
+            data={
+                "relative_path": "notes.txt",
+                "size_bytes": str(len(b"hello riverhog")),
+                "mode": "0644",
+                "mtime": "2026-04-18T00:00:00Z",
+            },
+        )
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "could not reach tusd upload service at http://tusd:1080/files"}

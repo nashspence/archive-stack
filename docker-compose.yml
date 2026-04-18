@@ -4,6 +4,8 @@ services:
       context: ./api
     env_file:
       - .env
+    environment:
+      TUSD_BASE_URL: http://tusd:1080/files
     ports:
       - "${API_PORT:-8080}:8080"
     volumes:
@@ -24,11 +26,11 @@ services:
 
   tusd:
     image: tusproject/tusd:v2.8.0
+    user: "0:0"
     command:
-      - /usr/local/bin/tusd
       - -host=0.0.0.0
       - -port=1080
-      - -dir=/var/lib/archive/tusd
+      - -upload-dir=/var/lib/archive/tusd
       - -hooks-http=http://api:8080/internal/tusd-hooks?hook_secret=${HOOK_SECRET:-change-me}
       - -hooks-enabled-events=pre-create,post-create,post-receive,post-finish,post-terminate
       - -progress-hooks-interval=1s

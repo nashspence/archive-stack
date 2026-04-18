@@ -41,6 +41,43 @@ def _error(status_code: int, message: str, reject: bool = False, stop: bool = Fa
     return JSONResponse(body)
 
 
+def _event_upload(payload: dict[str, Any]) -> dict[str, Any]:
+    event = payload.get("Event")
+    if not isinstance(event, dict):
+        return {}
+    upload = event.get("Upload")
+    if not isinstance(upload, dict):
+        return {}
+    return upload
+
+
+def _hook_type(payload: dict[str, Any], hook_name: str | None) -> str | None:
+    if hook_name:
+        return hook_name
+    payload_type = payload.get("Type")
+    if isinstance(payload_type, str):
+        return payload_type
+    return None
+
+
+def _upload_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+    upload = _event_upload(payload)
+    metadata = upload.get("MetaData")
+    if isinstance(metadata, dict):
+        return metadata
+    metadata = payload.get("MetaData")
+    if isinstance(metadata, dict):
+        return metadata
+    return {}
+
+
+def _upload_field(payload: dict[str, Any], name: str) -> Any:
+    upload = _event_upload(payload)
+    if name in upload:
+        return upload.get(name)
+    return payload.get(name)
+
+
 async def _publish_aggregate(db, slot: UploadSlot) -> None:
     if slot.collection_file_id:
         current, total = aggregate_collection_progress(db, slot.collection_file.collection_id)
@@ -60,14 +97,15 @@ async def tusd_hooks(
         raise HTTPException(status_code=403, detail="forbidden")
 
     payload = await request.json()
-    metadata = payload.get("MetaData") or {}
-    upload_id = _decode_metadata_value(metadata.get("upload_id")) or payload.get("ID")
+    hook_type = _hook_type(payload, hook_name)
+    metadata = _upload_metadata(payload)
+    upload_id = _decode_metadata_value(metadata.get("upload_id")) or _upload_field(payload, "ID")
     upload_token = _decode_metadata_value(metadata.get("upload_token"))
     relative_path = _decode_metadata_value(metadata.get("relative_path"))
 
     db = SessionLocal()
     try:
-        if hook_name == "pre-create":
+        if hook_type == "pre-create":
             if not upload_id or not upload_token or not relative_path:
                 return _error(400, "missing upload metadata", reject=True)
             slot = (
@@ -84,7 +122,7 @@ async def tusd_hooks(
                 return _error(403, "invalid upload token", reject=True)
             if slot.relative_path != normalize_relpath(relative_path):
                 return _error(409, "upload path does not match reserved slot", reject=True)
-            if int(payload.get("Size") or 0) != int(slot.size_bytes):
+            if int(_upload_field(payload, "Size") or 0) != int(slot.size_bytes):
                 return _error(409, "upload size does not match reserved slot", reject=True)
 
             slot.status = "uploading"
@@ -108,20 +146,20 @@ async def tusd_hooks(
         if slot is None:
             return JSONResponse({})
 
-        if hook_name == "post-create":
+        if hook_type == "post-create":
             await publish_progress(upload_stream_name(upload_id), {"status": "created", "offset": 0, "size": slot.size_bytes})
             await _publish_aggregate(db, slot)
             return JSONResponse({})
 
-        if hook_name == "post-receive":
-            slot.current_offset = int(payload.get("Offset") or 0)
+        if hook_type == "post-receive":
+            slot.current_offset = int(_upload_field(payload, "Offset") or 0)
             slot.status = "uploading"
             db.commit()
             await publish_progress(upload_stream_name(upload_id), {"status": "uploading", "offset": slot.current_offset, "size": slot.size_bytes})
             await _publish_aggregate(db, slot)
             return JSONResponse({})
 
-        if hook_name == "post-finish":
+        if hook_type == "post-finish":
             incoming_path = INCOMING_DIR / f"{upload_id}.bin"
             if not incoming_path.exists():
                 slot.status = "failed"
@@ -169,7 +207,7 @@ async def tusd_hooks(
             await _publish_aggregate(db, slot)
             return JSONResponse({})
 
-        if hook_name == "post-terminate":
+        if hook_type == "post-terminate":
             slot.status = "failed"
             slot.error_message = "upload terminated"
             db.commit()
