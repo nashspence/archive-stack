@@ -48,6 +48,34 @@ async function parseResponse(response) {
   return { detail: await response.text() };
 }
 
+const MAX_PARALLEL_UPLOADS = 4;
+const SKIPPABLE_COLLECTION_UPLOAD_ERROR = "file already uploaded for this collection";
+
+async function runWithConcurrency(items, limit, worker) {
+  const queue = Array.from(items);
+  let firstError = null;
+
+  async function runner() {
+    while (queue.length && !firstError) {
+      const item = queue.shift();
+      if (!item) {
+        return;
+      }
+      try {
+        await worker(item);
+      } catch (error) {
+        firstError = error;
+      }
+    }
+  }
+
+  const workerCount = Math.max(1, Math.min(limit, queue.length || 1));
+  await Promise.all(Array.from({ length: workerCount }, () => runner()));
+  if (firstError) {
+    throw firstError;
+  }
+}
+
 function wireCollectionUploadForm() {
   const form = document.getElementById("collection-upload-form");
   if (!form) {
@@ -79,7 +107,7 @@ function wireCollectionUploadForm() {
     const progressSource = connectProgress(form.dataset.progressUrl, output);
 
     try {
-      for (const file of files) {
+      await runWithConcurrency(files, MAX_PARALLEL_UPLOADS, async (file) => {
         const browserRelativePath = file.webkitRelativePath
           ? stripSelectedRoot(file.webkitRelativePath)
           : file.name;
@@ -101,10 +129,14 @@ function wireCollectionUploadForm() {
         const response = await fetch(form.action, { method: "POST", body: payload });
         const body = await parseResponse(response);
         if (!response.ok) {
+          if (body.detail === SKIPPABLE_COLLECTION_UPLOAD_ERROR) {
+            appendLine(output, `skipped ${relativePath} (already uploaded)`);
+            return;
+          }
           throw new Error(body.detail || `Upload failed for ${relativePath}`);
         }
         appendLine(output, `completed ${relativePath}`);
-      }
+      });
 
       appendLine(output, "All uploads completed. Reloading.");
       window.location.reload();
@@ -159,7 +191,7 @@ function wireActivationUploadForm() {
     const progressSource = connectProgress(form.dataset.progressUrl, output);
 
     try {
-      for (const entry of expected.entries || []) {
+      await runWithConcurrency(expected.entries || [], MAX_PARALLEL_UPLOADS, async (entry) => {
         const file = selectedByPath.get(entry.relative_path);
         const payload = new FormData();
         payload.append("file", file);
@@ -172,7 +204,7 @@ function wireActivationUploadForm() {
           throw new Error(body.detail || `Activation upload failed for ${entry.relative_path}`);
         }
         appendLine(output, `completed ${entry.relative_path}`);
-      }
+      });
 
       appendLine(output, "Finalizing activation session.");
       const completeResponse = await fetch(form.dataset.completeUrl, { method: "POST" });

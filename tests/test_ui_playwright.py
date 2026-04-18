@@ -337,6 +337,138 @@ def test_ui_playwright_collection_upload_and_flush_flow(module_factory, tmp_path
         expect(page.get_by_text("MANIFEST.yml")).to_be_visible()
 
 
+def test_ui_playwright_collection_uploads_run_in_parallel(module_factory, tmp_path_factory):
+    with live_ui_stack(module_factory, tmp_path_factory) as stack:
+        page = stack["page"]
+        ui_url = stack["ui_url"]
+
+        _create_collection_via_ui(
+            page,
+            ui_url,
+            root_node_name="playwright-parallel",
+            description="Playwright parallel uploads",
+        )
+
+        upload_dir = stack["tmp_path_factory"].mktemp("playwright-parallel-files")
+        upload_paths: list[str] = []
+        for index in range(4):
+            path = upload_dir / f"file-{index}.txt"
+            path.write_text(f"parallel upload {index}\n", encoding="utf-8")
+            upload_paths.append(str(path))
+
+        page.evaluate(
+            """
+            () => {
+              localStorage.setItem(
+                "uploadStats",
+                JSON.stringify({ active: 0, calls: 0, max: 0 })
+              );
+              const readStats = () => JSON.parse(localStorage.getItem("uploadStats") || "{}");
+              const writeStats = (stats) => localStorage.setItem("uploadStats", JSON.stringify(stats));
+
+              window.fetch = async () => {
+                const started = readStats();
+                started.calls += 1;
+                started.active += 1;
+                started.max = Math.max(started.max, started.active);
+                writeStats(started);
+
+                await new Promise((resolve) => setTimeout(resolve, 200));
+
+                const finished = readStats();
+                finished.active -= 1;
+                writeStats(finished);
+
+                return new Response(JSON.stringify({ status: "ok" }), {
+                  status: 200,
+                  headers: { "Content-Type": "application/json" },
+                });
+              };
+
+              document
+                .getElementById("collection-upload-form")
+                ?.removeAttribute("data-progress-url");
+            }
+            """
+        )
+        page.locator("#collection-files").set_input_files(upload_paths)
+
+        with page.expect_navigation(wait_until="load", timeout=30_000):
+            page.get_by_role("button", name="Upload selected files").click()
+
+        page.wait_for_function(
+            """
+            () => {
+              const stats = JSON.parse(localStorage.getItem("uploadStats") || "{}");
+              return stats.calls === 4 && stats.active === 0;
+            }
+            """,
+            timeout=30_000,
+        )
+        stats = page.evaluate("() => JSON.parse(localStorage.getItem('uploadStats') || '{}')")
+        assert stats["calls"] == 4
+        assert stats["max"] > 1
+
+
+def test_ui_playwright_collection_retry_skips_already_uploaded_files(module_factory, tmp_path_factory):
+    with live_ui_stack(module_factory, tmp_path_factory) as stack:
+        page = stack["page"]
+        ui_url = stack["ui_url"]
+
+        _create_collection_via_ui(
+            page,
+            ui_url,
+            root_node_name="playwright-retry",
+            description="Playwright retry skips uploaded files",
+        )
+
+        upload_dir = stack["tmp_path_factory"].mktemp("playwright-retry-files")
+        first_file = upload_dir / "first.txt"
+        second_file = upload_dir / "second.txt"
+        first_file.write_text("already uploaded\n", encoding="utf-8")
+        second_file.write_text("new file on retry\n", encoding="utf-8")
+
+        page.evaluate(
+            """
+            () => {
+              localStorage.setItem("retryStats", JSON.stringify([]));
+              const record = (entry) => {
+                const stats = JSON.parse(localStorage.getItem("retryStats") || "[]");
+                stats.push(entry);
+                localStorage.setItem("retryStats", JSON.stringify(stats));
+              };
+
+              window.fetch = async (_url, options) => {
+                const relativePath = options?.body?.get("relative_path");
+                record(relativePath);
+                if (relativePath === "first.txt") {
+                  return new Response(
+                    JSON.stringify({ detail: "file already uploaded for this collection" }),
+                    {
+                      status: 409,
+                      headers: { "Content-Type": "application/json" },
+                    }
+                  );
+                }
+                return new Response(JSON.stringify({ status: "ok" }), {
+                  status: 200,
+                  headers: { "Content-Type": "application/json" },
+                });
+              };
+
+              document
+                .getElementById("collection-upload-form")
+                ?.removeAttribute("data-progress-url");
+            }
+            """
+        )
+        page.locator("#collection-files").set_input_files([str(first_file), str(second_file)])
+        with page.expect_navigation(wait_until="load", timeout=30_000):
+            page.get_by_role("button", name="Upload selected files").click()
+        stats = page.evaluate("() => JSON.parse(localStorage.getItem('retryStats') || '[]')")
+        assert sorted(stats) == ["first.txt", "second.txt"]
+
+
 def test_ui_playwright_container_activation_and_download_flow(module_factory, tmp_path_factory):
     with live_ui_stack(module_factory, tmp_path_factory) as stack:
         page = stack["page"]

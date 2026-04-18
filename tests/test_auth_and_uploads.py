@@ -205,3 +205,39 @@ def test_upload_hooks_accept_tusd_v2_http_payload_shape(app_factory):
             assert Path(collection_file.buffer_abs_path).read_bytes() == sample.content
             assert slot_row.status == "completed"
             assert Path(slot_row.final_abs_path).read_bytes() == sample.content
+
+
+def test_collection_upload_slot_retry_replaces_incomplete_existing_path(app_factory):
+    with app_factory() as harness:
+        sample = family_archive_files()[0]
+        collection_id = create_collection(harness, description="retry incomplete collection upload")
+
+        first = reserve_collection_upload(harness, collection_id, sample)
+        second = reserve_collection_upload(harness, collection_id, sample)
+
+        assert first["upload_id"] != second["upload_id"]
+
+        with harness.session() as session:
+            files = session.query(harness.models.CollectionFile).filter_by(collection_id=collection_id).all()
+            slots = session.query(harness.models.UploadSlot).filter_by(collection_file_id=files[0].id).all()
+            assert len(files) == 1
+            assert files[0].status == "pending_upload"
+            assert len(slots) == 1
+            assert slots[0].upload_id == second["upload_id"]
+
+
+def test_collection_upload_slot_retry_rejects_active_existing_path(app_factory):
+    with app_factory() as harness:
+        sample = family_archive_files()[0]
+        collection_id = create_collection(harness, description="retry active collection upload")
+        upload_collection_file = reserve_collection_upload(harness, collection_id, sample)
+        simulate_tusd_upload(harness, upload_collection_file, sample.content)
+
+        retry = harness.client.post(
+            f"/v1/collections/{collection_id}/uploads",
+            headers=harness.auth_headers(),
+            json=sample.upload_payload(),
+        )
+
+        assert retry.status_code == 409
+        assert retry.json()["detail"] == "file already uploaded for this collection"

@@ -125,10 +125,6 @@ def create_upload_slot(collection_id: str, body: UploadSlotCreateRequest, db: Db
         raise HTTPException(status_code=404, detail="collection not found")
     if collection.status != "open":
         raise HTTPException(status_code=409, detail="collection is sealed")
-    relative_path = normalize_relpath(body.relative_path)
-    existing = db.scalar(select(CollectionFile).where(CollectionFile.collection_id == collection_id, CollectionFile.relative_path == relative_path))
-    if existing is not None:
-        raise HTTPException(status_code=409, detail="file path already exists for this collection")
 
     if len(body.mode) != 4 or body.mode[0] != "0" or any(char not in "01234567" for char in body.mode[1:]):
         raise HTTPException(status_code=400, detail="mode must be a zero-prefixed octal string like 0644")
@@ -141,18 +137,51 @@ def create_upload_slot(collection_id: str, body: UploadSlotCreateRequest, db: Db
     if parsed_mtime.tzinfo is None or parsed_mtime.utcoffset() != timezone.utc.utcoffset(parsed_mtime):
         raise HTTPException(status_code=400, detail="mtime must be an RFC3339 UTC timestamp")
 
-    collection_file = CollectionFile(
-        collection_id=collection_id,
-        relative_path=relative_path,
-        size_bytes=body.size_bytes,
-        expected_sha256=body.sha256.lower() if body.sha256 else None,
-        mode=body.mode,
-        mtime=body.mtime,
-        uid=body.uid,
-        gid=body.gid,
+    relative_path = normalize_relpath(body.relative_path)
+    existing = (
+        db.execute(
+            select(CollectionFile)
+            .where(CollectionFile.collection_id == collection_id, CollectionFile.relative_path == relative_path)
+            .options(selectinload(CollectionFile.uploads))
+        )
+        .scalar_one_or_none()
     )
-    db.add(collection_file)
-    db.flush()
+
+    if existing is not None and existing.status not in {"pending_upload", "uploading", "failed"}:
+        raise HTTPException(status_code=409, detail="file already uploaded for this collection")
+
+    if existing is None:
+        collection_file = CollectionFile(
+            collection_id=collection_id,
+            relative_path=relative_path,
+            size_bytes=body.size_bytes,
+            expected_sha256=body.sha256.lower() if body.sha256 else None,
+            mode=body.mode,
+            mtime=body.mtime,
+            uid=body.uid,
+            gid=body.gid,
+        )
+        db.add(collection_file)
+        db.flush()
+    else:
+        if existing.buffer_abs_path and Path(existing.buffer_abs_path).exists():
+            Path(existing.buffer_abs_path).unlink()
+        if existing.materialized_abs_path and Path(existing.materialized_abs_path).exists():
+            Path(existing.materialized_abs_path).unlink()
+        for stale_upload in existing.uploads:
+            db.delete(stale_upload)
+        existing.size_bytes = body.size_bytes
+        existing.expected_sha256 = body.sha256.lower() if body.sha256 else None
+        existing.actual_sha256 = None
+        existing.mode = body.mode
+        existing.mtime = body.mtime
+        existing.uid = body.uid
+        existing.gid = body.gid
+        existing.buffer_abs_path = None
+        existing.materialized_abs_path = None
+        existing.status = "pending_upload"
+        existing.error_message = None
+        collection_file = existing
 
     upload_id = secrets.token_hex(16)
     upload_token = secrets.token_urlsafe(32)
@@ -241,7 +270,7 @@ def collection_tree(collection_id: str, db: Db) -> TreeResponse:
     return TreeResponse(root_id=collection_id, root_kind="collection", nodes=nodes)
 
 
-@router.get("/{collection_id}/content/{relative_path:path}", responses={409: {"model": InactiveError}})
+@router.api_route("/{collection_id}/content/{relative_path:path}", methods=["GET", "HEAD"], responses={409: {"model": InactiveError}})
 def get_collection_file(collection_id: str, relative_path: str, db: Db):
     rel = normalize_relpath(relative_path)
     collection_file = (
@@ -270,7 +299,7 @@ def release_collection_buffer(collection_id: str, db: Db):
     return {"status": "ok", "collection_id": collection_id}
 
 
-@router.get("/{collection_id}/hash-manifest-proof")
+@router.api_route("/{collection_id}/hash-manifest-proof", methods=["GET", "HEAD"])
 def download_collection_hash_manifest_bundle(collection_id: str, db: Db):
     if db.get(Collection, collection_id) is None:
         raise HTTPException(status_code=404, detail="collection not found")

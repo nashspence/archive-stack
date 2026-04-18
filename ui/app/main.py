@@ -8,7 +8,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlsplit, urlunsp
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -50,6 +50,8 @@ def quote_path(value: str) -> str:
 
 templates.env.filters["human_bytes"] = human_bytes
 templates.env.globals["quote_path"] = quote_path
+
+ALREADY_UPLOADED_DETAIL = "file already uploaded for this collection"
 
 
 def _auth_headers() -> dict[str, str]:
@@ -166,10 +168,19 @@ def _upload_to_tusd(slot: dict[str, Any], payload: bytes) -> None:
         raise ApiError(502, f"could not reach tusd upload service at {slot['tus_create_url']}") from exc
 
 
-def _proxy_stream(path: str) -> StreamingResponse:
+def _proxy_stream(path: str, request: Request | None = None) -> Response:
     client = _api_client()
-    response = client.build_request("GET", _api_url(path))
-    upstream = client.send(response, stream=True)
+    forwarded_headers: dict[str, str] = {}
+    method = "GET"
+    if request is not None:
+        method = request.method
+        for name in ["range", "if-none-match", "if-modified-since"]:
+            value = request.headers.get(name)
+            if value:
+                forwarded_headers[name] = value
+
+    upstream_request = client.build_request(method, _api_url(path), headers=forwarded_headers)
+    upstream = client.send(upstream_request, stream=True)
     if upstream.status_code >= 400:
         message = _error_message(upstream)
         upstream.close()
@@ -177,10 +188,24 @@ def _proxy_stream(path: str) -> StreamingResponse:
         raise HTTPException(status_code=upstream.status_code, detail=message)
 
     headers = {}
-    for name in ["content-type", "content-length", "content-disposition", "cache-control"]:
+    for name in [
+        "accept-ranges",
+        "cache-control",
+        "content-disposition",
+        "content-length",
+        "content-range",
+        "content-type",
+        "etag",
+        "last-modified",
+    ]:
         value = upstream.headers.get(name)
         if value:
             headers[name] = value
+
+    if method == "HEAD":
+        upstream.close()
+        client.close()
+        return Response(status_code=upstream.status_code, headers=headers)
 
     def iterator():
         try:
@@ -346,18 +371,20 @@ async def upload_collection_file(
         )
         _upload_to_tusd(slot, payload)
     except ApiError as exc:
+        if exc.status_code == 409 and exc.message == ALREADY_UPLOADED_DETAIL:
+            return JSONResponse({"status": "skipped", "relative_path": relative_path, "detail": exc.message})
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
     return JSONResponse({"status": "ok", "relative_path": relative_path})
 
 
-@app.get("/collections/{collection_id}/content/{relative_path:path}")
-def download_collection_content(collection_id: str, relative_path: str):
-    return _proxy_stream(f"/v1/collections/{collection_id}/content/{quote_path(relative_path)}")
+@app.api_route("/collections/{collection_id}/content/{relative_path:path}", methods=["GET", "HEAD"])
+def download_collection_content(request: Request, collection_id: str, relative_path: str):
+    return _proxy_stream(f"/v1/collections/{collection_id}/content/{quote_path(relative_path)}", request)
 
 
-@app.get("/collections/{collection_id}/hash-manifest-proof")
-def download_collection_hash_manifest(collection_id: str):
-    return _proxy_stream(f"/v1/collections/{collection_id}/hash-manifest-proof")
+@app.api_route("/collections/{collection_id}/hash-manifest-proof", methods=["GET", "HEAD"])
+def download_collection_hash_manifest(request: Request, collection_id: str):
+    return _proxy_stream(f"/v1/collections/{collection_id}/hash-manifest-proof", request)
 
 
 @app.get("/containers/{container_id}", response_class=HTMLResponse)
@@ -490,19 +517,19 @@ def create_download_session(container_id: str):
     )
 
 
-@app.get("/containers/{container_id}/content/{relative_path:path}")
-def download_container_content(container_id: str, relative_path: str):
-    return _proxy_stream(f"/v1/containers/{container_id}/content/{quote_path(relative_path)}")
+@app.api_route("/containers/{container_id}/content/{relative_path:path}", methods=["GET", "HEAD"])
+def download_container_content(request: Request, container_id: str, relative_path: str):
+    return _proxy_stream(f"/v1/containers/{container_id}/content/{quote_path(relative_path)}", request)
 
 
-@app.get("/containers/{container_id}/iso/content")
-def download_registered_iso(container_id: str):
-    return _proxy_stream(f"/v1/containers/{container_id}/iso/content")
+@app.api_route("/containers/{container_id}/iso/content", methods=["GET", "HEAD"])
+def download_registered_iso(request: Request, container_id: str):
+    return _proxy_stream(f"/v1/containers/{container_id}/iso/content", request)
 
 
-@app.get("/downloads/{session_id}/content")
-def download_session_content(session_id: str):
-    return _proxy_stream(f"/v1/containers/downloads/{session_id}/content")
+@app.api_route("/downloads/{session_id}/content", methods=["GET", "HEAD"])
+def download_session_content(request: Request, session_id: str):
+    return _proxy_stream(f"/v1/containers/downloads/{session_id}/content", request)
 
 
 @app.get("/progress/uploads/{upload_id}/stream")

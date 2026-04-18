@@ -124,3 +124,79 @@ def test_collection_upload_returns_502_when_tusd_is_unreachable(monkeypatch):
 
     assert response.status_code == 502
     assert response.json() == {"detail": "could not reach tusd upload service at http://tusd:1080/files"}
+
+
+def test_collection_upload_skips_already_uploaded_file(monkeypatch):
+    def fake_api_json(method: str, path: str, **kwargs):
+        raise ui_main.ApiError(409, ui_main.ALREADY_UPLOADED_DETAIL)
+
+    monkeypatch.setattr(ui_main, "_api_json", fake_api_json)
+
+    with TestClient(ui_main.app) as client:
+        response = client.post(
+            "/collections/demo-collection/upload-files",
+            files={"file": ("notes.txt", b"hello riverhog", "text/plain")},
+            data={
+                "relative_path": "notes.txt",
+                "size_bytes": str(len(b"hello riverhog")),
+                "mode": "0644",
+                "mtime": "2026-04-18T00:00:00Z",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "skipped",
+        "relative_path": "notes.txt",
+        "detail": "file already uploaded for this collection",
+    }
+
+
+def test_collection_download_forwards_range_requests(monkeypatch):
+    class FakeApiClient:
+        def __init__(self):
+            self.last_request: httpx.Request | None = None
+            self.closed = False
+
+        def build_request(self, method: str, url: str, headers=None):
+            return httpx.Request(method, url, headers=headers)
+
+        def send(self, request: httpx.Request, stream: bool = False):
+            self.last_request = request
+            assert stream is True
+            assert request.headers.get("range") == "bytes=0-3"
+            return httpx.Response(
+                206,
+                headers={
+                    "accept-ranges": "bytes",
+                    "content-disposition": 'attachment; filename="demo.bin"',
+                    "content-length": "4",
+                    "content-range": "bytes 0-3/10",
+                    "content-type": "application/octet-stream",
+                    "etag": '"demo-etag"',
+                    "last-modified": "Sat, 18 Apr 2026 00:00:00 GMT",
+                },
+                content=b"demo",
+                request=request,
+            )
+
+        def close(self):
+            self.closed = True
+
+    fake_client = FakeApiClient()
+    monkeypatch.setattr(ui_main, "_api_client", lambda: fake_client)
+
+    with TestClient(ui_main.app) as client:
+        response = client.get(
+            "/collections/demo-collection/content/demo.bin",
+            headers={"Range": "bytes=0-3"},
+        )
+
+    assert response.status_code == 206
+    assert response.content == b"demo"
+    assert response.headers["accept-ranges"] == "bytes"
+    assert response.headers["content-range"] == "bytes 0-3/10"
+    assert response.headers["content-length"] == "4"
+    assert response.headers["etag"] == '"demo-etag"'
+    assert fake_client.last_request is not None
+    assert fake_client.closed is True

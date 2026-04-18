@@ -139,7 +139,7 @@ def container_tree(container_id: str, db: Db) -> TreeResponse:
     return TreeResponse(root_id=container_id, root_kind="container", nodes=nodes)
 
 
-@router.get("/{container_id}/content/{container_relative_path:path}", responses={409: {"model": InactiveError}})
+@router.api_route("/{container_id}/content/{container_relative_path:path}", methods=["GET", "HEAD"], responses={409: {"model": InactiveError}})
 def get_container_file(container_id: str, container_relative_path: str, db: Db):
     container_rel = normalize_relpath(container_relative_path)
     container = db.execute(select(Container).where(Container.id == container_id)).scalar_one_or_none()
@@ -350,7 +350,7 @@ def author_iso(container_id: str, body: IsoCreateRequest, db: Db) -> IsoCreateRe
     )
 
 
-@router.get("/{container_id}/iso/content")
+@router.api_route("/{container_id}/iso/content", methods=["GET", "HEAD"])
 def download_registered_iso(container_id: str, db: Db):
     container = db.get(Container, container_id)
     if container is None:
