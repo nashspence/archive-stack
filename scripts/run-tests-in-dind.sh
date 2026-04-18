@@ -13,4 +13,11 @@ cleanup() {
 trap cleanup EXIT
 cleanup
 
-docker compose -f "${COMPOSE_FILE}" up --build --abort-on-container-exit --exit-code-from test --menu=false
+if (($# == 0)); then
+  set -- pytest
+elif [[ "$1" != "pytest" ]]; then
+  set -- pytest "$@"
+fi
+
+docker compose -f "${COMPOSE_FILE}" build test
+docker compose -f "${COMPOSE_FILE}" run --rm test "$@"

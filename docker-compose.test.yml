@@ -13,6 +13,8 @@ services:
       context: .
       dockerfile: Dockerfile.test
     user: root
+    working_dir: /workspace
+    command: ["pytest"]
     environment:
       API_BASE_URL: http://archive.test
       API_TOKEN: test-api-token
@@ -28,7 +30,9 @@ services:
       CONTAINER_SPILL_FILL_GB: "0.0010"
       CONTAINER_BUFFER_MAX_GB: "0.0100"
       PYTHONWARNINGS: error
+      PYTEST_ADDOPTS: -o cache_dir=/tmp/pytest-cache
     volumes:
+      - .:/workspace
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       redis:

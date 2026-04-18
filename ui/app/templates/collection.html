@@ -58,6 +58,27 @@
       <input type="text" name="path_prefix" placeholder="optional/subdir">
     </label>
     <label>
+      Upload parallelism
+      <input
+        type="number"
+        id="collection-upload-parallelism"
+        name="parallelism"
+        min="1"
+        max="16"
+        step="1"
+        inputmode="numeric"
+        {% if collection.status != "open" %}disabled{% endif %}
+      >
+      <span class="help-text">Default is tuned for modern MacBook Pro and Wi-Fi 6 uploads. Lower it for slower media like Blu-ray drives.</span>
+    </label>
+    <label>
+      Directory upload behavior
+      <select id="collection-folder-mode" name="folder_mode" {% if collection.status != "open" %}disabled{% endif %}>
+        <option value="contents-only" selected>Upload only the selected directory contents</option>
+        <option value="include-root">Keep the selected directory name</option>
+      </select>
+    </label>
+    <label>
       File mode
       <input type="text" name="mode" value="0644">
     </label>
@@ -79,7 +100,12 @@
     </label>
     <button type="submit" {% if collection.status != "open" %}disabled{% endif %}>Upload selected files</button>
   </form>
-  <pre id="collection-upload-status">Waiting for uploads.</pre>
+  <div class="upload-progress">
+    <progress id="collection-upload-progress" value="0" max="1"></progress>
+    <p id="collection-upload-summary">Waiting for uploads.</p>
+    <p id="collection-upload-detail" class="muted">Choose files or a directory to start a batch upload.</p>
+    <p id="collection-upload-error" class="flash error hidden"></p>
+  </div>
 </section>
 
 <section>

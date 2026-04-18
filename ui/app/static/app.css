@@ -71,3 +71,24 @@ pre {
 .flash.error {
   background: #fff1f0;
 }
+
+.hidden {
+  display: none;
+}
+
+.muted {
+  color: #57606a;
+}
+
+.help-text {
+  color: #57606a;
+  font-size: 0.95rem;
+}
+
+.upload-progress progress {
+  width: 100%;
+}
+
+.upload-progress p {
+  margin: 0.5rem 0 0;
+}

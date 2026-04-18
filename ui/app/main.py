@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpx
@@ -136,10 +136,19 @@ def _tus_metadata_header(metadata: dict[str, str]) -> str:
     return ",".join(items)
 
 
-def _upload_to_tusd(slot: dict[str, Any], payload: bytes) -> None:
+def _uploaded_file_size(handle: BinaryIO) -> int:
+    original_offset = handle.tell()
+    handle.seek(0, 2)
+    size = handle.tell()
+    handle.seek(original_offset)
+    return size
+
+
+def _upload_to_tusd(slot: dict[str, Any], payload: BinaryIO, payload_size: int) -> None:
+    payload.seek(0)
     headers = {
         "Tus-Resumable": "1.0.0",
-        "Upload-Length": str(len(payload)),
+        "Upload-Length": str(payload_size),
         "Upload-Metadata": _tus_metadata_header(slot["tus_metadata"]),
     }
     try:
@@ -353,8 +362,8 @@ async def upload_collection_file(
     uid: int | None = Form(None),
     gid: int | None = Form(None),
 ):
-    payload = await file.read()
-    if len(payload) != size_bytes:
+    actual_size = _uploaded_file_size(file.file)
+    if actual_size != size_bytes:
         return JSONResponse(status_code=400, content={"detail": "uploaded bytes did not match the declared size"})
     try:
         slot = _api_json(
@@ -369,7 +378,7 @@ async def upload_collection_file(
                 "gid": gid,
             },
         )
-        _upload_to_tusd(slot, payload)
+        _upload_to_tusd(slot, file.file, actual_size)
     except ApiError as exc:
         if exc.status_code == 409 and exc.message == ALREADY_UPLOADED_DETAIL:
             return JSONResponse({"status": "skipped", "relative_path": relative_path, "detail": exc.message})
@@ -437,14 +446,13 @@ async def upload_activation_file(
     file: UploadFile = File(...),
     relative_path: str = Form(...),
 ):
-    payload = await file.read()
     try:
         slot = _api_json(
             "POST",
             f"/v1/containers/{container_id}/activation/sessions/{session_id}/uploads",
             json={"relative_path": relative_path},
         )
-        _upload_to_tusd(slot, payload)
+        _upload_to_tusd(slot, file.file, _uploaded_file_size(file.file))
     except ApiError as exc:
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
     return JSONResponse({"status": "ok", "relative_path": relative_path})

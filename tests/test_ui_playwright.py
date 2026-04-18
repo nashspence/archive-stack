@@ -392,6 +392,7 @@ def test_ui_playwright_collection_uploads_run_in_parallel(module_factory, tmp_pa
             """
         )
         page.locator("#collection-files").set_input_files(upload_paths)
+        page.locator("#collection-upload-parallelism").fill("2")
 
         with page.expect_navigation(wait_until="load", timeout=30_000):
             page.get_by_role("button", name="Upload selected files").click()
@@ -407,7 +408,74 @@ def test_ui_playwright_collection_uploads_run_in_parallel(module_factory, tmp_pa
         )
         stats = page.evaluate("() => JSON.parse(localStorage.getItem('uploadStats') || '{}')")
         assert stats["calls"] == 4
-        assert stats["max"] > 1
+        assert stats["max"] == 2
+
+
+def test_ui_playwright_collection_directory_mode_can_keep_or_strip_root(module_factory, tmp_path_factory):
+    with live_ui_stack(module_factory, tmp_path_factory) as stack:
+        page = stack["page"]
+        ui_url = stack["ui_url"]
+
+        _create_collection_via_ui(
+            page,
+            ui_url,
+            root_node_name="playwright-folder-mode",
+            description="Playwright folder mode uploads",
+        )
+
+        upload_root = stack["tmp_path_factory"].mktemp("playwright-folder-mode")
+        nested_dir = upload_root / "disc-1"
+        nested_dir.mkdir()
+        track = nested_dir / "track-01.txt"
+        track.write_text("folder upload test\n", encoding="utf-8")
+
+        def install_fetch_stub(reset_paths: bool):
+            page.evaluate(
+                """
+                ({ resetPaths }) => {
+                  if (resetPaths) {
+                    localStorage.setItem("folderModePaths", JSON.stringify([]));
+                  }
+
+                  window.fetch = async (_url, options) => {
+                    const entries = JSON.parse(localStorage.getItem("folderModePaths") || "[]");
+                    entries.push(options?.body?.get("relative_path"));
+                    localStorage.setItem("folderModePaths", JSON.stringify(entries));
+
+                    return new Response(JSON.stringify({ status: "ok" }), {
+                      status: 200,
+                      headers: { "Content-Type": "application/json" },
+                    });
+                  };
+
+                  document
+                    .getElementById("collection-upload-form")
+                    ?.removeAttribute("data-progress-url");
+                }
+                """,
+                {"resetPaths": reset_paths},
+            )
+
+        install_fetch_stub(True)
+
+        page.locator("#collection-folder").set_input_files(str(upload_root))
+        page.locator("#collection-folder-mode").select_option("contents-only")
+        with page.expect_navigation(wait_until="load", timeout=30_000):
+            page.get_by_role("button", name="Upload selected files").click()
+
+        stripped_paths = page.evaluate("() => JSON.parse(localStorage.getItem('folderModePaths') || '[]')")
+        assert stripped_paths == ["disc-1/track-01.txt"]
+
+        install_fetch_stub(True)
+        page.locator("#collection-folder").set_input_files(str(upload_root))
+        page.locator("#collection-folder-mode").select_option("include-root")
+        with page.expect_navigation(wait_until="load", timeout=30_000):
+            page.get_by_role("button", name="Upload selected files").click()
+
+        rooted_paths = page.evaluate("() => JSON.parse(localStorage.getItem('folderModePaths') || '[]')")
+        assert len(rooted_paths) == 1
+        assert rooted_paths[0].endswith("/disc-1/track-01.txt")
+        assert rooted_paths[0] != "disc-1/track-01.txt"
 
 
 def test_ui_playwright_collection_retry_skips_already_uploaded_files(module_factory, tmp_path_factory):

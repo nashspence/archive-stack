@@ -21,3 +21,14 @@ def test_compose_uses_internal_service_urls():
     assert tusd_command[0].startswith("-")
     assert "-port=1080" in tusd_command
     assert "-upload-dir=/var/lib/archive/tusd" in tusd_command
+
+
+def test_test_compose_mounts_live_repo_and_sets_pytest_defaults():
+    repo_root = Path(__file__).resolve().parents[1]
+    compose = yaml.safe_load((repo_root / "docker-compose.test.yml").read_text(encoding="utf-8"))
+    test_service = compose["services"]["test"]
+
+    assert test_service["working_dir"] == "/workspace"
+    assert test_service["command"] == ["pytest"]
+    assert ".:/workspace" in test_service["volumes"]
+    assert test_service["environment"]["PYTEST_ADDOPTS"] == "-o cache_dir=/tmp/pytest-cache"

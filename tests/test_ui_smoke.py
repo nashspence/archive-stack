@@ -80,6 +80,8 @@ def test_dashboard_and_detail_pages_render_with_api_data(monkeypatch):
         assert collection_page.status_code == 200
         assert "docs/file.txt" in collection_page.text
         assert "Upload Files" in collection_page.text
+        assert "Upload parallelism" in collection_page.text
+        assert "Upload only the selected directory contents" in collection_page.text
 
         container_page = client.get("/containers/DEMO-001")
         assert container_page.status_code == 200
