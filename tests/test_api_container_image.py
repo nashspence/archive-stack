@@ -28,8 +28,8 @@ def test_api_dockerfile_builds_and_serves_real_container():
     network = os.environ.get("TEST_DOCKER_NETWORK")
     if not network:
         pytest.skip("TEST_DOCKER_NETWORK is not configured")
-    image_tag = f"archive-stack-api-test:{uuid.uuid4().hex[:12]}"
-    container_name = f"archive-stack-api-{uuid.uuid4().hex[:12]}"
+    image_tag = f"riverhog-api-test:{uuid.uuid4().hex[:12]}"
+    container_name = f"riverhog-api-{uuid.uuid4().hex[:12]}"
     api_token = "runtime-api-token"
     hook_secret = "runtime-hook-secret"
     base_url = f"http://{container_name}:8080"

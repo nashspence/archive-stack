@@ -31,7 +31,7 @@ async def lifespan(_app: FastAPI):
             await notifier_task
 
 
-app = FastAPI(title="Archive Service MVP", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="Riverhog", version="0.4.0", lifespan=lifespan)
 
 
 @app.get("/healthz")
