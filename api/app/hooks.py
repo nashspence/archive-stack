@@ -15,7 +15,7 @@ from .config import INCOMING_DIR
 from .db import SessionLocal
 from .models import UploadSlot, JobFile, CacheSession
 from .progress import cache_session_stream_name, job_stream_name, publish_progress, upload_stream_name
-from .storage import aggregate_cache_progress, aggregate_job_progress, cache_staging_file_path, file_sha256, job_buffer_path, normalize_relpath, rebuild_job_export
+from .storage import aggregate_cache_progress, aggregate_job_progress, cache_staging_file_path, file_sha256, job_buffer_path, normalize_relpath, rebuild_job_export, refresh_job_hash_artifacts
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
@@ -150,6 +150,7 @@ async def tusd_hooks(
                 job_file.status = "online"
                 job_file.error_message = None
                 rebuild_job_export(db, job_file.job_id)
+                refresh_job_hash_artifacts(db, job_file.job_id)
             else:
                 final_path = cache_staging_file_path(slot.cache_session_id, slot.relative_path)
                 final_path.parent.mkdir(parents=True, exist_ok=True)

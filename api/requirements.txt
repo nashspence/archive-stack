@@ -7,3 +7,4 @@ python-multipart>=0.0.9,<1
 numpy>=1.26,<3
 scipy>=1.13,<2
 PyYAML>=6,<7
+opentimestamps-client>=0.7.2,<1

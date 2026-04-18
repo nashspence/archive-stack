@@ -17,7 +17,7 @@ from sqlalchemy import select
 from .config import PARTITIONER_STATE_DIR, PARTITION_CFG, PARTITION_ROOTS_DIR
 from .crypto import encrypt_bytes_to_file, encrypt_file_span, encrypted_size_for_plaintext_size, logical_file_sha256_and_size, max_plaintext_size_for_encrypted_budget
 from .models import Disc, DiscEntry, ArchivePiece, Job, JobFile
-from .storage import canonical_tree_hash
+from .storage import canonical_tree_hash, cold_job_hash_manifest_path, cold_job_hash_proof_path, job_disc_artifact_relpaths
 
 MANIFEST = "MANIFEST.yml"
 README = "README.txt"
@@ -550,6 +550,8 @@ def recovery_readme_bytes(part: str) -> bytes:
         "Decrypt a sidecar for any payload listed above:",
         "  age -d -j batchpass files/<entry>.meta.yaml > files/<entry>.meta.dec.yaml",
         "",
+        "Per-job hash manifests and OpenTimestamps proofs are stored under jobs/<job>/ on any disc carrying that job.",
+        "",
         "For split files, gather every chunk from every required disc and concatenate them in chunk-index order.",
         "",
     ]
@@ -559,25 +561,30 @@ def recovery_readme_bytes(part: str) -> bytes:
 def build_disc(state_dir: Path, s: dict, items: list[dict], out_dir: Path, emit=True, part: str | None = None):
     part = part or ts_name(s.get("last_closed", ""))
     pieces = [p for it in items for p in it["pieces"]]
+    jobs_on_disc = sorted({x["job"] for x in items})
     fmap = assign_paths(pieces)
     man = manifest_bytes(part, s["cfg"], s["jobs"], items, fmap)
     readme = recovery_readme_bytes(part)
+    evidence_payload = sum(entry["encrypted_size"] for job in jobs_on_disc for entry in s["jobs"][job]["artifacts"])
     payload = 0
     for it in items:
         meta = {f["id"]: f for f in s["jobs"][it["job"]]["files"]}
         for p in it["pieces"]:
             payload += (state_dir / p["store"]).stat().st_size
             payload += encrypted_size_for_plaintext_size(len(sidecar_bytes(meta[p["file"]], p["i"], p["n"])))
-    used = encrypted_size_for_plaintext_size(len(man)) + len(readme) + payload
+    used = encrypted_size_for_plaintext_size(len(man)) + len(readme) + payload + evidence_payload
     if used > s["cfg"]["target"]:
         return None
     root = out_dir / part
-    out = {"name": part, "path": str(root.resolve()), "used": used, "free": s["cfg"]["target"] - used, "jobs": sorted({x["job"] for x in items}), "items": [x["id"] for x in items], "pieces": []}
+    out = {"name": part, "path": str(root.resolve()), "used": used, "free": s["cfg"]["target"] - used, "jobs": jobs_on_disc, "items": [x["id"] for x in items], "pieces": []}
     if not emit:
         return out
     (root / STORE).mkdir(parents=True, exist_ok=True)
     encrypt_bytes_to_file(man, root / MANIFEST)
     (root / README).write_bytes(readme)
+    for job_id in jobs_on_disc:
+        for artifact in s["jobs"][job_id]["artifacts"]:
+            encrypt_bytes_to_file(Path(artifact["source"]).read_bytes(), root / artifact["disc_relpath"])
     for it in items:
         meta = {f["id"]: f for f in s["jobs"][it["job"]]["files"]}
         for p in it["pieces"]:
@@ -687,7 +694,25 @@ def ingest_job(session: Session, job_id: str):
         save_state(state_dir, s)
         return {"job": job_id, "closed": [], "buffer_bytes": sum(x["bytes"] for x in s["items"])}
 
-    fixed = manifest_job_budget(job_id, files)
+    manifest_artifact = cold_job_hash_manifest_path(job_id)
+    proof_artifact = cold_job_hash_proof_path(job_id)
+    if not manifest_artifact.exists() or not proof_artifact.exists():
+        raise RuntimeError(f"job hash artifacts are missing for {job_id}")
+    manifest_relpath, proof_relpath = job_disc_artifact_relpaths(job_id)
+    artifacts = [
+        {
+            "source": str(manifest_artifact),
+            "disc_relpath": manifest_relpath,
+            "encrypted_size": encrypted_size_for_plaintext_size(manifest_artifact.stat().st_size),
+        },
+        {
+            "source": str(proof_artifact),
+            "disc_relpath": proof_relpath,
+            "encrypted_size": encrypted_size_for_plaintext_size(proof_artifact.stat().st_size),
+        },
+    ]
+
+    fixed = manifest_job_budget(job_id, files) + sum(item["encrypted_size"] for item in artifacts)
     stage_pieces(state_dir, job_id, files, s["cfg"]["target"], fixed)
     s["jobs"][job_id] = {
         "files": [
@@ -697,6 +722,7 @@ def ingest_job(session: Session, job_id: str):
             }
             for f in files
         ],
+        "artifacts": artifacts,
         "fixed": fixed,
     }
 
@@ -752,6 +778,10 @@ def import_closed_discs(session: Session, closed: list[dict]) -> list[str]:
                 kind = "readme"
             elif str(rel).endswith(".meta.yaml"):
                 kind = "sidecar"
+            elif str(rel).startswith("jobs/") and str(rel).endswith("/HASHES.yml"):
+                kind = "job_hash_manifest"
+            elif str(rel).startswith("jobs/") and str(rel).endswith("/HASHES.yml.ots"):
+                kind = "job_hash_proof"
             logical_sha256, logical_size = logical_file_sha256_and_size(root / rel)
             session.add(
                 DiscEntry(

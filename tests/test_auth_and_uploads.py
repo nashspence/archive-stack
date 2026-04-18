@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import zipfile
+from io import BytesIO
 from pathlib import Path
 
 from .helpers import create_job, reserve_job_upload, simulate_tusd_upload
@@ -65,6 +67,33 @@ def test_auth_path_validation_and_hook_guards(app_factory):
         assert forbidden_hook.status_code == 403
 
 
+def test_job_creation_uses_root_node_name_and_rejects_duplicates(app_factory):
+    with app_factory() as harness:
+        first = harness.client.post(
+            "/v1/jobs",
+            headers=harness.auth_headers(),
+            json={
+                "root_node_name": "family-archive-root",
+                "description": "critical family archive",
+                "keep_buffer_after_archive": False,
+            },
+        )
+        assert first.status_code == 200
+        assert first.json()["job_id"] == "family-archive-root"
+
+        duplicate = harness.client.post(
+            "/v1/jobs",
+            headers=harness.auth_headers(),
+            json={
+                "root_node_name": "family-archive-root",
+                "description": "another archive",
+                "keep_buffer_after_archive": False,
+            },
+        )
+        assert duplicate.status_code == 409
+        assert duplicate.json()["detail"] == "root node name already exists"
+
+
 def test_upload_hooks_publish_progress_and_export_online_bytes(app_factory):
     with app_factory() as harness:
         sample = family_archive_files()[0]
@@ -117,3 +146,21 @@ def test_upload_hooks_publish_progress_and_export_online_bytes(app_factory):
         )
         assert content.status_code == 200
         assert content.content == sample.content
+
+        bundle = harness.client.get(
+            f"/v1/jobs/{job_id}/hash-manifest-proof",
+            headers=harness.auth_headers(),
+        )
+        assert bundle.status_code == 200
+        assert bundle.headers["content-disposition"].endswith(f'"{job_id}-hash-manifest-proof.zip"')
+
+        with zipfile.ZipFile(BytesIO(bundle.content)) as archive:
+            assert sorted(archive.namelist()) == ["HASHES.yml", "HASHES.yml.ots"]
+            manifest = archive.read("HASHES.yml").decode("utf-8")
+            proof = archive.read("HASHES.yml.ots").decode("utf-8")
+
+        assert "schema: job-hash-manifest/v1" in manifest
+        assert f"job_id: {job_id}" in manifest
+        assert f"path: {sample.relative_path}" in manifest
+        assert f"sha256: {sample.sha256}" in manifest
+        assert "OpenTimestamps stub proof v1" in proof

@@ -29,6 +29,7 @@ AGE_CLI = _get_env("AGE_CLI", "age")
 AGE_BATCHPASS_PASSPHRASE = _get_env("AGE_BATCHPASS_PASSPHRASE", "change-me")
 AGE_BATCHPASS_WORK_FACTOR = _get_env("AGE_BATCHPASS_WORK_FACTOR", "18")
 AGE_BATCHPASS_MAX_WORK_FACTOR = _get_env("AGE_BATCHPASS_MAX_WORK_FACTOR", "30")
+OTS_CLIENT_COMMAND = _get_env("OTS_CLIENT_COMMAND", "ots")
 
 PARTITION_TARGET = _gb_env("PARTITION_TARGET_GB", "50")
 PARTITION_FILL = _gb_env("PARTITION_FILL_GB", "45")
@@ -47,6 +48,7 @@ EXPORT_JOBS_ROOT = ARCHIVE_ROOT / "exports" / "jobs"
 PARTITIONER_STATE_DIR = ARCHIVE_ROOT / "partitions" / "state"
 PARTITION_ROOTS_DIR = ARCHIVE_ROOT / "partitions" / "roots"
 COLD_ISO_ROOT = ARCHIVE_ROOT / "cold" / "isos"
+COLD_JOB_ROOT = ARCHIVE_ROOT / "cold" / "jobs"
 
 STREAM_MAXLEN = 2048
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
@@ -72,5 +74,6 @@ def ensure_directories() -> None:
         PARTITIONER_STATE_DIR,
         PARTITION_ROOTS_DIR,
         COLD_ISO_ROOT,
+        COLD_JOB_ROOT,
     ]:
         path.mkdir(parents=True, exist_ok=True)

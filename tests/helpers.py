@@ -1,16 +1,24 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Callable
 
 from .mock_data import MockFile
 
 
-def create_job(harness, *, description: str, keep_buffer_after_archive: bool = False) -> str:
+def _default_root_node_name(description: str | None) -> str:
+    base = (description or "archive-job").strip().lower()
+    slug = re.sub(r"[^a-z0-9._-]+", "-", base).strip("-")
+    return slug or "archive-job"
+
+
+def create_job(harness, *, description: str, keep_buffer_after_archive: bool = False, root_node_name: str | None = None) -> str:
     response = harness.client.post(
         "/v1/jobs",
         headers=harness.auth_headers(),
         json={
+            "root_node_name": root_node_name or _default_root_node_name(description),
             "description": description,
             "keep_buffer_after_archive": keep_buffer_after_archive,
         },

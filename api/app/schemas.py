@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 
 class JobCreateRequest(BaseModel):
+    root_node_name: str
     description: str | None = None
     keep_buffer_after_archive: bool = False
 

@@ -3,28 +3,24 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import shlex
+import subprocess
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+from tempfile import mkdtemp
 
+import yaml
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from .config import COLD_ISO_ROOT, EXPORT_JOBS_ROOT, HOT_BUFFER_ROOT, HOT_CACHE_ROOT, HOT_CACHE_STAGING_ROOT, HOT_MATERIALIZED_ROOT, PARTITION_ROOTS_DIR
+from .config import COLD_ISO_ROOT, COLD_JOB_ROOT, EXPORT_JOBS_ROOT, HOT_BUFFER_ROOT, HOT_CACHE_ROOT, HOT_CACHE_STAGING_ROOT, HOT_MATERIALIZED_ROOT, OTS_CLIENT_COMMAND, PARTITION_ROOTS_DIR
 from .models import ArchivePiece, CacheSession, Disc, DiscEntry, Job, JobDirectory, JobFile, UploadSlot
 
-
-def utc_timestamp_id() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-
-def allocate_timestamp_id(session: Session, model: type[Job] | type[Disc]) -> str:
-    base = utc_timestamp_id()
-    candidate = base
-    counter = 1
-    while session.get(model, candidate) is not None:
-        candidate = f"{base}-{counter:02d}"
-        counter += 1
-    return candidate
+JOB_HASH_MANIFEST_NAME = "HASHES.yml"
+JOB_HASH_PROOF_NAME = f"{JOB_HASH_MANIFEST_NAME}.ots"
+JOB_HASH_BUNDLE_NAME = "hash-manifest-proof.zip"
+JOB_HASH_MANIFEST_SCHEMA = "job-hash-manifest/v1"
 
 
 def normalize_relpath(raw: str) -> str:
@@ -44,6 +40,18 @@ def normalize_relpath(raw: str) -> str:
     if not parts:
         raise ValueError("path must not be empty")
     return "/".join(parts)
+
+
+def normalize_root_node_name(raw: str) -> str:
+    candidate = raw.strip()
+    if not candidate:
+        raise ValueError("root node name must not be empty")
+    normalized = normalize_relpath(candidate)
+    if "/" in normalized:
+        raise ValueError("root node name must be a single path segment")
+    if normalized in {".", ".."}:
+        raise ValueError("root node name must not be . or ..")
+    return normalized
 
 
 def path_parents(relpath: str) -> list[str]:
@@ -145,12 +153,33 @@ def registered_iso_storage_path(disc_id: str) -> Path:
     return COLD_ISO_ROOT / f"{disc_id}.iso"
 
 
+def cold_job_artifact_root(job_id: str) -> Path:
+    return COLD_JOB_ROOT / normalize_root_node_name(job_id)
+
+
+def cold_job_hash_manifest_path(job_id: str) -> Path:
+    return cold_job_artifact_root(job_id) / JOB_HASH_MANIFEST_NAME
+
+
+def cold_job_hash_proof_path(job_id: str) -> Path:
+    return cold_job_artifact_root(job_id) / JOB_HASH_PROOF_NAME
+
+
+def cold_job_hash_bundle_path(job_id: str) -> Path:
+    return cold_job_artifact_root(job_id) / JOB_HASH_BUNDLE_NAME
+
+
 def iso_volume_label(name: str) -> str:
     allowed = []
     for char in name.upper():
         allowed.append(char if char.isalnum() else "_")
     label = "".join(allowed).strip("_") or "ARCHIVE"
     return label[:32]
+
+
+def job_disc_artifact_relpaths(job_id: str) -> tuple[str, str]:
+    name = normalize_root_node_name(job_id)
+    return f"jobs/{name}/{JOB_HASH_MANIFEST_NAME}", f"jobs/{name}/{JOB_HASH_PROOF_NAME}"
 
 
 def aggregate_job_progress(session: Session, job_id: str) -> tuple[int, int]:
@@ -165,6 +194,71 @@ def aggregate_cache_progress(session: Session, cache_session_id: str) -> tuple[i
     total = session.scalar(select(CacheSession.expected_total_bytes).where(CacheSession.id == cache_session_id)) or 0
     current = session.scalar(select(func.coalesce(func.sum(UploadSlot.current_offset), 0)).where(UploadSlot.cache_session_id == cache_session_id)) or 0
     return int(current), int(total)
+
+
+def job_hash_manifest_payload(job: Job) -> bytes:
+    files = [
+        {
+            "path": job_file.relative_path,
+            "size_bytes": job_file.size_bytes,
+            "sha256": job_file.actual_sha256,
+        }
+        for job_file in sorted(job.files, key=lambda item: item.relative_path)
+        if job_file.actual_sha256
+    ]
+    if not files:
+        raise RuntimeError(f"job {job.id} has no uploaded files to hash")
+    return yaml.safe_dump(
+        {
+            "schema": JOB_HASH_MANIFEST_SCHEMA,
+            "job_id": job.id,
+            "files": files,
+        },
+        sort_keys=False,
+        allow_unicode=True,
+    ).encode("utf-8")
+
+
+def _run_ots_stamp(manifest_path: Path) -> Path:
+    command = shlex.split(OTS_CLIENT_COMMAND)
+    if not command:
+        raise RuntimeError("OTS_CLIENT_COMMAND must not be empty")
+    result = subprocess.run(
+        [*command, "stamp", str(manifest_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        text=True,
+    )
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout).strip() or "OpenTimestamps stamp failed"
+        raise RuntimeError(message)
+    proof_path = manifest_path.with_name(f"{manifest_path.name}.ots")
+    if not proof_path.exists():
+        raise RuntimeError("OpenTimestamps stamp did not produce a proof file")
+    return proof_path
+
+
+def refresh_job_hash_artifacts(session: Session, job_id: str) -> None:
+    job = session.execute(select(Job).where(Job.id == job_id).options(selectinload(Job.files))).scalar_one()
+    payload = job_hash_manifest_payload(job)
+    artifact_root = cold_job_artifact_root(job_id)
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    temp_root = Path(mkdtemp(prefix=".job-hashes-", dir=str(artifact_root)))
+    try:
+        manifest_path = temp_root / JOB_HASH_MANIFEST_NAME
+        manifest_path.write_bytes(payload)
+        proof_path = _run_ots_stamp(manifest_path)
+        bundle_path = temp_root / JOB_HASH_BUNDLE_NAME
+        with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+            bundle.write(manifest_path, arcname=JOB_HASH_MANIFEST_NAME)
+            bundle.write(proof_path, arcname=JOB_HASH_PROOF_NAME)
+
+        manifest_path.replace(cold_job_hash_manifest_path(job_id))
+        proof_path.replace(cold_job_hash_proof_path(job_id))
+        bundle_path.replace(cold_job_hash_bundle_path(job_id))
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def _piece_online_path(piece: ArchivePiece) -> Path | None:

@@ -67,14 +67,17 @@ def test_api_dockerfile_builds_and_serves_real_container():
         authorized = httpx.post(
             f"{base_url}/v1/jobs",
             headers={"Authorization": f"Bearer {api_token}"},
-            json={"description": "real image runtime check"},
+            json={
+                "root_node_name": "real-image-runtime-check",
+                "description": "real image runtime check",
+            },
             timeout=5.0,
         )
         assert authorized.status_code == 200, authorized.text
         body = authorized.json()
         assert body["status"] == "open"
         assert body["keep_buffer_after_archive"] is False
-        assert isinstance(body["job_id"], str) and body["job_id"]
+        assert body["job_id"] == "real-image-runtime-check"
     finally:
         if container is not None:
             try:

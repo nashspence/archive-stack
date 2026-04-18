@@ -51,16 +51,22 @@ def test_closed_disc_can_be_cached_back_and_restore_job_reads(app_factory):
         assert disc_tree.status_code == 200
         assert any(node["path"] == "MANIFEST.yml" for node in disc_tree.json()["nodes"])
         assert any(node["path"] == "README.txt" for node in disc_tree.json()["nodes"])
+        assert any(node["path"] == f"jobs/{job_id}/HASHES.yml" for node in disc_tree.json()["nodes"])
+        assert any(node["path"] == f"jobs/{job_id}/HASHES.yml.ots" for node in disc_tree.json()["nodes"])
 
         disc_roots = closed_disc_roots(harness, disc_ids)
         manifest_path = disc_roots[disc_id] / "MANIFEST.yml"
         sidecar_path = next((disc_roots[disc_id] / "files").glob("*.meta.yaml"))
         readme_path = disc_roots[disc_id] / "README.txt"
+        hash_manifest_path = disc_roots[disc_id] / "jobs" / job_id / "HASHES.yml"
+        hash_proof_path = disc_roots[disc_id] / "jobs" / job_id / "HASHES.yml.ots"
         assert manifest_path.exists()
         assert manifest_path.read_bytes().startswith(b"age-encryption.org/")
         assert sidecar_path.read_bytes().startswith(b"age-encryption.org/")
         assert readme_path.read_text().startswith(f"Archive disc: {disc_id}")
         assert "age -d -j batchpass MANIFEST.yml" in readme_path.read_text()
+        assert hash_manifest_path.read_bytes().startswith(b"age-encryption.org/")
+        assert hash_proof_path.read_bytes().startswith(b"age-encryption.org/")
 
         with harness.session() as session:
             disc = session.get(harness.models.Disc, disc_id)
@@ -69,13 +75,19 @@ def test_closed_disc_can_be_cached_back_and_restore_job_reads(app_factory):
             cached_manifest = Path(disc.cached_root_abs_path) / "MANIFEST.yml"
             cached_sidecar = next((Path(disc.cached_root_abs_path) / "files").glob("*.meta.yaml"))
             cached_readme = Path(disc.cached_root_abs_path) / "README.txt"
+            cached_hash_manifest = Path(disc.cached_root_abs_path) / "jobs" / job_id / "HASHES.yml"
+            cached_hash_proof = Path(disc.cached_root_abs_path) / "jobs" / job_id / "HASHES.yml.ots"
             manifest = yaml.safe_load(cached_manifest.read_text())
+            job_hash_manifest = yaml.safe_load(cached_hash_manifest.read_text())
             assert manifest["schema"] == "manifest/v1"
             assert manifest["partition"] == disc_id
             assert len(manifest["jobs"]) == 1
             assert manifest["jobs"][0]["name"] == job_id
             assert all("path" in file_entry and "sha256" in file_entry for file_entry in manifest["jobs"][0]["files"])
             assert any(isinstance(file_entry.get("archive"), str) for file_entry in manifest["jobs"][0]["files"])
+            assert job_hash_manifest["schema"] == "job-hash-manifest/v1"
+            assert job_hash_manifest["job_id"] == job_id
+            assert cached_hash_proof.read_text().startswith("OpenTimestamps stub proof v1")
             assert cached_sidecar.read_text().startswith("schema: sidecar/v1")
             assert cached_readme.read_text().startswith(f"Archive disc: {disc_id}")
 

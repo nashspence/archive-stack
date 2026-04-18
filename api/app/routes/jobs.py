@@ -27,11 +27,13 @@ from ..schemas import (
     UploadSlotCreateResponse,
 )
 from ..storage import (
-    allocate_timestamp_id,
+    cold_job_hash_bundle_path,
     normalize_relpath,
+    normalize_root_node_name,
     path_parents,
     rebuild_job_export,
     recompute_job_file_runtime,
+    refresh_job_hash_artifacts,
     release_job_buffer_files,
 )
 
@@ -51,7 +53,9 @@ Db = Annotated[Session, Depends(get_db)]
 
 @router.post("", response_model=JobCreateResponse)
 def create_job(body: JobCreateRequest, db: Db) -> JobCreateResponse:
-    job_id = allocate_timestamp_id(db, Job)
+    job_id = normalize_root_node_name(body.root_node_name)
+    if db.get(Job, job_id) is not None:
+        raise HTTPException(status_code=409, detail="root node name already exists")
     db.add(
         Job(
             id=job_id,
@@ -158,6 +162,7 @@ def seal_job(job_id: str, db: Db) -> SealJobResponse:
     for jf in job.files:
         if jf.buffer_abs_path is None or not Path(jf.buffer_abs_path).exists():
             raise HTTPException(status_code=409, detail=f"job file {jf.relative_path} is not fully uploaded")
+    refresh_job_hash_artifacts(db, job_id)
     result = ingest_job(db, job_id)
     closed_ids = import_closed_discs(db, result["closed"])
     rebuild_job_export(db, job_id)
@@ -230,3 +235,17 @@ def release_job_buffer(job_id: str, db: Db):
         raise HTTPException(status_code=404, detail="job not found")
     release_job_buffer_files(db, job_id)
     return {"status": "ok", "job_id": job_id}
+
+
+@router.get("/{job_id}/hash-manifest-proof")
+def download_job_hash_manifest_bundle(job_id: str, db: Db):
+    if db.get(Job, job_id) is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    bundle_path = cold_job_hash_bundle_path(job_id)
+    if not bundle_path.exists():
+        raise HTTPException(status_code=404, detail="job hash manifest bundle not found")
+    return FileResponse(
+        path=str(bundle_path),
+        filename=f"{job_id}-hash-manifest-proof.zip",
+        media_type="application/zip",
+    )

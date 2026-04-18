@@ -23,6 +23,7 @@ DEFAULT_ENV = {
     "AGE_BATCHPASS_MAX_WORK_FACTOR": os.environ.get("AGE_BATCHPASS_MAX_WORK_FACTOR", "2"),
     "AGE_CLI": os.environ.get("AGE_CLI", str(LOCAL_AGE_CLI) if LOCAL_AGE_CLI.exists() else "age"),
     "HOOK_SECRET": "test-hook-secret",
+    "OTS_CLIENT_COMMAND": "python -m app.ots_stub",
     "PARTITION_BUFFER_MAX_GB": "0.0100",
     "PARTITION_FILL_GB": "0.0015",
     "PARTITION_SPILL_FILL_GB": "0.0010",

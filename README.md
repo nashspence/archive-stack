@@ -135,6 +135,7 @@ curl -X POST http://localhost:8080/v1/jobs \
   -H "Authorization: Bearer $API_TOKEN" \
   -H "content-type: application/json" \
   -d '{
+    "root_node_name": "trip-photos-2026",
     "description": "photos from trip",
     "keep_buffer_after_archive": false
   }'
@@ -143,7 +144,7 @@ curl -X POST http://localhost:8080/v1/jobs \
 Reserve an upload slot:
 
 ```bash
-curl -X POST http://localhost:8080/v1/jobs/20260417T060811Z/uploads \
+curl -X POST http://localhost:8080/v1/jobs/trip-photos-2026/uploads \
   -H "Authorization: Bearer $API_TOKEN" \
   -H "content-type: application/json" \
   -d '{
@@ -158,7 +159,7 @@ curl -X POST http://localhost:8080/v1/jobs/20260417T060811Z/uploads \
 Finalize the batch:
 
 ```bash
-curl -X POST http://localhost:8080/v1/jobs/20260417T060811Z/seal \
+curl -X POST http://localhost:8080/v1/jobs/trip-photos-2026/seal \
   -H "Authorization: Bearer $API_TOKEN"
 ```
 
@@ -190,6 +191,7 @@ Some internal names are still a little technical. In plain language, they mean:
 - `POST /v1/jobs/{job_id}/seal`
 - `GET /v1/jobs/{job_id}/tree`
 - `GET /v1/jobs/{job_id}/content/{relative_path}`
+- `GET /v1/jobs/{job_id}/hash-manifest-proof`
 - `POST /v1/jobs/{job_id}/buffer/release`
 
 ### Archived disc sets
