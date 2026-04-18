@@ -5,19 +5,19 @@ from typing import Any
 from pydantic import BaseModel, Field, HttpUrl
 
 
-class JobCreateRequest(BaseModel):
+class CollectionCreateRequest(BaseModel):
     root_node_name: str
     description: str | None = None
     keep_buffer_after_archive: bool = False
 
 
-class JobCreateResponse(BaseModel):
-    job_id: str
+class CollectionCreateResponse(BaseModel):
+    collection_id: str
     status: str
     keep_buffer_after_archive: bool
 
 
-class JobDirectoryCreateRequest(BaseModel):
+class CollectionDirectoryCreateRequest(BaseModel):
     relative_path: str
 
 
@@ -44,9 +44,9 @@ class TreeNode(BaseModel):
     path: str
     kind: str
     size_bytes: int | None = None
-    online: bool
+    active: bool
     source: str | None = None
-    disc_ids: list[str] = Field(default_factory=list)
+    container_ids: list[str] = Field(default_factory=list)
     status: str | None = None
     extra: dict[str, Any] | None = None
 
@@ -57,33 +57,33 @@ class TreeResponse(BaseModel):
     nodes: list[TreeNode]
 
 
-class OfflineError(BaseModel):
+class InactiveError(BaseModel):
     error: str
     message: str
-    disc_ids: list[str] = Field(default_factory=list)
+    container_ids: list[str] = Field(default_factory=list)
 
 
-class SealJobResponse(BaseModel):
-    job_id: str
+class SealCollectionResponse(BaseModel):
+    collection_id: str
     status: str
-    closed_discs: list[str]
+    closed_containers: list[str]
     buffer_bytes: int
 
 
-class CacheSessionCreateResponse(BaseModel):
+class ActivationSessionCreateResponse(BaseModel):
     session_id: str
-    disc_id: str
+    container_id: str
     expected_total_bytes: int
     expected_files: int
     progress_stream_url: str
 
 
-class CacheUploadSlotRequest(BaseModel):
+class ActivationUploadSlotRequest(BaseModel):
     relative_path: str
 
 
-class CacheSessionCompleteResponse(BaseModel):
-    disc_id: str
+class ActivationSessionCompleteResponse(BaseModel):
+    container_id: str
     session_id: str
     status: str
     contents_hash: str
@@ -99,32 +99,32 @@ class IsoCreateRequest(BaseModel):
 
 
 class IsoCreateResponse(BaseModel):
-    disc_id: str
+    container_id: str
     iso_path: str
     size_bytes: int
 
 
 class BurnConfirmResponse(BaseModel):
-    disc_id: str
+    container_id: str
     burn_confirmed_at: str
-    released_job_ids: list[str] = Field(default_factory=list)
+    released_collection_ids: list[str] = Field(default_factory=list)
 
 
 class DownloadSessionCreateResponse(BaseModel):
     session_id: str
-    disc_id: str
+    container_id: str
     total_bytes: int
     progress_stream_url: str
     content_url: str
 
 
-class DiscFinalizationWebhookCreateRequest(BaseModel):
+class ContainerFinalizationWebhookCreateRequest(BaseModel):
     webhook_url: HttpUrl
     reminder_interval_seconds: int | None = Field(default=None, gt=0)
 
 
-class DiscFinalizationWebhookCreateResponse(BaseModel):
+class ContainerFinalizationWebhookCreateResponse(BaseModel):
     subscription_id: str
     webhook_url: str
     reminder_interval_seconds: int | None = None
-    pending_disc_count: int
+    pending_container_count: int

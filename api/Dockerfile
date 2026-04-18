@@ -24,7 +24,7 @@ RUN arch="$(dpkg --print-architecture)" \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-activation-dir -r requirements.txt
 
 COPY app ./app
 

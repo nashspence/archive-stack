@@ -4,7 +4,7 @@ import zipfile
 from io import BytesIO
 from pathlib import Path
 
-from .helpers import create_job, reserve_job_upload, simulate_tusd_upload
+from .helpers import create_collection, reserve_collection_upload, simulate_tusd_upload
 from .mock_data import family_archive_files
 
 
@@ -14,13 +14,13 @@ def test_auth_path_validation_and_hook_guards(app_factory):
         assert health.status_code == 200
         assert health.json() == {"status": "ok"}
 
-        unauthorized = harness.client.post("/v1/jobs", json={"description": "blocked"})
+        unauthorized = harness.client.post("/v1/collections", json={"description": "blocked"})
         assert unauthorized.status_code == 401
 
-        job_id = create_job(harness, description="critical family archive")
+        collection_id = create_collection(harness, description="critical family archive")
 
         bad_directory = harness.client.post(
-            f"/v1/jobs/{job_id}/directories",
+            f"/v1/collections/{collection_id}/directories",
             headers=harness.auth_headers(),
             json={"relative_path": "../escape"},
         )
@@ -28,7 +28,7 @@ def test_auth_path_validation_and_hook_guards(app_factory):
         assert bad_directory.json()["detail"] == "path must not escape its root"
 
         invalid_mode = harness.client.post(
-            f"/v1/jobs/{job_id}/uploads",
+            f"/v1/collections/{collection_id}/uploads",
             headers=harness.auth_headers(),
             json={
                 "relative_path": "finance/statement.pdf",
@@ -44,7 +44,7 @@ def test_auth_path_validation_and_hook_guards(app_factory):
         assert invalid_mode.json()["detail"] == "mode must be a zero-prefixed octal string like 0644"
 
         invalid_sha = harness.client.post(
-            f"/v1/jobs/{job_id}/uploads",
+            f"/v1/collections/{collection_id}/uploads",
             headers=harness.auth_headers(),
             json={
                 "relative_path": "finance/statement.pdf",
@@ -67,10 +67,10 @@ def test_auth_path_validation_and_hook_guards(app_factory):
         assert forbidden_hook.status_code == 403
 
 
-def test_job_creation_uses_root_node_name_and_rejects_duplicates(app_factory):
+def test_collection_creation_uses_root_node_name_and_rejects_duplicates(app_factory):
     with app_factory() as harness:
         first = harness.client.post(
-            "/v1/jobs",
+            "/v1/collections",
             headers=harness.auth_headers(),
             json={
                 "root_node_name": "family-archive-root",
@@ -79,10 +79,10 @@ def test_job_creation_uses_root_node_name_and_rejects_duplicates(app_factory):
             },
         )
         assert first.status_code == 200
-        assert first.json()["job_id"] == "family-archive-root"
+        assert first.json()["collection_id"] == "family-archive-root"
 
         duplicate = harness.client.post(
-            "/v1/jobs",
+            "/v1/collections",
             headers=harness.auth_headers(),
             json={
                 "root_node_name": "family-archive-root",
@@ -94,35 +94,35 @@ def test_job_creation_uses_root_node_name_and_rejects_duplicates(app_factory):
         assert duplicate.json()["detail"] == "root node name already exists"
 
 
-def test_upload_hooks_publish_progress_and_export_online_bytes(app_factory):
+def test_upload_hooks_publish_progress_and_export_active_bytes(app_factory):
     with app_factory() as harness:
         sample = family_archive_files()[0]
-        job_id = create_job(harness, description="home video ingest")
-        slot = reserve_job_upload(harness, job_id, sample)
+        collection_id = create_collection(harness, description="home video ingest")
+        slot = reserve_collection_upload(harness, collection_id, sample)
 
         simulate_tusd_upload(harness, slot, sample.content)
 
         upload_messages = harness.redis_messages(harness.progress.upload_stream_name(slot["upload_id"]))
-        job_messages = harness.redis_messages(harness.progress.job_stream_name(job_id))
+        collection_messages = harness.redis_messages(harness.progress.collection_stream_name(collection_id))
         assert [fields["status"] for _, fields in upload_messages] == ["created", "uploading", "completed"]
-        assert [fields["status"] for _, fields in job_messages] == ["uploading", "uploading", "completed"]
+        assert [fields["status"] for _, fields in collection_messages] == ["uploading", "uploading", "completed"]
         assert upload_messages[-1][1]["sha256"] == sample.sha256
 
         with harness.session() as session:
-            job_file = session.query(harness.models.JobFile).filter_by(job_id=job_id).one()
+            collection_file = session.query(harness.models.CollectionFile).filter_by(collection_id=collection_id).one()
             slot_row = session.query(harness.models.UploadSlot).filter_by(upload_id=slot["upload_id"]).one()
-            assert job_file.status == "online"
-            assert job_file.actual_sha256 == sample.sha256
-            assert Path(job_file.buffer_abs_path).read_bytes() == sample.content
+            assert collection_file.status == "active"
+            assert collection_file.actual_sha256 == sample.sha256
+            assert Path(collection_file.buffer_abs_path).read_bytes() == sample.content
             assert slot_row.status == "completed"
             assert Path(slot_row.final_abs_path).read_bytes() == sample.content
 
-        export_path = harness.storage.export_job_root(job_id) / sample.relative_path
+        export_path = harness.storage.export_collection_root(collection_id) / sample.relative_path
         assert export_path.exists()
         assert export_path.read_bytes() == sample.content
 
         tree = harness.client.get(
-            f"/v1/jobs/{job_id}/tree",
+            f"/v1/collections/{collection_id}/tree",
             headers=harness.auth_headers(),
         )
         assert tree.status_code == 200
@@ -132,35 +132,35 @@ def test_upload_hooks_publish_progress_and_export_online_bytes(app_factory):
                 "path": sample.relative_path,
                 "kind": "file",
                 "size_bytes": sample.size_bytes,
-                "online": True,
+                "active": True,
                 "source": "buffer",
-                "disc_ids": [],
-                "status": "online",
+                "container_ids": [],
+                "status": "active",
                 "extra": None,
             }
         ]
 
         content = harness.client.get(
-            f"/v1/jobs/{job_id}/content/{sample.relative_path}",
+            f"/v1/collections/{collection_id}/content/{sample.relative_path}",
             headers=harness.auth_headers(),
         )
         assert content.status_code == 200
         assert content.content == sample.content
 
         bundle = harness.client.get(
-            f"/v1/jobs/{job_id}/hash-manifest-proof",
+            f"/v1/collections/{collection_id}/hash-manifest-proof",
             headers=harness.auth_headers(),
         )
         assert bundle.status_code == 200
-        assert bundle.headers["content-disposition"].endswith(f'"{job_id}-hash-manifest-proof.zip"')
+        assert bundle.headers["content-disposition"].endswith(f'"{collection_id}-hash-manifest-proof.zip"')
 
         with zipfile.ZipFile(BytesIO(bundle.content)) as archive:
             assert sorted(archive.namelist()) == ["HASHES.yml", "HASHES.yml.ots"]
             manifest = archive.read("HASHES.yml").decode("utf-8")
             proof = archive.read("HASHES.yml.ots").decode("utf-8")
 
-        assert "schema: job-hash-manifest/v1" in manifest
-        assert f"job_id: {job_id}" in manifest
+        assert "schema: collection-hash-manifest/v1" in manifest
+        assert f"collection_id: {collection_id}" in manifest
         assert f"path: {sample.relative_path}" in manifest
         assert f"sha256: {sample.sha256}" in manifest
         assert "OpenTimestamps stub proof v1" in proof

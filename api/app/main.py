@@ -11,9 +11,9 @@ from .config import ensure_directories
 from .auth import require_api_auth
 from .db import Base, engine, migrate_schema
 from .hooks import router as hooks_router
-from .notifications import run_disc_finalization_notifier
-from .routes.discs import router as discs_router
-from .routes.jobs import router as jobs_router
+from .notifications import run_container_finalization_notifier
+from .routes.containers import router as containers_router
+from .routes.collections import router as collections_router
 from .routes.progress import router as progress_router
 
 
@@ -22,7 +22,7 @@ async def lifespan(_app: FastAPI):
     ensure_directories()
     Base.metadata.create_all(bind=engine)
     migrate_schema()
-    notifier_task = asyncio.create_task(run_disc_finalization_notifier())
+    notifier_task = asyncio.create_task(run_container_finalization_notifier())
     try:
         yield
     finally:
@@ -31,7 +31,7 @@ async def lifespan(_app: FastAPI):
             await notifier_task
 
 
-app = FastAPI(title="Archive Storage MVP", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="Archive Service MVP", version="0.4.0", lifespan=lifespan)
 
 
 @app.get("/healthz")
@@ -44,7 +44,7 @@ async def value_error_handler(_request, exc: ValueError):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
-app.include_router(jobs_router, dependencies=[Depends(require_api_auth)])
-app.include_router(discs_router, dependencies=[Depends(require_api_auth)])
+app.include_router(collections_router, dependencies=[Depends(require_api_auth)])
+app.include_router(containers_router, dependencies=[Depends(require_api_auth)])
 app.include_router(progress_router, dependencies=[Depends(require_api_auth)])
 app.include_router(hooks_router)

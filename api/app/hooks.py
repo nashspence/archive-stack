@@ -13,9 +13,9 @@ from sqlalchemy.orm import selectinload
 from .auth import hook_auth_ok
 from .config import INCOMING_DIR
 from .db import SessionLocal
-from .models import UploadSlot, JobFile, CacheSession
-from .progress import cache_session_stream_name, job_stream_name, publish_progress, upload_stream_name
-from .storage import aggregate_cache_progress, aggregate_job_progress, cache_staging_file_path, file_sha256, job_buffer_path, normalize_relpath, rebuild_job_export, refresh_job_hash_artifacts
+from .models import UploadSlot, CollectionFile, ActivationSession
+from .progress import activation_session_stream_name, collection_stream_name, publish_progress, upload_stream_name
+from .storage import aggregate_activation_progress, aggregate_collection_progress, activation_staging_file_path, file_sha256, collection_buffer_path, normalize_relpath, rebuild_collection_export, refresh_collection_hash_artifacts
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
@@ -42,12 +42,12 @@ def _error(status_code: int, message: str, reject: bool = False, stop: bool = Fa
 
 
 async def _publish_aggregate(db, slot: UploadSlot) -> None:
-    if slot.job_file_id:
-        current, total = aggregate_job_progress(db, slot.job_file.job_id)
-        await publish_progress(job_stream_name(slot.job_file.job_id), {"status": slot.status, "bytes_current": current, "bytes_total": total})
-    elif slot.cache_session_id:
-        current, total = aggregate_cache_progress(db, slot.cache_session_id)
-        await publish_progress(cache_session_stream_name(slot.cache_session_id), {"status": slot.status, "bytes_current": current, "bytes_total": total})
+    if slot.collection_file_id:
+        current, total = aggregate_collection_progress(db, slot.collection_file.collection_id)
+        await publish_progress(collection_stream_name(slot.collection_file.collection_id), {"status": slot.status, "bytes_current": current, "bytes_total": total})
+    elif slot.activation_session_id:
+        current, total = aggregate_activation_progress(db, slot.activation_session_id)
+        await publish_progress(activation_session_stream_name(slot.activation_session_id), {"status": slot.status, "bytes_current": current, "bytes_total": total})
 
 
 @router.post("/tusd-hooks")
@@ -74,7 +74,7 @@ async def tusd_hooks(
                 db.execute(
                     select(UploadSlot)
                     .where(UploadSlot.upload_id == upload_id)
-                    .options(selectinload(UploadSlot.job_file), selectinload(UploadSlot.cache_session))
+                    .options(selectinload(UploadSlot.collection_file), selectinload(UploadSlot.activation_session))
                 )
                 .scalar_one_or_none()
             )
@@ -101,7 +101,7 @@ async def tusd_hooks(
             db.execute(
                 select(UploadSlot)
                 .where(UploadSlot.upload_id == upload_id)
-                .options(selectinload(UploadSlot.job_file).selectinload(JobFile.archive_pieces), selectinload(UploadSlot.cache_session))
+                .options(selectinload(UploadSlot.collection_file).selectinload(CollectionFile.archive_pieces), selectinload(UploadSlot.activation_session))
             )
             .scalar_one_or_none()
         )
@@ -138,27 +138,27 @@ async def tusd_hooks(
                 await publish_progress(upload_stream_name(upload_id), {"status": "failed", "error": slot.error_message})
                 return JSONResponse({})
 
-            if slot.kind == "job_file":
-                job_file = slot.job_file
-                assert job_file is not None
-                final_path = job_buffer_path(job_file.job_id, job_file.relative_path)
+            if slot.kind == "collection_file":
+                collection_file = slot.collection_file
+                assert collection_file is not None
+                final_path = collection_buffer_path(collection_file.collection_id, collection_file.relative_path)
                 final_path.parent.mkdir(parents=True, exist_ok=True)
                 incoming_path.replace(final_path)
                 slot.final_abs_path = str(final_path)
-                job_file.actual_sha256 = actual_sha256
-                job_file.buffer_abs_path = str(final_path)
-                job_file.status = "online"
-                job_file.error_message = None
-                rebuild_job_export(db, job_file.job_id)
-                refresh_job_hash_artifacts(db, job_file.job_id)
+                collection_file.actual_sha256 = actual_sha256
+                collection_file.buffer_abs_path = str(final_path)
+                collection_file.status = "active"
+                collection_file.error_message = None
+                rebuild_collection_export(db, collection_file.collection_id)
+                refresh_collection_hash_artifacts(db, collection_file.collection_id)
             else:
-                final_path = cache_staging_file_path(slot.cache_session_id, slot.relative_path)
+                final_path = activation_staging_file_path(slot.activation_session_id, slot.relative_path)
                 final_path.parent.mkdir(parents=True, exist_ok=True)
                 incoming_path.replace(final_path)
                 slot.final_abs_path = str(final_path)
-                cache_session = slot.cache_session
-                assert cache_session is not None
-                cache_session.status = "uploading"
+                activation_session = slot.activation_session
+                assert activation_session is not None
+                activation_session.status = "uploading"
 
             slot.actual_sha256 = actual_sha256
             slot.current_offset = slot.size_bytes

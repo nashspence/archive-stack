@@ -44,14 +44,14 @@ def _parse_print_size_bytes(output: str) -> int:
     return blocks * ISO_BLOCK_SIZE
 
 
-def estimate_iso_size_from_partition_root(
+def estimate_iso_size_from_container_root(
     root: Path,
     *,
     requested_label: str | None = None,
 ) -> int:
     tool = _require_iso_authoring_tool()
     if not root.exists() or not root.is_dir():
-        raise RuntimeError(f"partition root {root} is missing")
+        raise RuntimeError(f"container root {root} is missing")
 
     label = iso_volume_label(requested_label or root.name)
     result = subprocess.run(
@@ -67,22 +67,22 @@ def estimate_iso_size_from_partition_root(
     return _parse_print_size_bytes(result.stdout)
 
 
-def create_iso_from_partition_root(
-    disc_id: str,
+def create_iso_from_container_root(
+    container_id: str,
     root: Path,
     *,
     requested_label: str | None = None,
 ) -> Path:
     tool = _require_iso_authoring_tool()
     if not root.exists() or not root.is_dir():
-        raise RuntimeError(f"partition root {root} is missing")
+        raise RuntimeError(f"container root {root} is missing")
 
-    output = registered_iso_storage_path(disc_id)
+    output = registered_iso_storage_path(container_id)
     output.parent.mkdir(parents=True, exist_ok=True)
     temp = output.with_suffix(".iso.tmp")
     temp.unlink(missing_ok=True)
 
-    label = iso_volume_label(requested_label or disc_id)
+    label = iso_volume_label(requested_label or container_id)
     result = subprocess.run(
         _authoring_command_args(tool, label, "-o", str(temp)),
         cwd=root,

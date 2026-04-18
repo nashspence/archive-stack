@@ -17,8 +17,8 @@ def uuid_str() -> str:
     return str(uuid4())
 
 
-class Job(Base):
-    __tablename__ = "jobs"
+class Collection(Base):
+    __tablename__ = "collections"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     status: Mapped[str] = mapped_column(String(32), default="open", nullable=False)
@@ -31,31 +31,31 @@ class Job(Base):
     sealed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
-    directories: Mapped[list["JobDirectory"]] = relationship(back_populates="job", cascade="all, delete-orphan")
-    files: Mapped[list["JobFile"]] = relationship(back_populates="job", cascade="all, delete-orphan")
+    directories: Mapped[list["CollectionDirectory"]] = relationship(back_populates="collection", cascade="all, delete-orphan")
+    files: Mapped[list["CollectionFile"]] = relationship(back_populates="collection", cascade="all, delete-orphan")
 
 
-class JobDirectory(Base):
-    __tablename__ = "job_directories"
-    __table_args__ = (UniqueConstraint("job_id", "relative_path", name="uq_job_directories_job_path"),)
+class CollectionDirectory(Base):
+    __tablename__ = "collection_directories"
+    __table_args__ = (UniqueConstraint("collection_id", "relative_path", name="uq_collection_directories_collection_path"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
-    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    collection_id: Mapped[str] = mapped_column(ForeignKey("collections.id", ondelete="CASCADE"), nullable=False, index=True)
     relative_path: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
-    job: Mapped[Job] = relationship(back_populates="directories")
+    collection: Mapped[Collection] = relationship(back_populates="directories")
 
 
-class JobFile(Base):
-    __tablename__ = "job_files"
+class CollectionFile(Base):
+    __tablename__ = "collection_files"
     __table_args__ = (
-        UniqueConstraint("job_id", "relative_path", name="uq_job_files_job_path"),
-        Index("ix_job_files_job_id_relative_path", "job_id", "relative_path"),
+        UniqueConstraint("collection_id", "relative_path", name="uq_collection_files_collection_path"),
+        Index("ix_collection_files_collection_id_relative_path", "collection_id", "relative_path"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
-    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    collection_id: Mapped[str] = mapped_column(ForeignKey("collections.id", ondelete="CASCADE"), nullable=False, index=True)
     relative_path: Mapped[str] = mapped_column(String, nullable=False)
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     expected_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -71,21 +71,21 @@ class JobFile(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
-    job: Mapped[Job] = relationship(back_populates="files")
-    archive_pieces: Mapped[list["ArchivePiece"]] = relationship(back_populates="job_file", cascade="all, delete-orphan")
-    uploads: Mapped[list["UploadSlot"]] = relationship(back_populates="job_file")
+    collection: Mapped[Collection] = relationship(back_populates="files")
+    archive_pieces: Mapped[list["ArchivePiece"]] = relationship(back_populates="collection_file", cascade="all, delete-orphan")
+    uploads: Mapped[list["UploadSlot"]] = relationship(back_populates="collection_file")
 
 
-class Disc(Base):
-    __tablename__ = "discs"
+class Container(Base):
+    __tablename__ = "containers"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    status: Mapped[str] = mapped_column(String(32), default="offline", nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="inactive", nullable=False)
     description: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     root_abs_path: Mapped[str] = mapped_column(String, nullable=False)
     contents_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     total_root_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    cached_root_abs_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    active_root_abs_path: Mapped[str | None] = mapped_column(String, nullable=True)
     iso_abs_path: Mapped[str | None] = mapped_column(String, nullable=True)
     iso_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     burn_confirmed_at: Mapped[datetime | None] = mapped_column(
@@ -94,21 +94,21 @@ class Disc(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
-    entries: Mapped[list["DiscEntry"]] = relationship(back_populates="disc", cascade="all, delete-orphan")
-    archive_pieces: Mapped[list["ArchivePiece"]] = relationship(back_populates="disc", cascade="all, delete-orphan")
-    cache_sessions: Mapped[list["CacheSession"]] = relationship(back_populates="disc", cascade="all, delete-orphan")
-    finalization_notifications: Mapped[list["DiscFinalizationNotification"]] = relationship(
-        back_populates="disc",
+    entries: Mapped[list["ContainerEntry"]] = relationship(back_populates="container", cascade="all, delete-orphan")
+    archive_pieces: Mapped[list["ArchivePiece"]] = relationship(back_populates="container", cascade="all, delete-orphan")
+    activation_sessions: Mapped[list["ActivationSession"]] = relationship(back_populates="container", cascade="all, delete-orphan")
+    finalization_notifications: Mapped[list["ContainerFinalizationNotification"]] = relationship(
+        back_populates="container",
         cascade="all, delete-orphan",
     )
 
 
-class DiscEntry(Base):
-    __tablename__ = "disc_entries"
-    __table_args__ = (UniqueConstraint("disc_id", "relative_path", name="uq_disc_entries_disc_path"),)
+class ContainerEntry(Base):
+    __tablename__ = "container_entries"
+    __table_args__ = (UniqueConstraint("container_id", "relative_path", name="uq_container_entries_container_path"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
-    disc_id: Mapped[str] = mapped_column(ForeignKey("discs.id", ondelete="CASCADE"), nullable=False, index=True)
+    container_id: Mapped[str] = mapped_column(ForeignKey("containers.id", ondelete="CASCADE"), nullable=False, index=True)
     relative_path: Mapped[str] = mapped_column(String, nullable=False)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -116,42 +116,42 @@ class DiscEntry(Base):
     stored_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     stored_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
-    disc: Mapped[Disc] = relationship(back_populates="entries")
+    container: Mapped[Container] = relationship(back_populates="entries")
 
 
 class ArchivePiece(Base):
     __tablename__ = "archive_pieces"
     __table_args__ = (
-        UniqueConstraint("disc_id", "payload_relpath", name="uq_archive_pieces_disc_payload"),
+        UniqueConstraint("container_id", "payload_relpath", name="uq_archive_pieces_container_payload"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
-    disc_id: Mapped[str] = mapped_column(ForeignKey("discs.id", ondelete="CASCADE"), nullable=False, index=True)
-    job_file_id: Mapped[str] = mapped_column(ForeignKey("job_files.id", ondelete="CASCADE"), nullable=False, index=True)
+    container_id: Mapped[str] = mapped_column(ForeignKey("containers.id", ondelete="CASCADE"), nullable=False, index=True)
+    collection_file_id: Mapped[str] = mapped_column(ForeignKey("collection_files.id", ondelete="CASCADE"), nullable=False, index=True)
     payload_relpath: Mapped[str] = mapped_column(String, nullable=False)
     sidecar_relpath: Mapped[str] = mapped_column(String, nullable=False)
     payload_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     chunk_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     chunk_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    disc: Mapped[Disc] = relationship(back_populates="archive_pieces")
-    job_file: Mapped[JobFile] = relationship(back_populates="archive_pieces")
+    container: Mapped[Container] = relationship(back_populates="archive_pieces")
+    collection_file: Mapped[CollectionFile] = relationship(back_populates="archive_pieces")
 
 
-class CacheSession(Base):
-    __tablename__ = "cache_sessions"
-    __table_args__ = (Index("ix_cache_sessions_disc_id", "disc_id"),)
+class ActivationSession(Base):
+    __tablename__ = "activation_sessions"
+    __table_args__ = (Index("ix_activation_sessions_container_id", "container_id"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
-    disc_id: Mapped[str] = mapped_column(ForeignKey("discs.id", ondelete="CASCADE"), nullable=False)
+    container_id: Mapped[str] = mapped_column(ForeignKey("containers.id", ondelete="CASCADE"), nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="open", nullable=False)
     expected_total_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     uploaded_bytes: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
-    disc: Mapped[Disc] = relationship(back_populates="cache_sessions")
-    uploads: Mapped[list["UploadSlot"]] = relationship(back_populates="cache_session")
+    container: Mapped[Container] = relationship(back_populates="activation_sessions")
+    uploads: Mapped[list["UploadSlot"]] = relationship(back_populates="activation_session")
 
 
 class UploadSlot(Base):
@@ -159,8 +159,8 @@ class UploadSlot(Base):
     __table_args__ = (
         UniqueConstraint("upload_id", name="uq_upload_slots_upload_id"),
         UniqueConstraint("upload_token", name="uq_upload_slots_upload_token"),
-        Index("ix_upload_slots_job_file_id", "job_file_id"),
-        Index("ix_upload_slots_cache_session_id", "cache_session_id"),
+        Index("ix_upload_slots_collection_file_id", "collection_file_id"),
+        Index("ix_upload_slots_activation_session_id", "activation_session_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
@@ -175,21 +175,21 @@ class UploadSlot(Base):
     current_offset: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     final_abs_path: Mapped[str | None] = mapped_column(String, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    job_file_id: Mapped[str | None] = mapped_column(ForeignKey("job_files.id", ondelete="CASCADE"), nullable=True)
-    cache_session_id: Mapped[str | None] = mapped_column(ForeignKey("cache_sessions.id", ondelete="CASCADE"), nullable=True)
+    collection_file_id: Mapped[str | None] = mapped_column(ForeignKey("collection_files.id", ondelete="CASCADE"), nullable=True)
+    activation_session_id: Mapped[str | None] = mapped_column(ForeignKey("activation_sessions.id", ondelete="CASCADE"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
-    job_file: Mapped[JobFile | None] = relationship(back_populates="uploads")
-    cache_session: Mapped[CacheSession | None] = relationship(back_populates="uploads")
+    collection_file: Mapped[CollectionFile | None] = relationship(back_populates="uploads")
+    activation_session: Mapped[ActivationSession | None] = relationship(back_populates="uploads")
 
 
 class DownloadSession(Base):
     __tablename__ = "download_sessions"
-    __table_args__ = (Index("ix_download_sessions_disc_id", "disc_id"),)
+    __table_args__ = (Index("ix_download_sessions_container_id", "container_id"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
-    disc_id: Mapped[str] = mapped_column(ForeignKey("discs.id", ondelete="CASCADE"), nullable=False)
+    container_id: Mapped[str] = mapped_column(ForeignKey("containers.id", ondelete="CASCADE"), nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="ready", nullable=False)
     total_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     bytes_sent: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
@@ -197,8 +197,8 @@ class DownloadSession(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
-class DiscFinalizationWebhookSubscription(Base):
-    __tablename__ = "disc_finalization_webhook_subscriptions"
+class ContainerFinalizationWebhookSubscription(Base):
+    __tablename__ = "container_finalization_webhook_subscriptions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     webhook_url: Mapped[str] = mapped_column(String, nullable=False)
@@ -206,30 +206,30 @@ class DiscFinalizationWebhookSubscription(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
-    notifications: Mapped[list["DiscFinalizationNotification"]] = relationship(
+    notifications: Mapped[list["ContainerFinalizationNotification"]] = relationship(
         back_populates="subscription",
         cascade="all, delete-orphan",
     )
 
 
-class DiscFinalizationNotification(Base):
-    __tablename__ = "disc_finalization_notifications"
+class ContainerFinalizationNotification(Base):
+    __tablename__ = "container_finalization_notifications"
     __table_args__ = (
         UniqueConstraint(
             "subscription_id",
-            "disc_id",
-            name="uq_disc_finalization_notifications_subscription_disc",
+            "container_id",
+            name="uq_container_finalization_notifications_subscription_container",
         ),
-        Index("ix_disc_finalization_notifications_next_attempt_at", "next_attempt_at"),
-        Index("ix_disc_finalization_notifications_disc_id", "disc_id"),
+        Index("ix_container_finalization_notifications_next_attempt_at", "next_attempt_at"),
+        Index("ix_container_finalization_notifications_container_id", "container_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     subscription_id: Mapped[str] = mapped_column(
-        ForeignKey("disc_finalization_webhook_subscriptions.id", ondelete="CASCADE"),
+        ForeignKey("container_finalization_webhook_subscriptions.id", ondelete="CASCADE"),
         nullable=False,
     )
-    disc_id: Mapped[str] = mapped_column(ForeignKey("discs.id", ondelete="CASCADE"), nullable=False)
+    container_id: Mapped[str] = mapped_column(ForeignKey("containers.id", ondelete="CASCADE"), nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
     reminder_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     initial_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -240,5 +240,5 @@ class DiscFinalizationNotification(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
-    subscription: Mapped[DiscFinalizationWebhookSubscription] = relationship(back_populates="notifications")
-    disc: Mapped[Disc] = relationship(back_populates="finalization_notifications")
+    subscription: Mapped[ContainerFinalizationWebhookSubscription] = relationship(back_populates="notifications")
+    container: Mapped[Container] = relationship(back_populates="finalization_notifications")

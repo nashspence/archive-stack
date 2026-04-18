@@ -23,10 +23,10 @@ services:
       REDIS_URL: redis://redis:6379/0
       TEST_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME}_default
       TUSD_BASE_URL: http://tusd.test/files
-      PARTITION_TARGET_GB: "0.0025"
-      PARTITION_FILL_GB: "0.0015"
-      PARTITION_SPILL_FILL_GB: "0.0010"
-      PARTITION_BUFFER_MAX_GB: "0.0100"
+      CONTAINER_TARGET_GB: "0.0025"
+      CONTAINER_FILL_GB: "0.0015"
+      CONTAINER_SPILL_FILL_GB: "0.0010"
+      CONTAINER_BUFFER_MAX_GB: "0.0100"
       PYTHONWARNINGS: error
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

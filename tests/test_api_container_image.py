@@ -6,6 +6,7 @@ import uuid
 
 import docker
 import httpx
+import pytest
 
 
 def _wait_for_health(base_url: str, *, timeout_seconds: float = 30.0) -> None:
@@ -24,7 +25,9 @@ def _wait_for_health(base_url: str, *, timeout_seconds: float = 30.0) -> None:
 
 
 def test_api_dockerfile_builds_and_serves_real_container():
-    network = os.environ["TEST_DOCKER_NETWORK"]
+    network = os.environ.get("TEST_DOCKER_NETWORK")
+    if not network:
+        pytest.skip("TEST_DOCKER_NETWORK is not configured")
     image_tag = f"archive-stack-api-test:{uuid.uuid4().hex[:12]}"
     container_name = f"archive-stack-api-{uuid.uuid4().hex[:12]}"
     api_token = "runtime-api-token"
@@ -58,14 +61,14 @@ def test_api_dockerfile_builds_and_serves_real_container():
         _wait_for_health(base_url)
 
         unauthorized = httpx.post(
-            f"{base_url}/v1/jobs",
+            f"{base_url}/v1/collections",
             json={"description": "blocked"},
             timeout=5.0,
         )
         assert unauthorized.status_code == 401
 
         authorized = httpx.post(
-            f"{base_url}/v1/jobs",
+            f"{base_url}/v1/collections",
             headers={"Authorization": f"Bearer {api_token}"},
             json={
                 "root_node_name": "real-image-runtime-check",
@@ -77,7 +80,7 @@ def test_api_dockerfile_builds_and_serves_real_container():
         body = authorized.json()
         assert body["status"] == "open"
         assert body["keep_buffer_after_archive"] is False
-        assert body["job_id"] == "real-image-runtime-check"
+        assert body["collection_id"] == "real-image-runtime-check"
     finally:
         if container is not None:
             try:

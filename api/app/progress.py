@@ -45,12 +45,12 @@ def upload_stream_name(upload_id: str) -> str:
     return f"progress:uploads:{upload_id}"
 
 
-def job_stream_name(job_id: str) -> str:
-    return f"progress:jobs:{job_id}"
+def collection_stream_name(collection_id: str) -> str:
+    return f"progress:collections:{collection_id}"
 
 
-def cache_session_stream_name(session_id: str) -> str:
-    return f"progress:cache-sessions:{session_id}"
+def activation_session_stream_name(session_id: str) -> str:
+    return f"progress:activation-sessions:{session_id}"
 
 
 def download_stream_name(session_id: str) -> str:

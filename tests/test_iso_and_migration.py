@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .helpers import create_iso, create_job, force_flush, register_iso, seal_job, upload_job_file
+from .helpers import create_iso, create_collection, force_flush, register_iso, seal_collection, upload_collection_file
 from .mock_data import MockFile, document_archive_files, patterned_bytes
 
 
@@ -38,30 +38,30 @@ def _stress_files(seed: int, *, count: int, oversized_bytes: int | None = None) 
 
 def test_registered_iso_download_tracks_progress(app_factory):
     with app_factory() as harness:
-        job_id = create_job(harness, description="downloadable iso archive")
+        collection_id = create_collection(harness, description="downloadable iso archive")
         for sample in document_archive_files():
-            upload_job_file(harness, job_id, sample)
+            upload_collection_file(harness, collection_id, sample)
 
-        sealed = seal_job(harness, job_id)
-        disc_id = (sealed["closed_discs"] or force_flush(harness))[0]
+        sealed = seal_collection(harness, collection_id)
+        container_id = (sealed["closed_containers"] or force_flush(harness))[0]
 
         iso_bytes = b"SIMULATED-ISO-DATA" * 4096
-        register_iso(harness, disc_id, iso_bytes)
+        register_iso(harness, container_id, iso_bytes)
 
         create_session = harness.client.post(
-            f"/v1/discs/{disc_id}/download-sessions",
+            f"/v1/containers/{container_id}/download-sessions",
             headers=harness.auth_headers(),
         )
         assert create_session.status_code == 200
         session_id = create_session.json()["session_id"]
 
         download = harness.client.get(
-            f"/v1/discs/downloads/{session_id}/content",
+            f"/v1/containers/downloads/{session_id}/content",
             headers=harness.auth_headers(),
         )
         assert download.status_code == 200
         assert download.content == iso_bytes
-        assert download.headers["content-disposition"].endswith(f'"{disc_id}.iso"')
+        assert download.headers["content-disposition"].endswith(f'"{container_id}.iso"')
 
         stream_messages = harness.redis_messages(harness.progress.download_stream_name(session_id))
         statuses = [fields["status"] for _, fields in stream_messages]
@@ -87,54 +87,54 @@ def test_iso_size_estimate_matches_authored_iso_bytes(module_factory):
         ]
 
         for index, files in enumerate(cases, start=1):
-            disc_id = f"ESTIMATE-{index:02d}"
-            root = modules.archive_root / "iso-estimate-cases" / disc_id
+            container_id = f"ESTIMATE-{index:02d}"
+            root = modules.archive_root / "iso-estimate-cases" / container_id
             for sample in files:
                 path = root / sample.relative_path
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(sample.content)
 
-            estimated = iso_module.estimate_iso_size_from_partition_root(root, requested_label=disc_id)
-            authored = iso_module.create_iso_from_partition_root(disc_id, root, requested_label=disc_id)
+            estimated = iso_module.estimate_iso_size_from_container_root(root, requested_label=container_id)
+            authored = iso_module.create_iso_from_container_root(container_id, root, requested_label=container_id)
 
             assert authored.stat().st_size == estimated
 
 
-def test_partitioning_never_overshoots_target_when_authoring_isos(app_factory):
+def test_containerization_never_overshoots_target_when_authoring_isos(app_factory):
     with app_factory(
-        PARTITION_TARGET_GB="0.0014",
-        PARTITION_FILL_GB="0.0013",
-        PARTITION_SPILL_FILL_GB="0.0011",
-        PARTITION_BUFFER_MAX_GB="0.0045",
+        CONTAINER_TARGET_GB="0.0014",
+        CONTAINER_FILL_GB="0.0013",
+        CONTAINER_SPILL_FILL_GB="0.0011",
+        CONTAINER_BUFFER_MAX_GB="0.0045",
     ) as harness:
         iso_module = importlib.import_module("app.iso")
-        closed_disc_ids: list[str] = []
+        closed_container_ids: list[str] = []
 
         for index, seed in enumerate((5, 11, 23), start=1):
-            job_id = create_job(harness, description=f"partition stress archive {index}")
+            collection_id = create_collection(harness, description=f"container stress archive {index}")
             for sample in _stress_files(seed, count=14, oversized_bytes=1_050_000 + (index * 90_000)):
-                upload_job_file(harness, job_id, sample)
-            closed_disc_ids.extend(seal_job(harness, job_id)["closed_discs"])
+                upload_collection_file(harness, collection_id, sample)
+            closed_container_ids.extend(seal_collection(harness, collection_id)["closed_containers"])
 
-        closed_disc_ids.extend(force_flush(harness))
-        deduped_disc_ids = list(dict.fromkeys(closed_disc_ids))
-        assert len(deduped_disc_ids) >= 4
+        closed_container_ids.extend(force_flush(harness))
+        deduped_container_ids = list(dict.fromkeys(closed_container_ids))
+        assert len(deduped_container_ids) >= 4
 
-        for disc_id in deduped_disc_ids:
+        for container_id in deduped_container_ids:
             with harness.session() as session:
-                disc = session.get(harness.models.Disc, disc_id)
-                assert disc is not None
-                root = Path(disc.root_abs_path)
+                container = session.get(harness.models.Container, container_id)
+                assert container is not None
+                root = Path(container.root_abs_path)
 
-            estimated = iso_module.estimate_iso_size_from_partition_root(root, requested_label=disc_id)
-            created = create_iso(harness, disc_id)
+            estimated = iso_module.estimate_iso_size_from_container_root(root, requested_label=container_id)
+            created = create_iso(harness, container_id)
 
             assert estimated == created["size_bytes"]
-            assert created["size_bytes"] <= harness.config.PARTITION_TARGET
+            assert created["size_bytes"] <= harness.config.CONTAINER_TARGET
 
 
-def test_disc_finalization_webhook_payload_includes_disc_and_download_url(app_factory, monkeypatch):
-    with app_factory(DISC_WEBHOOK_DISPATCH_INTERVAL_SECONDS="3600") as harness:
+def test_container_finalization_webhook_payload_includes_container_and_download_url(app_factory, monkeypatch):
+    with app_factory(CONTAINER_WEBHOOK_DISPATCH_INTERVAL_SECONDS="3600") as harness:
         delivered: list[tuple[str, dict]] = []
 
         def fake_post_webhook(url: str, payload: dict[str, object]) -> None:
@@ -143,44 +143,44 @@ def test_disc_finalization_webhook_payload_includes_disc_and_download_url(app_fa
         monkeypatch.setattr(harness.notifications, "_post_webhook", fake_post_webhook)
 
         subscribe = harness.client.post(
-            "/v1/discs/finalization-webhooks",
+            "/v1/containers/finalization-webhooks",
             headers=harness.auth_headers(),
             json={"webhook_url": "http://example.test/archive-hook", "reminder_interval_seconds": 900},
         )
         assert subscribe.status_code == 200, subscribe.text
-        assert subscribe.json()["pending_disc_count"] == 0
+        assert subscribe.json()["pending_container_count"] == 0
 
-        job_id = create_job(harness, description="finalization webhook archive")
+        collection_id = create_collection(harness, description="finalization webhook archive")
         for sample in document_archive_files():
-            upload_job_file(harness, job_id, sample)
+            upload_collection_file(harness, collection_id, sample)
 
-        sealed = seal_job(harness, job_id)
-        disc_id = (sealed["closed_discs"] or force_flush(harness))[0]
+        sealed = seal_collection(harness, collection_id)
+        container_id = (sealed["closed_containers"] or force_flush(harness))[0]
 
-        delivered_count = harness.notifications.deliver_due_disc_finalization_notifications()
+        delivered_count = harness.notifications.deliver_due_container_finalization_notifications()
         assert delivered_count == 1
         assert len(delivered) == 1
 
         webhook_url, payload = delivered[0]
         assert webhook_url == "http://example.test/archive-hook"
-        assert payload["event"] == "disc.finalized"
-        assert payload["disc_id"] == disc_id
-        assert payload["download_url"] == f"{harness.config.API_BASE_URL}/v1/discs/{disc_id}/iso/content"
-        assert payload["request_burn_image_url"] == f"{harness.config.API_BASE_URL}/v1/discs/{disc_id}/iso/create"
+        assert payload["event"] == "container.finalized"
+        assert payload["container_id"] == container_id
+        assert payload["download_url"] == f"{harness.config.API_BASE_URL}/v1/containers/{container_id}/iso/content"
+        assert payload["request_burn_image_url"] == f"{harness.config.API_BASE_URL}/v1/containers/{container_id}/iso/create"
         assert payload["iso_available"] is False
         assert payload["reminder_interval_seconds"] == 900
         assert payload["reminder_count"] == 0
 
         iso_bytes = b"ON-DEMAND-ISO" * 2048
-        register_iso(harness, disc_id, iso_bytes)
+        register_iso(harness, container_id, iso_bytes)
         download_path = urlparse(str(payload["download_url"])).path
         download = harness.client.get(download_path, headers=harness.auth_headers())
         assert download.status_code == 200
         assert download.content == iso_bytes
 
 
-def test_disc_finalization_webhook_reminders_stop_after_burn_confirmation(app_factory, monkeypatch):
-    with app_factory(DISC_WEBHOOK_DISPATCH_INTERVAL_SECONDS="3600") as harness:
+def test_container_finalization_webhook_reminders_stop_after_burn_confirmation(app_factory, monkeypatch):
+    with app_factory(CONTAINER_WEBHOOK_DISPATCH_INTERVAL_SECONDS="3600") as harness:
         delivered: list[dict[str, object]] = []
 
         def fake_post_webhook(_url: str, payload: dict[str, object]) -> None:
@@ -189,113 +189,77 @@ def test_disc_finalization_webhook_reminders_stop_after_burn_confirmation(app_fa
         monkeypatch.setattr(harness.notifications, "_post_webhook", fake_post_webhook)
 
         subscribe = harness.client.post(
-            "/v1/discs/finalization-webhooks",
+            "/v1/containers/finalization-webhooks",
             headers=harness.auth_headers(),
             json={"webhook_url": "http://example.test/archive-hook", "reminder_interval_seconds": 60},
         )
         assert subscribe.status_code == 200, subscribe.text
 
-        job_id = create_job(harness, description="reminder archive")
+        collection_id = create_collection(harness, description="reminder archive")
         for sample in document_archive_files():
-            upload_job_file(harness, job_id, sample)
+            upload_collection_file(harness, collection_id, sample)
 
-        sealed = seal_job(harness, job_id)
-        disc_id = (sealed["closed_discs"] or force_flush(harness))[0]
+        sealed = seal_collection(harness, collection_id)
+        container_id = (sealed["closed_containers"] or force_flush(harness))[0]
 
-        initial_count = harness.notifications.deliver_due_disc_finalization_notifications()
+        initial_count = harness.notifications.deliver_due_container_finalization_notifications()
         assert initial_count == 1
-        assert [payload["event"] for payload in delivered] == ["disc.finalized"]
+        assert [payload["event"] for payload in delivered] == ["container.finalized"]
 
         with harness.session() as session:
-            notification = session.query(harness.models.DiscFinalizationNotification).filter_by(disc_id=disc_id).one()
+            notification = session.query(harness.models.ContainerFinalizationNotification).filter_by(container_id=container_id).one()
             notification.next_attempt_at = datetime.now(timezone.utc) - timedelta(seconds=1)
             session.commit()
 
-        reminder_count = harness.notifications.deliver_due_disc_finalization_notifications()
+        reminder_count = harness.notifications.deliver_due_container_finalization_notifications()
         assert reminder_count == 1
         assert [payload["event"] for payload in delivered] == [
-            "disc.finalized",
-            "disc.finalized.reminder",
+            "container.finalized",
+            "container.finalized.reminder",
         ]
-        assert delivered[-1]["disc_id"] == disc_id
+        assert delivered[-1]["container_id"] == container_id
         assert delivered[-1]["reminder_count"] == 1
 
-        register_iso(harness, disc_id, b"burnable-iso")
+        register_iso(harness, container_id, b"burnable-iso")
         confirm = harness.client.post(
-            f"/v1/discs/{disc_id}/burn/confirm",
+            f"/v1/containers/{container_id}/burn/confirm",
             headers=harness.auth_headers(),
         )
         assert confirm.status_code == 200, confirm.text
 
         with harness.session() as session:
-            notification = session.query(harness.models.DiscFinalizationNotification).filter_by(disc_id=disc_id).one()
+            notification = session.query(harness.models.ContainerFinalizationNotification).filter_by(container_id=container_id).one()
             assert notification.status == "completed"
             notification.next_attempt_at = datetime.now(timezone.utc) - timedelta(seconds=1)
             session.commit()
 
-        post_burn = harness.notifications.deliver_due_disc_finalization_notifications()
+        post_burn = harness.notifications.deliver_due_container_finalization_notifications()
         assert post_burn == 0
         assert [payload["event"] for payload in delivered] == [
-            "disc.finalized",
-            "disc.finalized.reminder",
+            "container.finalized",
+            "container.finalized.reminder",
         ]
 
 
-def test_schema_migration_adds_critical_columns(module_factory):
-    def prepare_legacy_db(env: dict[str, str], _base_dir):
-        sqlite_path = env["SQLITE_PATH"]
-        Path(sqlite_path).parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(sqlite_path)
-        conn.executescript(
-            """
-            CREATE TABLE jobs (
-              id TEXT PRIMARY KEY,
-              status TEXT NOT NULL,
-              description TEXT,
-              sealed_at DATETIME,
-              created_at DATETIME NOT NULL
-            );
-            CREATE TABLE discs (
-              id TEXT PRIMARY KEY,
-              status TEXT NOT NULL,
-              description TEXT,
-              root_abs_path TEXT NOT NULL,
-              contents_hash TEXT NOT NULL,
-              total_root_bytes INTEGER NOT NULL,
-              cached_root_abs_path TEXT,
-              iso_abs_path TEXT,
-              iso_size_bytes INTEGER,
-              created_at DATETIME NOT NULL
-            );
-            CREATE TABLE disc_entries (
-              id TEXT PRIMARY KEY,
-              disc_id TEXT NOT NULL,
-              relative_path TEXT NOT NULL,
-              kind TEXT NOT NULL,
-              size_bytes INTEGER NOT NULL,
-              sha256 TEXT NOT NULL
-            );
-            """
-        )
-        conn.commit()
-        conn.close()
-
-    with module_factory(before_import=prepare_legacy_db) as modules:
+def test_schema_bootstraps_current_tables(module_factory):
+    with module_factory() as modules:
+        modules.config.ensure_directories()
         modules.db.Base.metadata.create_all(bind=modules.db.engine)
         modules.db.migrate_schema()
 
         conn = sqlite3.connect(modules.sqlite_path)
         try:
-            job_columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
-            disc_columns = {row[1] for row in conn.execute("PRAGMA table_info(discs)")}
-            disc_entry_columns = {row[1] for row in conn.execute("PRAGMA table_info(disc_entries)")}
+            collection_columns = {row[1] for row in conn.execute("PRAGMA table_info(collections)")}
+            container_columns = {row[1] for row in conn.execute("PRAGMA table_info(containers)")}
+            container_entry_columns = {row[1] for row in conn.execute("PRAGMA table_info(container_entries)")}
             tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         finally:
             conn.close()
 
-        assert "keep_buffer_after_archive" in job_columns
-        assert "burn_confirmed_at" in disc_columns
-        assert "stored_size_bytes" in disc_entry_columns
-        assert "stored_sha256" in disc_entry_columns
-        assert "disc_finalization_webhook_subscriptions" in tables
-        assert "disc_finalization_notifications" in tables
+        assert "keep_buffer_after_archive" in collection_columns
+        assert "burn_confirmed_at" in container_columns
+        assert "active_root_abs_path" in container_columns
+        assert "stored_size_bytes" in container_entry_columns
+        assert "stored_sha256" in container_entry_columns
+        assert "container_finalization_webhook_subscriptions" in tables
+        assert "container_finalization_notifications" in tables

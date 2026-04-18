@@ -15,11 +15,11 @@ from scipy.sparse import lil_array
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select
 
-from .config import PARTITIONER_STATE_DIR, PARTITION_CFG, PARTITION_ROOTS_DIR
+from .config import CONTAINER_STATE_DIR, CONTAINER_CFG, CONTAINER_ROOTS_DIR
 from .crypto import encrypt_bytes_to_file, encrypt_file_span, encrypted_size_for_plaintext_size, logical_file_sha256_and_size
-from .iso import estimate_iso_size_from_partition_root
-from .models import Disc, DiscEntry, ArchivePiece, Job, JobFile
-from .storage import canonical_tree_hash, cold_job_hash_manifest_path, cold_job_hash_proof_path, job_disc_artifact_relpaths
+from .iso import estimate_iso_size_from_container_root
+from .models import Container, ContainerEntry, ArchivePiece, Collection, CollectionFile
+from .storage import canonical_tree_hash, inactive_collection_hash_manifest_path, inactive_collection_hash_proof_path, collection_container_artifact_relpaths
 
 MANIFEST = "MANIFEST.yml"
 README = "README.txt"
@@ -27,9 +27,9 @@ STORE = "files"
 STATE = "state.json"
 MANIFEST_SCHEMA = "manifest/v1"
 # Reserve space for the encrypted manifest envelope plus the plaintext
-# per-disc README so planner-selected piece sets still fit when emitted.
+# per-container README so planner-selected piece sets still fit when emitted.
 META_PAD = 2048
-MANIFEST_PLACEHOLDER_PARTITION = "00000000T000000Z"
+MANIFEST_PLACEHOLDER_CONTAINER = "00000000T000000Z"
 MANIFEST_PLACEHOLDER_CHUNK_COUNT = 999999
 MANIFEST_PLACEHOLDER_ARCHIVE = "files/999999999999.999999"
 _MISSING = object()
@@ -46,14 +46,14 @@ def load_state(state_dir: Path, cfg=None):
     p = state_dir / STATE
     if p.exists():
         s = json.loads(p.read_text())
-        s.setdefault("jobs", {})
+        s.setdefault("collections", {})
         s.setdefault("items", [])
         s.setdefault("next_item", 0)
         s.setdefault("last_closed", "")
         return s
     if cfg is None:
         raise RuntimeError(f"no state at {state_dir}")
-    s = {"cfg": cfg, "jobs": {}, "items": [], "next_item": 0, "last_closed": ""}
+    s = {"cfg": cfg, "collections": {}, "items": [], "next_item": 0, "last_closed": ""}
     state_dir.mkdir(parents=True, exist_ok=True)
     atomic_json(p, s)
     return s
@@ -129,17 +129,17 @@ def manifest_file_entry(path: str, sha256: str, archive=_MISSING) -> dict:
     return entry
 
 
-def manifest_dump(partition: str, jobs_payload: list[dict]) -> bytes:
+def manifest_dump(container: str, collections_payload: list[dict]) -> bytes:
     return yaml_bytes(
         {
             "schema": MANIFEST_SCHEMA,
-            "partition": partition,
-            "jobs": jobs_payload,
+            "container": container,
+            "collections": collections_payload,
         }
     )
 
 
-EMPTY_MANIFEST_SIZE = len(manifest_dump(MANIFEST_PLACEHOLDER_PARTITION, []))
+EMPTY_MANIFEST_SIZE = len(manifest_dump(MANIFEST_PLACEHOLDER_CONTAINER, []))
 _BASELINE_FILE_ENTRY = manifest_file_entry(
     "placeholder",
     "0" * 64,
@@ -157,22 +157,22 @@ _UNSPLIT_FILE_ENTRY = manifest_file_entry(
 )
 _BASELINE_FILE_SIZE = len(
     manifest_dump(
-        MANIFEST_PLACEHOLDER_PARTITION,
-        [{"name": MANIFEST_PLACEHOLDER_PARTITION, "files": [_BASELINE_FILE_ENTRY]}],
+        MANIFEST_PLACEHOLDER_CONTAINER,
+        [{"name": MANIFEST_PLACEHOLDER_CONTAINER, "files": [_BASELINE_FILE_ENTRY]}],
     )
 )
 _SPLIT_CHUNK_BUDGET = len(
     manifest_dump(
-        MANIFEST_PLACEHOLDER_PARTITION,
-        [{"name": MANIFEST_PLACEHOLDER_PARTITION, "files": [_ONE_CHUNK_FILE_ENTRY]}],
+        MANIFEST_PLACEHOLDER_CONTAINER,
+        [{"name": MANIFEST_PLACEHOLDER_CONTAINER, "files": [_ONE_CHUNK_FILE_ENTRY]}],
     )
 ) - _BASELINE_FILE_SIZE
 _UNSPLIT_ARCHIVE_BUDGET = max(
     0,
     len(
         manifest_dump(
-            MANIFEST_PLACEHOLDER_PARTITION,
-            [{"name": MANIFEST_PLACEHOLDER_PARTITION, "files": [_UNSPLIT_FILE_ENTRY]}],
+            MANIFEST_PLACEHOLDER_CONTAINER,
+            [{"name": MANIFEST_PLACEHOLDER_CONTAINER, "files": [_UNSPLIT_FILE_ENTRY]}],
         )
     )
     - _BASELINE_FILE_SIZE,
@@ -197,13 +197,13 @@ def tree_plan(kids: dict, sizes: dict, cap: int):
     return [parts[i] for i in sorted(parts)]
 
 
-def manifest_job_budget(job: str, files: list[dict]) -> int:
+def manifest_collection_budget(collection: str, files: list[dict]) -> int:
     return len(
         manifest_dump(
-            MANIFEST_PLACEHOLDER_PARTITION,
+            MANIFEST_PLACEHOLDER_CONTAINER,
             [
                 {
-                    "name": job,
+                    "name": collection,
                     "files": [
                         manifest_file_entry(
                             f["rel"],
@@ -218,39 +218,39 @@ def manifest_job_budget(job: str, files: list[dict]) -> int:
     ) - EMPTY_MANIFEST_SIZE
 
 
-def put_len(job: str, rel: str, i: int, n: int, why: str = "___"):
+def put_len(collection: str, rel: str, i: int, n: int, why: str = "___"):
     return _SPLIT_CHUNK_BUDGET if n > 1 else _UNSPLIT_ARCHIVE_BUDGET
 
 
-def stage_pieces(state_dir: Path, job: str, files: list[dict], target: int, fixed: int, artifacts: list[dict] | None = None):
+def stage_pieces(state_dir: Path, collection: str, files: list[dict], target: int, fixed: int, artifacts: list[dict] | None = None):
     artifacts = artifacts or []
-    pool, cap = state_dir / "pool" / job, target - META_PAD - fixed
+    pool, cap = state_dir / "pool" / collection, target - META_PAD - fixed
     if cap <= 0:
-        raise RuntimeError(f"job manifest for {job} leaves no payload room")
+        raise RuntimeError(f"collection manifest for {collection} leaves no payload room")
     pool.mkdir(parents=True, exist_ok=True)
     for f in files:
         sidecar_size = encrypted_size_for_plaintext_size(len(sidecar_bytes(f)))
-        stub1 = put_len(job, f["rel"], 0, 1, "job")
+        stub1 = put_len(collection, f["rel"], 0, 1, "collection")
         if f["raw"] <= target:
-            if not _piece_fits_iso_target(state_dir, target, job, files, f, 1, f["raw"], artifacts):
-                raise RuntimeError(f"file {f['rel']} in {job} cannot fit with required manifest overhead without forbidden chunking")
+            if not _piece_fits_iso_target(state_dir, target, collection, files, f, 1, f["raw"], artifacts):
+                raise RuntimeError(f"file {f['rel']} in {collection} cannot fit with required manifest overhead without forbidden chunking")
             store = pool / str(f["id"])
             encrypt_file_span(Path(f["src"]), store)
             stored_size = store.stat().st_size
             if stored_size + sidecar_size + stub1 > cap:
-                raise RuntimeError(f"file {f['rel']} in {job} cannot fit with required manifest overhead without forbidden chunking")
-            f["pieces"] = [{"job": job, "rel": f["rel"], "file": f["id"], "store": str(store.relative_to(state_dir)), "data": f["raw"], "i": 0, "n": 1, "est": stored_size + sidecar_size + stub1}]
+                raise RuntimeError(f"file {f['rel']} in {collection} cannot fit with required manifest overhead without forbidden chunking")
+            f["pieces"] = [{"collection": collection, "rel": f["rel"], "file": f["id"], "store": str(store.relative_to(state_dir)), "data": f["raw"], "i": 0, "n": 1, "est": stored_size + sidecar_size + stub1}]
             continue
         n = 2
         while True:
-            room = _max_piece_plaintext_size_for_iso_target(state_dir, target, job, files, f, n, artifacts)
+            room = _max_piece_plaintext_size_for_iso_target(state_dir, target, collection, files, f, n, artifacts)
             if room <= 0:
-                raise RuntimeError(f"chunk sidecar for {f['rel']} in {job} leaves no payload room")
+                raise RuntimeError(f"chunk sidecar for {f['rel']} in {collection} leaves no payload room")
             nn = max(2, math.ceil(f["raw"] / room))
             if nn == n:
                 break
             n = nn
-        room, pcs, off = (_max_piece_plaintext_size_for_iso_target(state_dir, target, job, files, f, n, artifacts), [], 0)
+        room, pcs, off = (_max_piece_plaintext_size_for_iso_target(state_dir, target, collection, files, f, n, artifacts), [], 0)
         w = max(3, len(str(n)))
         for i in range(n):
             b = min(room, f["raw"] - off)
@@ -259,14 +259,14 @@ def stage_pieces(state_dir: Path, job: str, files: list[dict], target: int, fixe
             sidecar_part_size = encrypted_size_for_plaintext_size(len(sidecar_bytes(f, i, n)))
             pcs.append(
                 {
-                    "job": job,
+                    "collection": collection,
                     "rel": f["rel"],
                     "file": f["id"],
                     "store": str(store.relative_to(state_dir)),
                     "data": b,
                     "i": i,
                     "n": n,
-                    "est": store.stat().st_size + sidecar_part_size + put_len(job, f["rel"], i, n, "vol"),
+                    "est": store.stat().st_size + sidecar_part_size + put_len(collection, f["rel"], i, n, "vol"),
                 }
             )
             off += b
@@ -283,7 +283,7 @@ def leaves(node, kids):
             stack.extend(reversed(kids[n]))
 
 
-def split_job(files: list[dict], kids: dict[str, list[str]], dirs: list[str], cap: int):
+def split_collection(files: list[dict], kids: dict[str, list[str]], dirs: list[str], cap: int):
     kids, sizes, by_rel = ({k: v[:] for k, v in kids.items()}, {}, {f["rel"]: f for f in files})
     for f in files:
         sizes[f["rel"]] = sum(p["est"] for p in f["pieces"])
@@ -301,7 +301,7 @@ def split_job(files: list[dict], kids: dict[str, list[str]], dirs: list[str], ca
         for node, why in q.get("nodes", []):
             for leaf in leaves(node, kids):
                 f, p = by_leaf[leaf] if leaf in by_leaf else (by_rel[leaf], by_rel[leaf]["pieces"][0])
-                cur["pieces"].append({"job": f["job"], "file": f["id"], "rel": f["rel"], "store": p["store"], "data": p["data"], "i": p["i"], "n": p["n"]})
+                cur["pieces"].append({"collection": f["collection"], "file": f["id"], "rel": f["rel"], "store": p["store"], "data": p["data"], "i": p["i"], "n": p["n"]})
                 cur["bytes"] += p["est"]
                 if p["n"] > 1:
                     cur["why"] = "vol"
@@ -312,22 +312,22 @@ def split_job(files: list[dict], kids: dict[str, list[str]], dirs: list[str], ca
 
 
 def close_threshold(items: list[dict], fill: int, spill: int):
-    return spill if any(x["hot"] for x in items) else fill
+    return spill if any(x["priority"] for x in items) else fill
 
 
-def _solve(items: list[dict], jobs: dict, cap: int, fill: int, spill: int, force=False):
-    js = sorted({x["job"] for x in items})
+def _solve(items: list[dict], collections: dict, cap: int, fill: int, spill: int, force=False):
+    js = sorted({x["collection"] for x in items})
     n, m = len(items), len(js)
     jix = {j: i for i, j in enumerate(js)}
     bytes_ = np.array([x["bytes"] for x in items], dtype=np.float64)
-    hot = np.array([int(x["hot"]) for x in items], dtype=np.float64)
-    fixed = np.array([jobs[j]["fixed"] for j in js], dtype=np.float64)
-    item_job = np.array([jix[x["job"]] for x in items], dtype=int)
+    priority = np.array([int(x["priority"]) for x in items], dtype=np.float64)
+    fixed = np.array([collections[j]["fixed"] for j in js], dtype=np.float64)
+    item_collection = np.array([jix[x["collection"]] for x in items], dtype=int)
     payload_cap = cap - META_PAD
     diff = fill - spill
     nv, ih = n + m + 1 + int(force), n + m
     idd = ih + 1 if force else None
-    rows = 1 + n + m + int(hot.sum()) + 2 + int(not force) + 2 * int(force)
+    rows = 1 + n + m + int(priority.sum()) + 2 + int(not force) + 2 * int(force)
     A = lil_array((rows, nv), dtype=np.float64)
     lo, hi, r = [], [], 0
 
@@ -336,26 +336,26 @@ def _solve(items: list[dict], jobs: dict, cap: int, fill: int, spill: int, force
     lo += [-np.inf]
     hi += [payload_cap]
     r += 1
-    for i, jv in enumerate(item_job):
+    for i, jv in enumerate(item_collection):
         A[r, i] = 1
         A[r, n + jv] = -1
         lo += [-np.inf]
         hi += [0]
         r += 1
     for jv in range(m):
-        idx = np.where(item_job == jv)[0]
+        idx = np.where(item_collection == jv)[0]
         A[r, idx] = -1
         A[r, n + jv] = 1
         lo += [-np.inf]
         hi += [0]
         r += 1
-    for i in np.where(hot > 0)[0]:
+    for i in np.where(priority > 0)[0]:
         A[r, i] = 1
         A[r, ih] = -1
         lo += [-np.inf]
         hi += [0]
         r += 1
-    A[r, :n] = -hot
+    A[r, :n] = -priority
     A[r, ih] = 1
     lo += [-np.inf]
     hi += [0]
@@ -410,9 +410,8 @@ def _solve(items: list[dict], jobs: dict, cap: int, fill: int, spill: int, force
             return None
         x = np.rint(res.x).astype(int)
         used = int(META_PAD + bytes_ @ x[:n] + fixed @ x[n : n + m])
-        active = [items[i] for i, v in enumerate(x[:n]) if v]
-        hotc = int(hot @ x[:n])
-        return {"x": x, "active": active, "used": used, "hotc": hotc}
+        selected = [items[i] for i, v in enumerate(x[:n]) if v]
+        return {"x": x, "selected": selected, "used": used}
 
     if force:
         c1 = np.zeros(nv)
@@ -427,7 +426,7 @@ def _solve(items: list[dict], jobs: dict, cap: int, fill: int, spill: int, force
         c2[:n] = -bytes_
         c2[n : n + m] = -fixed
         b = run(c2, [(v1, d, d)])
-        return b["active"] if b else a["active"]
+        return b["selected"] if b else a["selected"]
 
     c1 = np.zeros(nv)
     c1[:n] = bytes_
@@ -436,7 +435,7 @@ def _solve(items: list[dict], jobs: dict, cap: int, fill: int, spill: int, force
     a = run(c1)
     if not a:
         return []
-    s = a["used"] - close_threshold(a["active"], fill, spill)
+    s = a["used"] - close_threshold(a["selected"], fill, spill)
     v1 = np.zeros(nv)
     v1[:n] = bytes_
     v1[n : n + m] = fixed
@@ -446,88 +445,88 @@ def _solve(items: list[dict], jobs: dict, cap: int, fill: int, spill: int, force
     c2[n : n + m] = -fixed
     b = run(c2, [(v1, s, s)])
     if not b:
-        return a["active"]
+        return a["selected"]
     u = b["used"]
     v2 = np.zeros(nv)
     v2[:n] = bytes_
     v2[n : n + m] = fixed
     c3 = np.zeros(nv)
-    c3[:n] = -hot
+    c3[:n] = -priority
     c = run(c3, [(v1, s, s), (v2, u - META_PAD, u - META_PAD)])
-    return c["active"] if c else b["active"]
+    return c["selected"] if c else b["selected"]
 
 
-def pick(items: list[dict], jobs: dict, cap: int, fill: int, spill: int, force=False):
-    return _solve(items, jobs, cap, fill, spill, force) if items else []
+def pick(items: list[dict], collections: dict, cap: int, fill: int, spill: int, force=False):
+    return _solve(items, collections, cap, fill, spill, force) if items else []
 
 
 def assign_paths(pieces: list[dict]):
-    files = sorted({(p["job"], p["file"], p["rel"]) for p in pieces}, key=lambda x: (x[0], x[2], str(x[1])))
+    files = sorted({(p["collection"], p["file"], p["rel"]) for p in pieces}, key=lambda x: (x[0], x[2], str(x[1])))
     base = {(j, fid): i for i, (j, fid, _) in enumerate(files)}
     out = {}
     for p in pieces:
-        k, w = base[(p["job"], p["file"])], max(3, len(str(p["n"])))
+        k, w = base[(p["collection"], p["file"])], max(3, len(str(p["n"])))
         f = f"{STORE}/{k}" + ("" if p["n"] == 1 else f".{p['i'] + 1:0{w}d}")
-        out[(p["job"], p["file"], p["i"])] = (f, f + ".meta.yaml")
+        out[(p["collection"], p["file"], p["i"])] = (f, f + ".meta.yaml")
     return out
 
 
-def manifest_bytes(part: str, cfg: dict, jobs: dict, items: list[dict], fmap: dict):
+def manifest_bytes(part: str, cfg: dict, collections: dict, items: list[dict], fmap: dict):
     pieces_by_file: dict[tuple[str, int], list[dict]] = {}
     for item in items:
         for piece in item["pieces"]:
-            pieces_by_file.setdefault((piece["job"], piece["file"]), []).append(piece)
+            pieces_by_file.setdefault((piece["collection"], piece["file"]), []).append(piece)
 
-    manifest_jobs: list[dict] = []
-    for job in sorted({x["job"] for x in items}):
-        job_files = []
-        for file_meta in sorted(jobs[job]["files"], key=lambda x: x["rel"]):
+    manifest_collections: list[dict] = []
+    for collection in sorted({x["collection"] for x in items}):
+        collection_files = []
+        for file_meta in sorted(collections[collection]["files"], key=lambda x: x["rel"]):
             present = sorted(
-                pieces_by_file.get((job, file_meta["id"]), []),
+                pieces_by_file.get((collection, file_meta["id"]), []),
                 key=lambda x: x["i"],
             )
             if file_meta["piece_count"] > 1:
                 archive = {
                     "count": file_meta["piece_count"],
-                    "chunks": [fmap[(job, file_meta["id"], piece["i"])][0] for piece in present],
+                    "chunks": [fmap[(collection, file_meta["id"], piece["i"])][0] for piece in present],
                 }
-                job_files.append(manifest_file_entry(file_meta["rel"], file_meta["sha256"], archive))
+                collection_files.append(manifest_file_entry(file_meta["rel"], file_meta["sha256"], archive))
             elif present:
-                job_files.append(
+                collection_files.append(
                     manifest_file_entry(
                         file_meta["rel"],
                         file_meta["sha256"],
-                        fmap[(job, file_meta["id"], 0)][0],
+                        fmap[(collection, file_meta["id"], 0)][0],
                     )
                 )
             else:
-                job_files.append(manifest_file_entry(file_meta["rel"], file_meta["sha256"]))
-        manifest_jobs.append({"name": job, "files": job_files})
+                collection_files.append(manifest_file_entry(file_meta["rel"], file_meta["sha256"]))
+        manifest_collections.append({"name": collection, "files": collection_files})
 
-    return manifest_dump(part, manifest_jobs)
+    return manifest_dump(part, manifest_collections)
 
 
 def recovery_readme_bytes(part: str) -> bytes:
     lines = [
-        f"Archive disc: {part}",
+        f"Archive container: {part}",
         "",
-        "This README.txt is intentionally plaintext. Every other leaf file on this disc is age-encrypted.",
+        "This README.txt is intentionally plaintext. Every other leaf file on this container is age-encrypted.",
         "",
         "Requirements:",
         "- age CLI with age-plugin-batchpass in PATH",
-        "- the archive passphrase used when this disc was created",
+        "- the archive passphrase used when this container was created",
         "",
         "Set the passphrase in your shell:",
         "  export AGE_PASSPHRASE='your-passphrase'",
         "",
-        "Decrypt the manifest for this disc:",
+        "Decrypt the manifest for this container:",
         "  age -d -j batchpass MANIFEST.yml > MANIFEST.dec.yml",
         "",
         "The decrypted manifest is manifest/v1 YAML:",
         "- schema: manifest/v1",
-        "- jobs[*].files[*].archive is omitted when an unsplit file has no payload on this disc",
-        "- archive is a string for an unsplit payload on this disc",
-        "- archive.count and archive.chunks describe split payloads present on this disc",
+        "- collections[*].files[*].archive is omitted when an unsplit file has no payload on this container",
+        "- archive is a string for an unsplit payload on this container",
+        "- archive.count and archive.chunks describe split payloads present on this container",
         "",
         "Decrypt a payload:",
         "  age -d -j batchpass files/<entry> > recovered.bin",
@@ -535,15 +534,15 @@ def recovery_readme_bytes(part: str) -> bytes:
         "Decrypt a sidecar for any payload listed above:",
         "  age -d -j batchpass files/<entry>.meta.yaml > files/<entry>.meta.dec.yaml",
         "",
-        "Per-job hash manifests and OpenTimestamps proofs are stored under jobs/<job>/ on any disc carrying that job.",
+        "Per-collection hash manifests and OpenTimestamps proofs are stored under collections/<collection>/ on any container carrying that collection.",
         "",
-        "For split files, gather every chunk from every required disc and concatenate them in chunk-index order.",
+        "For split files, gather every chunk from every required container and concatenate them in chunk-index order.",
         "",
     ]
     return "\n".join(lines).encode("utf-8")
 
 
-def _piece_manifest_bytes(job: str, files: list[dict], target_file_id: int, n: int):
+def _piece_manifest_bytes(collection: str, files: list[dict], target_file_id: int, n: int):
     manifest_files = []
     for file_meta in sorted(files, key=lambda x: x["rel"]):
         archive = _MISSING
@@ -555,48 +554,48 @@ def _piece_manifest_bytes(job: str, files: list[dict], target_file_id: int, n: i
             )
         manifest_files.append(manifest_file_entry(file_meta["rel"], file_meta["sha256"], archive))
     return manifest_dump(
-        MANIFEST_PLACEHOLDER_PARTITION,
-        [{"name": job, "files": manifest_files}],
+        MANIFEST_PLACEHOLDER_CONTAINER,
+        [{"name": collection, "files": manifest_files}],
     )
 
 
 def _piece_fits_iso_target(
     state_dir: Path,
     target: int,
-    job: str,
+    collection: str,
     files: list[dict],
     file_meta: dict,
     n: int,
     payload_plaintext_size: int,
     artifacts: list[dict],
 ) -> bool:
-    manifest_size = encrypted_size_for_plaintext_size(len(_piece_manifest_bytes(job, files, file_meta["id"], n)))
+    manifest_size = encrypted_size_for_plaintext_size(len(_piece_manifest_bytes(collection, files, file_meta["id"], n)))
     sidecar_size = encrypted_size_for_plaintext_size(len(sidecar_bytes(file_meta, 0, n)))
     payload_size = encrypted_size_for_plaintext_size(payload_plaintext_size)
-    readme_size = len(recovery_readme_bytes(MANIFEST_PLACEHOLDER_PARTITION))
+    readme_size = len(recovery_readme_bytes(MANIFEST_PLACEHOLDER_CONTAINER))
     placeholder_entries = [
         {"relpath": MANIFEST, "size": manifest_size},
         {"relpath": README, "size": readme_size},
         {"relpath": MANIFEST_PLACEHOLDER_ARCHIVE, "size": payload_size},
         {"relpath": f"{MANIFEST_PLACEHOLDER_ARCHIVE}.meta.yaml", "size": sidecar_size},
         *(
-            {"relpath": artifact["disc_relpath"], "size": artifact["encrypted_size"]}
+            {"relpath": artifact["container_relpath"], "size": artifact["encrypted_size"]}
             for artifact in artifacts
         ),
     ]
     fallback = sum(entry["size"] for entry in placeholder_entries)
     with tempfile.TemporaryDirectory(prefix=".piece-preview-", dir=state_dir) as tmp_dir:
-        root = Path(tmp_dir) / MANIFEST_PLACEHOLDER_PARTITION
+        root = Path(tmp_dir) / MANIFEST_PLACEHOLDER_CONTAINER
         for entry in placeholder_entries:
             _write_placeholder_file(root / entry["relpath"], entry["size"])
-        used = _estimate_iso_size_bytes(root, MANIFEST_PLACEHOLDER_PARTITION, fallback)
+        used = _estimate_iso_size_bytes(root, MANIFEST_PLACEHOLDER_CONTAINER, fallback)
     return used <= target
 
 
 def _max_piece_plaintext_size_for_iso_target(
     state_dir: Path,
     target: int,
-    job: str,
+    collection: str,
     files: list[dict],
     file_meta: dict,
     n: int,
@@ -605,18 +604,18 @@ def _max_piece_plaintext_size_for_iso_target(
     low, high = 0, file_meta["raw"]
     while low < high:
         mid = (low + high + 1) // 2
-        if _piece_fits_iso_target(state_dir, target, job, files, file_meta, n, mid, artifacts):
+        if _piece_fits_iso_target(state_dir, target, collection, files, file_meta, n, mid, artifacts):
             low = mid
         else:
             high = mid - 1
     return low
 
 
-def _build_disc_layout(state_dir: Path, s: dict, items: list[dict], part: str) -> dict:
+def _build_container_layout(state_dir: Path, s: dict, items: list[dict], part: str) -> dict:
     pieces = [p for it in items for p in it["pieces"]]
-    jobs_on_disc = sorted({x["job"] for x in items})
+    collections_on_container = sorted({x["collection"] for x in items})
     fmap = assign_paths(pieces)
-    man = manifest_bytes(part, s["cfg"], s["jobs"], items, fmap)
+    man = manifest_bytes(part, s["cfg"], s["collections"], items, fmap)
     readme = recovery_readme_bytes(part)
     payload_entries: list[dict] = [
         {
@@ -634,9 +633,9 @@ def _build_disc_layout(state_dir: Path, s: dict, items: list[dict], part: str) -
     ]
     piece_records: list[dict] = []
     for it in items:
-        meta = {f["id"]: f for f in s["jobs"][it["job"]]["files"]}
+        meta = {f["id"]: f for f in s["collections"][it["collection"]]["files"]}
         for p in it["pieces"]:
-            payload_relpath, sidecar_relpath = fmap[(p["job"], p["file"], p["i"])]
+            payload_relpath, sidecar_relpath = fmap[(p["collection"], p["file"], p["i"])]
             payload_entries.append(
                 {
                     "kind": "payload",
@@ -656,8 +655,8 @@ def _build_disc_layout(state_dir: Path, s: dict, items: list[dict], part: str) -
             )
             piece_records.append(
                 {
-                    "job": p["job"],
-                    "job_file_id": p["file"],
+                    "collection": p["collection"],
+                    "collection_file_id": p["file"],
                     "relative_path": p["rel"],
                     "payload_relpath": payload_relpath,
                     "sidecar_relpath": sidecar_relpath,
@@ -666,18 +665,18 @@ def _build_disc_layout(state_dir: Path, s: dict, items: list[dict], part: str) -
                     "chunk_count": None if p["n"] == 1 else p["n"],
                 }
             )
-    for job_id in jobs_on_disc:
-        for artifact in s["jobs"][job_id]["artifacts"]:
+    for collection_id in collections_on_container:
+        for artifact in s["collections"][collection_id]["artifacts"]:
             payload_entries.append(
                 {
                     "kind": "artifact",
-                    "relpath": artifact["disc_relpath"],
+                    "relpath": artifact["container_relpath"],
                     "size": artifact["encrypted_size"],
                     "source": Path(artifact["source"]),
                 }
             )
     return {
-        "jobs": jobs_on_disc,
+        "collections": collections_on_container,
         "items": [x["id"] for x in items],
         "entries": payload_entries,
         "pieces": piece_records,
@@ -697,7 +696,7 @@ def _materialize_preview_root(root: Path, layout: dict) -> None:
         _write_placeholder_file(root / entry["relpath"], entry["size"])
 
 
-def _materialize_disc_root(root: Path, layout: dict) -> None:
+def _materialize_container_root(root: Path, layout: dict) -> None:
     root.mkdir(parents=True, exist_ok=True)
     for entry in layout["entries"]:
         dest = root / entry["relpath"]
@@ -712,19 +711,19 @@ def _materialize_disc_root(root: Path, layout: dict) -> None:
         elif kind == "payload":
             copy_span(str(entry["source"]), str(dest))
         else:
-            raise RuntimeError(f"unsupported disc entry kind {kind}")
+            raise RuntimeError(f"unsupported container entry kind {kind}")
 
 
 def _estimate_iso_size_bytes(root: Path, part: str, fallback: int) -> int:
     try:
-        return estimate_iso_size_from_partition_root(root, requested_label=part)
+        return estimate_iso_size_from_container_root(root, requested_label=part)
     except RuntimeError as exc:
         if str(exc).endswith("is not installed"):
             return fallback
         raise
 
 
-def _disc_result(part: str, out_dir: Path, target: int, layout: dict, used: int) -> dict:
+def _container_result(part: str, out_dir: Path, target: int, layout: dict, used: int) -> dict:
     return {
         "name": part,
         "path": str((out_dir / part).resolve()),
@@ -732,36 +731,36 @@ def _disc_result(part: str, out_dir: Path, target: int, layout: dict, used: int)
         "root_used": layout["root_used"],
         "iso_overhead": used - layout["root_used"],
         "free": target - used,
-        "jobs": layout["jobs"],
+        "collections": layout["collections"],
         "items": layout["items"],
         "pieces": layout["pieces"],
     }
 
 
-def preview_disc(state_dir: Path, s: dict, items: list[dict], out_dir: Path, part: str | None = None) -> dict:
+def preview_container(state_dir: Path, s: dict, items: list[dict], out_dir: Path, part: str | None = None) -> dict:
     part = part or ts_name(s.get("last_closed", ""))
-    layout = _build_disc_layout(state_dir, s, items, part)
+    layout = _build_container_layout(state_dir, s, items, part)
     with tempfile.TemporaryDirectory(prefix=".preview-", dir=out_dir) as tmp_dir:
         root = Path(tmp_dir) / part
         _materialize_preview_root(root, layout)
         used = _estimate_iso_size_bytes(root, part, layout["root_used"])
-    return _disc_result(part, out_dir, s["cfg"]["target"], layout, used)
+    return _container_result(part, out_dir, s["cfg"]["target"], layout, used)
 
 
-def build_disc(state_dir: Path, s: dict, items: list[dict], out_dir: Path, emit=True, part: str | None = None):
+def build_container(state_dir: Path, s: dict, items: list[dict], out_dir: Path, emit=True, part: str | None = None):
     if not emit:
-        return preview_disc(state_dir, s, items, out_dir, part)
+        return preview_container(state_dir, s, items, out_dir, part)
     part = part or ts_name(s.get("last_closed", ""))
-    layout = _build_disc_layout(state_dir, s, items, part)
+    layout = _build_container_layout(state_dir, s, items, part)
     root = out_dir / part
     if root.exists():
         shutil.rmtree(root)
-    _materialize_disc_root(root, layout)
+    _materialize_container_root(root, layout)
     used = _estimate_iso_size_bytes(root, part, layout["root_used"])
     if used > s["cfg"]["target"]:
         shutil.rmtree(root, ignore_errors=True)
         return None
-    out = _disc_result(part, out_dir, s["cfg"]["target"], layout, used)
+    out = _container_result(part, out_dir, s["cfg"]["target"], layout, used)
     s["last_closed"] = part
     return out
 
@@ -775,11 +774,11 @@ def gc_state(state_dir: Path, s: dict, done: list[dict]):
             except FileNotFoundError:
                 pass
     s["items"] = [x for x in s["items"] if x["id"] not in dead]
-    live = {x["job"] for x in s["items"]}
-    for job in list(s["jobs"]):
-        if job not in live:
-            shutil.rmtree(state_dir / "pool" / job, ignore_errors=True)
-            del s["jobs"][job]
+    live = {x["collection"] for x in s["items"]}
+    for collection in list(s["collections"]):
+        if collection not in live:
+            shutil.rmtree(state_dir / "pool" / collection, ignore_errors=True)
+            del s["collections"][collection]
 
 
 def fit_candidate_to_target(state_dir: Path, s: dict, items: list[dict], out_dir: Path, part: str, force=False):
@@ -792,13 +791,13 @@ def fit_candidate_to_target(state_dir: Path, s: dict, items: list[dict], out_dir
             cand = cand[:-1]
             continue
         seen.add(key)
-        preview = preview_disc(state_dir, s, cand, out_dir, part)
+        preview = preview_container(state_dir, s, cand, out_dir, part)
         if preview["used"] <= target:
             return cand, preview
         overshoot = preview["used"] - target
         next_cap = preview["root_used"] - max(1, overshoot)
         if next_cap > META_PAD:
-            alt = pick(s["items"], s["jobs"], next_cap, s["cfg"]["fill"], s["cfg"]["spill_fill"], force)
+            alt = pick(s["items"], s["collections"], next_cap, s["cfg"]["fill"], s["cfg"]["spill_fill"], force)
             if alt and tuple(x["id"] for x in alt) not in seen:
                 cand = alt
                 continue
@@ -809,10 +808,10 @@ def fit_candidate_to_target(state_dir: Path, s: dict, items: list[dict], out_dir
 def flush(state_dir: Path, s: dict, out_dir: Path, force=False):
     out = []
     while True:
-        cand = pick(s["items"], s["jobs"], s["cfg"]["target"], s["cfg"]["fill"], s["cfg"]["spill_fill"], force)
+        cand = pick(s["items"], s["collections"], s["cfg"]["target"], s["cfg"]["fill"], s["cfg"]["spill_fill"], force)
         forced = force
         if not cand and sum(x["bytes"] for x in s["items"]) > s["cfg"]["buffer_max"] and s["items"]:
-            cand, forced = (pick(s["items"], s["jobs"], s["cfg"]["target"], s["cfg"]["fill"], s["cfg"]["spill_fill"], True), True)
+            cand, forced = (pick(s["items"], s["collections"], s["cfg"]["target"], s["cfg"]["fill"], s["cfg"]["spill_fill"], True), True)
         if not cand:
             break
         part = ts_name(s.get("last_closed", ""))
@@ -825,7 +824,7 @@ def flush(state_dir: Path, s: dict, out_dir: Path, force=False):
             if not forced and preview["used"] < req:
                 cand = []
                 break
-            made = build_disc(state_dir, s, cand, out_dir, True, part)
+            made = build_container(state_dir, s, cand, out_dir, True, part)
             if made is not None:
                 break
             cand = cand[:-1]
@@ -836,22 +835,22 @@ def flush(state_dir: Path, s: dict, out_dir: Path, force=False):
     return out
 
 
-def build_job_structures(job: Job):
+def build_collection_structures(collection: Collection):
     files = []
     kids: dict[str, list] = {"": []}
     dirs = {""}
-    explicit_dirs = {d.relative_path for d in job.directories}
+    explicit_dirs = {d.relative_path for d in collection.directories}
     for d in explicit_dirs:
         parts = d.split("/")
         for i in range(1, len(parts) + 1):
             dirs.add("/".join(parts[:i]))
-    for jf in sorted(job.files, key=lambda x: x.relative_path):
+    for jf in sorted(collection.files, key=lambda x: x.relative_path):
         if not jf.buffer_abs_path or not Path(jf.buffer_abs_path).exists():
-            raise RuntimeError(f"job file {jf.relative_path} is not present in hot buffer")
+            raise RuntimeError(f"collection file {jf.relative_path} is not present in active buffer")
         rel = jf.relative_path
         for parent in [""] + ["/".join(rel.split("/")[:i]) for i in range(1, len(rel.split("/")) )]:
             dirs.add(parent)
-        files.append({"id": jf.id, "job": job.id, "src": jf.buffer_abs_path, "rel": rel, "raw": jf.size_bytes, "mode": jf.mode, "mtime": jf.mtime, "uid": jf.uid, "gid": jf.gid, "sha256": jf.actual_sha256 or jf.expected_sha256})
+        files.append({"id": jf.id, "collection": collection.id, "src": jf.buffer_abs_path, "rel": rel, "raw": jf.size_bytes, "mode": jf.mode, "mtime": jf.mtime, "uid": jf.uid, "gid": jf.gid, "sha256": jf.actual_sha256 or jf.expected_sha256})
     for d in sorted(dirs, key=lambda x: (x.count("/"), x)):
         kids.setdefault(d, [])
     for d in sorted(dirs):
@@ -871,45 +870,45 @@ def build_job_structures(job: Job):
     return files, kids, dir_list
 
 
-def ingest_job(session: Session, job_id: str):
-    job = session.execute(select(Job).where(Job.id == job_id).options(selectinload(Job.directories), selectinload(Job.files))).scalar_one()
-    if job.status == "sealed":
-        raise RuntimeError(f"job {job_id} already sealed")
-    files, kids, dirs = build_job_structures(job)
-    state_dir = PARTITIONER_STATE_DIR
-    out_dir = PARTITION_ROOTS_DIR
-    s = load_state(state_dir, PARTITION_CFG)
-    if s["cfg"] != PARTITION_CFG:
-        raise RuntimeError("partitioner state config mismatch")
-    if job_id in s["jobs"] or any(x["job"] == job_id for x in s["items"]):
-        raise RuntimeError(f"duplicate job {job_id}")
+def ingest_collection(session: Session, collection_id: str):
+    collection = session.execute(select(Collection).where(Collection.id == collection_id).options(selectinload(Collection.directories), selectinload(Collection.files))).scalar_one()
+    if collection.status == "sealed":
+        raise RuntimeError(f"collection {collection_id} already sealed")
+    files, kids, dirs = build_collection_structures(collection)
+    state_dir = CONTAINER_STATE_DIR
+    out_dir = CONTAINER_ROOTS_DIR
+    s = load_state(state_dir, CONTAINER_CFG)
+    if s["cfg"] != CONTAINER_CFG:
+        raise RuntimeError("container state config mismatch")
+    if collection_id in s["collections"] or any(x["collection"] == collection_id for x in s["items"]):
+        raise RuntimeError(f"duplicate collection {collection_id}")
     if not files:
-        job.status = "sealed"
-        job.sealed_at = datetime.now(timezone.utc)
+        collection.status = "sealed"
+        collection.sealed_at = datetime.now(timezone.utc)
         save_state(state_dir, s)
-        return {"job": job_id, "closed": [], "buffer_bytes": sum(x["bytes"] for x in s["items"])}
+        return {"collection": collection_id, "closed": [], "buffer_bytes": sum(x["bytes"] for x in s["items"])}
 
-    manifest_artifact = cold_job_hash_manifest_path(job_id)
-    proof_artifact = cold_job_hash_proof_path(job_id)
+    manifest_artifact = inactive_collection_hash_manifest_path(collection_id)
+    proof_artifact = inactive_collection_hash_proof_path(collection_id)
     if not manifest_artifact.exists() or not proof_artifact.exists():
-        raise RuntimeError(f"job hash artifacts are missing for {job_id}")
-    manifest_relpath, proof_relpath = job_disc_artifact_relpaths(job_id)
+        raise RuntimeError(f"collection hash artifacts are missing for {collection_id}")
+    manifest_relpath, proof_relpath = collection_container_artifact_relpaths(collection_id)
     artifacts = [
         {
             "source": str(manifest_artifact),
-            "disc_relpath": manifest_relpath,
+            "container_relpath": manifest_relpath,
             "encrypted_size": encrypted_size_for_plaintext_size(manifest_artifact.stat().st_size),
         },
         {
             "source": str(proof_artifact),
-            "disc_relpath": proof_relpath,
+            "container_relpath": proof_relpath,
             "encrypted_size": encrypted_size_for_plaintext_size(proof_artifact.stat().st_size),
         },
     ]
 
-    fixed = manifest_job_budget(job_id, files) + sum(item["encrypted_size"] for item in artifacts)
-    stage_pieces(state_dir, job_id, files, s["cfg"]["target"], fixed, artifacts)
-    s["jobs"][job_id] = {
+    fixed = manifest_collection_budget(collection_id, files) + sum(item["encrypted_size"] for item in artifacts)
+    stage_pieces(state_dir, collection_id, files, s["cfg"]["target"], fixed, artifacts)
+    s["collections"][collection_id] = {
         "files": [
             {
                 **{k: f[k] for k in ("id", "rel", "raw", "mode", "mtime", "uid", "gid", "sha256")},
@@ -921,51 +920,51 @@ def ingest_job(session: Session, job_id: str):
         "fixed": fixed,
     }
 
-    def add_item(kind, hot, why, pieces, b):
+    def add_item(kind, priority, why, pieces, b):
         s["next_item"] += 1
-        s["items"].append({"id": f"{s['next_item']:08d}", "job": job_id, "kind": kind, "hot": hot, "why": why, "pieces": pieces, "bytes": b})
+        s["items"].append({"id": f"{s['next_item']:08d}", "collection": collection_id, "kind": kind, "priority": priority, "why": why, "pieces": pieces, "bytes": b})
 
     total = META_PAD + fixed + sum(p["est"] for f in files for p in f["pieces"])
     if total <= s["cfg"]["target"] and all(f["raw"] <= s["cfg"]["target"] for f in files):
-        add_item("job", False, "job", [{"job": job_id, "file": p["file"], "rel": p["rel"], "store": p["store"], "data": p["data"], "i": p["i"], "n": p["n"]} for f in files for p in f["pieces"]], sum(p["est"] for f in files for p in f["pieces"]))
+        add_item("collection", False, "collection", [{"collection": collection_id, "file": p["file"], "rel": p["rel"], "store": p["store"], "data": p["data"], "i": p["i"], "n": p["n"]} for f in files for p in f["pieces"]], sum(p["est"] for f in files for p in f["pieces"]))
     else:
-        for q in split_job(files, kids, dirs, s["cfg"]["target"] - META_PAD - fixed):
+        for q in split_collection(files, kids, dirs, s["cfg"]["target"] - META_PAD - fixed):
             add_item("rem", True, q["why"], q["pieces"], q["bytes"])
     closed = flush(state_dir, s, out_dir)
-    job.status = "sealed"
-    job.sealed_at = datetime.now(timezone.utc)
+    collection.status = "sealed"
+    collection.sealed_at = datetime.now(timezone.utc)
     save_state(state_dir, s)
-    return {"job": job_id, "closed": closed, "buffer_bytes": sum(x["bytes"] for x in s["items"])}
+    return {"collection": collection_id, "closed": closed, "buffer_bytes": sum(x["bytes"] for x in s["items"])}
 
 
 def force_close_pending(session: Session):
-    state_dir = PARTITIONER_STATE_DIR
-    out_dir = PARTITION_ROOTS_DIR
-    s = load_state(state_dir, PARTITION_CFG)
+    state_dir = CONTAINER_STATE_DIR
+    out_dir = CONTAINER_ROOTS_DIR
+    s = load_state(state_dir, CONTAINER_CFG)
     closed = flush(state_dir, s, out_dir, force=True)
     save_state(state_dir, s)
     return closed
 
 
-def import_closed_discs(session: Session, closed: list[dict]) -> list[str]:
-    from .notifications import create_disc_finalization_notifications_for_disc
+def import_closed_containers(session: Session, closed: list[dict]) -> list[str]:
+    from .notifications import create_container_finalization_notifications_for_container
 
-    disc_ids: list[str] = []
+    container_ids: list[str] = []
     for item in closed:
-        disc_id = item["name"]
+        container_id = item["name"]
         root = Path(item["path"])
         contents_hash, total_bytes, rows = canonical_tree_hash(root)
-        disc = session.get(Disc, disc_id)
-        if disc is None:
-            disc = Disc(id=disc_id, status="offline", root_abs_path=str(root), contents_hash=contents_hash, total_root_bytes=total_bytes)
-            session.add(disc)
+        container = session.get(Container, container_id)
+        if container is None:
+            container = Container(id=container_id, status="inactive", root_abs_path=str(root), contents_hash=contents_hash, total_root_bytes=total_bytes)
+            session.add(container)
         else:
-            disc.root_abs_path = str(root)
-            disc.contents_hash = contents_hash
-            disc.total_root_bytes = total_bytes
+            container.root_abs_path = str(root)
+            container.contents_hash = contents_hash
+            container.total_root_bytes = total_bytes
         session.flush()
-        session.query(DiscEntry).filter(DiscEntry.disc_id == disc_id).delete()
-        session.query(ArchivePiece).filter(ArchivePiece.disc_id == disc_id).delete()
+        session.query(ContainerEntry).filter(ContainerEntry.container_id == container_id).delete()
+        session.query(ArchivePiece).filter(ArchivePiece.container_id == container_id).delete()
         for row in rows:
             kind = "payload"
             rel = row["relative_path"]
@@ -975,14 +974,14 @@ def import_closed_discs(session: Session, closed: list[dict]) -> list[str]:
                 kind = "readme"
             elif str(rel).endswith(".meta.yaml"):
                 kind = "sidecar"
-            elif str(rel).startswith("jobs/") and str(rel).endswith("/HASHES.yml"):
-                kind = "job_hash_manifest"
-            elif str(rel).startswith("jobs/") and str(rel).endswith("/HASHES.yml.ots"):
-                kind = "job_hash_proof"
+            elif str(rel).startswith("collections/") and str(rel).endswith("/HASHES.yml"):
+                kind = "collection_hash_manifest"
+            elif str(rel).startswith("collections/") and str(rel).endswith("/HASHES.yml.ots"):
+                kind = "collection_hash_proof"
             logical_sha256, logical_size = logical_file_sha256_and_size(root / rel)
             session.add(
-                DiscEntry(
-                    disc_id=disc_id,
+                ContainerEntry(
+                    container_id=container_id,
                     relative_path=str(rel),
                     kind=kind,
                     size_bytes=logical_size,
@@ -992,8 +991,8 @@ def import_closed_discs(session: Session, closed: list[dict]) -> list[str]:
                 )
             )
         for p in item.get("pieces", []):
-            session.add(ArchivePiece(disc_id=disc_id, job_file_id=p["job_file_id"], payload_relpath=p["payload_relpath"], sidecar_relpath=p["sidecar_relpath"], payload_size_bytes=p["payload_size_bytes"], chunk_index=p["chunk_index"], chunk_count=p["chunk_count"]))
-        create_disc_finalization_notifications_for_disc(session, disc_id)
-        disc_ids.append(disc_id)
+            session.add(ArchivePiece(container_id=container_id, collection_file_id=p["collection_file_id"], payload_relpath=p["payload_relpath"], sidecar_relpath=p["sidecar_relpath"], payload_size_bytes=p["payload_size_bytes"], chunk_index=p["chunk_index"], chunk_count=p["chunk_count"]))
+        create_container_finalization_notifications_for_container(session, container_id)
+        container_ids.append(container_id)
     session.commit()
-    return disc_ids
+    return container_ids

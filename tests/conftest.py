@@ -14,6 +14,11 @@ from fastapi.testclient import TestClient
 from redis import Redis as SyncRedis
 
 LOCAL_AGE_CLI = Path("/tmp/age-bin/age/age")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+API_ROOT = REPO_ROOT / "api"
+
+if str(API_ROOT) not in sys.path:
+    sys.path.insert(0, str(API_ROOT))
 
 DEFAULT_ENV = {
     "API_BASE_URL": "http://archive.test",
@@ -23,12 +28,12 @@ DEFAULT_ENV = {
     "AGE_BATCHPASS_MAX_WORK_FACTOR": os.environ.get("AGE_BATCHPASS_MAX_WORK_FACTOR", "2"),
     "AGE_CLI": os.environ.get("AGE_CLI", str(LOCAL_AGE_CLI) if LOCAL_AGE_CLI.exists() else "age"),
     "HOOK_SECRET": "test-hook-secret",
-    "OTS_CLIENT_COMMAND": "python -m app.ots_stub",
-    "PARTITION_BUFFER_MAX_GB": "0.0100",
-    "PARTITION_FILL_GB": "0.0015",
-    "PARTITION_SPILL_FILL_GB": "0.0010",
-    "PARTITION_TARGET_GB": "0.0025",
-    "REDIS_URL": os.environ.get("REDIS_URL", "redis://redis:6379/0"),
+    "OTS_CLIENT_COMMAND": f"python {API_ROOT / 'app' / 'ots_stub.py'}",
+    "CONTAINER_BUFFER_MAX_GB": "0.0100",
+    "CONTAINER_FILL_GB": "0.0015",
+    "CONTAINER_SPILL_FILL_GB": "0.0010",
+    "CONTAINER_TARGET_GB": "0.0025",
+    "REDIS_URL": os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0"),
     "TUSD_BASE_URL": "http://tusd.test/files",
 }
 

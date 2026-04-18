@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import SQLITE_PATH
@@ -31,55 +31,8 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expi
 
 
 def migrate_schema() -> None:
-    inspector = inspect(engine)
-    with engine.begin() as conn:
-        job_columns = {column["name"] for column in inspector.get_columns("jobs")} if inspector.has_table("jobs") else set()
-        if "keep_buffer_after_archive" not in job_columns:
-            conn.execute(
-                text(
-                    "ALTER TABLE jobs ADD COLUMN "
-                    "keep_buffer_after_archive BOOLEAN NOT NULL DEFAULT 0"
-                )
-            )
-
-        disc_columns = {column["name"] for column in inspector.get_columns("discs")} if inspector.has_table("discs") else set()
-        if "burn_confirmed_at" not in disc_columns:
-            conn.execute(
-                text(
-                    "ALTER TABLE discs ADD COLUMN "
-                    "burn_confirmed_at DATETIME"
-                )
-            )
-
-        disc_entry_columns = {column["name"] for column in inspector.get_columns("disc_entries")} if inspector.has_table("disc_entries") else set()
-        if "stored_size_bytes" not in disc_entry_columns:
-            conn.execute(
-                text(
-                    "ALTER TABLE disc_entries ADD COLUMN "
-                    "stored_size_bytes BIGINT"
-                )
-            )
-            conn.execute(
-                text(
-                    "UPDATE disc_entries "
-                    "SET stored_size_bytes = size_bytes "
-                    "WHERE stored_size_bytes IS NULL"
-                )
-            )
-        if "stored_sha256" not in disc_entry_columns:
-            conn.execute(
-                text(
-                    "ALTER TABLE disc_entries ADD COLUMN "
-                    "stored_sha256 VARCHAR(64)"
-                )
-            )
-            conn.execute(
-                text(
-                    "UPDATE disc_entries "
-                    "SET stored_sha256 = sha256 "
-                    "WHERE stored_sha256 IS NULL"
-                )
-            )
+    # This repo is still in active development, so we expect fresh schemas.
+    return None
 
 
 @contextmanager
