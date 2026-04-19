@@ -2,6 +2,7 @@ services:
   api:
     build:
       context: ./api
+    image: riverhog-api:dev
     env_file:
       - .env
     environment:
@@ -16,6 +17,7 @@ services:
   ui:
     build:
       context: ./ui
+    image: riverhog-ui:dev
     environment:
       RIVERHOG_API_BASE_URL: http://api:8080
       RIVERHOG_API_TOKEN: ${API_TOKEN:-change-me}
