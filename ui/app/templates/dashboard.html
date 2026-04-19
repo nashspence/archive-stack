@@ -67,7 +67,7 @@
     <tbody>
       {% for collection in collections %}
       <tr>
-        <td><a href="/collections/{{ collection.collection_id }}">{{ collection.collection_id }}</a></td>
+        <td><a href="/collections/{{ quote_path_segment(collection.collection_id) }}">{{ collection.collection_id }}</a></td>
         <td>{{ collection.status }}</td>
         <td>{{ collection.description or "" }}</td>
         <td>{{ collection.file_count }}</td>

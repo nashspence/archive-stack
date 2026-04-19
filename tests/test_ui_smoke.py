@@ -89,6 +89,42 @@ def test_dashboard_and_detail_pages_render_with_api_data(monkeypatch):
         assert "Create activation session" in container_page.text
 
 
+def test_collection_urls_are_percent_encoded_for_collection_ids_with_spaces(monkeypatch):
+    collection = {
+        "collection_id": "demo collection",
+        "status": "open",
+        "description": "demo collection",
+        "keep_buffer_after_archive": False,
+        "file_count": 0,
+        "directory_count": 0,
+        "created_at": "2026-04-18T00:00:00Z",
+        "sealed_at": None,
+    }
+
+    def fake_load_json(path: str):
+        if path == "/v1/collections":
+            return {"collections": [collection]}, None
+        if path == "/v1/containers":
+            return {"containers": []}, None
+        if path == "/v1/collections/demo%20collection/tree":
+            return {"nodes": []}, None
+        return None, "missing"
+
+    monkeypatch.setattr(ui_main, "_load_json", fake_load_json)
+    monkeypatch.setattr(ui_main, "_collection_summary", lambda collection_id: (collection, None))
+
+    with TestClient(ui_main.app) as client:
+        dashboard = client.get("/")
+        assert dashboard.status_code == 200
+        assert '/collections/demo%20collection' in dashboard.text
+
+        collection_page = client.get("/collections/demo%20collection")
+        assert collection_page.status_code == 200
+        assert '/collections/demo%20collection/upload-files' in collection_page.text
+        assert '/progress/collections/demo%20collection/stream' in collection_page.text
+        assert '/collections/demo%20collection/hash-manifest-proof' in collection_page.text
+
+
 def test_collection_upload_returns_502_when_tusd_is_unreachable(monkeypatch):
     monkeypatch.setattr(
         ui_main,

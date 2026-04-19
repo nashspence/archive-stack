@@ -312,6 +312,7 @@ function wireCollectionUploadForm() {
 
   const plainFilesInput = document.getElementById("collection-files");
   const folderInput = document.getElementById("collection-folder");
+  const submitButton = document.getElementById("collection-upload-submit");
   const parallelismInput = document.getElementById("collection-upload-parallelism");
   const folderModeInput = document.getElementById("collection-folder-mode");
   const progressBar = document.getElementById("collection-upload-progress");
@@ -322,6 +323,7 @@ function wireCollectionUploadForm() {
   if (
     !(plainFilesInput instanceof HTMLInputElement) ||
     !(folderInput instanceof HTMLInputElement) ||
+    !(submitButton instanceof HTMLButtonElement) ||
     !(parallelismInput instanceof HTMLInputElement) ||
     !(folderModeInput instanceof HTMLSelectElement) ||
     !(progressBar instanceof HTMLProgressElement) ||
@@ -339,8 +341,14 @@ function wireCollectionUploadForm() {
     saveCollectionUploadParallelism(value);
   });
 
-  form.addEventListener("submit", async (event) => {
+  let uploadInFlight = false;
+
+  async function handleCollectionUpload(event) {
     event.preventDefault();
+    if (uploadInFlight) {
+      return;
+    }
+    uploadInFlight = true;
 
     const prefix = form.elements.path_prefix.value;
     const mode = form.elements.mode.value || "0644";
@@ -360,6 +368,7 @@ function wireCollectionUploadForm() {
     if (!items.length) {
       errorBox.textContent = "Pick at least one file or folder first.";
       errorBox.classList.remove("hidden");
+      uploadInFlight = false;
       return;
     }
 
@@ -418,8 +427,12 @@ function wireCollectionUploadForm() {
         progressSource.close();
       }
       setFormBusy(form, false);
+      uploadInFlight = false;
     }
-  });
+  }
+
+  form.addEventListener("submit", handleCollectionUpload);
+  submitButton.addEventListener("click", handleCollectionUpload);
 }
 
 function wireActivationUploadForm() {

@@ -48,8 +48,13 @@ def quote_path(value: str) -> str:
     return quote(value, safe="/")
 
 
+def quote_path_segment(value: str) -> str:
+    return quote(value, safe="")
+
+
 templates.env.filters["human_bytes"] = human_bytes
 templates.env.globals["quote_path"] = quote_path
+templates.env.globals["quote_path_segment"] = quote_path_segment
 
 ALREADY_UPLOADED_DETAIL = "file already uploaded for this collection"
 
@@ -237,6 +242,14 @@ def _collection_summary(collection_id: str) -> tuple[dict[str, Any] | None, str 
     return None, "collection not found"
 
 
+def _collection_ui_path(collection_id: str, suffix: str = "") -> str:
+    return f"/collections/{quote_path_segment(collection_id)}{suffix}"
+
+
+def _collection_api_path(collection_id: str, suffix: str = "") -> str:
+    return f"/v1/collections/{quote_path_segment(collection_id)}{suffix}"
+
+
 def _container_summary(container_id: str) -> tuple[dict[str, Any] | None, str | None]:
     payload, error = _load_json("/v1/containers")
     if error or payload is None:
@@ -279,7 +292,7 @@ def create_collection(
         )
     except ApiError as exc:
         return _redirect("/", error=exc.message)
-    return _redirect(f"/collections/{payload['collection_id']}", message="Collection created.")
+    return _redirect(_collection_ui_path(payload["collection_id"]), message="Collection created.")
 
 
 @app.post("/containers/flush")
@@ -310,7 +323,7 @@ def create_webhook(
 @app.get("/collections/{collection_id}", response_class=HTMLResponse)
 def collection_page(request: Request, collection_id: str) -> HTMLResponse:
     collection, collection_error = _collection_summary(collection_id)
-    tree_payload, tree_error = _load_json(f"/v1/collections/{collection_id}/tree")
+    tree_payload, tree_error = _load_json(_collection_api_path(collection_id, "/tree"))
     if collection is None and collection_error == "collection not found":
         raise HTTPException(status_code=404, detail=collection_error)
     return _render(
@@ -326,29 +339,29 @@ def collection_page(request: Request, collection_id: str) -> HTMLResponse:
 @app.post("/collections/{collection_id}/directories")
 def add_collection_directory(collection_id: str, relative_path: str = Form(...)):
     try:
-        _api_json("POST", f"/v1/collections/{collection_id}/directories", json={"relative_path": relative_path})
+        _api_json("POST", _collection_api_path(collection_id, "/directories"), json={"relative_path": relative_path})
     except ApiError as exc:
-        return _redirect(f"/collections/{collection_id}", error=exc.message)
-    return _redirect(f"/collections/{collection_id}", message="Directory created.")
+        return _redirect(_collection_ui_path(collection_id), error=exc.message)
+    return _redirect(_collection_ui_path(collection_id), message="Directory created.")
 
 
 @app.post("/collections/{collection_id}/seal")
 def seal_collection(collection_id: str):
     try:
-        payload = _api_json("POST", f"/v1/collections/{collection_id}/seal")
+        payload = _api_json("POST", _collection_api_path(collection_id, "/seal"))
     except ApiError as exc:
-        return _redirect(f"/collections/{collection_id}", error=exc.message)
+        return _redirect(_collection_ui_path(collection_id), error=exc.message)
     closed_count = len(payload.get("closed_containers", []))
-    return _redirect(f"/collections/{collection_id}", message=f"Collection sealed. Closed containers: {closed_count}.")
+    return _redirect(_collection_ui_path(collection_id), message=f"Collection sealed. Closed containers: {closed_count}.")
 
 
 @app.post("/collections/{collection_id}/release-buffer")
 def release_collection_buffer(collection_id: str):
     try:
-        _api_json("POST", f"/v1/collections/{collection_id}/buffer/release")
+        _api_json("POST", _collection_api_path(collection_id, "/buffer/release"))
     except ApiError as exc:
-        return _redirect(f"/collections/{collection_id}", error=exc.message)
-    return _redirect(f"/collections/{collection_id}", message="Collection buffer released.")
+        return _redirect(_collection_ui_path(collection_id), error=exc.message)
+    return _redirect(_collection_ui_path(collection_id), message="Collection buffer released.")
 
 
 @app.post("/collections/{collection_id}/upload-files")
@@ -368,7 +381,7 @@ async def upload_collection_file(
     try:
         slot = _api_json(
             "POST",
-            f"/v1/collections/{collection_id}/uploads",
+            _collection_api_path(collection_id, "/uploads"),
             json={
                 "relative_path": relative_path,
                 "size_bytes": size_bytes,
@@ -388,12 +401,12 @@ async def upload_collection_file(
 
 @app.api_route("/collections/{collection_id}/content/{relative_path:path}", methods=["GET", "HEAD"])
 def download_collection_content(request: Request, collection_id: str, relative_path: str):
-    return _proxy_stream(f"/v1/collections/{collection_id}/content/{quote_path(relative_path)}", request)
+    return _proxy_stream(_collection_api_path(collection_id, f"/content/{quote_path(relative_path)}"), request)
 
 
 @app.api_route("/collections/{collection_id}/hash-manifest-proof", methods=["GET", "HEAD"])
 def download_collection_hash_manifest(request: Request, collection_id: str):
-    return _proxy_stream(f"/v1/collections/{collection_id}/hash-manifest-proof", request)
+    return _proxy_stream(_collection_api_path(collection_id, "/hash-manifest-proof"), request)
 
 
 @app.get("/containers/{container_id}", response_class=HTMLResponse)
@@ -547,7 +560,7 @@ def upload_progress(upload_id: str):
 
 @app.get("/progress/collections/{collection_id}/stream")
 def collection_progress(collection_id: str):
-    return _proxy_stream(f"/v1/progress/collections/{collection_id}/stream")
+    return _proxy_stream(f"/v1/progress/collections/{quote_path_segment(collection_id)}/stream")
 
 
 @app.get("/progress/activation-sessions/{session_id}/stream")
