@@ -149,7 +149,7 @@ class _StorageHarness:
         self.storage = storage
 
 
-def test_ui_playwright_dashboard_collection_and_webhook_flow(module_factory, tmp_path_factory):
+def test_ui_playwright_dashboard_and_collection_flow(module_factory, tmp_path_factory):
     with live_ui_stack(module_factory, tmp_path_factory) as stack:
         page = stack["page"]
         ui_url = stack["ui_url"]
@@ -165,10 +165,7 @@ def test_ui_playwright_dashboard_collection_and_webhook_flow(module_factory, tmp
 
         page.get_by_role("link", name="Dashboard").click()
         expect(page.get_by_role("link", name="playwright-home")).to_be_visible()
-
-        page.get_by_label("Webhook URL").fill("https://example.test/riverhog-hook")
-        page.get_by_role("button", name="Create finalization webhook").click()
-        expect(page.get_by_text("Webhook created. Pending containers: 0.")).to_be_visible()
+        expect(page.get_by_role("heading", name="Partitioning Pool")).to_be_visible()
 
 
 def test_ui_playwright_collection_seal_and_flush_flow(module_factory, tmp_path_factory):
@@ -211,7 +208,7 @@ def test_ui_playwright_collection_seal_and_flush_flow(module_factory, tmp_path_f
         expect(page.get_by_text("MANIFEST.yml")).to_be_visible()
 
 
-def test_ui_playwright_container_activation_and_download_flow(module_factory, tmp_path_factory):
+def test_ui_playwright_container_activation_and_iso_path_flow(module_factory, tmp_path_factory):
     with live_ui_stack(module_factory, tmp_path_factory) as stack:
         page = stack["page"]
         ui_url = stack["ui_url"]
@@ -255,16 +252,7 @@ def test_ui_playwright_container_activation_and_download_flow(module_factory, tm
         page.get_by_label("Server path").fill(str(iso_path))
         page.get_by_role("button", name="Register existing ISO").click()
         expect(page.get_by_text("ISO registered.")).to_be_visible()
-
-        page.get_by_role("button", name="Create download session").click()
-        expect(page.get_by_text("Download session created.")).to_be_visible()
-
-        with page.expect_download() as download_info:
-            page.get_by_role("link", name="Download via session").click()
-        download = download_info.value
-        saved_path = stack["tmp_path_factory"].mktemp("playwright-download") / "session.iso"
-        download.save_as(str(saved_path))
-        assert saved_path.read_bytes() == iso_bytes
+        expect(page.get_by_text(str(iso_path))).to_be_visible()
 
         page.get_by_role("button", name="Confirm burn").click()
         expect(page.get_by_text("Burn confirmed. Released collections:")).to_be_visible()

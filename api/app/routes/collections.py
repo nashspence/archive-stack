@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import shutil
-from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from ..config import ACTIVE_BUFFER_ROOT
+from ..config import ACTIVE_BUFFER_ROOT, ensure_managed_directory
 from ..db import SessionLocal
 from ..models import ArchivePiece, Collection, CollectionFile
 from ..notifications import isoformat_z
@@ -19,7 +17,6 @@ from ..schemas import (
     CollectionCreateResponse,
     CollectionListResponse,
     CollectionSummary,
-    InactiveError,
     SealCollectionResponse,
     TreeNode,
     TreeResponse,
@@ -28,8 +25,9 @@ from ..storage import (
     collection_intake_root,
     collection_live_counts,
     collection_tree_nodes_from_root,
-    inactive_collection_hash_bundle_path,
-    normalize_relpath,
+    export_collection_root,
+    inactive_collection_hash_manifest_path,
+    inactive_collection_hash_proof_path,
     normalize_root_node_name,
     rebuild_collection_export,
     recompute_collection_file_runtime,
@@ -74,6 +72,11 @@ def list_collections(db: Db) -> CollectionListResponse:
     summaries: list[CollectionSummary] = []
     for collection in collections:
         intake_path = str(collection_intake_root(collection.id)) if collection.status == "open" else None
+        hash_manifest_path = None
+        hash_proof_path = None
+        if collection.status != "open":
+            hash_manifest_path = str(inactive_collection_hash_manifest_path(collection.id))
+            hash_proof_path = str(inactive_collection_hash_proof_path(collection.id))
         if collection.status == "open":
             file_count, directory_count = _open_collection_counts(collection.id)
         else:
@@ -89,6 +92,9 @@ def list_collections(db: Db) -> CollectionListResponse:
                 created_at=isoformat_z(collection.created_at) or "",
                 sealed_at=isoformat_z(collection.sealed_at),
                 intake_path=intake_path,
+                export_path=str(export_collection_root(collection.id)),
+                hash_manifest_path=hash_manifest_path,
+                hash_proof_path=hash_proof_path,
             )
         )
     return CollectionListResponse(collections=summaries)
@@ -103,7 +109,7 @@ def create_collection(body: CollectionCreateRequest, db: Db) -> CollectionCreate
     if db.get(Collection, collection_id) is not None or intake_root.exists() or active_root.exists():
         raise HTTPException(status_code=409, detail="collection name already exists")
 
-    intake_root.mkdir(parents=True, exist_ok=False)
+    ensure_managed_directory(intake_root)
     db.add(
         Collection(
             id=collection_id,
@@ -214,56 +220,9 @@ def collection_tree(collection_id: str, db: Db) -> TreeResponse:
     return TreeResponse(root_id=collection_id, root_kind="collection", nodes=nodes)
 
 
-@router.api_route("/{collection_id}/content/{relative_path:path}", methods=["GET", "HEAD"], responses={409: {"model": InactiveError}})
-def get_collection_file(collection_id: str, relative_path: str, db: Db):
-    rel = normalize_relpath(relative_path)
-    collection = db.get(Collection, collection_id)
-    if collection is None:
-        raise HTTPException(status_code=404, detail="collection not found")
-
-    if collection.status == "open":
-        path = collection_intake_root(collection_id) / rel
-        if not path.exists() or not path.is_file():
-            raise HTTPException(status_code=404, detail="file not found")
-        return FileResponse(path=path, filename=Path(rel).name, media_type="application/octet-stream")
-
-    collection_file = (
-        db.execute(
-            select(CollectionFile)
-            .where(CollectionFile.collection_id == collection_id, CollectionFile.relative_path == rel)
-            .options(selectinload(CollectionFile.archive_pieces).selectinload(ArchivePiece.container))
-        )
-        .scalar_one_or_none()
-    )
-    if collection_file is None:
-        raise HTTPException(status_code=404, detail="file not found")
-    active_path, _source, container_ids = recompute_collection_file_runtime(collection_file)
-    if active_path is None:
-        message = collection_file.error_message or "This file is not active right now."
-        return JSONResponse(
-            status_code=409,
-            content={"error": "inactive_on_container", "message": message, "container_ids": container_ids},
-        )
-    return FileResponse(path=active_path, filename=Path(rel).name, media_type="application/octet-stream")
-
-
 @router.post("/{collection_id}/buffer/release")
 def release_collection_buffer(collection_id: str, db: Db):
     if db.get(Collection, collection_id) is None:
         raise HTTPException(status_code=404, detail="collection not found")
     release_collection_buffer_files(db, collection_id)
     return {"status": "ok", "collection_id": collection_id}
-
-
-@router.api_route("/{collection_id}/hash-manifest-proof", methods=["GET", "HEAD"])
-def download_collection_hash_manifest_bundle(collection_id: str, db: Db):
-    if db.get(Collection, collection_id) is None:
-        raise HTTPException(status_code=404, detail="collection not found")
-    bundle_path = inactive_collection_hash_bundle_path(collection_id)
-    if not bundle_path.exists():
-        raise HTTPException(status_code=404, detail="collection hash manifest bundle not found")
-    return FileResponse(
-        path=bundle_path,
-        filename=f"{collection_id}-hash-manifest-proof.zip",
-        media_type="application/zip",
-    )

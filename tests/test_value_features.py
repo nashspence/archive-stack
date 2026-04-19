@@ -51,21 +51,18 @@ def test_open_collection_tree_keeps_explicit_and_derived_directories(app_factory
         ]
 
 
-def test_open_collection_content_reads_directly_from_intake_path(app_factory):
+def test_open_collection_content_is_available_on_the_filesystem(app_factory):
     with app_factory() as harness:
         sample = document_archive_files()[0]
         collection_id = create_collection(harness, description="open intake reads")
-        stage_collection_files(harness, collection_id, [sample])
+        intake_root = stage_collection_files(harness, collection_id, [sample])
 
-        content = harness.client.get(
-            f"/v1/collections/{collection_id}/content/{sample.relative_path}",
-            headers=harness.auth_headers(),
-        )
-        assert content.status_code == 200
-        assert content.content == sample.content
+        content_path = intake_root / sample.relative_path
+        assert content_path.exists()
+        assert content_path.read_bytes() == sample.content
 
 
-def test_sealed_collection_rejects_new_seal_attempt_and_exposes_hash_bundle(app_factory):
+def test_sealed_collection_rejects_new_seal_attempt_and_writes_hash_artifacts(app_factory):
     with app_factory() as harness:
         sample = document_archive_files()[0]
         collection_id = create_collection(harness, description="sealed archive behavior")
@@ -79,11 +76,8 @@ def test_sealed_collection_rejects_new_seal_attempt_and_exposes_hash_bundle(app_
         assert reseal.status_code == 409
         assert reseal.json()["detail"] == "collection already sealed"
 
-        bundle = harness.client.get(
-            f"/v1/collections/{collection_id}/hash-manifest-proof",
-            headers=harness.auth_headers(),
-        )
-        assert bundle.status_code == 200
+        assert harness.storage.inactive_collection_hash_manifest_path(collection_id).exists()
+        assert harness.storage.inactive_collection_hash_proof_path(collection_id).exists()
 
 
 def test_container_activation_and_evict_toggle_container_and_collection_visibility(app_factory):
@@ -101,38 +95,27 @@ def test_container_activation_and_evict_toggle_container_and_collection_visibili
         )
         assert release.status_code == 200, release.text
 
+        export_path = harness.storage.export_collection_root(collection_id) / samples[0].relative_path
+        assert not export_path.exists()
+
+        _, complete = activation_container_from_root(harness, container_id)
+        assert complete.status_code == 200, complete.text
+
         with harness.session() as session:
-            container_entry = (
+            container = session.get(harness.models.Container, container_id)
+            assert container is not None
+            payload_entry = (
                 session.query(harness.models.ContainerEntry)
                 .filter_by(container_id=container_id, kind="payload")
                 .order_by(harness.models.ContainerEntry.relative_path.asc())
                 .first()
             )
-            assert container_entry is not None
-            container_relpath = container_entry.relative_path
+            assert payload_entry is not None
+            payload_path = Path(container.active_root_abs_path) / payload_entry.relative_path
+            assert payload_path.exists()
 
-        inactive_container = harness.client.get(
-            f"/v1/containers/{container_id}/content/{container_relpath}",
-            headers=harness.auth_headers(),
-        )
-        assert inactive_container.status_code == 409
-        assert inactive_container.json()["error"] == "container_inactive"
-
-        _, complete = activation_container_from_root(harness, container_id)
-        assert complete.status_code == 200, complete.text
-
-        active_container = harness.client.get(
-            f"/v1/containers/{container_id}/content/{container_relpath}",
-            headers=harness.auth_headers(),
-        )
-        assert active_container.status_code == 200
-
-        active_collection = harness.client.get(
-            f"/v1/collections/{collection_id}/content/{samples[0].relative_path}",
-            headers=harness.auth_headers(),
-        )
-        assert active_collection.status_code == 200
-        assert active_collection.content == samples[0].content
+        assert export_path.exists()
+        assert export_path.read_bytes() == samples[0].content
 
         evict = harness.client.delete(
             f"/v1/containers/{container_id}/activation",
@@ -147,13 +130,7 @@ def test_container_activation_and_evict_toggle_container_and_collection_visibili
         assert container_tree.status_code == 200
         assert all(node["active"] is False for node in container_tree.json()["nodes"] if node["kind"] == "file")
 
-        inactive_again = harness.client.get(
-            f"/v1/collections/{collection_id}/content/{samples[0].relative_path}",
-            headers=harness.auth_headers(),
-        )
-        assert inactive_again.status_code == 409
-        assert inactive_again.json()["error"] == "inactive_on_container"
-        assert inactive_again.json()["container_ids"] == [container_id]
+        assert not export_path.exists()
 
 
 def test_iso_overwrite_and_burn_confirmation_are_idempotent(app_factory):
@@ -194,23 +171,16 @@ def test_iso_overwrite_and_burn_confirmation_are_idempotent(app_factory):
         assert confirmed_twice.json()["released_collection_ids"] == []
 
 
-def test_webhook_subscription_backfills_existing_unconfirmed_containers(app_factory):
-    with app_factory() as harness:
+def test_env_configured_webhook_backfills_existing_unconfirmed_containers(app_factory):
+    with app_factory(CONTAINER_FINALIZATION_WEBHOOK_URL="http://example.test/archive-hook") as harness:
         collection_id = create_collection(harness, description="notification backfill archive")
         stage_collection_files(harness, collection_id, document_archive_files())
 
         sealed = seal_collection(harness, collection_id)
         container_id = (sealed["closed_containers"] or force_flush(harness))[0]
 
-        subscribe = harness.client.post(
-            "/v1/containers/finalization-webhooks",
-            headers=harness.auth_headers(),
-            json={"webhook_url": "http://example.test/archive-hook"},
-        )
-        assert subscribe.status_code == 200, subscribe.text
-        assert subscribe.json()["pending_container_count"] == 1
-
         with harness.session() as session:
-            notification = session.query(harness.models.ContainerFinalizationNotification).filter_by(container_id=container_id).one()
-            assert notification.status == "pending"
-            assert notification.next_attempt_at is not None
+            container = session.get(harness.models.Container, container_id)
+            assert container is not None
+            assert container.finalization_status == "pending"
+            assert container.finalization_next_attempt_at is not None

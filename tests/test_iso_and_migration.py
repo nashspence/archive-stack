@@ -36,7 +36,7 @@ def _stress_files(seed: int, *, count: int, oversized_bytes: int | None = None) 
     return files
 
 
-def test_registered_iso_download_tracks_progress(app_factory):
+def test_registered_iso_download_endpoint_serves_registered_iso(app_factory):
     with app_factory() as harness:
         collection_id = create_collection(harness, description="downloadable iso archive")
         stage_collection_files(harness, collection_id, document_archive_files())
@@ -47,33 +47,13 @@ def test_registered_iso_download_tracks_progress(app_factory):
         iso_bytes = b"SIMULATED-ISO-DATA" * 4096
         register_iso(harness, container_id, iso_bytes)
 
-        create_session = harness.client.post(
-            f"/v1/containers/{container_id}/download-sessions",
-            headers=harness.auth_headers(),
-        )
-        assert create_session.status_code == 200
-        session_id = create_session.json()["session_id"]
-
         download = harness.client.get(
-            f"/v1/containers/downloads/{session_id}/content",
+            f"/v1/containers/{container_id}/iso/content",
             headers=harness.auth_headers(),
         )
         assert download.status_code == 200
         assert download.content == iso_bytes
         assert download.headers["content-disposition"].endswith(f'"{container_id}.iso"')
-
-        stream_messages = harness.redis_messages(harness.progress.download_stream_name(session_id))
-        statuses = [fields["status"] for _, fields in stream_messages]
-        assert statuses[0] == "ready"
-        assert statuses[-1] == "completed"
-        assert "streaming" in statuses[1:-1]
-        assert int(stream_messages[-1][1]["bytes_sent"]) == len(iso_bytes)
-
-        with harness.session() as session:
-            download_session = session.get(harness.models.DownloadSession, session_id)
-            assert download_session is not None
-            assert download_session.status == "completed"
-            assert download_session.bytes_sent == len(iso_bytes)
 
 
 def test_iso_size_estimate_matches_authored_iso_bytes(module_factory):
@@ -136,21 +116,17 @@ def test_containerization_never_overshoots_target_when_authoring_isos(app_factor
 
 
 def test_container_finalization_webhook_payload_includes_container_and_download_url(app_factory, monkeypatch):
-    with app_factory(CONTAINER_WEBHOOK_DISPATCH_INTERVAL_SECONDS="3600") as harness:
+    with app_factory(
+        CONTAINER_WEBHOOK_DISPATCH_INTERVAL_SECONDS="3600",
+        CONTAINER_FINALIZATION_WEBHOOK_URL="http://example.test/archive-hook",
+        CONTAINER_FINALIZATION_REMINDER_INTERVAL_SECONDS="900",
+    ) as harness:
         delivered: list[tuple[str, dict]] = []
 
         def fake_post_webhook(url: str, payload: dict[str, object]) -> None:
             delivered.append((url, payload))
 
         monkeypatch.setattr(harness.notifications, "_post_webhook", fake_post_webhook)
-
-        subscribe = harness.client.post(
-            "/v1/containers/finalization-webhooks",
-            headers=harness.auth_headers(),
-            json={"webhook_url": "http://example.test/archive-hook", "reminder_interval_seconds": 900},
-        )
-        assert subscribe.status_code == 200, subscribe.text
-        assert subscribe.json()["pending_container_count"] == 0
 
         collection_id = create_collection(harness, description="finalization webhook archive")
         stage_collection_files(harness, collection_id, document_archive_files())
@@ -181,20 +157,17 @@ def test_container_finalization_webhook_payload_includes_container_and_download_
 
 
 def test_container_finalization_webhook_reminders_stop_after_burn_confirmation(app_factory, monkeypatch):
-    with app_factory(CONTAINER_WEBHOOK_DISPATCH_INTERVAL_SECONDS="3600") as harness:
+    with app_factory(
+        CONTAINER_WEBHOOK_DISPATCH_INTERVAL_SECONDS="3600",
+        CONTAINER_FINALIZATION_WEBHOOK_URL="http://example.test/archive-hook",
+        CONTAINER_FINALIZATION_REMINDER_INTERVAL_SECONDS="60",
+    ) as harness:
         delivered: list[dict[str, object]] = []
 
         def fake_post_webhook(_url: str, payload: dict[str, object]) -> None:
             delivered.append(payload)
 
         monkeypatch.setattr(harness.notifications, "_post_webhook", fake_post_webhook)
-
-        subscribe = harness.client.post(
-            "/v1/containers/finalization-webhooks",
-            headers=harness.auth_headers(),
-            json={"webhook_url": "http://example.test/archive-hook", "reminder_interval_seconds": 60},
-        )
-        assert subscribe.status_code == 200, subscribe.text
 
         collection_id = create_collection(harness, description="reminder archive")
         stage_collection_files(harness, collection_id, document_archive_files())
@@ -207,8 +180,9 @@ def test_container_finalization_webhook_reminders_stop_after_burn_confirmation(a
         assert [payload["event"] for payload in delivered] == ["container.finalized"]
 
         with harness.session() as session:
-            notification = session.query(harness.models.ContainerFinalizationNotification).filter_by(container_id=container_id).one()
-            notification.next_attempt_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+            container = session.get(harness.models.Container, container_id)
+            assert container is not None
+            container.finalization_next_attempt_at = datetime.now(timezone.utc) - timedelta(seconds=1)
             session.commit()
 
         reminder_count = harness.notifications.deliver_due_container_finalization_notifications()
@@ -228,9 +202,10 @@ def test_container_finalization_webhook_reminders_stop_after_burn_confirmation(a
         assert confirm.status_code == 200, confirm.text
 
         with harness.session() as session:
-            notification = session.query(harness.models.ContainerFinalizationNotification).filter_by(container_id=container_id).one()
-            assert notification.status == "completed"
-            notification.next_attempt_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+            container = session.get(harness.models.Container, container_id)
+            assert container is not None
+            assert container.finalization_status == "completed"
+            container.finalization_next_attempt_at = datetime.now(timezone.utc) - timedelta(seconds=1)
             session.commit()
 
         post_burn = harness.notifications.deliver_due_container_finalization_notifications()
@@ -252,14 +227,13 @@ def test_schema_bootstraps_current_tables(module_factory):
             collection_columns = {row[1] for row in conn.execute("PRAGMA table_info(collections)")}
             container_columns = {row[1] for row in conn.execute("PRAGMA table_info(containers)")}
             container_entry_columns = {row[1] for row in conn.execute("PRAGMA table_info(container_entries)")}
-            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         finally:
             conn.close()
 
         assert "keep_buffer_after_archive" in collection_columns
         assert "burn_confirmed_at" in container_columns
         assert "active_root_abs_path" in container_columns
+        assert "finalization_status" in container_columns
+        assert "finalization_next_attempt_at" in container_columns
         assert "stored_size_bytes" in container_entry_columns
         assert "stored_sha256" in container_entry_columns
-        assert "container_finalization_webhook_subscriptions" in tables
-        assert "container_finalization_notifications" in tables

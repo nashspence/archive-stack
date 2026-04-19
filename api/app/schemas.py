@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field
 
 
 class CollectionCreateRequest(BaseModel):
@@ -28,6 +28,9 @@ class CollectionSummary(BaseModel):
     created_at: str
     sealed_at: str | None = None
     intake_path: str | None = None
+    export_path: str
+    hash_manifest_path: str | None = None
+    hash_proof_path: str | None = None
 
 
 class CollectionListResponse(BaseModel):
@@ -104,6 +107,9 @@ class ContainerSummary(BaseModel):
     active_root_present: bool
     iso_present: bool
     iso_size_bytes: int | None = None
+    root_path: str
+    active_root_path: str | None = None
+    iso_path: str | None = None
     burn_confirmed_at: str | None = None
     created_at: str
 
@@ -118,21 +124,20 @@ class BurnConfirmResponse(BaseModel):
     released_collection_ids: list[str] = Field(default_factory=list)
 
 
-class DownloadSessionCreateResponse(BaseModel):
-    session_id: str
-    container_id: str
-    total_bytes: int
-    progress_stream_url: str
-    content_url: str
-
-
-class ContainerFinalizationWebhookCreateRequest(BaseModel):
-    webhook_url: HttpUrl
-    reminder_interval_seconds: int | None = Field(default=None, gt=0)
-
-
-class ContainerFinalizationWebhookCreateResponse(BaseModel):
-    subscription_id: str
-    webhook_url: str
-    reminder_interval_seconds: int | None = None
-    pending_container_count: int
+class PartitioningPoolStatusResponse(BaseModel):
+    state: str
+    status_message: str
+    pending_collection_count: int
+    pending_piece_group_count: int
+    pending_bytes: int
+    target_bytes: int
+    fill_bytes: int
+    spill_fill_bytes: int
+    buffer_max_bytes: int
+    force_close_required: bool
+    closeable_now: bool
+    next_container_id: str | None = None
+    next_container_bytes: int | None = None
+    next_container_free_bytes: int | None = None
+    next_container_collection_count: int | None = None
+    next_container_piece_group_count: int | None = None

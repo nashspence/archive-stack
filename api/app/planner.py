@@ -947,7 +947,7 @@ def force_close_pending(session: Session):
 
 
 def import_closed_containers(session: Session, closed: list[dict]) -> list[str]:
-    from .notifications import create_container_finalization_notifications_for_container
+    from .notifications import schedule_container_finalization_notification
 
     container_ids: list[str] = []
     for item in closed:
@@ -992,7 +992,7 @@ def import_closed_containers(session: Session, closed: list[dict]) -> list[str]:
             )
         for p in item.get("pieces", []):
             session.add(ArchivePiece(container_id=container_id, collection_file_id=p["collection_file_id"], payload_relpath=p["payload_relpath"], sidecar_relpath=p["sidecar_relpath"], payload_size_bytes=p["payload_size_bytes"], chunk_index=p["chunk_index"], chunk_count=p["chunk_count"]))
-        create_container_finalization_notifications_for_container(session, container_id)
+        schedule_container_finalization_notification(session, container_id)
         container_ids.append(container_id)
     session.commit()
     return container_ids

@@ -7,16 +7,17 @@ from pathlib import Path
 
 import httpx
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 
 from .config import (
     API_BASE_URL,
+    CONTAINER_FINALIZATION_REMINDER_INTERVAL_SECONDS,
+    CONTAINER_FINALIZATION_WEBHOOK_URL,
     CONTAINER_WEBHOOK_DISPATCH_INTERVAL_SECONDS,
     CONTAINER_WEBHOOK_RETRY_SECONDS,
     CONTAINER_WEBHOOK_TIMEOUT_SECONDS,
 )
 from .db import SessionLocal
-from .models import Container, ContainerFinalizationNotification, ContainerFinalizationWebhookSubscription
+from .models import Container
 
 logger = logging.getLogger(__name__)
 
@@ -46,94 +47,68 @@ def container_iso_create_url(container_id: str) -> str:
     return f"{API_BASE_URL}/v1/containers/{container_id}/iso/create"
 
 
+def _webhook_enabled() -> bool:
+    return CONTAINER_FINALIZATION_WEBHOOK_URL is not None
+
+
 def _iso_available(container: Container) -> bool:
     return bool(container.iso_abs_path and Path(container.iso_abs_path).exists())
 
 
-def create_container_finalization_notifications_for_container(session, container_id: str) -> int:
+def schedule_container_finalization_notification(session, container_id: str) -> bool:
+    if not _webhook_enabled():
+        return False
+
     container = session.get(Container, container_id)
     if container is None or container.burn_confirmed_at is not None:
+        return False
+
+    if container.finalization_status == "completed":
+        return False
+
+    if container.finalization_next_attempt_at is None:
+        container.finalization_status = "pending"
+        container.finalization_next_attempt_at = utcnow()
+        container.finalization_completed_at = None
+        container.finalization_last_error = None
+        return True
+    return False
+
+
+def backfill_pending_container_finalization_notifications(session) -> int:
+    if not _webhook_enabled():
         return 0
 
-    subscriptions = session.execute(
-        select(ContainerFinalizationWebhookSubscription).where(
-            ContainerFinalizationWebhookSubscription.active.is_(True)
-        )
+    containers = session.execute(
+        select(Container)
+        .where(Container.burn_confirmed_at.is_(None))
+        .order_by(Container.created_at.asc())
     ).scalars().all()
     created = 0
-    now = utcnow()
-    for subscription in subscriptions:
-        existing = session.execute(
-            select(ContainerFinalizationNotification).where(
-                ContainerFinalizationNotification.subscription_id == subscription.id,
-                ContainerFinalizationNotification.container_id == container_id,
-            )
-        ).scalar_one_or_none()
-        if existing is not None:
-            continue
-        session.add(
-            ContainerFinalizationNotification(
-                subscription_id=subscription.id,
-                container_id=container_id,
-                status="pending",
-                next_attempt_at=now,
-            )
-        )
-        created += 1
+    for container in containers:
+        if schedule_container_finalization_notification(session, container.id):
+            created += 1
     return created
 
 
-def backfill_container_finalization_notifications_for_subscription(session, subscription_id: str) -> int:
-    container_ids = session.execute(
-        select(Container.id).where(Container.burn_confirmed_at.is_(None)).order_by(Container.created_at.asc())
-    ).scalars().all()
-    created = 0
-    now = utcnow()
-    for container_id in container_ids:
-        existing = session.execute(
-            select(ContainerFinalizationNotification).where(
-                ContainerFinalizationNotification.subscription_id == subscription_id,
-                ContainerFinalizationNotification.container_id == container_id,
-            )
-        ).scalar_one_or_none()
-        if existing is not None:
-            continue
-        session.add(
-            ContainerFinalizationNotification(
-                subscription_id=subscription_id,
-                container_id=container_id,
-                status="pending",
-                next_attempt_at=now,
-            )
-        )
-        created += 1
-    return created
+def complete_container_finalization_notifications(session, container_id: str) -> bool:
+    container = session.get(Container, container_id)
+    if container is None:
+        return False
 
-
-def complete_container_finalization_notifications(session, container_id: str) -> int:
-    notifications = session.execute(
-        select(ContainerFinalizationNotification).where(
-            ContainerFinalizationNotification.container_id == container_id,
-            ContainerFinalizationNotification.status.in_(("pending", "active")),
-        )
-    ).scalars().all()
-    finished_at = utcnow()
-    for notification in notifications:
-        notification.status = "completed"
-        notification.next_attempt_at = None
-        notification.completed_at = finished_at
-        notification.last_error = None
-    return len(notifications)
+    container.finalization_status = "completed"
+    container.finalization_next_attempt_at = None
+    container.finalization_completed_at = utcnow()
+    container.finalization_last_error = None
+    return True
 
 
 def _build_container_finalization_payload(
-    notification: ContainerFinalizationNotification,
+    container: Container,
     *,
     delivered_at: datetime,
 ) -> dict[str, object]:
-    is_reminder = notification.initial_sent_at is not None
-    container = notification.container
-    subscription = notification.subscription
+    is_reminder = container.finalization_initial_sent_at is not None
     return {
         "event": CONTAINER_FINALIZED_REMINDER_EVENT if is_reminder else CONTAINER_FINALIZED_EVENT,
         "container_id": container.id,
@@ -142,8 +117,8 @@ def _build_container_finalization_payload(
         "iso_available": _iso_available(container),
         "burn_confirmed_at": isoformat_z(container.burn_confirmed_at),
         "delivered_at": isoformat_z(delivered_at),
-        "reminder_interval_seconds": subscription.reminder_interval_seconds,
-        "reminder_count": notification.reminder_count + (1 if is_reminder else 0),
+        "reminder_interval_seconds": CONTAINER_FINALIZATION_REMINDER_INTERVAL_SECONDS,
+        "reminder_count": container.finalization_reminder_count + (1 if is_reminder else 0),
     }
 
 
@@ -153,76 +128,58 @@ def _post_webhook(url: str, payload: dict[str, object]) -> None:
         response.raise_for_status()
 
 
-def _failure_retry_delay_seconds(notification: ContainerFinalizationNotification) -> float:
-    interval = notification.subscription.reminder_interval_seconds
-    if interval is not None:
-        return float(min(interval, max(1, int(CONTAINER_WEBHOOK_RETRY_SECONDS))))
-    return float(CONTAINER_WEBHOOK_RETRY_SECONDS)
-
-
 def deliver_due_container_finalization_notifications(*, now: datetime | None = None, limit: int = 100) -> int:
+    if not _webhook_enabled():
+        return 0
+
     delivered_count = 0
     session = SessionLocal()
     try:
+        backfill_pending_container_finalization_notifications(session)
         current_time = now or utcnow()
         pending = session.execute(
-            select(ContainerFinalizationNotification)
+            select(Container)
             .where(
-                ContainerFinalizationNotification.status.in_(("pending", "active")),
-                ContainerFinalizationNotification.next_attempt_at.is_not(None),
-                ContainerFinalizationNotification.next_attempt_at <= current_time,
+                Container.burn_confirmed_at.is_(None),
+                Container.finalization_next_attempt_at.is_not(None),
+                Container.finalization_next_attempt_at <= current_time,
             )
-            .order_by(ContainerFinalizationNotification.next_attempt_at.asc(), ContainerFinalizationNotification.created_at.asc())
+            .order_by(Container.finalization_next_attempt_at.asc(), Container.created_at.asc())
             .limit(limit)
-            .options(
-                selectinload(ContainerFinalizationNotification.subscription),
-                selectinload(ContainerFinalizationNotification.container),
-            )
         ).scalars().all()
 
-        for notification in pending:
-            container = notification.container
-            if container.burn_confirmed_at is not None:
-                notification.status = "completed"
-                notification.next_attempt_at = None
-                notification.completed_at = current_time
-                notification.last_error = None
-                continue
-
+        for container in pending:
             try:
-                payload = _build_container_finalization_payload(notification, delivered_at=current_time)
-                _post_webhook(notification.subscription.webhook_url, payload)
+                payload = _build_container_finalization_payload(container, delivered_at=current_time)
+                _post_webhook(CONTAINER_FINALIZATION_WEBHOOK_URL or "", payload)
             except Exception as exc:
-                notification.last_error = str(exc)
-                notification.next_attempt_at = current_time + timedelta(
-                    seconds=_failure_retry_delay_seconds(notification)
+                container.finalization_status = "pending"
+                container.finalization_last_error = str(exc)
+                container.finalization_next_attempt_at = current_time + timedelta(
+                    seconds=max(1.0, CONTAINER_WEBHOOK_RETRY_SECONDS)
                 )
                 logger.warning(
                     "container finalization webhook delivery failed",
-                    extra={
-                        "subscription_id": notification.subscription_id,
-                        "container_id": notification.container_id,
-                        "error": str(exc),
-                    },
+                    extra={"container_id": container.id, "error": str(exc)},
                 )
                 continue
 
-            is_reminder = notification.initial_sent_at is not None
+            is_reminder = container.finalization_initial_sent_at is not None
             if not is_reminder:
-                notification.initial_sent_at = current_time
+                container.finalization_initial_sent_at = current_time
             else:
-                notification.reminder_count += 1
-            notification.last_sent_at = current_time
-            notification.last_error = None
-            if notification.subscription.reminder_interval_seconds:
-                notification.status = "active"
-                notification.next_attempt_at = current_time + timedelta(
-                    seconds=notification.subscription.reminder_interval_seconds
+                container.finalization_reminder_count += 1
+            container.finalization_last_sent_at = current_time
+            container.finalization_last_error = None
+            if CONTAINER_FINALIZATION_REMINDER_INTERVAL_SECONDS:
+                container.finalization_status = "active"
+                container.finalization_next_attempt_at = current_time + timedelta(
+                    seconds=CONTAINER_FINALIZATION_REMINDER_INTERVAL_SECONDS
                 )
             else:
-                notification.status = "completed"
-                notification.next_attempt_at = None
-                notification.completed_at = current_time
+                container.finalization_status = "completed"
+                container.finalization_next_attempt_at = None
+                container.finalization_completed_at = current_time
             delivered_count += 1
 
         session.commit()

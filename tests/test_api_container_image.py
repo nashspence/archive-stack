@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import time
 import uuid
 
@@ -51,8 +52,9 @@ def test_api_dockerfile_builds_and_serves_real_container():
             network=network,
             environment={
                 "API_TOKEN": api_token,
-                "REDIS_URL": "redis://redis:6379/0",
                 "API_BASE_URL": base_url,
+                "PREFERRED_UID": "1000",
+                "PREFERRED_GID": "1000",
             },
         )
 
@@ -79,6 +81,42 @@ def test_api_dockerfile_builds_and_serves_real_container():
         assert body["status"] == "open"
         assert body["keep_buffer_after_archive"] is False
         assert body["collection_id"] == "real-image-runtime-check"
+        intake_path = body["intake_path"]
+
+        exit_code, output = container.exec_run(
+            [
+                "sh",
+                "-lc",
+                (
+                    f"mkdir -p {shlex.quote(intake_path)} "
+                    f"&& printf 'runtime image seal check\\n' > {shlex.quote(intake_path)}/sample.txt"
+                ),
+            ],
+            user="1000:1000",
+        )
+        assert exit_code == 0, output.decode()
+
+        sealed = httpx.post(
+            f"{base_url}/v1/collections/real-image-runtime-check/seal",
+            headers={"Authorization": f"Bearer {api_token}"},
+            timeout=20.0,
+        )
+        assert sealed.status_code == 200, sealed.text
+        assert sealed.json()["status"] == "sealed"
+
+        exit_code, output = container.exec_run(
+            [
+                "sh",
+                "-lc",
+                (
+                    "test -d /var/lib/archive/runtime-home "
+                    "&& test -d /var/lib/archive/runtime-home/.cache "
+                    "&& test -d /var/lib/archive/runtime-home/.config "
+                    "&& find /var/lib/archive/runtime-home/.cache -maxdepth 2 -type d | sort"
+                ),
+            ]
+        )
+        assert exit_code == 0, output.decode()
     finally:
         if container is not None:
             try:

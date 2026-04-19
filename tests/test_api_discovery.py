@@ -29,6 +29,9 @@ def test_collection_and_container_list_endpoints_surface_summary_state(app_facto
             "created_at": body["collections"][0]["created_at"],
             "sealed_at": None,
             "intake_path": str(harness.storage.collection_intake_root(collection_id)),
+            "export_path": str(harness.storage.export_collection_root(collection_id)),
+            "hash_manifest_path": None,
+            "hash_proof_path": None,
         }
         assert body["collections"][0]["created_at"].endswith("Z")
 
@@ -47,5 +50,12 @@ def test_collection_and_container_list_endpoints_surface_summary_state(app_facto
         assert payload["containers"][0]["active_root_present"] is False
         assert payload["containers"][0]["iso_present"] is True
         assert payload["containers"][0]["iso_size_bytes"] == len(b"registered-iso")
+        assert payload["containers"][0]["root_path"]
+        assert payload["containers"][0]["active_root_path"] is None
+        assert payload["containers"][0]["iso_path"]
         assert payload["containers"][0]["burn_confirmed_at"] is None
         assert payload["containers"][0]["created_at"].endswith("Z")
+
+        pool = harness.client.get("/v1/containers/pool", headers=harness.auth_headers())
+        assert pool.status_code == 200, pool.text
+        assert pool.json()["state"] in {"empty", "ready", "waiting", "overflow"}

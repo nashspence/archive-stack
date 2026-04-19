@@ -89,15 +89,18 @@ class Container(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    finalization_status: Mapped[str] = mapped_column(String(32), default="disabled", nullable=False)
+    finalization_reminder_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    finalization_initial_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finalization_last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finalization_next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finalization_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finalization_last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
     entries: Mapped[list["ContainerEntry"]] = relationship(back_populates="container", cascade="all, delete-orphan")
     archive_pieces: Mapped[list["ArchivePiece"]] = relationship(back_populates="container", cascade="all, delete-orphan")
     activation_sessions: Mapped[list["ActivationSession"]] = relationship(back_populates="container", cascade="all, delete-orphan")
-    finalization_notifications: Mapped[list["ContainerFinalizationNotification"]] = relationship(
-        back_populates="container",
-        cascade="all, delete-orphan",
-    )
 
 
 class ContainerEntry(Base):
@@ -148,61 +151,3 @@ class ActivationSession(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
     container: Mapped[Container] = relationship(back_populates="activation_sessions")
-class DownloadSession(Base):
-    __tablename__ = "download_sessions"
-    __table_args__ = (Index("ix_download_sessions_container_id", "container_id"),)
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
-    container_id: Mapped[str] = mapped_column(ForeignKey("containers.id", ondelete="CASCADE"), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default="ready", nullable=False)
-    total_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    bytes_sent: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
-
-
-class ContainerFinalizationWebhookSubscription(Base):
-    __tablename__ = "container_finalization_webhook_subscriptions"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
-    webhook_url: Mapped[str] = mapped_column(String, nullable=False)
-    reminder_interval_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
-
-    notifications: Mapped[list["ContainerFinalizationNotification"]] = relationship(
-        back_populates="subscription",
-        cascade="all, delete-orphan",
-    )
-
-
-class ContainerFinalizationNotification(Base):
-    __tablename__ = "container_finalization_notifications"
-    __table_args__ = (
-        UniqueConstraint(
-            "subscription_id",
-            "container_id",
-            name="uq_container_finalization_notifications_subscription_container",
-        ),
-        Index("ix_container_finalization_notifications_next_attempt_at", "next_attempt_at"),
-        Index("ix_container_finalization_notifications_container_id", "container_id"),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
-    subscription_id: Mapped[str] = mapped_column(
-        ForeignKey("container_finalization_webhook_subscriptions.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    container_id: Mapped[str] = mapped_column(ForeignKey("containers.id", ondelete="CASCADE"), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
-    reminder_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    initial_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
-
-    subscription: Mapped[ContainerFinalizationWebhookSubscription] = relationship(back_populates="notifications")
-    container: Mapped[Container] = relationship(back_populates="finalization_notifications")

@@ -26,6 +26,56 @@
 </section>
 
 <section>
+  <h2>Partitioning Pool</h2>
+  {% if partitioning_pool_error %}
+  <p class="flash error">{{ partitioning_pool_error }}</p>
+  {% elif partitioning_pool %}
+  <div class="pool-status pool-status-{{ partitioning_pool.state }}">
+    <p><strong>{{ partitioning_pool.state.replace("_", " ")|title }}</strong></p>
+    <p>{{ partitioning_pool.status_message }}</p>
+  </div>
+  <div class="metric-grid">
+    <div>
+      <span class="metric-label">Pending collections</span>
+      <strong>{{ partitioning_pool.pending_collection_count }}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Pending piece groups</span>
+      <strong>{{ partitioning_pool.pending_piece_group_count }}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Pending bytes</span>
+      <strong>{{ partitioning_pool.pending_bytes|human_bytes }}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Close threshold</span>
+      <strong>{{ partitioning_pool.fill_bytes|human_bytes }}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Priority threshold</span>
+      <strong>{{ partitioning_pool.spill_fill_bytes|human_bytes }}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Buffer max</span>
+      <strong>{{ partitioning_pool.buffer_max_bytes|human_bytes }}</strong>
+    </div>
+  </div>
+  {% if partitioning_pool.next_container_id %}
+  <p>
+    Next container preview:
+    <code>{{ partitioning_pool.next_container_id }}</code>,
+    {{ partitioning_pool.next_container_bytes|human_bytes }}
+    used,
+    {{ partitioning_pool.next_container_free_bytes|human_bytes }}
+    free,
+    {{ partitioning_pool.next_container_collection_count }} collections,
+    {{ partitioning_pool.next_container_piece_group_count }} piece groups.
+  </p>
+  {% endif %}
+  {% endif %}
+</section>
+
+<section>
   <h2>Container Ops</h2>
   <form method="post" action="/containers/flush">
     <label class="checkbox">
@@ -33,18 +83,6 @@
       Force close pending containers
     </label>
     <button type="submit">Flush containers</button>
-  </form>
-
-  <form method="post" action="/containers/finalization-webhooks">
-    <label>
-      Webhook URL
-      <input type="url" name="webhook_url" placeholder="https://example.test/hook" required>
-    </label>
-    <label>
-      Reminder interval seconds
-      <input type="number" name="reminder_interval_seconds" min="1" step="1">
-    </label>
-    <button type="submit">Create finalization webhook</button>
   </form>
 </section>
 
@@ -62,6 +100,7 @@
         <th>Files</th>
         <th>Directories</th>
         <th>Intake Path</th>
+        <th>Export Path</th>
         <th>Keep Buffer</th>
         <th>Created</th>
       </tr>
@@ -75,12 +114,13 @@
         <td>{{ collection.file_count }}</td>
         <td>{{ collection.directory_count }}</td>
         <td><code>{{ collection.intake_path or "-" }}</code></td>
+        <td><code>{{ collection.export_path }}</code></td>
         <td>{{ "yes" if collection.keep_buffer_after_archive else "no" }}</td>
         <td><code>{{ collection.created_at }}</code></td>
       </tr>
       {% else %}
       <tr>
-        <td colspan="8">No collections yet.</td>
+        <td colspan="9">No collections yet.</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -100,6 +140,8 @@
         <th>Entries</th>
         <th>Root Bytes</th>
         <th>ISO</th>
+        <th>Root Path</th>
+        <th>ISO Path</th>
         <th>Burn Confirmed</th>
         <th>Created</th>
       </tr>
@@ -112,12 +154,14 @@
         <td>{{ container.entry_count }}</td>
         <td>{{ container.total_root_bytes|human_bytes }}</td>
         <td>{{ "yes" if container.iso_present else "no" }}</td>
+        <td><code>{{ container.root_path }}</code></td>
+        <td><code>{{ container.iso_path or "-" }}</code></td>
         <td><code>{{ container.burn_confirmed_at or "-" }}</code></td>
         <td><code>{{ container.created_at }}</code></td>
       </tr>
       {% else %}
       <tr>
-        <td colspan="7">No containers yet.</td>
+        <td colspan="9">No containers yet.</td>
       </tr>
       {% endfor %}
     </tbody>

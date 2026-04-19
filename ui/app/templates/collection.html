@@ -18,6 +18,9 @@
       <tr><th>Description</th><td>{{ collection.description or "" }}</td></tr>
       <tr><th>Keep buffer</th><td>{{ "yes" if collection.keep_buffer_after_archive else "no" }}</td></tr>
       <tr><th>Intake path</th><td><code>{{ collection.intake_path or "-" }}</code></td></tr>
+      <tr><th>Export path</th><td><code>{{ collection.export_path }}</code></td></tr>
+      <tr><th>Hash manifest</th><td><code>{{ collection.hash_manifest_path or "-" }}</code></td></tr>
+      <tr><th>Hash proof</th><td><code>{{ collection.hash_proof_path or "-" }}</code></td></tr>
       <tr><th>Files</th><td>{{ collection.file_count }}</td></tr>
       <tr><th>Directories</th><td>{{ collection.directory_count }}</td></tr>
       <tr><th>Created</th><td><code>{{ collection.created_at }}</code></td></tr>
@@ -40,7 +43,7 @@
     <button type="submit">Release buffer</button>
   </form>
 
-  <p><a href="/collections/{{ quote_path_segment(collection.collection_id) }}/hash-manifest-proof">Download hash manifest proof bundle</a></p>
+  <p class="help-text">Collection files, manifests, and proofs are available from the filesystem paths above rather than through download links in the UI.</p>
 </section>
 
 <section>
@@ -58,7 +61,6 @@
         <th>Status</th>
         <th>Source</th>
         <th>Containers</th>
-        <th></th>
       </tr>
     </thead>
     <tbody>
@@ -71,15 +73,10 @@
         <td>{{ node.status or "" }}</td>
         <td>{{ node.source or "" }}</td>
         <td>{{ ", ".join(node.container_ids) }}</td>
-        <td>
-          {% if node.kind == "file" and node.active %}
-          <a href="/collections/{{ quote_path_segment(collection.collection_id) }}/content/{{ quote_path(node.path) }}">Download</a>
-          {% endif %}
-        </td>
       </tr>
       {% else %}
       <tr>
-        <td colspan="8">No tree data available.</td>
+        <td colspan="7">No tree data available.</td>
       </tr>
       {% endfor %}
     </tbody>

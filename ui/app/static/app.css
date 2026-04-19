@@ -1,5 +1,7 @@
 body {
-  font-family: sans-serif;
+  background: linear-gradient(180deg, #f7f4ec 0%, #fcfbf7 100%);
+  color: #1f2933;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
   line-height: 1.4;
   margin: 0;
 }
@@ -19,7 +21,10 @@ pre {
 }
 
 section {
-  border: 1px solid #d0d7de;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #d7d0c3;
+  border-radius: 0.75rem;
+  box-shadow: 0 10px 30px rgba(69, 55, 32, 0.05);
   padding: 1rem;
 }
 
@@ -85,10 +90,52 @@ pre {
   font-size: 0.95rem;
 }
 
-.upload-progress progress {
-  width: 100%;
+.metric-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  margin: 1rem 0;
 }
 
-.upload-progress p {
-  margin: 0.5rem 0 0;
+.metric-grid > div {
+  background: #f5efe2;
+  border-radius: 0.6rem;
+  padding: 0.75rem;
+}
+
+.metric-label {
+  color: #6b7280;
+  display: block;
+  font-size: 0.9rem;
+  margin-bottom: 0.25rem;
+}
+
+.pool-status {
+  border-left: 0.45rem solid #7c8a2d;
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
+}
+
+.pool-status p {
+  margin: 0.2rem 0;
+}
+
+.pool-status-empty {
+  background: #eef2f5;
+  border-left-color: #6b7280;
+}
+
+.pool-status-ready {
+  background: #edf7e8;
+  border-left-color: #467a1f;
+}
+
+.pool-status-overflow {
+  background: #fff1e8;
+  border-left-color: #b45309;
+}
+
+.pool-status-waiting {
+  background: #f8f2df;
+  border-left-color: #8a6d1f;
 }

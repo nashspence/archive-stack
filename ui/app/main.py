@@ -42,17 +42,11 @@ def human_bytes(value: int | None) -> str:
         return f"{int(size)} {unit}"
     return f"{size:.1f} {unit}"
 
-
-def quote_path(value: str) -> str:
-    return quote(value, safe="/")
-
-
 def quote_path_segment(value: str) -> str:
     return quote(value, safe="")
 
 
 templates.env.filters["human_bytes"] = human_bytes
-templates.env.globals["quote_path"] = quote_path
 templates.env.globals["quote_path_segment"] = quote_path_segment
 
 
@@ -212,11 +206,14 @@ def _container_summary(container_id: str) -> tuple[dict[str, Any] | None, str | 
 def dashboard(request: Request) -> HTMLResponse:
     collections_payload, collections_error = _load_json("/v1/collections")
     containers_payload, containers_error = _load_json("/v1/containers")
+    pool_payload, pool_error = _load_json("/v1/containers/pool")
     return _render(
         request,
         "dashboard.html",
         collections=(collections_payload or {}).get("collections", []),
         containers=(containers_payload or {}).get("containers", []),
+        partitioning_pool=pool_payload,
+        partitioning_pool_error=pool_error,
         collections_error=collections_error,
         containers_error=containers_error,
     )
@@ -256,21 +253,6 @@ def flush_containers(force: bool = Form(False)):
     return _redirect("/", message=f"Flush completed. Closed containers: {count}.")
 
 
-@app.post("/containers/finalization-webhooks")
-def create_webhook(
-    webhook_url: str = Form(...),
-    reminder_interval_seconds: int | None = Form(None),
-):
-    body: dict[str, Any] = {"webhook_url": webhook_url}
-    if reminder_interval_seconds:
-        body["reminder_interval_seconds"] = reminder_interval_seconds
-    try:
-        payload = _api_json("POST", "/v1/containers/finalization-webhooks", json=body)
-    except ApiError as exc:
-        return _redirect("/", error=exc.message)
-    return _redirect("/", message=f"Webhook created. Pending containers: {payload['pending_container_count']}.")
-
-
 @app.get("/collections/{collection_id}", response_class=HTMLResponse)
 def collection_page(request: Request, collection_id: str) -> HTMLResponse:
     collection, collection_error = _collection_summary(collection_id)
@@ -306,16 +288,6 @@ def release_collection_buffer(collection_id: str):
     return _redirect(_collection_ui_path(collection_id), message="Collection buffer released.")
 
 
-@app.api_route("/collections/{collection_id}/content/{relative_path:path}", methods=["GET", "HEAD"])
-def download_collection_content(request: Request, collection_id: str, relative_path: str):
-    return _proxy_stream(_collection_api_path(collection_id, f"/content/{quote_path(relative_path)}"), request)
-
-
-@app.api_route("/collections/{collection_id}/hash-manifest-proof", methods=["GET", "HEAD"])
-def download_collection_hash_manifest(request: Request, collection_id: str):
-    return _proxy_stream(_collection_api_path(collection_id, "/hash-manifest-proof"), request)
-
-
 @app.get("/containers/{container_id}", response_class=HTMLResponse)
 def container_page(request: Request, container_id: str) -> HTMLResponse:
     container, container_error = _container_summary(container_id)
@@ -331,8 +303,6 @@ def container_page(request: Request, container_id: str) -> HTMLResponse:
             f"/v1/containers/{container_id}/activation/sessions/{activation_session}/expected"
         )
 
-    download_session = request.query_params.get("download_session")
-
     return _render(
         request,
         "container.html",
@@ -343,7 +313,6 @@ def container_page(request: Request, container_id: str) -> HTMLResponse:
         activation_session=activation_session,
         activation_expected=activation_expected,
         activation_error=activation_error,
-        download_session=download_session,
     )
 
 
@@ -381,10 +350,14 @@ def deactivate_container(container_id: str):
 @app.post("/containers/{container_id}/iso/register")
 def register_iso(container_id: str, server_path: str = Form(...)):
     try:
-        _api_json("POST", f"/v1/containers/{container_id}/iso/register", json={"server_path": server_path})
+        payload = _api_json("POST", f"/v1/containers/{container_id}/iso/register", json={"server_path": server_path})
     except ApiError as exc:
         return _redirect(f"/containers/{container_id}", error=exc.message)
-    return _redirect(f"/containers/{container_id}", message="ISO registered.")
+    iso_path = payload.get("iso_path")
+    message = "ISO registered."
+    if isinstance(iso_path, str) and iso_path:
+        message = f"ISO registered. Source: {server_path}. Stored at: {iso_path}."
+    return _redirect(f"/containers/{container_id}", message=message)
 
 
 @app.post("/containers/{container_id}/iso/create")
@@ -393,10 +366,14 @@ def create_iso(container_id: str, volume_label: str = Form(""), overwrite: bool 
     if volume_label:
         body["volume_label"] = volume_label
     try:
-        _api_json("POST", f"/v1/containers/{container_id}/iso/create", json=body)
+        payload = _api_json("POST", f"/v1/containers/{container_id}/iso/create", json=body)
     except ApiError as exc:
         return _redirect(f"/containers/{container_id}", error=exc.message)
-    return _redirect(f"/containers/{container_id}", message="ISO created.")
+    iso_path = payload.get("iso_path")
+    message = "ISO created."
+    if isinstance(iso_path, str) and iso_path:
+        message = f"ISO created. Stored at: {iso_path}."
+    return _redirect(f"/containers/{container_id}", message=message)
 
 
 @app.post("/containers/{container_id}/burn/confirm")
@@ -409,33 +386,6 @@ def confirm_burn(container_id: str):
     return _redirect(f"/containers/{container_id}", message=f"Burn confirmed. Released collections: {released}.")
 
 
-@app.post("/containers/{container_id}/download-sessions")
-def create_download_session(container_id: str):
-    try:
-        payload = _api_json("POST", f"/v1/containers/{container_id}/download-sessions")
-    except ApiError as exc:
-        return _redirect(f"/containers/{container_id}", error=exc.message)
-    return _redirect(
-        f"/containers/{container_id}?{urlencode({'download_session': payload['session_id']})}",
-        message="Download session created.",
-    )
-
-
-@app.api_route("/containers/{container_id}/content/{relative_path:path}", methods=["GET", "HEAD"])
-def download_container_content(request: Request, container_id: str, relative_path: str):
-    return _proxy_stream(f"/v1/containers/{container_id}/content/{quote_path(relative_path)}", request)
-
-
 @app.api_route("/containers/{container_id}/iso/content", methods=["GET", "HEAD"])
 def download_registered_iso(request: Request, container_id: str):
     return _proxy_stream(f"/v1/containers/{container_id}/iso/content", request)
-
-
-@app.api_route("/downloads/{session_id}/content", methods=["GET", "HEAD"])
-def download_session_content(request: Request, session_id: str):
-    return _proxy_stream(f"/v1/containers/downloads/{session_id}/content", request)
-
-
-@app.get("/progress/downloads/{session_id}/stream")
-def download_progress(session_id: str):
-    return _proxy_stream(f"/v1/progress/downloads/{session_id}/stream")

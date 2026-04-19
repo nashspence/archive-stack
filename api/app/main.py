@@ -9,11 +9,10 @@ from fastapi.responses import JSONResponse
 
 from .config import ensure_directories
 from .auth import require_api_auth
-from .db import Base, engine, migrate_schema
-from .notifications import run_container_finalization_notifier
+from .db import Base, engine, migrate_schema, session_scope
+from .notifications import backfill_pending_container_finalization_notifications, run_container_finalization_notifier
 from .routes.containers import router as containers_router
 from .routes.collections import router as collections_router
-from .routes.progress import router as progress_router
 
 
 @asynccontextmanager
@@ -21,6 +20,8 @@ async def lifespan(_app: FastAPI):
     ensure_directories()
     Base.metadata.create_all(bind=engine)
     migrate_schema()
+    with session_scope() as session:
+        backfill_pending_container_finalization_notifications(session)
     notifier_task = asyncio.create_task(run_container_finalization_notifier())
     try:
         yield
@@ -45,4 +46,3 @@ async def value_error_handler(_request, exc: ValueError):
 
 app.include_router(collections_router, dependencies=[Depends(require_api_auth)])
 app.include_router(containers_router, dependencies=[Depends(require_api_auth)])
-app.include_router(progress_router, dependencies=[Depends(require_api_auth)])

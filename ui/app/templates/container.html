@@ -17,9 +17,12 @@
       <tr><th>Status</th><td>{{ container.status }}</td></tr>
       <tr><th>Entries</th><td>{{ container.entry_count }}</td></tr>
       <tr><th>Root bytes</th><td>{{ container.total_root_bytes|human_bytes }}</td></tr>
+      <tr><th>Container root</th><td><code>{{ container.root_path }}</code></td></tr>
       <tr><th>Active root</th><td>{{ "yes" if container.active_root_present else "no" }}</td></tr>
+      <tr><th>Active root path</th><td><code>{{ container.active_root_path or "-" }}</code></td></tr>
       <tr><th>ISO present</th><td>{{ "yes" if container.iso_present else "no" }}</td></tr>
       <tr><th>ISO size</th><td>{{ container.iso_size_bytes|human_bytes }}</td></tr>
+      <tr><th>ISO path</th><td><code>{{ container.iso_path or "-" }}</code></td></tr>
       <tr><th>Burn confirmed</th><td><code>{{ container.burn_confirmed_at or "-" }}</code></td></tr>
       <tr><th>Created</th><td><code>{{ container.created_at }}</code></td></tr>
       <tr><th>Contents hash</th><td><code>{{ container.contents_hash }}</code></td></tr>
@@ -96,25 +99,14 @@
     </label>
     <button type="submit">Create ISO</button>
   </form>
-
-  <p><a href="/containers/{{ container.container_id }}/iso/content">Download registered ISO</a></p>
+  <p class="help-text">Registered ISOs live on the filesystem at the path above. The UI no longer offers download-session workflows.</p>
 </section>
 
 <section>
-  <h2>Burn And Download</h2>
+  <h2>Burn</h2>
   <form method="post" action="/containers/{{ container.container_id }}/burn/confirm">
     <button type="submit">Confirm burn</button>
   </form>
-
-  <form method="post" action="/containers/{{ container.container_id }}/download-sessions">
-    <button type="submit">Create download session</button>
-  </form>
-
-  {% if download_session %}
-  <p>Current download session: <code>{{ download_session }}</code></p>
-  <p><a href="/downloads/{{ download_session }}/content">Download via session</a></p>
-  <p><a href="/progress/downloads/{{ download_session }}/stream">Open download progress stream</a></p>
-  {% endif %}
 </section>
 
 <section>
@@ -132,7 +124,6 @@
         <th>Status</th>
         <th>Source</th>
         <th>Containers</th>
-        <th></th>
       </tr>
     </thead>
     <tbody>
@@ -145,15 +136,10 @@
         <td>{{ node.status or "" }}</td>
         <td>{{ node.source or "" }}</td>
         <td>{{ ", ".join(node.container_ids) }}</td>
-        <td>
-          {% if node.kind == "file" and node.active %}
-          <a href="/containers/{{ container.container_id }}/content/{{ quote_path(node.path) }}">Download</a>
-          {% endif %}
-        </td>
       </tr>
       {% else %}
       <tr>
-        <td colspan="8">No tree data available.</td>
+        <td colspan="7">No tree data available.</td>
       </tr>
       {% endfor %}
     </tbody>

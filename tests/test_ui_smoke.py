@@ -17,6 +17,9 @@ def test_dashboard_and_detail_pages_render_with_api_data(monkeypatch):
         "created_at": "2026-04-18T00:00:00Z",
         "sealed_at": None,
         "intake_path": "/var/lib/uploads/collections/demo-collection",
+        "export_path": "/var/lib/archive/exports/collections/demo-collection",
+        "hash_manifest_path": None,
+        "hash_proof_path": None,
     }
     container = {
         "container_id": "DEMO-001",
@@ -28,8 +31,29 @@ def test_dashboard_and_detail_pages_render_with_api_data(monkeypatch):
         "active_root_present": False,
         "iso_present": True,
         "iso_size_bytes": 4096,
+        "root_path": "/var/lib/archive/containers/roots/DEMO-001",
+        "active_root_path": None,
+        "iso_path": "/var/lib/archive/inactive/isos/DEMO-001.iso",
         "burn_confirmed_at": None,
         "created_at": "2026-04-18T00:00:00Z",
+    }
+    pool = {
+        "state": "waiting",
+        "status_message": "Waiting for more sealed collection data.",
+        "pending_collection_count": 1,
+        "pending_piece_group_count": 2,
+        "pending_bytes": 1024,
+        "target_bytes": 2048,
+        "fill_bytes": 1536,
+        "spill_fill_bytes": 1024,
+        "buffer_max_bytes": 4096,
+        "force_close_required": False,
+        "closeable_now": False,
+        "next_container_id": None,
+        "next_container_bytes": None,
+        "next_container_free_bytes": None,
+        "next_container_collection_count": None,
+        "next_container_piece_group_count": None,
     }
 
     def fake_load_json(path: str):
@@ -37,6 +61,8 @@ def test_dashboard_and_detail_pages_render_with_api_data(monkeypatch):
             return {"collections": [collection]}, None
         if path == "/v1/containers":
             return {"containers": [container]}, None
+        if path == "/v1/containers/pool":
+            return pool, None
         if path == "/v1/collections/demo-collection/tree":
             return {
                 "nodes": [
@@ -83,12 +109,14 @@ def test_dashboard_and_detail_pages_render_with_api_data(monkeypatch):
         assert dashboard.status_code == 200
         assert "demo-collection" in dashboard.text
         assert "DEMO-001" in dashboard.text
+        assert "waiting" in dashboard.text.lower()
         assert "/var/lib/uploads/collections/demo-collection" in dashboard.text
 
         collection_page = client.get("/collections/demo-collection")
         assert collection_page.status_code == 200
         assert "docs/file.txt" in collection_page.text
         assert "Place the full collection tree under" in collection_page.text
+        assert "/var/lib/archive/exports/collections/demo-collection" in collection_page.text
         assert "/var/lib/uploads/collections/demo-collection" in collection_page.text
 
         container_page = client.get("/containers/DEMO-001?activation_session=session-123")
@@ -96,6 +124,7 @@ def test_dashboard_and_detail_pages_render_with_api_data(monkeypatch):
         assert "README.txt" in container_page.text
         assert "Create activation session" in container_page.text
         assert "Complete activation" in container_page.text
+        assert "/var/lib/archive/inactive/isos/DEMO-001.iso" in container_page.text
         assert "/var/lib/archive/active/activation/staging/session-123" in container_page.text
 
 
@@ -110,6 +139,9 @@ def test_collection_urls_are_percent_encoded_for_collection_ids_with_spaces(monk
         "created_at": "2026-04-18T00:00:00Z",
         "sealed_at": None,
         "intake_path": "/var/lib/uploads/collections/demo collection",
+        "export_path": "/var/lib/archive/exports/collections/demo collection",
+        "hash_manifest_path": None,
+        "hash_proof_path": None,
     }
 
     def fake_load_json(path: str):
@@ -117,6 +149,25 @@ def test_collection_urls_are_percent_encoded_for_collection_ids_with_spaces(monk
             return {"collections": [collection]}, None
         if path == "/v1/containers":
             return {"containers": []}, None
+        if path == "/v1/containers/pool":
+            return {
+                "state": "empty",
+                "status_message": "empty",
+                "pending_collection_count": 0,
+                "pending_piece_group_count": 0,
+                "pending_bytes": 0,
+                "target_bytes": 1,
+                "fill_bytes": 1,
+                "spill_fill_bytes": 1,
+                "buffer_max_bytes": 1,
+                "force_close_required": False,
+                "closeable_now": False,
+                "next_container_id": None,
+                "next_container_bytes": None,
+                "next_container_free_bytes": None,
+                "next_container_collection_count": None,
+                "next_container_piece_group_count": None,
+            }, None
         if path == "/v1/collections/demo%20collection/tree":
             return {"nodes": []}, None
         return None, "missing"
@@ -131,11 +182,10 @@ def test_collection_urls_are_percent_encoded_for_collection_ids_with_spaces(monk
 
         collection_page = client.get("/collections/demo%20collection")
         assert collection_page.status_code == 200
-        assert '/collections/demo%20collection/hash-manifest-proof' in collection_page.text
         assert '/collections/demo%20collection/seal' in collection_page.text
 
 
-def test_collection_download_forwards_range_requests(monkeypatch):
+def test_iso_download_forwards_range_requests(monkeypatch):
     class FakeApiClient:
         def __init__(self):
             self.last_request: httpx.Request | None = None
@@ -171,7 +221,7 @@ def test_collection_download_forwards_range_requests(monkeypatch):
 
     with TestClient(ui_main.app) as client:
         response = client.get(
-            "/collections/demo-collection/content/demo.bin",
+            "/containers/DEMO-001/iso/content",
             headers={"Range": "bytes=0-3"},
         )
 

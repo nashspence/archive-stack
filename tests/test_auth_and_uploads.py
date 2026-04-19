@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import zipfile
-from io import BytesIO
 from pathlib import Path
 
 from .helpers import create_collection, stage_collection_files
@@ -41,6 +39,10 @@ def test_collection_creation_creates_intake_directory_and_rejects_duplicates(app
         assert first.json()["collection_id"] == "family-archive-root"
         intake_path = Path(first.json()["intake_path"])
         assert intake_path.is_dir()
+        stat_result = intake_path.stat()
+        assert stat_result.st_uid == int(harness.modules.env["PREFERRED_UID"])
+        assert stat_result.st_gid == int(harness.modules.env["PREFERRED_GID"])
+        assert (stat_result.st_mode & 0o7777) == 0o2775
 
         duplicate = harness.client.post(
             "/v1/collections",
@@ -97,24 +99,17 @@ def test_sealing_collection_claims_staged_files_and_exports_active_bytes(app_fac
         assert export_path.exists()
         assert export_path.read_bytes() == sample.content
 
-        content = harness.client.get(
-            f"/v1/collections/{collection_id}/content/{sample.relative_path}",
-            headers=harness.auth_headers(),
-        )
-        assert content.status_code == 200
-        assert content.content == sample.content
+        export_path = harness.storage.export_collection_root(collection_id) / sample.relative_path
+        assert export_path.exists()
+        assert export_path.read_bytes() == sample.content
 
-        bundle = harness.client.get(
-            f"/v1/collections/{collection_id}/hash-manifest-proof",
-            headers=harness.auth_headers(),
-        )
-        assert bundle.status_code == 200
-        assert bundle.headers["content-disposition"].endswith(f'"{collection_id}-hash-manifest-proof.zip"')
+        manifest_path = harness.storage.inactive_collection_hash_manifest_path(collection_id)
+        proof_path = harness.storage.inactive_collection_hash_proof_path(collection_id)
+        assert manifest_path.exists()
+        assert proof_path.exists()
 
-        with zipfile.ZipFile(BytesIO(bundle.content)) as archive:
-            assert sorted(archive.namelist()) == ["HASHES.yml", "HASHES.yml.ots"]
-            manifest = archive.read("HASHES.yml").decode("utf-8")
-            proof = archive.read("HASHES.yml.ots").decode("utf-8")
+        manifest = manifest_path.read_text(encoding="utf-8")
+        proof = proof_path.read_text(encoding="utf-8")
 
         assert "schema: collection-hash-manifest/v1" in manifest
         assert f"collection_id: {collection_id}" in manifest

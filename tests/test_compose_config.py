@@ -16,6 +16,7 @@ def test_compose_uses_internal_service_urls():
     assert ui_env["RIVERHOG_API_BASE_URL"] == "http://api:8080"
     assert "./data/archive:/var/lib/archive" in api_volumes
     assert "./data/uploads:/var/lib/uploads" in api_volumes
+    assert "redis" not in services
 
 
 def test_test_compose_mounts_live_repo_and_sets_pytest_defaults():

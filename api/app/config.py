@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 GiB = 1024**3
+MANAGED_DIRECTORY_MODE = 0o2775
 
 
 def _get_env(name: str, default: str) -> str:
@@ -13,14 +14,19 @@ def _get_env(name: str, default: str) -> str:
     return value
 
 
+def _get_optional_env(name: str) -> str | None:
+    value = os.getenv(name, "").strip()
+    return value or None
+
+
 def _gb_env(name: str, default: str) -> int:
     return int(float(_get_env(name, default)) * GiB)
 
 
 ARCHIVE_ROOT = Path(_get_env("ARCHIVE_ROOT", "/var/lib/archive"))
+UPLOADS_ROOT = Path(_get_env("UPLOADS_ROOT", "/var/lib/uploads"))
 COLLECTION_INTAKE_ROOT = Path(_get_env("COLLECTION_INTAKE_ROOT", "/var/lib/uploads/collections"))
 SQLITE_PATH = Path(_get_env("SQLITE_PATH", str(ARCHIVE_ROOT / "catalog" / "catalog.sqlite3")))
-REDIS_URL = _get_env("REDIS_URL", "redis://redis:6379/0")
 API_BASE_URL = _get_env("API_BASE_URL", "http://localhost:8080").rstrip("/")
 API_TOKEN = _get_env("API_TOKEN", "change-me")
 ISO_AUTHORING_COMMAND = _get_env("ISO_AUTHORING_COMMAND", "xorriso")
@@ -29,6 +35,8 @@ AGE_BATCHPASS_PASSPHRASE = _get_env("AGE_BATCHPASS_PASSPHRASE", "change-me")
 AGE_BATCHPASS_WORK_FACTOR = _get_env("AGE_BATCHPASS_WORK_FACTOR", "18")
 AGE_BATCHPASS_MAX_WORK_FACTOR = _get_env("AGE_BATCHPASS_MAX_WORK_FACTOR", "30")
 OTS_CLIENT_COMMAND = _get_env("OTS_CLIENT_COMMAND", "ots")
+PREFERRED_UID = int(_get_env("PREFERRED_UID", str(os.getuid())))
+PREFERRED_GID = int(_get_env("PREFERRED_GID", str(os.getgid())))
 
 CONTAINER_TARGET = _gb_env("CONTAINER_TARGET_GB", "50")
 CONTAINER_FILL = _gb_env("CONTAINER_FILL_GB", "45")
@@ -47,8 +55,12 @@ CONTAINER_ROOTS_DIR = ARCHIVE_ROOT / "containers" / "roots"
 INACTIVE_ISO_ROOT = ARCHIVE_ROOT / "inactive" / "isos"
 INACTIVE_COLLECTION_ROOT = ARCHIVE_ROOT / "inactive" / "collections"
 
-STREAM_MAXLEN = 2048
-DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+CONTAINER_FINALIZATION_WEBHOOK_URL = _get_optional_env("CONTAINER_FINALIZATION_WEBHOOK_URL")
+CONTAINER_FINALIZATION_REMINDER_INTERVAL_SECONDS = (
+    int(value)
+    if (value := _get_optional_env("CONTAINER_FINALIZATION_REMINDER_INTERVAL_SECONDS")) is not None
+    else None
+)
 CONTAINER_WEBHOOK_DISPATCH_INTERVAL_SECONDS = float(_get_env("CONTAINER_WEBHOOK_DISPATCH_INTERVAL_SECONDS", "5"))
 CONTAINER_WEBHOOK_TIMEOUT_SECONDS = float(_get_env("CONTAINER_WEBHOOK_TIMEOUT_SECONDS", "10"))
 CONTAINER_WEBHOOK_RETRY_SECONDS = float(_get_env("CONTAINER_WEBHOOK_RETRY_SECONDS", "60"))
@@ -62,8 +74,18 @@ CONTAINER_CFG = {
 }
 
 
+def ensure_managed_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chown(path, PREFERRED_UID, PREFERRED_GID)
+    except PermissionError:
+        pass
+    path.chmod(MANAGED_DIRECTORY_MODE)
+
+
 def ensure_directories() -> None:
     for path in [
+        UPLOADS_ROOT,
         COLLECTION_INTAKE_ROOT,
         CATALOG_DIR,
         ACTIVE_BUFFER_ROOT,
@@ -76,4 +98,4 @@ def ensure_directories() -> None:
         INACTIVE_ISO_ROOT,
         INACTIVE_COLLECTION_ROOT,
     ]:
-        path.mkdir(parents=True, exist_ok=True)
+        ensure_managed_directory(path)

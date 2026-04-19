@@ -11,7 +11,6 @@ from typing import Any, Callable, Iterator
 
 import pytest
 from fastapi.testclient import TestClient
-from redis import Redis as SyncRedis
 
 LOCAL_AGE_CLI = Path("/tmp/age-bin/age/age")
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -32,7 +31,8 @@ DEFAULT_ENV = {
     "CONTAINER_FILL_GB": "0.0015",
     "CONTAINER_SPILL_FILL_GB": "0.0010",
     "CONTAINER_TARGET_GB": "0.0025",
-    "REDIS_URL": os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0"),
+    "PREFERRED_UID": str(os.getuid()),
+    "PREFERRED_GID": str(os.getgid()),
 }
 
 
@@ -53,7 +53,6 @@ class LoadedModules:
     main: ModuleType
     models: ModuleType
     notifications: ModuleType
-    progress: ModuleType
     storage: ModuleType
     archive_root: Path
     sqlite_path: Path
@@ -86,10 +85,6 @@ class AppHarness:
         return self.modules.models
 
     @property
-    def progress(self) -> ModuleType:
-        return self.modules.progress
-
-    @property
     def notifications(self) -> ModuleType:
         return self.modules.notifications
 
@@ -103,20 +98,6 @@ class AppHarness:
 
     def auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_token}"}
-
-    def redis_flush(self) -> None:
-        client = SyncRedis.from_url(self.modules.env["REDIS_URL"], decode_responses=True)
-        try:
-            client.flushdb()
-        finally:
-            client.close()
-
-    def redis_messages(self, stream_name: str) -> list[tuple[str, dict[str, str]]]:
-        client = SyncRedis.from_url(self.modules.env["REDIS_URL"], decode_responses=True)
-        try:
-            return client.xrange(stream_name)
-        finally:
-            client.close()
 
     @contextmanager
     def session(self) -> Iterator[Any]:
@@ -164,7 +145,6 @@ def _load_modules_with_env(
             main=importlib.import_module("app.main"),
             models=importlib.import_module("app.models"),
             notifications=importlib.import_module("app.notifications"),
-            progress=importlib.import_module("app.progress"),
             storage=importlib.import_module("app.storage"),
             archive_root=Path(env["ARCHIVE_ROOT"]),
             sqlite_path=Path(env["SQLITE_PATH"]),
@@ -207,8 +187,6 @@ def app_factory(module_factory):
     ) -> Iterator[AppHarness]:
         with module_factory(before_import=before_import, **env_overrides) as loaded:
             with TestClient(loaded.main.app) as client:
-                harness = AppHarness(client=client, modules=loaded)
-                harness.redis_flush()
-                yield harness
+                yield AppHarness(client=client, modules=loaded)
 
     return _factory

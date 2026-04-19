@@ -24,24 +24,15 @@ def test_closed_container_can_be_activated_and_restore_collection_reads(app_fact
         )
         assert release.status_code == 200
 
-        inactive = harness.client.get(
-            f"/v1/collections/{collection_id}/content/{family_archive_files()[0].relative_path}",
-            headers=harness.auth_headers(),
-        )
-        assert inactive.status_code == 409
-        assert inactive.json()["error"] == "inactive_on_container"
-        assert inactive.json()["container_ids"] == [container_id]
+        export_path = harness.storage.export_collection_root(collection_id) / family_archive_files()[0].relative_path
+        assert not export_path.exists()
 
         _, complete = activation_container_from_root(harness, container_id)
         assert complete.status_code == 200
         assert complete.json()["status"] == "active"
 
-        restored = harness.client.get(
-            f"/v1/collections/{collection_id}/content/{family_archive_files()[0].relative_path}",
-            headers=harness.auth_headers(),
-        )
-        assert restored.status_code == 200
-        assert restored.content == family_archive_files()[0].content
+        assert export_path.exists()
+        assert export_path.read_bytes() == family_archive_files()[0].content
 
         container_tree = harness.client.get(
             f"/v1/containers/{container_id}/tree",
@@ -137,24 +128,15 @@ def test_split_file_materializes_only_when_all_required_containers_are_active(ap
 
         activation_container_from_root(harness, container_ids[0])
 
-        partially_active = harness.client.get(
-            f"/v1/collections/{collection_id}/content/{master.relative_path}",
-            headers=harness.auth_headers(),
-        )
-        assert partially_active.status_code == 409
-        assert partially_active.json()["error"] == "inactive_on_container"
-        assert sorted(partially_active.json()["container_ids"]) == sorted(container_ids)
+        export_path = harness.storage.export_collection_root(collection_id) / master.relative_path
+        assert not export_path.exists()
 
         for container_id in container_ids[1:]:
             _, complete = activation_container_from_root(harness, container_id)
             assert complete.status_code == 200
 
-        restored = harness.client.get(
-            f"/v1/collections/{collection_id}/content/{master.relative_path}",
-            headers=harness.auth_headers(),
-        )
-        assert restored.status_code == 200
-        assert restored.content == master.content
+        assert export_path.exists()
+        assert export_path.read_bytes() == master.content
 
         with harness.session() as session:
             collection_file = session.query(harness.models.CollectionFile).filter_by(collection_id=collection_id).one()

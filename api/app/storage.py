@@ -6,7 +6,6 @@ import stat
 import shutil
 import shlex
 import subprocess
-import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from tempfile import mkdtemp
@@ -15,12 +14,23 @@ import yaml
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from .config import COLLECTION_INTAKE_ROOT, INACTIVE_ISO_ROOT, INACTIVE_COLLECTION_ROOT, EXPORT_COLLECTIONS_ROOT, ACTIVE_BUFFER_ROOT, ACTIVE_CONTAINER_ROOT, ACTIVE_STAGING_ROOT, ACTIVE_MATERIALIZED_ROOT, OTS_CLIENT_COMMAND, CONTAINER_ROOTS_DIR
+from .config import (
+    ACTIVE_BUFFER_ROOT,
+    ACTIVE_CONTAINER_ROOT,
+    ACTIVE_MATERIALIZED_ROOT,
+    ACTIVE_STAGING_ROOT,
+    COLLECTION_INTAKE_ROOT,
+    CONTAINER_ROOTS_DIR,
+    EXPORT_COLLECTIONS_ROOT,
+    INACTIVE_COLLECTION_ROOT,
+    INACTIVE_ISO_ROOT,
+    OTS_CLIENT_COMMAND,
+    ensure_managed_directory,
+)
 from .models import ArchivePiece, Container, ContainerEntry, Collection, CollectionDirectory, CollectionFile
 
 COLLECTION_HASH_MANIFEST_NAME = "HASHES.yml"
 COLLECTION_HASH_PROOF_NAME = f"{COLLECTION_HASH_MANIFEST_NAME}.ots"
-COLLECTION_HASH_BUNDLE_NAME = "hash-manifest-proof.zip"
 COLLECTION_HASH_MANIFEST_SCHEMA = "collection-hash-manifest/v1"
 
 
@@ -61,7 +71,7 @@ def path_parents(relpath: str) -> list[str]:
 
 
 def ensure_parent_dir(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_managed_directory(path.parent)
 
 
 def atomic_replace_file_link(link_path: Path, target: Path) -> None:
@@ -168,10 +178,6 @@ def inactive_collection_hash_manifest_path(collection_id: str) -> Path:
 
 def inactive_collection_hash_proof_path(collection_id: str) -> Path:
     return inactive_collection_artifact_root(collection_id) / COLLECTION_HASH_PROOF_NAME
-
-
-def inactive_collection_hash_bundle_path(collection_id: str) -> Path:
-    return inactive_collection_artifact_root(collection_id) / COLLECTION_HASH_BUNDLE_NAME
 
 
 def iso_volume_label(name: str) -> str:
@@ -365,20 +371,15 @@ def refresh_collection_hash_artifacts(session: Session, collection_id: str) -> N
     collection = session.execute(select(Collection).where(Collection.id == collection_id).options(selectinload(Collection.files))).scalar_one()
     payload = collection_hash_manifest_payload(collection)
     artifact_root = inactive_collection_artifact_root(collection_id)
-    artifact_root.mkdir(parents=True, exist_ok=True)
+    ensure_managed_directory(artifact_root)
     temp_root = Path(mkdtemp(prefix=".collection-hashes-", dir=str(artifact_root)))
     try:
         manifest_path = temp_root / COLLECTION_HASH_MANIFEST_NAME
         manifest_path.write_bytes(payload)
         proof_path = _run_ots_stamp(manifest_path)
-        bundle_path = temp_root / COLLECTION_HASH_BUNDLE_NAME
-        with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
-            bundle.write(manifest_path, arcname=COLLECTION_HASH_MANIFEST_NAME)
-            bundle.write(proof_path, arcname=COLLECTION_HASH_PROOF_NAME)
 
         manifest_path.replace(inactive_collection_hash_manifest_path(collection_id))
         proof_path.replace(inactive_collection_hash_proof_path(collection_id))
-        bundle_path.replace(inactive_collection_hash_bundle_path(collection_id))
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 
@@ -466,7 +467,7 @@ def rebuild_collection_export(session: Session, collection_id: str) -> None:
     )
     root = export_collection_root(collection_id)
     safe_remove_tree(root)
-    root.mkdir(parents=True, exist_ok=True)
+    ensure_managed_directory(root)
     safe_remove_tree(materialized_collection_root(collection_id))
 
     explicit_dirs = {d.relative_path for d in collection.directories}
@@ -475,7 +476,7 @@ def rebuild_collection_export(session: Session, collection_id: str) -> None:
         for parent in path_parents(jf.relative_path):
             derived_dirs.add(parent)
     for rel in sorted(explicit_dirs | derived_dirs):
-        (root / rel).mkdir(parents=True, exist_ok=True)
+        ensure_managed_directory(root / rel)
 
     for jf in collection.files:
         active_path, _source, _container_ids = recompute_collection_file_runtime(jf)
