@@ -1,0 +1,557 @@
+openapi: 3.1.0
+info:
+  title: ARC API
+  version: 1.0.0
+  summary: MVP API for hot/cold archival storage
+servers:
+  - url: /v1
+paths:
+  /collections/close:
+    post:
+      summary: Close a staged directory into a collection
+      operationId: closeCollection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path:
+                  type: string
+      responses:
+        "200":
+          description: Collection created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [collection]
+                properties:
+                  collection:
+                    $ref: "#/components/schemas/CollectionSummary"
+        default:
+          $ref: "#/components/responses/Error"
+  /search:
+    get:
+      summary: Search collections and files
+      operationId: search
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema: { type: string }
+        - in: query
+          name: limit
+          required: false
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [query, results]
+                properties:
+                  query: { type: string }
+                  results:
+                    type: array
+                    items:
+                      oneOf:
+                        - $ref: "#/components/schemas/FileSearchResult"
+                        - $ref: "#/components/schemas/CollectionSearchResult"
+        default:
+          $ref: "#/components/responses/Error"
+  /collections/{collection_id}:
+    get:
+      summary: Get one collection summary
+      operationId: getCollection
+      parameters:
+        - in: path
+          name: collection_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Collection summary
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/CollectionSummary"
+                  - type: object
+                    properties:
+                      copies:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/CopyRef"
+        default:
+          $ref: "#/components/responses/Error"
+  /plan:
+    get:
+      summary: Get current burn plan
+      operationId: getPlan
+      responses:
+        "200":
+          description: Planner output
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanResponse"
+  /images/{image_id}:
+    get:
+      summary: Get one image summary
+      operationId: getImage
+      parameters:
+        - in: path
+          name: image_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Image summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImageDetail"
+        default:
+          $ref: "#/components/responses/Error"
+  /images/{image_id}/iso:
+    get:
+      summary: Download ISO bytes for an image
+      operationId: getImageIso
+      parameters:
+        - in: path
+          name: image_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: ISO stream
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        default:
+          $ref: "#/components/responses/Error"
+  /images/{image_id}/copies:
+    post:
+      summary: Register a physical burned copy
+      operationId: createCopy
+      parameters:
+        - in: path
+          name: image_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, location]
+              properties:
+                id: { type: string }
+                location: { type: string }
+      responses:
+        "200":
+          description: Copy registered
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [copy]
+                properties:
+                  copy:
+                    $ref: "#/components/schemas/CopySummary"
+        default:
+          $ref: "#/components/responses/Error"
+  /pin:
+    post:
+      summary: Pin a target into hot storage
+      operationId: pinTarget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target]
+              properties:
+                target:
+                  $ref: "#/components/schemas/Target"
+      responses:
+        "200":
+          description: Pin result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PinResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /release:
+    post:
+      summary: Release an exact pin target
+      operationId: releaseTarget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target]
+              properties:
+                target:
+                  $ref: "#/components/schemas/Target"
+      responses:
+        "200":
+          description: Release result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [target, pin]
+                properties:
+                  target:
+                    $ref: "#/components/schemas/Target"
+                  pin:
+                    type: boolean
+                    const: false
+        default:
+          $ref: "#/components/responses/Error"
+  /pins:
+    get:
+      summary: List active pins
+      operationId: listPins
+      responses:
+        "200":
+          description: Active pins
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [pins]
+                properties:
+                  pins:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PinSummary"
+  /fetches/{fetch_id}:
+    get:
+      summary: Get fetch summary
+      operationId: getFetch
+      parameters:
+        - in: path
+          name: fetch_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Fetch summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FetchSummary"
+        default:
+          $ref: "#/components/responses/Error"
+  /fetches/{fetch_id}/manifest:
+    get:
+      summary: Get fetch manifest
+      operationId: getFetchManifest
+      parameters:
+        - in: path
+          name: fetch_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Fetch manifest
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FetchManifest"
+        default:
+          $ref: "#/components/responses/Error"
+  /fetches/{fetch_id}/files/{entry_id}:
+    put:
+      summary: Upload one recovered file
+      operationId: uploadFetchEntry
+      parameters:
+        - in: path
+          name: fetch_id
+          required: true
+          schema: { type: string }
+        - in: path
+          name: entry_id
+          required: true
+          schema: { type: string }
+        - in: header
+          name: X-Sha256
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: Entry upload accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entry, accepted, bytes]
+                properties:
+                  entry: { type: string }
+                  accepted: { type: boolean }
+                  bytes: { type: integer }
+        default:
+          $ref: "#/components/responses/Error"
+  /fetches/{fetch_id}/complete:
+    post:
+      summary: Complete a fetch
+      operationId: completeFetch
+      parameters:
+        - in: path
+          name: fetch_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Fetch completed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, state, hot]
+                properties:
+                  id: { type: string }
+                  state:
+                    $ref: "#/components/schemas/FetchState"
+                  hot:
+                    $ref: "#/components/schemas/HotStatus"
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  responses:
+    Error:
+      description: Error response
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    Target:
+      type: string
+      description: Canonical target string selecting a collection, directory target, or file target.
+    FetchState:
+      type: string
+      enum: [waiting_media, uploading, verifying, done, failed]
+    CollectionSummary:
+      type: object
+      required: [id, files, bytes, hot_bytes, archived_bytes, pending_bytes]
+      properties:
+        id: { type: string }
+        files: { type: integer }
+        bytes: { type: integer }
+        hot_bytes: { type: integer }
+        archived_bytes: { type: integer }
+        pending_bytes: { type: integer }
+    ImageSummary:
+      type: object
+      required: [id, bytes, fill, files, collections, iso_ready]
+      properties:
+        id: { type: string }
+        bytes: { type: integer }
+        fill: { type: number }
+        files: { type: integer }
+        collections: { type: integer }
+        iso_ready: { type: boolean }
+    ImageDetail:
+      type: object
+      required: [id, bytes, fill, iso_ready, files, collections]
+      properties:
+        id: { type: string }
+        bytes: { type: integer }
+        fill: { type: number }
+        iso_ready: { type: boolean }
+        files: { type: integer }
+        collections:
+          type: array
+          items: { type: string }
+    CopyRef:
+      type: object
+      required: [id, location]
+      properties:
+        id: { type: string }
+        location: { type: string }
+    CopySummary:
+      type: object
+      required: [id, image, location, created_at]
+      properties:
+        id: { type: string }
+        image: { type: string }
+        location: { type: string }
+        created_at: { type: string, format: date-time }
+    HotStatus:
+      type: object
+      required: [state, present_bytes, missing_bytes]
+      properties:
+        state:
+          type: string
+          enum: [ready, waiting]
+        present_bytes: { type: integer }
+        missing_bytes: { type: integer }
+    PinSummary:
+      type: object
+      required: [target]
+      properties:
+        target:
+          $ref: "#/components/schemas/Target"
+    FetchCopyHint:
+      type: object
+      required: [id, location]
+      properties:
+        id: { type: string }
+        location: { type: string }
+    FetchSummary:
+      type: object
+      required: [id, target, state, files, bytes, copies]
+      properties:
+        id: { type: string }
+        target:
+          $ref: "#/components/schemas/Target"
+        state:
+          $ref: "#/components/schemas/FetchState"
+        files: { type: integer }
+        bytes: { type: integer }
+        copies:
+          type: array
+          items:
+            $ref: "#/components/schemas/FetchCopyHint"
+    FetchManifestEntryCopy:
+      type: object
+      required: [copy, location, disc_path, enc]
+      properties:
+        copy: { type: string }
+        location: { type: string }
+        disc_path: { type: string }
+        enc:
+          type: object
+          additionalProperties: true
+    FetchManifestEntry:
+      type: object
+      required: [id, path, bytes, sha256, copies]
+      properties:
+        id: { type: string }
+        path: { type: string }
+        bytes: { type: integer }
+        sha256: { type: string }
+        copies:
+          type: array
+          items:
+            $ref: "#/components/schemas/FetchManifestEntryCopy"
+    FetchManifest:
+      type: object
+      required: [id, target, entries]
+      properties:
+        id: { type: string }
+        target:
+          $ref: "#/components/schemas/Target"
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/FetchManifestEntry"
+    FileSearchResult:
+      type: object
+      required: [kind, target, collection, path, bytes, hot, copies]
+      properties:
+        kind:
+          type: string
+          const: file
+        target:
+          $ref: "#/components/schemas/Target"
+        collection: { type: string }
+        path: { type: string }
+        bytes: { type: integer }
+        hot: { type: boolean }
+        copies:
+          type: array
+          items:
+            $ref: "#/components/schemas/CopyRef"
+    CollectionSearchResult:
+      type: object
+      required: [kind, target, collection, files, bytes, hot_bytes, archived_bytes, pending_bytes]
+      properties:
+        kind:
+          type: string
+          const: collection
+        target:
+          $ref: "#/components/schemas/Target"
+        collection: { type: string }
+        files: { type: integer }
+        bytes: { type: integer }
+        hot_bytes: { type: integer }
+        archived_bytes: { type: integer }
+        pending_bytes: { type: integer }
+    PinResponse:
+      type: object
+      required: [target, pin, hot, fetch]
+      properties:
+        target:
+          $ref: "#/components/schemas/Target"
+        pin: { type: boolean, const: true }
+        hot:
+          $ref: "#/components/schemas/HotStatus"
+        fetch:
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [id, state, copies]
+              properties:
+                id: { type: string }
+                state:
+                  $ref: "#/components/schemas/FetchState"
+                copies:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/FetchCopyHint"
+    PlanImage:
+      type: object
+      required: [id, bytes, fill, collections, files, iso_ready]
+      properties:
+        id: { type: string }
+        bytes: { type: integer }
+        fill: { type: number }
+        collections: { type: integer }
+        files: { type: integer }
+        iso_ready: { type: boolean }
+    PlanResponse:
+      type: object
+      required: [ready, target_bytes, min_fill_bytes, images, unplanned_bytes]
+      properties:
+        ready: { type: boolean }
+        target_bytes: { type: integer }
+        min_fill_bytes: { type: integer }
+        images:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlanImage"
+        unplanned_bytes: { type: integer }
+        note: { type: string }
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
