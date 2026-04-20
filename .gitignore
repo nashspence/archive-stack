@@ -8,3 +8,15 @@ AGENTS.md
 .env.*
 .devcontainer/.env
 .cache/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+dist/
+build/
+*.pyc
+*.pyo
+*.pyd
+.coverage
+

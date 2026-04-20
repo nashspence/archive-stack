@@ -1,0 +1,13 @@
+from __future__ import annotations
+
+from typing import BinaryIO, Protocol
+
+from arc_core.domain.models import ImageSummary
+from arc_core.domain.types import CollectionId, ImageId
+
+
+class PlannerPort(Protocol):
+    def include_collection(self, collection_id: CollectionId) -> None: ...
+    def get_plan(self) -> object: ...
+    def get_image(self, image_id: ImageId) -> ImageSummary: ...
+    def open_iso_stream(self, image_id: ImageId) -> BinaryIO: ...
