@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+IMAGE_NAME="${TEST_IMAGE_NAME:-archive-stack:test}"
+
+if [[ $# -eq 0 ]]; then
+  set -- -q
+fi
+
+TTY_ARGS=()
+if [[ -t 0 && -t 1 ]]; then
+  TTY_ARGS=(-it)
+fi
+
+docker build \
+  --file "${ROOT_DIR}/Dockerfile.test" \
+  --tag "${IMAGE_NAME}" \
+  "${ROOT_DIR}"
+
+exec docker run \
+  --rm \
+  --init \
+  "${TTY_ARGS[@]}" \
+  "${IMAGE_NAME}" \
+  "$@"

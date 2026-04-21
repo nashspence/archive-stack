@@ -17,4 +17,4 @@ def test_arc_help() -> None:
 def test_arc_disc_help() -> None:
     result = runner.invoke(disc_app, ["--help"])
     assert result.exit_code == 0
-    assert "FETCH_ID" in result.stdout
+    assert "fetch" in result.stdout
