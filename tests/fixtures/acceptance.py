@@ -37,6 +37,7 @@ from tests.fixtures.data import (
     PHOTOS_2024_FILES,
     PHOTOS_COLLECTION_ID,
     RECEIPT_TARGET,
+    SPLIT_IMAGE_FIXTURES,
     STAGING_PATH,
     TARGET_BYTES,
     TAX_DIRECTORY_TARGET,
@@ -743,8 +744,22 @@ class AcceptanceSystem:
         headers: Mapping[str, str] | None = None,
         content: bytes | None = None,
     ) -> httpx.Response:
-        with httpx.Client(base_url=self.base_url, timeout=5.0) as client:
-            return client.request(method, path, params=params, json=json_body, headers=headers, content=content)
+        for attempt in range(3):
+            try:
+                with httpx.Client(base_url=self.base_url, timeout=5.0) as client:
+                    return client.request(
+                        method,
+                        path,
+                        params=params,
+                        json=json_body,
+                        headers=headers,
+                        content=content,
+                    )
+            except httpx.RemoteProtocolError:
+                if not path.endswith("/iso") or attempt == 2:
+                    raise
+                time.sleep(0.05)
+        raise RuntimeError("unreachable")
 
     def run_arc(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -828,8 +843,15 @@ class AcceptanceSystem:
     def seed_planner_fixtures(self) -> None:
         self.seed_docs_hot()
         self.seed_photos_hot()
+        self.seed_image_fixtures(IMAGE_FIXTURES)
+
+    def seed_split_planner_fixtures(self) -> None:
+        self.seed_docs_hot()
+        self.seed_image_fixtures(SPLIT_IMAGE_FIXTURES)
+
+    def seed_image_fixtures(self, fixtures: tuple[Any, ...]) -> None:
         images_root = self.workspace / "images"
-        for fixture in IMAGE_FIXTURES:
+        for fixture in fixtures:
             image_root = write_tree(images_root / fixture.id, fixture.files)
             self.state.seed_image(
                 ImageRecord(

@@ -11,6 +11,10 @@ from tests.fixtures.data import (
     DOCS_COLLECTION_ID,
     DOCS_FILES,
     IMAGE_ID,
+    SPLIT_FILE_PARTS,
+    SPLIT_FILE_RELPATH,
+    SPLIT_IMAGE_ONE_ID,
+    SPLIT_IMAGE_TWO_ID,
     TARGET_BYTES,
     fixture_decrypt_bytes,
 )
@@ -218,6 +222,76 @@ def test_register_a_physical_copy(acceptance_system: AcceptanceSystem) -> None:
     }
     assert after["archived_bytes"] > before["archived_bytes"]
     assert after["pending_bytes"] < before["pending_bytes"]
+
+
+def test_split_file_parts_are_listed_per_disc_and_reconstruct_the_original_plaintext(
+    acceptance_system: AcceptanceSystem,
+    tmp_path: Path,
+) -> None:
+    acceptance_system.seed_split_planner_fixtures()
+
+    extracted_parts: list[bytes] = []
+    for image_id, expected_index in (
+        (SPLIT_IMAGE_ONE_ID, 1),
+        (SPLIT_IMAGE_TWO_ID, 2),
+    ):
+        response = acceptance_system.request("GET", f"/v1/images/{image_id}/iso")
+
+        assert response.status_code == 200
+        image_workspace = tmp_path / image_id
+        image_workspace.mkdir()
+        iso_path = _write_downloaded_iso(response.content, image_workspace)
+        _verify_iso(iso_path)
+        extract_workspace = tmp_path / f"{image_id}-extract"
+        extract_workspace.mkdir()
+        extract_root = _extract_iso(iso_path, extract_workspace)
+        relfiles = sorted(
+            path.relative_to(extract_root).as_posix()
+            for path in extract_root.rglob("*")
+            if path.is_file()
+        )
+
+        assert f"files/000001.00{expected_index}.age" in relfiles
+        assert f"files/000001.00{expected_index}.yml.age" in relfiles
+
+        manifest = yaml.safe_load(
+            fixture_decrypt_bytes((extract_root / MANIFEST_FILENAME).read_bytes()).decode("utf-8")
+        )
+        collection = manifest["collections"][0]
+        file_entry = collection["files"][0]
+
+        assert file_entry["path"] == f"/{SPLIT_FILE_RELPATH}"
+        assert "object" not in file_entry
+        assert "sidecar" not in file_entry
+        assert file_entry["parts"] == {
+            "count": 2,
+            "present": [
+                {
+                    "index": expected_index,
+                    "object": f"files/000001.00{expected_index}.age",
+                    "sidecar": f"files/000001.00{expected_index}.yml.age",
+                }
+            ],
+        }
+
+        sidecar = yaml.safe_load(
+            fixture_decrypt_bytes(
+                (extract_root / file_entry["parts"]["present"][0]["sidecar"]).read_bytes()
+            ).decode("utf-8")
+        )
+        assert sidecar["schema"] == "file-sidecar/v1"
+        assert sidecar["collection"] == DOCS_COLLECTION_ID
+        assert sidecar["path"] == f"/{SPLIT_FILE_RELPATH}"
+        assert sidecar["part"] == {"index": expected_index, "count": 2}
+
+        extracted_parts.append(
+            fixture_decrypt_bytes(
+                (extract_root / file_entry["parts"]["present"][0]["object"]).read_bytes()
+            )
+        )
+
+    assert tuple(extracted_parts) == SPLIT_FILE_PARTS
+    assert b"".join(extracted_parts) == DOCS_FILES[SPLIT_FILE_RELPATH]
 
 
 def test_reusing_a_copy_id_fails(acceptance_system: AcceptanceSystem) -> None:

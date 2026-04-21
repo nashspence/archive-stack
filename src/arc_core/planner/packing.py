@@ -20,7 +20,6 @@ class PlannerDependencyError(RuntimeError):
     pass
 
 
-
 def _require_milp() -> None:
     if _MILP_IMPORT_ERROR is not None:
         raise PlannerDependencyError(
@@ -28,18 +27,11 @@ def _require_milp() -> None:
         ) from _MILP_IMPORT_ERROR
 
 
-
-def close_threshold(items: list[dict[str, Any]], fill: int, spill: int) -> int:
-    return spill if any(bool(item["priority"]) for item in items) else fill
-
-
-
 def _solve(
     items: list[dict[str, Any]],
     collections: dict[str, dict[str, int]],
     cap: int,
     fill: int,
-    spill: int,
     *,
     force: bool,
 ) -> list[dict[str, Any]]:
@@ -55,16 +47,17 @@ def _solve(
     collection_index = {collection_id: idx for idx, collection_id in enumerate(collection_ids)}
     payload_bytes = np.array([item["planned_bytes"] for item in items], dtype=np.float64)
     priority = np.array([int(item["priority"]) for item in items], dtype=np.float64)
-    fixed = np.array([collections[collection_id]["fixed_bytes"] for collection_id in collection_ids], dtype=np.float64)
+    fixed = np.array(
+        [collections[collection_id]["fixed_bytes"] for collection_id in collection_ids],
+        dtype=np.float64,
+    )
     item_collection = np.array([collection_index[item["collection"]] for item in items], dtype=int)
 
     meta_pad = 2048
-    fill_diff = fill - spill
-    slack_index = item_count + collection_count
-    deviation_index = slack_index + 1 if force else None
-    variable_count = item_count + collection_count + 1 + int(force)
+    deviation_index = item_count + collection_count if force else None
+    variable_count = item_count + collection_count + int(force)
 
-    row_count = 1 + item_count + collection_count + int(priority.sum()) + 2 + int(not force) + 2 * int(force)
+    row_count = 1 + item_count + collection_count + 1 + int(not force) + 2 * int(force)
     matrix = lil_array((row_count, variable_count), dtype=np.float64)
     lower: list[float] = []
     upper: list[float] = []
@@ -91,19 +84,6 @@ def _solve(
         upper.append(0)
         row += 1
 
-    for item_idx in np.where(priority > 0)[0]:
-        matrix[row, item_idx] = 1
-        matrix[row, slack_index] = -1
-        lower.append(-np.inf)
-        upper.append(0)
-        row += 1
-
-    matrix[row, :item_count] = -priority
-    matrix[row, slack_index] = 1
-    lower.append(-np.inf)
-    upper.append(0)
-    row += 1
-
     matrix[row, :item_count] = 1
     lower.append(1)
     upper.append(np.inf)
@@ -127,7 +107,6 @@ def _solve(
     else:
         matrix[row, :item_count] = payload_bytes
         matrix[row, item_count : item_count + collection_count] = fixed
-        matrix[row, slack_index] = fill_diff
         lower.append(fill - meta_pad)
         upper.append(np.inf)
         row += 1
@@ -145,7 +124,10 @@ def _solve(
     )
     bounds = Bounds(bounds_lo, bounds_hi)
 
-    def run(cost: list[float], extra: tuple[tuple[Any, float, float], ...] = ()) -> dict[str, Any] | None:
+    def run(
+        cost: list[float],
+        extra: tuple[tuple[Any, float, float], ...] = (),
+    ) -> dict[str, Any] | None:
         if extra:
             extra_rows = lil_array((len(extra), variable_count), dtype=np.float64)
             extra_lower: list[float] = []
@@ -174,7 +156,11 @@ def _solve(
         if not result.success or result.x is None:
             return None
         x = np.rint(result.x).astype(int)
-        used = int(meta_pad + payload_bytes @ x[:item_count] + fixed @ x[item_count : item_count + collection_count])
+        used = int(
+            meta_pad
+            + payload_bytes @ x[:item_count]
+            + fixed @ x[item_count : item_count + collection_count]
+        )
         selected = [items[idx] for idx, chosen in enumerate(x[:item_count]) if chosen]
         return {"x": x, "selected": selected, "used": used}
 
@@ -192,49 +178,48 @@ def _solve(
         cost_2[:item_count] = -payload_bytes
         cost_2[item_count : item_count + collection_count] = -fixed
         second = run(cost_2.tolist(), ((pinned, deviation, deviation),))
-        return second["selected"] if second else first["selected"]
+        if not second:
+            return first["selected"]
+
+        used = second["used"]
+        vec_used = np.zeros(variable_count)
+        vec_used[:item_count] = payload_bytes
+        vec_used[item_count : item_count + collection_count] = fixed
+        cost_3 = np.zeros(variable_count)
+        cost_3[:item_count] = -priority
+        third = run(
+            cost_3.tolist(),
+            (
+                (pinned, deviation, deviation),
+                (vec_used, used - meta_pad, used - meta_pad),
+            ),
+        )
+        return third["selected"] if third else second["selected"]
 
     cost_1 = np.zeros(variable_count)
     cost_1[:item_count] = payload_bytes
     cost_1[item_count : item_count + collection_count] = fixed
-    cost_1[slack_index] = fill_diff
     first = run(cost_1.tolist())
     if not first:
         return []
 
-    slack = first["used"] - close_threshold(first["selected"], fill, spill)
-    vec_1 = np.zeros(variable_count)
-    vec_1[:item_count] = payload_bytes
-    vec_1[item_count : item_count + collection_count] = fixed
-    vec_1[slack_index] = fill_diff
-
+    used = first["used"]
+    vec_used = np.zeros(variable_count)
+    vec_used[:item_count] = payload_bytes
+    vec_used[item_count : item_count + collection_count] = fixed
     cost_2 = np.zeros(variable_count)
-    cost_2[:item_count] = -payload_bytes
-    cost_2[item_count : item_count + collection_count] = -fixed
-    second = run(cost_2.tolist(), ((vec_1, slack, slack),))
-    if not second:
-        return first["selected"]
-
-    used = second["used"]
-    vec_2 = np.zeros(variable_count)
-    vec_2[:item_count] = payload_bytes
-    vec_2[item_count : item_count + collection_count] = fixed
-    cost_3 = np.zeros(variable_count)
-    cost_3[:item_count] = -priority
-    third = run(cost_3.tolist(), ((vec_1, slack, slack), (vec_2, used - meta_pad, used - meta_pad)))
-    return third["selected"] if third else second["selected"]
-
-
+    cost_2[:item_count] = -priority
+    second = run(cost_2.tolist(), ((vec_used, used - meta_pad, used - meta_pad),))
+    return second["selected"] if second else first["selected"]
 
 def pick_items(
     items: list[dict[str, Any]],
     collections: dict[str, dict[str, int]],
     cap: int,
     fill: int,
-    spill: int,
     *,
     force: bool = False,
 ) -> list[dict[str, Any]]:
     if not items:
         return []
-    return _solve(items, collections, cap, fill, spill, force=force)
+    return _solve(items, collections, cap, fill, force=force)

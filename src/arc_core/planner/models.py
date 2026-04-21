@@ -8,7 +8,6 @@ from pathlib import Path
 class PlannerConfig:
     target_bytes: int
     fill_bytes: int
-    spill_fill_bytes: int
     meta_pad_bytes: int = 2048
 
 

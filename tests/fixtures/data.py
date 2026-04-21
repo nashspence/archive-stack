@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import cast
 
 import yaml
 
@@ -58,6 +59,13 @@ ALL_COLLECTION_FILES: dict[str, dict[str, bytes]] = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class ImageFileSpec:
+    relpath: str
+    piece_count: int = 1
+    present_piece_indexes: tuple[int, ...] = (0,)
+
+
 def total_bytes(files: Mapping[str, bytes]) -> int:
     return sum(len(content) for content in files.values())
 
@@ -74,6 +82,20 @@ def fixture_decrypt_bytes(data: bytes) -> bytes:
     if not data.startswith(FIXTURE_AGE_PREFIX):
         raise ValueError("fixture ciphertext is missing the expected prefix")
     return base64.b64decode(data[len(FIXTURE_AGE_PREFIX) :].strip(), validate=True)
+
+
+def split_fixture_plaintext(data: bytes, piece_count: int) -> tuple[bytes, ...]:
+    if piece_count < 1:
+        raise ValueError("piece_count must be at least 1")
+
+    base, remainder = divmod(len(data), piece_count)
+    offset = 0
+    parts: list[bytes] = []
+    for piece_index in range(piece_count):
+        size = base + int(piece_index < remainder)
+        parts.append(data[offset : offset + size])
+        offset += size
+    return tuple(parts)
 
 
 def _collection_manifest_bytes(collection_id: str, files: Mapping[str, bytes]) -> bytes:
@@ -94,7 +116,7 @@ def _collection_manifest_bytes(collection_id: str, files: Mapping[str, bytes]) -
                 "sha256": sha256,
             }
         )
-        tree_digest.update(f"{relpath}\t{size}\t{sha256}\n".encode("utf-8"))
+        tree_digest.update(f"{relpath}\t{size}\t{sha256}\n".encode())
 
     return yaml.safe_dump(
         {
@@ -133,13 +155,38 @@ def _build_image_files(
     volume_id: str,
     represented_paths: Mapping[str, tuple[str, ...]],
 ) -> dict[str, bytes]:
+    represented_specs = {
+        collection_id: tuple(ImageFileSpec(relpath=relpath) for relpath in relpaths)
+        for collection_id, relpaths in represented_paths.items()
+    }
+    return _build_image_files_from_specs(
+        image_id=image_id,
+        volume_id=volume_id,
+        represented_specs=represented_specs,
+    )
+
+
+def _build_image_files_from_specs(
+    *,
+    image_id: str,
+    volume_id: str,
+    represented_specs: Mapping[str, tuple[ImageFileSpec, ...]],
+) -> dict[str, bytes]:
     collections_payload: dict[str, list[dict[str, object]]] = {}
     pieces: list[dict[str, object]] = []
+    piece_payloads: dict[tuple[str, int, int], bytes] = {}
 
-    for collection_id in sorted(represented_paths):
+    for collection_id in sorted(represented_specs):
         files_payload: list[dict[str, object]] = []
-        for file_id, relpath in enumerate(sorted(represented_paths[collection_id]), start=1):
+        ordered_specs = sorted(
+            represented_specs[collection_id],
+            key=lambda spec: spec.relpath,
+        )
+        for file_id, spec in enumerate(ordered_specs, start=1):
+            relpath = spec.relpath
             content = ALL_COLLECTION_FILES[collection_id][relpath]
+            plaintext_parts = split_fixture_plaintext(content, spec.piece_count)
+            present_pieces = sorted(spec.present_piece_indexes)
             file_meta: dict[str, object] = {
                 "collection": collection_id,
                 "file_id": file_id,
@@ -150,27 +197,22 @@ def _build_image_files(
                 "uid": None,
                 "gid": None,
                 "sha256": _sha256_bytes(content),
-                "piece_count": 1,
-                "pieces": [
-                    {
-                        "collection": collection_id,
-                        "file_id": file_id,
-                        "relpath": relpath,
-                        "piece_index": 0,
-                        "piece_count": 1,
-                    }
-                ],
+                "piece_count": spec.piece_count,
+                "pieces": [],
             }
-            files_payload.append(file_meta)
-            pieces.append(
-                {
+            file_pieces = cast(list[dict[str, object]], file_meta["pieces"])
+            for piece_index in present_pieces:
+                piece = {
                     "collection": collection_id,
                     "file_id": file_id,
                     "relpath": relpath,
-                    "piece_index": 0,
-                    "piece_count": 1,
+                    "piece_index": piece_index,
+                    "piece_count": spec.piece_count,
                 }
-            )
+                file_pieces.append(piece)
+                pieces.append(piece)
+                piece_payloads[(collection_id, file_id, piece_index)] = plaintext_parts[piece_index]
+            files_payload.append(file_meta)
         collections_payload[collection_id] = files_payload
 
     path_map = assign_paths(pieces)
@@ -195,12 +237,20 @@ def _build_image_files(
         image_files[proof_path] = fixture_encrypt_bytes(_collection_proof_bytes(collection_manifest))
 
         for file_meta in collections_payload[collection_id]:
-            payload_path, sidecar_path = path_map[(collection_id, file_meta["file_id"], 0)]
-            relpath = str(file_meta["relpath"])
-            image_files[payload_path] = fixture_encrypt_bytes(ALL_COLLECTION_FILES[collection_id][relpath])
-            image_files[sidecar_path] = fixture_encrypt_bytes(
-                sidecar_bytes(file_meta, collection_id=collection_id)
-            )
+            for piece in cast(list[dict[str, object]], file_meta["pieces"]):
+                piece_index = int(piece["piece_index"])
+                payload_path, sidecar_path = path_map[(collection_id, file_meta["file_id"], piece_index)]
+                image_files[payload_path] = fixture_encrypt_bytes(
+                    piece_payloads[(collection_id, int(file_meta["file_id"]), piece_index)]
+                )
+                image_files[sidecar_path] = fixture_encrypt_bytes(
+                    sidecar_bytes(
+                        file_meta,
+                        collection_id=collection_id,
+                        part_index=piece_index,
+                        part_count=int(file_meta["piece_count"]),
+                    )
+                )
 
     return image_files
 
@@ -264,6 +314,60 @@ IMAGE_FIXTURES: tuple[ImageFixture, ...] = (
         bytes=6_100,
         iso_ready=False,
         covered_paths=((PHOTOS_COLLECTION_ID, "albums/japan/day-01.txt"),),
+    ),
+)
+
+SPLIT_FILE_RELPATH = "tax/2022/invoice-123.pdf"
+SPLIT_FILE_PARTS = split_fixture_plaintext(DOCS_FILES[SPLIT_FILE_RELPATH], 2)
+SPLIT_IMAGE_ONE_ID = "img_2026-04-20_03"
+SPLIT_IMAGE_TWO_ID = "img_2026-04-20_04"
+
+SPLIT_IMAGE_ONE_FILES: dict[str, bytes] = _build_image_files_from_specs(
+    image_id=SPLIT_IMAGE_ONE_ID,
+    volume_id="ARC-IMG-20260420-03",
+    represented_specs={
+        DOCS_COLLECTION_ID: (
+            ImageFileSpec(
+                relpath=SPLIT_FILE_RELPATH,
+                piece_count=2,
+                present_piece_indexes=(0,),
+            ),
+        )
+    },
+)
+
+SPLIT_IMAGE_TWO_FILES: dict[str, bytes] = _build_image_files_from_specs(
+    image_id=SPLIT_IMAGE_TWO_ID,
+    volume_id="ARC-IMG-20260420-04",
+    represented_specs={
+        DOCS_COLLECTION_ID: (
+            ImageFileSpec(
+                relpath=SPLIT_FILE_RELPATH,
+                piece_count=2,
+                present_piece_indexes=(1,),
+            ),
+        )
+    },
+)
+
+SPLIT_IMAGE_FIXTURES: tuple[ImageFixture, ...] = (
+    ImageFixture(
+        id=SPLIT_IMAGE_ONE_ID,
+        volume_id="ARC-IMG-20260420-03",
+        filename=f"{SPLIT_IMAGE_ONE_ID}.iso",
+        files=SPLIT_IMAGE_ONE_FILES,
+        bytes=5_100,
+        iso_ready=True,
+        covered_paths=((DOCS_COLLECTION_ID, SPLIT_FILE_RELPATH),),
+    ),
+    ImageFixture(
+        id=SPLIT_IMAGE_TWO_ID,
+        volume_id="ARC-IMG-20260420-04",
+        filename=f"{SPLIT_IMAGE_TWO_ID}.iso",
+        files=SPLIT_IMAGE_TWO_FILES,
+        bytes=5_100,
+        iso_ready=True,
+        covered_paths=((DOCS_COLLECTION_ID, SPLIT_FILE_RELPATH),),
     ),
 )
 
