@@ -1,7 +1,74 @@
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
+import yaml
+
+from arc_core.planner.manifest import MANIFEST_FILENAME, README_FILENAME
 from tests.fixtures.acceptance import AcceptanceSystem, acceptance_system
-from tests.fixtures.data import DOCS_COLLECTION_ID, IMAGE_ID, TARGET_BYTES
+from tests.fixtures.data import (
+    DOCS_COLLECTION_ID,
+    DOCS_FILES,
+    IMAGE_ID,
+    TARGET_BYTES,
+    fixture_decrypt_bytes,
+)
+
+
+def _write_downloaded_iso(iso_bytes: bytes, workspace: Path) -> Path:
+    iso_path = workspace / "image.iso"
+    iso_path.write_bytes(iso_bytes)
+    return iso_path
+
+
+def _verify_iso(iso_path: Path) -> None:
+    proc = subprocess.run(
+        [
+            "xorriso",
+            "-abort_on",
+            "FAILURE",
+            "-for_backup",
+            "-md5",
+            "on",
+            "-indev",
+            str(iso_path),
+            "-check_md5",
+            "FAILURE",
+            "--",
+            "-check_md5_r",
+            "FAILURE",
+            "/",
+            "--",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, "\n".join(part for part in (proc.stdout, proc.stderr) if part)
+
+
+def _extract_iso(iso_path: Path, workspace: Path) -> Path:
+    extract_root = workspace / "disc"
+    extract_root.mkdir()
+    proc = subprocess.run(
+        [
+            "xorriso",
+            "-osirrox",
+            "on",
+            "-indev",
+            str(iso_path),
+            "-extract",
+            "/",
+            str(extract_root),
+            "-end",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+    return extract_root
 
 
 def test_read_the_current_plan(acceptance_system: AcceptanceSystem) -> None:
@@ -11,7 +78,14 @@ def test_read_the_current_plan(acceptance_system: AcceptanceSystem) -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert set(payload) == {"ready", "target_bytes", "min_fill_bytes", "images", "unplanned_bytes", "note"}
+    assert set(payload) == {
+        "ready",
+        "target_bytes",
+        "min_fill_bytes",
+        "images",
+        "unplanned_bytes",
+        "note",
+    }
     assert payload["ready"] is True
     assert payload["target_bytes"] == TARGET_BYTES
     assert payload["images"]
@@ -43,6 +117,85 @@ def test_download_an_iso_for_a_ready_image(acceptance_system: AcceptanceSystem) 
     assert response.headers["content-type"].startswith("application/octet-stream")
     assert response.headers["content-disposition"].endswith(f'"{IMAGE_ID}.iso"')
     assert response.content
+
+
+def test_ready_image_iso_uses_the_canonical_disc_layout(
+    acceptance_system: AcceptanceSystem,
+    tmp_path: Path,
+) -> None:
+    acceptance_system.seed_planner_fixtures()
+
+    response = acceptance_system.request("GET", f"/v1/images/{IMAGE_ID}/iso")
+
+    assert response.status_code == 200
+    iso_path = _write_downloaded_iso(response.content, tmp_path)
+    _verify_iso(iso_path)
+    extract_root = _extract_iso(iso_path, tmp_path)
+    relfiles = sorted(
+        path.relative_to(extract_root).as_posix()
+        for path in extract_root.rglob("*")
+        if path.is_file()
+    )
+
+    assert README_FILENAME in relfiles
+    assert MANIFEST_FILENAME in relfiles
+    assert "collections/000001.ots.age" in relfiles
+    assert "collections/000001.yml.age" in relfiles
+    assert "files/000001.age" in relfiles
+    assert "files/000001.yml.age" in relfiles
+    assert "files/000002.age" in relfiles
+    assert "files/000002.yml.age" in relfiles
+    assert not any(
+        "invoice-123.pdf" in relpath or "receipt-456.pdf" in relpath for relpath in relfiles
+    )
+    assert all(relpath == README_FILENAME or relpath.endswith(".age") for relpath in relfiles)
+
+    readme = (extract_root / README_FILENAME).read_text(encoding="utf-8")
+    assert "arc-disc" in readme
+    assert "DISC.yml.age" in readme
+    assert "multiple discs" in readme
+
+    manifest = yaml.safe_load(
+        fixture_decrypt_bytes((extract_root / MANIFEST_FILENAME).read_bytes()).decode("utf-8")
+    )
+    assert manifest["schema"] == "disc-manifest/v1"
+    assert manifest["image"] == {"id": IMAGE_ID, "volume_id": "ARC-IMG-20260420-01"}
+    assert [collection["id"] for collection in manifest["collections"]] == [DOCS_COLLECTION_ID]
+
+    collection = manifest["collections"][0]
+    assert collection["manifest"] == "collections/000001.yml.age"
+    assert collection["proof"] == "collections/000001.ots.age"
+    assert [entry["path"] for entry in collection["files"]] == [
+        "/tax/2022/invoice-123.pdf",
+        "/tax/2022/receipt-456.pdf",
+    ]
+    assert collection["files"][0]["object"] == "files/000001.age"
+    assert collection["files"][0]["sidecar"] == "files/000001.yml.age"
+    assert collection["files"][1]["object"] == "files/000002.age"
+    assert collection["files"][1]["sidecar"] == "files/000002.yml.age"
+
+    sidecar = yaml.safe_load(
+        fixture_decrypt_bytes(
+            (extract_root / collection["files"][0]["sidecar"]).read_bytes()
+        ).decode("utf-8")
+    )
+    assert sidecar["schema"] == "file-sidecar/v1"
+    assert sidecar["collection"] == DOCS_COLLECTION_ID
+    assert sidecar["path"] == "/tax/2022/invoice-123.pdf"
+
+    payload = fixture_decrypt_bytes((extract_root / collection["files"][0]["object"]).read_bytes())
+    assert payload == DOCS_FILES["tax/2022/invoice-123.pdf"]
+
+    collection_manifest = yaml.safe_load(
+        fixture_decrypt_bytes((extract_root / collection["manifest"]).read_bytes()).decode("utf-8")
+    )
+    assert collection_manifest["schema"] == "collection-hash-manifest/v1"
+    assert collection_manifest["collection"] == DOCS_COLLECTION_ID
+    assert [row["relative_path"] for row in collection_manifest["files"]] == sorted(DOCS_FILES)
+
+    proof = fixture_decrypt_bytes((extract_root / collection["proof"]).read_bytes()).decode("utf-8")
+    assert "OpenTimestamps stub proof v1" in proof
+    assert "file: HASHES.yml" in proof
 
 
 def test_register_a_physical_copy(acceptance_system: AcceptanceSystem) -> None:

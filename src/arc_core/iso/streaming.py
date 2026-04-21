@@ -58,7 +58,7 @@ def _base_xorriso_cmd(*, volume_id: str) -> list[str]:
         "-xattr",
         "user",
         "-md5",
-        "all",
+        "on",
     ]
 
 
@@ -71,7 +71,7 @@ def build_iso_cmd(volume: IsoVolume) -> list[str]:
         if not entry.disk_path.exists():
             raise Conflict(f"missing source path: {entry.disk_path}")
         cmd += ["-map", str(entry.disk_path), entry.iso_path]
-    cmd += ["-end"]
+    cmd += ["-commit"]
     return cmd
 
 
@@ -84,14 +84,14 @@ def build_iso_cmd_from_root(*, image_root: Path, volume_id: str) -> list[str]:
         "-map",
         str(image_root),
         "/",
-        "-end",
+        "-commit",
     ]
 
 
 
 def build_iso_print_size_cmd_from_root(*, image_root: Path, volume_id: str) -> list[str]:
     cmd = build_iso_cmd_from_root(image_root=image_root, volume_id=volume_id)
-    return [*cmd[:-1], "-print-size", cmd[-1]]
+    return [*cmd[:-1], "-print-size", "-end"]
 
 
 

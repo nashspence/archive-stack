@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 import yaml
 
-MANIFEST_FILENAME = "MANIFEST.yml"
-README_FILENAME = "README.txt"
-MANIFEST_SCHEMA = "manifest/v1"
-PLACEHOLDER_CONTAINER = "00000000T000000Z"
-PLACEHOLDER_ARCHIVE = "files/999999999999.999999"
+MANIFEST_FILENAME = "DISC.yml.age"
+README_FILENAME = "README.md"
+MANIFEST_SCHEMA = "disc-manifest/v1"
+PLACEHOLDER_IMAGE_ID = "img_00000000000000_00"
+PLACEHOLDER_VOLUME_ID = "ARC-IMG-00000000-00"
+PLACEHOLDER_OBJECT = "files/999999.age"
+PLACEHOLDER_SIDECAR = "files/999999.yml.age"
+PLACEHOLDER_COLLECTION_MANIFEST = "collections/999999.yml.age"
+PLACEHOLDER_COLLECTION_PROOF = "collections/999999.ots.age"
 PLACEHOLDER_CHUNK_COUNT = 999999
 
 _MISSING = object()
@@ -18,33 +23,79 @@ def yaml_bytes(obj: Any) -> bytes:
     return yaml.safe_dump(obj, sort_keys=False, allow_unicode=True).encode("utf-8")
 
 
-def manifest_file_entry(path: str, sha256: str, archive: object = _MISSING) -> dict[str, object]:
-    entry: dict[str, object] = {"path": path, "sha256": sha256}
-    if archive is not _MISSING:
-        entry["archive"] = archive
+def _manifest_relpath(path: str) -> str:
+    normalized = path.strip()
+    if not normalized.startswith("/"):
+        normalized = f"/{normalized.lstrip('/')}"
+    return normalized
+
+
+def assign_collection_artifact_paths(collection_ids: Iterable[str]) -> dict[str, tuple[str, str]]:
+    ordered = sorted(collection_ids)
+    width = max(6, len(str(len(ordered) or 1)))
+    return {
+        collection_id: (
+            f"collections/{index:0{width}d}.yml.age",
+            f"collections/{index:0{width}d}.ots.age",
+        )
+        for index, collection_id in enumerate(ordered, start=1)
+    }
+
+
+def manifest_file_entry(
+    path: str,
+    sha256: str,
+    *,
+    plaintext_bytes: int | None = None,
+    object_path: object = _MISSING,
+    sidecar_path: object = _MISSING,
+    parts: object = _MISSING,
+) -> dict[str, object]:
+    entry: dict[str, object] = {
+        "path": _manifest_relpath(path),
+        "sha256": sha256,
+    }
+    if plaintext_bytes is not None:
+        entry["bytes"] = plaintext_bytes
+    if object_path is not _MISSING:
+        entry["object"] = object_path
+    if sidecar_path is not _MISSING:
+        entry["sidecar"] = sidecar_path
+    if parts is not _MISSING:
+        entry["parts"] = parts
     return entry
 
 
 
-def manifest_dump(container: str, collections_payload: list[dict[str, object]]) -> bytes:
+def manifest_dump(image_id: str, volume_id: str, collections_payload: list[dict[str, object]]) -> bytes:
     return yaml_bytes(
         {
             "schema": MANIFEST_SCHEMA,
-            "container": container,
+            "image": {
+                "id": image_id,
+                "volume_id": volume_id,
+            },
             "collections": collections_payload,
         }
     )
 
 
-EMPTY_MANIFEST_SIZE = len(manifest_dump(PLACEHOLDER_CONTAINER, []))
+EMPTY_MANIFEST_SIZE = len(manifest_dump(PLACEHOLDER_IMAGE_ID, PLACEHOLDER_VOLUME_ID, []))
 
 
-def sidecar_dict(file_meta: dict[str, Any], part_index: int = 0, part_count: int = 1) -> dict[str, Any]:
+def sidecar_dict(
+    file_meta: dict[str, Any],
+    *,
+    collection_id: str,
+    part_index: int = 0,
+    part_count: int = 1,
+) -> dict[str, Any]:
     data: dict[str, Any] = {
-        "schema": "sidecar/v1",
-        "path": file_meta["relpath"],
+        "schema": "file-sidecar/v1",
+        "collection": collection_id,
+        "path": _manifest_relpath(str(file_meta["relpath"])),
         "sha256": file_meta["sha256"],
-        "size": file_meta["plaintext_bytes"],
+        "bytes": file_meta["plaintext_bytes"],
         "mode": file_meta.get("mode"),
         "mtime": file_meta.get("mtime"),
     }
@@ -58,29 +109,51 @@ def sidecar_dict(file_meta: dict[str, Any], part_index: int = 0, part_count: int
 
 
 
-def sidecar_bytes(file_meta: dict[str, Any], part_index: int = 0, part_count: int = 1) -> bytes:
-    return yaml_bytes(sidecar_dict(file_meta, part_index=part_index, part_count=part_count))
+def sidecar_bytes(
+    file_meta: dict[str, Any],
+    *,
+    collection_id: str,
+    part_index: int = 0,
+    part_count: int = 1,
+) -> bytes:
+    return yaml_bytes(
+        sidecar_dict(
+            file_meta,
+            collection_id=collection_id,
+            part_index=part_index,
+            part_count=part_count,
+        )
+    )
 
 
 
 def manifest_collection_budget(collection_id: str, files: list[dict[str, Any]]) -> int:
     payload = [
         {
-            "name": collection_id,
+            "id": collection_id,
+            "manifest": PLACEHOLDER_COLLECTION_MANIFEST,
+            "proof": PLACEHOLDER_COLLECTION_PROOF,
             "files": [
                 manifest_file_entry(
                     file_meta["relpath"],
                     file_meta["sha256"],
-                    {
+                    plaintext_bytes=file_meta.get("plaintext_bytes"),
+                    parts={
                         "count": PLACEHOLDER_CHUNK_COUNT,
-                        "chunks": [],
+                        "present": [
+                            {
+                                "index": PLACEHOLDER_CHUNK_COUNT,
+                                "object": PLACEHOLDER_OBJECT,
+                                "sidecar": PLACEHOLDER_SIDECAR,
+                            }
+                        ],
                     },
                 )
                 for file_meta in sorted(files, key=lambda item: item["relpath"])
             ],
         }
     ]
-    return len(manifest_dump(PLACEHOLDER_CONTAINER, payload)) - EMPTY_MANIFEST_SIZE
+    return len(manifest_dump(PLACEHOLDER_IMAGE_ID, PLACEHOLDER_VOLUME_ID, payload)) - EMPTY_MANIFEST_SIZE
 
 
 
@@ -88,15 +161,20 @@ def recovery_readme_bytes(container_name: str) -> bytes:
     lines = [
         f"Archive image: {container_name}",
         "",
-        "This README.txt is intentionally plaintext.",
-        "Every other leaf file in the image is expected to be age-encrypted.",
+        "This README.md is intentionally plaintext.",
+        "Every other file on this disc is expected to be encrypted with age-plugin-batchpass.",
         "",
-        "Suggested recovery flow:",
-        "- decrypt MANIFEST.yml",
-        "- inspect collections[*].files[*].archive",
-        "- decrypt files/<entry>",
-        "- decrypt files/<entry>.meta.yaml for metadata",
-        "- concatenate split chunks in chunk-index order",
+        "Preferred recovery flow:",
+        "- use arc-disc with the API fetch manifest when available",
+        "",
+        "Manual recovery without arc-disc:",
+        "- decrypt DISC.yml.age",
+        "- find the collection and file entry you need",
+        "- decrypt the paired files/*.yml.age sidecar for metadata",
+        "- decrypt the matching files/*.age payload",
+        "- if a file is split, gather every listed part from every disc and concatenate plaintext in ascending part index order",
+        "- if a collection spans multiple discs, gather every disc whose DISC.yml.age lists that collection and reconstruct files by collection id plus path",
+        "- decrypt collections/*.yml.age and collections/*.ots.age to verify the whole-collection manifest and timestamp proof",
         "",
     ]
     return "\n".join(lines).encode("utf-8")

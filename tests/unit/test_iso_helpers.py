@@ -43,7 +43,7 @@ def test_build_iso_cmd_from_root_maps_root(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
     cmd = build_iso_cmd_from_root(image_root=root, volume_id="VOL_ROOT")
-    assert cmd[-3:] == [str(root), "/", "-end"]
+    assert cmd[-3:] == [str(root), "/", "-commit"]
 
 
 
