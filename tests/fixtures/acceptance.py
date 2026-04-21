@@ -22,29 +22,45 @@ from arc_api.app import create_app
 from arc_api.deps import ServiceContainer, get_container
 from arc_core.domain.enums import FetchState
 from arc_core.domain.errors import Conflict, HashMismatch, InvalidState, NotFound
-from arc_core.domain.models import CollectionSummary, CopySummary, FetchCopyHint, FetchSummary, PinSummary
+from arc_core.domain.models import (
+    CollectionSummary,
+    CopySummary,
+    FetchCopyHint,
+    FetchSummary,
+    PinSummary,
+)
 from arc_core.domain.selectors import parse_target
-from arc_core.domain.types import CollectionId, CopyId, EntryId, FetchId, ImageId, Sha256Hex, TargetStr
+from arc_core.domain.types import (
+    CollectionId,
+    CopyId,
+    EntryId,
+    FetchId,
+    ImageId,
+    Sha256Hex,
+    TargetStr,
+)
 from arc_core.services.planning import ImageRootPlanningService, ImageRootRecord
 from tests.fixtures.data import (
     DEFAULT_COPY_CREATED_AT,
     DOCS_COLLECTION_ID,
     DOCS_FILES,
     IMAGE_FIXTURES,
-    IMAGE_ID,
-    INVOICE_TARGET,
     MIN_FILL_BYTES,
     PHOTOS_2024_FILES,
     PHOTOS_COLLECTION_ID,
-    RECEIPT_TARGET,
+    SPLIT_COPY_ONE_ID,
+    SPLIT_COPY_ONE_LOCATION,
+    SPLIT_COPY_TWO_ID,
+    SPLIT_COPY_TWO_LOCATION,
+    SPLIT_FILE_PARTS,
+    SPLIT_FILE_RELPATH,
     SPLIT_IMAGE_FIXTURES,
     STAGING_PATH,
     TARGET_BYTES,
-    TAX_DIRECTORY_TARGET,
     build_file_copy,
+    split_fixture_plaintext,
     write_tree,
 )
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "src"
@@ -56,6 +72,10 @@ class FileCopy:
     location: str
     disc_path: str
     enc: dict[str, object]
+    part_index: int | None = None
+    part_count: int | None = None
+    part_bytes: int | None = None
+    part_sha256: str | None = None
 
     @property
     def hint(self) -> FetchCopyHint:
@@ -262,6 +282,10 @@ class AcceptanceState:
             location=str(item["location"]),
             disc_path=str(item["disc_path"]),
             enc=cast(dict[str, object], item["enc"]),
+            part_index=cast(int | None, item.get("part_index")),
+            part_count=cast(int | None, item.get("part_count")),
+            part_bytes=cast(int | None, item.get("part_bytes")),
+            part_sha256=cast(str | None, item.get("part_sha256")),
         )
 
 
@@ -478,15 +502,8 @@ class AcceptanceFetchService:
                     "path": entry.path,
                     "bytes": entry.bytes,
                     "sha256": str(entry.sha256),
-                    "copies": [
-                        {
-                            "copy": str(copy.id),
-                            "location": copy.location,
-                            "disc_path": copy.disc_path,
-                            "enc": copy.enc,
-                        }
-                        for copy in entry.copies
-                    ],
+                    "copies": [self._manifest_copy(copy) for copy in entry.copies],
+                    "parts": self._manifest_parts(entry),
                 }
                 for entry in record.entries.values()
             ],
@@ -561,6 +578,49 @@ class AcceptanceFetchService:
                 seen.add(copy.id)
                 out.append(copy.hint)
         return out
+
+    @staticmethod
+    def _manifest_copy(copy: FileCopy) -> dict[str, object]:
+        return {
+            "copy": str(copy.id),
+            "location": copy.location,
+            "disc_path": copy.disc_path,
+            "enc": copy.enc,
+        }
+
+    def _manifest_parts(self, entry: FetchEntryRecord) -> list[dict[str, object]]:
+        if not entry.copies:
+            return []
+
+        if all(copy.part_index is None for copy in entry.copies):
+            return [
+                {
+                    "index": 0,
+                    "bytes": entry.bytes,
+                    "sha256": str(entry.sha256),
+                    "copies": [self._manifest_copy(copy) for copy in entry.copies],
+                }
+            ]
+
+        part_count = max((copy.part_count or 1) for copy in entry.copies)
+        parts: list[dict[str, object]] = []
+        for part_index in range(part_count):
+            part_copies = [copy for copy in entry.copies if copy.part_index == part_index]
+            if not part_copies:
+                raise NotFound(f"missing copy hints for part {part_index} of entry {entry.id}")
+            bytes_hint = part_copies[0].part_bytes
+            sha256_hint = part_copies[0].part_sha256
+            if bytes_hint is None or sha256_hint is None:
+                raise NotFound(f"missing part metadata for part {part_index} of entry {entry.id}")
+            parts.append(
+                {
+                    "index": part_index,
+                    "bytes": bytes_hint,
+                    "sha256": sha256_hint,
+                    "copies": [self._manifest_copy(copy) for copy in part_copies],
+                }
+            )
+        return parts
 
     def _hot_payload(self, raw_target: str) -> dict[str, object]:
         selected = self.state.selected_files(raw_target)
@@ -771,7 +831,7 @@ class AcceptanceSystem:
             check=False,
         )
 
-    def run_arc_disc(self, *args: str) -> subprocess.CompletedProcess[str]:
+    def run_arc_disc(self, *args: str, input_text: str = "\n" * 16) -> subprocess.CompletedProcess[str]:
         if not self.fixture_path.exists():
             self.configure_arc_disc_fixture()
         env = self._subprocess_env(
@@ -785,6 +845,7 @@ class AcceptanceSystem:
             [sys.executable, "-m", "arc_disc.main", *args],
             cwd=REPO_ROOT,
             env=env,
+            input=input_text,
             capture_output=True,
             text=True,
             check=False,
@@ -824,6 +885,46 @@ class AcceptanceSystem:
                         collection_id=DOCS_COLLECTION_ID,
                         path="tax/2022/invoice-123.pdf",
                     )
+                ],
+                "tax/2022/receipt-456.pdf": [
+                    build_file_copy(
+                        copy_id="copy-docs-2",
+                        location="vault-a/shelf-02",
+                        collection_id=DOCS_COLLECTION_ID,
+                        path="tax/2022/receipt-456.pdf",
+                    )
+                ],
+            },
+        )
+
+    def seed_docs_archive_with_split_invoice(self) -> None:
+        self.state.seed_collection(
+            DOCS_COLLECTION_ID,
+            DOCS_FILES,
+            hot_paths={"tax/2022/receipt-456.pdf", "letters/cover.txt"},
+            archived_paths={"tax/2022/invoice-123.pdf", "tax/2022/receipt-456.pdf"},
+            copies_by_path={
+                "tax/2022/invoice-123.pdf": [
+                    build_file_copy(
+                        copy_id=SPLIT_COPY_ONE_ID,
+                        location=SPLIT_COPY_ONE_LOCATION,
+                        collection_id=DOCS_COLLECTION_ID,
+                        path=SPLIT_FILE_RELPATH,
+                        part_index=0,
+                        part_count=len(SPLIT_FILE_PARTS),
+                        part_bytes=len(SPLIT_FILE_PARTS[0]),
+                        part_sha256=hashlib.sha256(SPLIT_FILE_PARTS[0]).hexdigest(),
+                    ),
+                    build_file_copy(
+                        copy_id=SPLIT_COPY_TWO_ID,
+                        location=SPLIT_COPY_TWO_LOCATION,
+                        collection_id=DOCS_COLLECTION_ID,
+                        path=SPLIT_FILE_RELPATH,
+                        part_index=1,
+                        part_count=len(SPLIT_FILE_PARTS),
+                        part_bytes=len(SPLIT_FILE_PARTS[1]),
+                        part_sha256=hashlib.sha256(SPLIT_FILE_PARTS[1]).hexdigest(),
+                    ),
                 ],
                 "tax/2022/receipt-456.pdf": [
                     build_file_copy(
@@ -882,12 +983,21 @@ class AcceptanceSystem:
     def pins_list(self) -> list[str]:
         return [str(item.target) for item in self.pins.list_pins()]
 
+    def uploaded_entry_content(self, fetch_id: str, entry_path: str) -> bytes | None:
+        record = self.state.fetches[FetchId(fetch_id)]
+        for entry in record.entries.values():
+            if entry.path == entry_path:
+                return entry.uploaded_content
+        raise NotFound(f"entry not found for {fetch_id}: {entry_path}")
+
     def configure_arc_disc_fixture(
         self,
         *,
         fetch_id: str = "fx-1",
         fail_path: str | None = None,
         corrupt_path: str | None = None,
+        fail_copy_ids: set[str] | None = None,
+        corrupt_copy_ids: set[str] | None = None,
     ) -> None:
         manifest = cast(dict[str, Any], self.fetches.manifest(fetch_id))
         files_by_path = {
@@ -896,20 +1006,28 @@ class AcceptanceSystem:
         encrypted_by_disc_path: dict[str, str] = {}
         plaintext_by_fixture_key: dict[str, str] = {}
         fail_disc_paths: list[str] = []
+        fail_copy_ids = fail_copy_ids or set()
+        corrupt_copy_ids = corrupt_copy_ids or set()
 
         for entry in cast(list[dict[str, Any]], manifest["entries"]):
-            copy_info = cast(list[dict[str, Any]], entry["copies"])[0]
             entry_path = str(entry["path"])
-            disc_path = str(copy_info["disc_path"])
-            fixture_key = str(copy_info["enc"]["fixture_key"])
-            plaintext = files_by_path[entry_path]
-            if entry_path == corrupt_path:
-                plaintext = plaintext + b"corrupted-by-fixture\n"
-            encrypted = f"ciphertext::{fixture_key}".encode("utf-8")
-            encrypted_by_disc_path[disc_path] = base64.b64encode(encrypted).decode("ascii")
-            plaintext_by_fixture_key[fixture_key] = base64.b64encode(plaintext).decode("ascii")
-            if entry_path == fail_path:
-                fail_disc_paths.append(disc_path)
+            parts = cast(list[dict[str, Any]], entry["parts"])
+            plaintext_parts = split_fixture_plaintext(files_by_path[entry_path], len(parts))
+            for part in parts:
+                part_index = int(part["index"])
+                part_plaintext = plaintext_parts[part_index]
+                for copy_info in cast(list[dict[str, Any]], part["copies"]):
+                    copy_id = str(copy_info["copy"])
+                    disc_path = str(copy_info["disc_path"])
+                    fixture_key = str(copy_info["enc"]["fixture_key"])
+                    plaintext = part_plaintext
+                    if entry_path == corrupt_path or copy_id in corrupt_copy_ids:
+                        plaintext = plaintext + b"corrupted-by-fixture\n"
+                    encrypted = f"ciphertext::{fixture_key}".encode()
+                    encrypted_by_disc_path[disc_path] = base64.b64encode(encrypted).decode("ascii")
+                    plaintext_by_fixture_key[fixture_key] = base64.b64encode(plaintext).decode("ascii")
+                    if entry_path == fail_path or copy_id in fail_copy_ids:
+                        fail_disc_paths.append(disc_path)
 
         payload = {
             "reader": {

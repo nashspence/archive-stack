@@ -22,12 +22,20 @@ class FetchManifestCopyOut(ArcModel):
     enc: dict
 
 
+class FetchManifestPartOut(ArcModel):
+    index: int
+    bytes: int
+    sha256: str
+    copies: list[FetchManifestCopyOut]
+
+
 class FetchManifestEntryOut(ArcModel):
     id: str
     path: str
     bytes: int
     sha256: str
     copies: list[FetchManifestCopyOut]
+    parts: list[FetchManifestPartOut]
 
 
 class FetchManifestResponse(ArcModel):

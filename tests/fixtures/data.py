@@ -23,7 +23,6 @@ from arc_core.planner.manifest import (
     sidecar_bytes,
 )
 
-
 STAGING_PATH = "/staging/photos-2024"
 PHOTOS_COLLECTION_ID = "photos-2024"
 DOCS_COLLECTION_ID = "docs"
@@ -319,6 +318,10 @@ IMAGE_FIXTURES: tuple[ImageFixture, ...] = (
 
 SPLIT_FILE_RELPATH = "tax/2022/invoice-123.pdf"
 SPLIT_FILE_PARTS = split_fixture_plaintext(DOCS_FILES[SPLIT_FILE_RELPATH], 2)
+SPLIT_COPY_ONE_ID = "copy-docs-split-1"
+SPLIT_COPY_TWO_ID = "copy-docs-split-2"
+SPLIT_COPY_ONE_LOCATION = "vault-a/shelf-03"
+SPLIT_COPY_TWO_LOCATION = "vault-a/shelf-04"
 SPLIT_IMAGE_ONE_ID = "img_2026-04-20_03"
 SPLIT_IMAGE_TWO_ID = "img_2026-04-20_04"
 
@@ -372,17 +375,46 @@ SPLIT_IMAGE_FIXTURES: tuple[ImageFixture, ...] = (
 )
 
 
-def build_file_copy(*, copy_id: str, location: str, collection_id: str, path: str) -> dict[str, object]:
+def build_file_copy(
+    *,
+    copy_id: str,
+    location: str,
+    collection_id: str,
+    path: str,
+    part_index: int | None = None,
+    part_count: int | None = None,
+    part_bytes: int | None = None,
+    part_sha256: str | None = None,
+) -> dict[str, object]:
+    if (part_index is None) != (part_count is None):
+        raise ValueError("part_index and part_count must be provided together")
+    if part_index is None and (part_bytes is not None or part_sha256 is not None):
+        raise ValueError("part metadata requires part_index and part_count")
+
     normalized = path.replace("/", "-")
-    return {
+    suffix = ""
+    if part_index is not None and part_count is not None:
+        suffix = f"--part-{part_index + 1}-of-{part_count}"
+
+    payload: dict[str, object] = {
         "id": copy_id,
         "location": location,
-        "disc_path": f"/copies/{copy_id}/{collection_id}-{normalized}.age",
+        "disc_path": f"/copies/{copy_id}/{collection_id}-{normalized}{suffix}.age",
         "enc": {
             "alg": "fixture-age",
-            "fixture_key": f"{copy_id}:{collection_id}:{path}",
+            "fixture_key": f"{copy_id}:{collection_id}:{path}{suffix}",
         },
     }
+    if part_index is not None and part_count is not None:
+        payload.update(
+            {
+                "part_index": part_index,
+                "part_count": part_count,
+                "part_bytes": part_bytes,
+                "part_sha256": part_sha256,
+            }
+        )
+    return payload
 
 
 def write_tree(root: Path, files: Mapping[str, bytes]) -> Path:
