@@ -204,6 +204,14 @@ def _prepare_arc_expectation(
         context.expected_api_payload = acceptance_system.request("GET", "/v1/plan").json()
         return
 
+    if argv[1] == "pins":
+        context.expected_api_endpoint = ("GET", "/v1/pins")
+        context.expected_api_payload = acceptance_system.request("GET", "/v1/pins").json()
+        return
+
+    if argv[1] == "fetch":
+        return
+
     raise AssertionError(f"unsupported arc command: {argv}")
 
 
@@ -314,6 +322,17 @@ def given_file_is_archived(acceptance_system: AcceptanceSystem, target: str) -> 
 def given_file_is_not_hot(acceptance_system: AcceptanceSystem, target: str) -> None:
     acceptance_system.seed_docs_archive()
     assert acceptance_system.state.is_hot(target) is False
+
+
+@given(parsers.parse('archived target "{target}" is pinned with fetch "{fetch_id}"'))
+def given_archived_target_is_pinned_with_fetch(
+    acceptance_system: AcceptanceSystem,
+    target: str,
+    fetch_id: str,
+) -> None:
+    acceptance_system.seed_docs_archive()
+    acceptance_system.seed_pin(target)
+    acceptance_system.seed_fetch(fetch_id, target)
 
 
 @given(parsers.parse('split archived fetch "{fetch_id}" exists for target "{target}"'))
@@ -558,6 +577,16 @@ def when_client_posts(
     _set_response(acceptance_context, response)
 
 
+@when(parsers.parse('the client posts to "{path}" again'))
+def when_client_posts_again(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+    path: str,
+) -> None:
+    response = acceptance_system.request("POST", path)
+    _set_response(acceptance_context, response, append=True)
+
+
 @when(parsers.parse('the client posts to "{path}" with path "{staging_path}"'))
 def when_client_posts_with_path(
     acceptance_system: AcceptanceSystem,
@@ -785,6 +814,8 @@ def then_response_contains_file_results(
 
 
 @then("each file result contains a canonical target")
+@then("each file result contains a canonical selector")
+@then("each file result contains a projected-path selector")
 def then_each_file_result_contains_canonical_target(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
@@ -792,6 +823,8 @@ def then_each_file_result_contains_canonical_target(
     file_results = [item for item in payload["results"] if item["kind"] == "file"]
     assert file_results
     assert all(result["target"] for result in file_results)
+    assert all(":" not in str(result["target"]) for result in file_results)
+    assert all(not str(result["target"]).startswith("/") for result in file_results)
 
 
 @then("each file result contains current hot availability")
@@ -949,6 +982,32 @@ def then_pins_still_contains_target(
     assert target in pins
 
 
+def _pin_entry(acceptance_system: AcceptanceSystem, target: str) -> dict[str, object]:
+    pins = acceptance_system.request("GET", "/v1/pins").json()["pins"]
+    for entry in pins:
+        if entry["target"] == target:
+            return entry
+    raise AssertionError(f'pin entry not found for target "{target}"')
+
+
+@then(parsers.parse('"/v1/pins" entry for target "{target}" contains fetch id "{fetch_id}"'))
+def then_pins_entry_contains_fetch_id(
+    acceptance_system: AcceptanceSystem,
+    target: str,
+    fetch_id: str,
+) -> None:
+    assert _pin_entry(acceptance_system, target)["fetch"]["id"] == fetch_id
+
+
+@then(parsers.parse('"/v1/pins" entry for target "{target}" contains fetch state "{state}"'))
+def then_pins_entry_contains_fetch_state(
+    acceptance_system: AcceptanceSystem,
+    target: str,
+    state: str,
+) -> None:
+    assert _pin_entry(acceptance_system, target)["fetch"]["state"] == state
+
+
 @then(parsers.parse('file "{target}" remains hot'))
 @then(parsers.parse('target "{target}" is hot'))
 def then_target_is_hot(
@@ -956,6 +1015,15 @@ def then_target_is_hot(
     target: str,
 ) -> None:
     assert acceptance_system.state.is_hot(target) is True
+
+
+@then(parsers.parse('file "{target}" is not hot'))
+@then(parsers.parse('target "{target}" is not hot'))
+def then_target_is_not_hot(
+    acceptance_system: AcceptanceSystem,
+    target: str,
+) -> None:
+    assert acceptance_system.state.is_hot(target) is False
 
 
 @then(parsers.parse('target "{target}" is pinned'))
@@ -1138,6 +1206,19 @@ def then_fetch_manifest_part_hashes_match_fixture(
     ]
 
 
+@then(
+    parsers.re(r'fetch manifest entry "(?P<entry_id>[^"]+)" contains "(?P<first>[^"]+)"(?P<rest>.*)')
+)
+def then_fetch_manifest_entry_contains_fields(
+    acceptance_context: AcceptanceScenarioContext,
+    entry_id: str,
+    first: str,
+    rest: str,
+) -> None:
+    entry = _response_manifest_entry(acceptance_context, entry_id)
+    assert set([first, *_quoted_values(rest)]).issubset(entry)
+
+
 @then(parsers.parse("the command exits with code {exit_code:d}"))
 def then_command_exits_with_code(
     acceptance_context: AcceptanceScenarioContext,
@@ -1172,6 +1253,22 @@ def then_stdout_mentions_target(
     target: str,
 ) -> None:
     assert target in _require_command(acceptance_context).stdout
+
+
+@then(parsers.parse('stdout mentions "{text}"'))
+def then_stdout_mentions_text(
+    acceptance_context: AcceptanceScenarioContext,
+    text: str,
+) -> None:
+    assert text in _require_command(acceptance_context).stdout
+
+
+@then(parsers.parse('stdout does not mention "{text}"'))
+def then_stdout_does_not_mention_text(
+    acceptance_context: AcceptanceScenarioContext,
+    text: str,
+) -> None:
+    assert text not in _require_command(acceptance_context).stdout
 
 
 @then(parsers.parse('stdout mentions fetch id "{fetch_id}"'))
@@ -1360,6 +1457,14 @@ def then_fetch_is_not_state(
     assert acceptance_system.fetches.get(fetch_id).state.value != state
 
 
+@then(parsers.parse('fetch "{fetch_id}" no longer exists'))
+def then_fetch_no_longer_exists(
+    acceptance_system: AcceptanceSystem,
+    fetch_id: str,
+) -> None:
+    assert fetch_id not in {str(current) for current in acceptance_system.state.fetches}
+
+
 @then(parsers.parse('stderr mentions copy id "{copy_id}"'))
 def then_stderr_mentions_copy_id(
     acceptance_context: AcceptanceScenarioContext,
@@ -1368,12 +1473,29 @@ def then_stderr_mentions_copy_id(
     assert copy_id in _require_command(acceptance_context).stderr
 
 
+@then(parsers.parse('stderr mentions "{text}"'))
+def then_stderr_mentions_text(
+    acceptance_context: AcceptanceScenarioContext,
+    text: str,
+) -> None:
+    assert text in _require_command(acceptance_context).stderr
+
+
 @then(parsers.parse('stderr does not mention copy id "{copy_id}"'))
 def then_stderr_does_not_mention_copy_id(
     acceptance_context: AcceptanceScenarioContext,
     copy_id: str,
 ) -> None:
     assert copy_id not in _require_command(acceptance_context).stderr
+
+
+@then("both upload-session responses contain the same upload url")
+def then_upload_session_responses_reuse_upload_url(
+    acceptance_context: AcceptanceScenarioContext,
+) -> None:
+    assert len(acceptance_context.responses) == 2
+    payloads = [_json_payload(response) for response in acceptance_context.responses]
+    assert payloads[0]["upload_url"] == payloads[1]["upload_url"]
 
 
 @then(parsers.parse('the recovery state directory contains staged part {part_index:d} for entry "{entry_id}"'))

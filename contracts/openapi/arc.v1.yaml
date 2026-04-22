@@ -285,10 +285,10 @@ paths:
                 $ref: "#/components/schemas/FetchManifest"
         default:
           $ref: "#/components/responses/Error"
-  /fetches/{fetch_id}/files/{entry_id}:
-    put:
-      summary: Upload one recovered file
-      operationId: uploadFetchEntry
+  /fetches/{fetch_id}/entries/{entry_id}/upload:
+    post:
+      summary: Create or resume one fetch-entry upload resource
+      operationId: createOrResumeFetchEntryUpload
       parameters:
         - in: path
           name: fetch_id
@@ -298,29 +298,13 @@ paths:
           name: entry_id
           required: true
           schema: { type: string }
-        - in: header
-          name: X-Sha256
-          required: true
-          schema: { type: string }
-      requestBody:
-        required: true
-        content:
-          application/octet-stream:
-            schema:
-              type: string
-              format: binary
       responses:
         "200":
-          description: Entry upload accepted
+          description: Upload resource ready
           content:
             application/json:
               schema:
-                type: object
-                required: [entry, accepted, bytes]
-                properties:
-                  entry: { type: string }
-                  accepted: { type: boolean }
-                  bytes: { type: integer }
+                $ref: "#/components/schemas/FetchUploadSession"
         default:
           $ref: "#/components/responses/Error"
   /fetches/{fetch_id}/complete:
@@ -359,10 +343,13 @@ components:
   schemas:
     Target:
       type: string
-      description: Canonical target string selecting a collection, directory target, or file target. The collection component may itself contain `/`.
+      description: Canonical projected-path selector relative to the hot-view root. Directory selectors end with `/` and file selectors do not.
     FetchState:
       type: string
       enum: [waiting_media, uploading, verifying, done, failed]
+    FetchEntryUploadState:
+      type: string
+      enum: [pending, partial, uploaded]
     CollectionSummary:
       type: object
       required: [id, files, bytes, hot_bytes, archived_bytes, pending_bytes]
@@ -456,10 +443,19 @@ components:
         missing_bytes: { type: integer }
     PinSummary:
       type: object
-      required: [target]
+      required: [target, fetch]
       properties:
         target:
           $ref: "#/components/schemas/Target"
+        fetch:
+          $ref: "#/components/schemas/FetchHint"
+    FetchHint:
+      type: object
+      required: [id, state]
+      properties:
+        id: { type: string }
+        state:
+          $ref: "#/components/schemas/FetchState"
     FetchCopyHint:
       type: object
       required: [id, volume_id, location]
@@ -471,7 +467,21 @@ components:
         location: { type: string }
     FetchSummary:
       type: object
-      required: [id, target, state, files, bytes, copies]
+      required:
+        [
+          id,
+          target,
+          state,
+          files,
+          bytes,
+          entries_total,
+          entries_pending,
+          entries_partial,
+          entries_uploaded,
+          uploaded_bytes,
+          missing_bytes,
+          copies,
+        ]
       properties:
         id: { type: string }
         target:
@@ -480,6 +490,17 @@ components:
           $ref: "#/components/schemas/FetchState"
         files: { type: integer }
         bytes: { type: integer }
+        entries_total: { type: integer }
+        entries_pending: { type: integer }
+        entries_partial: { type: integer }
+        entries_uploaded: { type: integer }
+        uploaded_bytes: { type: integer }
+        missing_bytes: { type: integer }
+        upload_state_expires_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
         copies:
           type: array
           items:
@@ -499,16 +520,46 @@ components:
           additionalProperties: true
     FetchManifestEntry:
       type: object
-      required: [id, path, bytes, sha256, copies]
+      required: [id, target, bytes, sha256, upload, copies]
       properties:
         id: { type: string }
-        path: { type: string }
+        target:
+          $ref: "#/components/schemas/Target"
+        bytes: { type: integer }
+        sha256: { type: string }
+        upload:
+          $ref: "#/components/schemas/FetchManifestEntryUpload"
+        copies:
+          type: array
+          items:
+            $ref: "#/components/schemas/FetchManifestEntryCopy"
+        parts:
+          type: array
+          items:
+            $ref: "#/components/schemas/FetchManifestPart"
+    FetchManifestPart:
+      type: object
+      required: [index, bytes, sha256, copies]
+      properties:
+        index: { type: integer }
         bytes: { type: integer }
         sha256: { type: string }
         copies:
           type: array
           items:
             $ref: "#/components/schemas/FetchManifestEntryCopy"
+    FetchManifestEntryUpload:
+      type: object
+      required: [state, uploaded_bytes]
+      properties:
+        state:
+          $ref: "#/components/schemas/FetchEntryUploadState"
+        uploaded_bytes: { type: integer }
+        expires_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
     FetchManifest:
       type: object
       required: [id, target, entries]
@@ -562,18 +613,36 @@ components:
         hot:
           $ref: "#/components/schemas/HotStatus"
         fetch:
-          oneOf:
-            - type: "null"
+          allOf:
+            - $ref: "#/components/schemas/FetchHint"
             - type: object
-              required: [id, state, copies]
+              required: [copies]
               properties:
-                id: { type: string }
-                state:
-                  $ref: "#/components/schemas/FetchState"
                 copies:
                   type: array
                   items:
                     $ref: "#/components/schemas/FetchCopyHint"
+    FetchUploadSession:
+      type: object
+      required: [entry, protocol, upload_url, offset, length, checksum_algorithm, expires_at]
+      properties:
+        entry: { type: string }
+        protocol:
+          type: string
+          const: tus
+        upload_url:
+          type: string
+          format: uri
+        offset: { type: integer }
+        length: { type: integer }
+        checksum_algorithm:
+          type: string
+          const: sha256
+        expires_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
     PlanImage:
       type: object
       required: [id, bytes, fill, collections, files, iso_ready]

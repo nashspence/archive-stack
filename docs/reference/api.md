@@ -5,7 +5,8 @@ This document summarizes the MVP HTTP and CLI contract. The canonical machine-re
 
 ## HTTP API
 
-All endpoints are under `/v1`. Requests and responses use JSON unless otherwise specified.
+All JSON endpoints are under `/v1`. Requests and responses use JSON unless otherwise specified.
+Resumable fetch-entry upload URLs are returned by the JSON API and use tus-compatible transport semantics.
 
 ### Collections
 
@@ -35,13 +36,14 @@ Required behavior:
 
 #### `GET /v1/search?q=<query>&limit=<n>`
 
-Returns collection and file targets that can be used directly with `pin` and `release`.
+Returns collection and file selectors that can be used directly with `pin` and `release`.
 
 Required behavior:
 
 - search is case-insensitive substring match over collection ids and full logical file paths
 - file results include current hot availability
 - file results include available copies, if any
+- returned selectors use projected-path syntax only
 - `limit` is honored
 
 ### Collections summary
@@ -113,49 +115,69 @@ Pins a target into hot storage.
 
 Required behavior:
 
+- the `target` field carries one canonical selector over the projected hot namespace
 - successful pin keeps the target desired in hot until explicitly released
-- if all targeted bytes are already hot, no fetch is created
-- if some targeted bytes are archived but not hot, a fetch is created or reused
-- repeated pin of the same canonical target is idempotent
+- every successful exact pin creates or reuses one fetch manifest for that same selector
+- if all targeted bytes are already hot, the returned fetch manifest is already in state `done`
+- if some targeted bytes are archived but not hot, the returned fetch manifest is created or reused in a non-`done`
+  state
+- repeated pin of the same canonical selector is idempotent
 
 #### `POST /v1/release`
 
-Releases exactly one canonical target pin.
+Releases exactly one canonical selector pin.
 
 Required behavior:
 
 - releasing a non-existent exact pin is a successful no-op
 - releasing a broader pin must not remove narrower remaining pins
 - releasing a narrower pin must not remove broader remaining pins
+- releasing the last exact pin for one selector abandons and removes that selector's fetch manifest
+- releasing one exact pin also removes any hot files that are no longer selected by a remaining pin
 
 #### `GET /v1/pins`
 
 Lists active pins.
 
+Required behavior:
+
+- every returned pin includes its associated fetch id and current fetch state
+
 ### Fetches
 
 #### `GET /v1/fetches/{fetch_id}`
 
-Returns one fetch summary.
+Returns one pin-scoped fetch summary.
 
 #### `GET /v1/fetches/{fetch_id}/manifest`
 
-Returns a stable manifest for the fetch lifetime.
+Returns a stable manifest for the exact pin lifetime.
 
 - the fetch manifest is the source of truth for automated multipart recovery
 - multipart logical files include part-level recovery hints
 - `entries[].parts[]` are ordered by zero-based `index`
 - every part hint includes exact plaintext `bytes`, plaintext `sha256`, and at least one candidate recovery copy
-- those hints drive disc sequencing and local resumable recovery state in `arc-disc`
-- the API still accepts one final plaintext upload per logical file
+- each manifest entry exposes current upload state, uploaded bytes, and upload expiry if partial state exists
+- those hints drive disc sequencing and resumable recovery in `arc-disc`
+- incomplete upload state expires after `INCOMPLETE_UPLOAD_TTL` since the last accepted chunk and the manifest returns to
+  `waiting_media`
+- fetch summaries expose an audit field such as `upload_state_expires_at`
 
-#### `PUT /v1/fetches/{fetch_id}/files/{entry_id}`
+#### `POST /v1/fetches/{fetch_id}/entries/{entry_id}/upload`
 
-Uploads one recovered plaintext file and verifies it against the expected hash.
+Creates or resumes the resumable upload resource for one manifest entry.
+
+Required behavior:
+
+- the response returns one upload URL bound to exactly one logical file entry
+- the returned upload URL uses tus-compatible resumable upload semantics
+- the response includes current offset, total length, checksum algorithm, and expiry time
+- repeated calls while the upload remains resumable return the current upload resource rather than creating duplicates
 
 #### `POST /v1/fetches/{fetch_id}/complete`
 
-Finalizes a fetch once all required entries have been uploaded and verified.
+Marks the fetch manifest satisfied once all required entries have been uploaded, verified, and materialized. The
+manifest remains readable while the exact pin remains active.
 
 ## Error model
 
@@ -190,22 +212,42 @@ The `arc` CLI is a thin API client and should provide at least:
 - `arc pins`
 - `arc fetch FETCH_ID`
 
+`arc fetch FETCH_ID` should provide a concise human-readable listing of:
+
+- files still pending upload
+- files currently partial and still resumable
+- the expiry time for each partial upload
+
 ### `arc-disc`
 
 The `arc-disc` CLI is a fetch-fulfillment client for a machine with an optical drive and should provide:
 
-- `arc-disc fetch FETCH_ID --state-dir PATH [--device DEVICE]`
+- `arc-disc fetch FETCH_ID [--device DEVICE]`
 
 For multipart recovery, one invocation should continue across successive discs until every required
-part has been staged, reconstructed, verified, and uploaded.
+part has been recovered, streamed, verified, and uploaded.
+
+Required behavior:
+
+- complete files stream straight from optical recovery into the upload resource rather than being materialized to disk
+  first
+- split files stream into the same logical-file upload resource in ascending part order
+- any temporary buffering used during recovery is an internal implementation detail
+- progress output is precise and continuous, including current transfer rate, percent complete for the current file, and
+  percent complete for the whole manifest
 
 ## Behavioral invariants
 
-- pinning the same target twice results in exactly one active pin
+- pinning the same selector twice results in exactly one active pin
+- pinning the same exact selector twice reuses the same fetch manifest while that exact pin remains present
 - releasing a target not currently pinned is a successful no-op
 - a file is logically required in hot if and only if at least one active pin selects it
 - immediately after collection close, every file in the collection is hot
+- every active pin has exactly one associated fetch manifest, even when the selected bytes are already hot
 - a file restored by a completed fetch is hot
+- upload-state expiry for a manifest discards incomplete partial uploads and returns that manifest to `waiting_media`
+- `INCOMPLETE_UPLOAD_TTL` defaults to `24h`
+- fetch upload progress is tracked per logical file, not per disc fragment
 - before the first ISO download request, a planned image may still be re-allocated and has `volume_id = null`
 - the first successful ISO download finalizes the image allocation and stores immutable `volume_id` for that `image.id`
 - subsequent ISO downloads for the same `image.id` use the same `volume_id` and represented bytes
@@ -213,4 +255,4 @@ part has been staged, reconstructed, verified, and uploaded.
 - a physical copy is identified by `(volume_id, copy_id)`, never by `location`
 - duplicate `copy_id` values are rejected within one finalized image/`volume_id`
 - no collection id is an ancestor or descendant of another collection id
-- the same canonical target string means the same file set everywhere in API and CLI
+- the same canonical selector string means the same projected file set everywhere in API and CLI

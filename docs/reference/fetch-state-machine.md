@@ -13,6 +13,7 @@
 ```text
 waiting_media -> uploading -> verifying -> done
 waiting_media -> uploading -> verifying -> failed
+uploading -> waiting_media
 waiting_media -> failed
 uploading -> failed
 verifying -> failed
@@ -22,11 +23,11 @@ verifying -> failed
 
 ### waiting_media
 
-The fetch exists and requires optical recovery input.
+The pin-scoped fetch manifest exists, is still selected by an exact pin, and requires optical recovery input.
 
 ### uploading
 
-One or more recovered files are being uploaded.
+One or more recovered files are being streamed directly from optical recovery into resumable upload resources.
 
 ### verifying
 
@@ -34,8 +35,15 @@ All required files have been uploaded and are being verified and materialized.
 
 ### done
 
-All required files are verified and materialized in hot storage.
+All bytes selected by the exact pinned selector are currently hot. The manifest remains readable until that exact pin is
+released.
 
 ### failed
 
 The fetch cannot currently complete.
+
+## Upload-state expiry
+
+- incomplete upload state expires after `INCOMPLETE_UPLOAD_TTL` since the last accepted chunk for that manifest
+- expiry discards incomplete cached upload data and moves the manifest back to `waiting_media`
+- the fetch summary should expose the expiry boundary as an audit field such as `upload_state_expires_at`

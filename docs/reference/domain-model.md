@@ -8,7 +8,7 @@ Use these five nouns consistently:
 - `image` — one provisional or finalized ISO artifact
 - `copy` — one physical burned disc of an image
 - `pin` — a declared requirement to keep a target materialized in hot storage
-- `fetch` — an operational recovery job created only when a pin needs archived bytes that are not currently hot
+- `fetch` — the pin-scoped recovery manifest for one exact selector
 
 ## Core terms
 
@@ -31,6 +31,8 @@ A logical file identified by `(collection_id, path)`.
 
 The server-side materialized cache of file bytes currently available without optical recovery.
 
+Selectors operate over the projected hot namespace, not over literal hot-store paths on disk.
+
 ### Image
 
 A planned optical artifact addressed by stable API `image.id`.
@@ -45,7 +47,10 @@ Image lifecycle rules:
 
 ### Target
 
-A selector naming either a whole collection, a directory prefix within a collection, or a single file within a collection.
+A selector over the projected hot namespace naming either:
+
+- a projected directory that may span multiple collections
+- a projected file
 
 ### Copy
 
@@ -108,10 +113,18 @@ A fetch summary exposes at least:
 - `state`
 - `files`
 - `bytes`
+- `entries_total`
+- `entries_pending`
+- `entries_partial`
+- `entries_uploaded`
+- `uploaded_bytes`
+- `missing_bytes`
 - `copies`
+- `upload_state_expires_at`
 
 ### Pin summary
 
 A pin summary exposes at least:
 
 - `target`
+- `fetch`

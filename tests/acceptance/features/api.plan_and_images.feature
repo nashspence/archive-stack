@@ -51,7 +51,7 @@ Feature: Plan and images API
       And every referenced collection manifest matches the collection hash manifest contract
       And every referenced file sidecar matches the file sidecar contract
       And the current ISO README documents split-file recovery
-      And the current ISO payload for "docs:/tax/2022/invoice-123.pdf" decrypts to the original plaintext
+      And the current ISO payload for "docs/tax/2022/invoice-123.pdf" decrypts to the original plaintext
 
     Scenario: Split image parts are listed per disc and reconstruct the logical file
       Given an archive with split planner fixtures
@@ -73,7 +73,7 @@ Feature: Plan and images API
       And every referenced file sidecar matches the file sidecar contract
       And the current ISO lists split file "/tax/2022/invoice-123.pdf" part 2 of 2
       And the current split payload for "/tax/2022/invoice-123.pdf" is recorded
-      And the recorded split payloads for "docs:/tax/2022/invoice-123.pdf" reconstruct the original plaintext
+      And the recorded split payloads for "docs/tax/2022/invoice-123.pdf" reconstruct the original plaintext
 
   Rule: Registering a copy increases archived coverage
     Background:

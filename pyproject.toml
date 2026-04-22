@@ -63,6 +63,7 @@ markers = [
   "cli: CLI-focused contract coverage",
   "integration: non-contract regression coverage",
   "mvp: MVP contract coverage",
+  "xfail_contract: executable contract scenario that intentionally leads implementation",
 ]
 
 [tool.mypy]
