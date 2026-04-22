@@ -41,6 +41,7 @@ from tests.fixtures.data import (
     SPLIT_FILE_RELPATH,
     TAX_DIRECTORY_TARGET,
     fixture_encrypt_bytes,
+    split_fixture_plaintext,
 )
 
 
