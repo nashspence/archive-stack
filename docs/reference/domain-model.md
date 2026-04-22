@@ -5,7 +5,7 @@
 Use these five nouns consistently:
 
 - `collection` — the logical namespace the user thinks in
-- `image` — one planned ISO artifact
+- `image` — one provisional or finalized ISO artifact
 - `copy` — one physical burned disc of an image
 - `pin` — a declared requirement to keep a target materialized in hot storage
 - `fetch` — an operational recovery job created only when a pin needs archived bytes that are not currently hot
@@ -31,9 +31,31 @@ A logical file identified by `(collection_id, path)`.
 
 The server-side materialized cache of file bytes currently available without optical recovery.
 
+### Image
+
+A planned optical artifact addressed by stable API `image.id`.
+
+Image lifecycle rules:
+
+- before the first ISO download request, an image is provisional and its represented collections may still be
+  re-allocated by the planner
+- the first ISO download request finalizes the image allocation
+- finalization assigns and stores immutable `volume_id` for that `image.id`
+- `volume_id` is the media-facing identifier carried in the ISO and disc manifest
+
 ### Target
 
 A selector naming either a whole collection, a directory prefix within a collection, or a single file within a collection.
+
+### Copy
+
+A physical burned disc identified by `(volume_id, copy_id)`.
+
+Copy rules:
+
+- `copy_id` is operator-supplied and unique within one finalized image/`volume_id`
+- `location` is mutable operational metadata
+- `location` is never part of copy identity
 
 ## Summary models
 
@@ -60,6 +82,7 @@ Definitions:
 An image summary exposes at least:
 
 - `id`
+- `volume_id`
 - `bytes`
 - `fill`
 - `files`
@@ -72,6 +95,7 @@ A copy summary exposes at least:
 
 - `id`
 - `image`
+- `volume_id`
 - `location`
 - `created_at`
 

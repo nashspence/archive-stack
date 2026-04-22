@@ -94,6 +94,7 @@ paths:
   /plan:
     get:
       summary: Get current burn plan
+      description: Planned images remain provisional until their first ISO download request. `volume_id` is `null` until that first successful download finalizes the image.
       operationId: getPlan
       responses:
         "200":
@@ -105,6 +106,7 @@ paths:
   /images/{image_id}:
     get:
       summary: Get one image summary
+      description: Returns the stable API image handle plus its current stored `volume_id`, if the image has already been finalized by a first ISO download.
       operationId: getImage
       parameters:
         - in: path
@@ -123,6 +125,7 @@ paths:
   /images/{image_id}/iso:
     get:
       summary: Download ISO bytes for an image
+      description: The first successful download finalizes the image allocation, assigns and stores immutable `volume_id`, and prevents later planner re-allocation of that image's represented bytes.
       operationId: getImageIso
       parameters:
         - in: path
@@ -142,6 +145,7 @@ paths:
   /images/{image_id}/copies:
     post:
       summary: Register a physical burned copy
+      description: Registers one burned disc for a finalized image. The physical copy identity is `(volume_id, copy_id)` and `location` is mutable metadata, not identity.
       operationId: createCopy
       parameters:
         - in: path
@@ -156,8 +160,12 @@ paths:
               type: object
               required: [id, location]
               properties:
-                id: { type: string }
-                location: { type: string }
+                id:
+                  type: string
+                  description: User-supplied copy id. Must be unique within the finalized image and its stored `volume_id`.
+                location:
+                  type: string
+                  description: Mutable operator-supplied physical location label. Not part of the copy identity.
       responses:
         "200":
           description: Copy registered
@@ -369,9 +377,17 @@ components:
         pending_bytes: { type: integer }
     ImageSummary:
       type: object
-      required: [id, bytes, fill, files, collections, iso_ready]
+      required: [id, volume_id, bytes, fill, files, collections, iso_ready]
       properties:
-        id: { type: string }
+        id:
+          type: string
+          description: Stable API handle for the planned image.
+        volume_id:
+          description: Immutable media identifier stored when the image is finalized by its first successful ISO download. `null` means the image is still provisional.
+          oneOf:
+            - type: string
+              pattern: "^[0-9]{8}T[0-9]{6}Z$"
+            - type: "null"
         bytes: { type: integer }
         fill: { type: number }
         files: { type: integer }
@@ -379,9 +395,17 @@ components:
         iso_ready: { type: boolean }
     ImageDetail:
       type: object
-      required: [id, bytes, fill, iso_ready, files, collections]
+      required: [id, volume_id, bytes, fill, iso_ready, files, collections]
       properties:
-        id: { type: string }
+        id:
+          type: string
+          description: Stable API handle for the planned image.
+        volume_id:
+          description: Immutable media identifier stored when the image is finalized by its first successful ISO download. `null` means the image is still provisional.
+          oneOf:
+            - type: string
+              pattern: "^[0-9]{8}T[0-9]{6}Z$"
+            - type: "null"
         bytes: { type: integer }
         fill: { type: number }
         iso_ready: { type: boolean }
@@ -391,17 +415,35 @@ components:
           items: { type: string }
     CopyRef:
       type: object
-      required: [id, location]
+      required: [id, volume_id, location]
       properties:
-        id: { type: string }
-        location: { type: string }
+        id:
+          type: string
+          description: User-supplied copy id, unique within one finalized image/`volume_id`.
+        volume_id:
+          type: string
+          pattern: "^[0-9]{8}T[0-9]{6}Z$"
+          description: Immutable media identifier for the burned image this copy belongs to.
+        location:
+          type: string
+          description: Mutable physical location label. Not part of copy identity.
     CopySummary:
       type: object
-      required: [id, image, location, created_at]
+      required: [id, image, volume_id, location, created_at]
       properties:
-        id: { type: string }
-        image: { type: string }
-        location: { type: string }
+        id:
+          type: string
+          description: User-supplied copy id, unique within one finalized image/`volume_id`.
+        image:
+          type: string
+          description: Stable API image handle associated with this burned copy.
+        volume_id:
+          type: string
+          pattern: "^[0-9]{8}T[0-9]{6}Z$"
+          description: Immutable media identifier for the finalized image this copy belongs to.
+        location:
+          type: string
+          description: Mutable physical location label. Not part of copy identity.
         created_at: { type: string, format: date-time }
     HotStatus:
       type: object
@@ -420,9 +462,12 @@ components:
           $ref: "#/components/schemas/Target"
     FetchCopyHint:
       type: object
-      required: [id, location]
+      required: [id, volume_id, location]
       properties:
         id: { type: string }
+        volume_id:
+          type: string
+          pattern: "^[0-9]{8}T[0-9]{6}Z$"
         location: { type: string }
     FetchSummary:
       type: object
@@ -441,9 +486,12 @@ components:
             $ref: "#/components/schemas/FetchCopyHint"
     FetchManifestEntryCopy:
       type: object
-      required: [copy, location, disc_path, enc]
+      required: [copy, volume_id, location, disc_path, enc]
       properties:
         copy: { type: string }
+        volume_id:
+          type: string
+          pattern: "^[0-9]{8}T[0-9]{6}Z$"
         location: { type: string }
         disc_path: { type: string }
         enc:

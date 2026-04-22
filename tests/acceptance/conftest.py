@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -483,6 +484,7 @@ def given_copy_already_exists(
     acceptance_system: AcceptanceSystem,
     copy_id: str,
 ) -> None:
+    acceptance_system.state.finalized_image_ids.add(IMAGE_ID)
     acceptance_system.copies.register(IMAGE_ID, copy_id, "Shelf B1")
 
 
@@ -974,12 +976,12 @@ def then_error_code_is(
     assert payload["error"]["code"] == code
 
 
-@then("each image contains \"id\", \"bytes\", \"fill\", \"files\", \"collections\", and \"iso_ready\"")
+@then('each image contains "id", "volume_id", "bytes", "fill", "files", "collections", and "iso_ready"')
 def then_each_image_contains_expected_fields(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    expected = {"id", "bytes", "fill", "files", "collections", "iso_ready"}
+    expected = {"id", "volume_id", "bytes", "fill", "files", "collections", "iso_ready"}
     assert payload["images"]
     assert all(expected.issubset(image) for image in payload["images"])
 
@@ -1031,6 +1033,36 @@ def then_response_contains_copy_id(
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     assert payload["copy"]["id"] == copy_id
+
+
+@then(parsers.re(r'the response copy contains "(?P<first>[^"]+)"(?P<rest>.*)'))
+def then_response_copy_contains_fields(
+    acceptance_context: AcceptanceScenarioContext,
+    first: str,
+    rest: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert set([first, *_quoted_values(rest)]).issubset(payload["copy"])
+
+
+@then(parsers.parse('the response field "{field}" is null'))
+def then_response_field_is_null(
+    acceptance_context: AcceptanceScenarioContext,
+    field: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert payload[field] is None
+
+
+@then(parsers.parse('the response field "{field}" matches compact UTC timestamp'))
+def then_response_field_matches_compact_utc_timestamp(
+    acceptance_context: AcceptanceScenarioContext,
+    field: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    value = payload[field]
+    assert isinstance(value, str)
+    assert re.fullmatch(r"[0-9]{8}T[0-9]{6}Z", value)
 
 
 @then(parsers.parse('collection "{collection_id}" archived_bytes increases'))

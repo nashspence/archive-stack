@@ -54,6 +54,7 @@ class ImageSummary:
 class CopySummary:
     id: CopyId
     image: ImageId
+    volume_id: str
     location: str
     created_at: str
 
@@ -61,6 +62,7 @@ class CopySummary:
 @dataclass(frozen=True)
 class FetchCopyHint:
     id: CopyId
+    volume_id: str
     location: str
 
 

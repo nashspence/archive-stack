@@ -61,19 +61,49 @@ Required behavior:
 
 Returns the best current planner output and readiness status.
 
+Required behavior:
+
+- each image in the plan is provisional until its first ISO download request
+- before first download, a planned image may be re-allocated by the planner
+- plan responses expose `volume_id`, which is `null` until the image is finalized by first download
+
 ### Images
 
 #### `GET /v1/images/{image_id}`
 
 Returns one image summary.
 
+Required behavior:
+
+- `image.id` is the stable API handle for the planned image
+- `volume_id` is `null` before the first ISO download request for that image
+- after the first ISO download request, the stored `volume_id` is returned for that same `image.id`
+
 #### `GET /v1/images/{image_id}/iso`
 
 Returns ISO bytes if the image is ready.
 
+Required behavior:
+
+- the first successful request finalizes that image's represented bytes for burning
+- that first successful request assigns a unique immutable `volume_id` in UTC basic form `YYYYMMDDTHHMMSSZ`
+- if more than one image would otherwise finalize in the same second, later assignments advance in whole seconds until
+  an unused `volume_id` is found
+- after finalization, subsequent downloads for the same `image.id` reuse the same `volume_id` and the same represented
+  bytes
+- after finalization, the planner must not re-allocate those represented collections away from that image
+
 #### `POST /v1/images/{image_id}/copies`
 
 Registers a physical burned disc for an image.
+
+Required behavior:
+
+- copy registration is only valid for a finalized image that already has a stored `volume_id`
+- the physical copy identity is `(volume_id, copy_id)`
+- the user-supplied `copy_id` must be unique within that finalized image/`volume_id`; duplicates are rejected with
+  `conflict`
+- `location` is mutable operational metadata and is never part of copy identity
 
 ### Pins
 
@@ -176,6 +206,11 @@ part has been staged, reconstructed, verified, and uploaded.
 - a file is logically required in hot if and only if at least one active pin selects it
 - immediately after collection close, every file in the collection is hot
 - a file restored by a completed fetch is hot
+- before the first ISO download request, a planned image may still be re-allocated and has `volume_id = null`
+- the first successful ISO download finalizes the image allocation and stores immutable `volume_id` for that `image.id`
+- subsequent ISO downloads for the same `image.id` use the same `volume_id` and represented bytes
 - registering a copy cannot reduce archived coverage
+- a physical copy is identified by `(volume_id, copy_id)`, never by `location`
+- duplicate `copy_id` values are rejected within one finalized image/`volume_id`
 - no collection id is an ancestor or descendant of another collection id
 - the same canonical target string means the same file set everywhere in API and CLI

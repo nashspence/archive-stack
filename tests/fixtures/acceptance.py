@@ -72,6 +72,7 @@ SRC_ROOT = REPO_ROOT / "src"
 @dataclass(frozen=True, slots=True)
 class FileCopy:
     id: CopyId
+    volume_id: str
     location: str
     disc_path: str
     enc: dict[str, object]
@@ -82,7 +83,7 @@ class FileCopy:
 
     @property
     def hint(self) -> FetchCopyHint:
-        return FetchCopyHint(id=self.id, location=self.location)
+        return FetchCopyHint(id=self.id, volume_id=self.volume_id, location=self.location)
 
 
 @dataclass(slots=True)
@@ -129,9 +130,10 @@ class ImageRecord:
     def fill(self) -> float:
         return self.bytes / TARGET_BYTES
 
-    def plan_payload(self) -> dict[str, object]:
+    def plan_payload(self, *, volume_id: str | None) -> dict[str, object]:
         return {
             "id": str(self.id),
+            "volume_id": volume_id,
             "bytes": self.bytes,
             "fill": self.fill,
             "files": self.files,
@@ -139,9 +141,10 @@ class ImageRecord:
             "iso_ready": self.iso_ready,
         }
 
-    def image_payload(self) -> dict[str, object]:
+    def image_payload(self, *, volume_id: str | None) -> dict[str, object]:
         return {
             "id": str(self.id),
+            "volume_id": volume_id,
             "bytes": self.bytes,
             "fill": self.fill,
             "files": self.files,
@@ -181,7 +184,8 @@ class AcceptanceState:
     staged_directories: dict[str, Path] = field(default_factory=dict)
     files_by_collection: dict[CollectionId, dict[str, StoredFile]] = field(default_factory=dict)
     images_by_id: dict[ImageId, ImageRecord] = field(default_factory=dict)
-    copy_summaries: dict[CopyId, CopySummary] = field(default_factory=dict)
+    copy_summaries: dict[tuple[str, CopyId], CopySummary] = field(default_factory=dict)
+    finalized_image_ids: set[ImageId] = field(default_factory=set)
     exact_pins: set[TargetStr] = field(default_factory=set)
     fetches: dict[FetchId, FetchRecord] = field(default_factory=dict)
     rejected_upload_codes: list[str] = field(default_factory=list)
@@ -286,6 +290,7 @@ class AcceptanceState:
     def _copy_from_dict(item: dict[str, object]) -> FileCopy:
         return FileCopy(
             id=CopyId(str(item["id"])),
+            volume_id=str(item["volume_id"]),
             location=str(item["location"]),
             disc_path=str(item["disc_path"]),
             enc=cast(dict[str, object], item["enc"]),
@@ -367,7 +372,10 @@ class AcceptanceSearchService:
                         "path": full_path,
                         "bytes": record.bytes,
                         "hot": record.hot,
-                        "copies": [{"id": str(copy.id), "location": copy.location} for copy in record.copies],
+                        "copies": [
+                            {"id": str(copy.id), "volume_id": copy.volume_id, "location": copy.location}
+                            for copy in record.copies
+                        ],
                     }
                 )
 
@@ -400,14 +408,16 @@ class AcceptancePlanningService:
             "ready": bool(images),
             "target_bytes": TARGET_BYTES,
             "min_fill_bytes": MIN_FILL_BYTES,
-            "images": [image.plan_payload() for image in images],
+            "images": [image.plan_payload(volume_id=self._visible_volume_id(image)) for image in images],
             "unplanned_bytes": unplanned_bytes,
         }
 
     def get_image(self, image_id: str) -> dict[str, object]:
-        return self._image_record(image_id).image_payload()
+        image = self._image_record(image_id)
+        return image.image_payload(volume_id=self._visible_volume_id(image))
 
     async def get_iso_stream(self, image_id: str) -> object:
+        self.state.finalized_image_ids.add(ImageId(image_id))
         return await self._iso_service.get_iso_stream(image_id)
 
     def _image_record(self, image_id: str) -> ImageRecord:
@@ -419,33 +429,43 @@ class AcceptancePlanningService:
     def _image_root_record(self, image_id: str) -> ImageRootRecord:
         return self._image_record(image_id).image_root_record()
 
+    def _visible_volume_id(self, image: ImageRecord) -> str | None:
+        if image.id in self.state.finalized_image_ids:
+            return image.volume_id
+        return None
+
 
 class AcceptanceCopyService:
     def __init__(self, state: AcceptanceState) -> None:
         self.state = state
 
     def register(self, image_id: str, copy_id: str, location: str) -> CopySummary:
-        copy_key = CopyId(copy_id)
-        if copy_key in self.state.copy_summaries:
-            raise Conflict(f"copy already exists: {copy_id}")
         image = self.state.images_by_id.get(ImageId(image_id))
         if image is None:
             raise NotFound(f"image not found: {image_id}")
+        if image.id not in self.state.finalized_image_ids:
+            raise InvalidState("image must be finalized by ISO download before copy registration")
+        copy_key = CopyId(copy_id)
+        scoped_key = (image.volume_id, copy_key)
+        if scoped_key in self.state.copy_summaries:
+            raise Conflict(f"copy already exists for volume: {copy_id}")
         summary = CopySummary(
             id=copy_key,
             image=ImageId(image_id),
+            volume_id=image.volume_id,
             location=location,
             created_at=DEFAULT_COPY_CREATED_AT,
         )
-        self.state.copy_summaries[copy_key] = summary
+        self.state.copy_summaries[scoped_key] = summary
         for collection_id, path in image.covered_paths:
             record = self.state.files_by_collection[collection_id][path]
             record.archived = True
-            if all(existing.id != copy_key for existing in record.copies):
+            if all((existing.id, existing.volume_id) != (copy_key, image.volume_id) for existing in record.copies):
                 record.copies.append(
                     AcceptanceState._copy_from_dict(
                         build_file_copy(
                             copy_id=copy_id,
+                            volume_id=image.volume_id,
                             location=location,
                             collection_id=str(collection_id),
                             path=path,
@@ -580,12 +600,13 @@ class AcceptanceFetchService:
     @staticmethod
     def _summary_copies(entries: Iterator[FetchEntryRecord]) -> list[FetchCopyHint]:
         out: list[FetchCopyHint] = []
-        seen: set[CopyId] = set()
+        seen: set[tuple[str, CopyId]] = set()
         for entry in entries:
             for copy in entry.copies:
-                if copy.id in seen:
+                key = (copy.volume_id, copy.id)
+                if key in seen:
                     continue
-                seen.add(copy.id)
+                seen.add(key)
                 out.append(copy.hint)
         return out
 
@@ -593,6 +614,7 @@ class AcceptanceFetchService:
     def _manifest_copy(copy: FileCopy) -> dict[str, object]:
         return {
             "copy": str(copy.id),
+            "volume_id": copy.volume_id,
             "location": copy.location,
             "disc_path": copy.disc_path,
             "enc": copy.enc,
@@ -665,7 +687,10 @@ class AcceptancePinService:
             fetch_payload = {
                 "id": str(summary.id),
                 "state": summary.state.value,
-                "copies": [{"id": str(copy.id), "location": copy.location} for copy in summary.copies],
+                "copies": [
+                    {"id": str(copy.id), "volume_id": copy.volume_id, "location": copy.location}
+                    for copy in summary.copies
+                ],
             }
         return {
             "target": str(canonical),
@@ -911,6 +936,7 @@ class AcceptanceSystem:
                 "tax/2022/invoice-123.pdf": [
                     build_file_copy(
                         copy_id="copy-docs-1",
+                        volume_id="20260419T230001Z",
                         location="vault-a/shelf-01",
                         collection_id=DOCS_COLLECTION_ID,
                         path="tax/2022/invoice-123.pdf",
@@ -919,6 +945,7 @@ class AcceptanceSystem:
                 "tax/2022/receipt-456.pdf": [
                     build_file_copy(
                         copy_id="copy-docs-2",
+                        volume_id="20260419T230002Z",
                         location="vault-a/shelf-02",
                         collection_id=DOCS_COLLECTION_ID,
                         path="tax/2022/receipt-456.pdf",
@@ -937,6 +964,7 @@ class AcceptanceSystem:
                 "tax/2022/invoice-123.pdf": [
                     build_file_copy(
                         copy_id=SPLIT_COPY_ONE_ID,
+                        volume_id="20260420T040003Z",
                         location=SPLIT_COPY_ONE_LOCATION,
                         collection_id=DOCS_COLLECTION_ID,
                         path=SPLIT_FILE_RELPATH,
@@ -947,6 +975,7 @@ class AcceptanceSystem:
                     ),
                     build_file_copy(
                         copy_id=SPLIT_COPY_TWO_ID,
+                        volume_id="20260420T040004Z",
                         location=SPLIT_COPY_TWO_LOCATION,
                         collection_id=DOCS_COLLECTION_ID,
                         path=SPLIT_FILE_RELPATH,
@@ -959,6 +988,7 @@ class AcceptanceSystem:
                 "tax/2022/receipt-456.pdf": [
                     build_file_copy(
                         copy_id="copy-docs-2",
+                        volume_id="20260419T230002Z",
                         location="vault-a/shelf-02",
                         collection_id=DOCS_COLLECTION_ID,
                         path="tax/2022/receipt-456.pdf",

@@ -15,6 +15,7 @@ class HotStatusOut(ArcModel):
 
 class FetchHintCopyOut(ArcModel):
     id: str
+    volume_id: str
     location: str
 
 

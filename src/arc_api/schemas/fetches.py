@@ -17,6 +17,7 @@ class FetchSummaryOut(ArcModel):
 
 class FetchManifestCopyOut(ArcModel):
     copy_: str = Field(alias="copy")
+    volume_id: str
     location: str
     disc_path: str
     enc: dict

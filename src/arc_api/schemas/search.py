@@ -5,6 +5,7 @@ from arc_api.schemas.common import ArcModel
 
 class SearchCopyOut(ArcModel):
     id: str
+    volume_id: str
     location: str
 
 

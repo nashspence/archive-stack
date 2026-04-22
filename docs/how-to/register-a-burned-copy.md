@@ -1,6 +1,7 @@
 # Register a burned copy
 
-Once an image has been downloaded and burned, register the physical copy so archival coverage can be counted.
+Once an image has been downloaded, finalized, and burned, register the physical copy so archival coverage can be
+counted.
 
 CLI example:
 
@@ -22,4 +23,12 @@ Content-Type: application/json
 }
 ```
 
-Registering a copy does not change hot presence by itself. It updates archival coverage for files contained in the image.
+Notes:
+
+- registration is valid only after the image's first ISO download has assigned and stored its `volume_id`
+- the physical copy identity is `(volume_id, id)`
+- the user-supplied `id` must be unique within that finalized image/`volume_id`
+- `location` is mutable metadata and is not part of the copy identity
+
+Registering a copy does not change hot presence by itself. It updates archival coverage for files contained in the
+image.

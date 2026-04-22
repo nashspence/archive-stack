@@ -258,7 +258,7 @@ def _build_image_files_from_specs(
 
 IMAGE_ONE_FILES: dict[str, bytes] = _build_image_files(
     image_id=IMAGE_ID,
-    volume_id="ARC-IMG-20260420-01",
+    volume_id="20260420T040001Z",
     represented_paths={
         DOCS_COLLECTION_ID: (
             "tax/2022/invoice-123.pdf",
@@ -269,7 +269,7 @@ IMAGE_ONE_FILES: dict[str, bytes] = _build_image_files(
 
 IMAGE_TWO_FILES: dict[str, bytes] = _build_image_files(
     image_id=SECOND_IMAGE_ID,
-    volume_id="ARC-IMG-20260420-02",
+    volume_id="20260420T040002Z",
     represented_paths={
         PHOTOS_COLLECTION_ID: (
             "albums/japan/day-01.txt",
@@ -297,7 +297,7 @@ class ImageFixture:
 IMAGE_FIXTURES: tuple[ImageFixture, ...] = (
     ImageFixture(
         id=IMAGE_ID,
-        volume_id="ARC-IMG-20260420-01",
+        volume_id="20260420T040001Z",
         filename=f"{IMAGE_ID}.iso",
         files=IMAGE_ONE_FILES,
         bytes=8_200,
@@ -309,7 +309,7 @@ IMAGE_FIXTURES: tuple[ImageFixture, ...] = (
     ),
     ImageFixture(
         id=SECOND_IMAGE_ID,
-        volume_id="ARC-IMG-20260420-02",
+        volume_id="20260420T040002Z",
         filename=f"{SECOND_IMAGE_ID}.iso",
         files=IMAGE_TWO_FILES,
         bytes=6_100,
@@ -329,7 +329,7 @@ SPLIT_IMAGE_TWO_ID = "img_2026-04-20_04"
 
 SPLIT_IMAGE_ONE_FILES: dict[str, bytes] = _build_image_files_from_specs(
     image_id=SPLIT_IMAGE_ONE_ID,
-    volume_id="ARC-IMG-20260420-03",
+    volume_id="20260420T040003Z",
     represented_specs={
         DOCS_COLLECTION_ID: (
             ImageFileSpec(
@@ -343,7 +343,7 @@ SPLIT_IMAGE_ONE_FILES: dict[str, bytes] = _build_image_files_from_specs(
 
 SPLIT_IMAGE_TWO_FILES: dict[str, bytes] = _build_image_files_from_specs(
     image_id=SPLIT_IMAGE_TWO_ID,
-    volume_id="ARC-IMG-20260420-04",
+    volume_id="20260420T040004Z",
     represented_specs={
         DOCS_COLLECTION_ID: (
             ImageFileSpec(
@@ -358,7 +358,7 @@ SPLIT_IMAGE_TWO_FILES: dict[str, bytes] = _build_image_files_from_specs(
 SPLIT_IMAGE_FIXTURES: tuple[ImageFixture, ...] = (
     ImageFixture(
         id=SPLIT_IMAGE_ONE_ID,
-        volume_id="ARC-IMG-20260420-03",
+        volume_id="20260420T040003Z",
         filename=f"{SPLIT_IMAGE_ONE_ID}.iso",
         files=SPLIT_IMAGE_ONE_FILES,
         bytes=5_100,
@@ -367,7 +367,7 @@ SPLIT_IMAGE_FIXTURES: tuple[ImageFixture, ...] = (
     ),
     ImageFixture(
         id=SPLIT_IMAGE_TWO_ID,
-        volume_id="ARC-IMG-20260420-04",
+        volume_id="20260420T040004Z",
         filename=f"{SPLIT_IMAGE_TWO_ID}.iso",
         files=SPLIT_IMAGE_TWO_FILES,
         bytes=5_100,
@@ -380,6 +380,7 @@ SPLIT_IMAGE_FIXTURES: tuple[ImageFixture, ...] = (
 def build_file_copy(
     *,
     copy_id: str,
+    volume_id: str,
     location: str,
     collection_id: str,
     path: str,
@@ -400,6 +401,7 @@ def build_file_copy(
 
     payload: dict[str, object] = {
         "id": copy_id,
+        "volume_id": volume_id,
         "location": location,
         "disc_path": f"/copies/{copy_id}/{collection_id}-{normalized}{suffix}.age",
         "enc": {
