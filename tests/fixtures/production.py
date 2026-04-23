@@ -67,7 +67,9 @@ class ProductionSystem:
             check=False,
         )
 
-    def run_arc_disc(self, *args: str, input_text: str = "\n" * 16) -> subprocess.CompletedProcess[str]:
+    def run_arc_disc(
+        self, *args: str, input_text: str = "\n" * 16
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, "-m", "arc_disc.main", *args],
             cwd=REPO_ROOT,
@@ -78,9 +80,13 @@ class ProductionSystem:
             check=False,
         )
 
-    def seed_staged_collection(self, collection_id: str, files: Mapping[str, bytes] | None = None) -> None:
+    def seed_staged_collection(
+        self, collection_id: str, files: Mapping[str, bytes] | None = None
+    ) -> None:
         normalized_collection_id = normalize_collection_id(collection_id)
-        write_tree(self.workspace / "staging" / normalized_collection_id, files or PHOTOS_2024_FILES)
+        write_tree(
+            self.workspace / "staging" / normalized_collection_id, files or PHOTOS_2024_FILES
+        )
 
     def _subprocess_env(self) -> dict[str, str]:
         env = os.environ.copy()

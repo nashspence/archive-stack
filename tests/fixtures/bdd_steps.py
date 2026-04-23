@@ -15,19 +15,6 @@ from pytest_bdd import given, parsers, then, when
 from arc_core.domain.selectors import parse_target
 from arc_core.domain.types import ImageId
 from arc_core.fs_paths import derive_collection_id_from_staging_path
-from tests.fixtures.disc_contracts import (
-    InspectedIso,
-    assert_collection_manifest_semantics,
-    assert_contract_schema,
-    assert_disc_manifest_semantics,
-    assert_root_layout_contract,
-    assert_sidecar_semantics,
-    decrypt_yaml_file,
-    inspect_downloaded_iso,
-    manifest_entry_by_path,
-    payload_bytes,
-    require_xorriso,
-)
 from tests.fixtures.acceptance import AcceptanceSystem
 from tests.fixtures.data import (
     DOCS_COLLECTION_ID,
@@ -44,6 +31,19 @@ from tests.fixtures.data import (
     TAX_DIRECTORY_TARGET,
     fixture_encrypt_bytes,
     split_fixture_plaintext,
+)
+from tests.fixtures.disc_contracts import (
+    InspectedIso,
+    assert_collection_manifest_semantics,
+    assert_contract_schema,
+    assert_disc_manifest_semantics,
+    assert_root_layout_contract,
+    assert_sidecar_semantics,
+    decrypt_yaml_file,
+    inspect_downloaded_iso,
+    manifest_entry_by_path,
+    payload_bytes,
+    require_xorriso,
 )
 
 
@@ -145,7 +145,10 @@ def _coerce_query_value(value: str) -> object:
 
 def _query_params(url: str) -> dict[str, object]:
     parts = urlsplit(url)
-    return {key: _coerce_query_value(value) for key, value in parse_qsl(parts.query, keep_blank_values=True)}
+    return {
+        key: _coerce_query_value(value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+    }
 
 
 def _arc_option_value(argv: list[str], option: str, default: object | None = None) -> object | None:
@@ -170,7 +173,9 @@ def _maybe_skip_xorriso_for_url(url: str) -> None:
         require_xorriso()
 
 
-def _set_response(context: AcceptanceScenarioContext, response: httpx.Response, *, append: bool = False) -> None:
+def _set_response(
+    context: AcceptanceScenarioContext, response: httpx.Response, *, append: bool = False
+) -> None:
     if append:
         context.responses.append(response)
     else:
@@ -278,7 +283,9 @@ def _prepare_arc_expectation(
             params["collection"] = collection
         if iso_ready is not None:
             params["iso_ready"] = iso_ready
-        context.expected_api_payload = acceptance_system.request("GET", "/v1/plan", params=params).json()
+        context.expected_api_payload = acceptance_system.request(
+            "GET", "/v1/plan", params=params
+        ).json()
         return
 
     if argv[1] == "images":
@@ -335,7 +342,9 @@ def given_staged_directory_already_closed(
     staging_path: str,
 ) -> None:
     acceptance_system.seed_staged_collection(derive_collection_id_from_staging_path(staging_path))
-    response = acceptance_system.request("POST", "/v1/collections/close", json_body={"path": staging_path})
+    response = acceptance_system.request(
+        "POST", "/v1/collections/close", json_body={"path": staging_path}
+    )
     assert response.status_code == 200
 
 
@@ -541,7 +550,11 @@ def given_fetch_is_not_terminal(
     assert state not in {"done", "failed"}
 
 
-@given(parsers.parse('every required fetch entry for "{fetch_id}" has been uploaded with the correct bytes'))
+@given(
+    parsers.parse(
+        'every required fetch entry for "{fetch_id}" has been uploaded with the correct bytes'
+    )
+)
 def given_fetch_entries_are_uploaded(
     acceptance_system: AcceptanceSystem,
     fetch_id: str,
@@ -567,7 +580,9 @@ def given_candidate_exists(acceptance_system: AcceptanceSystem, candidate_id: st
 
 
 @given(parsers.parse('candidate "{candidate_id}" has iso_ready true'))
-def given_candidate_has_iso_ready_true(acceptance_system: AcceptanceSystem, candidate_id: str) -> None:
+def given_candidate_has_iso_ready_true(
+    acceptance_system: AcceptanceSystem, candidate_id: str
+) -> None:
     candidate = acceptance_system.state.candidates_by_id[ImageId(candidate_id)]
     assert candidate.iso_ready is True
 
@@ -580,7 +595,10 @@ def given_candidate_covers_collection(
     collection_id: str,
 ) -> None:
     candidate = acceptance_system.state.candidates_by_id[ImageId(candidate_id)]
-    assert any(str(current_collection_id) == collection_id for current_collection_id, _ in candidate.covered_paths)
+    assert any(
+        str(current_collection_id) == collection_id
+        for current_collection_id, _ in candidate.covered_paths
+    )
     acceptance_context.tracked_collection_id = collection_id
 
 
@@ -614,7 +632,9 @@ def given_collection_contains_file(
     collection_id: str,
     path: str,
 ) -> None:
-    collection_files = {record.path for record in acceptance_system.state.collection_files(collection_id)}
+    collection_files = {
+        record.path for record in acceptance_system.state.collection_files(collection_id)
+    }
     assert path.lstrip("/") in collection_files
 
 
@@ -625,7 +645,9 @@ def given_collection_contains_directory(
     path: str,
 ) -> None:
     prefix = path.strip("/").rstrip("/") + "/"
-    collection_files = [record.path for record in acceptance_system.state.collection_files(collection_id)]
+    collection_files = [
+        record.path for record in acceptance_system.state.collection_files(collection_id)
+    ]
     assert any(current.startswith(prefix) for current in collection_files)
 
 
@@ -936,7 +958,10 @@ def then_every_returned_target_is_valid_input_for_pin(
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     for target in [item["target"] for item in payload["results"]]:
-        assert acceptance_system.request("POST", "/v1/pin", json_body={"target": target}).status_code == 200
+        assert (
+            acceptance_system.request("POST", "/v1/pin", json_body={"target": target}).status_code
+            == 200
+        )
 
 
 @then("every returned target is valid input for release")
@@ -946,10 +971,15 @@ def then_every_returned_target_is_valid_input_for_release(
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     for target in [item["target"] for item in payload["results"]]:
-        assert acceptance_system.request("POST", "/v1/release", json_body={"target": target}).status_code == 200
+        assert (
+            acceptance_system.request(
+                "POST", "/v1/release", json_body={"target": target}
+            ).status_code
+            == 200
+        )
 
 
-@then(parsers.parse('the response contains at most {limit:d} result'))
+@then(parsers.parse("the response contains at most {limit:d} result"))
 def then_response_contains_at_most_limit(
     acceptance_context: AcceptanceScenarioContext,
     limit: int,
@@ -1128,13 +1158,22 @@ def then_error_code_is(
 
 
 @then(
-    'each plan candidate contains "candidate_id", "bytes", "fill", "files", "collections", "collection_ids", and "iso_ready"'
+    'each plan candidate contains "candidate_id", "bytes", "fill", "files", '
+    '"collections", "collection_ids", and "iso_ready"'
 )
 def then_each_plan_candidate_contains_expected_fields(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    expected = {"candidate_id", "bytes", "fill", "files", "collections", "collection_ids", "iso_ready"}
+    expected = {
+        "candidate_id",
+        "bytes",
+        "fill",
+        "files",
+        "collections",
+        "collection_ids",
+        "iso_ready",
+    }
     assert payload["candidates"]
     assert all(expected.issubset(candidate) for candidate in payload["candidates"])
 
@@ -1208,7 +1247,8 @@ def then_response_plan_candidates_contain_only(
 
 
 @then(
-    'each finalized image contains "id", "filename", "finalized_at", "bytes", "fill", "files", "collections", '
+    'each finalized image contains "id", "filename", "finalized_at", "bytes", '
+    '"fill", "files", "collections", '
     '"collection_ids", "iso_ready", and "copy_count"'
 )
 def then_each_finalized_image_contains_expected_fields(
@@ -1256,7 +1296,12 @@ def then_response_contains_finalized_image_count(
     assert len(payload["images"]) == count
 
 
-@then(parsers.parse('the response pagination is page {page:d} with per_page {per_page:d} and total {total:d} and pages {pages:d}'))
+@then(
+    parsers.parse(
+        "the response pagination is page {page:d} with per_page {per_page:d} "
+        "and total {total:d} and pages {pages:d}"
+    )
+)
 def then_response_pagination_matches(
     acceptance_context: AcceptanceScenarioContext,
     page: int,
@@ -1392,9 +1437,10 @@ def then_collection_archived_bytes_increases(
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
 ) -> None:
-    assert acceptance_context.after_collections[collection_id]["archived_bytes"] > acceptance_context.before_collections[
-        collection_id
-    ]["archived_bytes"]
+    assert (
+        acceptance_context.after_collections[collection_id]["archived_bytes"]
+        > acceptance_context.before_collections[collection_id]["archived_bytes"]
+    )
 
 
 @then(parsers.parse('collection "{collection_id}" pending_bytes decreases'))
@@ -1402,9 +1448,10 @@ def then_collection_pending_bytes_decreases(
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
 ) -> None:
-    assert acceptance_context.after_collections[collection_id]["pending_bytes"] < acceptance_context.before_collections[
-        collection_id
-    ]["pending_bytes"]
+    assert (
+        acceptance_context.after_collections[collection_id]["pending_bytes"]
+        < acceptance_context.before_collections[collection_id]["pending_bytes"]
+    )
 
 
 @then("both manifests contain the same entry ids")
@@ -1436,7 +1483,11 @@ def then_fetch_manifest_entry_lists_split_parts(
     assert [part["index"] for part in entry["parts"]] == [0, 1]
 
 
-@then(parsers.parse('fetch manifest entry "{entry_id}" part {part_index:d} is recoverable from copy "{copy_id}"'))
+@then(
+    parsers.parse(
+        'fetch manifest entry "{entry_id}" part {part_index:d} is recoverable from copy "{copy_id}"'
+    )
+)
 def then_fetch_manifest_part_recovers_from_copy(
     acceptance_context: AcceptanceScenarioContext,
     entry_id: str,
@@ -1448,7 +1499,12 @@ def then_fetch_manifest_part_recovers_from_copy(
     assert [copy["copy"] for copy in part["copies"]] == [copy_id]
 
 
-@then(parsers.parse('fetch manifest entry "{entry_id}" part hashes and recovery-byte hashes match the published split fixture'))
+@then(
+    parsers.parse(
+        'fetch manifest entry "{entry_id}" part hashes and recovery-byte hashes '
+        "match the published split fixture"
+    )
+)
 def then_fetch_manifest_part_hashes_match_fixture(
     acceptance_context: AcceptanceScenarioContext,
     entry_id: str,
@@ -1467,7 +1523,9 @@ def then_fetch_manifest_part_hashes_match_fixture(
 
 
 @then(
-    parsers.re(r'fetch manifest entry "(?P<entry_id>[^"]+)" contains "(?P<first>[^"]+)"(?P<rest>.*)')
+    parsers.re(
+        r'fetch manifest entry "(?P<entry_id>[^"]+)" contains "(?P<first>[^"]+)"(?P<rest>.*)'
+    )
 )
 def then_fetch_manifest_entry_contains_fields(
     acceptance_context: AcceptanceScenarioContext,
@@ -1601,7 +1659,8 @@ def then_every_collection_manifest_matches_contract(
         payload = decrypt_yaml_file(inspected.extract_root / collection["manifest"])
         assert_contract_schema("collection-hash-manifest.schema.json", payload)
         expected_files = sorted(
-            record.path for record in acceptance_system.state.collection_files(str(collection["id"]))
+            record.path
+            for record in acceptance_system.state.collection_files(str(collection["id"]))
         )
         assert_collection_manifest_semantics(
             payload,
@@ -1670,7 +1729,11 @@ def then_current_iso_payload_decrypts_to_original_plaintext(
     assert payload == expected
 
 
-@then(parsers.parse('the current ISO lists split file "{relpath}" part {part_index:d} of {part_count:d}'))
+@then(
+    parsers.parse(
+        'the current ISO lists split file "{relpath}" part {part_index:d} of {part_count:d}'
+    )
+)
 def then_current_iso_lists_split_file_part(
     acceptance_context: AcceptanceScenarioContext,
     relpath: str,
@@ -1695,10 +1758,14 @@ def then_current_split_payload_is_recorded(
     assert len(present) == 1
     current_part = present[0]
     payload = payload_bytes(inspected.extract_root / current_part["object"])
-    acceptance_context.recorded_split_payloads.setdefault(relpath, {})[int(current_part["index"])] = payload
+    acceptance_context.recorded_split_payloads.setdefault(relpath, {})[
+        int(current_part["index"])
+    ] = payload
 
 
-@then(parsers.parse('the recorded split payloads for "{target}" reconstruct the original plaintext'))
+@then(
+    parsers.parse('the recorded split payloads for "{target}" reconstruct the original plaintext')
+)
 def then_recorded_split_payloads_reconstruct_plaintext(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
@@ -1761,7 +1828,11 @@ def then_upload_session_responses_reuse_upload_url(
     assert payloads[0]["upload_url"] == payloads[1]["upload_url"]
 
 
-@then(parsers.parse('the upload-session length matches fetch "{fetch_id}" entry "{entry_id}" recovery bytes'))
+@then(
+    parsers.parse(
+        'the upload-session length matches fetch "{fetch_id}" entry "{entry_id}" recovery bytes'
+    )
+)
 def then_upload_session_length_matches_manifest_entry_recovery_bytes(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 import httpx
@@ -26,7 +26,9 @@ class ImagesReadyBatch:
 
 class ImageReadyReminderStore(Protocol):
     def list_due(self, *, now: datetime, limit: int) -> list[ImagesReadyBatch]: ...
-    def mark_delivered(self, batch_id: str, *, delivered_at: datetime, next_attempt_at: datetime | None) -> None: ...
+    def mark_delivered(
+        self, batch_id: str, *, delivered_at: datetime, next_attempt_at: datetime | None
+    ) -> None: ...
     def mark_failed(self, batch_id: str, *, error: str, next_attempt_at: datetime) -> None: ...
 
 
@@ -39,30 +41,27 @@ class WebhookConfig:
     reminder_interval_seconds: float = 3600.0
 
 
-
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
-
+    return datetime.now(UTC)
 
 
 def isoformat_z(value: datetime | None) -> str | None:
     if value is None:
         return None
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def image_iso_download_path(image_id: str) -> str:
     return f"/v1/images/{image_id}/iso"
 
 
-
 def image_iso_download_url(base_url: str, image_id: str) -> str:
     return f"{base_url.rstrip('/')}{image_iso_download_path(image_id)}"
 
 
-
-def build_images_ready_payload(*, config: WebhookConfig, batch: ImagesReadyBatch, delivered_at: datetime) -> dict[str, object]:
+def build_images_ready_payload(
+    *, config: WebhookConfig, batch: ImagesReadyBatch, delivered_at: datetime
+) -> dict[str, object]:
     is_reminder = batch.initial_sent_at is not None
     return {
         "event": "images.ready.reminder" if is_reminder else "images.ready",
@@ -82,7 +81,6 @@ def build_images_ready_payload(*, config: WebhookConfig, batch: ImagesReadyBatch
     }
 
 
-
 def post_webhook(*, config: WebhookConfig, payload: dict[str, object]) -> None:
     with httpx.Client(timeout=config.timeout_seconds) as client:
         response = client.post(config.url, json=payload)
@@ -99,19 +97,24 @@ class ImagesReadyReminderService:
         delivered = 0
         for batch in self.store.list_due(now=current, limit=limit):
             try:
-                payload = build_images_ready_payload(config=self.config, batch=batch, delivered_at=current)
+                payload = build_images_ready_payload(
+                    config=self.config, batch=batch, delivered_at=current
+                )
                 post_webhook(config=self.config, payload=payload)
             except Exception as exc:
                 self.store.mark_failed(
                     batch.batch_id,
                     error=str(exc),
-                    next_attempt_at=current + timedelta(seconds=max(1.0, self.config.retry_seconds)),
+                    next_attempt_at=current
+                    + timedelta(seconds=max(1.0, self.config.retry_seconds)),
                 )
                 continue
             next_attempt = None
             if self.config.reminder_interval_seconds > 0:
                 next_attempt = current + timedelta(seconds=self.config.reminder_interval_seconds)
-            self.store.mark_delivered(batch.batch_id, delivered_at=current, next_attempt_at=next_attempt)
+            self.store.mark_delivered(
+                batch.batch_id, delivered_at=current, next_attempt_at=next_attempt
+            )
             delivered += 1
         return delivered
 

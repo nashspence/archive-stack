@@ -5,9 +5,9 @@ import math
 import os
 import shutil
 import subprocess
+from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterator
 
 CHUNK_SIZE = 1024 * 1024
 AGE_STREAM_CHUNK_SIZE = 64 * 1024
@@ -22,11 +22,9 @@ class AgeEncryptionError(RuntimeError):
     pass
 
 
-
 def _read_head(path: Path, size: int = 64) -> bytes:
     with path.open("rb") as handle:
         return handle.read(size)
-
 
 
 def is_age_encrypted_file(path: Path) -> bool:
@@ -36,13 +34,11 @@ def is_age_encrypted_file(path: Path) -> bool:
     return any(head.startswith(prefix) for prefix in AGE_MAGIC_PREFIXES)
 
 
-
 def encrypted_size_for_plaintext_size(plaintext_size: int) -> int:
     if plaintext_size < 0:
         raise ValueError("plaintext_size must be non-negative")
     chunks = math.ceil(plaintext_size / AGE_STREAM_CHUNK_SIZE)
     return plaintext_size + chunks * AGE_STREAM_TAG_BYTES
-
 
 
 def max_plaintext_size_for_encrypted_budget(budget: int) -> int:
@@ -56,7 +52,6 @@ def max_plaintext_size_for_encrypted_budget(budget: int) -> int:
         else:
             high = mid - 1
     return low
-
 
 
 def _iter_file_chunks(path: Path, *, offset: int = 0, size: int | None = None) -> Iterator[bytes]:
@@ -75,8 +70,9 @@ def _iter_file_chunks(path: Path, *, offset: int = 0, size: int | None = None) -
             yield chunk
 
 
-
-def _run_age_encrypt(plaintext: Iterator[bytes], dest: Path, *, age_cli: str = "age", passphrase: str | None = None) -> None:
+def _run_age_encrypt(
+    plaintext: Iterator[bytes], dest: Path, *, age_cli: str = "age", passphrase: str | None = None
+) -> None:
     env = os.environ.copy()
     if passphrase is not None:
         env["AGE_PASSPHRASE"] = passphrase
@@ -98,13 +94,15 @@ def _run_age_encrypt(plaintext: Iterator[bytes], dest: Path, *, age_cli: str = "
         proc.kill()
         raise
     if proc.returncode != 0:
-        raise AgeEncryptionError(stderr.decode("utf-8", errors="replace") or "age encryption failed")
+        raise AgeEncryptionError(
+            stderr.decode("utf-8", errors="replace") or "age encryption failed"
+        )
 
 
-
-def encrypt_bytes_to_file(data: bytes, dest: Path, *, age_cli: str = "age", passphrase: str | None = None) -> None:
+def encrypt_bytes_to_file(
+    data: bytes, dest: Path, *, age_cli: str = "age", passphrase: str | None = None
+) -> None:
     _run_age_encrypt(iter([data]), dest, age_cli=age_cli, passphrase=passphrase)
-
 
 
 def encrypt_file_span(
@@ -116,11 +114,17 @@ def encrypt_file_span(
     age_cli: str = "age",
     passphrase: str | None = None,
 ) -> None:
-    _run_age_encrypt(_iter_file_chunks(source, offset=offset, size=size), dest, age_cli=age_cli, passphrase=passphrase)
+    _run_age_encrypt(
+        _iter_file_chunks(source, offset=offset, size=size),
+        dest,
+        age_cli=age_cli,
+        passphrase=passphrase,
+    )
 
 
-
-def decrypt_file_to_bytes(path: Path, *, age_cli: str = "age", passphrase: str | None = None) -> bytes:
+def decrypt_file_to_bytes(
+    path: Path, *, age_cli: str = "age", passphrase: str | None = None
+) -> bytes:
     env = os.environ.copy()
     if passphrase is not None:
         env["AGE_PASSPHRASE"] = passphrase
@@ -131,12 +135,15 @@ def decrypt_file_to_bytes(path: Path, *, age_cli: str = "age", passphrase: str |
         check=False,
     )
     if proc.returncode != 0:
-        raise AgeEncryptionError(proc.stderr.decode("utf-8", errors="replace") or "age decryption failed")
+        raise AgeEncryptionError(
+            proc.stderr.decode("utf-8", errors="replace") or "age decryption failed"
+        )
     return proc.stdout
 
 
-
-def decrypt_tree(source_root: Path, dest_root: Path, *, age_cli: str = "age", passphrase: str | None = None) -> None:
+def decrypt_tree(
+    source_root: Path, dest_root: Path, *, age_cli: str = "age", passphrase: str | None = None
+) -> None:
     for path in sorted(candidate for candidate in source_root.rglob("*") if candidate.is_file()):
         rel = path.relative_to(source_root)
         dest = dest_root / rel
@@ -144,8 +151,9 @@ def decrypt_tree(source_root: Path, dest_root: Path, *, age_cli: str = "age", pa
         dest.write_bytes(decrypt_file_to_bytes(path, age_cli=age_cli, passphrase=passphrase))
 
 
-
-def logical_file_sha256_and_size(path: Path, *, decrypt: bool = False, age_cli: str = "age", passphrase: str | None = None) -> tuple[str, int]:
+def logical_file_sha256_and_size(
+    path: Path, *, decrypt: bool = False, age_cli: str = "age", passphrase: str | None = None
+) -> tuple[str, int]:
     if decrypt and is_age_encrypted_file(path):
         data = decrypt_file_to_bytes(path, age_cli=age_cli, passphrase=passphrase)
         return hashlib.sha256(data).hexdigest(), len(data)

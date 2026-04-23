@@ -56,7 +56,9 @@ def test_arc_disc_fetch_recovers_in_memory_and_reports_progress(monkeypatch) -> 
             assert fetch_id == "fx-1"
             return _manifest_for(plaintext)
 
-        def create_or_resume_fetch_entry_upload(self, fetch_id: str, entry_id: str) -> dict[str, object]:
+        def create_or_resume_fetch_entry_upload(
+            self, fetch_id: str, entry_id: str
+        ) -> dict[str, object]:
             assert fetch_id == "fx-1"
             assert entry_id == "e1"
             return {
@@ -117,7 +119,9 @@ def test_arc_disc_fetch_reports_clean_error_when_optical_read_fails(monkeypatch)
         def get_fetch_manifest(self, fetch_id: str) -> dict[str, object]:
             return _manifest_for(b"invoice fixture bytes\n")
 
-        def create_or_resume_fetch_entry_upload(self, fetch_id: str, entry_id: str) -> dict[str, object]:
+        def create_or_resume_fetch_entry_upload(
+            self, fetch_id: str, entry_id: str
+        ) -> dict[str, object]:
             recovery = fixture_encrypt_bytes(b"invoice fixture bytes\n")
             return {
                 "entry": entry_id,
@@ -143,7 +147,9 @@ def test_arc_disc_fetch_reports_clean_error_when_optical_read_fails(monkeypatch)
     )
 
     assert result.exit_code == 1
-    assert "error: fixture optical read failed for disc/000001.bin on /dev/fake-sr0" in result.stderr
+    assert (
+        "error: fixture optical read failed for disc/000001.bin on /dev/fake-sr0" in result.stderr
+    )
     assert "Traceback" not in result.stderr
 
 
@@ -165,7 +171,9 @@ def test_arc_disc_fetch_resumes_split_entry_from_session_offset(monkeypatch) -> 
                         "id": "e1",
                         "path": "tax/2022/invoice-123.pdf",
                         "bytes": len(part_one_plaintext) + len(part_two_plaintext),
-                        "sha256": hashlib.sha256(part_one_plaintext + part_two_plaintext).hexdigest(),
+                        "sha256": hashlib.sha256(
+                            part_one_plaintext + part_two_plaintext
+                        ).hexdigest(),
                         "recovery_bytes": len(part_one) + len(part_two),
                         "parts": [
                             {
@@ -205,7 +213,9 @@ def test_arc_disc_fetch_resumes_split_entry_from_session_offset(monkeypatch) -> 
                 ],
             }
 
-        def create_or_resume_fetch_entry_upload(self, fetch_id: str, entry_id: str) -> dict[str, object]:
+        def create_or_resume_fetch_entry_upload(
+            self, fetch_id: str, entry_id: str
+        ) -> dict[str, object]:
             return {
                 "entry": entry_id,
                 "protocol": "tus",

@@ -14,7 +14,9 @@ if str(ROOT) not in sys.path:
 
 
 XFAIL_REASONS = {
-    "xfail_contract": "acceptance backing exists but production is not implemented to the contract yet",
+    "xfail_contract": (
+        "acceptance backing exists but production is not implemented to the contract yet"
+    ),
     "xfail_not_backed": "Gherkin contract exists but acceptance backing is not implemented yet",
 }
 STRICT_XFAIL_MARKERS = {"xfail_contract", "xfail_not_backed"}

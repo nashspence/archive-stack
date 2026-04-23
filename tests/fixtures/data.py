@@ -138,16 +138,14 @@ def _collection_manifest_bytes(collection_id: str, files: Mapping[str, bytes]) -
 
 def _collection_proof_bytes(manifest_bytes: bytes) -> bytes:
     digest = _sha256_bytes(manifest_bytes)
-    return (
-        "\n".join(
-            [
-                "OpenTimestamps stub proof v1",
-                f"file: {COLLECTION_HASH_MANIFEST_NAME}",
-                f"sha256: {digest}",
-                "",
-            ]
-        ).encode("utf-8")
-    )
+    return "\n".join(
+        [
+            "OpenTimestamps stub proof v1",
+            f"file: {COLLECTION_HASH_MANIFEST_NAME}",
+            f"sha256: {digest}",
+            "",
+        ]
+    ).encode("utf-8")
 
 
 def _build_image_files(
@@ -233,14 +231,20 @@ def _build_image_files_from_specs(
 
     for collection_id in sorted(collections_payload):
         manifest_path, proof_path = collection_artifact_paths[collection_id]
-        collection_manifest = _collection_manifest_bytes(collection_id, ALL_COLLECTION_FILES[collection_id])
+        collection_manifest = _collection_manifest_bytes(
+            collection_id, ALL_COLLECTION_FILES[collection_id]
+        )
         image_files[manifest_path] = fixture_encrypt_bytes(collection_manifest)
-        image_files[proof_path] = fixture_encrypt_bytes(_collection_proof_bytes(collection_manifest))
+        image_files[proof_path] = fixture_encrypt_bytes(
+            _collection_proof_bytes(collection_manifest)
+        )
 
         for file_meta in collections_payload[collection_id]:
             for piece in cast(list[dict[str, object]], file_meta["pieces"]):
                 piece_index = int(piece["piece_index"])
-                payload_path, sidecar_path = path_map[(collection_id, file_meta["file_id"], piece_index)]
+                payload_path, sidecar_path = path_map[
+                    (collection_id, file_meta["file_id"], piece_index)
+                ]
                 image_files[payload_path] = fixture_encrypt_bytes(
                     piece_payloads[(collection_id, int(file_meta["file_id"]), piece_index)]
                 )
@@ -270,11 +274,7 @@ IMAGE_ONE_FILES: dict[str, bytes] = _build_image_files(
 IMAGE_TWO_FILES: dict[str, bytes] = _build_image_files(
     image_id="20260420T040002Z",
     volume_id="20260420T040002Z",
-    represented_paths={
-        PHOTOS_COLLECTION_ID: (
-            "albums/japan/day-01.txt",
-        )
-    },
+    represented_paths={PHOTOS_COLLECTION_ID: ("albums/japan/day-01.txt",)},
 )
 
 

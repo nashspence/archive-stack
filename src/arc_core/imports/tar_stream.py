@@ -4,9 +4,9 @@ import hashlib
 import io
 import queue
 import tarfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Callable
 
 CHUNK_BYTES = 1024 * 1024
 TarMemberPredicate = Callable[[str], bool]
@@ -57,7 +57,6 @@ class TarExtractionResult:
     stream_bytes: int | None = None
 
 
-
 def safe_target(root: Path, member_name: str) -> Path:
     parts = [part for part in PurePosixPath(member_name).parts if part not in ("", ".")]
     if any(part == ".." for part in parts):
@@ -67,7 +66,6 @@ def safe_target(root: Path, member_name: str) -> Path:
     if target != root_resolved and root_resolved not in target.parents:
         raise ValueError(f"unsafe tar path: {member_name}")
     return target
-
 
 
 def extract_tar_stream(

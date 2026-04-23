@@ -40,7 +40,11 @@ from arc_core.domain.types import (
     Sha256Hex,
     TargetStr,
 )
-from arc_core.fs_paths import derive_collection_id_from_staging_path, find_collection_id_conflict, normalize_collection_id
+from arc_core.fs_paths import (
+    derive_collection_id_from_staging_path,
+    find_collection_id_conflict,
+    normalize_collection_id,
+)
 from arc_core.services.planning import ImageRootPlanningService, ImageRootRecord
 from tests.fixtures.data import (
     DEFAULT_COPY_CREATED_AT,
@@ -63,8 +67,8 @@ from tests.fixtures.data import (
     build_file_copy,
     fixture_decrypt_bytes,
     fixture_encrypt_bytes,
-    staging_path_for_collection,
     split_fixture_plaintext,
+    staging_path_for_collection,
     write_tree,
 )
 
@@ -226,8 +230,13 @@ class AcceptanceState:
     ) -> None:
         copies_by_path = copies_by_path or {}
         normalized_collection_id = normalize_collection_id(collection_id)
-        conflict = find_collection_id_conflict((str(current) for current in self.files_by_collection), normalized_collection_id)
-        if CollectionId(normalized_collection_id) not in self.files_by_collection and conflict is not None:
+        conflict = find_collection_id_conflict(
+            (str(current) for current in self.files_by_collection), normalized_collection_id
+        )
+        if (
+            CollectionId(normalized_collection_id) not in self.files_by_collection
+            and conflict is not None
+        ):
             raise Conflict(f"collection id conflicts with existing collection: {conflict}")
         collection_key = CollectionId(normalized_collection_id)
         records: dict[str, StoredFile] = {}
@@ -327,7 +336,9 @@ class AcceptanceCollectionService:
         collection_id = derive_collection_id_from_staging_path(staging_path)
         if CollectionId(collection_id) in self.state.files_by_collection:
             raise Conflict(f"collection already exists: {collection_id}")
-        conflict = find_collection_id_conflict((str(current) for current in self.state.files_by_collection), collection_id)
+        conflict = find_collection_id_conflict(
+            (str(current) for current in self.state.files_by_collection), collection_id
+        )
         if conflict is not None:
             raise Conflict(f"collection id conflicts with existing collection: {conflict}")
         files = {
@@ -375,7 +386,9 @@ class AcceptanceSearchService:
 
         for collection_id in sorted(self.state.files_by_collection):
             collection_name = str(collection_id)
-            for record in sorted(self.state.collection_files(collection_id), key=lambda item: item.path):
+            for record in sorted(
+                self.state.collection_files(collection_id), key=lambda item: item.path
+            ):
                 full_path = record.projected_target
                 if needle not in full_path.casefold():
                     continue
@@ -388,7 +401,11 @@ class AcceptanceSearchService:
                         "bytes": record.bytes,
                         "hot": record.hot,
                         "copies": [
-                            {"id": str(copy.id), "volume_id": copy.volume_id, "location": copy.location}
+                            {
+                                "id": str(copy.id),
+                                "volume_id": copy.volume_id,
+                                "location": copy.location,
+                            }
                             for copy in record.copies
                         ],
                     }
@@ -440,20 +457,43 @@ class AcceptancePlanningService:
                 candidate
                 for candidate in candidates
                 if needle in str(candidate.candidate_id).casefold()
-                or any(needle in collection_id.casefold() for collection_id in candidate.collections)
-                or any(needle in projected_path.casefold() for projected_path in candidate.projected_paths)
+                or any(
+                    needle in collection_id.casefold() for collection_id in candidate.collections
+                )
+                or any(
+                    needle in projected_path.casefold()
+                    for projected_path in candidate.projected_paths
+                )
             ]
         if collection:
-            candidates = [candidate for candidate in candidates if collection in candidate.collections]
+            candidates = [
+                candidate for candidate in candidates if collection in candidate.collections
+            ]
         if iso_ready is not None:
             candidates = [candidate for candidate in candidates if candidate.iso_ready is iso_ready]
 
         reverse = order == "desc"
         sort_key = {
-            "fill": lambda candidate: (candidate.fill, candidate.bytes, str(candidate.candidate_id)),
-            "bytes": lambda candidate: (candidate.bytes, candidate.fill, str(candidate.candidate_id)),
-            "files": lambda candidate: (candidate.files, candidate.bytes, str(candidate.candidate_id)),
-            "collections": lambda candidate: (len(candidate.collections), candidate.bytes, str(candidate.candidate_id)),
+            "fill": lambda candidate: (
+                candidate.fill,
+                candidate.bytes,
+                str(candidate.candidate_id),
+            ),
+            "bytes": lambda candidate: (
+                candidate.bytes,
+                candidate.fill,
+                str(candidate.candidate_id),
+            ),
+            "files": lambda candidate: (
+                candidate.files,
+                candidate.bytes,
+                str(candidate.candidate_id),
+            ),
+            "collections": lambda candidate: (
+                len(candidate.collections),
+                candidate.bytes,
+                str(candidate.candidate_id),
+            ),
             "candidate_id": lambda candidate: (str(candidate.candidate_id),),
         }[sort]
         candidates = sorted(candidates, key=sort_key, reverse=reverse)
@@ -507,11 +547,7 @@ class AcceptancePlanningService:
         if collection:
             images = [image for image in images if collection in image.collections]
         if has_copies is not None:
-            images = [
-                image
-                for image in images
-                if (self._copy_count(image) > 0) is has_copies
-            ]
+            images = [image for image in images if (self._copy_count(image) > 0) is has_copies]
 
         reverse = order == "desc"
         sort_key = {
@@ -533,7 +569,10 @@ class AcceptancePlanningService:
             "pages": pages,
             "sort": sort,
             "order": order,
-            "images": [image.finalized_image_payload(copy_count=self._copy_count(image)) for image in page_images],
+            "images": [
+                image.finalized_image_payload(copy_count=self._copy_count(image))
+                for image in page_images
+            ],
         }
 
     def get_image(self, image_id: str) -> dict[str, object]:
@@ -568,7 +607,11 @@ class AcceptancePlanningService:
         return self._finalized_image_record(image_id).image_root_record()
 
     def _copy_count(self, image: CandidateRecord) -> int:
-        return sum(1 for volume_id, _copy_id in self.state.copy_summaries if volume_id == image.finalized_id)
+        return sum(
+            1
+            for volume_id, _copy_id in self.state.copy_summaries
+            if volume_id == image.finalized_id
+        )
 
 
 class AcceptanceCopyService:
@@ -593,7 +636,10 @@ class AcceptanceCopyService:
         for collection_id, path in image.covered_paths:
             record = self.state.files_by_collection[collection_id][path]
             record.archived = True
-            if all((existing.id, existing.volume_id) != (copy_key, image.finalized_id) for existing in record.copies):
+            if all(
+                (existing.id, existing.volume_id) != (copy_key, image.finalized_id)
+                for existing in record.copies
+            ):
                 record.copies.append(
                     AcceptanceState._copy_from_dict(
                         build_file_copy(
@@ -667,7 +713,11 @@ class AcceptanceFetchService:
         return summary
 
     def remove_for_target(self, target: TargetStr) -> None:
-        to_delete = [fetch_id for fetch_id, record in self.state.fetches.items() if record.summary.target == target]
+        to_delete = [
+            fetch_id
+            for fetch_id, record in self.state.fetches.items()
+            if record.summary.target == target
+        ]
         for fetch_id in to_delete:
             del self.state.fetches[fetch_id]
 
@@ -800,16 +850,28 @@ class AcceptanceFetchService:
         except KeyError as exc:
             raise NotFound(f"fetch not found: {fetch_id}") from exc
 
-    def _replace_summary(self, record: FetchRecord, *, state: FetchState | None = None) -> FetchSummary:
+    def _replace_summary(
+        self, record: FetchRecord, *, state: FetchState | None = None
+    ) -> FetchSummary:
         summary = record.summary
         entries = list(record.entries.values())
         entries_total = len(entries)
-        entries_pending = sum(1 for entry in entries if self._entry_upload_state(entry) == "pending")
-        entries_partial = sum(1 for entry in entries if self._entry_upload_state(entry) == "partial")
-        entries_uploaded = sum(1 for entry in entries if self._entry_upload_state(entry) == "uploaded")
+        entries_pending = sum(
+            1 for entry in entries if self._entry_upload_state(entry) == "pending"
+        )
+        entries_partial = sum(
+            1 for entry in entries if self._entry_upload_state(entry) == "partial"
+        )
+        entries_uploaded = sum(
+            1 for entry in entries if self._entry_upload_state(entry) == "uploaded"
+        )
         uploaded_bytes = sum(entry.uploaded_bytes for entry in entries)
-        missing_bytes = max(sum(self._entry_recovery_bytes(entry) for entry in entries) - uploaded_bytes, 0)
-        upload_expiries = [entry.upload_expires_at for entry in entries if entry.upload_expires_at is not None]
+        missing_bytes = max(
+            sum(self._entry_recovery_bytes(entry) for entry in entries) - uploaded_bytes, 0
+        )
+        upload_expiries = [
+            entry.upload_expires_at for entry in entries if entry.upload_expires_at is not None
+        ]
         return FetchSummary(
             id=summary.id,
             target=summary.target,
@@ -827,7 +889,10 @@ class AcceptanceFetchService:
         )
 
     def _entry_upload_state(self, entry: FetchEntryRecord) -> str:
-        if entry.uploaded_content is not None and entry.uploaded_bytes >= self._entry_recovery_bytes(entry):
+        if (
+            entry.uploaded_content is not None
+            and entry.uploaded_bytes >= self._entry_recovery_bytes(entry)
+        ):
             return "uploaded"
         if entry.uploaded_bytes > 0:
             return "partial"
@@ -898,7 +963,10 @@ class AcceptanceFetchService:
         if not entry.copies or all(copy.part_index is None for copy in entry.copies):
             return (fixture_encrypt_bytes(entry.content),)
         part_count = max((copy.part_count or 1) for copy in entry.copies)
-        return tuple(fixture_encrypt_bytes(part) for part in split_fixture_plaintext(entry.content, part_count))
+        return tuple(
+            fixture_encrypt_bytes(part)
+            for part in split_fixture_plaintext(entry.content, part_count)
+        )
 
     def _entry_recovery_bytes(self, entry: FetchEntryRecord) -> int:
         return sum(len(payload) for payload in self._entry_recovery_payloads(entry))
@@ -919,7 +987,9 @@ class AcceptanceFetchService:
             next_offset = offset + len(recovery_payload)
             chunk = entry.uploaded_content[offset:next_offset]
             if len(chunk) != len(recovery_payload):
-                raise HashMismatch("uploaded recovery stream did not match expected recovery boundaries")
+                raise HashMismatch(
+                    "uploaded recovery stream did not match expected recovery boundaries"
+                )
             try:
                 plaintext_parts.append(fixture_decrypt_bytes(chunk))
             except ValueError as exc:
@@ -1021,7 +1091,9 @@ class _LiveServerHandle:
             except Exception as exc:  # pragma: no cover
                 last_error = exc
             time.sleep(0.05)
-        raise RuntimeError(f"Timed out waiting for live arc test server at {self.base_url}") from last_error
+        raise RuntimeError(
+            f"Timed out waiting for live arc test server at {self.base_url}"
+        ) from last_error
 
     def close(self) -> None:
         self._server.should_exit = True
@@ -1165,7 +1237,9 @@ class AcceptanceSystem:
             check=False,
         )
 
-    def run_arc_disc(self, *args: str, input_text: str = "\n" * 16) -> subprocess.CompletedProcess[str]:
+    def run_arc_disc(
+        self, *args: str, input_text: str = "\n" * 16
+    ) -> subprocess.CompletedProcess[str]:
         if not self.fixture_path.exists():
             self.configure_arc_disc_fixture()
         env = self._subprocess_env(
@@ -1184,10 +1258,16 @@ class AcceptanceSystem:
             check=False,
         )
 
-    def seed_staged_collection(self, collection_id: str, files: Mapping[str, bytes] | None = None) -> None:
+    def seed_staged_collection(
+        self, collection_id: str, files: Mapping[str, bytes] | None = None
+    ) -> None:
         normalized_collection_id = normalize_collection_id(collection_id)
-        root = write_tree(self.workspace / "staging" / normalized_collection_id, files or PHOTOS_2024_FILES)
-        self.state.register_staged_directory(staging_path_for_collection(normalized_collection_id), root)
+        root = write_tree(
+            self.workspace / "staging" / normalized_collection_id, files or PHOTOS_2024_FILES
+        )
+        self.state.register_staged_directory(
+            staging_path_for_collection(normalized_collection_id), root
+        )
 
     def seed_staged_photos(self) -> None:
         self.seed_staged_collection(PHOTOS_COLLECTION_ID, PHOTOS_2024_FILES)
@@ -1321,7 +1401,8 @@ class AcceptanceSystem:
                     bytes=fixture.bytes,
                     iso_ready=fixture.iso_ready,
                     covered_paths=tuple(
-                        (CollectionId(collection_id), path) for collection_id, path in fixture.covered_paths
+                        (CollectionId(collection_id), path)
+                        for collection_id, path in fixture.covered_paths
                     ),
                 )
             )
@@ -1359,7 +1440,8 @@ class AcceptanceSystem:
     ) -> None:
         manifest = cast(dict[str, Any], self.fetches.manifest(fetch_id))
         files_by_path = {
-            record.path: record.content for record in self.state.selected_files(str(manifest["target"]))
+            record.path: record.content
+            for record in self.state.selected_files(str(manifest["target"]))
         }
         payload_by_disc_path: dict[str, str] = {}
         fail_disc_paths: list[str] = []
@@ -1389,7 +1471,9 @@ class AcceptanceSystem:
                 "fail_disc_paths": fail_disc_paths,
             },
         }
-        self.fixture_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        self.fixture_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+        )
 
     def _subprocess_env(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
         env = os.environ.copy()

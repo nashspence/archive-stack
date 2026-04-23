@@ -39,7 +39,12 @@ class CommandProofStamper:
     command: list[str]
 
     def stamp(self, manifest_path: Path) -> Path:
-        proc = subprocess.run([*self.command, "stamp", str(manifest_path)], capture_output=True, text=True, check=False)
+        proc = subprocess.run(
+            [*self.command, "stamp", str(manifest_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         if proc.returncode != 0:
             raise ProofStampError(proc.stderr or proc.stdout or "proof stamping failed")
         proof_path = manifest_path.with_name(f"{manifest_path.name}.ots")

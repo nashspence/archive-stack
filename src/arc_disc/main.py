@@ -192,7 +192,9 @@ class ProgressReporter:
         return sum(entry.recovery_bytes for entry in self.entries)
 
     def record_uploaded_bytes(self, entry: RecoveryEntry, byte_count: int) -> None:
-        self.uploaded_bytes_by_entry[entry.id] = self.uploaded_bytes_by_entry.get(entry.id, 0) + byte_count
+        self.uploaded_bytes_by_entry[entry.id] = (
+            self.uploaded_bytes_by_entry.get(entry.id, 0) + byte_count
+        )
         self.uploaded_manifest_bytes += byte_count
 
     def report(self, entry: RecoveryEntry) -> None:
@@ -277,7 +279,9 @@ def _upload_entry_from_disc(
         part_start = part_end
 
     if offset != entry.recovery_bytes:
-        raise RuntimeError(f"upload for {entry.path} stopped at {offset} of {entry.recovery_bytes} bytes")
+        raise RuntimeError(
+            f"upload for {entry.path} stopped at {offset} of {entry.recovery_bytes} bytes"
+        )
 
 
 @app.command("fetch")

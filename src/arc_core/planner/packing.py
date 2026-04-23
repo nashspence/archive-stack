@@ -212,6 +212,7 @@ def _solve(
     second = run(cost_2.tolist(), ((vec_used, used - meta_pad, used - meta_pad),))
     return second["selected"] if second else first["selected"]
 
+
 def pick_items(
     items: list[dict[str, Any]],
     collections: dict[str, dict[str, int]],

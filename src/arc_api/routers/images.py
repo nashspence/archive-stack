@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends
-from fastapi import Query
+from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
-from arc_api.deps import ServiceContainer, get_container
+from arc_api.deps import ContainerDep
 from arc_api.mappers import map_copy
 from arc_api.schemas.images import (
     CopyOut,
@@ -22,6 +21,7 @@ router = APIRouter(tags=["images"])
 
 @router.get("/images", response_model=ListImagesResponse)
 def list_images(
+    container: ContainerDep,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
     sort: Literal["finalized_at", "bytes", "copy_count"] = Query("finalized_at"),
@@ -29,7 +29,6 @@ def list_images(
     q: str | None = Query(None),
     collection: str | None = Query(None),
     has_copies: bool | None = Query(None),
-    container: ServiceContainer = Depends(get_container),
 ) -> ListImagesResponse:
     payload = container.planning.list_images(
         page=page,
@@ -44,19 +43,21 @@ def list_images(
 
 
 @router.get("/images/{image_id}", response_model=FinalizedImageSummaryResponse)
-def get_image(image_id: str, container: ServiceContainer = Depends(get_container)) -> FinalizedImageSummaryResponse:
+def get_image(image_id: str, container: ContainerDep) -> FinalizedImageSummaryResponse:
     payload = container.planning.get_image(image_id)
     return FinalizedImageSummaryResponse.model_validate(payload)
 
 
-@router.post("/plan/candidates/{candidate_id}/finalize", response_model=FinalizedImageSummaryResponse)
-def finalize_image(candidate_id: str, container: ServiceContainer = Depends(get_container)) -> FinalizedImageSummaryResponse:
+@router.post(
+    "/plan/candidates/{candidate_id}/finalize", response_model=FinalizedImageSummaryResponse
+)
+def finalize_image(candidate_id: str, container: ContainerDep) -> FinalizedImageSummaryResponse:
     payload = container.planning.finalize_image(candidate_id)
     return FinalizedImageSummaryResponse.model_validate(payload)
 
 
 @router.get("/images/{image_id}/iso")
-async def get_iso(image_id: str, container: ServiceContainer = Depends(get_container)) -> StreamingResponse:
+async def get_iso(image_id: str, container: ContainerDep) -> StreamingResponse:
     stream = container.planning.get_iso_stream(image_id)
     if hasattr(stream, "__await__"):
         stream = await stream
@@ -69,7 +70,11 @@ async def get_iso(image_id: str, container: ServiceContainer = Depends(get_conta
 def register_copy(
     image_id: str,
     request: RegisterCopyRequest,
-    container: ServiceContainer = Depends(get_container),
+    container: ContainerDep,
 ) -> RegisterCopyResponse:
-    summary = container.copies.register(image_id=image_id, copy_id=request.id, location=request.location)
-    return RegisterCopyResponse.model_validate({"copy": CopyOut.model_validate(map_copy(summary)).model_dump()})
+    summary = container.copies.register(
+        image_id=image_id, copy_id=request.id, location=request.location
+    )
+    return RegisterCopyResponse.model_validate(
+        {"copy": CopyOut.model_validate(map_copy(summary)).model_dump()}
+    )

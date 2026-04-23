@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
@@ -21,14 +21,12 @@ class CollectionArtifactPaths:
     proof_path: Path
 
 
-
 def collection_artifact_relpaths(collection_id: str) -> tuple[str, str]:
     name = normalize_collection_id(collection_id)
     return (
         f"collections/{name}/{COLLECTION_HASH_MANIFEST_NAME}",
         f"collections/{name}/{COLLECTION_HASH_PROOF_NAME}",
     )
-
 
 
 def scan_collection_root(root: Path) -> tuple[list[str], list[dict[str, object]]]:
@@ -57,14 +55,13 @@ def scan_collection_root(root: Path) -> tuple[list[str], list[dict[str, object]]
     return directories, files
 
 
-
 def build_collection_hash_manifest(collection_id: str, source_root: Path) -> dict[str, object]:
     directories, files = scan_collection_root(source_root)
     tree_sha256, total_bytes, rows = canonical_tree_hash(source_root)
     return {
         "schema": COLLECTION_HASH_MANIFEST_SCHEMA,
         "collection": normalize_collection_id(collection_id),
-        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "tree": {
             "sha256": tree_sha256,
             "total_bytes": total_bytes,
@@ -72,7 +69,6 @@ def build_collection_hash_manifest(collection_id: str, source_root: Path) -> dic
         "directories": directories,
         "files": rows,
     }
-
 
 
 def generate_collection_hash_artifacts(
@@ -85,6 +81,8 @@ def generate_collection_hash_artifacts(
     artifact_root.mkdir(parents=True, exist_ok=True)
     manifest_path = artifact_root / COLLECTION_HASH_MANIFEST_NAME
     manifest = build_collection_hash_manifest(collection_id, source_root)
-    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    manifest_path.write_text(
+        yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True), encoding="utf-8"
+    )
     proof_path = (stamper or StubProofStamper()).stamp(manifest_path)
     return CollectionArtifactPaths(manifest_path=manifest_path, proof_path=proof_path)

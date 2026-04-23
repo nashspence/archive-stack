@@ -15,7 +15,6 @@ from arc_core.iso.streaming import (
 )
 
 
-
 def test_build_iso_cmd_contains_maps(tmp_path: Path) -> None:
     left = tmp_path / "left.txt"
     right = tmp_path / "right.bin"
@@ -38,13 +37,11 @@ def test_build_iso_cmd_contains_maps(tmp_path: Path) -> None:
     assert "/payload/right.bin" in cmd
 
 
-
 def test_build_iso_cmd_from_root_maps_root(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
     cmd = build_iso_cmd_from_root(image_root=root, volume_id="VOL_ROOT")
     assert cmd[-3:] == [str(root), "/", "-commit"]
-
 
 
 def test_build_print_size_cmd_from_root_reuses_streaming_flags(tmp_path: Path) -> None:
@@ -57,17 +54,17 @@ def test_build_print_size_cmd_from_root_reuses_streaming_flags(tmp_path: Path) -
     assert size_cmd[-2:] == ["-print-size", "-end"]
 
 
-
 def test_parse_print_size_accepts_size_prefix() -> None:
     assert _parse_print_size_blocks("xorriso : NOTE : foo\nsize=1234\n") == 1234
-
 
 
 def test_estimate_iso_size_from_root_converts_blocks_to_bytes(monkeypatch, tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
 
-    def fake_run(cmd: list[str], *, capture_output: bool, text: bool, check: bool) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        cmd: list[str], *, capture_output: bool, text: bool, check: bool
+    ) -> subprocess.CompletedProcess[str]:
         assert "-print-size" in cmd
         assert cmd[-2:] == ["-print-size", "-end"]
         return subprocess.CompletedProcess(cmd, 0, stdout="size=4321\n", stderr="")
@@ -77,12 +74,15 @@ def test_estimate_iso_size_from_root_converts_blocks_to_bytes(monkeypatch, tmp_p
     assert used == 4321 * ISO_BLOCK_BYTES
 
 
-
-def test_estimate_iso_size_from_root_falls_back_if_xorriso_missing(monkeypatch, tmp_path: Path) -> None:
+def test_estimate_iso_size_from_root_falls_back_if_xorriso_missing(
+    monkeypatch, tmp_path: Path
+) -> None:
     root = tmp_path / "root"
     root.mkdir()
 
-    def fake_run(cmd: list[str], *, capture_output: bool, text: bool, check: bool) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        cmd: list[str], *, capture_output: bool, text: bool, check: bool
+    ) -> subprocess.CompletedProcess[str]:
         raise FileNotFoundError
 
     monkeypatch.setattr("arc_core.iso.streaming.subprocess.run", fake_run)

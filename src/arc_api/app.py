@@ -1,18 +1,18 @@
 from __future__ import annotations
 
-from fastapi import Depends, FastAPI, Request
-from fastapi.responses import JSONResponse
 import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
+from arc_api.auth import api_auth_dependencies
 from arc_api.routers.collections import router as collections_router
 from arc_api.routers.fetches import router as fetches_router
 from arc_api.routers.images import router as images_router
 from arc_api.routers.pins import router as pins_router
 from arc_api.routers.plan import router as plan_router
 from arc_api.routers.search import router as search_router
-from arc_api.auth import api_auth_dependencies
 from arc_api.schemas.common import ErrorBody, ErrorResponse
-from arc_core.domain.errors import ArcError, NotYetImplemented
+from arc_core.domain.errors import ArcError
 
 
 def create_app() -> FastAPI:
@@ -34,7 +34,9 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(NotImplementedError)
     async def handle_builtin_not_implemented(_: Request, exc: NotImplementedError) -> JSONResponse:
-        payload = ErrorResponse(error=ErrorBody(code="not_implemented", message=str(exc) or "not implemented"))
+        payload = ErrorResponse(
+            error=ErrorBody(code="not_implemented", message=str(exc) or "not implemented")
+        )
         return JSONResponse(status_code=501, content=payload.model_dump())
 
     auth_deps = list(api_auth_dependencies())

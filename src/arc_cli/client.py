@@ -10,12 +10,23 @@ from urllib.parse import quote
 
 import httpx
 
-from arc_core.domain.errors import ArcError, BadRequest, Conflict, HashMismatch, InvalidState, InvalidTarget, NotFound, NotYetImplemented
+from arc_core.domain.errors import (
+    ArcError,
+    BadRequest,
+    Conflict,
+    HashMismatch,
+    InvalidState,
+    InvalidTarget,
+    NotFound,
+    NotYetImplemented,
+)
 
 
 class ApiClient:
     def __init__(self, base_url: str | None = None, token: str | None = None) -> None:
-        self.base_url = (base_url or os.getenv("ARC_BASE_URL") or "http://127.0.0.1:8000").rstrip("/")
+        self.base_url = (base_url or os.getenv("ARC_BASE_URL") or "http://127.0.0.1:8000").rstrip(
+            "/"
+        )
         self.token = token or os.getenv("ARC_TOKEN")
 
     def _client(self) -> httpx.Client:
@@ -126,7 +137,9 @@ class ApiClient:
         return content
 
     def register_copy(self, image_id: str, copy_id: str, location: str) -> dict[str, Any]:
-        return self._json("POST", f"/v1/images/{image_id}/copies", json={"id": copy_id, "location": location})
+        return self._json(
+            "POST", f"/v1/images/{image_id}/copies", json={"id": copy_id, "location": location}
+        )
 
     def pin(self, target: str) -> dict[str, Any]:
         return self._json("POST", "/v1/pin", json={"target": target})
@@ -154,7 +167,9 @@ class ApiClient:
         checksum_algorithm: str,
         content: bytes,
     ) -> dict[str, Any]:
-        checksum = base64.b64encode(hashlib.new(checksum_algorithm, content).digest()).decode("ascii")
+        checksum = base64.b64encode(hashlib.new(checksum_algorithm, content).digest()).decode(
+            "ascii"
+        )
         response = self._request(
             "PATCH",
             upload_url,

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 from arc_core.domain.errors import NotYetImplemented
 from arc_core.iso.streaming import IsoStream, stream_iso_from_root

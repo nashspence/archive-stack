@@ -7,9 +7,9 @@ import re
 import shutil
 import signal
 import subprocess
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncIterator
 
 from arc_core.domain.errors import Conflict
 
@@ -39,7 +39,6 @@ class IsoStream:
     headers: dict[str, str] | None = None
 
 
-
 def _base_xorriso_cmd(*, volume_id: str) -> list[str]:
     return [
         XORRISO,
@@ -62,7 +61,6 @@ def _base_xorriso_cmd(*, volume_id: str) -> list[str]:
     ]
 
 
-
 def build_iso_cmd(volume: IsoVolume) -> list[str]:
     cmd = _base_xorriso_cmd(volume_id=volume.volume_id)
     for entry in volume.entries:
@@ -73,7 +71,6 @@ def build_iso_cmd(volume: IsoVolume) -> list[str]:
         cmd += ["-map", str(entry.disk_path), entry.iso_path]
     cmd += ["-commit"]
     return cmd
-
 
 
 def build_iso_cmd_from_root(*, image_root: Path, volume_id: str) -> list[str]:
@@ -88,11 +85,9 @@ def build_iso_cmd_from_root(*, image_root: Path, volume_id: str) -> list[str]:
     ]
 
 
-
 def build_iso_print_size_cmd_from_root(*, image_root: Path, volume_id: str) -> list[str]:
     cmd = build_iso_cmd_from_root(image_root=image_root, volume_id=volume_id)
     return [*cmd[:-1], "-print-size", "-end"]
-
 
 
 def _parse_print_size_blocks(output: str) -> int:
@@ -106,7 +101,6 @@ def _parse_print_size_blocks(output: str) -> int:
         if stripped == match.group("blocks") or stripped.startswith("size="):
             return int(match.group("blocks"))
     raise RuntimeError("xorriso did not report a parseable -print-size value")
-
 
 
 def estimate_iso_size_from_root(*, image_root: Path, volume_id: str, fallback_bytes: int) -> int:
@@ -216,4 +210,6 @@ async def stream_iso_from_entries(volume: IsoVolume) -> IsoStream:
 
 
 async def stream_iso_from_root(*, image_root: Path, volume_id: str, filename: str) -> IsoStream:
-    return await _stream_process(build_iso_cmd_from_root(image_root=image_root, volume_id=volume_id), filename=filename)
+    return await _stream_process(
+        build_iso_cmd_from_root(image_root=image_root, volume_id=volume_id), filename=filename
+    )

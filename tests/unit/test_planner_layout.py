@@ -67,7 +67,6 @@ def test_preview_image_uses_default_root_estimator(monkeypatch) -> None:
     assert preview.image.iso_overhead_bytes == 123
 
 
-
 def test_preview_image_accepts_explicit_estimator() -> None:
     preview = preview_image(
         image_id="img_002",

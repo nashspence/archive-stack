@@ -4,7 +4,6 @@ from fastapi.testclient import TestClient
 
 from arc_api.app import create_app
 
-
 REQUIRED_PATHS = {
     "/v1/collections/close",
     "/v1/collections/{collection_id}",

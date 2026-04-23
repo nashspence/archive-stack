@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 
-from arc_api.deps import ServiceContainer, get_container
+from arc_api.deps import ContainerDep
 from arc_api.mappers import map_collection
-from arc_api.schemas.collections import CloseCollectionRequest, CloseCollectionResponse, CollectionSummaryOut
+from arc_api.schemas.collections import (
+    CloseCollectionRequest,
+    CloseCollectionResponse,
+    CollectionSummaryOut,
+)
 
 router = APIRouter(tags=["collections"])
 
@@ -12,16 +16,18 @@ router = APIRouter(tags=["collections"])
 @router.post("/collections/close", response_model=CloseCollectionResponse)
 def close_collection(
     request: CloseCollectionRequest,
-    container: ServiceContainer = Depends(get_container),
+    container: ContainerDep,
 ) -> CloseCollectionResponse:
     summary = container.collections.close(request.path)
-    return CloseCollectionResponse(collection=CollectionSummaryOut.model_validate(map_collection(summary)))
+    return CloseCollectionResponse(
+        collection=CollectionSummaryOut.model_validate(map_collection(summary))
+    )
 
 
 @router.get("/collections/{collection_id:path}", response_model=CollectionSummaryOut)
 def get_collection(
     collection_id: str,
-    container: ServiceContainer = Depends(get_container),
+    container: ContainerDep,
 ) -> CollectionSummaryOut:
     summary = container.collections.get(collection_id)  # type: ignore[attr-defined]
     return CollectionSummaryOut.model_validate(map_collection(summary))

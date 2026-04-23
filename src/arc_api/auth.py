@@ -3,16 +3,17 @@ from __future__ import annotations
 import os
 import secrets
 from collections.abc import Sequence
+from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 _bearer = HTTPBearer(auto_error=False)
-
+BearerCredentials = Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)]
 
 
 def require_api_auth(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    credentials: BearerCredentials,
     expected_token: str | None = None,
 ) -> None:
     token = expected_token if expected_token is not None else os.getenv("ARC_API_TOKEN", "")
@@ -25,7 +26,6 @@ def require_api_auth(
             detail="invalid api token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-
 
 
 def api_auth_dependencies() -> Sequence[Depends]:

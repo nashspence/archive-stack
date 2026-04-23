@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 from arc_core.iso import estimate_iso_size_from_root
 from arc_core.planner.manifest import (
@@ -43,7 +43,6 @@ class IsoLayoutPreview:
     collections: list[str]
 
 
-
 def assign_paths(pieces: list[dict[str, object]]) -> dict[tuple[str, object, int], tuple[str, str]]:
     files = sorted(
         {(str(piece["collection"]), piece["file_id"], str(piece["relpath"])) for piece in pieces},
@@ -65,7 +64,6 @@ def assign_paths(pieces: list[dict[str, object]]) -> dict[tuple[str, object, int
     return out
 
 
-
 def manifest_bytes(
     image_id: str,
     collections: dict[str, list[dict[str, object]]],
@@ -85,8 +83,12 @@ def manifest_bytes(
                     "present": [
                         {
                             "index": int(piece["piece_index"]) + 1,
-                            "object": path_map[(collection_id, file_meta["file_id"], int(piece["piece_index"]))][0],
-                            "sidecar": path_map[(collection_id, file_meta["file_id"], int(piece["piece_index"]))][1],
+                            "object": path_map[
+                                (collection_id, file_meta["file_id"], int(piece["piece_index"]))
+                            ][0],
+                            "sidecar": path_map[
+                                (collection_id, file_meta["file_id"], int(piece["piece_index"]))
+                            ][1],
                         }
                         for piece in present
                     ],
@@ -100,7 +102,9 @@ def manifest_bytes(
                     manifest_file_entry(
                         str(file_meta["relpath"]),
                         str(file_meta["sha256"]),
-                        plaintext_bytes=int(plaintext_bytes) if plaintext_bytes is not None else None,
+                        plaintext_bytes=int(plaintext_bytes)
+                        if plaintext_bytes is not None
+                        else None,
                         object_path=object_path,
                         sidecar_path=sidecar_path,
                     )
@@ -110,7 +114,9 @@ def manifest_bytes(
                     manifest_file_entry(
                         str(file_meta["relpath"]),
                         str(file_meta["sha256"]),
-                        plaintext_bytes=int(plaintext_bytes) if plaintext_bytes is not None else None,
+                        plaintext_bytes=int(plaintext_bytes)
+                        if plaintext_bytes is not None
+                        else None,
                         parts=parts,
                     )
                 )
@@ -123,12 +129,10 @@ def manifest_bytes(
     return manifest_dump(volume_id or image_id, payload)
 
 
-
 def _write_placeholder_file(path: Path, size: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("wb") as handle:
         handle.truncate(size)
-
 
 
 def preview_image(
@@ -164,7 +168,9 @@ def preview_image(
 
     payload_bytes = 0
     for piece in pieces:
-        payload_relpath, sidecar_relpath = path_map[(str(piece["collection"]), piece["file_id"], int(piece["piece_index"]))]
+        payload_relpath, sidecar_relpath = path_map[
+            (str(piece["collection"]), piece["file_id"], int(piece["piece_index"]))
+        ]
         payload_size = int(piece["stored_size_bytes"])
         payload_bytes += payload_size
         entries.append(PreviewEntry(kind="payload", relpath=payload_relpath, size=payload_size))

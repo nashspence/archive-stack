@@ -80,8 +80,9 @@ def test_sidecar_dict_omits_uid_gid_and_part_for_unsplit_files() -> None:
     assert "part" not in sidecar
 
 
-def test_manifest_collection_budget_grows_with_more_files_and_readme_mentions_recovery_steps(
-) -> None:
+def test_manifest_collection_budget_grows_with_more_files_and_readme_mentions_recovery_steps() -> (
+    None
+):
     one_file = manifest_collection_budget(
         "docs",
         [{"relpath": "/a.txt", "sha256": "d" * 64, "plaintext_bytes": 10}],

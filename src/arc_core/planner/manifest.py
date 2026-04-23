@@ -65,7 +65,6 @@ def manifest_file_entry(
     return entry
 
 
-
 def manifest_dump(image_id: str, collections_payload: list[dict[str, object]]) -> bytes:
     return yaml_bytes(
         {
@@ -106,7 +105,6 @@ def sidecar_dict(
     return data
 
 
-
 def sidecar_bytes(
     file_meta: dict[str, Any],
     *,
@@ -122,7 +120,6 @@ def sidecar_bytes(
             part_count=part_count,
         )
     )
-
 
 
 def manifest_collection_budget(collection_id: str, files: list[dict[str, Any]]) -> int:
@@ -154,7 +151,6 @@ def manifest_collection_budget(collection_id: str, files: list[dict[str, Any]]) 
     return len(manifest_dump(PLACEHOLDER_IMAGE_ID, payload)) - EMPTY_MANIFEST_SIZE
 
 
-
 def recovery_readme_bytes(container_name: str) -> bytes:
     lines = [
         f"Archive image: {container_name}",
@@ -170,9 +166,18 @@ def recovery_readme_bytes(container_name: str) -> bytes:
         "- find the collection and file entry you need",
         "- decrypt the paired files/*.yml.age sidecar for metadata",
         "- decrypt the matching files/*.age payload",
-        "- if a file is split, gather every listed part from every disc and concatenate plaintext in ascending part index order",
-        "- if a collection spans multiple discs, gather every disc whose DISC.yml.age lists that collection and reconstruct files by collection id plus path",
-        "- decrypt collections/*.yml.age and collections/*.ots.age to verify the whole-collection manifest and timestamp proof",
+        (
+            "- if a file is split, gather every listed part from every disc and concatenate "
+            "plaintext in ascending part index order"
+        ),
+        (
+            "- if a collection spans multiple discs, gather every disc whose DISC.yml.age "
+            "lists that collection and reconstruct files by collection id plus path"
+        ),
+        (
+            "- decrypt collections/*.yml.age and collections/*.ots.age to verify the "
+            "whole-collection manifest and timestamp proof"
+        ),
         "",
     ]
     return "\n".join(lines).encode("utf-8")

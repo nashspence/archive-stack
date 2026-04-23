@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class FetchState(str, Enum):
+class FetchState(StrEnum):
     WAITING_MEDIA = "waiting_media"
     UPLOADING = "uploading"
     VERIFYING = "verifying"
@@ -11,6 +11,6 @@ class FetchState(str, Enum):
     FAILED = "failed"
 
 
-class SearchKind(str, Enum):
+class SearchKind(StrEnum):
     COLLECTION = "collection"
     FILE = "file"

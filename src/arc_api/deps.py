@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Annotated
+
+from fastapi import Depends
 
 from arc_core.services.collections import StubCollectionService
-from arc_core.services.contracts import CollectionService, CopyService, FetchService, PinService, PlanningService, SearchService
+from arc_core.services.contracts import (
+    CollectionService,
+    CopyService,
+    FetchService,
+    PinService,
+    PlanningService,
+    SearchService,
+)
 from arc_core.services.copies import StubCopyService
 from arc_core.services.fetches import StubFetchService
 from arc_core.services.pins import StubPinService
@@ -34,3 +44,6 @@ def default_container() -> ServiceContainer:
 
 def get_container() -> ServiceContainer:
     return default_container()
+
+
+ContainerDep = Annotated[ServiceContainer, Depends(get_container)]

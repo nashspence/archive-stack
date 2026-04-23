@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
 import shutil
+from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 
 
@@ -49,7 +49,9 @@ def derive_collection_id_from_staging_path(staging_path: str) -> str:
     except ValueError as exc:
         raise PathNormalizationError("staging path must include a staging root segment") from exc
     if len(parts) <= staging_index + 1:
-        raise PathNormalizationError("staging path must include a collection path beneath the staging root")
+        raise PathNormalizationError(
+            "staging path must include a collection path beneath the staging root"
+        )
     return normalize_collection_id("/".join(parts[staging_index + 1 :]))
 
 

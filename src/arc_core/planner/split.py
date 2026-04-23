@@ -4,18 +4,24 @@ from collections.abc import Iterable
 from typing import Any
 
 
-def tree_plan(children: dict[str, list[object]], sizes: dict[object, int], cap: int) -> list[dict[str, object]]:
+def tree_plan(
+    children: dict[str, list[object]], sizes: dict[object, int], cap: int
+) -> list[dict[str, object]]:
     free = [cap]
     parts: dict[int, dict[str, object]] = {}
     stack: list[tuple[object, str]] = [("", "dir")]
     while stack:
         node, reason = stack.pop()
         if node not in children or sizes[node] <= cap:
-            index = next((idx for idx, available in enumerate(free) if available >= sizes[node]), len(free))
+            index = next(
+                (idx for idx, available in enumerate(free) if available >= sizes[node]), len(free)
+            )
             if index == len(free):
                 free.append(cap)
             free[index] -= sizes[node]
-            bucket = parts.setdefault(index, {"pieces": [], "bytes": 0, "reason": reason, "nodes": []})
+            bucket = parts.setdefault(
+                index, {"pieces": [], "bytes": 0, "reason": reason, "nodes": []}
+            )
             bucket["bytes"] = int(bucket["bytes"]) + sizes[node]
             cast_nodes = bucket.setdefault("nodes", [])
             assert isinstance(cast_nodes, list)
@@ -24,7 +30,6 @@ def tree_plan(children: dict[str, list[object]], sizes: dict[object, int], cap: 
         ordered = sorted(children[node], key=lambda item: (-sizes[item], str(item)))
         stack.extend((child, "split") for child in reversed(ordered))
     return [parts[index] for index in sorted(parts)]
-
 
 
 def leaves(node: object, children: dict[object, list[object]]) -> Iterable[object]:
@@ -37,7 +42,6 @@ def leaves(node: object, children: dict[object, list[object]]) -> Iterable[objec
             stack.extend(reversed(children[current]))
 
 
-
 def split_collection(
     *,
     files: list[dict[str, Any]],
@@ -45,12 +49,16 @@ def split_collection(
     directories: list[str],
     cap: int,
 ) -> list[dict[str, object]]:
-    mutable_children: dict[object, list[object]] = {key: value[:] for key, value in children.items()}
+    mutable_children: dict[object, list[object]] = {
+        key: value[:] for key, value in children.items()
+    }
     sizes: dict[object, int] = {}
     by_rel = {file_meta["relpath"]: file_meta for file_meta in files}
 
     for file_meta in files:
-        sizes[file_meta["relpath"]] = sum(piece["estimated_on_disc_bytes"] for piece in file_meta["pieces"])
+        sizes[file_meta["relpath"]] = sum(
+            piece["estimated_on_disc_bytes"] for piece in file_meta["pieces"]
+        )
         if len(file_meta["pieces"]) > 1:
             mutable_children[file_meta["relpath"]] = [
                 (file_meta["relpath"], piece["piece_index"]) for piece in file_meta["pieces"]

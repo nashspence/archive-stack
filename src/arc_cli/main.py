@@ -14,6 +14,11 @@ copy_app = typer.Typer(help="copy registration")
 app.add_typer(iso_app, name="iso")
 app.add_typer(copy_app, name="copy")
 
+PLAN_QUERY_HELP = (
+    "Substring match over candidate id, collection ids, and represented projected file paths"
+)
+IMAGE_QUERY_HELP = "Substring match over id, filename, and collection ids"
+
 
 def client() -> ApiClient:
     return ApiClient()
@@ -50,9 +55,22 @@ def plan_cmd(
     per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "fill",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
-    query: Annotated[str | None, typer.Option("--query", help="Substring match over candidate id, collection ids, and represented projected file paths")] = None,
-    collection: Annotated[str | None, typer.Option("--collection", help="Filter by exact contained collection id")] = None,
-    iso_ready: Annotated[bool | None, typer.Option("--iso-ready/--not-ready", help="Filter by whether the candidate is ready to finalize")] = None,
+    query: Annotated[
+        str | None,
+        typer.Option(
+            "--query",
+            help=PLAN_QUERY_HELP,
+        ),
+    ] = None,
+    collection: Annotated[
+        str | None, typer.Option("--collection", help="Filter by exact contained collection id")
+    ] = None,
+    iso_ready: Annotated[
+        bool | None,
+        typer.Option(
+            "--iso-ready/--not-ready", help="Filter by whether the candidate is ready to finalize"
+        ),
+    ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     payload = client().get_plan(
@@ -73,9 +91,19 @@ def images_cmd(
     per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "finalized_at",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
-    query: Annotated[str | None, typer.Option("--query", help="Substring match over id, filename, and collection ids")] = None,
-    collection: Annotated[str | None, typer.Option("--collection", help="Filter by exact contained collection id")] = None,
-    has_copies: Annotated[bool | None, typer.Option("--has-copies/--no-copies", help="Filter by whether the image has registered copies")] = None,
+    query: Annotated[
+        str | None,
+        typer.Option("--query", help=IMAGE_QUERY_HELP),
+    ] = None,
+    collection: Annotated[
+        str | None, typer.Option("--collection", help="Filter by exact contained collection id")
+    ] = None,
+    has_copies: Annotated[
+        bool | None,
+        typer.Option(
+            "--has-copies/--no-copies", help="Filter by whether the image has registered copies"
+        ),
+    ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     payload = client().list_images(

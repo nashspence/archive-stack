@@ -76,7 +76,10 @@ def inspect_downloaded_iso(*, image_id: str, iso_bytes: bytes, workspace: Path) 
 
 
 def assert_root_layout_contract(inspected_iso: InspectedIso) -> None:
-    contract = cast(dict[str, Any], json.loads((DISC_CONTRACTS_ROOT / "root-layout.json").read_text(encoding="utf-8")))
+    contract = cast(
+        dict[str, Any],
+        json.loads((DISC_CONTRACTS_ROOT / "root-layout.json").read_text(encoding="utf-8")),
+    )
     root_entries = list(inspected_iso.extract_root.iterdir())
     root_files = sorted(path.name for path in root_entries if path.is_file())
     root_directories = sorted(path.name for path in root_entries if path.is_dir())
@@ -119,7 +122,9 @@ def payload_bytes(path: Path) -> bytes:
     return fixture_decrypt_bytes(path.read_bytes())
 
 
-def manifest_entry_by_path(disc_manifest: dict[str, Any], relpath: object) -> tuple[str, dict[str, Any]]:
+def manifest_entry_by_path(
+    disc_manifest: dict[str, Any], relpath: object
+) -> tuple[str, dict[str, Any]]:
     raw_path = str(relpath)
     normalized = raw_path if raw_path.startswith("/") else f"/{raw_path.lstrip('/')}"
     for collection in cast(list[dict[str, Any]], disc_manifest["collections"]):
@@ -136,7 +141,9 @@ def assert_disc_manifest_semantics(disc_manifest: dict[str, Any]) -> None:
     )
     for collection in collections:
         files = cast(list[dict[str, Any]], collection["files"])
-        assert [file_entry["path"] for file_entry in files] == sorted(file_entry["path"] for file_entry in files)
+        assert [file_entry["path"] for file_entry in files] == sorted(
+            file_entry["path"] for file_entry in files
+        )
 
 
 def assert_collection_manifest_semantics(

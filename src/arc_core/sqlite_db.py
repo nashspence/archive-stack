@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 try:
     from sqlalchemy import create_engine, event
@@ -22,11 +22,11 @@ class Base(DeclarativeBase):
     pass
 
 
-
 def _require_sqlalchemy() -> None:
     if _SQLALCHEMY_IMPORT_ERROR is not None:
-        raise RuntimeError("SQLAlchemy support requires `pip install .[db]`") from _SQLALCHEMY_IMPORT_ERROR
-
+        raise RuntimeError(
+            "SQLAlchemy support requires `pip install .[db]`"
+        ) from _SQLALCHEMY_IMPORT_ERROR
 
 
 def create_sqlite_engine(sqlite_path: str) -> Engine:
@@ -47,7 +47,6 @@ def create_sqlite_engine(sqlite_path: str) -> Engine:
         cursor.close()
 
     return engine
-
 
 
 def make_session_factory(sqlite_path: str):
