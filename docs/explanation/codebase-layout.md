@@ -2,7 +2,7 @@
 
 The implementation should keep business rules in a shared core library and keep the HTTP API and CLIs thin.
 
-## Recommended layout
+## Current layout
 
 ```text
 src/
@@ -20,55 +20,64 @@ src/
       copies.py
       pins.py
       fetches.py
+      contracts.py
     ports/
       catalog.py
-      planner.py
-      hot_store.py
-      projection.py
-      fetch_store.py
-      copy_store.py
-      optical_reader.py
-      crypto.py
       clock.py
+      copy_store.py
+      crypto.py
+      fetch_store.py
+      hot_store.py
       ids.py
+      optical_reader.py
+      planner.py
+      projection.py
+    planner/
+      layout.py
+      manifest.py
+      models.py
+      packing.py
+      split.py
+    iso/
+      streaming.py
+    imports/
+      tar_stream.py
+    archive_artifacts.py
+    crypto_age.py
+    fs_paths.py
+    hashing.py
+    proofs.py
+    sqlite_db.py
+    webhooks.py
   arc_api/
     app.py
+    auth.py
     deps.py
+    mappers.py
     routers/
       collections.py
+      fetches.py
       search.py
       plan.py
       images.py
       pins.py
-      fetches.py
     schemas/
       common.py
       collections.py
+      fetches.py
       search.py
       plan.py
       images.py
       pins.py
-      fetches.py
   arc_cli/
     main.py
     client.py
-    commands/
-      close.py
-      find.py
-      show.py
-      plan.py
-      iso.py
-      copy_add.py
-      pin.py
-      release.py
-      pins.py
-      fetch.py
+    output.py
   arc_disc/
     main.py
-    client.py
-    fetch.py
 tests/
   acceptance/
+  integration/
   unit/
   fixtures/
 ```
@@ -79,3 +88,4 @@ tests/
 - Treat FastAPI and both CLIs as adapters over the same service layer.
 - Keep selector parsing and normalization in one shared place.
 - Keep planner helpers and donor code adaptations behind ports and services rather than wiring them directly into routers.
+- Keep explanation docs aligned to the actual repository layout rather than an aspirational one.

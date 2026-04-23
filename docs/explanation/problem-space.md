@@ -16,3 +16,11 @@ The product goal is therefore:
 - make hot storage a projection of system state rather than a writable source of intent
 
 That means the system should treat the API state and catalog as authoritative, and the visible hot tree as generated.
+
+## MVP non-goals
+
+The MVP deliberately does not include:
+
+- a full web file browser
+- direct user mutation of the hot tree
+- exposing internal database schema as part of the public contract
