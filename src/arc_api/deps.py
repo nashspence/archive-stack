@@ -19,7 +19,7 @@ from arc_core.services.copies import StubCopyService
 from arc_core.services.fetches import StubFetchService
 from arc_core.services.pins import StubPinService
 from arc_core.services.planning import StubPlanningService
-from arc_core.services.search import StubSearchService
+from arc_core.services.search import SqlAlchemySearchService
 
 
 @dataclass(slots=True)
@@ -36,7 +36,7 @@ def default_container() -> ServiceContainer:
     config = load_runtime_config()
     return ServiceContainer(
         collections=SqlAlchemyCollectionService(config),
-        search=StubSearchService(),
+        search=SqlAlchemySearchService(config),
         planning=StubPlanningService(),
         copies=StubCopyService(),
         pins=StubPinService(),

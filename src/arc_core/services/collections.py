@@ -3,9 +3,9 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, select
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import select
 
+from arc_core.catalog_models import CollectionFileRecord, CollectionRecord
 from arc_core.domain.errors import BadRequest, Conflict, NotFound
 from arc_core.domain.models import CollectionSummary
 from arc_core.domain.types import CollectionId, Sha256Hex
@@ -25,34 +25,6 @@ class StubCollectionService:
 
     def get(self, collection_id: str) -> object:
         raise NotImplementedError("StubCollectionService is not implemented yet")
-
-
-class CollectionRecord(Base):
-    __tablename__ = "collections"
-
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    source_staging_path: Mapped[str] = mapped_column(String, unique=True)
-    files: Mapped[list[CollectionFileRecord]] = relationship(
-        back_populates="collection",
-        cascade="all, delete-orphan",
-    )
-
-
-class CollectionFileRecord(Base):
-    __tablename__ = "collection_files"
-
-    collection_id: Mapped[str] = mapped_column(
-        String,
-        ForeignKey("collections.id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    path: Mapped[str] = mapped_column(String, primary_key=True)
-    bytes: Mapped[int] = mapped_column(Integer)
-    sha256: Mapped[str] = mapped_column(String(64))
-    hot: Mapped[bool] = mapped_column(Boolean, default=True)
-    archived: Mapped[bool] = mapped_column(Boolean, default=False)
-
-    collection: Mapped[CollectionRecord] = relationship(back_populates="files")
 
 
 class SqlAlchemyCollectionService:

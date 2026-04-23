@@ -10,13 +10,16 @@ from typing import cast
 
 import httpx
 import pytest
+from sqlalchemy import delete, select
 
 from arc_api.app import create_app
+from arc_core.catalog_models import CollectionFileRecord, FileCopyRecord
 from arc_core.domain.models import CollectionSummary
 from arc_core.domain.types import CollectionId
 from arc_core.fs_paths import normalize_collection_id
+from arc_core.sqlite_db import make_session_factory, session_scope
 from tests.fixtures.acceptance import REPO_ROOT, SRC_ROOT, _LiveServerHandle, _reserve_local_port
-from tests.fixtures.data import DOCS_FILES, PHOTOS_2024_FILES, write_tree
+from tests.fixtures.data import DOCS_COLLECTION_ID, DOCS_FILES, PHOTOS_2024_FILES, write_tree
 
 
 class ProductionCollectionsClient:
@@ -35,6 +38,28 @@ class ProductionCollectionsClient:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ProductionStoredFile:
+    path: str
+
+
+class ProductionStateClient:
+    def __init__(self, system: ProductionSystem) -> None:
+        self._system = system
+
+    def collection_files(self, collection_id: str) -> list[ProductionStoredFile]:
+        with session_scope(make_session_factory(str(self._system.db_path))) as session:
+            records = session.scalars(
+                select(CollectionFileRecord).where(
+                    CollectionFileRecord.collection_id == collection_id
+                )
+            ).all()
+        return [
+            ProductionStoredFile(path=record.path)
+            for record in sorted(records, key=lambda item: item.path)
+        ]
+
+
 @dataclass(slots=True)
 class ProductionSystem:
     workspace: Path
@@ -43,6 +68,11 @@ class ProductionSystem:
     previous_arc_staging_root: str | None
     previous_arc_db_path: str | None
     collections: ProductionCollectionsClient
+    state: ProductionStateClient
+
+    @property
+    def db_path(self) -> Path:
+        return (self.workspace / ".arc" / "state.sqlite3").resolve()
 
     @classmethod
     def create(cls, workspace: Path) -> ProductionSystem:
@@ -61,8 +91,10 @@ class ProductionSystem:
             previous_arc_staging_root=previous_arc_staging_root,
             previous_arc_db_path=previous_arc_db_path,
             collections=cast(ProductionCollectionsClient, None),
+            state=cast(ProductionStateClient, None),
         )
         system.collections = ProductionCollectionsClient(system)
+        system.state = ProductionStateClient(system)
         return system
 
     def close(self) -> None:
@@ -153,6 +185,39 @@ class ProductionSystem:
     def seed_docs_hot(self) -> None:
         self.seed_collection_closed("docs", DOCS_FILES)
 
+    def seed_docs_archive(self) -> None:
+        self.seed_docs_hot()
+        self._update_file_hot_and_archive(
+            DOCS_COLLECTION_ID,
+            "tax/2022/invoice-123.pdf",
+            hot=False,
+            archived=True,
+            copies=[
+                {
+                    "copy_id": "copy-docs-1",
+                    "volume_id": "20260419T230001Z",
+                    "location": "vault-a/shelf-01",
+                }
+            ],
+        )
+        self._update_file_hot_and_archive(
+            DOCS_COLLECTION_ID,
+            "tax/2022/receipt-456.pdf",
+            hot=True,
+            archived=True,
+            copies=[
+                {
+                    "copy_id": "copy-docs-2",
+                    "volume_id": "20260419T230002Z",
+                    "location": "vault-a/shelf-02",
+                }
+            ],
+        )
+
+    def seed_search_fixtures(self) -> None:
+        self.seed_docs_archive()
+        self.seed_photos_hot()
+
     def _subprocess_env(self) -> dict[str, str]:
         env = os.environ.copy()
         pythonpath_parts = [str(ROOT) for ROOT in (SRC_ROOT, REPO_ROOT)]
@@ -162,8 +227,45 @@ class ProductionSystem:
         env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
         env["ARC_BASE_URL"] = self.base_url
         env["ARC_STAGING_ROOT"] = str((self.workspace / "staging").resolve())
-        env["ARC_DB_PATH"] = str((self.workspace / ".arc" / "state.sqlite3").resolve())
+        env["ARC_DB_PATH"] = str(self.db_path)
         return env
+
+    def _update_file_hot_and_archive(
+        self,
+        collection_id: str,
+        path: str,
+        *,
+        hot: bool,
+        archived: bool,
+        copies: list[dict[str, str]],
+    ) -> None:
+        with session_scope(make_session_factory(str(self.db_path))) as session:
+            record = session.get(
+                CollectionFileRecord,
+                {
+                    "collection_id": collection_id,
+                    "path": path,
+                },
+            )
+            assert record is not None
+            record.hot = hot
+            record.archived = archived
+            session.execute(
+                delete(FileCopyRecord).where(
+                    FileCopyRecord.collection_id == collection_id,
+                    FileCopyRecord.path == path,
+                )
+            )
+            for copy in copies:
+                session.add(
+                    FileCopyRecord(
+                        collection_id=collection_id,
+                        path=path,
+                        copy_id=copy["copy_id"],
+                        volume_id=copy["volume_id"],
+                        location=copy["location"],
+                    )
+                )
 
     def _restore_environment(self) -> None:
         if self.previous_arc_staging_root is None:

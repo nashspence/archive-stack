@@ -19,7 +19,6 @@ Feature: arc CLI
       And stdout is valid JSON
       And stdout matches the structure of POST "/v1/release"
 
-    @xfail_contract
     Scenario: arc find emits the API search payload
       When the operator runs 'arc find "invoice" --json'
       Then the command exits with code 0
