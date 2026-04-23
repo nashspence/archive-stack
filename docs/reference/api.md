@@ -63,13 +63,32 @@ Required behavior:
 
 Returns the best current provisional planner output and readiness status.
 
+Supported query parameters:
+
+- `page` — 1-based page number, default `1`
+- `per_page` — page size, default `25`
+- `sort` — one of `fill`, `bytes`, `files`, `collections`, or `candidate_id`
+- `order` — `asc` or `desc`
+- `q` — case-insensitive substring filter over `candidate_id`, contained collection ids, and represented projected file
+  paths
+- `collection` — exact collection-id filter over contained collection ids
+- `iso_ready` — filters provisional candidates by whether they are currently ready to finalize
+
 Required behavior:
 
 - every returned plan entry is a provisional candidate
 - a provisional candidate may be re-allocated by the planner
 - finalized images are not returned by `GET /v1/plan`
+- the response includes pagination metadata and a `candidates` array
+- the default ordering is fullest candidates first using `sort=fill&order=desc`
+- explicit sort and filter controls only change how the current provisional plan is listed; they do not change planner
+  allocation behavior
 - plan candidate objects expose `candidate_id`
-- plan candidate objects do not expose `volume_id`
+- plan candidate objects expose `collection_ids`
+- plan candidate objects do not expose finalized-image fields such as finalized `id`, `filename`, `finalized_at`, or
+  `copy_count`
+- plan-specific fields such as `ready`, `target_bytes`, `min_fill_bytes`, and `unplanned_bytes` remain part of the
+  response alongside the paged candidate listing
 
 ### Images
 
@@ -251,7 +270,7 @@ The `arc` CLI is a thin API client and should provide at least:
 - `arc close PATH`
 - `arc find QUERY`
 - `arc show COLLECTION`
-- `arc plan`
+- `arc plan [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--iso-ready|--not-ready]`
 - `arc images [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--has-copies|--no-copies]`
 - `arc iso get IMAGE_ID [-o FILE]`
 - `arc copy add IMAGE_ID COPY_ID --at LOCATION`
@@ -271,6 +290,9 @@ For finalized-image commands:
 - `IMAGE_ID` means the finalized image id
 - finalized image ids use compact UTC basic form `YYYYMMDDTHHMMSSZ`
 - `arc images --json` mirrors the `GET /v1/images` response payload
+- `arc plan --json` mirrors the `GET /v1/plan` response payload
+- non-JSON `arc plan` output stays concise and line-oriented while surfacing candidate id, fill, readiness, and
+  contained collections
 - non-JSON `arc images` output stays concise and line-oriented while surfacing finalized id, filename, copy count,
   and contained collections
 

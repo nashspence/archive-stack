@@ -96,6 +96,41 @@ paths:
       summary: Get current burn plan
       description: Returns provisional planner output only. Finalized images do not appear in this plan.
       operationId: getPlan
+      parameters:
+        - in: query
+          name: page
+          required: false
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: per_page
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+        - in: query
+          name: sort
+          required: false
+          schema:
+            type: string
+            enum: [fill, bytes, files, collections, candidate_id]
+            default: fill
+        - in: query
+          name: order
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+        - in: query
+          name: q
+          required: false
+          schema: { type: string }
+        - in: query
+          name: collection
+          required: false
+          schema: { type: string }
+        - in: query
+          name: iso_ready
+          required: false
+          schema: { type: boolean }
       responses:
         "200":
           description: Planner output
@@ -764,27 +799,48 @@ components:
             - type: string
               format: date-time
             - type: "null"
-    PlanImage:
+    PlanCandidate:
       type: object
-      required: [candidate_id, bytes, fill, collections, files, iso_ready]
+      required: [candidate_id, bytes, fill, collections, collection_ids, files, iso_ready]
       properties:
         candidate_id: { type: string }
         bytes: { type: integer }
         fill: { type: number }
         collections: { type: integer }
+        collection_ids:
+          type: array
+          items: { type: string }
         files: { type: integer }
         iso_ready: { type: boolean }
     PlanResponse:
       type: object
-      required: [ready, target_bytes, min_fill_bytes, images, unplanned_bytes]
+      required: [page, per_page, total, pages, sort, order, ready, target_bytes, min_fill_bytes, candidates, unplanned_bytes]
       properties:
+        page:
+          type: integer
+          minimum: 1
+        per_page:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+        pages:
+          type: integer
+          minimum: 0
+        sort:
+          type: string
+          enum: [fill, bytes, files, collections, candidate_id]
+        order:
+          type: string
+          enum: [asc, desc]
         ready: { type: boolean }
         target_bytes: { type: integer }
         min_fill_bytes: { type: integer }
-        images:
+        candidates:
           type: array
           items:
-            $ref: "#/components/schemas/PlanImage"
+            $ref: "#/components/schemas/PlanCandidate"
         unplanned_bytes: { type: integer }
         note: { type: string }
     ErrorEnvelope:

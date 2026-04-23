@@ -263,7 +263,22 @@ def _prepare_arc_expectation(
 
     if argv[1] == "plan":
         context.expected_api_endpoint = ("GET", "/v1/plan")
-        context.expected_api_payload = acceptance_system.request("GET", "/v1/plan").json()
+        params = {
+            "page": _arc_option_value(argv, "--page", 1),
+            "per_page": _arc_option_value(argv, "--per-page", 25),
+            "sort": _arc_option_value(argv, "--sort", "fill"),
+            "order": _arc_option_value(argv, "--order", "desc"),
+        }
+        query = _arc_option_value(argv, "--query")
+        collection = _arc_option_value(argv, "--collection")
+        iso_ready = _arc_bool_flag(argv, "--iso-ready", "--not-ready")
+        if query is not None:
+            params["q"] = query
+        if collection is not None:
+            params["collection"] = collection
+        if iso_ready is not None:
+            params["iso_ready"] = iso_ready
+        context.expected_api_payload = acceptance_system.request("GET", "/v1/plan", params=params).json()
         return
 
     if argv[1] == "images":
@@ -350,9 +365,9 @@ def given_archive_with_split_planner_fixtures(acceptance_system: AcceptanceSyste
 @given("the planner has at least one candidate image")
 def given_planner_has_candidate_image(acceptance_system: AcceptanceSystem) -> None:
     plan = acceptance_system.planning.get_plan()
-    images = plan["images"]
-    assert isinstance(images, list)
-    assert images
+    candidates = plan["candidates"]
+    assert isinstance(candidates, list)
+    assert candidates
 
 
 @given(parsers.parse('collection "{collection_id}" exists and is fully hot'))
@@ -1112,43 +1127,84 @@ def then_error_code_is(
     assert payload["error"]["code"] == code
 
 
-@then('each plan image contains "candidate_id", "bytes", "fill", "files", "collections", and "iso_ready"')
-def then_each_plan_image_contains_expected_fields(
+@then(
+    'each plan candidate contains "candidate_id", "bytes", "fill", "files", "collections", "collection_ids", and "iso_ready"'
+)
+def then_each_plan_candidate_contains_expected_fields(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    expected = {"candidate_id", "bytes", "fill", "files", "collections", "iso_ready"}
-    assert payload["images"]
-    assert all(expected.issubset(image) for image in payload["images"])
+    expected = {"candidate_id", "bytes", "fill", "files", "collections", "collection_ids", "iso_ready"}
+    assert payload["candidates"]
+    assert all(expected.issubset(candidate) for candidate in payload["candidates"])
 
 
-@then(parsers.parse('plan images do not contain field "{field}"'))
-def then_plan_images_do_not_contain_field(
+@then(parsers.parse('plan candidates do not contain field "{field}"'))
+def then_plan_candidates_do_not_contain_field(
     acceptance_context: AcceptanceScenarioContext,
     field: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert payload["images"]
-    assert all(field not in image for image in payload["images"])
+    assert payload["candidates"]
+    assert all(field not in candidate for candidate in payload["candidates"])
 
 
-@then("each image fill equals image bytes divided by target bytes")
-def then_each_image_fill_matches_target_bytes(
+@then("each candidate fill equals candidate bytes divided by target bytes")
+def then_each_candidate_fill_matches_target_bytes(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     target_bytes = payload["target_bytes"]
-    for image in payload["images"]:
-        assert image["fill"] == image["bytes"] / target_bytes
+    for candidate in payload["candidates"]:
+        assert candidate["fill"] == candidate["bytes"] / target_bytes
 
 
-@then("images are returned in best-first order")
-def then_images_are_returned_in_best_first_order(
+@then("candidates are returned fullest-first")
+def then_candidates_are_returned_fullest_first(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    fills = [image["fill"] for image in payload["images"]]
+    fills = [candidate["fill"] for candidate in payload["candidates"]]
     assert fills == sorted(fills, reverse=True)
+
+
+@then("plan candidates are returned by candidate_id ascending")
+def then_plan_candidates_are_returned_by_candidate_id_ascending(
+    acceptance_context: AcceptanceScenarioContext,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    ids = [candidate["candidate_id"] for candidate in payload["candidates"]]
+    assert ids == sorted(ids)
+
+
+@then(parsers.parse("the response contains {count:d} plan candidates"))
+def then_response_contains_plan_candidate_count(
+    acceptance_context: AcceptanceScenarioContext,
+    count: int,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert len(payload["candidates"]) == count
+
+
+@then(parsers.re(r'the response plan candidates include "(?P<first>[^"]+)"(?P<rest>.*)'))
+def then_response_plan_candidates_include(
+    acceptance_context: AcceptanceScenarioContext,
+    first: str,
+    rest: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    ids = [candidate["candidate_id"] for candidate in payload["candidates"]]
+    for candidate_id in [first, *_quoted_values(rest)]:
+        assert candidate_id in ids
+
+
+@then(parsers.parse('the response plan candidates contain only "{candidate_id}"'))
+def then_response_plan_candidates_contain_only(
+    acceptance_context: AcceptanceScenarioContext,
+    candidate_id: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert [candidate["candidate_id"] for candidate in payload["candidates"]] == [candidate_id]
 
 
 @then(
@@ -1254,13 +1310,13 @@ def then_response_contains_image_id(
     assert payload["id"] == image_id
 
 
-@then(parsers.parse('the response images do not contain image id "{image_id}"'))
-def then_response_images_do_not_contain_image_id(
+@then(parsers.parse('the response candidates do not contain candidate id "{image_id}"'))
+def then_response_candidates_do_not_contain_candidate_id(
     acceptance_context: AcceptanceScenarioContext,
     image_id: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    ids = [image.get("candidate_id", image.get("id")) for image in payload["images"]]
+    ids = [candidate["candidate_id"] for candidate in payload["candidates"]]
     assert image_id not in ids
 
 

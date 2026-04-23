@@ -9,7 +9,17 @@ from arc_core.iso.streaming import IsoStream, stream_iso_from_root
 
 
 class StubPlanningService:
-    def get_plan(self) -> object:
+    def get_plan(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        sort: str = "fill",
+        order: str = "desc",
+        q: str | None = None,
+        collection: str | None = None,
+        iso_ready: bool | None = None,
+    ) -> object:
         raise NotYetImplemented("StubPlanningService is not implemented yet")
 
     def list_images(
@@ -51,7 +61,7 @@ class ImageRootPlanningService:
         *,
         image_lookup: Callable[[str], object],
         list_lookup: Callable[..., object] | None = None,
-        plan_lookup: Callable[[], object],
+        plan_lookup: Callable[..., object],
         finalize_lookup: Callable[[str], object] | None = None,
     ) -> None:
         self._image_lookup = image_lookup
@@ -59,8 +69,26 @@ class ImageRootPlanningService:
         self._plan_lookup = plan_lookup
         self._finalize_lookup = finalize_lookup
 
-    def get_plan(self) -> object:
-        return self._plan_lookup()
+    def get_plan(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        sort: str = "fill",
+        order: str = "desc",
+        q: str | None = None,
+        collection: str | None = None,
+        iso_ready: bool | None = None,
+    ) -> object:
+        return self._plan_lookup(
+            page=page,
+            per_page=per_page,
+            sort=sort,
+            order=order,
+            q=q,
+            collection=collection,
+            iso_ready=iso_ready,
+        )
 
     def list_images(
         self,

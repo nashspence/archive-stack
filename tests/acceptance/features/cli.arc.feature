@@ -28,10 +28,13 @@ Feature: arc CLI
 
     @xfail_contract
     Scenario: arc plan emits the API plan payload
-      When the operator runs 'arc plan --json'
+      Given an archive with planner fixtures
+      And an archive with split planner fixtures
+      When the operator runs 'arc plan --page 1 --per-page 2 --sort candidate_id --order asc --collection docs --iso-ready --query invoice-123.pdf --json'
       Then the command exits with code 0
       And stdout is valid JSON
       And stdout matches the structure of GET "/v1/plan"
+      And stdout mentions "img_2026-04-20_01"
 
     @xfail_contract
     Scenario: arc images emits the finalized-image listing payload
@@ -58,6 +61,17 @@ Feature: arc CLI
       And stdout mentions "waiting_media"
 
   Rule: Non-JSON mode remains concise and stable
+    @xfail_contract
+    Scenario: arc plan prints candidate ids, fill, and readiness
+      Given an archive with planner fixtures
+      And an archive with split planner fixtures
+      When the operator runs 'arc plan --collection docs --iso-ready'
+      Then the command exits with code 0
+      And stdout mentions "img_2026-04-20_01"
+      And stdout mentions "fill:"
+      And stdout mentions "iso_ready: True"
+      And stdout mentions "collections: 1 [docs]"
+
     @xfail_contract
     Scenario: arc images prints finalized ids, filenames, and copy counts
       Given an archive with planner fixtures

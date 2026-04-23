@@ -104,7 +104,14 @@ A candidate summary exposes at least:
 - `fill`
 - `files`
 - `collections`
+- `collection_ids`
 - `iso_ready`
+
+Candidate-summary rules:
+
+- `collections` is the count of contained collection ids
+- `collection_ids` is the lexically sorted list of contained collection ids
+- candidate summaries remain provisional and never expose finalized-image ids or finalized-image-only fields
 
 ### Image summary
 

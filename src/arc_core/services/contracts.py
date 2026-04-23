@@ -15,7 +15,17 @@ class SearchService(Protocol):
 
 
 class PlanningService(Protocol):
-    def get_plan(self) -> object: ...
+    def get_plan(
+        self,
+        *,
+        page: int,
+        per_page: int,
+        sort: str,
+        order: str,
+        q: str | None,
+        collection: str | None,
+        iso_ready: bool | None,
+    ) -> object: ...
     def list_images(
         self,
         *,

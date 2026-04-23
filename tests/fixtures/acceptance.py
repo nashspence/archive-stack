@@ -132,6 +132,10 @@ class CandidateRecord:
         return sorted({str(collection_id) for collection_id, _ in self.covered_paths})
 
     @property
+    def projected_paths(self) -> list[str]:
+        return sorted(f"{collection_id}/{path}" for collection_id, path in self.covered_paths)
+
+    @property
     def fill(self) -> float:
         return self.bytes / TARGET_BYTES
 
@@ -149,6 +153,7 @@ class CandidateRecord:
             "fill": self.fill,
             "files": self.files,
             "collections": len(self.collections),
+            "collection_ids": self.collections,
             "iso_ready": self.iso_ready,
         }
 
@@ -402,15 +407,22 @@ class AcceptancePlanningService:
             plan_lookup=self.get_plan,
         )
 
-    def get_plan(self) -> dict[str, object]:
-        images = sorted(
-            (
-                image
-                for image in self.state.candidates_by_id.values()
-                if ImageId(image.finalized_id) not in self.state.finalized_images_by_id
-            ),
-            key=lambda image: (-image.fill, str(image.candidate_id)),
-        )
+    def get_plan(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        sort: str = "fill",
+        order: str = "desc",
+        q: str | None = None,
+        collection: str | None = None,
+        iso_ready: bool | None = None,
+    ) -> dict[str, object]:
+        candidates = [
+            image
+            for image in self.state.candidates_by_id.values()
+            if ImageId(image.finalized_id) not in self.state.finalized_images_by_id
+        ]
         covered = {
             (collection_id, path)
             for image in self.state.candidates_by_id.values()
@@ -422,11 +434,52 @@ class AcceptancePlanningService:
             for record in collection_files.values()
             if (record.collection_id, record.path) not in covered
         )
+        if q:
+            needle = q.casefold()
+            candidates = [
+                candidate
+                for candidate in candidates
+                if needle in str(candidate.candidate_id).casefold()
+                or any(needle in collection_id.casefold() for collection_id in candidate.collections)
+                or any(needle in projected_path.casefold() for projected_path in candidate.projected_paths)
+            ]
+        if collection:
+            candidates = [candidate for candidate in candidates if collection in candidate.collections]
+        if iso_ready is not None:
+            candidates = [candidate for candidate in candidates if candidate.iso_ready is iso_ready]
+
+        reverse = order == "desc"
+        sort_key = {
+            "fill": lambda candidate: (candidate.fill, candidate.bytes, str(candidate.candidate_id)),
+            "bytes": lambda candidate: (candidate.bytes, candidate.fill, str(candidate.candidate_id)),
+            "files": lambda candidate: (candidate.files, candidate.bytes, str(candidate.candidate_id)),
+            "collections": lambda candidate: (len(candidate.collections), candidate.bytes, str(candidate.candidate_id)),
+            "candidate_id": lambda candidate: (str(candidate.candidate_id),),
+        }[sort]
+        candidates = sorted(candidates, key=sort_key, reverse=reverse)
+
+        total = len(candidates)
+        pages = math.ceil(total / per_page) if total else 0
+        start = (page - 1) * per_page
+        stop = start + per_page
+        page_candidates = candidates[start:stop]
         return {
-            "ready": bool(images),
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "pages": pages,
+            "sort": sort,
+            "order": order,
+            "ready": bool(
+                [
+                    image
+                    for image in self.state.candidates_by_id.values()
+                    if ImageId(image.finalized_id) not in self.state.finalized_images_by_id
+                ]
+            ),
             "target_bytes": TARGET_BYTES,
             "min_fill_bytes": MIN_FILL_BYTES,
-            "images": [image.plan_payload() for image in images],
+            "candidates": [candidate.plan_payload() for candidate in page_candidates],
             "unplanned_bytes": unplanned_bytes,
         }
 

@@ -6,7 +6,7 @@ from typing import Annotated
 import typer
 
 from arc_cli.client import ApiClient
-from arc_cli.output import emit, format_fetch, format_images, format_pin
+from arc_cli.output import emit, format_fetch, format_images, format_pin, format_plan
 
 app = typer.Typer(help="arc archival control CLI")
 iso_app = typer.Typer(help="ISO operations")
@@ -46,9 +46,25 @@ def show_cmd(
 
 @app.command("plan")
 def plan_cmd(
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "fill",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
+    query: Annotated[str | None, typer.Option("--query", help="Substring match over candidate id, collection ids, and represented projected file paths")] = None,
+    collection: Annotated[str | None, typer.Option("--collection", help="Filter by exact contained collection id")] = None,
+    iso_ready: Annotated[bool | None, typer.Option("--iso-ready/--not-ready", help="Filter by whether the candidate is ready to finalize")] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    emit(client().get_plan(), json_mode=json_mode)
+    payload = client().get_plan(
+        page=page,
+        per_page=per_page,
+        sort=sort,
+        order=order,
+        query=query,
+        collection=collection,
+        iso_ready=iso_ready,
+    )
+    emit(payload if json_mode else format_plan(payload), json_mode=json_mode)
 
 
 @app.command("images")

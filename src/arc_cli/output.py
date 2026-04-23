@@ -111,6 +111,43 @@ def format_images(payload: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def format_plan(payload: Mapping[str, Any]) -> str:
+    lines = [
+        "plan: "
+        f'page {payload.get("page", 1)}/{payload.get("pages", 0)} '
+        f'per_page={payload.get("per_page", 25)} '
+        f'total={payload.get("total", 0)} '
+        f'sort={payload.get("sort", "fill")} '
+        f'order={payload.get("order", "desc")}',
+        "planner: "
+        f'ready={payload.get("ready", False)} '
+        f'target_bytes={payload.get("target_bytes", 0)} '
+        f'min_fill_bytes={payload.get("min_fill_bytes", 0)} '
+        f'unplanned_bytes={payload.get("unplanned_bytes", 0)}',
+    ]
+
+    candidates = payload.get("candidates")
+    if not isinstance(candidates, Sequence) or not candidates:
+        lines.append("- none")
+        return "\n".join(lines)
+
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping):
+            continue
+        collection_ids = candidate.get("collection_ids")
+        collection_text = ", ".join(str(item) for item in collection_ids) if isinstance(collection_ids, Sequence) else ""
+        lines.extend(
+            [
+                f'- {candidate.get("candidate_id", "unknown")}',
+                f'  fill: {candidate.get("fill", 0)}',
+                f'  iso_ready: {candidate.get("iso_ready", False)}',
+                f'  collections: {candidate.get("collections", 0)} [{collection_text}]',
+            ]
+        )
+
+    return "\n".join(lines)
+
+
 def emit(payload: Any, *, json_mode: bool) -> None:
     if json_mode:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))

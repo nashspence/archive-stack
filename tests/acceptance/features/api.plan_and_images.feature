@@ -9,11 +9,31 @@ Feature: Plan and images API
   Scenario: Read the current plan
     When the client gets "/v1/plan"
     Then the response status is 200
-    And the response contains "ready", "target_bytes", "min_fill_bytes", "images", and "unplanned_bytes"
-    And each plan image contains "candidate_id", "bytes", "fill", "files", "collections", and "iso_ready"
-    And plan images do not contain field "volume_id"
-    And each image fill equals image bytes divided by target bytes
-    And images are returned in best-first order
+    And the response contains "page", "per_page", "total", "pages", "sort", "order", "ready", "target_bytes", "min_fill_bytes", "candidates", and "unplanned_bytes"
+    And each plan candidate contains "candidate_id", "bytes", "fill", "files", "collections", "collection_ids", and "iso_ready"
+    And plan candidates do not contain field "volume_id"
+    And each candidate fill equals candidate bytes divided by target bytes
+    And candidates are returned fullest-first
+
+  Scenario: Plan listing honors pagination
+    Given an archive with split planner fixtures
+    When the client gets "/v1/plan?page=1&per_page=2"
+    Then the response status is 200
+    And the response pagination is page 1 with per_page 2 and total 4 and pages 2
+    And the response contains 2 plan candidates
+    And the response plan candidates include "img_2026-04-20_01" and "img_2026-04-20_02"
+
+  Scenario: Plan listing can sort by candidate id ascending
+    Given an archive with split planner fixtures
+    When the client gets "/v1/plan?sort=candidate_id&order=asc"
+    Then the response status is 200
+    And plan candidates are returned by candidate_id ascending
+
+  Scenario: Plan listing can filter by readiness, collection, and projected file path query
+    When the client gets "/v1/plan?iso_ready=false&collection=photos-2024&q=albums/japan/day-01.txt"
+    Then the response status is 200
+    And the response contains 1 plan candidates
+    And the response plan candidates contain only "img_2026-04-20_02"
 
   Scenario: Finalized image lookup requires an existing finalized id
     Given candidate "img_2026-04-20_01" exists
@@ -29,7 +49,7 @@ Feature: Plan and images API
     And the response does not contain field "volume_id"
     When the client gets "/v1/plan"
     Then the response status is 200
-    And the response images do not contain image id "img_2026-04-20_01"
+    And the response candidates do not contain candidate id "img_2026-04-20_01"
     When the client gets "/v1/images/20260420T040001Z"
     Then the response status is 200
     And the response contains image id "20260420T040001Z"

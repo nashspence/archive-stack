@@ -63,8 +63,30 @@ class ApiClient:
     def get_collection(self, collection_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/collections/{quote(collection_id, safe='/')}")
 
-    def get_plan(self) -> dict[str, Any]:
-        return self._json("GET", "/v1/plan")
+    def get_plan(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        sort: str = "fill",
+        order: str = "desc",
+        query: str | None = None,
+        collection: str | None = None,
+        iso_ready: bool | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "page": page,
+            "per_page": per_page,
+            "sort": sort,
+            "order": order,
+        }
+        if query:
+            params["q"] = query
+        if collection:
+            params["collection"] = collection
+        if iso_ready is not None:
+            params["iso_ready"] = iso_ready
+        return self._json("GET", "/v1/plan", params=params)
 
     def list_images(
         self,
