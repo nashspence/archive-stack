@@ -1,7 +1,7 @@
 # API reference
 
 This document summarizes the MVP HTTP and CLI contract. The canonical machine-readable shape is
-`openapi/arc.v1.yaml`.
+`contracts/openapi/arc.v1.yaml`.
 
 ## HTTP API
 
