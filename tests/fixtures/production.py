@@ -18,12 +18,16 @@ from sqlalchemy import delete, select
 from arc_api.app import create_app
 from arc_core.catalog_models import (
     ActivePinRecord,
+    CandidateCoveredPathRecord,
     CollectionFileRecord,
     FetchEntryRecord,
     FileCopyRecord,
+    FinalizedImageCoveredPathRecord,
+    FinalizedImageRecord,
+    PlannedCandidateRecord,
 )
 from arc_core.domain.enums import FetchState
-from arc_core.domain.models import CollectionSummary, FetchCopyHint, FetchSummary
+from arc_core.domain.models import CollectionSummary, CopySummary, FetchCopyHint, FetchSummary
 from arc_core.domain.selectors import parse_target
 from arc_core.domain.types import CollectionId, CopyId, FetchId, TargetStr
 from arc_core.fs_paths import normalize_collection_id
@@ -32,6 +36,8 @@ from tests.fixtures.acceptance import REPO_ROOT, SRC_ROOT, _LiveServerHandle, _r
 from tests.fixtures.data import (
     DOCS_COLLECTION_ID,
     DOCS_FILES,
+    IMAGE_FIXTURES,
+    MIN_FILL_BYTES,
     PHOTOS_2024_FILES,
     SPLIT_COPY_ONE_ID,
     SPLIT_COPY_ONE_LOCATION,
@@ -39,6 +45,9 @@ from tests.fixtures.data import (
     SPLIT_COPY_TWO_LOCATION,
     SPLIT_FILE_PARTS,
     SPLIT_FILE_RELPATH,
+    SPLIT_IMAGE_FIXTURES,
+    TARGET_BYTES,
+    ImageFixture,
     build_file_copy,
     fixture_encrypt_bytes,
     split_fixture_plaintext,
@@ -153,6 +162,101 @@ class ProductionFetchRecordView:
     entries: dict[str, ProductionFetchEntryView]
 
 
+@dataclass(frozen=True, slots=True)
+class ProductionCandidateView:
+    candidate_id: str
+    finalized_id: str
+    iso_ready: bool
+    covered_paths: tuple[tuple[str, str], ...]
+
+
+class ProductionCandidatesProxy:
+    def __init__(self, system: ProductionSystem) -> None:
+        self._system = system
+
+    def __iter__(self) -> Iterator[str]:
+        with session_scope(make_session_factory(str(self._system.db_path))) as session:
+            records = session.scalars(select(PlannedCandidateRecord.candidate_id)).all()
+        return iter(records)
+
+    def __contains__(self, key: object) -> bool:
+        candidate_id = str(key)
+        with session_scope(make_session_factory(str(self._system.db_path))) as session:
+            return session.get(PlannedCandidateRecord, candidate_id) is not None
+
+    def __getitem__(self, key: object) -> ProductionCandidateView:
+        candidate_id = str(key)
+        with session_scope(make_session_factory(str(self._system.db_path))) as session:
+            record = session.get(PlannedCandidateRecord, candidate_id)
+            if record is None:
+                raise KeyError(candidate_id)
+            covered = tuple(
+                (cp.collection_id, cp.path) for cp in record.covered_paths
+            )
+            return ProductionCandidateView(
+                candidate_id=record.candidate_id,
+                finalized_id=record.finalized_id,
+                iso_ready=record.iso_ready,
+                covered_paths=covered,
+            )
+
+
+class ProductionPlanningClient:
+    def __init__(self, system: ProductionSystem) -> None:
+        self._system = system
+
+    def get_plan(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        sort: str = "fill",
+        order: str = "desc",
+        q: str | None = None,
+        collection: str | None = None,
+        iso_ready: bool | None = None,
+    ) -> dict[str, object]:
+        params: dict[str, object] = {
+            "page": page,
+            "per_page": per_page,
+            "sort": sort,
+            "order": order,
+        }
+        if q is not None:
+            params["q"] = q
+        if collection is not None:
+            params["collection"] = collection
+        if iso_ready is not None:
+            params["iso_ready"] = str(iso_ready).lower()
+        response = self._system.request("GET", "/v1/plan", params=params)
+        return cast(dict[str, object], response.json())
+
+    def finalize_image(self, candidate_id: str) -> dict[str, object]:
+        return cast(
+            dict[str, object],
+            self._system.request("POST", f"/v1/plan/candidates/{candidate_id}/finalize").json(),
+        )
+
+
+class ProductionCopiesClient:
+    def __init__(self, system: ProductionSystem) -> None:
+        self._system = system
+
+    def register(self, image_id: str, copy_id: str, location: str) -> CopySummary:
+        payload = self._system.request(
+            "POST",
+            f"/v1/images/{image_id}/copies",
+            json_body={"id": copy_id, "location": location},
+        ).json()
+        copy = payload["copy"]
+        return CopySummary(
+            id=CopyId(str(copy["id"])),
+            volume_id=str(copy["volume_id"]),
+            location=str(copy["location"]),
+            created_at=str(copy["created_at"]),
+        )
+
+
 class ProductionStateFetchesProxy:
     def __init__(self, system: ProductionSystem) -> None:
         self._system = system
@@ -214,6 +318,7 @@ class ProductionStateClient:
         self._system = system
         self.exact_pins = ProductionExactPinsProxy(system)
         self.fetches = ProductionStateFetchesProxy(system)
+        self.candidates_by_id = ProductionCandidatesProxy(system)
 
     def collection_files(self, collection_id: str) -> list[ProductionStoredFile]:
         with session_scope(make_session_factory(str(self._system.db_path))) as session:
@@ -275,6 +380,8 @@ class ProductionSystem:
     collections: ProductionCollectionsClient
     fetches: ProductionFetchesClient
     state: ProductionStateClient
+    planning: ProductionPlanningClient
+    copies: ProductionCopiesClient
 
     @property
     def db_path(self) -> Path:
@@ -301,10 +408,14 @@ class ProductionSystem:
             collections=cast(ProductionCollectionsClient, None),
             fetches=cast(ProductionFetchesClient, None),
             state=cast(ProductionStateClient, None),
+            planning=cast(ProductionPlanningClient, None),
+            copies=cast(ProductionCopiesClient, None),
         )
         system.collections = ProductionCollectionsClient(system)
         system.fetches = ProductionFetchesClient(system)
         system.state = ProductionStateClient(system)
+        system.planning = ProductionPlanningClient(system)
+        system.copies = ProductionCopiesClient(system)
         return system
 
     def close(self) -> None:
@@ -392,6 +503,69 @@ class ProductionSystem:
 
     def seed_photos_hot(self) -> None:
         self.seed_collection_closed("photos-2024", PHOTOS_2024_FILES)
+
+    def seed_planner_fixtures(self) -> None:
+        self.seed_docs_hot()
+        self.seed_photos_hot()
+        self.seed_image_fixtures(IMAGE_FIXTURES)
+
+    def seed_split_planner_fixtures(self) -> None:
+        self.seed_docs_hot()
+        self.seed_image_fixtures(SPLIT_IMAGE_FIXTURES)
+
+    def seed_image_fixtures(self, fixtures: tuple[ImageFixture, ...]) -> None:
+        images_root = self.workspace / "images"
+        with session_scope(make_session_factory(str(self.db_path))) as session:
+            for fixture in fixtures:
+                image_root = write_tree(images_root / fixture.id, fixture.files)
+                existing = session.get(PlannedCandidateRecord, fixture.id)
+                if existing is not None:
+                    continue
+                candidate = PlannedCandidateRecord(
+                    candidate_id=fixture.id,
+                    finalized_id=fixture.volume_id,
+                    filename=fixture.filename,
+                    bytes=fixture.bytes,
+                    iso_ready=fixture.iso_ready,
+                    image_root=str(image_root),
+                    target_bytes=TARGET_BYTES,
+                    min_fill_bytes=MIN_FILL_BYTES,
+                )
+                session.add(candidate)
+                for collection_id, path in fixture.covered_paths:
+                    session.add(
+                        CandidateCoveredPathRecord(
+                            candidate_id=fixture.id,
+                            collection_id=collection_id,
+                            path=path,
+                        )
+                    )
+
+    def seed_finalized_image(self, candidate_id: str, *, force_ready: bool = False) -> None:
+        with session_scope(make_session_factory(str(self.db_path))) as session:
+            candidate = session.get(PlannedCandidateRecord, candidate_id)
+            assert candidate is not None, f"candidate not found: {candidate_id}"
+            existing = session.get(FinalizedImageRecord, candidate.finalized_id)
+            if existing is not None:
+                return
+            session.add(
+                FinalizedImageRecord(
+                    image_id=candidate.finalized_id,
+                    candidate_id=candidate.candidate_id,
+                    filename=candidate.filename,
+                    bytes=candidate.bytes,
+                    image_root=candidate.image_root,
+                    target_bytes=candidate.target_bytes,
+                )
+            )
+            for cp in candidate.covered_paths:
+                session.add(
+                    FinalizedImageCoveredPathRecord(
+                        image_id=candidate.finalized_id,
+                        collection_id=cp.collection_id,
+                        path=cp.path,
+                    )
+                )
 
     def seed_nested_photos_hot(self) -> None:
         self.seed_collection_closed("photos/2024", PHOTOS_2024_FILES)

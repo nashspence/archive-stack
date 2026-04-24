@@ -116,18 +116,28 @@ def initialize_db(sqlite_path: str) -> None:
     """
     from arc_core.catalog_models import (  # noqa: PLC0415 - avoid circular import at module level
         ActivePinRecord,
+        CandidateCoveredPathRecord,
         CollectionFileRecord,
         CollectionRecord,
         FetchEntryRecord,
         FileCopyRecord,
+        FinalizedImageCoveredPathRecord,
+        FinalizedImageRecord,
+        ImageCopyRecord,
+        PlannedCandidateRecord,
     )
 
     _ = (
         ActivePinRecord,
+        CandidateCoveredPathRecord,
         CollectionFileRecord,
         CollectionRecord,
         FetchEntryRecord,
         FileCopyRecord,
+        FinalizedImageCoveredPathRecord,
+        FinalizedImageRecord,
+        ImageCopyRecord,
+        PlannedCandidateRecord,
     )
     engine = create_sqlite_engine(sqlite_path)
     Base.metadata.create_all(engine)

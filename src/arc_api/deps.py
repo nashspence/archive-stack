@@ -15,10 +15,10 @@ from arc_core.services.contracts import (
     PlanningService,
     SearchService,
 )
-from arc_core.services.copies import StubCopyService
+from arc_core.services.copies import SqlAlchemyCopyService
 from arc_core.services.fetches import SqlAlchemyFetchService
 from arc_core.services.pins import SqlAlchemyPinService
-from arc_core.services.planning import StubPlanningService
+from arc_core.services.planning import SqlAlchemyPlanningService
 from arc_core.services.search import SqlAlchemySearchService
 from arc_core.sqlite_db import initialize_db
 
@@ -39,8 +39,8 @@ def default_container() -> ServiceContainer:
     return ServiceContainer(
         collections=SqlAlchemyCollectionService(config),
         search=SqlAlchemySearchService(config),
-        planning=StubPlanningService(),
-        copies=StubCopyService(),
+        planning=SqlAlchemyPlanningService(config),
+        copies=SqlAlchemyCopyService(config),
         pins=SqlAlchemyPinService(config),
         fetches=SqlAlchemyFetchService(config),
     )

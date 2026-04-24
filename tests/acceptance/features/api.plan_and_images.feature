@@ -1,4 +1,4 @@
-@acceptance @api @mvp @xfail_contract
+@acceptance @api @mvp
 Feature: Plan and images API
   The API reports the current best image plan, exposes image summaries, and registers physical copies.
 

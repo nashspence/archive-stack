@@ -73,6 +73,99 @@ class FileCopyRecord(Base):
     file: Mapped[CollectionFileRecord] = relationship(back_populates="copies")
 
 
+class PlannedCandidateRecord(Base):
+    __tablename__ = "planned_candidates"
+
+    candidate_id: Mapped[str] = mapped_column(String, primary_key=True)
+    finalized_id: Mapped[str] = mapped_column(String, unique=True)
+    filename: Mapped[str] = mapped_column(String)
+    bytes: Mapped[int] = mapped_column(Integer)
+    iso_ready: Mapped[bool] = mapped_column(Boolean, default=False)
+    image_root: Mapped[str] = mapped_column(String)
+    target_bytes: Mapped[int] = mapped_column(Integer)
+    min_fill_bytes: Mapped[int] = mapped_column(Integer)
+
+    covered_paths: Mapped[list[CandidateCoveredPathRecord]] = relationship(
+        back_populates="candidate",
+        cascade="all, delete-orphan",
+    )
+
+
+class CandidateCoveredPathRecord(Base):
+    __tablename__ = "candidate_covered_paths"
+
+    candidate_id: Mapped[str] = mapped_column(String, primary_key=True)
+    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    path: Mapped[str] = mapped_column(String, primary_key=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["candidate_id"],
+            ["planned_candidates.candidate_id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    candidate: Mapped[PlannedCandidateRecord] = relationship(back_populates="covered_paths")
+
+
+class FinalizedImageRecord(Base):
+    __tablename__ = "finalized_images"
+
+    image_id: Mapped[str] = mapped_column(String, primary_key=True)
+    candidate_id: Mapped[str] = mapped_column(String)
+    filename: Mapped[str] = mapped_column(String)
+    bytes: Mapped[int] = mapped_column(Integer)
+    image_root: Mapped[str] = mapped_column(String)
+    target_bytes: Mapped[int] = mapped_column(Integer)
+
+    covered_paths: Mapped[list[FinalizedImageCoveredPathRecord]] = relationship(
+        back_populates="image",
+        cascade="all, delete-orphan",
+    )
+    copies: Mapped[list[ImageCopyRecord]] = relationship(
+        back_populates="image",
+        cascade="all, delete-orphan",
+    )
+
+
+class FinalizedImageCoveredPathRecord(Base):
+    __tablename__ = "finalized_image_covered_paths"
+
+    image_id: Mapped[str] = mapped_column(String, primary_key=True)
+    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    path: Mapped[str] = mapped_column(String, primary_key=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["image_id"],
+            ["finalized_images.image_id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    image: Mapped[FinalizedImageRecord] = relationship(back_populates="covered_paths")
+
+
+class ImageCopyRecord(Base):
+    __tablename__ = "image_copies"
+
+    image_id: Mapped[str] = mapped_column(String, primary_key=True)
+    copy_id: Mapped[str] = mapped_column(String, primary_key=True)
+    location: Mapped[str] = mapped_column(String)
+    created_at: Mapped[str] = mapped_column(String)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["image_id"],
+            ["finalized_images.image_id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    image: Mapped[FinalizedImageRecord] = relationship(back_populates="copies")
+
+
 class ActivePinRecord(Base):
     __tablename__ = "active_pins"
 

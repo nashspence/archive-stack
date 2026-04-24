@@ -23,7 +23,6 @@ Feature: arc CLI
       And stdout is valid JSON
       And stdout matches the structure of GET "/v1/search"
 
-    @xfail_contract
     Scenario: arc plan emits the API plan payload
       Given an archive with planner fixtures
       And an archive with split planner fixtures
@@ -33,7 +32,6 @@ Feature: arc CLI
       And stdout matches the structure of GET "/v1/plan"
       And stdout mentions "img_2026-04-20_01"
 
-    @xfail_contract
     Scenario: arc images emits the finalized-image listing payload
       Given an archive with planner fixtures
       And an archive with split planner fixtures
@@ -57,7 +55,6 @@ Feature: arc CLI
       And stdout mentions "waiting_media"
 
   Rule: Non-JSON mode remains concise and stable
-    @xfail_contract
     Scenario: arc plan prints candidate ids, fill, and readiness
       Given an archive with planner fixtures
       And an archive with split planner fixtures
@@ -68,7 +65,6 @@ Feature: arc CLI
       And stdout mentions "iso_ready: True"
       And stdout mentions "collections: 1 [docs]"
 
-    @xfail_contract
     Scenario: arc images prints finalized ids, filenames, and copy counts
       Given an archive with planner fixtures
       And candidate "img_2026-04-20_01" is finalized
