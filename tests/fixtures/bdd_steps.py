@@ -1852,6 +1852,14 @@ def then_fetch_no_longer_exists(
     assert fetch_id not in {str(current) for current in acceptance_system.state.fetches}
 
 
+@then(parsers.parse('the upload buffer for fetch "{fetch_id}" is absent'))
+def then_upload_buffer_is_absent(
+    acceptance_system: AcceptanceSystem,
+    fetch_id: str,
+) -> None:
+    assert acceptance_system.upload_buffer_absent(fetch_id)
+
+
 @then(parsers.parse('stderr mentions copy id "{copy_id}"'))
 def then_stderr_mentions_copy_id(
     acceptance_context: AcceptanceScenarioContext,

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
@@ -28,6 +31,7 @@ class StubPinService:
 class SqlAlchemyPinService:
     def __init__(self, config: RuntimeConfig) -> None:
         self._session_factory = make_session_factory(str(config.sqlite_path))
+        self._staging_root = config.staging_root
 
     def pin(self, raw_target: str) -> dict[str, object]:
         target = parse_target(raw_target)
@@ -71,9 +75,11 @@ class SqlAlchemyPinService:
         with session_scope(self._session_factory) as session:
             pin_record = session.get(ActivePinRecord, canonical)
             if pin_record is not None:
-                delete_fetch_entries(session, pin_record.fetch_id)
+                fetch_id = pin_record.fetch_id
+                delete_fetch_entries(session, fetch_id)
                 session.delete(pin_record)
                 session.flush()
+                _delete_upload_buffer(self._staging_root, fetch_id)
             _reconcile_hot_from_pins(session)
         return {
             "target": str(canonical),
@@ -166,6 +172,12 @@ def _fetch_payload(fetch_summary: FetchSummary) -> dict[str, object]:
             for copy in fetch_summary.copies
         ],
     }
+
+
+def _delete_upload_buffer(staging_root: Path, fetch_id: str) -> None:
+    buffer_dir = staging_root / ".arc_uploads" / fetch_id
+    if buffer_dir.exists():
+        shutil.rmtree(buffer_dir)
 
 
 def _reconcile_hot_from_pins(session) -> None:

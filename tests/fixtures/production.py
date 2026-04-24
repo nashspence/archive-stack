@@ -699,6 +699,10 @@ class ProductionSystem:
                 )
             )
 
+    def upload_buffer_absent(self, fetch_id: str) -> bool:
+        buffer_dir = self.workspace / "staging" / ".arc_uploads" / fetch_id
+        return not buffer_dir.exists()
+
     def upload_required_entries(self, fetch_id: str) -> None:
         manifest = self.fetches.manifest(fetch_id)
         for entry in manifest["entries"]:

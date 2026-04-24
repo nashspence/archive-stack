@@ -1455,6 +1455,9 @@ class AcceptanceSystem:
     def upload_partial_entry(self, fetch_id: str, entry_id: str) -> int:
         return self.fetches.upload_partial_entry(fetch_id, entry_id)
 
+    def upload_buffer_absent(self, fetch_id: str) -> bool:
+        return True  # stub has no real filesystem upload buffers
+
     def pins_list(self) -> list[str]:
         return [str(item.target) for item in self.pins.list_pins()]
 
