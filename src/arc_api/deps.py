@@ -20,6 +20,7 @@ from arc_core.services.fetches import SqlAlchemyFetchService
 from arc_core.services.pins import SqlAlchemyPinService
 from arc_core.services.planning import StubPlanningService
 from arc_core.services.search import SqlAlchemySearchService
+from arc_core.sqlite_db import initialize_db
 
 
 @dataclass(slots=True)
@@ -34,6 +35,7 @@ class ServiceContainer:
 
 def default_container() -> ServiceContainer:
     config = load_runtime_config()
+    initialize_db(str(config.sqlite_path))
     return ServiceContainer(
         collections=SqlAlchemyCollectionService(config),
         search=SqlAlchemySearchService(config),

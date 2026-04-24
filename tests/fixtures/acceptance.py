@@ -74,7 +74,7 @@ from tests.fixtures.data import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "src"
-FIXTURE_UPLOAD_EXPIRES_AT = "2026-04-23T00:00:00Z"
+FIXTURE_UPLOAD_EXPIRES_AT = "2099-12-31T23:59:59Z"
 FIXTURE_UPLOAD_URL_BASE = "https://uploads.fixture.invalid"
 
 
@@ -844,6 +844,22 @@ class AcceptanceFetchService:
         else:
             record.summary = self._replace_summary(record)
 
+    def upload_partial_entry(self, fetch_id: str, entry_id: str) -> int:
+        record = self._record(fetch_id)
+        entry = record.entries.get(EntryId(entry_id))
+        if entry is None:
+            raise NotFound(f"entry not found: {entry_id}")
+        recovery_stream = b"".join(self._entry_recovery_payloads(entry))
+        partial = recovery_stream[: max(1, len(recovery_stream) // 2)]
+        entry.uploaded_bytes = len(partial)
+        entry.uploaded_content = partial
+        entry.upload_expires_at = FIXTURE_UPLOAD_EXPIRES_AT
+        if record.summary.state == FetchState.WAITING_MEDIA:
+            record.summary = self._replace_summary(record, state=FetchState.UPLOADING)
+        else:
+            record.summary = self._replace_summary(record)
+        return len(partial)
+
     def _record(self, fetch_id: str) -> FetchRecord:
         try:
             return self.state.fetches[FetchId(fetch_id)]
@@ -1435,6 +1451,9 @@ class AcceptanceSystem:
 
     def upload_required_entries(self, fetch_id: str) -> None:
         self.fetches.upload_all_required_entries(fetch_id)
+
+    def upload_partial_entry(self, fetch_id: str, entry_id: str) -> int:
+        return self.fetches.upload_partial_entry(fetch_id, entry_id)
 
     def pins_list(self) -> list[str]:
         return [str(item.target) for item in self.pins.list_pins()]

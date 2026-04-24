@@ -5,7 +5,7 @@ from sqlalchemy.orm import selectinload
 
 from arc_core.catalog_models import CollectionFileRecord, CollectionRecord, FileCopyRecord
 from arc_core.runtime_config import RuntimeConfig
-from arc_core.sqlite_db import Base, make_session_factory, session_scope
+from arc_core.sqlite_db import make_session_factory, session_scope
 
 
 class StubSearchService:
@@ -16,15 +16,6 @@ class StubSearchService:
 class SqlAlchemySearchService:
     def __init__(self, config: RuntimeConfig) -> None:
         self._session_factory = make_session_factory(str(config.sqlite_path))
-        bind = self._session_factory.kw["bind"]
-        Base.metadata.create_all(
-            bind,
-            tables=[
-                CollectionRecord.__table__,
-                CollectionFileRecord.__table__,
-                FileCopyRecord.__table__,
-            ],
-        )
 
     def search(self, query: str, limit: int) -> list[object]:
         needle = query.casefold()

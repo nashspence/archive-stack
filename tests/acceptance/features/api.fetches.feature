@@ -70,6 +70,14 @@ Feature: Fetches API
       Then the response status is 200
       And fetch manifest entry "e1" contains "recovery_bytes", "upload_state", "uploaded_bytes", and "upload_state_expires_at"
 
+  Rule: Partial upload progress survives service restarts
+    Scenario: A restart mid-upload preserves the upload offset
+      Given fetch "fx-1" has entry "e1" with a partial upload in progress
+      When the API process restarts
+      And the client posts to "/v1/fetches/fx-1/entries/e1/upload"
+      Then the response status is 200
+      And the returned offset matches the previously uploaded bytes
+
   Rule: Split fetch manifests expose part-level recovery hints
     Background:
       Given split archived fetch "fx-1" exists for target "docs/tax/2022/invoice-123.pdf"

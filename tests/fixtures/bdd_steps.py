@@ -63,6 +63,7 @@ class AcceptanceScenarioContext:
     inspected_isos: dict[str, InspectedIso] = field(default_factory=dict)
     current_iso: InspectedIso | None = None
     recorded_split_payloads: dict[str, dict[int, bytes]] = field(default_factory=dict)
+    recorded_upload_offset: int | None = None
 
 
 @pytest.fixture
@@ -480,6 +481,25 @@ def given_fetch_has_stable_manifest(
     first = acceptance_system.fetches.manifest(fetch_id)
     second = acceptance_system.fetches.manifest(fetch_id)
     assert first == second
+
+
+@given(
+    parsers.parse('fetch "{fetch_id}" has entry "{entry_id}" with a partial upload in progress')
+)
+def given_fetch_has_partial_upload_in_progress(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+    fetch_id: str,
+    entry_id: str,
+) -> None:
+    acceptance_system.seed_docs_archive()
+    acceptance_system.seed_fetch(fetch_id, INVOICE_TARGET)
+    manifest = acceptance_system.fetches.manifest(fetch_id)
+    entry_ids = [item["id"] for item in manifest["entries"]]
+    assert entry_id in entry_ids
+    acceptance_context.recorded_upload_offset = acceptance_system.upload_partial_entry(
+        fetch_id, entry_id
+    )
 
 
 @given("a fake optical reader fixture can recover every required entry")
@@ -1822,6 +1842,14 @@ def then_stderr_does_not_mention_copy_id(
     copy_id: str,
 ) -> None:
     assert copy_id not in _require_command(acceptance_context).stderr
+
+
+@then("the returned offset matches the previously uploaded bytes")
+def then_returned_offset_matches_recorded(
+    acceptance_context: AcceptanceScenarioContext,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert payload["offset"] == acceptance_context.recorded_upload_offset
 
 
 @then("both upload-session responses contain the same upload url")

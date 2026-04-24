@@ -541,6 +541,18 @@ class ProductionSystem:
                 )
                 session["offset"] = result["offset"]
 
+    def upload_partial_entry(self, fetch_id: str, entry_id: str) -> int:
+        entry_view = self.state.fetches[fetch_id].entries[entry_id]
+        full_payload = fixture_encrypt_bytes(entry_view.content)
+        partial_payload = full_payload[: max(1, len(full_payload) // 2)]
+        session_info = self.fetches.create_or_resume_upload(fetch_id, entry_id)
+        result = self.fetches.append_upload_chunk(
+            str(session_info["upload_url"]),
+            offset=int(session_info["offset"]),
+            content=partial_payload,
+        )
+        return int(result["offset"])
+
     def configure_arc_disc_fixture(
         self,
         *,

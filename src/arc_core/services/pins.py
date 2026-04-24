@@ -11,7 +11,7 @@ from arc_core.domain.selectors import parse_target
 from arc_core.domain.types import CopyId, FetchId, TargetStr
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.fetches import delete_fetch_entries
-from arc_core.sqlite_db import Base, make_session_factory, session_scope
+from arc_core.sqlite_db import make_session_factory, session_scope
 
 
 class StubPinService:
@@ -28,15 +28,6 @@ class StubPinService:
 class SqlAlchemyPinService:
     def __init__(self, config: RuntimeConfig) -> None:
         self._session_factory = make_session_factory(str(config.sqlite_path))
-        bind = self._session_factory.kw["bind"]
-        Base.metadata.create_all(
-            bind,
-            tables=[
-                CollectionFileRecord.__table__,
-                FileCopyRecord.__table__,
-                ActivePinRecord.__table__,
-            ],
-        )
 
     def pin(self, raw_target: str) -> dict[str, object]:
         target = parse_target(raw_target)

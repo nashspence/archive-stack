@@ -22,7 +22,7 @@ from arc_core.domain.selectors import parse_target
 from arc_core.domain.types import CopyId, FetchId, TargetStr
 from arc_core.recovery_payloads import decrypt_recovery_payload, encrypt_recovery_payload
 from arc_core.runtime_config import RuntimeConfig
-from arc_core.sqlite_db import Base, make_session_factory, session_scope
+from arc_core.sqlite_db import make_session_factory, session_scope
 
 @dataclass(frozen=True, slots=True)
 class _ManifestCopy:
@@ -45,16 +45,6 @@ class SqlAlchemyFetchService:
     def __init__(self, config: RuntimeConfig) -> None:
         self._upload_ttl = config.incomplete_upload_ttl
         self._session_factory = make_session_factory(str(config.sqlite_path))
-        bind = self._session_factory.kw["bind"]
-        Base.metadata.create_all(
-            bind,
-            tables=[
-                CollectionFileRecord.__table__,
-                FileCopyRecord.__table__,
-                ActivePinRecord.__table__,
-                FetchEntryRecord.__table__,
-            ],
-        )
 
     def get(self, fetch_id: str) -> FetchSummary:
         with session_scope(self._session_factory) as session:

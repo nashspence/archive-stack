@@ -16,7 +16,7 @@ from arc_core.fs_paths import (
     normalize_collection_id,
 )
 from arc_core.runtime_config import RuntimeConfig
-from arc_core.sqlite_db import Base, make_session_factory, session_scope
+from arc_core.sqlite_db import make_session_factory, session_scope
 
 
 class StubCollectionService:
@@ -31,11 +31,6 @@ class SqlAlchemyCollectionService:
     def __init__(self, config: RuntimeConfig) -> None:
         self._config = config
         self._session_factory = make_session_factory(str(config.sqlite_path))
-        bind = self._session_factory.kw["bind"]
-        Base.metadata.create_all(
-            bind,
-            tables=[CollectionRecord.__table__, CollectionFileRecord.__table__],
-        )
 
     def close(self, staging_path: str) -> CollectionSummary:
         try:
