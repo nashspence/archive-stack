@@ -38,6 +38,7 @@ from tests.fixtures.data import (
     DOCS_COLLECTION_ID,
     DOCS_FILES,
     IMAGE_FIXTURES,
+    INVOICE_TARGET,
     MIN_FILL_BYTES,
     PHOTOS_2024_FILES,
     SPLIT_COPY_ONE_ID,
@@ -47,6 +48,8 @@ from tests.fixtures.data import (
     SPLIT_FILE_PARTS,
     SPLIT_FILE_RELPATH,
     SPLIT_IMAGE_FIXTURES,
+    SPLIT_IMAGE_ONE_ID,
+    SPLIT_IMAGE_TWO_ID,
     TARGET_BYTES,
     ImageFixture,
     build_file_copy,
@@ -611,6 +614,41 @@ class ProductionSystem:
                 )
             ],
         )
+
+    def seed_api_registered_split_archive(self, fetch_id: str) -> None:
+        self.seed_split_planner_fixtures()
+
+        resp = self.request("POST", f"/v1/plan/candidates/{SPLIT_IMAGE_ONE_ID}/finalize")
+        assert resp.status_code == 200, resp.text
+        image_one_id = resp.json()["id"]
+
+        resp = self.request("POST", f"/v1/plan/candidates/{SPLIT_IMAGE_TWO_ID}/finalize")
+        assert resp.status_code == 200, resp.text
+        image_two_id = resp.json()["id"]
+
+        resp = self.request(
+            "POST",
+            f"/v1/images/{image_one_id}/copies",
+            json_body={"id": "api-split-copy-1", "location": "vault-api/shelf-01"},
+        )
+        assert resp.status_code == 200, resp.text
+
+        resp = self.request(
+            "POST",
+            f"/v1/images/{image_two_id}/copies",
+            json_body={"id": "api-split-copy-2", "location": "vault-api/shelf-02"},
+        )
+        assert resp.status_code == 200, resp.text
+
+        with session_scope(make_session_factory(str(self.db_path))) as session:
+            record = session.get(
+                CollectionFileRecord,
+                {"collection_id": DOCS_COLLECTION_ID, "path": SPLIT_FILE_RELPATH},
+            )
+            assert record is not None
+            record.hot = False
+
+        self.seed_fetch(fetch_id, INVOICE_TARGET)
 
     def seed_docs_archive_with_split_invoice(self) -> None:
         self.seed_docs_hot()

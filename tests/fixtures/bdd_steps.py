@@ -501,6 +501,31 @@ def given_arc_disc_success_fixture(
     acceptance_system.configure_arc_disc_fixture(fetch_id="fx-1")
 
 
+@given(
+    parsers.parse(
+        'a fake optical reader fixture can recover every required entry for fetch "{fetch_id}"'
+    )
+)
+def given_arc_disc_success_fixture_for_fetch(
+    acceptance_system: AcceptanceSystem,
+    fetch_id: str,
+) -> None:
+    acceptance_system.configure_arc_disc_fixture(fetch_id=fetch_id)
+
+
+@given(
+    parsers.parse(
+        'split archived target "{target}" is pinned via API copies with fetch "{fetch_id}"'
+    )
+)
+def given_split_archived_target_pinned_via_api_copies(
+    acceptance_system: AcceptanceSystem,
+    target: str,
+    fetch_id: str,
+) -> None:
+    acceptance_system.seed_api_registered_split_archive(fetch_id)
+
+
 @given("the optical reader fixture fails for one required entry")
 def given_arc_disc_reader_failure_fixture(acceptance_system: AcceptanceSystem) -> None:
     acceptance_system.configure_arc_disc_fixture(
