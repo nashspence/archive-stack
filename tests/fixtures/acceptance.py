@@ -1459,6 +1459,35 @@ class AcceptanceSystem:
         files = self.state.selected_files(raw_target)
         self.fetches.create_fetch(canonical, files, fetch_id=fetch_id)
 
+    def seed_api_registered_split_archive(self, fetch_id: str, target: str) -> None:
+        target_path = parse_target(target).path
+        collection_id = target_path.parts[0]
+        file_path = str(target_path.relative_to(collection_id))
+
+        covering_fixtures = [
+            f for f in SPLIT_IMAGE_FIXTURES
+            if any(coll == collection_id and p == file_path for coll, p in f.covered_paths)
+        ]
+        assert covering_fixtures, f"no SPLIT_IMAGE_FIXTURES cover {collection_id}/{file_path}"
+
+        self.seed_split_planner_fixtures()
+
+        for i, fixture in enumerate(covering_fixtures, start=1):
+            resp = self.request("POST", f"/v1/plan/candidates/{fixture.id}/finalize")
+            assert resp.status_code == 200, resp.text
+            image_id = resp.json()["id"]
+
+            resp = self.request(
+                "POST",
+                f"/v1/images/{image_id}/copies",
+                json_body={"id": f"api-split-copy-{i}", "location": f"vault-api/shelf-{i:02d}"},
+            )
+            assert resp.status_code == 200, resp.text
+
+        self.state.files_by_collection[CollectionId(collection_id)][file_path].hot = False
+
+        self.seed_fetch(fetch_id, target)
+
     def upload_required_entries(self, fetch_id: str) -> None:
         self.fetches.upload_all_required_entries(fetch_id)
 
