@@ -6,14 +6,13 @@ import re
 import shlex
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, quote, urlsplit
 
 import httpx
 import pytest
 from pytest_bdd import given, parsers, then, when
 
 from arc_core.domain.selectors import parse_target
-from arc_core.domain.types import ImageId
 from arc_core.fs_paths import derive_collection_id_from_staging_path
 from tests.fixtures.acceptance import AcceptanceSystem
 from tests.fixtures.data import (
@@ -94,21 +93,22 @@ def _selected_relpath_for_target(
     acceptance_system: AcceptanceSystem,
     target: str,
 ) -> str:
-    matches = acceptance_system.state.selected_files(target, missing_ok=True)
-    if len(matches) != 1:
+    resp = acceptance_system.request("GET", "/v1/files", params={"target": target})
+    assert resp.status_code == 200, resp.text
+    files = resp.json()["files"]
+    if len(files) != 1:
         raise AssertionError(f"expected exactly one projected file target match for {target!r}")
-    return matches[0].path
+    return files[0]["path"]
 
 
 def _selected_content_for_target(
     acceptance_system: AcceptanceSystem,
     target: str,
 ) -> bytes:
-    matches = acceptance_system.state.selected_files(target, missing_ok=True)
-    if len(matches) != 1:
-        raise AssertionError(f"expected exactly one projected file target match for {target!r}")
-    record = matches[0]
-    return acceptance_system.state.file_content(record.collection_id, record.path)
+    resp = acceptance_system.request("GET", f"/v1/files/{quote(target, safe='/')}/content")
+    if resp.status_code != 200:
+        raise AssertionError(f"could not get file content for {target!r}: {resp.status_code} {resp.text}")
+    return resp.content
 
 
 def _json_payload(response: httpx.Response) -> dict[str, Any]:
@@ -205,7 +205,8 @@ def _ensure_collection_fixture(acceptance_system: AcceptanceSystem, collection_i
 
 def _ensure_target_fixture(acceptance_system: AcceptanceSystem, target: str) -> None:
     parse_target(target)
-    if acceptance_system.state.selected_files(target, missing_ok=True):
+    resp = acceptance_system.request("GET", "/v1/files", params={"target": target})
+    if resp.status_code == 200 and resp.json()["files"]:
         return
 
     if target.startswith(f"{DOCS_COLLECTION_ID}/"):
@@ -313,6 +314,22 @@ def _prepare_arc_expectation(
     if argv[1] == "fetch":
         return
 
+    if argv[1] == "show" and "--files" in argv:
+        collection_id = argv[2]
+        context.expected_api_endpoint = ("GET", f"/v1/collections/{collection_id}/files")
+        context.expected_api_payload = acceptance_system.request(
+            "GET", f"/v1/collections/{quote(collection_id, safe='/')}/files"
+        ).json()
+        return
+
+    if argv[1] == "status":
+        target = argv[2]
+        context.expected_api_endpoint = ("GET", "/v1/files")
+        context.expected_api_payload = acceptance_system.request(
+            "GET", "/v1/files", params={"target": target}
+        ).json()
+        return
+
     raise AssertionError(f"unsupported arc command: {argv}")
 
 
@@ -403,15 +420,20 @@ def given_target_is_valid(acceptance_system: AcceptanceSystem, target: str) -> N
 @given(parsers.parse('file "{target}" is archived'))
 def given_file_is_archived(acceptance_system: AcceptanceSystem, target: str) -> None:
     acceptance_system.seed_docs_archive()
-    selected = acceptance_system.state.selected_files(target)
-    assert selected
-    assert all(record.archived for record in selected)
+    resp = acceptance_system.request("GET", "/v1/files", params={"target": target})
+    assert resp.status_code == 200, resp.text
+    files = resp.json()["files"]
+    assert files
+    assert all(record["archived"] for record in files)
 
 
 @given(parsers.parse('file "{target}" is not hot'))
 def given_file_is_not_hot(acceptance_system: AcceptanceSystem, target: str) -> None:
     acceptance_system.seed_docs_archive()
-    assert acceptance_system.state.is_hot(target) is False
+    resp = acceptance_system.request("GET", "/v1/files", params={"target": target})
+    assert resp.status_code == 200, resp.text
+    files = resp.json()["files"]
+    assert not (bool(files) and all(record["hot"] for record in files))
 
 
 @given(parsers.parse('archived target "{target}" is pinned with fetch "{fetch_id}"'))
@@ -598,15 +620,22 @@ def given_pinning_target_requires_fetch(
 
 @given(parsers.parse('candidate "{candidate_id}" exists'))
 def given_candidate_exists(acceptance_system: AcceptanceSystem, candidate_id: str) -> None:
-    assert candidate_id in {str(key) for key in acceptance_system.state.candidates_by_id}
+    resp = acceptance_system.request("GET", "/v1/plan", params={"q": candidate_id})
+    assert resp.status_code == 200, resp.text
+    candidates = resp.json()["candidates"]
+    assert any(c["candidate_id"] == candidate_id for c in candidates)
 
 
 @given(parsers.parse('candidate "{candidate_id}" has iso_ready true'))
 def given_candidate_has_iso_ready_true(
     acceptance_system: AcceptanceSystem, candidate_id: str
 ) -> None:
-    candidate = acceptance_system.state.candidates_by_id[ImageId(candidate_id)]
-    assert candidate.iso_ready is True
+    resp = acceptance_system.request("GET", "/v1/plan", params={"q": candidate_id})
+    assert resp.status_code == 200, resp.text
+    candidates = resp.json()["candidates"]
+    candidate = next((c for c in candidates if c["candidate_id"] == candidate_id), None)
+    assert candidate is not None
+    assert candidate["iso_ready"] is True
 
 
 @given(parsers.parse('candidate "{candidate_id}" covers bytes from collection "{collection_id}"'))
@@ -616,11 +645,12 @@ def given_candidate_covers_collection(
     candidate_id: str,
     collection_id: str,
 ) -> None:
-    candidate = acceptance_system.state.candidates_by_id[ImageId(candidate_id)]
-    assert any(
-        str(current_collection_id) == collection_id
-        for current_collection_id, _ in candidate.covered_paths
-    )
+    resp = acceptance_system.request("GET", "/v1/plan", params={"q": candidate_id})
+    assert resp.status_code == 200, resp.text
+    candidates = resp.json()["candidates"]
+    candidate = next((c for c in candidates if c["candidate_id"] == candidate_id), None)
+    assert candidate is not None
+    assert collection_id in candidate["collection_ids"]
     acceptance_context.tracked_collection_id = collection_id
 
 
@@ -654,9 +684,11 @@ def given_collection_contains_file(
     collection_id: str,
     path: str,
 ) -> None:
-    collection_files = {
-        record.path for record in acceptance_system.state.collection_files(collection_id)
-    }
+    resp = acceptance_system.request(
+        "GET", f"/v1/collections/{quote(collection_id, safe='/')}/files"
+    )
+    assert resp.status_code == 200, resp.text
+    collection_files = {record["path"] for record in resp.json()["files"]}
     assert path.lstrip("/") in collection_files
 
 
@@ -667,9 +699,11 @@ def given_collection_contains_directory(
     path: str,
 ) -> None:
     prefix = path.strip("/").rstrip("/") + "/"
-    collection_files = [
-        record.path for record in acceptance_system.state.collection_files(collection_id)
-    ]
+    resp = acceptance_system.request(
+        "GET", f"/v1/collections/{quote(collection_id, safe='/')}/files"
+    )
+    assert resp.status_code == 200, resp.text
+    collection_files = [record["path"] for record in resp.json()["files"]]
     assert any(current.startswith(prefix) for current in collection_files)
 
 
@@ -968,6 +1002,59 @@ def then_each_file_result_contains_hot_availability(
     assert all("hot" in result for result in file_results)
 
 
+@then(parsers.re(r'each file entry contains "(?P<first>[^"]+)"(?P<rest>.*)'))
+def then_each_file_entry_contains_fields(
+    acceptance_context: AcceptanceScenarioContext,
+    first: str,
+    rest: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    expected = {first, *_quoted_values(rest)}
+    for entry in payload["files"]:
+        assert expected.issubset(entry)
+
+
+@then("the response files list has exactly 1 entry")
+def then_response_files_list_has_one(
+    acceptance_context: AcceptanceScenarioContext,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert len(payload["files"]) == 1
+
+
+@then("the response files list is empty")
+def then_response_files_list_is_empty(
+    acceptance_context: AcceptanceScenarioContext,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert payload["files"] == []
+
+
+@then("the response files list is non-empty")
+def then_response_files_list_is_non_empty(
+    acceptance_context: AcceptanceScenarioContext,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert payload["files"]
+
+
+@then("every file entry has hot equal to true")
+def then_every_file_entry_is_hot(
+    acceptance_context: AcceptanceScenarioContext,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert all(entry["hot"] for entry in payload["files"])
+
+
+@then(parsers.parse('the response content type is "{content_type}"'))
+def then_response_content_type_is(
+    acceptance_context: AcceptanceScenarioContext,
+    content_type: str,
+) -> None:
+    response = _require_response(acceptance_context)
+    assert content_type in response.headers.get("content-type", "")
+
+
 @then("each file result contains available copies if archived")
 def then_each_file_result_contains_copies_if_archived(
     acceptance_context: AcceptanceScenarioContext,
@@ -1204,7 +1291,10 @@ def then_target_is_hot(
     acceptance_system: AcceptanceSystem,
     target: str,
 ) -> None:
-    assert acceptance_system.state.is_hot(target) is True
+    resp = acceptance_system.request("GET", "/v1/files", params={"target": target})
+    assert resp.status_code == 200, resp.text
+    files = resp.json()["files"]
+    assert bool(files) and all(record["hot"] for record in files)
 
 
 @then(parsers.parse('file "{target}" is not hot'))
@@ -1213,7 +1303,10 @@ def then_target_is_not_hot(
     acceptance_system: AcceptanceSystem,
     target: str,
 ) -> None:
-    assert acceptance_system.state.is_hot(target) is False
+    resp = acceptance_system.request("GET", "/v1/files", params={"target": target})
+    assert resp.status_code == 200, resp.text
+    files = resp.json()["files"]
+    assert not (bool(files) and all(record["hot"] for record in files))
 
 
 @then(parsers.parse('target "{target}" is pinned'))
@@ -1699,8 +1792,13 @@ def then_target_for_fetch_is_hot(
     acceptance_system: AcceptanceSystem,
     fetch_id: str,
 ) -> None:
-    target = str(acceptance_system.fetches.get(fetch_id).target)
-    assert acceptance_system.state.is_hot(target) is True
+    fetch_resp = acceptance_system.request("GET", f"/v1/fetches/{fetch_id}")
+    assert fetch_resp.status_code == 200, fetch_resp.text
+    target = fetch_resp.json()["target"]
+    files_resp = acceptance_system.request("GET", "/v1/files", params={"target": target})
+    assert files_resp.status_code == 200, files_resp.text
+    files = files_resp.json()["files"]
+    assert bool(files) and all(record["hot"] for record in files)
 
 
 @then("the downloaded ISO passes xorriso verification")
@@ -1735,13 +1833,15 @@ def then_every_collection_manifest_matches_contract(
     for collection in inspected.disc_manifest["collections"]:
         payload = decrypt_yaml_file(inspected.extract_root / collection["manifest"])
         assert_contract_schema("collection-hash-manifest.schema.json", payload)
-        expected_files = sorted(
-            record.path
-            for record in acceptance_system.state.collection_files(str(collection["id"]))
+        collection_id = str(collection["id"])
+        resp = acceptance_system.request(
+            "GET", f"/v1/collections/{quote(collection_id, safe='/')}/files"
         )
+        assert resp.status_code == 200, resp.text
+        expected_files = sorted(record["path"] for record in resp.json()["files"])
         assert_collection_manifest_semantics(
             payload,
-            expected_collection_id=str(collection["id"]),
+            expected_collection_id=collection_id,
             expected_files=expected_files,
         )
 

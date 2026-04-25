@@ -189,3 +189,16 @@ class ApiClient:
 
     def complete_fetch(self, fetch_id: str) -> dict[str, Any]:
         return self._json("POST", f"/v1/fetches/{fetch_id}/complete")
+
+    def list_collection_files(self, collection_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/v1/collections/{quote(collection_id, safe='/')}/files")
+
+    def query_files(self, target: str) -> dict[str, Any]:
+        return self._json("GET", "/v1/files", params={"target": target})
+
+    def get_file_content(self, target: str, output: Path | None = None) -> bytes:
+        response = self._request("GET", f"/v1/files/{quote(target, safe='/')}/content")
+        content = response.content
+        if output is not None:
+            output.write_bytes(content)
+        return content

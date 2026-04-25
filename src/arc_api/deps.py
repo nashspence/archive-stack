@@ -11,12 +11,14 @@ from arc_core.services.contracts import (
     CollectionService,
     CopyService,
     FetchService,
+    FileService,
     PinService,
     PlanningService,
     SearchService,
 )
 from arc_core.services.copies import SqlAlchemyCopyService
 from arc_core.services.fetches import SqlAlchemyFetchService
+from arc_core.services.files import SqlAlchemyFileService
 from arc_core.services.pins import SqlAlchemyPinService
 from arc_core.services.planning import SqlAlchemyPlanningService
 from arc_core.services.search import SqlAlchemySearchService
@@ -31,6 +33,7 @@ class ServiceContainer:
     copies: CopyService
     pins: PinService
     fetches: FetchService
+    files: FileService
 
 
 def default_container() -> ServiceContainer:
@@ -43,6 +46,7 @@ def default_container() -> ServiceContainer:
         copies=SqlAlchemyCopyService(config),
         pins=SqlAlchemyPinService(config),
         fetches=SqlAlchemyFetchService(config),
+        files=SqlAlchemyFileService(config),
     )
 
 

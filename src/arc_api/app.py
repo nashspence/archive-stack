@@ -8,6 +8,7 @@ from arc_api.auth import api_auth_dependencies
 from arc_api.deps import default_container, get_container
 from arc_api.routers.collections import router as collections_router
 from arc_api.routers.fetches import router as fetches_router
+from arc_api.routers.files import router as files_router
 from arc_api.routers.images import router as images_router
 from arc_api.routers.pins import router as pins_router
 from arc_api.routers.plan import router as plan_router
@@ -43,6 +44,7 @@ def create_app() -> FastAPI:
         return JSONResponse(status_code=501, content=payload.model_dump())
 
     auth_deps = list(api_auth_dependencies())
+    app.include_router(files_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(collections_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(search_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(plan_router, prefix="/v1", dependencies=auth_deps)

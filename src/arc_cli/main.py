@@ -6,7 +6,15 @@ from typing import Annotated
 import typer
 
 from arc_cli.client import ApiClient
-from arc_cli.output import emit, format_fetch, format_images, format_pin, format_plan
+from arc_cli.output import (
+    emit,
+    format_collection_files,
+    format_fetch,
+    format_files,
+    format_images,
+    format_pin,
+    format_plan,
+)
 
 app = typer.Typer(help="arc archival control CLI")
 iso_app = typer.Typer(help="ISO operations")
@@ -44,9 +52,37 @@ def find_cmd(
 @app.command("show")
 def show_cmd(
     collection: Annotated[str, typer.Argument(help="Collection id")],
+    files: Annotated[bool, typer.Option("--files", help="List files in the collection")] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    emit(client().get_collection(collection), json_mode=json_mode)
+    if files:
+        payload = client().list_collection_files(collection)
+        emit(payload if json_mode else format_collection_files(payload), json_mode=json_mode)
+    else:
+        emit(client().get_collection(collection), json_mode=json_mode)
+
+
+@app.command("status")
+def status_cmd(
+    target: Annotated[str, typer.Argument(help="Target selector")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    payload = client().query_files(target)
+    emit(payload if json_mode else format_files(payload), json_mode=json_mode)
+
+
+@app.command("get")
+def get_cmd(
+    target: Annotated[str, typer.Argument(help="File target selector")],
+    output: Annotated[Path | None, typer.Option("-o", "--output", help="Output path")] = None,
+) -> None:
+    import sys
+
+    content = client().get_file_content(target, output)
+    if output is None:
+        sys.stdout.buffer.write(content)
+    else:
+        typer.echo(f"wrote {len(content)} bytes to {output}")
 
 
 @app.command("plan")

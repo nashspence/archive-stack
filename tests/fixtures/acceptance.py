@@ -1125,6 +1125,57 @@ class AcceptancePinService:
         ]
 
 
+class AcceptanceFileService:
+    def __init__(self, state: AcceptanceState) -> None:
+        self.state = state
+
+    def list_collection_files(self, collection_id: str) -> list[dict[str, object]]:
+        records = self.state.collection_files(collection_id)
+        return sorted(
+            [
+                {
+                    "path": record.path,
+                    "bytes": record.bytes,
+                    "hot": record.hot,
+                    "archived": record.archived,
+                }
+                for record in records
+            ],
+            key=lambda r: str(r["path"]),
+        )
+
+    def query_by_target(self, raw_target: str) -> list[dict[str, object]]:
+        selected = self.state.selected_files(raw_target, missing_ok=True)
+        result = [
+            {
+                "target": record.projected_target,
+                "collection": str(record.collection_id),
+                "path": record.path,
+                "bytes": record.bytes,
+                "sha256": str(record.sha256),
+                "hot": record.hot,
+                "archived": record.archived,
+            }
+            for record in selected
+        ]
+        return sorted(result, key=lambda r: str(r["target"]))
+
+    def get_content(self, raw_target: str) -> bytes:
+        from arc_core.domain.errors import InvalidTarget, NotFound
+        from arc_core.domain.selectors import parse_target
+
+        target = parse_target(raw_target)
+        if target.is_dir:
+            raise InvalidTarget("directory selectors are not supported for content download")
+        selected = self.state.selected_files(raw_target, missing_ok=True)
+        if len(selected) != 1:
+            raise NotFound(f"file not found: {raw_target}")
+        record = selected[0]
+        if not record.hot:
+            raise NotFound(f"file is not hot: {raw_target}")
+        return self.state.file_content(record.collection_id, record.path)
+
+
 class _LiveServerHandle:
     def __init__(self, app: Any, *, host: str, port: int) -> None:
         self._config = uvicorn.Config(app, host=host, port=port, log_level="warning")
@@ -1193,6 +1244,7 @@ class AcceptanceSystem:
     copies: AcceptanceCopyService
     pins: AcceptancePinService
     fetches: AcceptanceFetchService
+    files: AcceptanceFileService
 
     @classmethod
     def create(cls, workspace: Path) -> AcceptanceSystem:
@@ -1207,6 +1259,7 @@ class AcceptanceSystem:
         copies = AcceptanceCopyService(state)
         fetches = AcceptanceFetchService(state)
         pins = AcceptancePinService(state, fetches)
+        files = AcceptanceFileService(state)
 
         app = create_app()
         container = ServiceContainer(
@@ -1216,6 +1269,7 @@ class AcceptanceSystem:
             copies=copies,
             pins=pins,
             fetches=fetches,
+            files=files,
         )
         app.dependency_overrides[get_container] = lambda: container
 
@@ -1236,6 +1290,7 @@ class AcceptanceSystem:
             copies=copies,
             pins=pins,
             fetches=fetches,
+            files=files,
         )
 
     def restart(self) -> None:
@@ -1251,6 +1306,7 @@ class AcceptanceSystem:
         self.copies = restarted.copies
         self.pins = restarted.pins
         self.fetches = restarted.fetches
+        self.files = restarted.files
 
     def close(self) -> None:
         self.app.dependency_overrides.clear()

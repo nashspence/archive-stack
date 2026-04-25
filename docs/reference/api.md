@@ -62,6 +62,43 @@ Required behavior:
 - collection ids may span multiple path segments, for example `GET /v1/collections/photos/2024`
 - API and CLI collection lookup treat slash-bearing ids as first-class
 
+### File introspection
+
+#### `GET /v1/collections/{collection_id}/files`
+
+Lists the logical files in one collection.
+
+Required behavior:
+
+- collection ids may span multiple path segments, for example `GET /v1/collections/photos/2024/files`
+- each returned file includes its projected path and current hot or archived state
+- each returned file includes available copies, if any
+- collection ids whose final path segment is literally `files` are reserved by this endpoint shape
+
+#### `GET /v1/files?target=<target>`
+
+Returns logical files selected by one canonical target selector.
+
+Required behavior:
+
+- the `target` query parameter carries one canonical selector over the projected hot namespace
+- returned files use the same projected-path syntax accepted by `pin` and `release`
+- file results include current hot availability
+- file results include available copies, if any
+- missing or non-matching targets return an empty list rather than `not_found`
+- invalid target syntax is rejected with `invalid_target`
+
+#### `GET /v1/files/{target:path}/content`
+
+Downloads the bytes for one hot logical file.
+
+Required behavior:
+
+- the path target must select exactly one logical file, not a directory or broader selector
+- content download succeeds only when the selected file is hot
+- archived-only files return `not_found` and continue to use the fetch/upload recovery flow
+- the response returns the file bytes rather than JSON
+
 ### Planning
 
 #### `GET /v1/plan`
@@ -279,6 +316,9 @@ The `arc` CLI is a thin API client and should provide at least:
 - `arc close PATH`
 - `arc find QUERY`
 - `arc show COLLECTION`
+- `arc show COLLECTION --files`
+- `arc status [TARGET]`
+- `arc get TARGET [-o FILE]`
 - `arc plan [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--iso-ready|--not-ready]`
 - `arc images [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--has-copies|--no-copies]`
 - `arc iso get IMAGE_ID [-o FILE]`
@@ -287,6 +327,12 @@ The `arc` CLI is a thin API client and should provide at least:
 - `arc release TARGET`
 - `arc pins`
 - `arc fetch FETCH_ID`
+
+`arc show COLLECTION --files` should provide a concise human-readable listing of the collection's logical files, including current hot or archived state and available copies when applicable.
+
+`arc status [TARGET]` should show file availability for either the whole projected namespace or one target selector.
+
+`arc get TARGET [-o FILE]` should download one hot file target and fail clearly when the target is archived-only or does not select exactly one file.
 
 `arc fetch FETCH_ID` should provide a concise human-readable listing of:
 
@@ -335,6 +381,8 @@ Required behavior:
 - immediately after collection close, every file in the collection is hot
 - every active pin has exactly one associated fetch manifest, even when the selected bytes are already hot
 - a file restored by a completed fetch is hot
+- hot file content is directly downloadable when the target selects exactly one file
+- archived-only file content is recoverable through fetch/upload, not through hot-content download
 - upload-state expiry for a manifest discards incomplete partial uploads and returns that manifest to `waiting_media`
 - `INCOMPLETE_UPLOAD_TTL` defaults to `24h`
 - fetch upload progress is tracked per logical file, not per disc fragment
@@ -347,3 +395,4 @@ Required behavior:
 - duplicate `copy_id` values are rejected within one finalized image/`volume_id`
 - no collection id is an ancestor or descendant of another collection id
 - the same canonical selector string means the same projected file set everywhere in API and CLI
+- file availability shown by search, file introspection, pins, and CLI status uses the same hot/archived meaning

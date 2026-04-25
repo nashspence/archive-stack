@@ -67,6 +67,67 @@ paths:
                         - $ref: "#/components/schemas/CollectionSearchResult"
         default:
           $ref: "#/components/responses/Error"
+  /collections/{collection_id}/files:
+    get:
+      summary: List files in a collection with per-file state
+      description: Returns all files belonging to a collection with their hot/archived state. The collection id may contain slashes and occupies multiple path segments under `/collections/`.
+      operationId: listCollectionFiles
+      parameters:
+        - in: path
+          name: collection_id
+          required: true
+          description: Canonical collection id. Slash-bearing ids occupy multiple path segments under `/collections/`.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Collection file listing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionFilesResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /files:
+    get:
+      summary: Query files matching a target selector
+      description: Returns files whose projected path matches the given target selector with their full state. Returns an empty list when no files match; never 404.
+      operationId: queryFiles
+      parameters:
+        - in: query
+          name: target
+          required: true
+          schema: { type: string }
+          description: Canonical projected-path selector. File selectors return exactly matching files; directory selectors (ending with `/`) return all files under that prefix.
+      responses:
+        "200":
+          description: Files matching the target selector
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FilesResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /files/{target}/content:
+    get:
+      summary: Download raw bytes for a hot file
+      description: Serves the raw bytes of the currently hot version of a file identified by its projected-path target. Returns 404 when the file is not hot or does not exist.
+      operationId: getFileContent
+      parameters:
+        - in: path
+          name: target
+          required: true
+          description: Canonical file target (not a directory selector). Slash-bearing targets occupy multiple path segments.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Raw file bytes
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        default:
+          $ref: "#/components/responses/Error"
   /collections/{collection_id}:
     get:
       summary: Get one collection summary
@@ -846,6 +907,53 @@ components:
             $ref: "#/components/schemas/PlanCandidate"
         unplanned_bytes: { type: integer }
         note: { type: string }
+    CollectionFileRecord:
+      type: object
+      required: [path, bytes, hot, archived]
+      properties:
+        path:
+          type: string
+          description: Relative file path within the collection, no leading slash.
+        bytes: { type: integer }
+        hot: { type: boolean }
+        archived: { type: boolean }
+    CollectionFilesResponse:
+      type: object
+      required: [collection_id, files]
+      properties:
+        collection_id:
+          type: string
+          description: Canonical collection id.
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/CollectionFileRecord"
+    FileRecord:
+      type: object
+      required: [target, collection, path, bytes, sha256, hot, archived]
+      properties:
+        target:
+          $ref: "#/components/schemas/Target"
+        collection:
+          type: string
+          description: Canonical collection id owning this file.
+        path:
+          type: string
+          description: Relative file path within the collection, no leading slash.
+        bytes: { type: integer }
+        sha256:
+          type: string
+          description: SHA-256 hex digest of the file content.
+        hot: { type: boolean }
+        archived: { type: boolean }
+    FilesResponse:
+      type: object
+      required: [files]
+      properties:
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/FileRecord"
     ErrorEnvelope:
       type: object
       required: [error]

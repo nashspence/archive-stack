@@ -156,6 +156,48 @@ def format_plan(payload: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def format_collection_files(payload: Mapping[str, Any]) -> str:
+    lines = [
+        f"collection: {payload.get('collection_id', 'unknown')}",
+        f"files: {len(payload.get('files', []))}",
+    ]
+    files = payload.get("files")
+    if not isinstance(files, Sequence) or not files:
+        lines.append("- none")
+        return "\n".join(lines)
+    for file in files:
+        if not isinstance(file, Mapping):
+            continue
+        lines.extend(
+            [
+                f"- {file.get('path', 'unknown')}",
+                f"  bytes: {file.get('bytes', 0)}",
+                f"  hot: {str(file.get('hot', False)).lower()}",
+                f"  archived: {str(file.get('archived', False)).lower()}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def format_files(payload: Mapping[str, Any]) -> str:
+    files = payload.get("files")
+    if not isinstance(files, Sequence) or not files:
+        return "files: none"
+    lines = [f"files: {len(files)}"]
+    for file in files:
+        if not isinstance(file, Mapping):
+            continue
+        lines.extend(
+            [
+                f"- {file.get('target', 'unknown')}",
+                f"  bytes: {file.get('bytes', 0)}",
+                f"  hot: {str(file.get('hot', False)).lower()}",
+                f"  archived: {str(file.get('archived', False)).lower()}",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def emit(payload: Any, *, json_mode: bool) -> None:
     if json_mode:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))

@@ -54,6 +54,22 @@ Feature: arc CLI
       And stdout mentions fetch id "fx-1"
       And stdout mentions "waiting_media"
 
+    Scenario: arc show --files emits the collection files payload
+      Given an archive containing collection "docs"
+      When the operator runs 'arc show docs --files --json'
+      Then the command exits with code 0
+      And stdout is valid JSON
+      And stdout matches the structure of GET "/v1/collections/docs/files"
+      And stdout mentions "invoice-123.pdf"
+
+    Scenario: arc status emits the files query payload
+      Given an archive containing collection "docs"
+      When the operator runs 'arc status "docs/tax/2022/invoice-123.pdf" --json'
+      Then the command exits with code 0
+      And stdout is valid JSON
+      And stdout matches the structure of GET "/v1/files"
+      And stdout mentions "invoice-123.pdf"
+
   Rule: Non-JSON mode remains concise and stable
     Scenario: arc plan prints candidate ids, fill, and readiness
       Given an archive with planner fixtures
