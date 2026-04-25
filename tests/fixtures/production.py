@@ -13,7 +13,7 @@ from typing import cast
 
 import httpx
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from arc_api.app import create_app
 from arc_core.catalog_models import (
@@ -44,12 +44,10 @@ from tests.fixtures.data import (
     SPLIT_COPY_ONE_LOCATION,
     SPLIT_COPY_TWO_ID,
     SPLIT_COPY_TWO_LOCATION,
-    SPLIT_FILE_PARTS,
     SPLIT_FILE_RELPATH,
     SPLIT_IMAGE_FIXTURES,
     TARGET_BYTES,
     ImageFixture,
-    build_file_copy,
     fixture_encrypt_bytes,
     split_fixture_plaintext,
     write_tree,
@@ -580,122 +578,57 @@ class ProductionSystem:
             self.seed_collection_closed("docs", DOCS_FILES)
 
     def seed_docs_archive(self) -> None:
+        files = self.state.selected_files(
+            f"{DOCS_COLLECTION_ID}/tax/2022/invoice-123.pdf", missing_ok=True
+        )
+        if files and files[0].archived:
+            return
         self.seed_docs_hot()
-        self._update_file_hot_and_archive(
-            DOCS_COLLECTION_ID,
-            "tax/2022/invoice-123.pdf",
-            hot=False,
-            archived=True,
-            copies=[
-                build_file_copy(
-                    copy_id="copy-docs-1",
-                    volume_id="20260419T230001Z",
-                    location="vault-a/shelf-01",
-                    collection_id=DOCS_COLLECTION_ID,
-                    path="tax/2022/invoice-123.pdf",
-                )
-            ],
+        self.seed_image_fixtures((IMAGE_FIXTURES[0],))
+        resp = self.request("POST", f"/v1/plan/candidates/{IMAGE_FIXTURES[0].id}/finalize")
+        assert resp.status_code == 200, resp.text
+        image_id = resp.json()["id"]
+        resp = self.request(
+            "POST", f"/v1/images/{image_id}/copies",
+            json_body={"id": "copy-docs-1", "location": "vault-a/shelf-01"},
         )
-        self._update_file_hot_and_archive(
-            DOCS_COLLECTION_ID,
-            "tax/2022/receipt-456.pdf",
-            hot=True,
-            archived=True,
-            copies=[
-                build_file_copy(
-                    copy_id="copy-docs-2",
-                    volume_id="20260419T230002Z",
-                    location="vault-a/shelf-02",
-                    collection_id=DOCS_COLLECTION_ID,
-                    path="tax/2022/receipt-456.pdf",
-                )
-            ],
-        )
-
-    def seed_api_registered_split_archive(self, fetch_id: str, target: str) -> None:
-        target_path = parse_target(target).path
-        collection_id = target_path.parts[0]
-        file_path = str(target_path.relative_to(collection_id))
-
-        covering_fixtures = [
-            f for f in SPLIT_IMAGE_FIXTURES
-            if any(coll == collection_id and p == file_path for coll, p in f.covered_paths)
-        ]
-        assert covering_fixtures, (
-            f"no SPLIT_IMAGE_FIXTURES cover {collection_id}/{file_path}"
-        )
-
-        self.seed_split_planner_fixtures()
-
-        for i, fixture in enumerate(covering_fixtures, start=1):
-            resp = self.request("POST", f"/v1/plan/candidates/{fixture.id}/finalize")
-            assert resp.status_code == 200, resp.text
-            image_id = resp.json()["id"]
-
-            resp = self.request(
-                "POST",
-                f"/v1/images/{image_id}/copies",
-                json_body={"id": f"api-split-copy-{i}", "location": f"vault-api/shelf-{i:02d}"},
-            )
-            assert resp.status_code == 200, resp.text
-
+        assert resp.status_code == 200, resp.text
         with session_scope(make_session_factory(str(self.db_path))) as session:
             record = session.get(
                 CollectionFileRecord,
-                {"collection_id": collection_id, "path": file_path},
+                {"collection_id": DOCS_COLLECTION_ID, "path": "tax/2022/invoice-123.pdf"},
             )
             assert record is not None
             record.hot = False
 
-        self.seed_fetch(fetch_id, target)
-
     def seed_docs_archive_with_split_invoice(self) -> None:
+        files = self.state.selected_files(
+            f"{DOCS_COLLECTION_ID}/{SPLIT_FILE_RELPATH}", missing_ok=True
+        )
+        if files and files[0].archived:
+            return
         self.seed_docs_hot()
-        self._update_file_hot_and_archive(
-            DOCS_COLLECTION_ID,
-            SPLIT_FILE_RELPATH,
-            hot=False,
-            archived=True,
-            copies=[
-                build_file_copy(
-                    copy_id=SPLIT_COPY_ONE_ID,
-                    volume_id="20260420T040003Z",
-                    location=SPLIT_COPY_ONE_LOCATION,
-                    collection_id=DOCS_COLLECTION_ID,
-                    path=SPLIT_FILE_RELPATH,
-                    part_index=0,
-                    part_count=len(SPLIT_FILE_PARTS),
-                    part_bytes=len(SPLIT_FILE_PARTS[0]),
-                    part_sha256=hashlib.sha256(SPLIT_FILE_PARTS[0]).hexdigest(),
-                ),
-                build_file_copy(
-                    copy_id=SPLIT_COPY_TWO_ID,
-                    volume_id="20260420T040004Z",
-                    location=SPLIT_COPY_TWO_LOCATION,
-                    collection_id=DOCS_COLLECTION_ID,
-                    path=SPLIT_FILE_RELPATH,
-                    part_index=1,
-                    part_count=len(SPLIT_FILE_PARTS),
-                    part_bytes=len(SPLIT_FILE_PARTS[1]),
-                    part_sha256=hashlib.sha256(SPLIT_FILE_PARTS[1]).hexdigest(),
-                ),
-            ],
-        )
-        self._update_file_hot_and_archive(
-            DOCS_COLLECTION_ID,
-            "tax/2022/receipt-456.pdf",
-            hot=True,
-            archived=True,
-            copies=[
-                build_file_copy(
-                    copy_id="copy-docs-2",
-                    volume_id="20260419T230002Z",
-                    location="vault-a/shelf-02",
-                    collection_id=DOCS_COLLECTION_ID,
-                    path="tax/2022/receipt-456.pdf",
-                )
-            ],
-        )
+        self.seed_image_fixtures(SPLIT_IMAGE_FIXTURES)
+        for fixture, copy_id, location in zip(
+            SPLIT_IMAGE_FIXTURES,
+            (SPLIT_COPY_ONE_ID, SPLIT_COPY_TWO_ID),
+            (SPLIT_COPY_ONE_LOCATION, SPLIT_COPY_TWO_LOCATION),
+        ):
+            resp = self.request("POST", f"/v1/plan/candidates/{fixture.id}/finalize")
+            assert resp.status_code == 200, resp.text
+            image_id = resp.json()["id"]
+            resp = self.request(
+                "POST", f"/v1/images/{image_id}/copies",
+                json_body={"id": copy_id, "location": location},
+            )
+            assert resp.status_code == 200, resp.text
+        with session_scope(make_session_factory(str(self.db_path))) as session:
+            record = session.get(
+                CollectionFileRecord,
+                {"collection_id": DOCS_COLLECTION_ID, "path": SPLIT_FILE_RELPATH},
+            )
+            assert record is not None
+            record.hot = False
 
     def seed_search_fixtures(self) -> None:
         self.seed_docs_archive()
@@ -704,40 +637,6 @@ class ProductionSystem:
     def seed_pin(self, target: str) -> None:
         response = self.request("POST", "/v1/pin", json_body={"target": target})
         assert response.status_code == 200, response.text
-
-    def seed_fetch(self, fetch_id: str, target: str) -> None:
-        pins = self.request("GET", "/v1/pins").json()["pins"]
-        for pin in pins:
-            if pin["target"] == target:
-                assert pin["fetch"]["id"] == fetch_id
-                return
-
-        target_record = parse_target(target)
-        selected = self.state.selected_files(target, missing_ok=False)
-        missing_bytes = sum(
-            self._selected_file_bytes(record.collection_id, record.path)
-            for record in selected
-            if not record.hot
-        )
-        with session_scope(make_session_factory(str(self.db_path))) as session:
-            next_order = (
-                session.scalar(select(ActivePinRecord.fetch_order).order_by(
-                    ActivePinRecord.fetch_order.desc()
-                ).limit(1))
-                or 0
-            ) + 1
-            session.merge(
-                ActivePinRecord(
-                    target=target_record.canonical,
-                    fetch_id=fetch_id,
-                    fetch_order=next_order,
-                    fetch_state=(
-                        FetchState.DONE.value
-                        if missing_bytes == 0
-                        else FetchState.WAITING_MEDIA.value
-                    ),
-                )
-            )
 
     def upload_buffer_absent(self, fetch_id: str) -> bool:
         buffer_dir = self.workspace / "staging" / ".arc_uploads" / fetch_id
@@ -864,49 +763,6 @@ class ProductionSystem:
         if extra:
             env.update(extra)
         return env
-
-    def _update_file_hot_and_archive(
-        self,
-        collection_id: str,
-        path: str,
-        *,
-        hot: bool,
-        archived: bool,
-        copies: list[dict[str, object]],
-    ) -> None:
-        with session_scope(make_session_factory(str(self.db_path))) as session:
-            record = session.get(
-                CollectionFileRecord,
-                {
-                    "collection_id": collection_id,
-                    "path": path,
-                },
-            )
-            assert record is not None
-            record.hot = hot
-            record.archived = archived
-            session.execute(
-                delete(FileCopyRecord).where(
-                    FileCopyRecord.collection_id == collection_id,
-                    FileCopyRecord.path == path,
-                )
-            )
-            for copy in copies:
-                session.add(
-                    FileCopyRecord(
-                        collection_id=collection_id,
-                        path=path,
-                        copy_id=str(copy["id"]),
-                        volume_id=copy["volume_id"],
-                        location=copy["location"],
-                        disc_path=str(copy["disc_path"]),
-                        enc_json=json.dumps(copy["enc"], sort_keys=True),
-                        part_index=copy.get("part_index"),
-                        part_count=copy.get("part_count"),
-                        part_bytes=copy.get("part_bytes"),
-                        part_sha256=copy.get("part_sha256"),
-                    )
-                )
 
     def _selected_file_bytes(self, collection_id: str, path: str) -> int:
         with session_scope(make_session_factory(str(self.db_path))) as session:

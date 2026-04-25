@@ -30,12 +30,10 @@ Feature: Fetches API
       And fetch state is "waiting_media"
 
     Scenario: Repeating the same pin reuses the active fetch
-      Given fetch "fx-existing" already exists for target "docs/tax/2022/invoice-123.pdf"
-      And fetch "fx-existing" is not done
-      And fetch "fx-existing" is not failed
+      Given the client has already pinned "docs/tax/2022/invoice-123.pdf"
       When the client posts to "/v1/pin" with target "docs/tax/2022/invoice-123.pdf"
       Then the response status is 200
-      And the returned fetch id is "fx-existing"
+      And the returned fetch id is the same as before
 
   Rule: Fetch manifests are stable and complete
     Background:

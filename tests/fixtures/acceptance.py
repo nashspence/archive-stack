@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+import yaml
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,6 +46,7 @@ from arc_core.fs_paths import (
     find_collection_id_conflict,
     normalize_collection_id,
 )
+from arc_core.planner.manifest import MANIFEST_FILENAME
 from arc_core.services.planning import ImageRootPlanningService, ImageRootRecord
 from tests.fixtures.data import (
     DEFAULT_COPY_CREATED_AT,
@@ -60,7 +62,6 @@ from tests.fixtures.data import (
     SPLIT_COPY_ONE_LOCATION,
     SPLIT_COPY_TWO_ID,
     SPLIT_COPY_TWO_LOCATION,
-    SPLIT_FILE_PARTS,
     SPLIT_FILE_RELPATH,
     SPLIT_IMAGE_FIXTURES,
     TARGET_BYTES,
@@ -226,9 +227,7 @@ class AcceptanceState:
         *,
         hot_paths: set[str],
         archived_paths: set[str],
-        copies_by_path: Mapping[str, list[dict[str, object]]] | None = None,
     ) -> None:
-        copies_by_path = copies_by_path or {}
         normalized_collection_id = normalize_collection_id(collection_id)
         conflict = find_collection_id_conflict(
             (str(current) for current in self.files_by_collection), normalized_collection_id
@@ -248,7 +247,6 @@ class AcceptanceState:
                 content=content,
                 hot=normalized in hot_paths,
                 archived=normalized in archived_paths,
-                copies=[self._copy_from_dict(item) for item in copies_by_path.get(normalized, [])],
             )
         self.files_by_collection[collection_key] = records
 
@@ -628,6 +626,25 @@ class AcceptanceCopyService:
     def __init__(self, state: AcceptanceState) -> None:
         self.state = state
 
+    def _read_disc_part_info(
+        self, image: CandidateRecord
+    ) -> dict[tuple[str, str], tuple[int, int] | tuple[None, None]]:
+        manifest_path = image.image_root / MANIFEST_FILENAME
+        raw_bytes = manifest_path.read_bytes()
+        disc_manifest = yaml.safe_load(fixture_decrypt_bytes(raw_bytes))
+        result: dict[tuple[str, str], tuple[int, int] | tuple[None, None]] = {}
+        for collection in disc_manifest.get("collections", []):
+            coll_id = str(collection["id"])
+            for file_entry in collection.get("files", []):
+                path = str(file_entry["path"]).lstrip("/")
+                if "parts" in file_entry:
+                    count = int(file_entry["parts"]["count"])
+                    index_1based = int(file_entry["parts"]["present"][0]["index"])
+                    result[(coll_id, path)] = (index_1based - 1, count)
+                else:
+                    result[(coll_id, path)] = (None, None)
+        return result
+
     def register(self, image_id: str, copy_id: str, location: str) -> CopySummary:
         image = self.state.finalized_images_by_id.get(ImageId(image_id))
         if image is None:
@@ -643,6 +660,7 @@ class AcceptanceCopyService:
             created_at=DEFAULT_COPY_CREATED_AT,
         )
         self.state.copy_summaries[scoped_key] = summary
+        disc_info = self._read_disc_part_info(image)
         for collection_id, path in image.covered_paths:
             record = self.state.files_by_collection[collection_id][path]
             record.archived = True
@@ -650,6 +668,16 @@ class AcceptanceCopyService:
                 (existing.id, existing.volume_id) != (copy_key, image.finalized_id)
                 for existing in record.copies
             ):
+                part_index, part_count = disc_info.get((str(collection_id), path), (None, None))
+                kwargs: dict[str, object] = {}
+                if part_index is not None and part_count is not None:
+                    file_parts = split_fixture_plaintext(record.content, part_count)
+                    kwargs = {
+                        "part_index": part_index,
+                        "part_count": part_count,
+                        "part_bytes": len(file_parts[part_index]),
+                        "part_sha256": hashlib.sha256(file_parts[part_index]).hexdigest(),
+                    }
                 record.copies.append(
                     AcceptanceState._copy_from_dict(
                         build_file_copy(
@@ -658,6 +686,7 @@ class AcceptanceCopyService:
                             location=location,
                             collection_id=str(collection_id),
                             path=path,
+                            **kwargs,
                         )
                     )
                 )
@@ -1316,107 +1345,88 @@ class AcceptanceSystem:
         self.seed_staged_collection(PHOTOS_COLLECTION_ID, PHOTOS_2024_FILES)
 
     def seed_photos_hot(self) -> None:
-        self.state.seed_collection(
-            PHOTOS_COLLECTION_ID,
-            PHOTOS_2024_FILES,
-            hot_paths=set(PHOTOS_2024_FILES),
-            archived_paths=set(),
+        normalized = normalize_collection_id(PHOTOS_COLLECTION_ID)
+        if CollectionId(normalized) in self.state.files_by_collection:
+            return
+        self.seed_staged_collection(PHOTOS_COLLECTION_ID, PHOTOS_2024_FILES)
+        resp = self.request(
+            "POST", "/v1/collections/close",
+            json_body={"path": staging_path_for_collection(normalized)},
         )
+        assert resp.status_code == 200, resp.text
 
     def seed_nested_photos_hot(self) -> None:
-        self.state.seed_collection(
-            PHOTOS_NESTED_COLLECTION_ID,
-            PHOTOS_2024_FILES,
-            hot_paths=set(PHOTOS_2024_FILES),
-            archived_paths=set(),
+        normalized = normalize_collection_id(PHOTOS_NESTED_COLLECTION_ID)
+        if CollectionId(normalized) in self.state.files_by_collection:
+            return
+        self.seed_staged_collection(PHOTOS_NESTED_COLLECTION_ID, PHOTOS_2024_FILES)
+        resp = self.request(
+            "POST", "/v1/collections/close",
+            json_body={"path": staging_path_for_collection(normalized)},
         )
+        assert resp.status_code == 200, resp.text
 
     def seed_parent_photos_hot(self) -> None:
-        self.state.seed_collection(
-            PHOTOS_PARENT_COLLECTION_ID,
-            PHOTOS_2024_FILES,
-            hot_paths=set(PHOTOS_2024_FILES),
-            archived_paths=set(),
+        normalized = normalize_collection_id(PHOTOS_PARENT_COLLECTION_ID)
+        if CollectionId(normalized) in self.state.files_by_collection:
+            return
+        self.seed_staged_collection(PHOTOS_PARENT_COLLECTION_ID, PHOTOS_2024_FILES)
+        resp = self.request(
+            "POST", "/v1/collections/close",
+            json_body={"path": staging_path_for_collection(normalized)},
         )
+        assert resp.status_code == 200, resp.text
 
     def seed_docs_hot(self) -> None:
-        self.state.seed_collection(
-            DOCS_COLLECTION_ID,
-            DOCS_FILES,
-            hot_paths=set(DOCS_FILES),
-            archived_paths=set(),
+        normalized = normalize_collection_id(DOCS_COLLECTION_ID)
+        if CollectionId(normalized) in self.state.files_by_collection:
+            return
+        self.seed_staged_collection(DOCS_COLLECTION_ID, DOCS_FILES)
+        resp = self.request(
+            "POST", "/v1/collections/close",
+            json_body={"path": staging_path_for_collection(normalized)},
         )
+        assert resp.status_code == 200, resp.text
 
     def seed_docs_archive(self) -> None:
-        self.state.seed_collection(
-            DOCS_COLLECTION_ID,
-            DOCS_FILES,
-            hot_paths={"tax/2022/receipt-456.pdf", "letters/cover.txt"},
-            archived_paths={"tax/2022/invoice-123.pdf", "tax/2022/receipt-456.pdf"},
-            copies_by_path={
-                "tax/2022/invoice-123.pdf": [
-                    build_file_copy(
-                        copy_id="copy-docs-1",
-                        volume_id="20260419T230001Z",
-                        location="vault-a/shelf-01",
-                        collection_id=DOCS_COLLECTION_ID,
-                        path="tax/2022/invoice-123.pdf",
-                    )
-                ],
-                "tax/2022/receipt-456.pdf": [
-                    build_file_copy(
-                        copy_id="copy-docs-2",
-                        volume_id="20260419T230002Z",
-                        location="vault-a/shelf-02",
-                        collection_id=DOCS_COLLECTION_ID,
-                        path="tax/2022/receipt-456.pdf",
-                    )
-                ],
-            },
+        docs_key = CollectionId(normalize_collection_id(DOCS_COLLECTION_ID))
+        docs = self.state.files_by_collection.get(docs_key, {})
+        if docs.get("tax/2022/invoice-123.pdf") and docs["tax/2022/invoice-123.pdf"].archived:
+            return
+        self.seed_docs_hot()
+        self.seed_image_fixtures((IMAGE_FIXTURES[0],))
+        resp = self.request("POST", f"/v1/plan/candidates/{IMAGE_FIXTURES[0].id}/finalize")
+        assert resp.status_code == 200, resp.text
+        image_id = resp.json()["id"]
+        resp = self.request(
+            "POST", f"/v1/images/{image_id}/copies",
+            json_body={"id": "copy-docs-1", "location": "vault-a/shelf-01"},
         )
+        assert resp.status_code == 200, resp.text
+        self.state.files_by_collection[docs_key]["tax/2022/invoice-123.pdf"].hot = False
 
     def seed_docs_archive_with_split_invoice(self) -> None:
-        self.state.seed_collection(
-            DOCS_COLLECTION_ID,
-            DOCS_FILES,
-            hot_paths={"tax/2022/receipt-456.pdf", "letters/cover.txt"},
-            archived_paths={"tax/2022/invoice-123.pdf", "tax/2022/receipt-456.pdf"},
-            copies_by_path={
-                "tax/2022/invoice-123.pdf": [
-                    build_file_copy(
-                        copy_id=SPLIT_COPY_ONE_ID,
-                        volume_id="20260420T040003Z",
-                        location=SPLIT_COPY_ONE_LOCATION,
-                        collection_id=DOCS_COLLECTION_ID,
-                        path=SPLIT_FILE_RELPATH,
-                        part_index=0,
-                        part_count=len(SPLIT_FILE_PARTS),
-                        part_bytes=len(SPLIT_FILE_PARTS[0]),
-                        part_sha256=hashlib.sha256(SPLIT_FILE_PARTS[0]).hexdigest(),
-                    ),
-                    build_file_copy(
-                        copy_id=SPLIT_COPY_TWO_ID,
-                        volume_id="20260420T040004Z",
-                        location=SPLIT_COPY_TWO_LOCATION,
-                        collection_id=DOCS_COLLECTION_ID,
-                        path=SPLIT_FILE_RELPATH,
-                        part_index=1,
-                        part_count=len(SPLIT_FILE_PARTS),
-                        part_bytes=len(SPLIT_FILE_PARTS[1]),
-                        part_sha256=hashlib.sha256(SPLIT_FILE_PARTS[1]).hexdigest(),
-                    ),
-                ],
-                "tax/2022/receipt-456.pdf": [
-                    build_file_copy(
-                        copy_id="copy-docs-2",
-                        volume_id="20260419T230002Z",
-                        location="vault-a/shelf-02",
-                        collection_id=DOCS_COLLECTION_ID,
-                        path="tax/2022/receipt-456.pdf",
-                    )
-                ],
-            },
-        )
+        docs_key = CollectionId(normalize_collection_id(DOCS_COLLECTION_ID))
+        docs = self.state.files_by_collection.get(docs_key, {})
+        invoice = docs.get(SPLIT_FILE_RELPATH)
+        if invoice and invoice.archived and any(c.part_index is not None for c in invoice.copies):
+            return
+        self.seed_docs_hot()
+        self.seed_image_fixtures(SPLIT_IMAGE_FIXTURES)
+        for fixture, copy_id, location in zip(
+            SPLIT_IMAGE_FIXTURES,
+            (SPLIT_COPY_ONE_ID, SPLIT_COPY_TWO_ID),
+            (SPLIT_COPY_ONE_LOCATION, SPLIT_COPY_TWO_LOCATION),
+        ):
+            resp = self.request("POST", f"/v1/plan/candidates/{fixture.id}/finalize")
+            assert resp.status_code == 200, resp.text
+            image_id = resp.json()["id"]
+            resp = self.request(
+                "POST", f"/v1/images/{image_id}/copies",
+                json_body={"id": copy_id, "location": location},
+            )
+            assert resp.status_code == 200, resp.text
+        self.state.files_by_collection[docs_key][SPLIT_FILE_RELPATH].hot = False
 
     def seed_search_fixtures(self) -> None:
         self.seed_docs_archive()
@@ -1449,45 +1459,6 @@ class AcceptanceSystem:
                     ),
                 )
             )
-
-    def seed_pin(self, raw_target: str) -> None:
-        self.pins.pin(raw_target)
-
-    def seed_fetch(self, fetch_id: str, raw_target: str) -> None:
-        canonical = cast(TargetStr, parse_target(raw_target).canonical)
-        self.fetches.remove_for_target(canonical)
-        files = self.state.selected_files(raw_target)
-        self.fetches.create_fetch(canonical, files, fetch_id=fetch_id)
-        self.state.exact_pins.add(canonical)
-
-    def seed_api_registered_split_archive(self, fetch_id: str, target: str) -> None:
-        target_path = parse_target(target).path
-        collection_id = target_path.parts[0]
-        file_path = str(target_path.relative_to(collection_id))
-
-        covering_fixtures = [
-            f for f in SPLIT_IMAGE_FIXTURES
-            if any(coll == collection_id and p == file_path for coll, p in f.covered_paths)
-        ]
-        assert covering_fixtures, f"no SPLIT_IMAGE_FIXTURES cover {collection_id}/{file_path}"
-
-        self.seed_split_planner_fixtures()
-
-        for i, fixture in enumerate(covering_fixtures, start=1):
-            resp = self.request("POST", f"/v1/plan/candidates/{fixture.id}/finalize")
-            assert resp.status_code == 200, resp.text
-            image_id = resp.json()["id"]
-
-            resp = self.request(
-                "POST",
-                f"/v1/images/{image_id}/copies",
-                json_body={"id": f"api-split-copy-{i}", "location": f"vault-api/shelf-{i:02d}"},
-            )
-            assert resp.status_code == 200, resp.text
-
-        self.state.files_by_collection[CollectionId(collection_id)][file_path].hot = False
-
-        self.seed_fetch(fetch_id, target)
 
     def upload_required_entries(self, fetch_id: str) -> None:
         self.fetches.upload_all_required_entries(fetch_id)

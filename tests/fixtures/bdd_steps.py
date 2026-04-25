@@ -384,13 +384,14 @@ def given_collection_exists_and_is_fully_hot(
 @given(parsers.parse('target "{target}" is pinned'))
 def given_target_is_pinned(acceptance_system: AcceptanceSystem, target: str) -> None:
     _ensure_target_fixture(acceptance_system, target)
-    acceptance_system.seed_pin(target)
+    resp = acceptance_system.request("POST", "/v1/pin", json_body={"target": target})
+    assert resp.status_code == 200, resp.text
 
 
 @given(parsers.parse('target "{target}" is not pinned'))
 def given_target_is_not_pinned(acceptance_system: AcceptanceSystem, target: str) -> None:
-    canonical = parse_target(target).canonical
-    acceptance_system.state.exact_pins.discard(canonical)
+    resp = acceptance_system.request("POST", "/v1/release", json_body={"target": target})
+    assert resp.status_code == 200, resp.text
 
 
 @given(parsers.parse('target "{target}" is valid'))
@@ -420,8 +421,8 @@ def given_archived_target_is_pinned_with_fetch(
     fetch_id: str,
 ) -> None:
     acceptance_system.seed_docs_archive()
-    acceptance_system.seed_pin(target)
-    acceptance_system.seed_fetch(fetch_id, target)
+    resp = acceptance_system.request("POST", "/v1/pin", json_body={"target": target})
+    assert resp.status_code == 200, resp.text
 
 
 @given(parsers.parse('split archived fetch "{fetch_id}" exists for target "{target}"'))
@@ -431,7 +432,8 @@ def given_split_archived_fetch_exists(
     target: str,
 ) -> None:
     acceptance_system.seed_docs_archive_with_split_invoice()
-    acceptance_system.seed_fetch(fetch_id, target)
+    resp = acceptance_system.request("POST", "/v1/pin", json_body={"target": target})
+    assert resp.status_code == 200, resp.text
 
 
 @given(parsers.parse('split archived target "{target}" is pinned with fetch "{fetch_id}"'))
@@ -441,8 +443,8 @@ def given_split_archived_target_is_pinned_with_fetch(
     fetch_id: str,
 ) -> None:
     acceptance_system.seed_docs_archive_with_split_invoice()
-    acceptance_system.seed_pin(target)
-    acceptance_system.seed_fetch(fetch_id, target)
+    resp = acceptance_system.request("POST", "/v1/pin", json_body={"target": target})
+    assert resp.status_code == 200, resp.text
 
 
 @given(parsers.parse('fetch "{fetch_id}" already exists for target "{target}"'))
@@ -453,7 +455,8 @@ def given_fetch_exists_for_target(
     target: str,
 ) -> None:
     acceptance_system.seed_docs_archive()
-    acceptance_system.seed_fetch(fetch_id, target)
+    resp = acceptance_system.request("POST", "/v1/pin", json_body={"target": target})
+    assert resp.status_code == 200, resp.text
 
 
 @given(parsers.parse('fetch "{fetch_id}" exists'))
@@ -462,7 +465,8 @@ def given_fetch_exists(
     fetch_id: str,
 ) -> None:
     acceptance_system.seed_docs_archive()
-    acceptance_system.seed_fetch(fetch_id, TAX_DIRECTORY_TARGET)
+    resp = acceptance_system.request("POST", "/v1/pin", json_body={"target": TAX_DIRECTORY_TARGET})
+    assert resp.status_code == 200, resp.text
 
 
 @given(parsers.parse('fetch "{fetch_id}" has a stable manifest'))
@@ -485,7 +489,8 @@ def given_fetch_has_partial_upload_in_progress(
     entry_id: str,
 ) -> None:
     acceptance_system.seed_docs_archive()
-    acceptance_system.seed_fetch(fetch_id, INVOICE_TARGET)
+    resp = acceptance_system.request("POST", "/v1/pin", json_body={"target": INVOICE_TARGET})
+    assert resp.status_code == 200, resp.text
     manifest = acceptance_system.fetches.manifest(fetch_id)
     entry_ids = [item["id"] for item in manifest["entries"]]
     assert entry_id in entry_ids
@@ -499,31 +504,6 @@ def given_arc_disc_success_fixture(
     acceptance_system: AcceptanceSystem,
 ) -> None:
     acceptance_system.configure_arc_disc_fixture(fetch_id="fx-1")
-
-
-@given(
-    parsers.parse(
-        'a fake optical reader fixture can recover every required entry for fetch "{fetch_id}"'
-    )
-)
-def given_arc_disc_success_fixture_for_fetch(
-    acceptance_system: AcceptanceSystem,
-    fetch_id: str,
-) -> None:
-    acceptance_system.configure_arc_disc_fixture(fetch_id=fetch_id)
-
-
-@given(
-    parsers.parse(
-        'split archived target "{target}" is pinned via API copies with fetch "{fetch_id}"'
-    )
-)
-def given_split_archived_target_pinned_via_api_copies(
-    acceptance_system: AcceptanceSystem,
-    target: str,
-    fetch_id: str,
-) -> None:
-    acceptance_system.seed_api_registered_split_archive(fetch_id, target)
 
 
 @given("the optical reader fixture fails for one required entry")
@@ -558,7 +538,8 @@ def given_fetch_exists_with_entry(
     entry_id: str,
 ) -> None:
     acceptance_system.seed_docs_archive()
-    acceptance_system.seed_fetch(fetch_id, INVOICE_TARGET)
+    resp = acceptance_system.request("POST", "/v1/pin", json_body={"target": INVOICE_TARGET})
+    assert resp.status_code == 200, resp.text
     manifest = acceptance_system.fetches.manifest(fetch_id)
     entry_ids = [item["id"] for item in manifest["entries"]]
     assert entry_id in entry_ids
@@ -570,11 +551,13 @@ def given_entry_expected_hash(
     entry_id: str,
     sha256: str,
 ) -> None:
-    record = acceptance_system.state.fetches["fx-1"].entries[entry_id]
+    manifest = acceptance_system.request("GET", "/v1/fetches/fx-1/manifest").json()
+    entry = next((e for e in manifest["entries"] if e["id"] == entry_id), None)
+    assert entry is not None, f"entry {entry_id!r} not found in manifest"
     if sha256 == "good-hash":
-        assert record.sha256
+        assert entry["sha256"]
         return
-    assert str(record.sha256) == sha256
+    assert entry["sha256"] == sha256
 
 
 @given(parsers.parse('fetch "{fetch_id}" is not done'))
@@ -597,7 +580,8 @@ def given_fetch_entries_are_uploaded(
     fetch_id: str,
 ) -> None:
     target = str(acceptance_system.fetches.get(fetch_id).target)
-    acceptance_system.seed_pin(target)
+    resp = acceptance_system.request("POST", "/v1/pin", json_body={"target": target})
+    assert resp.status_code == 200, resp.text
     acceptance_system.upload_required_entries(fetch_id)
 
 
@@ -608,7 +592,8 @@ def given_pinning_target_requires_fetch(
     fetch_id: str,
 ) -> None:
     acceptance_system.seed_docs_archive()
-    acceptance_system.seed_fetch(fetch_id, target)
+    resp = acceptance_system.request("POST", "/v1/pin", json_body={"target": target})
+    assert resp.status_code == 200, resp.text
 
 
 @given(parsers.parse('candidate "{candidate_id}" exists'))
@@ -1077,12 +1062,31 @@ def then_missing_bytes_is_greater_than_zero(
     assert payload["hot"]["missing_bytes"] > 0
 
 
+@given(parsers.parse('the client has already pinned "{target}"'))
+def given_client_has_already_pinned(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+    target: str,
+) -> None:
+    response = acceptance_system.request("POST", "/v1/pin", json_body={"target": target})
+    assert response.status_code == 200, response.text
+    acceptance_context.last_fetch_id = response.json()["fetch"]["id"]
+
+
 @then("a fetch id is returned")
 def then_fetch_id_is_returned(acceptance_context: AcceptanceScenarioContext) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     fetch_id = payload["fetch"]["id"]
     assert fetch_id
     acceptance_context.last_fetch_id = str(fetch_id)
+
+
+@then("the returned fetch id is the same as before")
+def then_returned_fetch_id_is_same_as_before(
+    acceptance_context: AcceptanceScenarioContext,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert payload["fetch"]["id"] == acceptance_context.last_fetch_id
 
 
 @when("the client gets the manifest for the returned fetch")
@@ -1865,7 +1869,8 @@ def then_fetch_no_longer_exists(
     acceptance_system: AcceptanceSystem,
     fetch_id: str,
 ) -> None:
-    assert fetch_id not in {str(current) for current in acceptance_system.state.fetches}
+    resp = acceptance_system.request("GET", f"/v1/fetches/{fetch_id}")
+    assert resp.status_code == 404
 
 
 @then(parsers.parse('the upload buffer for fetch "{fetch_id}" is absent'))
