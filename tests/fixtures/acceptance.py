@@ -1458,6 +1458,7 @@ class AcceptanceSystem:
         self.fetches.remove_for_target(canonical)
         files = self.state.selected_files(raw_target)
         self.fetches.create_fetch(canonical, files, fetch_id=fetch_id)
+        self.state.exact_pins.add(canonical)
 
     def seed_api_registered_split_archive(self, fetch_id: str, target: str) -> None:
         target_path = parse_target(target).path
@@ -1495,7 +1496,7 @@ class AcceptanceSystem:
         return self.fetches.upload_partial_entry(fetch_id, entry_id)
 
     def upload_buffer_absent(self, fetch_id: str) -> bool:
-        return True  # stub has no real filesystem upload buffers
+        return FetchId(fetch_id) not in self.state.fetches
 
     def pins_list(self) -> list[str]:
         return [str(item.target) for item in self.pins.list_pins()]
