@@ -4,14 +4,52 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="${TEST_IMAGE_NAME:-archive-stack:test}"
 
+usage() {
+  cat <<'EOF'
+Usage:
+  ./test
+  ./test acceptance [pytest args...]
+  ./test spec [pytest args...]
+  ./test unit [pytest args...]
+  ./test fast [pytest args...]
+  ./test [pytest args...]
+
+Modes:
+  acceptance  Run the production-backed BDD acceptance lane.
+  spec        Run the fixture-backed BDD spec harness lane.
+  unit        Run the unit test lane.
+  fast        Run the non-production lanes together (integration + unit).
+  no args     Run the canonical split test flow inside the test container.
+EOF
+}
+
+MODE="pytest"
+
 if [[ $# -eq 0 ]]; then
   MODE="canonical"
-elif [[ "$1" == "acceptance" ]]; then
-  MODE="pytest"
-  shift
-  set -- -q -m acceptance tests/acceptance "$@"
 else
-  MODE="pytest"
+  case "$1" in
+    acceptance)
+      shift
+      set -- -q -m acceptance tests/acceptance "$@"
+      ;;
+    spec)
+      shift
+      set -- -q tests/integration "$@"
+      ;;
+    unit)
+      shift
+      set -- -q tests/unit "$@"
+      ;;
+    fast)
+      shift
+      set -- -q tests/integration tests/unit "$@"
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+  esac
 fi
 
 TTY_ARGS=()
@@ -25,13 +63,34 @@ docker build \
   "${ROOT_DIR}"
 
 if [[ "${MODE}" == "canonical" ]]; then
+  read -r -d '' CANONICAL_SCRIPT <<'EOF' || true
+set -euo pipefail
+
+run_phase() {
+  local label="$1"
+  shift
+  local started_at
+  started_at="$(date +%s)"
+
+  printf '\n==> %s\n' "${label}"
+  "$@"
+
+  local finished_at
+  finished_at="$(date +%s)"
+  printf '==> %s finished in %ss\n' "${label}" "$((finished_at - started_at))"
+}
+
+run_phase "acceptance" python -m pytest -q -m acceptance tests/acceptance
+run_phase "integration + unit" python -m pytest -q tests/integration tests/unit
+EOF
+
   exec docker run \
     --rm \
     --init \
     "${TTY_ARGS[@]}" \
     --entrypoint bash \
     "${IMAGE_NAME}" \
-    -lc "python -m pytest -q -m acceptance tests/acceptance && python -m pytest -q tests/integration tests/unit"
+    -lc "${CANONICAL_SCRIPT}"
 fi
 
 exec docker run \

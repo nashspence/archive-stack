@@ -43,9 +43,12 @@ arc-disc --help
 
 ## Testing
 
-Run the full suite with `pytest` or `./test`.
+Run the full suite with `./test`.
 
-Run the executable acceptance contract with `pytest tests/acceptance` or `./test acceptance`.
+Run the executable acceptance contract with `./test acceptance`.
+Run the fixture-backed spec harness lane with `./test spec`.
+Run the unit lane with `./test unit`.
+Run the non-production lanes together with `./test fast`.
 The `.feature` files under `tests/acceptance/features` are the source of truth for those scenarios.
 
 ## Environment variables

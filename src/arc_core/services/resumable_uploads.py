@@ -36,11 +36,11 @@ def sync_upload_state(
         try:
             upload_store.read_target(target_path)
         except Exception:
-            return UploadLifecycleState(
-                tus_url=current.tus_url,
-                uploaded_bytes=0,
-                upload_expires_at=current.upload_expires_at,
-            )
+            # Another worker may have consumed and deleted the backing upload between
+            # loading the row and syncing the current offset. Preserve the current
+            # lifecycle state here so a stale sync cannot roll committed progress back
+            # to zero during fetch completion.
+            return current
         offset = length
 
     expires_at = current.upload_expires_at

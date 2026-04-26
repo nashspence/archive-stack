@@ -26,7 +26,19 @@ Run the same acceptance contract inside the deterministic test container:
 Run the fixture-backed spec harness lane against the same contract:
 
 ```bash
-./test tests/integration -m integration
+./test spec
+```
+
+Run the unit lane by itself:
+
+```bash
+./test unit
+```
+
+Run the non-production lanes together:
+
+```bash
+./test fast
 ```
 
 ## What lives where
