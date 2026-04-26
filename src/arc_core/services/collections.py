@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
 
 from sqlalchemy import select
 
@@ -15,6 +14,7 @@ from arc_core.fs_paths import (
     find_collection_id_conflict,
     normalize_collection_id,
 )
+from arc_core.ports.hot_store import HotStore
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.sqlite_db import make_session_factory, session_scope
 
@@ -28,8 +28,9 @@ class StubCollectionService:
 
 
 class SqlAlchemyCollectionService:
-    def __init__(self, config: RuntimeConfig) -> None:
+    def __init__(self, config: RuntimeConfig, hot_store: HotStore) -> None:
         self._config = config
+        self._hot_store = hot_store
         self._session_factory = make_session_factory(str(config.sqlite_path))
 
     def close(self, staging_path: str) -> CollectionSummary:
@@ -38,9 +39,9 @@ class SqlAlchemyCollectionService:
         except PathNormalizationError as exc:
             raise BadRequest(str(exc)) from exc
 
-        root = self._config.resolve_staging_path(staging_path)
-        if not root.exists() or not root.is_dir():
-            raise NotFound(f"staged directory not found: {staging_path}")
+        entries = self._hot_store.list_collection_files(collection_id)
+        if not entries:
+            raise NotFound(f"no files found in hot store for collection: {collection_id}")
 
         with session_scope(self._session_factory) as session:
             existing_ids = session.scalars(select(CollectionRecord.id)).all()
@@ -53,12 +54,13 @@ class SqlAlchemyCollectionService:
 
             collection = CollectionRecord(id=collection_id, source_staging_path=staging_path)
             session.add(collection)
-            for path, content in _scan_collection_files(root).items():
+            for path, size in entries:
+                content = self._hot_store.get_collection_file(collection_id, path)
                 collection.files.append(
                     CollectionFileRecord(
                         collection_id=collection_id,
                         path=path,
-                        bytes=len(content),
+                        bytes=size,
                         sha256=_sha256_hex(content),
                         hot=True,
                         archived=False,
@@ -79,14 +81,6 @@ class SqlAlchemyCollectionService:
             if collection is None:
                 raise NotFound(f"collection not found: {normalized_collection_id}")
             return _summary_from_records(normalized_collection_id, collection.files)
-
-
-def _scan_collection_files(root: Path) -> dict[str, bytes]:
-    return {
-        path.relative_to(root).as_posix(): path.read_bytes()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
 
 
 def _sha256_hex(content: bytes) -> Sha256Hex:

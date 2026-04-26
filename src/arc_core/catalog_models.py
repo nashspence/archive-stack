@@ -187,6 +187,7 @@ class FetchEntryRecord(Base):
     recovery_bytes: Mapped[int] = mapped_column(Integer, default=0)
     uploaded_bytes: Mapped[int] = mapped_column(Integer, default=0)
     upload_expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    tus_url: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(

@@ -7,6 +7,7 @@ from arc_core.catalog_models import CollectionFileRecord, CollectionRecord
 from arc_core.domain.errors import BadRequest, InvalidTarget, NotFound
 from arc_core.domain.selectors import parse_target
 from arc_core.fs_paths import PathNormalizationError, normalize_collection_id
+from arc_core.ports.hot_store import HotStore
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.sqlite_db import make_session_factory, session_scope
 
@@ -23,8 +24,9 @@ class StubFileService:
 
 
 class SqlAlchemyFileService:
-    def __init__(self, config: RuntimeConfig) -> None:
+    def __init__(self, config: RuntimeConfig, hot_store: HotStore) -> None:
         self._config = config
+        self._hot_store = hot_store
         self._session_factory = make_session_factory(str(config.sqlite_path))
 
     def list_collection_files(self, collection_id: str) -> list[dict[str, object]]:
@@ -105,9 +107,4 @@ class SqlAlchemyFileService:
             if not file_record.hot:
                 raise NotFound(f"file is not hot: {raw_target}")
 
-            collection = session.get(CollectionRecord, file_record.collection_id)
-            if collection is None:
-                raise NotFound(f"collection not found: {file_record.collection_id}")
-
-            dir_path = self._config.resolve_staging_path(collection.source_staging_path)
-            return (dir_path / file_record.path).read_bytes()
+        return self._hot_store.get_collection_file(file_record.collection_id, file_record.path)

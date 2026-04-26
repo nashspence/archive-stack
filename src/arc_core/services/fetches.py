@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import object_session, selectinload
@@ -13,18 +11,20 @@ from sqlalchemy.orm import object_session, selectinload
 from arc_core.catalog_models import (
     ActivePinRecord,
     CollectionFileRecord,
-    CollectionRecord,
     FetchEntryRecord,
     FileCopyRecord,
 )
 from arc_core.domain.enums import FetchState
-from arc_core.domain.errors import Conflict, HashMismatch, InvalidState, NotFound
+from arc_core.domain.errors import HashMismatch, InvalidState, NotFound
 from arc_core.domain.models import FetchCopyHint, FetchSummary
 from arc_core.domain.selectors import parse_target
 from arc_core.domain.types import CopyId, FetchId, TargetStr
+from arc_core.ports.hot_store import HotStore
+from arc_core.ports.upload_store import UploadStore
 from arc_core.recovery_payloads import decrypt_recovery_payload, encrypt_recovery_payload
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.sqlite_db import make_session_factory, session_scope
+
 
 @dataclass(frozen=True, slots=True)
 class _ManifestCopy:
@@ -44,100 +44,124 @@ class _ManifestCopy:
 
 
 class SqlAlchemyFetchService:
-    def __init__(self, config: RuntimeConfig) -> None:
+    def __init__(
+        self, config: RuntimeConfig, hot_store: HotStore, upload_store: UploadStore
+    ) -> None:
         self._config = config
+        self._hot_store = hot_store
+        self._upload_store = upload_store
         self._upload_ttl = config.incomplete_upload_ttl
         self._session_factory = make_session_factory(str(config.sqlite_path))
 
     def get(self, fetch_id: str) -> FetchSummary:
         with session_scope(self._session_factory) as session:
             pin_record = _get_pin_record(session, fetch_id)
-            entries = _ensure_fetch_entries(session, pin_record, self._config)
-            _expire_incomplete_uploads(pin_record, entries, self._config.staging_root)
+            entries = _ensure_fetch_entries(session, pin_record, self._hot_store)
+            _sync_upload_progress(pin_record, entries, self._upload_store)
+            _expire_incomplete_uploads(pin_record, entries, self._upload_store)
             return _summary_from_records(pin_record, entries)
 
     def manifest(self, fetch_id: str) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
             pin_record = _get_pin_record(session, fetch_id)
-            entries = _ensure_fetch_entries(session, pin_record, self._config)
-            _expire_incomplete_uploads(pin_record, entries, self._config.staging_root)
+            entries = _ensure_fetch_entries(session, pin_record, self._hot_store)
+            _sync_upload_progress(pin_record, entries, self._upload_store)
+            _expire_incomplete_uploads(pin_record, entries, self._upload_store)
             return {
                 "id": pin_record.fetch_id,
                 "target": pin_record.target,
                 "entries": [
-                    _manifest_entry_payload(self._config, session, entry) for entry in entries
+                    _manifest_entry_payload(self._hot_store, session, entry)
+                    for entry in entries
                 ],
             }
 
     def create_or_resume_upload(self, fetch_id: str, entry_id: str) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
             pin_record = _get_pin_record(session, fetch_id)
-            entries = _ensure_fetch_entries(session, pin_record, self._config)
-            _expire_incomplete_uploads(pin_record, entries, self._config.staging_root)
+            entries = _ensure_fetch_entries(session, pin_record, self._hot_store)
+            _sync_upload_progress(pin_record, entries, self._upload_store)
+            _expire_incomplete_uploads(pin_record, entries, self._upload_store)
             entry = _get_entry(entries, entry_id)
+
+            target_path = f"/.arc/recovery/{fetch_id}/{entry_id}.enc"
+
+            if entry.tus_url is None:
+                tus_url = self._upload_store.create_upload(target_path, entry.recovery_bytes)
+                entry.tus_url = tus_url
+                current_offset = 0
+            else:
+                current_offset = self._upload_store.get_offset(entry.tus_url)
+                if current_offset == -1:
+                    try:
+                        self._upload_store.read_target(target_path)
+                        current_offset = entry.recovery_bytes
+                    except Exception:
+                        entry.tus_url = None
+                        entry.uploaded_bytes = 0
+                        tus_url = self._upload_store.create_upload(
+                            target_path, entry.recovery_bytes
+                        )
+                        entry.tus_url = tus_url
+                        current_offset = 0
+
+            entry.uploaded_bytes = current_offset
             if _entry_upload_state(entry) != "uploaded":
                 entry.upload_expires_at = _upload_expiry_timestamp(self._upload_ttl)
-            return {
-                "entry": entry.entry_id,
-                "protocol": "tus",
-                "upload_url": None,
-                "offset": entry.uploaded_bytes,
-                "length": _entry_recovery_bytes(entry),
-                "checksum_algorithm": "sha256",
-                "expires_at": entry.upload_expires_at,
-            }
 
-    def append_upload_chunk(
-        self, fetch_id: str, entry_id: str, offset: int, checksum: str, content: bytes
-    ) -> dict[str, object]:
-        with session_scope(self._session_factory) as session:
-            pin_record = _get_pin_record(session, fetch_id)
-            entries = _ensure_fetch_entries(session, pin_record, self._config)
-            _expire_incomplete_uploads(pin_record, entries, self._config.staging_root)
-            entry = _get_entry(entries, entry_id)
-            if offset != entry.uploaded_bytes:
-                raise Conflict("upload offset did not match current entry offset")
-
-            algorithm, separator, digest = checksum.partition(" ")
-            if separator != " " or algorithm != "sha256":
-                raise InvalidState("upload checksum must use sha256")
-            actual_digest = base64.b64encode(hashlib.sha256(content).digest()).decode("ascii")
-            if digest != actual_digest:
-                raise HashMismatch("upload checksum did not match the provided chunk")
-
-            next_uploaded_bytes = offset + len(content)
-            if next_uploaded_bytes > _entry_recovery_bytes(entry):
-                raise Conflict("upload chunk exceeded the expected entry length")
-
-            _write_upload_chunk(self._config.staging_root, entry.fetch_id, entry.entry_id, offset, content)
-            entry.uploaded_bytes = next_uploaded_bytes
-
-            if entry.uploaded_bytes < _entry_recovery_bytes(entry):
-                entry.upload_expires_at = _upload_expiry_timestamp(self._upload_ttl)
-            else:
-                _verify_uploaded_entry(self._config, session, entry)
-                entry.upload_expires_at = None
-
-            if pin_record.fetch_state == FetchState.WAITING_MEDIA.value:
+            if pin_record.fetch_state == FetchState.WAITING_MEDIA.value and current_offset > 0:
                 pin_record.fetch_state = FetchState.UPLOADING.value
 
             return {
-                "offset": entry.uploaded_bytes,
+                "entry": entry.entry_id,
+                "protocol": "tus",
+                "upload_url": entry.tus_url,
+                "offset": current_offset,
+                "length": entry.recovery_bytes,
+                "checksum_algorithm": "sha256",
                 "expires_at": entry.upload_expires_at,
             }
 
     def complete(self, fetch_id: str) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
             pin_record = _get_pin_record(session, fetch_id)
-            entries = _ensure_fetch_entries(session, pin_record, self._config)
-            _expire_incomplete_uploads(pin_record, entries, self._config.staging_root)
+            entries = _ensure_fetch_entries(session, pin_record, self._hot_store)
+            _sync_upload_progress(pin_record, entries, self._upload_store)
+            _expire_incomplete_uploads(pin_record, entries, self._upload_store)
 
             if any(_entry_upload_state(entry) != "uploaded" for entry in entries):
                 raise InvalidState("fetch is missing required entry uploads")
 
             pin_record.fetch_state = FetchState.VERIFYING.value
             for entry in entries:
-                _verify_uploaded_entry(self._config, session, entry)
+                target_path = f"/.arc/recovery/{fetch_id}/{entry.entry_id}.enc"
+                encrypted = self._upload_store.read_target(target_path)
+
+                copies = _entry_copies(entry)
+                if copies and any(copy.part_index is not None for copy in copies):
+                    part_count = max((copy.part_count or 1) for copy in copies)
+                    content = self._hot_store.get_collection_file(
+                        entry.collection_id, entry.path
+                    )
+                    parts = _split_plaintext(content, part_count)
+                    sizes = [len(encrypt_recovery_payload(part)) for part in parts]
+                    offset = 0
+                    plaintext_chunks: list[bytes] = []
+                    for size in sizes:
+                        plaintext_chunks.append(
+                            decrypt_recovery_payload(encrypted[offset : offset + size])
+                        )
+                        offset += size
+                    plaintext = b"".join(plaintext_chunks)
+                else:
+                    plaintext = decrypt_recovery_payload(encrypted)
+
+                if hashlib.sha256(plaintext).hexdigest() != entry.sha256:
+                    raise HashMismatch("sha256 did not match")
+
+                self._hot_store.put_collection_file(entry.collection_id, entry.path, plaintext)
+                self._upload_store.delete_target(target_path)
+
                 file_record = session.get(
                     CollectionFileRecord,
                     {"collection_id": entry.collection_id, "path": entry.path},
@@ -185,7 +209,7 @@ def _selected_files(session, raw_target: str) -> list[CollectionFileRecord]:
 def _ensure_fetch_entries(
     session,
     pin_record: ActivePinRecord,
-    config: RuntimeConfig,
+    hot_store: HotStore,
 ) -> list[FetchEntryRecord]:
     existing = session.scalars(
         select(FetchEntryRecord)
@@ -200,7 +224,7 @@ def _ensure_fetch_entries(
     for index, file_record in enumerate(
         sorted(selected, key=lambda item: (item.collection_id, item.path)), start=1
     ):
-        content = _read_collection_file_content(config, session, file_record.collection_id, file_record.path)
+        content = hot_store.get_collection_file(file_record.collection_id, file_record.path)
         copy_records = session.scalars(
             select(FileCopyRecord).where(
                 FileCopyRecord.collection_id == file_record.collection_id,
@@ -228,6 +252,7 @@ def _ensure_fetch_entries(
             recovery_bytes=recovery_bytes,
             uploaded_bytes=0,
             upload_expires_at=None,
+            tus_url=None,
         )
         session.add(entry)
         created.append(entry)
@@ -278,7 +303,7 @@ def _summary_copies(entries: list[FetchEntryRecord]) -> list[FetchCopyHint]:
 
 
 def _manifest_entry_payload(
-    config: RuntimeConfig, session, entry: FetchEntryRecord
+    hot_store: HotStore, session, entry: FetchEntryRecord
 ) -> dict[str, object]:
     return {
         "id": entry.entry_id,
@@ -289,13 +314,16 @@ def _manifest_entry_payload(
         "upload_state": _entry_upload_state(entry),
         "uploaded_bytes": entry.uploaded_bytes,
         "upload_state_expires_at": entry.upload_expires_at,
-        "copies": [_manifest_copy_payload(config, session, entry, copy) for copy in _entry_copies(entry)],
-        "parts": _manifest_parts_payload(config, session, entry),
+        "copies": [
+            _manifest_copy_payload(hot_store, session, entry, copy)
+            for copy in _entry_copies(entry)
+        ],
+        "parts": _manifest_parts_payload(hot_store, session, entry),
     }
 
 
 def _manifest_parts_payload(
-    config: RuntimeConfig, session, entry: FetchEntryRecord
+    hot_store: HotStore, session, entry: FetchEntryRecord
 ) -> list[dict[str, object]]:
     copies = _entry_copies(entry)
     if not copies:
@@ -308,7 +336,9 @@ def _manifest_parts_payload(
                 "bytes": entry.bytes,
                 "sha256": entry.sha256,
                 "recovery_bytes": _entry_recovery_bytes(entry),
-                "copies": [_manifest_copy_payload(config, session, entry, copy) for copy in copies],
+                "copies": [
+                    _manifest_copy_payload(hot_store, session, entry, copy) for copy in copies
+                ],
             }
         ]
 
@@ -327,17 +357,22 @@ def _manifest_parts_payload(
                 "index": part_index,
                 "bytes": bytes_hint,
                 "sha256": sha256_hint,
-                "recovery_bytes": len(_copy_recovery_payload(config, session, entry, part_copies[0])),
-                "copies": [_manifest_copy_payload(config, session, entry, copy) for copy in part_copies],
+                "recovery_bytes": len(
+                    _copy_recovery_payload(hot_store, session, entry, part_copies[0])
+                ),
+                "copies": [
+                    _manifest_copy_payload(hot_store, session, entry, copy)
+                    for copy in part_copies
+                ],
             }
         )
     return parts
 
 
 def _manifest_copy_payload(
-    config: RuntimeConfig, session, entry: FetchEntryRecord, copy: _ManifestCopy
+    hot_store: HotStore, session, entry: FetchEntryRecord, copy: _ManifestCopy
 ) -> dict[str, object]:
-    recovery_payload = _copy_recovery_payload(config, session, entry, copy)
+    recovery_payload = _copy_recovery_payload(hot_store, session, entry, copy)
     return {
         "copy": str(copy.id),
         "volume_id": copy.volume_id,
@@ -382,6 +417,28 @@ def _entry_copies(entry: FetchEntryRecord) -> list[_ManifestCopy]:
     ]
 
 
+def _entry_recovery_payloads(
+    hot_store: HotStore, session, entry: FetchEntryRecord
+) -> tuple[bytes, ...]:
+    content = hot_store.get_collection_file(entry.collection_id, entry.path)
+    copies = _entry_copies(entry)
+    if not copies or all(copy.part_index is None for copy in copies):
+        return (encrypt_recovery_payload(content),)
+    part_count = max((copy.part_count or 1) for copy in copies)
+    return tuple(
+        encrypt_recovery_payload(part) for part in _split_plaintext(content, part_count)
+    )
+
+
+def _copy_recovery_payload(
+    hot_store: HotStore, session, entry: FetchEntryRecord, copy: _ManifestCopy
+) -> bytes:
+    payloads = _entry_recovery_payloads(hot_store, session, entry)
+    if copy.part_index is None:
+        return payloads[0]
+    return payloads[copy.part_index]
+
+
 def _entry_upload_state(entry: FetchEntryRecord) -> str:
     if entry.recovery_bytes > 0 and entry.uploaded_bytes >= entry.recovery_bytes:
         return "uploaded"
@@ -394,94 +451,10 @@ def _entry_recovery_bytes(entry: FetchEntryRecord) -> int:
     return entry.recovery_bytes
 
 
-def _entry_recovery_payloads(
-    config: RuntimeConfig, session, entry: FetchEntryRecord
-) -> tuple[bytes, ...]:
-    content = _read_collection_file_content(config, session, entry.collection_id, entry.path)
-    copies = _entry_copies(entry)
-    if not copies or all(copy.part_index is None for copy in copies):
-        return (encrypt_recovery_payload(content),)
-    part_count = max((copy.part_count or 1) for copy in copies)
-    return tuple(
-        encrypt_recovery_payload(part) for part in _split_plaintext(content, part_count)
-    )
-
-
-def _copy_recovery_payload(
-    config: RuntimeConfig, session, entry: FetchEntryRecord, copy: _ManifestCopy
-) -> bytes:
-    payloads = _entry_recovery_payloads(config, session, entry)
-    if copy.part_index is None:
-        return payloads[0]
-    return payloads[copy.part_index]
-
-
-def _read_collection_file_content(
-    config: RuntimeConfig, session, collection_id: str, path: str
-) -> bytes:
-    collection = session.get(CollectionRecord, collection_id)
-    if collection is None:
-        raise NotFound(f"collection not found: {collection_id}")
-    dir_path = config.resolve_staging_path(collection.source_staging_path)
-    return (dir_path / path).read_bytes()
-
-
-def _upload_buffer_path(staging_root: Path, fetch_id: str, entry_id: str) -> Path:
-    return staging_root / ".arc_uploads" / fetch_id / entry_id
-
-
-def _write_upload_chunk(
-    staging_root: Path, fetch_id: str, entry_id: str, offset: int, chunk: bytes
-) -> None:
-    buffer_path = _upload_buffer_path(staging_root, fetch_id, entry_id)
-    buffer_path.parent.mkdir(parents=True, exist_ok=True)
-    if offset == 0:
-        buffer_path.write_bytes(chunk)
-    else:
-        with buffer_path.open("r+b") as f:
-            f.seek(offset)
-            f.truncate()
-            f.write(chunk)
-
-
-def _verify_uploaded_entry(
-    config: RuntimeConfig, session, entry: FetchEntryRecord
-) -> None:
-    buffer_path = _upload_buffer_path(
-        config.staging_root, entry.fetch_id, entry.entry_id
-    )
-    if not buffer_path.exists():
-        raise InvalidState("upload buffer missing for entry verification")
-    uploaded_content = buffer_path.read_bytes()
-
-    recovery_payloads = _entry_recovery_payloads(config, session, entry)
-    offset = 0
-    plaintext_parts: list[bytes] = []
-    for recovery_payload in recovery_payloads:
-        next_offset = offset + len(recovery_payload)
-        chunk = uploaded_content[offset:next_offset]
-        if len(chunk) != len(recovery_payload):
-            raise HashMismatch(
-                "uploaded recovery stream did not match expected recovery boundaries"
-            )
-        try:
-            plaintext_parts.append(decrypt_recovery_payload(chunk))
-        except ValueError as exc:
-            raise HashMismatch("uploaded recovery bytes did not decrypt cleanly") from exc
-        offset = next_offset
-
-    if offset != len(uploaded_content):
-        raise HashMismatch("uploaded recovery stream contained trailing bytes")
-
-    actual_sha = hashlib.sha256(b"".join(plaintext_parts)).hexdigest()
-    if actual_sha != entry.sha256:
-        raise HashMismatch("sha256 did not match expected entry hash")
-
-
 def _expire_incomplete_uploads(
     pin_record: ActivePinRecord,
     entries: list[FetchEntryRecord],
-    staging_root: Path,
+    upload_store: UploadStore,
 ) -> None:
     now = _utc_now()
     expired = False
@@ -490,14 +463,53 @@ def _expire_incomplete_uploads(
             continue
         if datetime.fromisoformat(entry.upload_expires_at.replace("Z", "+00:00")) > now:
             continue
+        if entry.tus_url is not None:
+            target_path = f"/.arc/recovery/{entry.fetch_id}/{entry.entry_id}.enc"
+            offset = upload_store.get_offset(entry.tus_url)
+            if offset == -1:
+                try:
+                    upload_store.read_target(target_path)
+                except Exception:
+                    entry.tus_url = None
+                    entry.uploaded_bytes = 0
+                    entry.upload_expires_at = None
+                    expired = True
+                    continue
+            upload_store.cancel_upload(entry.tus_url)
+            upload_store.delete_target(target_path)
+            entry.tus_url = None
         entry.uploaded_bytes = 0
         entry.upload_expires_at = None
-        buffer_path = _upload_buffer_path(staging_root, entry.fetch_id, entry.entry_id)
-        if buffer_path.exists():
-            buffer_path.unlink()
         expired = True
     if expired and pin_record.fetch_state == FetchState.UPLOADING.value:
         pin_record.fetch_state = FetchState.WAITING_MEDIA.value
+
+
+def _sync_upload_progress(
+    pin_record: ActivePinRecord,
+    entries: list[FetchEntryRecord],
+    upload_store: UploadStore,
+) -> None:
+    any_uploaded = False
+    for entry in entries:
+        if entry.tus_url is None:
+            continue
+        offset = upload_store.get_offset(entry.tus_url)
+        if offset == -1:
+            target_path = f"/.arc/recovery/{entry.fetch_id}/{entry.entry_id}.enc"
+            try:
+                upload_store.read_target(target_path)
+            except Exception:
+                entry.uploaded_bytes = 0
+                continue
+            offset = entry.recovery_bytes
+        entry.uploaded_bytes = offset
+        if _entry_upload_state(entry) == "uploaded":
+            entry.upload_expires_at = None
+        if entry.uploaded_bytes > 0:
+            any_uploaded = True
+    if any_uploaded and pin_record.fetch_state == FetchState.WAITING_MEDIA.value:
+        pin_record.fetch_state = FetchState.UPLOADING.value
 
 
 def _get_entry(entries: list[FetchEntryRecord], entry_id: str) -> FetchEntryRecord:

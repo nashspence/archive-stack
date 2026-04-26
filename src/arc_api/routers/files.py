@@ -6,8 +6,8 @@ from arc_api.deps import ContainerDep
 from arc_api.schemas.files import (
     CollectionFileOut,
     CollectionFilesResponse,
-    FileStateOut,
     FilesResponse,
+    FileStateOut,
 )
 
 router = APIRouter(tags=["files"])

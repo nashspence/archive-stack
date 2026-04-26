@@ -1,17 +1,20 @@
 from __future__ import annotations
 
-import shutil
-from pathlib import Path
-
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
-from arc_core.catalog_models import ActivePinRecord, CollectionFileRecord, FileCopyRecord
+from arc_core.catalog_models import (
+    ActivePinRecord,
+    CollectionFileRecord,
+    FetchEntryRecord,
+)
 from arc_core.domain.enums import FetchState
 from arc_core.domain.errors import NotFound
 from arc_core.domain.models import FetchCopyHint, FetchSummary, PinSummary
 from arc_core.domain.selectors import parse_target
 from arc_core.domain.types import CopyId, FetchId, TargetStr
+from arc_core.ports.hot_store import HotStore
+from arc_core.ports.upload_store import UploadStore
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.fetches import delete_fetch_entries
 from arc_core.sqlite_db import make_session_factory, session_scope
@@ -29,9 +32,12 @@ class StubPinService:
 
 
 class SqlAlchemyPinService:
-    def __init__(self, config: RuntimeConfig) -> None:
+    def __init__(
+        self, config: RuntimeConfig, hot_store: HotStore, upload_store: UploadStore
+    ) -> None:
         self._session_factory = make_session_factory(str(config.sqlite_path))
-        self._staging_root = config.staging_root
+        self._hot_store = hot_store
+        self._upload_store = upload_store
 
     def pin(self, raw_target: str) -> dict[str, object]:
         target = parse_target(raw_target)
@@ -76,11 +82,20 @@ class SqlAlchemyPinService:
             pin_record = session.get(ActivePinRecord, canonical)
             if pin_record is not None:
                 fetch_id = pin_record.fetch_id
+                entries = session.scalars(
+                    select(FetchEntryRecord).where(
+                        FetchEntryRecord.fetch_id == fetch_id
+                    )
+                ).all()
+                for entry in entries:
+                    if entry.tus_url is not None:
+                        self._upload_store.cancel_upload(entry.tus_url)
+                    target_path = f"/.arc/recovery/{fetch_id}/{entry.entry_id}.enc"
+                    self._upload_store.delete_target(target_path)
                 delete_fetch_entries(session, fetch_id)
                 session.delete(pin_record)
                 session.flush()
-                _delete_upload_buffer(self._staging_root, fetch_id)
-            _reconcile_hot_from_pins(session)
+            _reconcile_hot_from_pins(session, self._hot_store)
         return {
             "target": str(canonical),
             "pin": False,
@@ -174,13 +189,7 @@ def _fetch_payload(fetch_summary: FetchSummary) -> dict[str, object]:
     }
 
 
-def _delete_upload_buffer(staging_root: Path, fetch_id: str) -> None:
-    buffer_dir = staging_root / ".arc_uploads" / fetch_id
-    if buffer_dir.exists():
-        shutil.rmtree(buffer_dir)
-
-
-def _reconcile_hot_from_pins(session) -> None:
+def _reconcile_hot_from_pins(session, hot_store: HotStore) -> None:
     active_targets = session.scalars(select(ActivePinRecord.target)).all()
     selected_paths: set[tuple[str, str]] = set()
     for raw_target in active_targets:
@@ -188,4 +197,7 @@ def _reconcile_hot_from_pins(session) -> None:
             selected_paths.add((record.collection_id, record.path))
     records = session.scalars(select(CollectionFileRecord)).all()
     for record in records:
-        record.hot = (record.collection_id, record.path) in selected_paths
+        should_be_hot = (record.collection_id, record.path) in selected_paths
+        if record.hot and not should_be_hot:
+            hot_store.delete_collection_file(record.collection_id, record.path)
+        record.hot = should_be_hot

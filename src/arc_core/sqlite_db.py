@@ -30,6 +30,10 @@ _COLUMN_MIGRATIONS: list[list[tuple[str, str, str]]] = [
         ("file_copies", "part_bytes", "INTEGER"),
         ("file_copies", "part_sha256", "TEXT"),
     ],
+    # version 2
+    [
+        ("fetch_entries", "tus_url", "TEXT"),
+    ],
 ]
 
 

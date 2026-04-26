@@ -52,7 +52,7 @@ The `.feature` files under `tests/acceptance/features` are the source of truth f
 
 - `ARC_BASE_URL` default: `http://127.0.0.1:8000`
 - `ARC_TOKEN` optional bearer token
-- `ARC_STAGING_ROOT` default: `/staging`
+- `ARC_SEAWEEDFS_FILER_URL` default: `http://localhost:8888`
 - `ARC_DB_PATH` default: `.arc/state.sqlite3`
 
 ## Suggested implementation order

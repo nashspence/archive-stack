@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from arc_core.catalog_models import CollectionFileRecord, CollectionRecord, FileCopyRecord
+from arc_core.catalog_models import CollectionFileRecord, CollectionRecord
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.sqlite_db import make_session_factory, session_scope
 

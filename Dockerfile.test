@@ -6,8 +6,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app:/app/src
 
+ARG WEED_VERSION=4.21
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends xorriso \
+    && apt-get install -y --no-install-recommends curl xorriso \
+    && curl -fsSL \
+       "https://github.com/seaweedfs/seaweedfs/releases/download/${WEED_VERSION}/linux_amd64_full.tar.gz" \
+       | tar -xz -C /usr/local/bin weed \
+    && chmod +x /usr/local/bin/weed \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -29,7 +29,6 @@ from tests.fixtures.data import (
     SPLIT_FILE_RELPATH,
     TAX_DIRECTORY_TARGET,
     fixture_encrypt_bytes,
-    split_fixture_plaintext,
 )
 from tests.fixtures.disc_contracts import (
     InspectedIso,
@@ -107,7 +106,10 @@ def _selected_content_for_target(
 ) -> bytes:
     resp = acceptance_system.request("GET", f"/v1/files/{quote(target, safe='/')}/content")
     if resp.status_code != 200:
-        raise AssertionError(f"could not get file content for {target!r}: {resp.status_code} {resp.text}")
+        raise AssertionError(
+            f"could not get file content for {target!r}: "
+            f"{resp.status_code} {resp.text}"
+        )
     return resp.content
 
 
@@ -1973,12 +1975,12 @@ def then_fetch_no_longer_exists(
     assert resp.status_code == 404
 
 
-@then(parsers.parse('the upload buffer for fetch "{fetch_id}" is absent'))
-def then_upload_buffer_is_absent(
+@then(parsers.parse('the recovery upload for fetch "{fetch_id}" is absent'))
+def then_recovery_upload_is_absent(
     acceptance_system: AcceptanceSystem,
     fetch_id: str,
 ) -> None:
-    assert acceptance_system.upload_buffer_absent(fetch_id)
+    assert acceptance_system.recovery_upload_absent(fetch_id)
 
 
 @then(parsers.parse('stderr mentions copy id "{copy_id}"'))

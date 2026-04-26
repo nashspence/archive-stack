@@ -1,14 +1,15 @@
 # Configuration Reference
 
-## `ARC_STAGING_ROOT`
+## `ARC_SEAWEEDFS_FILER_URL`
 
-- type: absolute path
-- default: `/staging`
+- type: URL
+- default: `http://localhost:8888`
 
-This is the filesystem directory the API treats as the backing root for logical request paths beneath `/staging/...`.
+This is the SeaweedFS Filer base URL Riverhog uses for committed collection files and fetch recovery upload targets.
 
-For example, with `ARC_STAGING_ROOT=/srv/archive/staging`, the request path `/staging/photos/2024` resolves to the
-real directory `/srv/archive/staging/photos/2024`.
+Committed hot collection content lives at `/collections/{collection_id}/{path}` within the filer namespace.
+
+Completed encrypted recovery uploads live at `/.arc/recovery/{fetch_id}/{entry_id}.enc`.
 
 ## `ARC_DB_PATH`
 
@@ -29,7 +30,8 @@ Service restart does not shorten this TTL or discard unexpired upload state by i
 
 When the TTL expires:
 
-- incomplete upload bytes are discarded
+- the pending SeaweedFS TUS session is cancelled
+- any incomplete recovery target object is deleted
 - the entry returns to `pending`
 - the fetch manifest returns to `waiting_media` if any selected bytes are still not hot
 - `upload_state_expires_at` becomes `null` until a new upload session is opened

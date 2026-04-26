@@ -10,7 +10,6 @@ from sqlalchemy import select
 
 from arc_core.catalog_models import (
     CollectionFileRecord,
-    CollectionRecord,
     FileCopyRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
@@ -20,6 +19,7 @@ from arc_core.domain.errors import Conflict, NotFound, NotYetImplemented
 from arc_core.domain.models import CopySummary
 from arc_core.domain.types import CopyId
 from arc_core.planner.manifest import MANIFEST_FILENAME
+from arc_core.ports.hot_store import HotStore
 from arc_core.recovery_payloads import decrypt_recovery_payload
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.sqlite_db import make_session_factory, session_scope
@@ -28,8 +28,9 @@ _ENC_JSON = json.dumps({"alg": "fixture-age-plugin-batchpass/v1"}, sort_keys=Tru
 
 
 class SqlAlchemyCopyService:
-    def __init__(self, config: RuntimeConfig) -> None:
+    def __init__(self, config: RuntimeConfig, hot_store: HotStore) -> None:
         self._config = config
+        self._hot_store = hot_store
         self._session_factory = make_session_factory(str(config.sqlite_path))
 
     def register(self, image_id: str, copy_id: str, location: str) -> CopySummary:
@@ -69,8 +70,8 @@ class SqlAlchemyCopyService:
                     part_sha256_val = None
                     if part_count > 1:
                         assert part_index is not None
-                        content = _read_collection_file_bytes(
-                            self._config, session, cp.collection_id, cp.path
+                        content = self._hot_store.get_collection_file(
+                            cp.collection_id, cp.path
                         )
                         parts = _split_plaintext(content, part_count)
                         part_bytes_val = len(parts[part_index])
@@ -106,7 +107,6 @@ class StubCopyService:
 def _read_disc_manifest_entries(
     image_root: str,
 ) -> dict[tuple[str, str], list[tuple[str, int | None, int]]]:
-    """Return {(collection_id, path): [(disc_path, 0-based part_index, part_count)]}."""
     manifest_path = Path(image_root) / MANIFEST_FILENAME
     manifest = yaml.safe_load(decrypt_recovery_payload(manifest_path.read_bytes()))
     result: dict[tuple[str, str], list[tuple[str, int | None, int]]] = {}
@@ -127,15 +127,6 @@ def _read_disc_manifest_entries(
                 ]
             result[(collection_id, path)] = items
     return result
-
-
-def _read_collection_file_bytes(
-    config: RuntimeConfig, session, collection_id: str, path: str
-) -> bytes:
-    collection = session.get(CollectionRecord, collection_id)
-    if collection is None:
-        raise NotFound(f"collection not found: {collection_id}")
-    return (config.resolve_staging_path(collection.source_staging_path) / path).read_bytes()
 
 
 def _split_plaintext(content: bytes, part_count: int) -> tuple[bytes, ...]:

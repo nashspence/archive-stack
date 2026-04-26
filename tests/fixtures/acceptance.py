@@ -10,7 +10,6 @@ import subprocess
 import sys
 import threading
 import time
-import yaml
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +18,8 @@ from typing import Any, cast
 import httpx
 import pytest
 import uvicorn
+import yaml
+from fastapi import Request, Response
 
 from arc_api.app import create_app
 from arc_api.deps import ServiceContainer, get_container
@@ -76,7 +77,7 @@ from tests.fixtures.data import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "src"
 FIXTURE_UPLOAD_EXPIRES_AT = "2099-12-31T23:59:59Z"
-FIXTURE_UPLOAD_URL_BASE = "https://uploads.fixture.invalid"
+FIXTURE_UPLOAD_URL_BASE = "/__fixture_uploads"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1273,6 +1274,28 @@ class AcceptanceSystem:
         )
         app.dependency_overrides[get_container] = lambda: container
 
+        @app.patch(
+            "/__fixture_uploads/fetches/{fetch_id}/entries/{entry_id}",
+            include_in_schema=False,
+        )
+        async def fixture_upload(
+            fetch_id: str,
+            entry_id: str,
+            request: Request,
+        ) -> Response:
+            content = await request.body()
+            payload = fetches.append_upload_chunk(
+                fetch_id=fetch_id,
+                entry_id=entry_id,
+                offset=int(request.headers["Upload-Offset"]),
+                checksum=request.headers["Upload-Checksum"],
+                content=content,
+            )
+            headers = {"Upload-Offset": str(payload["offset"])}
+            if payload["expires_at"] is not None:
+                headers["Upload-Expires"] = str(payload["expires_at"])
+            return Response(status_code=204, headers=headers)
+
         fixture_path = workspace / "arc_disc_fixture.json"
         with _reserve_local_port() as reserved:
             server = _LiveServerHandle(app, host="127.0.0.1", port=reserved.port)
@@ -1473,6 +1496,7 @@ class AcceptanceSystem:
             SPLIT_IMAGE_FIXTURES,
             (SPLIT_COPY_ONE_ID, SPLIT_COPY_TWO_ID),
             (SPLIT_COPY_ONE_LOCATION, SPLIT_COPY_TWO_LOCATION),
+            strict=True,
         ):
             resp = self.request("POST", f"/v1/plan/candidates/{fixture.id}/finalize")
             assert resp.status_code == 200, resp.text
@@ -1522,7 +1546,7 @@ class AcceptanceSystem:
     def upload_partial_entry(self, fetch_id: str, entry_id: str) -> int:
         return self.fetches.upload_partial_entry(fetch_id, entry_id)
 
-    def upload_buffer_absent(self, fetch_id: str) -> bool:
+    def recovery_upload_absent(self, fetch_id: str) -> bool:
         return FetchId(fetch_id) not in self.state.fetches
 
     def pins_list(self) -> list[str]:

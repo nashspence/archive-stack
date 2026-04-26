@@ -79,12 +79,12 @@ Feature: Pins API
       Then the response status is 200
       And fetch "fx-1" no longer exists
 
-  Rule: Release cleans up partial upload buffers
-    Scenario: Releasing a pin with a partial upload deletes the upload buffer directory
+  Rule: Release cleans up partial recovery uploads
+    Scenario: Releasing a pin with a partial upload deletes the recovery upload object
       Given fetch "fx-1" has entry "e1" with a partial upload in progress
       When the client posts to "/v1/release" with target "docs/tax/2022/invoice-123.pdf"
       Then the response status is 200
-      And the upload buffer for fetch "fx-1" is absent
+      And the recovery upload for fetch "fx-1" is absent
 
   Rule: Selectors are canonical and precise
     Scenario: A projected parent directory selector is valid for pin

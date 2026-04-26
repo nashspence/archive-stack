@@ -4,8 +4,10 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,7 +22,6 @@ from arc_core.catalog_models import (
     ActivePinRecord,
     CandidateCoveredPathRecord,
     CollectionFileRecord,
-    CollectionRecord,
     FetchEntryRecord,
     FileCopyRecord,
     FinalizedImageCoveredPathRecord,
@@ -52,6 +53,95 @@ from tests.fixtures.data import (
     split_fixture_plaintext,
     write_tree,
 )
+
+_SEAWEEDFS_START_TIMEOUT = 15.0
+_SEAWEEDFS_REQUEST_TIMEOUT = 5.0
+
+
+@dataclass(slots=True)
+class _SeaweedFSServerHandle:
+    base_url: str
+    process: subprocess.Popen[str]
+    log_file: object
+    log_path: Path
+
+    def wait_until_ready(self) -> None:
+        deadline = time.monotonic() + _SEAWEEDFS_START_TIMEOUT
+        last_error: Exception | None = None
+        while time.monotonic() < deadline:
+            if self.process.poll() is not None:
+                break
+            try:
+                with httpx.Client(timeout=0.5) as client:
+                    response = client.get(f"{self.base_url}/")
+                if response.status_code < 500:
+                    return
+            except Exception as exc:  # pragma: no cover - readiness race
+                last_error = exc
+            time.sleep(0.05)
+        self.close()
+        log_output = self.log_path.read_text(encoding="utf-8", errors="replace")
+        raise RuntimeError(
+            f"Timed out waiting for SeaweedFS filer at {self.base_url}\n{log_output}"
+        ) from last_error
+
+    def close(self) -> None:
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:  # pragma: no cover - defensive cleanup
+                self.process.kill()
+                self.process.wait(timeout=5.0)
+        log_file = self.log_file
+        if hasattr(log_file, "close"):
+            log_file.close()
+
+
+def _start_seaweedfs_server(workspace: Path) -> _SeaweedFSServerHandle:
+    weed_path = shutil.which("weed")
+    if weed_path is None:
+        pytest.skip("production acceptance tests require the SeaweedFS `weed` binary")
+
+    data_root = (workspace / "seaweedfs").resolve()
+    data_root.mkdir(parents=True, exist_ok=True)
+    master_dir = data_root / "master"
+    volume_dir = data_root / "volume"
+    master_dir.mkdir(parents=True, exist_ok=True)
+    volume_dir.mkdir(parents=True, exist_ok=True)
+
+    with (
+        _reserve_local_port() as master_port,
+        _reserve_local_port() as volume_port,
+        _reserve_local_port() as filer_port,
+    ):
+        log_path = data_root / "seaweedfs.log"
+        log_file = log_path.open("w", encoding="utf-8")
+        process = subprocess.Popen(
+            [
+                weed_path,
+                "server",
+                "-ip=127.0.0.1",
+                "-ip.bind=127.0.0.1",
+                "-filer",
+                f"-master.port={master_port.port}",
+                f"-volume.port={volume_port.port}",
+                f"-filer.port={filer_port.port}",
+                f"-master.dir={master_dir}",
+                f"-dir={volume_dir}",
+            ],
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    handle = _SeaweedFSServerHandle(
+        base_url=f"http://127.0.0.1:{filer_port.port}",
+        process=process,
+        log_file=log_file,
+        log_path=log_path,
+    )
+    handle.wait_until_ready()
+    return handle
 
 
 class ProductionCollectionsClient:
@@ -372,10 +462,12 @@ class ProductionStateClient:
 @dataclass(slots=True)
 class ProductionSystem:
     workspace: Path
+    filer_url: str
+    seaweedfs: _SeaweedFSServerHandle
     server: _LiveServerHandle
     base_url: str
     fixture_path: Path
-    previous_arc_staging_root: str | None
+    previous_arc_seaweedfs_filer_url: str | None
     previous_arc_db_path: str | None
     collections: ProductionCollectionsClient
     fetches: ProductionFetchesClient
@@ -388,10 +480,13 @@ class ProductionSystem:
         return (self.workspace / ".arc" / "state.sqlite3").resolve()
 
     @classmethod
-    def create(cls, workspace: Path) -> ProductionSystem:
-        previous_arc_staging_root = os.environ.get("ARC_STAGING_ROOT")
+    def create(
+        cls, workspace: Path, seaweedfs: _SeaweedFSServerHandle
+    ) -> ProductionSystem:
+        previous_arc_seaweedfs_filer_url = os.environ.get("ARC_SEAWEEDFS_FILER_URL")
         previous_arc_db_path = os.environ.get("ARC_DB_PATH")
-        os.environ["ARC_STAGING_ROOT"] = str((workspace / "staging").resolve())
+        filer_url = f"{seaweedfs.base_url}/test-fixtures/{workspace.name}"
+        os.environ["ARC_SEAWEEDFS_FILER_URL"] = filer_url
         os.environ["ARC_DB_PATH"] = str((workspace / ".arc" / "state.sqlite3").resolve())
         app = create_app()
         fixture_path = workspace / "arc_disc_fixture.json"
@@ -400,10 +495,12 @@ class ProductionSystem:
         server.start()
         system = cls(
             workspace=workspace,
+            filer_url=filer_url,
+            seaweedfs=seaweedfs,
             server=server,
             base_url=server.base_url,
             fixture_path=fixture_path,
-            previous_arc_staging_root=previous_arc_staging_root,
+            previous_arc_seaweedfs_filer_url=previous_arc_seaweedfs_filer_url,
             previous_arc_db_path=previous_arc_db_path,
             collections=cast(ProductionCollectionsClient, None),
             fetches=cast(ProductionFetchesClient, None),
@@ -451,6 +548,24 @@ class ProductionSystem:
                 content=content,
             )
 
+    def filer_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        content: bytes | None = None,
+        params: Mapping[str, object] | None = None,
+    ) -> httpx.Response:
+        with httpx.Client(timeout=_SEAWEEDFS_REQUEST_TIMEOUT) as client:
+            return client.request(
+                method,
+                f"{self.filer_url}/{path.lstrip('/')}",
+                headers=headers,
+                content=content,
+                params=params,
+            )
+
     def run_arc(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, "-m", "arc_cli.main", *args],
@@ -485,9 +600,13 @@ class ProductionSystem:
         self, collection_id: str, files: Mapping[str, bytes] | None = None
     ) -> None:
         normalized_collection_id = normalize_collection_id(collection_id)
-        write_tree(
-            self.workspace / "staging" / normalized_collection_id, files or PHOTOS_2024_FILES
-        )
+        for path, content in (files or PHOTOS_2024_FILES).items():
+            response = self.filer_request(
+                "PUT",
+                f"/collections/{normalized_collection_id}/{path}",
+                content=content,
+            )
+            assert response.status_code in {200, 201, 204}, response.text
 
     def seed_collection_closed(
         self, collection_id: str, files: Mapping[str, bytes]
@@ -613,6 +732,7 @@ class ProductionSystem:
             SPLIT_IMAGE_FIXTURES,
             (SPLIT_COPY_ONE_ID, SPLIT_COPY_TWO_ID),
             (SPLIT_COPY_ONE_LOCATION, SPLIT_COPY_TWO_LOCATION),
+            strict=True,
         ):
             resp = self.request("POST", f"/v1/plan/candidates/{fixture.id}/finalize")
             assert resp.status_code == 200, resp.text
@@ -638,9 +758,9 @@ class ProductionSystem:
         response = self.request("POST", "/v1/pin", json_body={"target": target})
         assert response.status_code == 200, response.text
 
-    def upload_buffer_absent(self, fetch_id: str) -> bool:
-        buffer_dir = self.workspace / "staging" / ".arc_uploads" / fetch_id
-        return not buffer_dir.exists()
+    def recovery_upload_absent(self, fetch_id: str) -> bool:
+        response = self.filer_request("GET", f"/.arc/recovery/{fetch_id}/")
+        return response.status_code == 404
 
     def upload_required_entries(self, fetch_id: str) -> None:
         manifest = self.fetches.manifest(fetch_id)
@@ -758,7 +878,7 @@ class ProductionSystem:
             pythonpath_parts.append(existing)
         env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
         env["ARC_BASE_URL"] = self.base_url
-        env["ARC_STAGING_ROOT"] = str((self.workspace / "staging").resolve())
+        env["ARC_SEAWEEDFS_FILER_URL"] = self.filer_url
         env["ARC_DB_PATH"] = str(self.db_path)
         if extra:
             env.update(extra)
@@ -777,25 +897,27 @@ class ProductionSystem:
             return record.bytes
 
     def _file_bytes(self, collection_id: str, path: str) -> bytes:
-        with session_scope(make_session_factory(str(self.db_path))) as session:
-            collection = session.get(CollectionRecord, collection_id)
-            assert collection is not None, f"collection not found: {collection_id}"
-            source_staging_path = collection.source_staging_path
-        # source_staging_path is like "/staging/docs"; staging root is workspace/staging
-        rel_parts = source_staging_path.lstrip("/").split("/")
-        return self.workspace.joinpath(*rel_parts).joinpath(path).read_bytes()
+        response = self.filer_request("GET", f"/collections/{collection_id}/{path}")
+        assert response.status_code == 200, response.text
+        return response.content
 
-    def _file_part_bytes(self, collection_id: str, path: str, part_index: int, part_count: int) -> bytes:
+    def _file_part_bytes(
+        self,
+        collection_id: str,
+        path: str,
+        part_index: int,
+        part_count: int,
+    ) -> bytes:
         return split_fixture_plaintext(
             self._file_bytes(collection_id, path),
             part_count,
         )[part_index]
 
     def _restore_environment(self) -> None:
-        if self.previous_arc_staging_root is None:
-            os.environ.pop("ARC_STAGING_ROOT", None)
+        if self.previous_arc_seaweedfs_filer_url is None:
+            os.environ.pop("ARC_SEAWEEDFS_FILER_URL", None)
         else:
-            os.environ["ARC_STAGING_ROOT"] = self.previous_arc_staging_root
+            os.environ["ARC_SEAWEEDFS_FILER_URL"] = self.previous_arc_seaweedfs_filer_url
 
         if self.previous_arc_db_path is None:
             os.environ.pop("ARC_DB_PATH", None)
@@ -816,9 +938,20 @@ class ProductionSystem:
         )
 
 
+@pytest.fixture(scope="session")
+def seaweedfs_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_SeaweedFSServerHandle]:
+    server = _start_seaweedfs_server(tmp_path_factory.mktemp("seaweedfs"))
+    try:
+        yield server
+    finally:
+        server.close()
+
+
 @pytest.fixture
-def acceptance_system(tmp_path: Path) -> Iterator[ProductionSystem]:
-    system = ProductionSystem.create(tmp_path)
+def acceptance_system(
+    tmp_path: Path, seaweedfs_server: _SeaweedFSServerHandle
+) -> Iterator[ProductionSystem]:
+    system = ProductionSystem.create(tmp_path, seaweedfs_server)
     try:
         yield system
     finally:
