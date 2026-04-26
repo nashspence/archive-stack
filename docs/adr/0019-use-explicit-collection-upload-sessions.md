@@ -25,7 +25,8 @@ collection contract that:
 - collection-upload sessions persist enough state to survive service restart and repeated CLI runs
 - collection-upload files use the same `INCOMPLETE_UPLOAD_TTL` expiry model as fetch recovery uploads
 - a collection remains invisible until every required file upload completes and Riverhog verifies the advertised hashes
-- successful upload-session refresh auto-finalizes the collection without a second explicit completion operation
+- the terminal successful collection-file upload chunk auto-finalizes the collection without a second explicit completion operation
+- once the last resumable collection-file state expires, Riverhog forgets the collection-upload session instead of keeping an empty pending record
 - optional ingest-source metadata is descriptive only and is never part of collection identity
 
 ## Consequences

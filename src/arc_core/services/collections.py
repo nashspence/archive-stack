@@ -12,7 +12,7 @@ from arc_core.catalog_models import (
     CollectionUploadFileRecord,
     CollectionUploadRecord,
 )
-from arc_core.domain.errors import BadRequest, Conflict, NotFound
+from arc_core.domain.errors import BadRequest, Conflict, HashMismatch, NotFound
 from arc_core.domain.models import CollectionSummary
 from arc_core.domain.types import CollectionId, Sha256Hex
 from arc_core.fs_paths import (
@@ -52,6 +52,17 @@ class StubCollectionService:
     def create_or_resume_file_upload(self, collection_id: str, path: str) -> object:
         raise NotImplementedError("StubCollectionService is not implemented yet")
 
+    def append_upload_chunk(
+        self,
+        collection_id: str,
+        path: str,
+        *,
+        offset: int,
+        checksum: str,
+        content: bytes,
+    ) -> object:
+        raise NotImplementedError("StubCollectionService is not implemented yet")
+
     def get(self, collection_id: str) -> object:
         raise NotImplementedError("StubCollectionService is not implemented yet")
 
@@ -84,6 +95,13 @@ class SqlAlchemyCollectionService:
                 raise Conflict(f"collection already exists: {normalized_collection_id}")
 
             upload = session.get(CollectionUploadRecord, normalized_collection_id)
+            if upload is not None:
+                upload = _sync_and_expire_collection_upload(
+                    session,
+                    upload,
+                    upload_store=self._upload_store,
+                )
+
             if upload is None:
                 _ensure_collection_upload_conflict_free(session, normalized_collection_id)
                 upload = CollectionUploadRecord(
@@ -107,9 +125,6 @@ class SqlAlchemyCollectionService:
             else:
                 _validate_existing_upload_manifest(upload, normalized_files)
                 upload.ingest_source = ingest_source
-
-            _sync_collection_upload_files(upload.files, self._upload_store)
-            _expire_collection_upload_files(upload.files, self._upload_store)
 
             if _collection_upload_is_complete(upload.files):
                 summary = _finalize_collection_upload(
@@ -141,8 +156,13 @@ class SqlAlchemyCollectionService:
             if upload is None:
                 raise NotFound(f"collection upload not found: {normalized_collection_id}")
 
-            _sync_collection_upload_files(upload.files, self._upload_store)
-            _expire_collection_upload_files(upload.files, self._upload_store)
+            upload = _sync_and_expire_collection_upload(
+                session,
+                upload,
+                upload_store=self._upload_store,
+            )
+            if upload is None:
+                raise NotFound(f"collection upload not found: {normalized_collection_id}")
 
             if _collection_upload_is_complete(upload.files):
                 summary = _finalize_collection_upload(
@@ -175,8 +195,13 @@ class SqlAlchemyCollectionService:
             if upload is None:
                 raise NotFound(f"collection upload not found: {normalized_collection_id}")
 
-            _sync_collection_upload_files(upload.files, self._upload_store)
-            _expire_collection_upload_files(upload.files, self._upload_store)
+            upload = _sync_and_expire_collection_upload(
+                session,
+                upload,
+                upload_store=self._upload_store,
+            )
+            if upload is None:
+                raise NotFound(f"collection upload not found: {normalized_collection_id}")
 
             file_record = _get_upload_file(upload.files, normalized_path)
             target_path = _collection_upload_target_path(normalized_collection_id, normalized_path)
@@ -198,6 +223,55 @@ class SqlAlchemyCollectionService:
                 "checksum_algorithm": "sha256",
                 "expires_at": file_record.upload_expires_at,
             }
+
+    def append_upload_chunk(
+        self,
+        collection_id: str,
+        path: str,
+        *,
+        offset: int,
+        checksum: str,
+        content: bytes,
+    ) -> dict[str, object]:
+        normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
+        normalized_path = _normalize_relpath_or_raise(path)
+
+        with session_scope(self._session_factory) as session:
+            upload = session.get(CollectionUploadRecord, normalized_collection_id)
+            if upload is None:
+                raise NotFound(f"collection upload not found: {normalized_collection_id}")
+
+            upload = _sync_and_expire_collection_upload(
+                session,
+                upload,
+                upload_store=self._upload_store,
+            )
+            if upload is None:
+                raise NotFound(f"collection upload not found: {normalized_collection_id}")
+
+            file_record = _get_upload_file(upload.files, normalized_path)
+            if file_record.tus_url is None:
+                raise Conflict(f"collection upload file is not resumable: {normalized_path}")
+
+            next_offset, expires_at = self._upload_store.append_upload_chunk(
+                file_record.tus_url,
+                offset=offset,
+                checksum=checksum,
+                content=content,
+            )
+            file_record.uploaded_bytes = next_offset
+            file_record.upload_expires_at = expires_at
+
+            if next_offset >= file_record.bytes:
+                target_path = _collection_upload_target_path(normalized_collection_id, normalized_path)
+                content_digest = _sha256_hex(self._upload_store.read_target(target_path))
+                if content_digest != file_record.sha256:
+                    raise HashMismatch("sha256 did not match expected file hash")
+
+            if _collection_upload_is_complete(upload.files):
+                _finalize_collection_upload(session, upload, hot_store=self._hot_store)
+
+            return {"offset": file_record.uploaded_bytes, "expires_at": file_record.upload_expires_at}
 
     def get(self, collection_id: str) -> CollectionSummary:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
@@ -323,14 +397,56 @@ def _sync_collection_upload_files(
 def _expire_collection_upload_files(
     file_records: Sequence[CollectionUploadFileRecord],
     upload_store: UploadStore,
-) -> None:
+) -> bool:
+    expired_any = False
     for file_record in file_records:
-        updated, _ = expire_upload_state(
+        updated, expired = expire_upload_state(
             current=_upload_lifecycle_state(file_record),
             target_path=_collection_upload_target_path(file_record.collection_id, file_record.path),
             upload_store=upload_store,
         )
         _apply_upload_lifecycle_state(file_record, updated)
+        expired_any = expired_any or expired
+    return expired_any
+
+
+def _sync_and_expire_collection_upload(
+    session,
+    upload: CollectionUploadRecord,
+    *,
+    upload_store: UploadStore,
+) -> CollectionUploadRecord | None:
+    _sync_collection_upload_files(upload.files, upload_store)
+    expired_any = _expire_collection_upload_files(upload.files, upload_store)
+    if expired_any and _collection_upload_has_no_live_file_state(upload.files):
+        _forget_collection_upload(upload, upload_store)
+        session.delete(upload)
+        return None
+    return upload
+
+
+def _collection_upload_has_no_live_file_state(
+    file_records: Sequence[CollectionUploadFileRecord],
+) -> bool:
+    return all(
+        upload_state_name(uploaded_bytes=file_record.uploaded_bytes, length=file_record.bytes)
+        == "pending"
+        and file_record.tus_url is None
+        and file_record.upload_expires_at is None
+        for file_record in file_records
+    )
+
+
+def _forget_collection_upload(
+    upload: CollectionUploadRecord,
+    upload_store: UploadStore,
+) -> None:
+    for file_record in upload.files:
+        if file_record.tus_url is not None:
+            upload_store.cancel_upload(file_record.tus_url)
+        upload_store.delete_target(
+            _collection_upload_target_path(upload.collection_id, file_record.path)
+        )
 
 
 def _collection_upload_is_complete(file_records: Sequence[CollectionUploadFileRecord]) -> bool:

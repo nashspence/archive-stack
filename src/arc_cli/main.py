@@ -17,6 +17,7 @@ from arc_cli.output import (
     format_pin,
     format_plan,
 )
+from arc_core.domain.errors import NotFound
 
 app = typer.Typer(help="arc archival control CLI")
 iso_app = typer.Typer(help="ISO operations")
@@ -50,6 +51,40 @@ def _local_collection_manifest(root: Path) -> list[dict[str, object]]:
     if not files:
         raise typer.BadParameter("collection source must contain at least one file")
     return files
+
+
+def _finalized_collection_upload_payload(
+    collection_id: str,
+    manifest: list[dict[str, object]],
+    collection: dict[str, object],
+) -> dict[str, object]:
+    bytes_total = sum(int(item["bytes"]) for item in manifest)
+    files = [
+        {
+            "path": str(item["path"]),
+            "bytes": int(item["bytes"]),
+            "sha256": str(item["sha256"]),
+            "upload_state": "uploaded",
+            "uploaded_bytes": int(item["bytes"]),
+            "upload_state_expires_at": None,
+        }
+        for item in manifest
+    ]
+    return {
+        "collection_id": collection_id,
+        "ingest_source": collection.get("ingest_source"),
+        "state": "finalized",
+        "files_total": len(files),
+        "files_pending": 0,
+        "files_partial": 0,
+        "files_uploaded": len(files),
+        "bytes_total": bytes_total,
+        "uploaded_bytes": bytes_total,
+        "missing_bytes": 0,
+        "upload_state_expires_at": None,
+        "files": files,
+        "collection": collection,
+    }
 
 
 @app.command("upload")
@@ -88,7 +123,11 @@ def upload_cmd(
                 content=content[offset:],
             )
 
-    final_payload = api.get_collection_upload(collection_id)
+    try:
+        collection = api.get_collection(collection_id)
+        final_payload = _finalized_collection_upload_payload(collection_id, manifest, collection)
+    except NotFound:
+        final_payload = api.get_collection_upload(collection_id)
     emit(
         final_payload if json_mode else format_collection_upload(final_payload),
         json_mode=json_mode,

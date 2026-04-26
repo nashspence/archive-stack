@@ -682,7 +682,7 @@ class ProductionSystem:
                 offset=int(upload["offset"]),
                 content=content,
             )
-        return self.collections.get_upload(normalized_collection_id)
+        return self.request("GET", f"/v1/collections/{normalized_collection_id}").json()
 
     def seed_photos_hot(self) -> None:
         self.upload_collection_source("photos-2024", PHOTOS_2024_FILES)

@@ -30,7 +30,7 @@ paths:
   /collection-uploads/{collection_id}:
     get:
       summary: Get one collection upload session
-      description: Returns the current resumable upload state for one collection id and auto-finalizes the collection once every expected file has uploaded and verified successfully.
+      description: Returns the current resumable upload state for one collection id while it remains in progress. Once the terminal file-upload chunk finalizes the collection, this upload session is deleted and later reads return `not_found`.
       operationId: getCollectionUpload
       parameters:
         - in: path
@@ -50,7 +50,7 @@ paths:
   /collection-uploads/{collection_id}/files/{path}/upload:
     post:
       summary: Create or resume one collection-file upload resource
-      description: Creates or resumes the SeaweedFS-backed resumable upload resource for one logical collection file until the published expiry time discards incomplete state.
+      description: Creates or resumes the resumable upload resource for one logical collection file until the published expiry time discards incomplete state.
       operationId: createOrResumeCollectionFileUpload
       parameters:
         - in: path
@@ -70,6 +70,46 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CollectionFileUploadSession"
+        default:
+          $ref: "#/components/responses/Error"
+    patch:
+      summary: Append one collection-file upload chunk
+      description: Streams bytes into the resumable upload resource. When the final required chunk completes the last outstanding file and the full-file hashes verify, Riverhog finalizes the collection immediately and deletes the upload session.
+      operationId: appendCollectionFileUploadChunk
+      parameters:
+        - in: path
+          name: collection_id
+          required: true
+          description: Explicit canonical collection id. Slash-bearing ids occupy multiple path segments.
+          schema: { type: string }
+        - in: path
+          name: path
+          required: true
+          description: Relative logical file path within the collection.
+          schema: { type: string }
+        - in: header
+          name: Upload-Offset
+          required: true
+          schema: { type: integer, minimum: 0 }
+        - in: header
+          name: Upload-Checksum
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/offset+octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "204":
+          description: Chunk accepted
+          headers:
+            Upload-Offset:
+              schema: { type: integer, minimum: 0 }
+            Upload-Expires:
+              schema: { type: string, format: date-time }
         default:
           $ref: "#/components/responses/Error"
   /search:

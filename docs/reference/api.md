@@ -51,7 +51,7 @@ Required behavior:
 
 - collection ids may span multiple path segments
 - the returned state includes pending, partial, and uploaded file counts plus `upload_state_expires_at`
-- once every required file is fully uploaded and verified, this refresh auto-finalizes the collection without a second explicit completion call
+- once the collection finalizes, the upload session is deleted and later reads return `not_found`
 
 #### `POST /v1/collection-uploads/{collection_id}/files/{path}/upload`
 
@@ -62,7 +62,8 @@ Required behavior:
 - the returned upload URL uses tus-compatible resumable upload semantics
 - repeated calls while the file remains resumable return the current upload resource rather than creating duplicates
 - offsets and checksums are measured against the logical file byte stream for that file
-- incomplete upload state expires after `INCOMPLETE_UPLOAD_TTL` and resets the file back to `pending`
+- the terminal successful upload chunk finalizes the collection immediately once every required file has uploaded and verified successfully
+- incomplete upload state expires after `INCOMPLETE_UPLOAD_TTL`; once the last resumable file state expires, Riverhog forgets the upload session entirely and later retries start a fresh session
 
 ### Search
 

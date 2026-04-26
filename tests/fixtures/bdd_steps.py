@@ -934,8 +934,23 @@ def when_client_uploads_every_required_collection_file(
             collection_id=collection_id,
             path=str(file_payload["path"]),
         )
-    final = _refresh_collection_upload(acceptance_system, collection_id)
-    _set_response(acceptance_context, final)
+    final = acceptance_system.request(
+        "GET",
+        f"/v1/collections/{quote(normalize_collection_id(collection_id), safe='/')}",
+    )
+    assert final.status_code == 200, final.text
+    summary = final.json()
+    _set_response(
+        acceptance_context,
+        httpx.Response(
+            200,
+            json={
+                "collection_id": normalize_collection_id(collection_id),
+                "state": "finalized",
+                "collection": summary,
+            },
+        ),
+    )
 
 
 @when(parsers.parse('the client refreshes collection upload "{collection_id}"'))

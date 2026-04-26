@@ -7,6 +7,11 @@ Riverhog uses the same resumable-upload lifecycle for collection ingest and fetc
 - upload state survives service restart until `INCOMPLETE_UPLOAD_TTL` expires
 - expiry cancels the upload resource, deletes incomplete server-side bytes, and resets the domain resource cleanly
 
+For collection ingest specifically:
+
+- the terminal successful collection-file upload chunk finalizes the collection immediately once every required file verifies
+- once the last resumable collection-file state expires, Riverhog forgets the upload session instead of keeping an empty pending record
+
 ## Collection File Upload Session
 
 `POST /v1/collection-uploads/{collection_id}/files/{path}/upload` creates or resumes the upload resource for one logical

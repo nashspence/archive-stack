@@ -372,6 +372,9 @@ class AcceptanceCollectionService:
 
         normalized_files = self._normalize_files(files)
         upload = self.state.collection_uploads.get(collection_key)
+        if upload is not None:
+            upload = self._expire_upload(upload)
+
         if upload is None:
             conflict = find_collection_id_conflict(
                 (
@@ -410,7 +413,6 @@ class AcceptanceCollectionService:
                 raise Conflict(f"collection upload manifest does not match: {normalized_collection_id}")
             upload.ingest_source = ingest_source
 
-        self._expire_upload(upload)
         if self._is_complete(upload):
             summary = self._finalize_upload(upload)
             return self._upload_payload(upload, state="finalized", collection=summary)
@@ -421,7 +423,9 @@ class AcceptanceCollectionService:
         upload = self.state.collection_uploads.get(CollectionId(normalized_collection_id))
         if upload is None:
             raise NotFound(f"collection upload not found: {normalized_collection_id}")
-        self._expire_upload(upload)
+        upload = self._expire_upload(upload)
+        if upload is None:
+            raise NotFound(f"collection upload not found: {normalized_collection_id}")
         if self._is_complete(upload):
             summary = self._finalize_upload(upload)
             return self._upload_payload(upload, state="finalized", collection=summary)
@@ -433,16 +437,17 @@ class AcceptanceCollectionService:
         upload = self.state.collection_uploads.get(CollectionId(normalized_collection_id))
         if upload is None:
             raise NotFound(f"collection upload not found: {normalized_collection_id}")
-        self._expire_upload(upload)
+        upload = self._expire_upload(upload)
+        if upload is None:
+            raise NotFound(f"collection upload not found: {normalized_collection_id}")
         try:
             file_record = upload.files[normalized_path]
         except KeyError as exc:
             raise NotFound(f"collection upload file not found: {normalized_path}") from exc
         if file_record.upload_url is None:
             file_record.upload_url = (
-                f"{FIXTURE_UPLOAD_URL_BASE}/collections-file"
-                f"?collection_id={quote(normalized_collection_id, safe='')}"
-                f"&path={quote(normalized_path, safe='')}"
+                f"/v1/collection-uploads/{quote(normalized_collection_id, safe='/')}/files/"
+                f"{quote(normalized_path, safe='/')}/upload"
             )
         if self._file_upload_state(file_record) != "uploaded":
             file_record.upload_expires_at = FIXTURE_UPLOAD_EXPIRES_AT
@@ -456,9 +461,6 @@ class AcceptanceCollectionService:
             "expires_at": file_record.upload_expires_at,
         }
 
-    def get(self, collection_id: str) -> CollectionSummary:
-        return self.state.collection_summary(collection_id)
-
     def append_upload_chunk(
         self,
         collection_id: str,
@@ -470,7 +472,12 @@ class AcceptanceCollectionService:
     ) -> dict[str, object]:
         normalized_collection_id = normalize_collection_id(collection_id)
         normalized_path = normalize_relpath(path)
-        upload = self.state.collection_uploads[CollectionId(normalized_collection_id)]
+        upload = self.state.collection_uploads.get(CollectionId(normalized_collection_id))
+        if upload is None:
+            raise NotFound(f"collection upload not found: {normalized_collection_id}")
+        upload = self._expire_upload(upload)
+        if upload is None:
+            raise NotFound(f"collection upload not found: {normalized_collection_id}")
         file_record = upload.files[normalized_path]
         if offset != file_record.uploaded_bytes:
             raise Conflict("upload offset did not match current collection file offset")
@@ -494,7 +501,14 @@ class AcceptanceCollectionService:
             if actual_sha != file_record.sha256:
                 raise HashMismatch("sha256 did not match expected file hash")
             file_record.upload_expires_at = None
+
+        if self._is_complete(upload):
+            self._finalize_upload(upload)
+
         return {"offset": file_record.uploaded_bytes, "expires_at": file_record.upload_expires_at}
+
+    def get(self, collection_id: str) -> CollectionSummary:
+        return self.state.collection_summary(collection_id)
 
     @staticmethod
     def _normalize_files(files: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -527,8 +541,9 @@ class AcceptanceCollectionService:
             return "partial"
         return "pending"
 
-    def _expire_upload(self, upload: CollectionUploadRecord) -> None:
+    def _expire_upload(self, upload: CollectionUploadRecord) -> CollectionUploadRecord | None:
         now = datetime.now(UTC)
+        expired_any = False
         for file_record in upload.files.values():
             if file_record.upload_expires_at is None:
                 continue
@@ -537,10 +552,23 @@ class AcceptanceCollectionService:
             )
             if expires_at > now:
                 continue
+            expired_any = True
             file_record.upload_url = None
             file_record.uploaded_bytes = 0
             file_record.uploaded_content = None
             file_record.upload_expires_at = None
+        if expired_any and self._has_no_live_file_state(upload):
+            del self.state.collection_uploads[upload.collection_id]
+            return None
+        return upload
+
+    def _has_no_live_file_state(self, upload: CollectionUploadRecord) -> bool:
+        return all(
+            self._file_upload_state(file_record) == "pending"
+            and file_record.upload_url is None
+            and file_record.upload_expires_at is None
+            for file_record in upload.files.values()
+        )
 
     def _is_complete(self, upload: CollectionUploadRecord) -> bool:
         return bool(upload.files) and all(
@@ -1754,7 +1782,7 @@ class AcceptanceSystem:
                 content=content,
             )
             assert response.status_code == 204, response.text
-        final = self.request("GET", f"/v1/collection-uploads/{normalized_collection_id}")
+        final = self.request("GET", f"/v1/collections/{normalized_collection_id}")
         assert final.status_code == 200, final.text
         return cast(dict[str, object], final.json())
 

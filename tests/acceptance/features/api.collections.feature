@@ -14,7 +14,7 @@ Feature: Collections API
       And collection upload "photos-2024" state is "uploading"
       And collection "photos-2024" is not yet visible
 
-    Scenario: Uploading every required file auto-finalizes the collection and survives restart
+    Scenario: Uploading every required file auto-finalizes the collection from the terminal upload step and survives restart
       Given a local collection source "photos-2024" with deterministic fixture contents
       When the client uploads every required file for collection "photos-2024"
       Then the response status is 200
@@ -26,6 +26,9 @@ Feature: Collections API
       And collection "photos-2024" has archived_bytes equal to 0
       And collection "photos-2024" has pending_bytes equal to bytes
       And collection "photos-2024" is eligible for planning
+      When the client gets "/v1/collection-uploads/photos-2024"
+      Then the response status is 404
+      And the error code is "not_found"
       When the API process restarts
       And the client gets "/v1/collections/photos-2024"
       Then the response status is 200
@@ -61,14 +64,17 @@ Feature: Collections API
       And the returned offset matches the previously uploaded bytes
       And the upload-session length matches collection "photos-2024" file "albums/japan/day-01.txt" bytes
 
-    Scenario: Expired partial upload state resets cleanly
+    Scenario: Expired partial upload state is forgotten completely
       Given collection upload "photos-2024" has expired partial upload state
       When the client refreshes collection upload "photos-2024"
+      Then the response status is 404
+      And the error code is "not_found"
+      And collection "photos-2024" is not yet visible
+      When the client creates or resumes collection upload "photos-2024" again
       Then the response status is 200
       And collection upload "photos-2024" state is "uploading"
       And collection upload "photos-2024" file "albums/japan/day-01.txt" is "pending"
       And collection upload "photos-2024" reports uploaded bytes 0 for every file
-      And collection "photos-2024" is not yet visible
 
   Rule: Collection summaries remain stable after upload finalization
     Background:

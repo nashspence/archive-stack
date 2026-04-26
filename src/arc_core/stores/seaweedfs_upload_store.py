@@ -48,6 +48,28 @@ class SeaweedFSTUSUploadStore:
             r.raise_for_status()
             return int(r.headers["Upload-Offset"])
 
+    def append_upload_chunk(
+        self,
+        tus_url: str,
+        *,
+        offset: int,
+        checksum: str,
+        content: bytes,
+    ) -> tuple[int, str | None]:
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            r = client.patch(
+                tus_url,
+                headers={
+                    "Content-Type": "application/offset+octet-stream",
+                    "Tus-Resumable": "1.0.0",
+                    "Upload-Offset": str(offset),
+                    "Upload-Checksum": checksum,
+                },
+                content=content,
+            )
+            r.raise_for_status()
+            return int(r.headers["Upload-Offset"]), r.headers.get("Upload-Expires")
+
     def read_target(self, target_path: str) -> bytes:
         url = self._filer_url_for(target_path)
         with httpx.Client(timeout=_TIMEOUT) as client:
