@@ -236,6 +236,7 @@ run_test_container() {
   compose run \
     --rm \
     "${COMPOSE_RUN_TTY_ARGS[@]}" \
+    -e ARC_TEST_CANONICAL_ENTRYPOINT=1 \
     "${COMPOSE_RUN_ENV_ARGS[@]}" \
     test \
     "$@"

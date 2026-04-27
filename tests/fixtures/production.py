@@ -75,6 +75,7 @@ _EXTERNAL_APP_DB_PATH_ENV = "ARC_TEST_EXTERNAL_APP_DB_PATH"
 _EXTERNAL_WEBDAV_BASE_URL_ENV = "ARC_TEST_EXTERNAL_WEBDAV_BASE_URL"
 _EXTERNAL_APP_RESTART_PATH_ENV = "ARC_TEST_EXTERNAL_APP_RESTART_PATH"
 _EXTERNAL_APP_RESET_PATH_ENV = "ARC_TEST_EXTERNAL_APP_RESET_PATH"
+_CANONICAL_TEST_ENTRYPOINT_ENV = "ARC_TEST_CANONICAL_ENTRYPOINT"
 _DEFAULT_EXTERNAL_APP_BASE_URL = "http://app:8000"
 _DEFAULT_EXTERNAL_APP_DB_PATH = "/app/.compose/state.sqlite3"
 _DEFAULT_EXTERNAL_WEBDAV_BASE_URL = "http://webdav:8080"
@@ -91,6 +92,15 @@ def _copy_summary_from_payload(copy: Mapping[str, object]) -> CopySummary:
         created_at=str(copy["created_at"]),
         state=CopyState(str(copy["state"])),
         verification_state=VerificationState(str(copy["verification_state"])),
+    )
+
+
+def _require_canonical_test_entrypoint() -> None:
+    if os.environ.get(_CANONICAL_TEST_ENTRYPOINT_ENV) == "1":
+        return
+    raise pytest.UsageError(
+        "Production acceptance runs must use `./test prod`, `./test prod-profile`, "
+        "or the canonical `./test` entrypoint; direct `pytest` is unsupported."
     )
 
 
@@ -1514,6 +1524,7 @@ class ProductionSystem:
 
 @pytest.fixture
 def acceptance_system(tmp_path: Path) -> Iterator[ProductionSystem]:
+    _require_canonical_test_entrypoint()
     workspace = (REPO_ROOT / ".tmp" / "acceptance" / tmp_path.name).resolve()
     if workspace.exists():
         shutil.rmtree(workspace)

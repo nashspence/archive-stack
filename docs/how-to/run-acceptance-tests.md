@@ -15,6 +15,10 @@ That path now keeps `pytest` in the canonical test container while `docker compo
 manages the checked-in `app` service and its storage sidecars outside the
 container.
 
+Do not run the production-backed harness with direct `pytest`. The supported
+entrypoints are `./test prod`, `./test prod-profile`, or the canonical `./test`,
+which prepare the compose-managed app and sidecars the harness expects.
+
 Run the production-backed harness lane with built-in timing output for scenario and fixture hotspots:
 
 ```bash

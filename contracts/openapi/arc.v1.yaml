@@ -249,16 +249,16 @@ paths:
                         - $ref: "#/components/schemas/CollectionSearchResult"
         default:
           $ref: "#/components/responses/Error"
-  /collections/{collection_id}/files:
+  /collection-files/{collection_id}:
     get:
       summary: List files in a collection with per-file state
-      description: Returns all files belonging to a collection with their hot/archived state. The collection id may contain slashes and occupies multiple path segments under `/collections/`.
+      description: Returns all files belonging to a collection with their hot/archived state.
       operationId: listCollectionFiles
       parameters:
         - in: path
           name: collection_id
           required: true
-          description: Canonical collection id. Slash-bearing ids occupy multiple path segments under `/collections/`.
+          description: Canonical collection id. Slash-bearing ids occupy multiple path segments.
           schema: { type: string }
       responses:
         "200":
@@ -326,14 +326,7 @@ paths:
           content:
             application/json:
               schema:
-                allOf:
-                  - $ref: "#/components/schemas/CollectionSummary"
-                  - type: object
-                    properties:
-                      copies:
-                        type: array
-                        items:
-                          $ref: "#/components/schemas/CopyRef"
+                $ref: "#/components/schemas/CollectionSummary"
         default:
           $ref: "#/components/responses/Error"
   /plan:
@@ -491,6 +484,30 @@ paths:
         default:
           $ref: "#/components/responses/Error"
   /images/{image_id}/copies:
+    get:
+      summary: List generated copy slots for an image
+      description: Returns the generated copy slots for one finalized image identified by `image_id`.
+      operationId: listCopies
+      parameters:
+        - in: path
+          name: image_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Copy listing
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [copies]
+                properties:
+                  copies:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CopySummary"
+        default:
+          $ref: "#/components/responses/Error"
     post:
       summary: Register a physical burned copy
       description: Registers one durable burned-disc record for an already finalized image identified by `image_id`.
@@ -506,17 +523,63 @@ paths:
           application/json:
             schema:
               type: object
-              required: [id, location]
+              required: [location]
               properties:
-                id:
+                copy_id:
                   type: string
-                  description: User-supplied copy id. Must be unique within the finalized image and its stored `volume_id`.
+                  description: Optional generated copy id to claim explicitly for this finalized image.
                 location:
                   type: string
                   description: Mutable operator-supplied physical location label. Not part of the copy identity.
       responses:
         "200":
           description: Copy registered
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [copy]
+                properties:
+                  copy:
+                    $ref: "#/components/schemas/CopySummary"
+        default:
+          $ref: "#/components/responses/Error"
+  /images/{image_id}/copies/{copy_id}:
+    patch:
+      summary: Update one generated copy record
+      description: Updates mutable operational metadata for one generated copy slot on a finalized image.
+      operationId: updateCopy
+      parameters:
+        - in: path
+          name: image_id
+          required: true
+          schema: { type: string }
+        - in: path
+          name: copy_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                location:
+                  type: string
+                  nullable: true
+                  description: Updated physical location label. Not part of copy identity.
+                state:
+                  type: string
+                  nullable: true
+                  enum: [needed, burning, verified, registered, lost, damaged, retired]
+                verification_state:
+                  type: string
+                  nullable: true
+                  enum: [pending, verified, failed]
+      responses:
+        "200":
+          description: Updated copy record
           content:
             application/json:
               schema:
@@ -1145,22 +1208,49 @@ components:
           description: Mutable physical location label. Not part of copy identity.
     CopySummary:
       type: object
-      required: [id, volume_id, location, created_at, state]
+      required:
+        [id, volume_id, label_text, location, created_at, state, verification_state, history]
       properties:
         id:
           type: string
-          description: User-supplied copy id, unique within one finalized image/`volume_id`.
+          description: Generated copy id, unique within one finalized image/`volume_id`.
         volume_id:
           type: string
           pattern: "^[0-9]{8}T[0-9]{6}Z$"
           description: Immutable media identifier for the finalized image this copy belongs to.
+        label_text:
+          type: string
+          description: Exact operator-facing disc label text for this generated copy slot.
         location:
           type: string
+          nullable: true
           description: Mutable physical location label. Not part of copy identity.
         created_at: { type: string, format: date-time }
         state:
           type: string
           enum: [needed, burning, verified, registered, lost, damaged, retired]
+        verification_state:
+          type: string
+          enum: [pending, verified, failed]
+        history:
+          type: array
+          items:
+            $ref: "#/components/schemas/CopyHistory"
+    CopyHistory:
+      type: object
+      required: [at, event, state, verification_state, location]
+      properties:
+        at: { type: string, format: date-time }
+        event: { type: string }
+        state:
+          type: string
+          enum: [needed, burning, verified, registered, lost, damaged, retired]
+        verification_state:
+          type: string
+          enum: [pending, verified, failed]
+        location:
+          type: string
+          nullable: true
     HotStatus:
       type: object
       required: [state, present_bytes, missing_bytes]
