@@ -79,6 +79,10 @@ Region sent to the archive-upload object-store client.
 
 Bucket holding finalized-image Glacier uploads.
 
+When this differs from `ARC_S3_BUCKET`, that separate archive bucket must publish
+the same abort-incomplete-multipart lifecycle rule as the committed hot-store
+bucket.
+
 ## `ARC_GLACIER_ACCESS_KEY_ID`
 
 - type: string
@@ -149,6 +153,9 @@ Delay between automatic retry attempts for one failed Glacier upload.
 
 How often Riverhog's Glacier-upload worker scans for due finalized-image uploads,
 retries, and restart-recovered work.
+
+Restart-recovered work resumes one durable job record. It does not resume one
+interrupted multipart byte stream inside the remote object store.
 
 ## `ARC_GLACIER_FAILURE_WEBHOOK_URL`
 

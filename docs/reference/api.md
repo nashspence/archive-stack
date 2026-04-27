@@ -250,6 +250,11 @@ Required behavior:
 - the finalized image record remains addressable after service restart
 - finalization automatically enqueues one Glacier upload job for that finalized image
 - Glacier upload state survives restart and is reflected through the finalized-image `glacier` summary fields
+- restart recovery resumes the durable Glacier upload job, not an in-flight multipart byte stream
+- if a restart finds the privacy-safe finalized-image object already complete at its canonical key, Riverhog reconciles that
+  completed object and records `uploaded` without writing a second object
+- if a restart finds no completed object at that canonical key, Riverhog rebuilds the ISO and starts a fresh archive-object
+  upload attempt while storage-side multipart cleanup handles abandoned remote parts
 - persistent Glacier upload failures remain visible in finalized-image summaries and may notify
   `ARC_GLACIER_FAILURE_WEBHOOK_URL` when configured
 

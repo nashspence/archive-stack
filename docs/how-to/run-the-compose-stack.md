@@ -46,8 +46,11 @@ the canonical test container while using the same compose surface for the checke
 ```
 
 `./test` also performs the deterministic Garage bootstrap that creates the
-canonical bucket, grants the checked-in test credentials, and verifies the
+canonical bucket set, grants the checked-in test credentials, and verifies the
 incomplete multipart lifecycle configuration before the acceptance lane runs.
+
+If `ARC_GLACIER_BUCKET` differs from `ARC_S3_BUCKET`, that bootstrap applies and
+verifies the same lifecycle rule on both buckets.
 
 ## Tear the stack down
 

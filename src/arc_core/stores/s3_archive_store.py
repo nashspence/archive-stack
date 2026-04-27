@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from arc_core.iso.streaming import build_iso_cmd_from_root
 from arc_core.ports.archive_store import ArchiveUploadReceipt
@@ -25,6 +26,31 @@ class S3ArchiveStore:
         suffix = Path(filename).suffix or ".iso"
         return f"{self._config.glacier_prefix}/{image_id}/{image_id}{suffix}"
 
+    def _head_object(self, *, object_key: str) -> dict[str, Any] | None:
+        try:
+            return self._client.head_object(Bucket=self._bucket, Key=object_key)
+        except Exception as exc:
+            if _is_missing_object_error(exc):
+                return None
+            raise
+
+    def _receipt_from_head(
+        self,
+        *,
+        object_key: str,
+        head: dict[str, Any],
+        uploaded_at: str | None = None,
+    ) -> ArchiveUploadReceipt:
+        verified_at = _utc_now()
+        return ArchiveUploadReceipt(
+            object_path=object_key,
+            stored_bytes=int(head.get("ContentLength", 0)),
+            backend=self._config.glacier_backend,
+            storage_class=self._config.glacier_storage_class,
+            uploaded_at=uploaded_at or _format_s3_timestamp(head.get("LastModified"), fallback=verified_at),
+            verified_at=verified_at,
+        )
+
     def upload_finalized_image(
         self,
         *,
@@ -33,6 +59,10 @@ class S3ArchiveStore:
         image_root: Path,
     ) -> ArchiveUploadReceipt:
         object_key = self._object_key(image_id=image_id, filename=filename)
+        existing = self._head_object(object_key=object_key)
+        if existing is not None:
+            return self._receipt_from_head(object_key=object_key, head=existing)
+
         uploaded_at = _utc_now()
 
         with tempfile.TemporaryDirectory(prefix="arc-glacier-upload-") as tmpdir:
@@ -64,12 +94,21 @@ class S3ArchiveStore:
             )
             head = self._client.head_object(Bucket=self._bucket, Key=object_key)
 
-        verified_at = _utc_now()
-        return ArchiveUploadReceipt(
-            object_path=object_key,
-            stored_bytes=int(head.get("ContentLength", 0)),
-            backend=self._config.glacier_backend,
-            storage_class=self._config.glacier_storage_class,
-            uploaded_at=uploaded_at,
-            verified_at=verified_at,
-        )
+        return self._receipt_from_head(object_key=object_key, head=head, uploaded_at=uploaded_at)
+
+
+def _format_s3_timestamp(value: object, *, fallback: str) -> str:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return fallback
+
+
+def _is_missing_object_error(exc: Exception) -> bool:
+    response = getattr(exc, "response", None)
+    if not isinstance(response, dict):
+        return False
+    error = response.get("Error", {})
+    if not isinstance(error, dict):
+        return False
+    code = str(error.get("Code", "")).strip()
+    return code in {"NoSuchKey", "404", "NotFound"}
