@@ -93,13 +93,21 @@ def test_stale_sync_does_not_rollback_completed_fetch_state(tmp_path: Path) -> N
     content = b"invoice payload\n"
     sha256 = hashlib.sha256(content).hexdigest()
     encrypted = encrypt_recovery_payload(content)
-    target_path = "/.arc/recovery/fx-1/e1.enc"
+    target_path = "/.arc/uploads/recovery/fx-1/e1.enc"
     tus_url = "/uploads/fx-1/e1"
 
     hot_store = _FakeHotStore({(collection_id, path): content})
     upload_store = _RaceyUploadStore({target_path: encrypted})
     config = RuntimeConfig(
-        seaweedfs_filer_url="http://example.invalid",
+        object_store="s3",
+        s3_endpoint_url="http://example.invalid:9000",
+        s3_region="us-east-1",
+        s3_bucket="riverhog",
+        s3_access_key_id="test-access",
+        s3_secret_access_key="test-secret",
+        s3_force_path_style=True,
+        tusd_base_url="http://example.invalid:1080/files",
+        tusd_hook_secret="hook-secret",
         sqlite_path=sqlite_path,
     )
     service = SqlAlchemyFetchService(config, hot_store, upload_store)

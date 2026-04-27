@@ -142,6 +142,7 @@ class SqlAlchemyCollectionService:
                     session,
                     upload,
                     hot_store=self._hot_store,
+                    upload_store=self._upload_store,
                 )
                 return _collection_upload_payload(
                     collection_id=normalized_collection_id,
@@ -180,6 +181,7 @@ class SqlAlchemyCollectionService:
                     session,
                     upload,
                     hot_store=self._hot_store,
+                    upload_store=self._upload_store,
                 )
                 return _collection_upload_payload(
                     collection_id=normalized_collection_id,
@@ -277,7 +279,12 @@ class SqlAlchemyCollectionService:
                 file_record.upload_expires_at = upload_expiry_timestamp(self._upload_ttl)
 
             if _collection_upload_is_complete(upload.files):
-                _finalize_collection_upload(session, upload, hot_store=self._hot_store)
+                _finalize_collection_upload(
+                    session,
+                    upload,
+                    hot_store=self._hot_store,
+                    upload_store=self._upload_store,
+                )
 
             return {
                 "offset": file_record.uploaded_bytes,
@@ -457,7 +464,7 @@ def _apply_upload_lifecycle_state(
 
 
 def _collection_upload_target_path(collection_id: str, path: str) -> str:
-    return f"/collections/{collection_id}/{path}"
+    return f"/.arc/uploads/collections/{collection_id}/{path}"
 
 
 def _collection_file_upload_payload(
@@ -558,18 +565,22 @@ def _finalize_collection_upload(
     upload: CollectionUploadRecord,
     *,
     hot_store: HotStore,
+    upload_store: UploadStore,
 ) -> CollectionSummary:
     collection = CollectionRecord(id=upload.collection_id, ingest_source=upload.ingest_source)
     session.add(collection)
 
     for file_record in sorted(upload.files, key=lambda current: current.file_order):
-        content = hot_store.get_collection_file(upload.collection_id, file_record.path)
+        target_path = _collection_upload_target_path(upload.collection_id, file_record.path)
+        content = upload_store.read_target(target_path)
         digest = _sha256_hex(content)
         if digest != file_record.sha256:
             raise Conflict(
                 "uploaded collection file sha256 did not match "
                 f"expected digest for {upload.collection_id}/{file_record.path}"
             )
+        hot_store.put_collection_file(upload.collection_id, file_record.path, content)
+        upload_store.delete_target(target_path)
         collection.files.append(
             CollectionFileRecord(
                 collection_id=upload.collection_id,

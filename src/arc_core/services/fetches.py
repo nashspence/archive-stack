@@ -671,7 +671,7 @@ def _entry_upload_payload(entry: FetchEntryRecord) -> dict[str, object]:
 
 
 def _entry_upload_target_path(entry: FetchEntryRecord) -> str:
-    return f"/.arc/recovery/{entry.fetch_id}/{entry.entry_id}.enc"
+    return f"/.arc/uploads/recovery/{entry.fetch_id}/{entry.entry_id}.enc"
 
 
 def _hot_payload(session, raw_target: str) -> dict[str, object]:

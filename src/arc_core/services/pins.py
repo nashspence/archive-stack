@@ -90,7 +90,7 @@ class SqlAlchemyPinService:
                 for entry in entries:
                     if entry.tus_url is not None:
                         self._upload_store.cancel_upload(entry.tus_url)
-                    target_path = f"/.arc/recovery/{fetch_id}/{entry.entry_id}.enc"
+                    target_path = f"/.arc/uploads/recovery/{fetch_id}/{entry.entry_id}.enc"
                     self._upload_store.delete_target(target_path)
                 delete_fetch_entries(session, fetch_id)
                 session.delete(pin_record)

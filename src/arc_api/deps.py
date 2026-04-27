@@ -23,8 +23,9 @@ from arc_core.services.pins import SqlAlchemyPinService
 from arc_core.services.planning import SqlAlchemyPlanningService
 from arc_core.services.search import SqlAlchemySearchService
 from arc_core.sqlite_db import initialize_db
-from arc_core.stores.seaweedfs_hot_store import SeaweedFSHotStore
-from arc_core.stores.seaweedfs_upload_store import SeaweedFSTUSUploadStore
+from arc_core.stores.s3_hot_store import S3HotStore
+from arc_core.stores.s3_support import ensure_bucket_exists
+from arc_core.stores.tusd_upload_store import TusdUploadStore
 
 
 @dataclass(slots=True)
@@ -41,8 +42,9 @@ class ServiceContainer:
 def default_container() -> ServiceContainer:
     config = load_runtime_config()
     initialize_db(str(config.sqlite_path))
-    hot_store = SeaweedFSHotStore(config.seaweedfs_filer_url)
-    upload_store = SeaweedFSTUSUploadStore(config.seaweedfs_filer_url)
+    ensure_bucket_exists(config)
+    hot_store = S3HotStore(config)
+    upload_store = TusdUploadStore(config)
     return ServiceContainer(
         collections=SqlAlchemyCollectionService(config, hot_store, upload_store),
         search=SqlAlchemySearchService(config),

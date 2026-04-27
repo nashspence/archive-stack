@@ -5,11 +5,9 @@ import contextlib
 import logging
 import os
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import timedelta
-from urllib.parse import urlsplit
 
-import httpx
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.responses import JSONResponse
@@ -20,6 +18,7 @@ from arc_api.routers.collections import router as collections_router
 from arc_api.routers.fetches import router as fetches_router
 from arc_api.routers.files import router as files_router
 from arc_api.routers.images import router as images_router
+from arc_api.routers.internal import router as internal_router
 from arc_api.routers.pins import router as pins_router
 from arc_api.routers.plan import router as plan_router
 from arc_api.routers.search import router as search_router
@@ -27,6 +26,7 @@ from arc_api.schemas.common import ErrorBody, ErrorResponse
 from arc_core.domain.errors import ArcError
 from arc_core.runtime_config import load_runtime_config
 from arc_core.sqlite_db import Base, create_sqlite_engine, initialize_db
+from arc_core.stores.s3_support import delete_keys_with_prefixes, ensure_bucket_exists
 
 _LOG = logging.getLogger(__name__)
 _TEST_CONTROL_ENV = "ARC_ENABLE_TEST_CONTROL"
@@ -43,60 +43,10 @@ def _terminate_for_restart() -> None:
     os._exit(75)
 
 
-def _clear_filer_namespace(filer_url: str) -> None:
-    parsed = urlsplit(filer_url)
-    prefix = parsed.path.rstrip("/")
-    files_to_delete: list[str] = []
-    dirs_to_delete: list[str] = []
-    seen_dirs: set[str] = set()
-
-    def walk(relpath: str) -> None:
-        dir_url = (f"{filer_url.rstrip('/')}/{relpath}".rstrip("/") + "/")
-        if dir_url in seen_dirs:
-            return
-        seen_dirs.add(dir_url)
-
-        with httpx.Client(timeout=5.0) as client:
-            response = client.get(
-                dir_url,
-                params={"recursive": "true", "limit": "100000"},
-                headers={"Accept": "application/json"},
-            )
-            if response.status_code == 404:
-                return
-            response.raise_for_status()
-            payload = response.json()
-
-            for entry in payload.get("Entries") or []:
-                full_path = str(entry.get("FullPath", ""))
-                child_relpath = full_path.removeprefix(prefix).lstrip("/")
-                if not child_relpath:
-                    continue
-                child_url = (f"{filer_url.rstrip('/')}/{child_relpath}".rstrip("/") + "/")
-                child_response = client.get(child_url, headers={"Accept": "application/json"})
-                if child_response.status_code == 200:
-                    try:
-                        child_payload = child_response.json()
-                    except ValueError:
-                        child_payload = None
-                    if isinstance(child_payload, dict) and "Entries" in child_payload:
-                        walk(child_relpath)
-                        dirs_to_delete.append(child_relpath)
-                        continue
-                files_to_delete.append(child_relpath)
-
-    walk("")
-
-    with httpx.Client(timeout=5.0) as client:
-        for relpath in sorted(files_to_delete, key=lambda item: item.count("/"), reverse=True):
-            response = client.delete(f"{filer_url.rstrip('/')}/{relpath.lstrip('/')}")
-            if response.status_code not in (200, 204, 404):
-                response.raise_for_status()
-
-        for relpath in sorted(set(dirs_to_delete), key=lambda item: item.count("/"), reverse=True):
-            response = client.delete(f"{filer_url.rstrip('/')}/{relpath.lstrip('/')}/")
-            if response.status_code not in (200, 204, 404):
-                response.raise_for_status()
+def _clear_runtime_storage() -> None:
+    config = load_runtime_config()
+    ensure_bucket_exists(config)
+    delete_keys_with_prefixes(config, ["collections/", ".arc/uploads/"])
 
 
 def _reset_runtime_state() -> None:
@@ -106,7 +56,7 @@ def _reset_runtime_state() -> None:
 
     _ = _catalog_models
     config = load_runtime_config()
-    _clear_filer_namespace(config.seaweedfs_filer_url)
+    _clear_runtime_storage()
     engine = create_sqlite_engine(str(config.sqlite_path))
     try:
         Base.metadata.drop_all(engine)
@@ -121,7 +71,7 @@ def _sweep_expired_uploads(container: ServiceContainer) -> None:
 
 
 async def _run_upload_expiry_reaper(
-    container: ServiceContainer,
+    container_provider: Callable[[], ServiceContainer | None],
     *,
     sweep_interval: timedelta,
 ) -> None:
@@ -129,6 +79,9 @@ async def _run_upload_expiry_reaper(
     while True:
         try:
             await asyncio.sleep(interval_seconds)
+            container = container_provider()
+            if container is None:
+                continue
             await asyncio.to_thread(_sweep_expired_uploads, container)
         except asyncio.CancelledError:
             raise
@@ -142,17 +95,26 @@ def create_app(
     upload_expiry_reaper_interval: float | None = None,
 ) -> FastAPI:
     config = load_runtime_config()
-    app_container = container or default_container()
+    app_container: ServiceContainer | None = container
     sweep_interval = (
         timedelta(seconds=upload_expiry_reaper_interval)
         if upload_expiry_reaper_interval is not None
         else config.upload_expiry_sweep_interval
     )
 
+    def get_or_create_container() -> ServiceContainer:
+        nonlocal app_container
+        if app_container is None:
+            app_container = default_container()
+        return app_container
+
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         task = asyncio.create_task(
-            _run_upload_expiry_reaper(app_container, sweep_interval=sweep_interval)
+            _run_upload_expiry_reaper(
+                lambda: app_container,
+                sweep_interval=sweep_interval,
+            )
         )
         try:
             yield
@@ -163,7 +125,7 @@ def create_app(
 
     app = FastAPI(title="arc API", version="0.1.0", lifespan=lifespan)
     app.state.instance_id = f"{os.getpid()}-{time.time_ns()}"
-    app.dependency_overrides[get_container] = lambda: app_container
+    app.dependency_overrides[get_container] = get_or_create_container
 
     @app.exception_handler(ArcError)
     async def handle_arc_error(_: Request, exc: ArcError) -> JSONResponse:
@@ -209,6 +171,7 @@ def create_app(
             }
 
     auth_deps = list(api_auth_dependencies())
+    app.include_router(internal_router)
     app.include_router(files_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(collections_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(search_router, prefix="/v1", dependencies=auth_deps)
