@@ -2067,6 +2067,20 @@ def then_bucket_does_not_contain_prefix(
     assert not acceptance_system.bucket_contains_prefix(storage=storage, prefix=prefix)
 
 
+@then(parsers.parse('the {credentials} credentials cannot write object "{key}" to the {storage} bucket'))
+def then_credentials_cannot_write_object_to_bucket(
+    acceptance_system: AcceptanceSystem,
+    credentials: str,
+    storage: str,
+    key: str,
+) -> None:
+    assert acceptance_system.bucket_write_is_rejected(
+        credentials=credentials,
+        storage=storage,
+        key=key,
+    )
+
+
 @then(parsers.parse('target "{target}" is pinned'))
 @then(parsers.parse('target "{target}" remains pinned'))
 def then_target_is_pinned(

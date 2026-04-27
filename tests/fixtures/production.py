@@ -41,7 +41,11 @@ from arc_core.fs_paths import normalize_collection_id
 from arc_core.runtime_config import load_runtime_config
 from arc_core.services.glacier_uploads import enqueue_glacier_upload_job
 from arc_core.sqlite_db import make_session_factory, session_scope
-from arc_core.stores.s3_support import create_glacier_s3_client, create_s3_client
+from arc_core.stores.s3_support import (
+    _create_s3_client,
+    create_glacier_s3_client,
+    create_s3_client,
+)
 from tests.fixtures.acceptance import REPO_ROOT, SRC_ROOT
 from tests.fixtures.data import (
     DOCS_COLLECTION_ID,
@@ -740,6 +744,27 @@ class ProductionSystem:
             return config.glacier_bucket, create_glacier_s3_client(config)
         raise AssertionError(f"unsupported storage bucket kind: {storage}")
 
+    @staticmethod
+    def _client_for_credentials(credentials: str):
+        config = load_runtime_config()
+        if credentials == "hot":
+            return _create_s3_client(
+                endpoint_url=config.s3_endpoint_url,
+                region=config.s3_region,
+                access_key_id=config.s3_access_key_id,
+                secret_access_key=config.s3_secret_access_key,
+                force_path_style=config.s3_force_path_style,
+            )
+        if credentials == "archive":
+            return _create_s3_client(
+                endpoint_url=config.glacier_endpoint_url,
+                region=config.glacier_region,
+                access_key_id=config.glacier_access_key_id,
+                secret_access_key=config.glacier_secret_access_key,
+                force_path_style=config.glacier_force_path_style,
+            )
+        raise AssertionError(f"unsupported credential kind: {credentials}")
+
     def _webdav_request(
         self,
         method: str,
@@ -1115,6 +1140,23 @@ class ProductionSystem:
         bucket, client = self._bucket_and_client(storage)
         response = client.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)
         return response.get("KeyCount", 0) > 0
+
+    def bucket_write_is_rejected(
+        self,
+        *,
+        credentials: str,
+        storage: str,
+        key: str,
+    ) -> bool:
+        bucket, _client = self._bucket_and_client(storage)
+        client = self._client_for_credentials(credentials)
+        try:
+            client.put_object(Bucket=bucket, Key=key, Body=b"forbidden")
+        except client.exceptions.ClientError as exc:  # type: ignore[attr-defined]
+            status = int(exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0))
+            code = str(exc.response.get("Error", {}).get("Code", "")).strip()
+            return status in {401, 403} or code in {"AccessDenied", "Forbidden"}
+        return False
 
     def upload_required_entries(self, fetch_id: str) -> None:
         with time_block("fixture.upload_required_entries"):

@@ -35,3 +35,8 @@ Feature: Read-only hot storage browsing
       And the archive bucket does not contain prefix ".arc/uploads/"
       And the archive bucket contains object "glacier/finalized-images/20260420T040001Z/20260420T040001Z.iso"
       And the hot bucket does not contain object "glacier/finalized-images/20260420T040001Z/20260420T040001Z.iso"
+
+    Scenario: The canonical harness enforces least-privilege bucket credentials
+      Then the hot credentials cannot write object "glacier/forbidden-hot-write.iso" to the archive bucket
+      And the archive credentials cannot write object "collections/forbidden-archive-write.txt" to the hot bucket
+      And the archive credentials cannot write object ".arc/uploads/forbidden-archive-write" to the hot bucket
