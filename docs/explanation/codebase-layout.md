@@ -77,7 +77,7 @@ src/
     main.py
 tests/
   acceptance/
-  integration/
+  harness/
   unit/
   fixtures/
 ```

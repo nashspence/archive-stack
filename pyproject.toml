@@ -31,14 +31,9 @@ dev = [
   "mypy>=1.10,<2.0",
 ]
 
-planner = [
-  "numpy>=2.0,<3.0",
-  "scipy>=1.13,<2.0",
-]
+planner = ["numpy>=2.0,<3.0", "scipy>=1.13,<2.0"]
 
-db = [
-  "sqlalchemy>=2.0,<3.0",
-]
+db = ["sqlalchemy>=2.0,<3.0"]
 
 [project.scripts]
 arc-api = "arc_api.app:main"
@@ -64,8 +59,8 @@ markers = [
   "cli: CLI-focused contract coverage",
   "integration: non-contract regression coverage",
   "mvp: MVP contract coverage",
-  "xfail_contract: executable contract scenario whose acceptance backing exists before production catches up",
-  "xfail_not_backed: contract scenario whose Gherkin exists before acceptance backing fully exists",
+  "xfail_contract: spec backing exists, but prod is not implemented to the contract yet",
+  "xfail_not_backed: Gherkin contract exists, but prod backing is not implemented yet",
 ]
 
 [tool.mypy]

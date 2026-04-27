@@ -41,19 +41,19 @@ usage() {
   cat <<'EOF'
 Usage:
   ./test
-  ./test acceptance [pytest args...]
-  ./test acceptance-profile [pytest args...]
+  ./test prod [pytest args...]
+  ./test prod-profile [pytest args...]
   ./test spec [pytest args...]
   ./test unit [pytest args...]
   ./test fast [pytest args...]
   ./test [pytest args...]
 
 Modes:
-  acceptance  Run the production-backed BDD acceptance lane.
-  acceptance-profile  Run the production-backed acceptance lane with profiling output.
+  prod        Run the production-backed BDD harness lane.
+  prod-profile  Run the production-backed harness lane with profiling output.
   spec        Run the fixture-backed BDD spec harness lane.
   unit        Run the unit test lane.
-  fast        Run the non-production lanes together (integration + unit).
+  fast        Run the non-production lanes together (spec + unit).
   no args     Run the canonical split test flow inside the test container.
 
 Compose env:
@@ -81,20 +81,20 @@ if [[ $# -eq 0 ]]; then
   REQUIRES_SIDECARS=1
 else
   case "$1" in
-    acceptance)
+    prod)
       shift
       REQUIRES_SIDECARS=1
-      set -- -q -m acceptance tests/acceptance "$@"
+      set -- -q -m acceptance tests/harness/test_prod_harness.py "$@"
       ;;
-    acceptance-profile)
+    prod-profile)
       shift
       REQUIRES_SIDECARS=1
       COMPOSE_RUN_ENV_ARGS=(-e ARC_TEST_PROFILE=1)
-      set -- -q --durations=0 --durations-min=0.5 -m acceptance tests/acceptance "$@"
+      set -- -q --durations=0 --durations-min=0.5 -m acceptance tests/harness/test_prod_harness.py "$@"
       ;;
     spec)
       shift
-      set -- -q tests/integration "$@"
+      set -- -q tests/harness/test_spec_harness.py "$@"
       ;;
     unit)
       shift
@@ -102,7 +102,7 @@ else
       ;;
     fast)
       shift
-      set -- -q tests/integration tests/unit "$@"
+      set -- -q tests/harness/test_spec_harness.py tests/unit "$@"
       ;;
     -h|--help)
       usage
@@ -257,8 +257,8 @@ if [[ "${MODE}" == "canonical" ]]; then
   }
 
   run_phase "unit" run_test_container -q tests/unit
-  run_phase "integration" run_test_container -q tests/integration
-  run_phase "acceptance" run_test_container -q -m acceptance tests/acceptance
+  run_phase "spec" run_test_container -q tests/harness/test_spec_harness.py
+  run_phase "prod" run_test_container -q -m acceptance tests/harness/test_prod_harness.py
   exit 0
 fi
 

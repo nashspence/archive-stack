@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import pytest
 from pytest_bdd import scenarios
 
-pytestmark = pytest.mark.integration
+from tests.fixtures.acceptance import acceptance_system  # noqa: F401
+from tests.fixtures.bdd_steps import *  # noqa: F403
 
 scenarios("../acceptance/features/api.collections.feature")
 scenarios("../acceptance/features/api.fetches.feature")

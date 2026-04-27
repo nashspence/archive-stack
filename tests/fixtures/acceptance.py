@@ -2488,8 +2488,11 @@ class AcceptanceSystem:
             raise AssertionError(f"unsupported storage bucket kind: {storage}")
         for records in self.state.files_by_collection.values():
             for file in records.values():
+                key_for_file = (
+                    f"collections/{normalize_collection_id(str(file.collection_id))}/{file.path}"
+                )
                 if (
-                    f"collections/{normalize_collection_id(str(file.collection_id))}/{file.path}" == key
+                    key_for_file == key
                     and file.hot
                     and not file.hot_backing_missing
                 ):

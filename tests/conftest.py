@@ -17,15 +17,17 @@ if str(ROOT) not in sys.path:
 
 XFAIL_REASONS = {
     "xfail_contract": (
-        "acceptance backing exists but production is not implemented to the contract yet"
+        "spec backing exists, but prod is not implemented to the contract yet"
     ),
-    "xfail_not_backed": "Gherkin contract exists but acceptance backing is not implemented yet",
+    "xfail_not_backed": (
+        "Gherkin contract exists, but prod backing is not implemented yet"
+    ),
 }
 STRICT_XFAIL_MARKERS = {"xfail_contract", "xfail_not_backed"}
 
 
-def _uses_integration_harness(item: pytest.Item) -> bool:
-    return "tests/integration/" in item.nodeid
+def _uses_spec_harness(item: pytest.Item) -> bool:
+    return "tests/harness/test_spec_harness.py" in item.nodeid
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -33,7 +35,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         xfail_markers = {
             marker.name for marker in item.iter_markers() if marker.name in XFAIL_REASONS
         }
-        if _uses_integration_harness(item):
+        if _uses_spec_harness(item):
             xfail_markers.discard("xfail_contract")
         if len(xfail_markers) > 1:
             names = ", ".join(sorted(xfail_markers))
@@ -58,5 +60,5 @@ def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
     rendered = PROFILE.render()
     if not rendered:
         return
-    terminalreporter.section("acceptance profile", sep="-", blue=True, bold=True)
+    terminalreporter.section("prod profile", sep="-", blue=True, bold=True)
     terminalreporter.write_line(rendered)

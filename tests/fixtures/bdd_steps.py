@@ -2001,7 +2001,9 @@ def when_the_client_inspects_the_canonical_storage_lifecycle_configuration(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
-    acceptance_context.stdout_json = acceptance_system.storage_lifecycle_configuration(storage="hot")
+    acceptance_context.stdout_json = acceptance_system.storage_lifecycle_configuration(
+        storage="hot"
+    )
 
 
 @when("the client inspects the canonical archive-storage lifecycle configuration")
@@ -2067,7 +2069,11 @@ def then_bucket_does_not_contain_prefix(
     assert not acceptance_system.bucket_contains_prefix(storage=storage, prefix=prefix)
 
 
-@then(parsers.parse('the {credentials} credentials cannot write object "{key}" to the {storage} bucket'))
+@then(
+    parsers.parse(
+        'the {credentials} credentials cannot write object "{key}" to the {storage} bucket'
+    )
+)
 def then_credentials_cannot_write_object_to_bucket(
     acceptance_system: AcceptanceSystem,
     credentials: str,
@@ -2081,7 +2087,11 @@ def then_credentials_cannot_write_object_to_bucket(
     )
 
 
-@then(parsers.parse('the {credentials} credentials cannot read object "{key}" from the {storage} bucket'))
+@then(
+    parsers.parse(
+        'the {credentials} credentials cannot read object "{key}" from the {storage} bucket'
+    )
+)
 def then_credentials_cannot_read_object_from_bucket(
     acceptance_system: AcceptanceSystem,
     credentials: str,
@@ -2095,7 +2105,11 @@ def then_credentials_cannot_read_object_from_bucket(
     )
 
 
-@then(parsers.parse('the {credentials} credentials cannot list prefix "{prefix}" in the {storage} bucket'))
+@then(
+    parsers.parse(
+        'the {credentials} credentials cannot list prefix "{prefix}" in the {storage} bucket'
+    )
+)
 def then_credentials_cannot_list_prefix_in_bucket(
     acceptance_system: AcceptanceSystem,
     credentials: str,

@@ -4,8 +4,8 @@ import ast
 from pathlib import Path
 
 FEATURES_DIR = Path(__file__).resolve().parents[1] / "acceptance" / "features"
-ACCEPTANCE_SUITE = FEATURES_DIR.parent / "test_bdd_acceptance.py"
-INTEGRATION_SUITE = FEATURES_DIR.parents[0].parent / "integration" / "test_bdd_spec_harness.py"
+PROD_HARNESS = FEATURES_DIR.parents[1] / "harness" / "test_prod_harness.py"
+SPEC_HARNESS = FEATURES_DIR.parents[1] / "harness" / "test_spec_harness.py"
 
 
 def _feature_names_on_disk() -> set[str]:
@@ -27,9 +27,9 @@ def _scenario_feature_names(test_module: Path) -> set[str]:
     return names
 
 
-def test_acceptance_bdd_suite_loads_every_feature_file() -> None:
-    assert _scenario_feature_names(ACCEPTANCE_SUITE) == _feature_names_on_disk()
+def test_prod_harness_loads_every_feature_file() -> None:
+    assert _scenario_feature_names(PROD_HARNESS) == _feature_names_on_disk()
 
 
-def test_integration_bdd_suite_loads_every_feature_file() -> None:
-    assert _scenario_feature_names(INTEGRATION_SUITE) == _feature_names_on_disk()
+def test_spec_harness_loads_every_feature_file() -> None:
+    assert _scenario_feature_names(SPEC_HARNESS) == _feature_names_on_disk()

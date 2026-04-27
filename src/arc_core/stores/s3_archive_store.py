@@ -47,7 +47,11 @@ class S3ArchiveStore:
             stored_bytes=int(head.get("ContentLength", 0)),
             backend=self._config.glacier_backend,
             storage_class=self._config.glacier_storage_class,
-            uploaded_at=uploaded_at or _format_s3_timestamp(head.get("LastModified"), fallback=verified_at),
+            uploaded_at=uploaded_at
+            or _format_s3_timestamp(
+                head.get("LastModified"),
+                fallback=verified_at,
+            ),
             verified_at=verified_at,
         )
 
