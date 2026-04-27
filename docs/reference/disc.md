@@ -175,6 +175,30 @@ Expected multipart flow:
 7. let the server decrypt, validate, and materialize the logical file as needed
 8. rely on the manifest's resumable upload state if the process is interrupted before completion
 
+## Guided Burn Sessions
+
+`arc-disc burn` is the guided workflow for clearing the current finalized-image burn backlog.
+
+- the burn backlog includes ready provisional candidates plus finalized images whose required copy backlog is not yet
+  complete
+- the session selects the fullest ready backlog item first
+- if that item is still provisional, `arc-disc burn` finalizes it before continuing
+- the session downloads and stages the image ISO locally before burn work
+- the staged ISO is verified before burn work continues
+- if the staged ISO is missing or no longer matches the last verified staged copy, `arc-disc burn` downloads it again
+- one physical copy is burned and burned-media-verified at a time
+- `arc-disc burn` prints the exact label text plus storage guidance before copy registration
+- Riverhog does not register the copy, associate that generated `copy_id` with that physical disc, or count the copy
+  toward coverage until the operator explicitly confirms that the disc is labeled
+- if the session stops after burning or burned-media verification but before label confirmation, a later run first asks
+  whether that unlabeled disc is still available
+- if that unlabeled disc is still available, the session resumes from the earliest unfinished local checkpoint for that
+  copy, including burned-media verification when needed
+- if that unlabeled disc is no longer available, the local checkpoint is discarded and the copy is burned again as a
+  replacement
+- after label confirmation, `arc-disc burn` records the storage location, registers the generated copy id, and marks the
+  copy verified before moving on
+
 ## Manual Recovery
 
 Without `arc-disc`, the intended recovery path is:

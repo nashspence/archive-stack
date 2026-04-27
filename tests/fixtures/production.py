@@ -750,7 +750,7 @@ class ProductionSystem:
     ) -> subprocess.CompletedProcess[str]:
         with time_block("subprocess arc-disc"):
             if not self.fixture_path.exists():
-                self.configure_arc_disc_fixture()
+                self._write_arc_disc_fixture(self._default_arc_disc_fixture())
             return subprocess.run(
                 [sys.executable, "-m", "arc_disc.main", *args],
                 cwd=REPO_ROOT,
@@ -760,6 +760,19 @@ class ProductionSystem:
                         "ARC_DISC_READER_FACTORY": (
                             "tests.fixtures.arc_disc_fakes:FixtureOpticalReader"
                         ),
+                        "ARC_DISC_ISO_VERIFIER_FACTORY": (
+                            "tests.fixtures.arc_disc_fakes:FixtureIsoVerifier"
+                        ),
+                        "ARC_DISC_BURNER_FACTORY": (
+                            "tests.fixtures.arc_disc_fakes:FixtureDiscBurner"
+                        ),
+                        "ARC_DISC_BURNED_MEDIA_VERIFIER_FACTORY": (
+                            "tests.fixtures.arc_disc_fakes:FixtureBurnedMediaVerifier"
+                        ),
+                        "ARC_DISC_BURN_PROMPTS_FACTORY": (
+                            "tests.fixtures.arc_disc_fakes:FixtureBurnPrompts"
+                        ),
+                        "ARC_DISC_STAGING_DIR": str(self.workspace / "arc_disc_staging"),
                     }
                 ),
                 input=input_text,
@@ -1110,6 +1123,7 @@ class ProductionSystem:
         fail_copy_ids: set[str] | None = None,
         corrupt_copy_ids: set[str] | None = None,
     ) -> None:
+        payload = self._load_arc_disc_fixture()
         manifest = self.fetches.manifest(fetch_id)
         with session_scope(make_session_factory(str(self.db_path))) as session:
             entry_records = session.scalars(
@@ -1131,30 +1145,107 @@ class ProductionSystem:
                 )
                 for part in parts:
                     part_index = int(part["index"])
-                    payload = fixture_encrypt_bytes(plaintext_parts[part_index])
+                    recovery_payload = fixture_encrypt_bytes(plaintext_parts[part_index])
                     for copy in part["copies"]:
                         copy_id = str(copy["copy"])
                         disc_path = str(copy["disc_path"])
-                        encoded = payload
+                        encoded = recovery_payload
                         if entry_path == corrupt_path or copy_id in corrupt_copy_ids:
-                            encoded = payload + b"corrupted-by-fixture\n"
+                            encoded = recovery_payload + b"corrupted-by-fixture\n"
                         payload_by_disc_path[disc_path] = base64.b64encode(encoded).decode("ascii")
                         if entry_path == fail_path or copy_id in fail_copy_ids:
                             fail_disc_paths.append(disc_path)
 
-            self.fixture_path.write_text(
-                json.dumps(
-                    {
-                        "reader": {
-                            "payload_by_disc_path": payload_by_disc_path,
-                            "fail_disc_paths": fail_disc_paths,
-                        }
-                    },
-                    indent=2,
-                    sort_keys=True,
-                ),
-                encoding="utf-8",
-            )
+            payload["reader"] = {
+                "payload_by_disc_path": payload_by_disc_path,
+                "fail_disc_paths": fail_disc_paths,
+            }
+            self._write_arc_disc_fixture(payload)
+
+    @staticmethod
+    def _default_arc_disc_fixture() -> dict[str, object]:
+        return {
+            "reader": {
+                "payload_by_disc_path": {},
+                "fail_disc_paths": [],
+            },
+            "burn": {
+                "confirmed_copy_ids": [],
+                "available_copy_ids": [],
+                "location_by_copy_id": {},
+                "label_text_by_copy_id": {},
+                "fail_copy_ids": [],
+                "verify_fail_copy_ids": [],
+                "blank_media_blocked_copy_ids": [],
+            },
+        }
+
+    def _load_arc_disc_fixture(self) -> dict[str, object]:
+        if not self.fixture_path.exists():
+            return self._default_arc_disc_fixture()
+        return cast(dict[str, object], json.loads(self.fixture_path.read_text(encoding="utf-8")))
+
+    def _write_arc_disc_fixture(self, payload: dict[str, object]) -> None:
+        self.fixture_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    def confirm_arc_disc_burn_copy(self, copy_id: str, *, location: str) -> None:
+        payload = self._load_arc_disc_fixture()
+        burn = cast(dict[str, object], payload["burn"])
+        confirmed = set(cast(list[str], burn.get("confirmed_copy_ids", [])))
+        confirmed.add(copy_id)
+        burn["confirmed_copy_ids"] = sorted(confirmed)
+        locations = dict(cast(dict[str, str], burn.get("location_by_copy_id", {})))
+        locations[copy_id] = location
+        burn["location_by_copy_id"] = locations
+        labels = dict(cast(dict[str, str], burn.get("label_text_by_copy_id", {})))
+        labels[copy_id] = copy_id
+        burn["label_text_by_copy_id"] = labels
+        self._write_arc_disc_fixture(payload)
+
+    def set_arc_disc_burn_copy_available(self, copy_id: str, *, available: bool) -> None:
+        payload = self._load_arc_disc_fixture()
+        burn = cast(dict[str, object], payload["burn"])
+        available_copy_ids = set(cast(list[str], burn.get("available_copy_ids", [])))
+        if available:
+            available_copy_ids.add(copy_id)
+        else:
+            available_copy_ids.discard(copy_id)
+        burn["available_copy_ids"] = sorted(available_copy_ids)
+        self._write_arc_disc_fixture(payload)
+
+    def fail_arc_disc_burn_copy(self, copy_id: str) -> None:
+        payload = self._load_arc_disc_fixture()
+        burn = cast(dict[str, object], payload["burn"])
+        failures = set(cast(list[str], burn.get("fail_copy_ids", [])))
+        failures.add(copy_id)
+        burn["fail_copy_ids"] = sorted(failures)
+        self._write_arc_disc_fixture(payload)
+
+    def fail_arc_disc_burn_copy_verification(self, copy_id: str) -> None:
+        payload = self._load_arc_disc_fixture()
+        burn = cast(dict[str, object], payload["burn"])
+        failures = set(cast(list[str], burn.get("verify_fail_copy_ids", [])))
+        failures.add(copy_id)
+        burn["verify_fail_copy_ids"] = sorted(failures)
+        self._write_arc_disc_fixture(payload)
+
+    def clear_arc_disc_burn_failures(self) -> None:
+        payload = self._load_arc_disc_fixture()
+        burn = cast(dict[str, object], payload["burn"])
+        burn["fail_copy_ids"] = []
+        burn["verify_fail_copy_ids"] = []
+        burn["blank_media_blocked_copy_ids"] = []
+        self._write_arc_disc_fixture(payload)
+
+    def corrupt_arc_disc_staged_iso(self, image_id: str) -> None:
+        image = self.request("GET", f"/v1/images/{image_id}").json()
+        staging_path = self.workspace / "arc_disc_staging" / image_id / str(image["filename"])
+        if not staging_path.is_file():
+            raise AssertionError(f"staged ISO not found: {staging_path}")
+        staging_path.write_bytes(staging_path.read_bytes() + b"corrupted-by-fixture\n")
 
     def pins_list(self) -> list[str]:
         return [item["target"] for item in self.request("GET", "/v1/pins").json()["pins"]]

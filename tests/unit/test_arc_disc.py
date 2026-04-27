@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 from typer.testing import CliRunner
 
@@ -263,3 +264,844 @@ def test_arc_disc_fetch_resumes_split_entry_from_session_offset(monkeypatch) -> 
         (len(part_one), part_two[:2]),
         (len(part_one) + 2, part_two[2:]),
     ]
+
+
+def test_discover_burn_backlog_prefers_fullest_ready_candidate() -> None:
+    class FakeClient:
+        def get_plan(self, *, page: int, per_page: int, sort: str, order: str, iso_ready: bool):
+            assert (page, per_page, sort, order, iso_ready) == (1, 100, "fill", "desc", True)
+            return {
+                "page": 1,
+                "pages": 1,
+                "candidates": [
+                    {
+                        "candidate_id": "img_2026-04-20_01",
+                        "fill": 0.9,
+                        "iso_ready": True,
+                    }
+                ],
+            }
+
+        def list_images(self, *, page: int, per_page: int, sort: str, order: str):
+            assert (page, per_page, sort, order) == (1, 100, "finalized_at", "desc")
+            return {
+                "page": 1,
+                "pages": 1,
+                "images": [
+                    {
+                        "id": "20260420T040003Z",
+                        "filename": "20260420T040003Z.iso",
+                        "fill": 0.5,
+                        "physical_copies_registered": 1,
+                        "physical_copies_required": 2,
+                    }
+                ],
+            }
+
+    backlog = arc_disc_main._discover_burn_backlog(FakeClient())
+
+    assert [(item.candidate_id, item.image_id) for item in backlog] == [
+        ("img_2026-04-20_01", None),
+        (None, "20260420T040003Z"),
+    ]
+
+
+def test_arc_disc_burn_waits_for_label_confirmation_before_registration_and_resumes(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    copy_one = "20260420T040001Z-1"
+    copy_two = "20260420T040001Z-2"
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.finalized = False
+            self.iso_bytes = b"fixture-iso\n"
+            self.register_calls: list[str] = []
+            self.copy_states = {
+                copy_one: {
+                    "id": copy_one,
+                    "label_text": copy_one,
+                    "state": "needed",
+                    "verification_state": "pending",
+                    "location": None,
+                },
+                copy_two: {
+                    "id": copy_two,
+                    "label_text": copy_two,
+                    "state": "needed",
+                    "verification_state": "pending",
+                    "location": None,
+                },
+            }
+
+        def _registered_count(self) -> int:
+            return sum(
+                1
+                for copy in self.copy_states.values()
+                if copy["state"] in {"registered", "verified"}
+            )
+
+        def get_plan(
+            self,
+            *,
+            page: int,
+            per_page: int,
+            sort: str,
+            order: str,
+            iso_ready: bool,
+        ) -> dict[str, object]:
+            if self.finalized:
+                return {"page": 1, "pages": 0, "candidates": []}
+            return {
+                "page": 1,
+                "pages": 1,
+                "candidates": [
+                    {
+                        "candidate_id": "img_2026-04-20_01",
+                        "fill": 0.9,
+                        "iso_ready": True,
+                    }
+                ],
+            }
+
+        def list_images(
+            self,
+            *,
+            page: int,
+            per_page: int,
+            sort: str,
+            order: str,
+        ) -> dict[str, object]:
+            if not self.finalized:
+                return {"page": 1, "pages": 0, "images": []}
+            return {
+                "page": 1,
+                "pages": 1,
+                "images": [
+                    {
+                        "id": "20260420T040001Z",
+                        "filename": "20260420T040001Z.iso",
+                        "fill": 0.9,
+                        "physical_copies_registered": self._registered_count(),
+                        "physical_copies_required": 2,
+                    }
+                ],
+            }
+
+        def finalize_image(self, candidate_id: str) -> dict[str, object]:
+            assert candidate_id == "img_2026-04-20_01"
+            self.finalized = True
+            return {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"}
+
+        def list_copies(self, image_id: str) -> dict[str, object]:
+            assert image_id == "20260420T040001Z"
+            return {"copies": list(self.copy_states.values())}
+
+        def download_iso(self, image_id: str, output: Path) -> bytes:
+            assert image_id == "20260420T040001Z"
+            output.write_bytes(self.iso_bytes)
+            return self.iso_bytes
+
+        def register_copy(self, image_id: str, location: str, *, copy_id: str | None = None):
+            assert image_id == "20260420T040001Z"
+            assert copy_id is not None
+            self.register_calls.append(copy_id)
+            self.copy_states[copy_id]["state"] = "registered"
+            self.copy_states[copy_id]["location"] = location
+            return {"copy": self.copy_states[copy_id]}
+
+        def update_copy(
+            self,
+            image_id: str,
+            copy_id: str,
+            *,
+            location: str | None = None,
+            state: str | None = None,
+            verification_state: str | None = None,
+        ):
+            assert image_id == "20260420T040001Z"
+            copy = self.copy_states[copy_id]
+            if location is not None:
+                copy["location"] = location
+            if state is not None:
+                copy["state"] = state
+            if verification_state is not None:
+                copy["verification_state"] = verification_state
+            return {"copy": copy}
+
+    class FakeIsoVerifier:
+        def verify(self, iso_path: Path) -> None:
+            assert iso_path.read_bytes() == b"fixture-iso\n"
+
+    class FakeBurner:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def burn(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+            assert device == "/dev/fake-sr0"
+            assert iso_path.read_bytes() == b"fixture-iso\n"
+            self.calls.append(copy_id)
+
+    class FakeMediaVerifier:
+        def verify(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+            assert device == "/dev/fake-sr0"
+            assert iso_path.read_bytes() == b"fixture-iso\n"
+
+    class FakePrompts:
+        def __init__(self) -> None:
+            self.confirmed: set[str] = set()
+            self.available: set[str] = set()
+            self.locations = {
+                copy_one: "vault-a/shelf-01",
+                copy_two: "vault-b/shelf-01",
+            }
+
+        def wait_for_blank_disc(self, copy_id: str, *, device: str) -> None:
+            assert device == "/dev/fake-sr0"
+
+        def confirm_label(self, copy_id: str, *, label_text: str) -> None:
+            assert label_text == copy_id
+            if copy_id not in self.confirmed:
+                raise RuntimeError(f"label confirmation required for {copy_id}")
+
+        def prompt_location(self, copy_id: str) -> str:
+            return self.locations[copy_id]
+
+        def confirm_unlabeled_copy_available(self, copy_id: str) -> bool:
+            return copy_id in self.available
+
+    client = FakeClient()
+    burner = FakeBurner()
+    prompts = FakePrompts()
+
+    monkeypatch.setattr(arc_disc_main, "ApiClient", lambda: client)
+    monkeypatch.setattr(arc_disc_main, "build_iso_verifier", lambda: FakeIsoVerifier())
+    monkeypatch.setattr(arc_disc_main, "build_disc_burner", lambda: burner)
+    monkeypatch.setattr(arc_disc_main, "build_burned_media_verifier", lambda: FakeMediaVerifier())
+    monkeypatch.setattr(arc_disc_main, "build_burn_prompts", lambda: prompts)
+
+    first = runner.invoke(
+        arc_disc_main.app,
+        ["burn", "--device", "/dev/fake-sr0", "--staging-dir", str(tmp_path)],
+    )
+
+    assert first.exit_code == 1
+    assert f"error: label confirmation required for {copy_one}" in first.stderr
+    assert client.register_calls == []
+    assert burner.calls == [copy_one]
+    assert client.copy_states[copy_one]["state"] == "needed"
+
+    prompts.confirmed.update({copy_one, copy_two})
+    prompts.available.update({copy_one, copy_two})
+    second = runner.invoke(
+        arc_disc_main.app,
+        ["burn", "--device", "/dev/fake-sr0", "--staging-dir", str(tmp_path)],
+    )
+
+    assert second.exit_code == 0
+    assert "resuming label confirmation for 20260420T040001Z-1" in second.stderr
+    assert "burning copy 20260420T040001Z-1" not in second.stderr
+    assert burner.calls == [copy_one, copy_two]
+    assert client.register_calls == [copy_one, copy_two]
+    assert client.copy_states[copy_one]["state"] == "verified"
+    assert client.copy_states[copy_two]["verification_state"] == "verified"
+
+
+def test_arc_disc_burn_resumes_from_media_verification_when_unfinished_disc_is_available(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    copy_one = "20260420T040001Z-1"
+    copy_two = "20260420T040001Z-2"
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.finalized = False
+            self.iso_bytes = b"fixture-iso\n"
+            self.register_calls: list[str] = []
+            self.copy_states = {
+                copy_one: {
+                    "id": copy_one,
+                    "label_text": copy_one,
+                    "state": "needed",
+                    "verification_state": "pending",
+                    "location": None,
+                },
+                copy_two: {
+                    "id": copy_two,
+                    "label_text": copy_two,
+                    "state": "needed",
+                    "verification_state": "pending",
+                    "location": None,
+                },
+            }
+
+        def _registered_count(self) -> int:
+            return sum(
+                1
+                for copy in self.copy_states.values()
+                if copy["state"] in {"registered", "verified"}
+            )
+
+        def get_plan(
+            self,
+            *,
+            page: int,
+            per_page: int,
+            sort: str,
+            order: str,
+            iso_ready: bool,
+        ) -> dict[str, object]:
+            if self.finalized:
+                return {"page": 1, "pages": 0, "candidates": []}
+            return {
+                "page": 1,
+                "pages": 1,
+                "candidates": [
+                    {
+                        "candidate_id": "img_2026-04-20_01",
+                        "fill": 0.9,
+                        "iso_ready": True,
+                    }
+                ],
+            }
+
+        def list_images(
+            self,
+            *,
+            page: int,
+            per_page: int,
+            sort: str,
+            order: str,
+        ) -> dict[str, object]:
+            if not self.finalized:
+                return {"page": 1, "pages": 0, "images": []}
+            return {
+                "page": 1,
+                "pages": 1,
+                "images": [
+                    {
+                        "id": "20260420T040001Z",
+                        "filename": "20260420T040001Z.iso",
+                        "fill": 0.9,
+                        "physical_copies_registered": self._registered_count(),
+                        "physical_copies_required": 2,
+                    }
+                ],
+            }
+
+        def finalize_image(self, candidate_id: str) -> dict[str, object]:
+            assert candidate_id == "img_2026-04-20_01"
+            self.finalized = True
+            return {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"}
+
+        def list_copies(self, image_id: str) -> dict[str, object]:
+            assert image_id == "20260420T040001Z"
+            return {"copies": list(self.copy_states.values())}
+
+        def download_iso(self, image_id: str, output: Path) -> bytes:
+            assert image_id == "20260420T040001Z"
+            output.write_bytes(self.iso_bytes)
+            return self.iso_bytes
+
+        def register_copy(self, image_id: str, location: str, *, copy_id: str | None = None):
+            assert image_id == "20260420T040001Z"
+            assert copy_id is not None
+            self.register_calls.append(copy_id)
+            self.copy_states[copy_id]["state"] = "registered"
+            self.copy_states[copy_id]["location"] = location
+            return {"copy": self.copy_states[copy_id]}
+
+        def update_copy(
+            self,
+            image_id: str,
+            copy_id: str,
+            *,
+            location: str | None = None,
+            state: str | None = None,
+            verification_state: str | None = None,
+        ):
+            assert image_id == "20260420T040001Z"
+            copy = self.copy_states[copy_id]
+            if location is not None:
+                copy["location"] = location
+            if state is not None:
+                copy["state"] = state
+            if verification_state is not None:
+                copy["verification_state"] = verification_state
+            return {"copy": copy}
+
+    class FakeIsoVerifier:
+        def verify(self, iso_path: Path) -> None:
+            assert iso_path.read_bytes() == b"fixture-iso\n"
+
+    class FakeBurner:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def burn(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+            assert device == "/dev/fake-sr0"
+            assert iso_path.read_bytes() == b"fixture-iso\n"
+            self.calls.append(copy_id)
+
+    class FakeMediaVerifier:
+        def __init__(self) -> None:
+            self.fail_copy_ids = {copy_one}
+            self.calls: list[str] = []
+
+        def verify(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+            assert device == "/dev/fake-sr0"
+            assert iso_path.read_bytes() == b"fixture-iso\n"
+            self.calls.append(copy_id)
+            if copy_id in self.fail_copy_ids:
+                raise RuntimeError(f"fixture burned-media verification failed for {copy_id}")
+
+    class FakePrompts:
+        def __init__(self) -> None:
+            self.confirmed: set[str] = set()
+            self.available: set[str] = set()
+            self.locations = {
+                copy_one: "vault-a/shelf-01",
+                copy_two: "vault-b/shelf-01",
+            }
+
+        def wait_for_blank_disc(self, copy_id: str, *, device: str) -> None:
+            assert device == "/dev/fake-sr0"
+
+        def confirm_label(self, copy_id: str, *, label_text: str) -> None:
+            assert label_text == copy_id
+            if copy_id not in self.confirmed:
+                raise RuntimeError(f"label confirmation required for {copy_id}")
+
+        def prompt_location(self, copy_id: str) -> str:
+            return self.locations[copy_id]
+
+        def confirm_unlabeled_copy_available(self, copy_id: str) -> bool:
+            return copy_id in self.available
+
+    client = FakeClient()
+    burner = FakeBurner()
+    media_verifier = FakeMediaVerifier()
+    prompts = FakePrompts()
+
+    monkeypatch.setattr(arc_disc_main, "ApiClient", lambda: client)
+    monkeypatch.setattr(arc_disc_main, "build_iso_verifier", lambda: FakeIsoVerifier())
+    monkeypatch.setattr(arc_disc_main, "build_disc_burner", lambda: burner)
+    monkeypatch.setattr(
+        arc_disc_main,
+        "build_burned_media_verifier",
+        lambda: media_verifier,
+    )
+    monkeypatch.setattr(arc_disc_main, "build_burn_prompts", lambda: prompts)
+
+    first = runner.invoke(
+        arc_disc_main.app,
+        ["burn", "--device", "/dev/fake-sr0", "--staging-dir", str(tmp_path)],
+    )
+
+    assert first.exit_code == 1
+    assert f"error: fixture burned-media verification failed for {copy_one}" in first.stderr
+    assert burner.calls == [copy_one]
+    assert media_verifier.calls == [copy_one]
+    assert client.register_calls == []
+
+    media_verifier.fail_copy_ids.clear()
+    prompts.available.update({copy_one, copy_two})
+    prompts.confirmed.update({copy_one, copy_two})
+    second = runner.invoke(
+        arc_disc_main.app,
+        ["burn", "--device", "/dev/fake-sr0", "--staging-dir", str(tmp_path)],
+    )
+
+    assert second.exit_code == 0
+    assert "verifying burned media for 20260420T040001Z-1" in second.stderr
+    assert "burning copy 20260420T040001Z-1" not in second.stderr
+    assert burner.calls == [copy_one, copy_two]
+    assert media_verifier.calls == [copy_one, copy_one, copy_two]
+    assert client.register_calls == [copy_one, copy_two]
+    assert client.copy_states[copy_one]["state"] == "verified"
+    assert client.copy_states[copy_two]["verification_state"] == "verified"
+
+
+def test_arc_disc_burn_redownloads_invalid_staged_iso(monkeypatch, tmp_path: Path) -> None:
+    copy_one = "20260420T040001Z-1"
+    copy_two = "20260420T040001Z-2"
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.finalized = False
+            self.iso_bytes = b"fixture-iso\n"
+            self.download_calls = 0
+            self.copy_states = {
+                copy_one: {
+                    "id": copy_one,
+                    "label_text": copy_one,
+                    "state": "needed",
+                    "verification_state": "pending",
+                    "location": None,
+                },
+                copy_two: {
+                    "id": copy_two,
+                    "label_text": copy_two,
+                    "state": "needed",
+                    "verification_state": "pending",
+                    "location": None,
+                },
+            }
+
+        def _registered_count(self) -> int:
+            return sum(
+                1
+                for copy in self.copy_states.values()
+                if copy["state"] in {"registered", "verified"}
+            )
+
+        def get_plan(
+            self,
+            *,
+            page: int,
+            per_page: int,
+            sort: str,
+            order: str,
+            iso_ready: bool,
+        ) -> dict[str, object]:
+            if self.finalized:
+                return {"page": 1, "pages": 0, "candidates": []}
+            return {
+                "page": 1,
+                "pages": 1,
+                "candidates": [
+                    {
+                        "candidate_id": "img_2026-04-20_01",
+                        "fill": 0.9,
+                        "iso_ready": True,
+                    }
+                ],
+            }
+
+        def list_images(
+            self,
+            *,
+            page: int,
+            per_page: int,
+            sort: str,
+            order: str,
+        ) -> dict[str, object]:
+            if not self.finalized:
+                return {"page": 1, "pages": 0, "images": []}
+            return {
+                "page": 1,
+                "pages": 1,
+                "images": [
+                    {
+                        "id": "20260420T040001Z",
+                        "filename": "20260420T040001Z.iso",
+                        "fill": 0.9,
+                        "physical_copies_registered": self._registered_count(),
+                        "physical_copies_required": 2,
+                    }
+                ],
+            }
+
+        def finalize_image(self, candidate_id: str) -> dict[str, object]:
+            assert candidate_id == "img_2026-04-20_01"
+            self.finalized = True
+            return {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"}
+
+        def list_copies(self, image_id: str) -> dict[str, object]:
+            assert image_id == "20260420T040001Z"
+            return {"copies": list(self.copy_states.values())}
+
+        def download_iso(self, image_id: str, output: Path) -> bytes:
+            assert image_id == "20260420T040001Z"
+            self.download_calls += 1
+            output.write_bytes(self.iso_bytes)
+            return self.iso_bytes
+
+        def register_copy(self, image_id: str, location: str, *, copy_id: str | None = None):
+            assert image_id == "20260420T040001Z"
+            assert copy_id is not None
+            self.copy_states[copy_id]["state"] = "registered"
+            self.copy_states[copy_id]["location"] = location
+            return {"copy": self.copy_states[copy_id]}
+
+        def update_copy(
+            self,
+            image_id: str,
+            copy_id: str,
+            *,
+            location: str | None = None,
+            state: str | None = None,
+            verification_state: str | None = None,
+        ):
+            copy = self.copy_states[copy_id]
+            if location is not None:
+                copy["location"] = location
+            if state is not None:
+                copy["state"] = state
+            if verification_state is not None:
+                copy["verification_state"] = verification_state
+            return {"copy": copy}
+
+    class FakeIsoVerifier:
+        def verify(self, iso_path: Path) -> None:
+            assert iso_path.read_bytes() == b"fixture-iso\n"
+
+    class FakeBurner:
+        def __init__(self) -> None:
+            self.fail_copy_ids = {copy_two}
+
+        def burn(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+            assert iso_path.exists()
+            if copy_id in self.fail_copy_ids:
+                raise RuntimeError(f"fixture burn failed for {copy_id}")
+
+    class FakeMediaVerifier:
+        def verify(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+            assert iso_path.read_bytes() == b"fixture-iso\n"
+
+    class FakePrompts:
+        def __init__(self) -> None:
+            self.confirmed = {copy_one}
+            self.available = {copy_two}
+            self.locations = {
+                copy_one: "vault-a/shelf-01",
+                copy_two: "vault-b/shelf-01",
+            }
+
+        def wait_for_blank_disc(self, copy_id: str, *, device: str) -> None:
+            assert device == "/dev/fake-sr0"
+
+        def confirm_label(self, copy_id: str, *, label_text: str) -> None:
+            if copy_id not in self.confirmed:
+                raise RuntimeError(f"label confirmation required for {copy_id}")
+
+        def prompt_location(self, copy_id: str) -> str:
+            return self.locations[copy_id]
+
+        def confirm_unlabeled_copy_available(self, copy_id: str) -> bool:
+            return copy_id in self.available
+
+    client = FakeClient()
+    burner = FakeBurner()
+    prompts = FakePrompts()
+
+    monkeypatch.setattr(arc_disc_main, "ApiClient", lambda: client)
+    monkeypatch.setattr(arc_disc_main, "build_iso_verifier", lambda: FakeIsoVerifier())
+    monkeypatch.setattr(arc_disc_main, "build_disc_burner", lambda: burner)
+    monkeypatch.setattr(arc_disc_main, "build_burned_media_verifier", lambda: FakeMediaVerifier())
+    monkeypatch.setattr(arc_disc_main, "build_burn_prompts", lambda: prompts)
+
+    first = runner.invoke(
+        arc_disc_main.app,
+        ["burn", "--device", "/dev/fake-sr0", "--staging-dir", str(tmp_path)],
+    )
+
+    assert first.exit_code == 1
+    assert "fixture burn failed for 20260420T040001Z-2" in first.stderr
+    assert client.download_calls == 1
+
+    staged_iso = tmp_path / "20260420T040001Z" / "20260420T040001Z.iso"
+    staged_iso.write_bytes(b"corrupted-iso\n")
+    burner.fail_copy_ids.clear()
+    prompts.confirmed.add(copy_two)
+    prompts.available.add(copy_two)
+
+    second = runner.invoke(
+        arc_disc_main.app,
+        ["burn", "--device", "/dev/fake-sr0", "--staging-dir", str(tmp_path)],
+    )
+
+    assert second.exit_code == 0
+    assert "staged ISO is invalid" in second.stderr
+    assert "re-downloading" in second.stderr
+    assert client.download_calls == 2
+    assert client.copy_states[copy_two]["state"] == "verified"
+
+
+def test_arc_disc_burn_reburns_when_unlabeled_disc_is_unavailable_on_resume(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    copy_one = "20260420T040001Z-1"
+    copy_two = "20260420T040001Z-2"
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.finalized = False
+            self.iso_bytes = b"fixture-iso\n"
+            self.register_calls: list[str] = []
+            self.copy_states = {
+                copy_one: {
+                    "id": copy_one,
+                    "label_text": copy_one,
+                    "state": "needed",
+                    "verification_state": "pending",
+                    "location": None,
+                },
+                copy_two: {
+                    "id": copy_two,
+                    "label_text": copy_two,
+                    "state": "needed",
+                    "verification_state": "pending",
+                    "location": None,
+                },
+            }
+
+        def _registered_count(self) -> int:
+            return sum(
+                1
+                for copy in self.copy_states.values()
+                if copy["state"] in {"registered", "verified"}
+            )
+
+        def get_plan(
+            self,
+            *,
+            page: int,
+            per_page: int,
+            sort: str,
+            order: str,
+            iso_ready: bool,
+        ) -> dict[str, object]:
+            if self.finalized:
+                return {"page": 1, "pages": 0, "candidates": []}
+            return {
+                "page": 1,
+                "pages": 1,
+                "candidates": [
+                    {
+                        "candidate_id": "img_2026-04-20_01",
+                        "fill": 0.9,
+                        "iso_ready": True,
+                    }
+                ],
+            }
+
+        def list_images(
+            self,
+            *,
+            page: int,
+            per_page: int,
+            sort: str,
+            order: str,
+        ) -> dict[str, object]:
+            if not self.finalized:
+                return {"page": 1, "pages": 0, "images": []}
+            return {
+                "page": 1,
+                "pages": 1,
+                "images": [
+                    {
+                        "id": "20260420T040001Z",
+                        "filename": "20260420T040001Z.iso",
+                        "fill": 0.9,
+                        "physical_copies_registered": self._registered_count(),
+                        "physical_copies_required": 2,
+                    }
+                ],
+            }
+
+        def finalize_image(self, candidate_id: str) -> dict[str, object]:
+            self.finalized = True
+            return {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"}
+
+        def list_copies(self, image_id: str) -> dict[str, object]:
+            return {"copies": list(self.copy_states.values())}
+
+        def download_iso(self, image_id: str, output: Path) -> bytes:
+            output.write_bytes(self.iso_bytes)
+            return self.iso_bytes
+
+        def register_copy(self, image_id: str, location: str, *, copy_id: str | None = None):
+            assert copy_id is not None
+            self.register_calls.append(copy_id)
+            self.copy_states[copy_id]["state"] = "registered"
+            self.copy_states[copy_id]["location"] = location
+            return {"copy": self.copy_states[copy_id]}
+
+        def update_copy(
+            self,
+            image_id: str,
+            copy_id: str,
+            *,
+            location: str | None = None,
+            state: str | None = None,
+            verification_state: str | None = None,
+        ):
+            copy = self.copy_states[copy_id]
+            if location is not None:
+                copy["location"] = location
+            if state is not None:
+                copy["state"] = state
+            if verification_state is not None:
+                copy["verification_state"] = verification_state
+            return {"copy": copy}
+
+    class FakeIsoVerifier:
+        def verify(self, iso_path: Path) -> None:
+            assert iso_path.read_bytes() == b"fixture-iso\n"
+
+    class FakeBurner:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def burn(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+            self.calls.append(copy_id)
+
+    class FakeMediaVerifier:
+        def verify(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+            assert iso_path.read_bytes() == b"fixture-iso\n"
+
+    class FakePrompts:
+        def __init__(self) -> None:
+            self.confirmed: set[str] = set()
+            self.available: set[str] = set()
+            self.locations = {
+                copy_one: "vault-a/shelf-01",
+                copy_two: "vault-b/shelf-01",
+            }
+
+        def wait_for_blank_disc(self, copy_id: str, *, device: str) -> None:
+            return None
+
+        def confirm_label(self, copy_id: str, *, label_text: str) -> None:
+            if copy_id not in self.confirmed:
+                raise RuntimeError(f"label confirmation required for {copy_id}")
+
+        def prompt_location(self, copy_id: str) -> str:
+            return self.locations[copy_id]
+
+        def confirm_unlabeled_copy_available(self, copy_id: str) -> bool:
+            return copy_id in self.available
+
+    client = FakeClient()
+    burner = FakeBurner()
+    prompts = FakePrompts()
+
+    monkeypatch.setattr(arc_disc_main, "ApiClient", lambda: client)
+    monkeypatch.setattr(arc_disc_main, "build_iso_verifier", lambda: FakeIsoVerifier())
+    monkeypatch.setattr(arc_disc_main, "build_disc_burner", lambda: burner)
+    monkeypatch.setattr(arc_disc_main, "build_burned_media_verifier", lambda: FakeMediaVerifier())
+    monkeypatch.setattr(arc_disc_main, "build_burn_prompts", lambda: prompts)
+
+    first = runner.invoke(
+        arc_disc_main.app,
+        ["burn", "--device", "/dev/fake-sr0", "--staging-dir", str(tmp_path)],
+    )
+
+    assert first.exit_code == 1
+    assert burner.calls == [copy_one]
+
+    prompts.confirmed.update({copy_one, copy_two})
+    prompts.available.add(copy_two)
+    second = runner.invoke(
+        arc_disc_main.app,
+        ["burn", "--device", "/dev/fake-sr0", "--staging-dir", str(tmp_path)],
+    )
+
+    assert second.exit_code == 0
+    assert "unlabeled disc for 20260420T040001Z-1 is unavailable; restarting burn" in second.stderr
+    assert burner.calls == [copy_one, copy_one, copy_two]
+    assert client.register_calls == [copy_one, copy_two]

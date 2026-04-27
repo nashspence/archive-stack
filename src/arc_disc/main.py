@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
+import json
 import os
+import subprocess
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Annotated, Any
 
 import typer
@@ -62,6 +66,107 @@ class UploadSession:
     expires_at: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class BurnBacklogItem:
+    image_id: str | None
+    candidate_id: str | None
+    filename: str
+    fill: float
+
+
+@dataclass(slots=True)
+class BurnCopyProgress:
+    burned: bool = False
+    media_verified: bool = False
+    label_confirmed: bool = False
+    location: str | None = None
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "burned": self.burned,
+            "media_verified": self.media_verified,
+            "label_confirmed": self.label_confirmed,
+            "location": self.location,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, object]) -> BurnCopyProgress:
+        return cls(
+            burned=bool(payload.get("burned", False)),
+            media_verified=bool(payload.get("media_verified", False)),
+            label_confirmed=bool(payload.get("label_confirmed", False)),
+            location=str(payload["location"]) if payload.get("location") else None,
+        )
+
+
+@dataclass(slots=True)
+class BurnImageProgress:
+    verified_sha256: str | None = None
+    copies: dict[str, BurnCopyProgress] = field(default_factory=dict)
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "verified_sha256": self.verified_sha256,
+            "copies": {copy_id: progress.to_payload() for copy_id, progress in self.copies.items()},
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, object]) -> BurnImageProgress:
+        copies_raw = payload.get("copies", {})
+        copies = {
+            str(copy_id): BurnCopyProgress.from_payload(copy_payload)
+            for copy_id, copy_payload in copies_raw.items()
+            if isinstance(copy_payload, dict)
+        }
+        verified_sha256 = (
+            str(payload["verified_sha256"]) if payload.get("verified_sha256") is not None else None
+        )
+        return cls(verified_sha256=verified_sha256, copies=copies)
+
+
+@dataclass(slots=True)
+class BurnSessionState:
+    path: Path
+    images: dict[str, BurnImageProgress] = field(default_factory=dict)
+
+    @classmethod
+    def load(cls, path: Path) -> BurnSessionState:
+        if not path.exists():
+            return cls(path=path)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        images_raw = payload.get("images", {})
+        images = {
+            str(image_id): BurnImageProgress.from_payload(image_payload)
+            for image_id, image_payload in images_raw.items()
+            if isinstance(image_payload, dict)
+        }
+        return cls(path=path, images=images)
+
+    def save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "images": {
+                image_id: progress.to_payload() for image_id, progress in self.images.items()
+            }
+        }
+        self.path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    def image_progress(self, image_id: str) -> BurnImageProgress:
+        progress = self.images.get(image_id)
+        if progress is None:
+            progress = BurnImageProgress()
+            self.images[image_id] = progress
+        return progress
+
+    def copy_progress(self, image_id: str, copy_id: str) -> BurnCopyProgress:
+        image = self.image_progress(image_id)
+        progress = image.copies.get(copy_id)
+        if progress is None:
+            progress = BurnCopyProgress()
+            image.copies[copy_id] = progress
+        return progress
+
+
 def _load_factory(spec: str) -> object:
     module_name, sep, attr_name = spec.partition(":")
     if not sep:
@@ -77,6 +182,124 @@ def build_optical_reader() -> object:
     if spec:
         return _load_factory(spec)
     return PlaceholderOpticalReader()
+
+
+class XorrisoIsoVerifier:
+    def verify(self, iso_path: Path) -> None:
+        proc = subprocess.run(
+            [
+                "xorriso",
+                "-abort_on",
+                "FAILURE",
+                "-for_backup",
+                "-md5",
+                "on",
+                "-indev",
+                str(iso_path),
+                "-check_md5",
+                "FAILURE",
+                "--",
+                "-check_md5_r",
+                "FAILURE",
+                "/",
+                "--",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode == 0:
+            return
+        detail = ((proc.stderr or proc.stdout).strip() or f"xorriso exited {proc.returncode}")[
+            -1500:
+        ]
+        raise RuntimeError(f"staged ISO verification failed for {iso_path}: {detail}")
+
+
+class PlaceholderDiscBurner:
+    def burn(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+        raise RuntimeError(f"optical burn not implemented for {copy_id} on {device}")
+
+
+class PlaceholderBurnedMediaVerifier:
+    def verify(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+        raise RuntimeError(f"burned-media verification not implemented for {copy_id} on {device}")
+
+
+class TerminalBurnPrompts:
+    def wait_for_blank_disc(self, copy_id: str, *, device: str) -> None:
+        typer.echo(
+            (
+                f"Insert blank media for {copy_id} into {device}, "
+                "then press Enter to continue."
+            ),
+            err=True,
+        )
+        try:
+            input()
+        except EOFError as exc:  # pragma: no cover - exercised via subprocess acceptance tests
+            raise RuntimeError("stdin closed while waiting for blank media") from exc
+
+    def confirm_label(self, copy_id: str, *, label_text: str) -> None:
+        typer.echo(
+            f'Type "labeled" after writing "{label_text}" on disc {copy_id}.',
+            err=True,
+        )
+        try:
+            response = input().strip()
+        except EOFError as exc:  # pragma: no cover - exercised via subprocess acceptance tests
+            raise RuntimeError("stdin closed while waiting for label confirmation") from exc
+        if response.casefold() != "labeled":
+            raise RuntimeError(f"label confirmation required for {copy_id}")
+
+    def prompt_location(self, copy_id: str) -> str:
+        typer.echo(f"Enter the storage location for {copy_id}.", err=True)
+        try:
+            response = input().strip()
+        except EOFError as exc:  # pragma: no cover - exercised via subprocess acceptance tests
+            raise RuntimeError("stdin closed while waiting for storage location") from exc
+        if not response:
+            raise RuntimeError(f"storage location required for {copy_id}")
+        return response
+
+    def confirm_unlabeled_copy_available(self, copy_id: str) -> bool:
+        typer.echo(
+            f"Is the already-burned unlabeled disc for {copy_id} still available? [y/N]",
+            err=True,
+        )
+        try:
+            response = input().strip().casefold()
+        except EOFError as exc:  # pragma: no cover - exercised via subprocess acceptance tests
+            raise RuntimeError("stdin closed while confirming unlabeled disc availability") from exc
+        return response in {"y", "yes"}
+
+
+def build_iso_verifier() -> object:
+    spec = os.getenv("ARC_DISC_ISO_VERIFIER_FACTORY")
+    if spec:
+        return _load_factory(spec)
+    return XorrisoIsoVerifier()
+
+
+def build_disc_burner() -> object:
+    spec = os.getenv("ARC_DISC_BURNER_FACTORY")
+    if spec:
+        return _load_factory(spec)
+    return PlaceholderDiscBurner()
+
+
+def build_burned_media_verifier() -> object:
+    spec = os.getenv("ARC_DISC_BURNED_MEDIA_VERIFIER_FACTORY")
+    if spec:
+        return _load_factory(spec)
+    return PlaceholderBurnedMediaVerifier()
+
+
+def build_burn_prompts() -> object:
+    spec = os.getenv("ARC_DISC_BURN_PROMPTS_FACTORY")
+    if spec:
+        return _load_factory(spec)
+    return TerminalBurnPrompts()
 
 
 def _copy_from_manifest(payload: dict[str, Any]) -> RecoveryCopyHint:
@@ -161,6 +384,270 @@ def _prompt_for_disc(copy: RecoveryCopyHint, *, device: str) -> None:
         input()
     except EOFError as exc:  # pragma: no cover - exercised via subprocess acceptance tests
         raise RuntimeError("stdin closed while waiting for disc insertion") from exc
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                return digest.hexdigest()
+            digest.update(chunk)
+
+
+def _burn_state_path(staging_dir: Path) -> Path:
+    return staging_dir / "burn-session.json"
+
+
+def _staged_iso_path(staging_dir: Path, *, image_id: str, filename: str) -> Path:
+    return staging_dir / image_id / filename
+
+
+def _storage_guidance(copy_id: str) -> str:
+    ordinal = copy_id.rsplit("-", 1)[-1]
+    if ordinal == "1":
+        return "Store this first copy in your primary archive location."
+    return "Store this copy in a different physical location from the first copy."
+
+
+def _copy_label(copy_payload: dict[str, Any]) -> str:
+    label = copy_payload.get("label_text")
+    return str(label if label is not None else copy_payload.get("id"))
+
+
+def _iter_paged_payloads(fetch_page) -> list[dict[str, Any]]:
+    page = 1
+    payload = fetch_page(page)
+    results = [payload]
+    pages = int(payload.get("pages", 0))
+    while page < pages:
+        page += 1
+        results.append(fetch_page(page))
+    return results
+
+
+def _discover_burn_backlog(client: ApiClient) -> list[BurnBacklogItem]:
+    items: list[BurnBacklogItem] = []
+
+    for payload in _iter_paged_payloads(
+        lambda page: client.get_plan(
+            page=page,
+            per_page=100,
+            sort="fill",
+            order="desc",
+            iso_ready=True,
+        )
+    ):
+        for candidate in payload.get("candidates", []):
+            if not isinstance(candidate, dict) or not candidate.get("iso_ready"):
+                continue
+            items.append(
+                BurnBacklogItem(
+                    image_id=None,
+                    candidate_id=str(candidate["candidate_id"]),
+                    filename=f"{candidate['candidate_id']}.iso",
+                    fill=float(candidate.get("fill", 0)),
+                )
+            )
+
+    for payload in _iter_paged_payloads(
+        lambda page: client.list_images(page=page, per_page=100, sort="finalized_at", order="desc")
+    ):
+        for image in payload.get("images", []):
+            if not isinstance(image, dict):
+                continue
+            registered = int(image.get("physical_copies_registered", 0))
+            required = int(image.get("physical_copies_required", 0))
+            if registered >= required:
+                continue
+            items.append(
+                BurnBacklogItem(
+                    image_id=str(image["id"]),
+                    candidate_id=None,
+                    filename=str(image["filename"]),
+                    fill=float(image.get("fill", 0)),
+                )
+            )
+
+    return sorted(
+        items,
+        key=lambda item: (item.fill, item.image_id or item.candidate_id or ""),
+        reverse=True,
+    )
+
+
+def _ensure_staged_iso(
+    client: ApiClient,
+    image_id: str,
+    filename: str,
+    *,
+    staging_dir: Path,
+    verifier: Any,
+    session_state: BurnSessionState,
+) -> Path:
+    image_progress = session_state.image_progress(image_id)
+    iso_path = _staged_iso_path(staging_dir, image_id=image_id, filename=filename)
+    iso_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if iso_path.is_file() and image_progress.verified_sha256 is not None:
+        if _sha256_file(iso_path) == image_progress.verified_sha256:
+            typer.echo(f"reusing staged ISO {iso_path}", err=True)
+            return iso_path
+        typer.echo(f"staged ISO is invalid at {iso_path}; re-downloading", err=True)
+    elif iso_path.is_file():
+        typer.echo(f"staged ISO is unverified at {iso_path}; re-downloading", err=True)
+    else:
+        typer.echo(f"staged ISO is missing at {iso_path}; re-downloading", err=True)
+
+    typer.echo(f"downloading ISO {image_id} to {iso_path}", err=True)
+    client.download_iso(image_id, iso_path)
+    typer.echo(f"verifying staged ISO {iso_path}", err=True)
+    verifier.verify(iso_path)
+    image_progress.verified_sha256 = _sha256_file(iso_path)
+    session_state.save()
+    return iso_path
+
+
+def _register_burned_copy(
+    client: ApiClient,
+    image_id: str,
+    copy_id: str,
+    *,
+    location: str,
+) -> None:
+    client.register_copy(image_id, location, copy_id=copy_id)
+    client.update_copy(
+        image_id,
+        copy_id,
+        location=location,
+        state="verified",
+        verification_state="verified",
+    )
+
+
+def _burn_pending_copy(
+    copy_payload: dict[str, Any],
+    *,
+    client: ApiClient,
+    image_id: str,
+    filename: str,
+    staging_dir: Path,
+    session_state: BurnSessionState,
+    iso_verifier: Any,
+    burner: Any,
+    media_verifier: Any,
+    prompts: Any,
+    device: str,
+) -> str:
+    copy_id = str(copy_payload["id"])
+    progress = session_state.copy_progress(image_id, copy_id)
+
+    if progress.burned and not progress.label_confirmed:
+        typer.echo(
+            f"checking whether the unlabeled disc for {copy_id} is still available",
+            err=True,
+        )
+        if not prompts.confirm_unlabeled_copy_available(copy_id):
+            typer.echo(
+                f"unlabeled disc for {copy_id} is unavailable; restarting burn",
+                err=True,
+            )
+            progress = BurnCopyProgress()
+            session_state.image_progress(image_id).copies[copy_id] = progress
+            session_state.save()
+
+    iso_path = _ensure_staged_iso(
+        client,
+        image_id,
+        filename,
+        staging_dir=staging_dir,
+        verifier=iso_verifier,
+        session_state=session_state,
+    )
+
+    if not progress.burned:
+        prompts.wait_for_blank_disc(copy_id, device=device)
+        typer.echo(f"burning copy {copy_id} from {iso_path}", err=True)
+        burner.burn(iso_path, device=device, copy_id=copy_id)
+        progress.burned = True
+        session_state.save()
+
+    if not progress.media_verified:
+        typer.echo(f"verifying burned media for {copy_id}", err=True)
+        media_verifier.verify(iso_path, device=device, copy_id=copy_id)
+        progress.media_verified = True
+        session_state.save()
+
+    if progress.label_confirmed:
+        typer.echo(f"resuming label confirmation for {copy_id}", err=True)
+    else:
+        if progress.burned and progress.media_verified:
+            typer.echo(f"resuming label confirmation for {copy_id}", err=True)
+        else:
+            typer.echo(f"awaiting label confirmation for {copy_id}", err=True)
+        typer.echo(f"label text: {_copy_label(copy_payload)}", err=True)
+        typer.echo(f"storage guidance: {_storage_guidance(copy_id)}", err=True)
+        prompts.confirm_label(copy_id, label_text=_copy_label(copy_payload))
+        progress.label_confirmed = True
+        progress.location = prompts.prompt_location(copy_id)
+        session_state.save()
+
+    if progress.location is None:
+        raise RuntimeError(f"storage location required for {copy_id}")
+    _register_burned_copy(client, image_id, copy_id, location=progress.location)
+    return copy_id
+
+
+def _process_burn_backlog_item(
+    item: BurnBacklogItem,
+    *,
+    client: ApiClient,
+    staging_dir: Path,
+    session_state: BurnSessionState,
+    iso_verifier: Any,
+    burner: Any,
+    media_verifier: Any,
+    prompts: Any,
+    device: str,
+) -> list[str]:
+    if item.image_id is None:
+        assert item.candidate_id is not None
+        typer.echo(
+            f"selected candidate {item.candidate_id} for finalization (fill={item.fill:.3f})",
+            err=True,
+        )
+        image_payload = client.finalize_image(item.candidate_id)
+        image_id = str(image_payload["id"])
+        filename = str(image_payload["filename"])
+    else:
+        image_id = item.image_id
+        filename = item.filename
+        typer.echo(f"selected image {image_id} (fill={item.fill:.3f})", err=True)
+
+    payload = client.list_copies(image_id)
+    completed: list[str] = []
+    for copy_payload in payload.get("copies", []):
+        if not isinstance(copy_payload, dict):
+            continue
+        if str(copy_payload.get("state")) in {"registered", "verified"}:
+            continue
+        completed.append(
+            _burn_pending_copy(
+                copy_payload,
+                client=client,
+                image_id=image_id,
+                filename=filename,
+                staging_dir=staging_dir,
+                session_state=session_state,
+                iso_verifier=iso_verifier,
+                burner=burner,
+                media_verifier=media_verifier,
+                prompts=prompts,
+                device=device,
+            )
+        )
+    return completed
 
 
 @dataclass(slots=True)
@@ -320,6 +807,61 @@ def fetch_cmd(
         raise typer.Exit(code=1) from exc
 
     emit(payload, json_mode=json_mode)
+
+
+@app.command("burn")
+def burn_cmd(
+    device: Annotated[str, typer.Option("--device", help="Optical device path")] = "/dev/sr0",
+    staging_dir: Annotated[
+        Path | None,
+        typer.Option("--staging-dir", help="Local staging directory for ISO downloads"),
+    ] = None,
+) -> None:
+    try:
+        client = ApiClient()
+        iso_verifier = build_iso_verifier()
+        burner = build_disc_burner()
+        media_verifier = build_burned_media_verifier()
+        prompts = build_burn_prompts()
+        resolved_staging_dir = (
+            staging_dir
+            or (
+                Path(os.getenv("ARC_DISC_STAGING_DIR"))
+                if os.getenv("ARC_DISC_STAGING_DIR")
+                else Path(".arc-disc-staging")
+            )
+        ).expanduser()
+        session_state = BurnSessionState.load(_burn_state_path(resolved_staging_dir))
+        completed_copy_ids: list[str] = []
+
+        while True:
+            backlog = _discover_burn_backlog(client)
+            if not backlog:
+                break
+            completed_copy_ids.extend(
+                _process_burn_backlog_item(
+                    backlog[0],
+                    client=client,
+                    staging_dir=resolved_staging_dir,
+                    session_state=session_state,
+                    iso_verifier=iso_verifier,
+                    burner=burner,
+                    media_verifier=media_verifier,
+                    prompts=prompts,
+                    device=device,
+                )
+            )
+
+    except (ArcError, RuntimeError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if completed_copy_ids:
+        typer.echo("burn backlog cleared")
+        for copy_id in completed_copy_ids:
+            typer.echo(copy_id)
+        return
+    typer.echo("burn backlog already clear")
 
 
 def main() -> None:

@@ -810,6 +810,71 @@ def given_arc_disc_reader_failure_for_copy(
     acceptance_system.configure_arc_disc_fixture(fetch_id="fx-1", fail_copy_ids={copy_id})
 
 
+@given(
+    parsers.parse(
+        'the burn fixture confirms labeled copy id "{copy_id}" at location "{location}"'
+    )
+)
+@when(
+    parsers.parse(
+        'the burn fixture confirms labeled copy id "{copy_id}" at location "{location}"'
+    )
+)
+def given_burn_fixture_confirms_labeled_copy(
+    acceptance_system: AcceptanceSystem,
+    copy_id: str,
+    location: str,
+) -> None:
+    acceptance_system.confirm_arc_disc_burn_copy(copy_id, location=location)
+
+
+@given(parsers.parse('the burn fixture says unlabeled copy id "{copy_id}" is still available'))
+@when(parsers.parse('the burn fixture says unlabeled copy id "{copy_id}" is still available'))
+def given_burn_fixture_says_unlabeled_copy_is_available(
+    acceptance_system: AcceptanceSystem,
+    copy_id: str,
+) -> None:
+    acceptance_system.set_arc_disc_burn_copy_available(copy_id, available=True)
+
+
+@given(parsers.parse('the burn fixture says unlabeled copy id "{copy_id}" is unavailable'))
+@when(parsers.parse('the burn fixture says unlabeled copy id "{copy_id}" is unavailable'))
+def given_burn_fixture_says_unlabeled_copy_is_unavailable(
+    acceptance_system: AcceptanceSystem,
+    copy_id: str,
+) -> None:
+    acceptance_system.set_arc_disc_burn_copy_available(copy_id, available=False)
+
+
+@given(parsers.parse('the burn fixture fails while burning copy id "{copy_id}"'))
+def given_burn_fixture_fails_while_burning_copy(
+    acceptance_system: AcceptanceSystem,
+    copy_id: str,
+) -> None:
+    acceptance_system.fail_arc_disc_burn_copy(copy_id)
+
+
+@given(parsers.parse('the burn fixture fails while verifying burned media for copy id "{copy_id}"'))
+def given_burn_fixture_fails_while_verifying_burned_media(
+    acceptance_system: AcceptanceSystem,
+    copy_id: str,
+) -> None:
+    acceptance_system.fail_arc_disc_burn_copy_verification(copy_id)
+
+
+@when("the burn fixture clears all burn failures")
+def when_burn_fixture_clears_failures(acceptance_system: AcceptanceSystem) -> None:
+    acceptance_system.clear_arc_disc_burn_failures()
+
+
+@when(parsers.parse('the staged ISO for image "{image_id}" is corrupted'))
+def when_staged_iso_is_corrupted(
+    acceptance_system: AcceptanceSystem,
+    image_id: str,
+) -> None:
+    acceptance_system.corrupt_arc_disc_staged_iso(image_id)
+
+
 @given(parsers.parse('fetch "{fetch_id}" exists with entry "{entry_id}"'))
 def given_fetch_exists_with_entry(
     acceptance_system: AcceptanceSystem,
@@ -1268,6 +1333,8 @@ def when_operator_runs_command(
         return
 
     if argv[0] == "arc-disc":
+        if len(argv) > 1 and argv[1] == "burn":
+            require_xorriso()
         acceptance_context.command = acceptance_system.run_arc_disc(*argv[1:])
         return
 
@@ -2485,7 +2552,12 @@ def then_command_exits_with_code(
     acceptance_context: AcceptanceScenarioContext,
     exit_code: int,
 ) -> None:
-    assert _require_command(acceptance_context).returncode == exit_code
+    command = _require_command(acceptance_context)
+    assert command.returncode == exit_code, (
+        f"expected exit code {exit_code}, got {command.returncode}\n"
+        f"stdout:\n{command.stdout}\n"
+        f"stderr:\n{command.stderr}"
+    )
 
 
 @then("the command exits non-zero")
@@ -2572,6 +2644,49 @@ def then_target_for_fetch_is_hot(
     assert files_resp.status_code == 200, files_resp.text
     files = files_resp.json()["files"]
     assert bool(files) and all(record["hot"] for record in files)
+
+
+@then(parsers.parse('image "{image_id}" has physical_copies_registered {count:d}'))
+def then_image_has_physical_copies_registered(
+    acceptance_system: AcceptanceSystem,
+    image_id: str,
+    count: int,
+) -> None:
+    resp = acceptance_system.request("GET", f"/v1/images/{image_id}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["physical_copies_registered"] == count
+
+
+@then(parsers.parse('copy "{copy_id}" for image "{image_id}" state is "{state}"'))
+def then_copy_for_image_state_is(
+    acceptance_system: AcceptanceSystem,
+    copy_id: str,
+    image_id: str,
+    state: str,
+) -> None:
+    resp = acceptance_system.request("GET", f"/v1/images/{image_id}/copies")
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()["copies"]
+    copy = next(item for item in payload if item["id"] == copy_id)
+    assert copy["state"] == state
+
+
+@then(
+    parsers.parse(
+        'copy "{copy_id}" for image "{image_id}" verification_state is "{verification_state}"'
+    )
+)
+def then_copy_for_image_verification_state_is(
+    acceptance_system: AcceptanceSystem,
+    copy_id: str,
+    image_id: str,
+    verification_state: str,
+) -> None:
+    resp = acceptance_system.request("GET", f"/v1/images/{image_id}/copies")
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()["copies"]
+    copy = next(item for item in payload if item["id"] == copy_id)
+    assert copy["verification_state"] == verification_state
 
 
 @then("the downloaded ISO passes xorriso verification")
@@ -2767,6 +2882,14 @@ def then_stderr_mentions_text(
     text: str,
 ) -> None:
     assert text in _require_command(acceptance_context).stderr
+
+
+@then(parsers.parse('stderr does not mention "{text}"'))
+def then_stderr_does_not_mention_text(
+    acceptance_context: AcceptanceScenarioContext,
+    text: str,
+) -> None:
+    assert text not in _require_command(acceptance_context).stderr
 
 
 @then(parsers.parse('stderr does not mention copy id "{copy_id}"'))

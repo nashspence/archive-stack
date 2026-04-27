@@ -130,6 +130,29 @@ def test_list_collection_files_uses_unambiguous_collection_files_endpoint(monkey
     assert captured == ["https://api.test/v1/collection-files/tax/files"]
 
 
+def test_finalize_image_uses_candidate_finalize_endpoint(monkeypatch) -> None:
+    captured: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append((request.method, str(request.url)))
+        return httpx.Response(200, json={"id": "20260420T040001Z"})
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_client(self: ApiClient) -> httpx.Client:
+        return httpx.Client(base_url=self.base_url, transport=transport)
+
+    monkeypatch.setattr(ApiClient, "_client", fake_client)
+
+    client = ApiClient(base_url="https://api.test")
+    payload = client.finalize_image("img_2026-04-20_01")
+
+    assert payload["id"] == "20260420T040001Z"
+    assert captured == [
+        ("POST", "https://api.test/v1/plan/candidates/img_2026-04-20_01/finalize")
+    ]
+
+
 def test_create_or_resume_fetch_entry_upload_uses_manifest_entry_endpoint(monkeypatch) -> None:
     captured: list[tuple[str, str]] = []
 

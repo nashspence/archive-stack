@@ -145,6 +145,9 @@ class ApiClient:
             params["has_copies"] = has_copies
         return self._json("GET", "/v1/images", params=params)
 
+    def finalize_image(self, candidate_id: str) -> dict[str, Any]:
+        return self._json("POST", f"/v1/plan/candidates/{candidate_id}/finalize")
+
     def get_image(self, image_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/images/{image_id}")
 
