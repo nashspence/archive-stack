@@ -21,6 +21,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.app
+    restart: unless-stopped
     depends_on:
       seaweedfs:
         condition: service_healthy
@@ -29,6 +30,19 @@ services:
       ARC_DB_PATH: ${ARC_DB_PATH}
       INCOMPLETE_UPLOAD_TTL: ${INCOMPLETE_UPLOAD_TTL:-24h}
       UPLOAD_EXPIRY_SWEEP_INTERVAL: ${UPLOAD_EXPIRY_SWEEP_INTERVAL:-30s}
+      ARC_ENABLE_TEST_CONTROL: ${ARC_ENABLE_TEST_CONTROL:-0}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import json, urllib.request; payload = json.load(urllib.request.urlopen('http://127.0.0.1:8000/healthz')); assert payload['status'] == 'ok'",
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
     ports:
       - "${ARC_API_PORT:-8000}:8000"
     volumes:
@@ -40,6 +54,9 @@ services:
       dockerfile: Dockerfile.test
     environment:
       ARC_TEST_EXTERNAL_SEAWEEDFS_BASE_URL: ${ARC_TEST_EXTERNAL_SEAWEEDFS_BASE_URL:-http://seaweedfs:8888}
+      ARC_TEST_EXTERNAL_APP_BASE_URL: ${ARC_TEST_EXTERNAL_APP_BASE_URL:-http://app:8000}
+      ARC_TEST_EXTERNAL_APP_DB_PATH: ${ARC_TEST_EXTERNAL_APP_DB_PATH:-/app/.compose/state.sqlite3}
+      ARC_TEST_EXTERNAL_APP_FILER_URL: ${ARC_TEST_EXTERNAL_APP_FILER_URL:-http://seaweedfs:8888/compose-app}
       PYTHONPATH: /app:/app/src
     volumes:
       - .:/app

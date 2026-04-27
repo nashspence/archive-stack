@@ -32,7 +32,8 @@ The default example env exposes:
 ## Run the canonical tests
 
 The preferred deterministic test path is still `./test`, which keeps `pytest` inside
-the canonical test container while using the same compose surface for sidecars:
+the canonical test container while using the same compose surface for the checked-in
+`app` service and its sidecars:
 
 ```bash
 ./test

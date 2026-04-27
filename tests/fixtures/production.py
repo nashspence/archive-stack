@@ -17,7 +17,6 @@ import httpx
 import pytest
 from sqlalchemy import select
 
-from arc_api.app import create_app
 from arc_core.catalog_models import (
     ActivePinRecord,
     CandidateCoveredPathRecord,
@@ -37,7 +36,7 @@ from arc_core.domain.selectors import parse_target
 from arc_core.domain.types import CollectionId, CopyId, FetchId, TargetStr
 from arc_core.fs_paths import normalize_collection_id
 from arc_core.sqlite_db import make_session_factory, session_scope
-from tests.fixtures.acceptance import REPO_ROOT, SRC_ROOT, _LiveServerHandle, _reserve_local_port
+from tests.fixtures.acceptance import REPO_ROOT, SRC_ROOT, _reserve_local_port
 from tests.fixtures.data import (
     DOCS_COLLECTION_ID,
     DOCS_FILES,
@@ -58,10 +57,21 @@ from tests.fixtures.data import (
 )
 from tests.timing_profile import time_block
 
+_APP_START_TIMEOUT = 15.0
 _SEAWEEDFS_START_TIMEOUT = 15.0
 _SEAWEEDFS_REQUEST_TIMEOUT = 5.0
-_UPLOAD_EXPIRY_SWEEP_INTERVAL_SECONDS = 0.05
+_APP_REQUEST_TIMEOUT = 5.0
 _EXTERNAL_SEAWEEDFS_BASE_URL_ENV = "ARC_TEST_EXTERNAL_SEAWEEDFS_BASE_URL"
+_EXTERNAL_APP_BASE_URL_ENV = "ARC_TEST_EXTERNAL_APP_BASE_URL"
+_EXTERNAL_APP_DB_PATH_ENV = "ARC_TEST_EXTERNAL_APP_DB_PATH"
+_EXTERNAL_APP_FILER_URL_ENV = "ARC_TEST_EXTERNAL_APP_FILER_URL"
+_EXTERNAL_APP_RESTART_PATH_ENV = "ARC_TEST_EXTERNAL_APP_RESTART_PATH"
+_EXTERNAL_APP_RESET_PATH_ENV = "ARC_TEST_EXTERNAL_APP_RESET_PATH"
+_DEFAULT_EXTERNAL_APP_BASE_URL = "http://app:8000"
+_DEFAULT_EXTERNAL_APP_DB_PATH = "/app/.compose/state.sqlite3"
+_DEFAULT_EXTERNAL_APP_FILER_URL = "http://seaweedfs:8888/compose-app"
+_DEFAULT_EXTERNAL_APP_RESTART_PATH = "/_test/restart"
+_DEFAULT_EXTERNAL_APP_RESET_PATH = "/_test/reset"
 
 
 @dataclass(slots=True)
@@ -164,6 +174,81 @@ def _external_seaweedfs_server() -> _SeaweedFSServerHandle | None:
         raise RuntimeError(f"{_EXTERNAL_SEAWEEDFS_BASE_URL_ENV} must not be empty")
 
     handle = _SeaweedFSServerHandle(base_url=base_url)
+    handle.wait_until_ready()
+    return handle
+
+
+@dataclass(slots=True)
+class _ExternalAppHandle:
+    base_url: str
+    reset_path: str
+    restart_path: str
+    instance_id: str | None = None
+
+    def wait_until_ready(self, *, previous_instance_id: str | None = None) -> str:
+        deadline = time.monotonic() + _APP_START_TIMEOUT
+        last_error: Exception | None = None
+        while time.monotonic() < deadline:
+            try:
+                with httpx.Client(base_url=self.base_url, timeout=0.5) as client:
+                    response = client.get("/healthz")
+                if response.status_code != 200:
+                    time.sleep(0.05)
+                    continue
+                payload = response.json()
+                instance_id = str(payload["instance_id"])
+                if previous_instance_id is not None and instance_id == previous_instance_id:
+                    time.sleep(0.05)
+                    continue
+                self.instance_id = instance_id
+                return instance_id
+            except Exception as exc:  # pragma: no cover - readiness race
+                last_error = exc
+            time.sleep(0.05)
+        raise RuntimeError(
+            f"Timed out waiting for compose-managed app at {self.base_url}"
+        ) from last_error
+
+    def restart(self) -> None:
+        previous_instance_id = self.instance_id
+        try:
+            with httpx.Client(base_url=self.base_url, timeout=_APP_REQUEST_TIMEOUT) as client:
+                response = client.post(self.restart_path)
+            if response.status_code != 202:
+                response.raise_for_status()
+        except httpx.HTTPError:
+            # The process can exit before the response fully flushes. The follow-up
+            # readiness check below is the authoritative signal that the service
+            # recycled through the compose-managed runtime path.
+            pass
+        self.wait_until_ready(previous_instance_id=previous_instance_id)
+
+    def reset(self) -> None:
+        with httpx.Client(base_url=self.base_url, timeout=_APP_REQUEST_TIMEOUT) as client:
+            response = client.post(self.reset_path)
+        if response.status_code != 204:
+            response.raise_for_status()
+        self.wait_until_ready()
+
+    def close(self) -> None:
+        return None
+
+
+def _external_app_server() -> _ExternalAppHandle:
+    base_url = os.environ.get(
+        _EXTERNAL_APP_BASE_URL_ENV, _DEFAULT_EXTERNAL_APP_BASE_URL
+    ).rstrip("/")
+    if not base_url:
+        raise RuntimeError(f"{_EXTERNAL_APP_BASE_URL_ENV} must not be empty")
+    restart_path = os.environ.get(
+        _EXTERNAL_APP_RESTART_PATH_ENV, _DEFAULT_EXTERNAL_APP_RESTART_PATH
+    )
+    reset_path = os.environ.get(_EXTERNAL_APP_RESET_PATH_ENV, _DEFAULT_EXTERNAL_APP_RESET_PATH)
+    handle = _ExternalAppHandle(
+        base_url=base_url,
+        reset_path=reset_path,
+        restart_path=restart_path,
+    )
     handle.wait_until_ready()
     return handle
 
@@ -534,45 +619,35 @@ class ProductionSystem:
     workspace: Path
     filer_url: str
     seaweedfs: _SeaweedFSServerHandle
-    server: _LiveServerHandle
+    server: _ExternalAppHandle
     base_url: str
+    db_path: Path
     fixture_path: Path
-    previous_arc_seaweedfs_filer_url: str | None
-    previous_arc_db_path: str | None
     collections: ProductionCollectionsClient
     fetches: ProductionFetchesClient
     state: ProductionStateClient
     planning: ProductionPlanningClient
     copies: ProductionCopiesClient
 
-    @property
-    def db_path(self) -> Path:
-        return (self.workspace / ".arc" / "state.sqlite3").resolve()
-
     @classmethod
     def create(
         cls, workspace: Path, seaweedfs: _SeaweedFSServerHandle
     ) -> ProductionSystem:
         with time_block("fixture.acceptance_system.create"):
-            previous_arc_seaweedfs_filer_url = os.environ.get("ARC_SEAWEEDFS_FILER_URL")
-            previous_arc_db_path = os.environ.get("ARC_DB_PATH")
-            filer_url = f"{seaweedfs.base_url}/test-fixtures/{workspace.name}"
-            os.environ["ARC_SEAWEEDFS_FILER_URL"] = filer_url
-            os.environ["ARC_DB_PATH"] = str((workspace / ".arc" / "state.sqlite3").resolve())
-            app = create_app(upload_expiry_reaper_interval=_UPLOAD_EXPIRY_SWEEP_INTERVAL_SECONDS)
+            filer_url = os.environ.get(_EXTERNAL_APP_FILER_URL_ENV, _DEFAULT_EXTERNAL_APP_FILER_URL)
+            db_path = Path(
+                os.environ.get(_EXTERNAL_APP_DB_PATH_ENV, _DEFAULT_EXTERNAL_APP_DB_PATH)
+            ).expanduser().resolve()
             fixture_path = workspace / "arc_disc_fixture.json"
-            with _reserve_local_port() as reserved:
-                server = _LiveServerHandle(app, host="127.0.0.1", port=reserved.port)
-            server.start()
+            server = _external_app_server()
             system = cls(
                 workspace=workspace,
                 filer_url=filer_url,
                 seaweedfs=seaweedfs,
                 server=server,
                 base_url=server.base_url,
+                db_path=db_path,
                 fixture_path=fixture_path,
-                previous_arc_seaweedfs_filer_url=previous_arc_seaweedfs_filer_url,
-                previous_arc_db_path=previous_arc_db_path,
                 collections=cast(ProductionCollectionsClient, None),
                 fetches=cast(ProductionFetchesClient, None),
                 state=cast(ProductionStateClient, None),
@@ -584,22 +659,22 @@ class ProductionSystem:
             system.state = ProductionStateClient(system)
             system.planning = ProductionPlanningClient(system)
             system.copies = ProductionCopiesClient(system)
+            system.reset()
             return system
 
     def close(self) -> None:
         with time_block("fixture.acceptance_system.close"):
             self.server.close()
-            self._restore_environment()
 
     def restart(self) -> None:
         with time_block("fixture.acceptance_system.restart"):
-            self.server.close()
-            app = create_app(upload_expiry_reaper_interval=_UPLOAD_EXPIRY_SWEEP_INTERVAL_SECONDS)
-            with _reserve_local_port() as reserved:
-                server = _LiveServerHandle(app, host="127.0.0.1", port=reserved.port)
-            server.start()
-            self.server = server
-            self.base_url = server.base_url
+            self.server.restart()
+            self.base_url = self.server.base_url
+
+    def reset(self) -> None:
+        with time_block("fixture.acceptance_system.reset"):
+            self._clear_fixture_path()
+            self.server.reset()
 
     def request(
         self,
@@ -1096,6 +1171,10 @@ class ProductionSystem:
             time.sleep(0.05)
         raise AssertionError(f"timed out waiting for fetch upload cleanup: {fetch_id}/{entry_id}")
 
+    def _clear_fixture_path(self) -> None:
+        if self.fixture_path.exists():
+            self.fixture_path.unlink()
+
     def _subprocess_env(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
         env = os.environ.copy()
         pythonpath_parts = [str(ROOT) for ROOT in (SRC_ROOT, REPO_ROOT)]
@@ -1139,17 +1218,6 @@ class ProductionSystem:
             part_count,
         )[part_index]
 
-    def _restore_environment(self) -> None:
-        if self.previous_arc_seaweedfs_filer_url is None:
-            os.environ.pop("ARC_SEAWEEDFS_FILER_URL", None)
-        else:
-            os.environ["ARC_SEAWEEDFS_FILER_URL"] = self.previous_arc_seaweedfs_filer_url
-
-        if self.previous_arc_db_path is None:
-            os.environ.pop("ARC_DB_PATH", None)
-        else:
-            os.environ["ARC_DB_PATH"] = self.previous_arc_db_path
-
     def _collection_exists(self, collection_id: str) -> bool:
         response = self.request("GET", f"/v1/collections/{collection_id}")
         if response.status_code == 200:
@@ -1179,8 +1247,13 @@ def seaweedfs_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_Seaw
 def acceptance_system(
     tmp_path: Path, seaweedfs_server: _SeaweedFSServerHandle
 ) -> Iterator[ProductionSystem]:
-    system = ProductionSystem.create(tmp_path, seaweedfs_server)
+    workspace = (REPO_ROOT / ".tmp" / "acceptance" / tmp_path.name).resolve()
+    if workspace.exists():
+        shutil.rmtree(workspace)
+    workspace.mkdir(parents=True, exist_ok=True)
+    system = ProductionSystem.create(workspace, seaweedfs_server)
     try:
         yield system
     finally:
         system.close()
+        shutil.rmtree(workspace, ignore_errors=True)

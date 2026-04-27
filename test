@@ -100,9 +100,11 @@ fi
 compose build test
 
 if [[ "${REQUIRES_SIDECARS}" == "1" ]]; then
-  compose build seaweedfs
+  export ARC_ENABLE_TEST_CONTROL="${ARC_ENABLE_TEST_CONTROL:-1}"
+  export UPLOAD_EXPIRY_SWEEP_INTERVAL="${UPLOAD_EXPIRY_SWEEP_INTERVAL:-1s}"
+  compose build seaweedfs app
   compose down --volumes --remove-orphans >/dev/null 2>&1 || true
-  compose up --detach --wait seaweedfs
+  compose up --detach --wait seaweedfs app
 fi
 
 run_test_container() {
