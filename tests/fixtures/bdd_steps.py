@@ -512,16 +512,27 @@ def _prepare_arc_expectation(
     if argv[1] == "show" and "--files" in argv:
         collection_id = argv[2]
         context.expected_api_endpoint = ("GET", f"/v1/collection-files/{collection_id}")
+        params = {
+            "page": _arc_option_value(argv, "--page", 1),
+            "per_page": _arc_option_value(argv, "--per-page", 25),
+        }
         context.expected_api_payload = acceptance_system.request(
-            "GET", f"/v1/collection-files/{quote(collection_id, safe='/')}"
+            "GET",
+            f"/v1/collection-files/{quote(collection_id, safe='/')}",
+            params=params,
         ).json()
         return
 
     if argv[1] == "status":
         target = argv[2]
         context.expected_api_endpoint = ("GET", "/v1/files")
+        params = {
+            "target": target,
+            "page": _arc_option_value(argv, "--page", 1),
+            "per_page": _arc_option_value(argv, "--per-page", 25),
+        }
         context.expected_api_payload = acceptance_system.request(
-            "GET", "/v1/files", params={"target": target}
+            "GET", "/v1/files", params=params
         ).json()
         return
 

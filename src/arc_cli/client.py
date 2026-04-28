@@ -242,11 +242,31 @@ class ApiClient:
     def complete_fetch(self, fetch_id: str) -> dict[str, Any]:
         return self._json("POST", f"/v1/fetches/{fetch_id}/complete")
 
-    def list_collection_files(self, collection_id: str) -> dict[str, Any]:
-        return self._json("GET", f"/v1/collection-files/{quote(collection_id, safe='/')}")
+    def list_collection_files(
+        self,
+        collection_id: str,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+    ) -> dict[str, Any]:
+        return self._json(
+            "GET",
+            f"/v1/collection-files/{quote(collection_id, safe='/')}",
+            params={"page": page, "per_page": per_page},
+        )
 
-    def query_files(self, target: str) -> dict[str, Any]:
-        return self._json("GET", "/v1/files", params={"target": target})
+    def query_files(
+        self,
+        target: str,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+    ) -> dict[str, Any]:
+        return self._json(
+            "GET",
+            "/v1/files",
+            params={"target": target, "page": page, "per_page": per_page},
+        )
 
     def get_file_content(self, target: str, output: Path | None = None) -> bytes:
         response = self._request("GET", f"/v1/files/{quote(target, safe='/')}/content")

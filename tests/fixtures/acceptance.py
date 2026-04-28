@@ -1923,9 +1923,14 @@ class AcceptanceFileService:
     def __init__(self, state: AcceptanceState) -> None:
         self.state = state
 
-    def list_collection_files(self, collection_id: str) -> list[dict[str, object]]:
-        records = self.state.collection_files(collection_id)
-        return sorted(
+    def list_collection_files(
+        self,
+        collection_id: str,
+        *,
+        page: int,
+        per_page: int,
+    ) -> dict[str, object]:
+        records = sorted(
             [
                 {
                     "path": record.path,
@@ -1933,26 +1938,59 @@ class AcceptanceFileService:
                     "hot": record.hot,
                     "archived": record.archived,
                 }
-                for record in records
+                for record in self.state.collection_files(collection_id)
             ],
             key=lambda r: str(r["path"]),
         )
+        total = len(records)
+        pages = math.ceil(total / per_page) if total else 0
+        start = (page - 1) * per_page
+        return {
+            "collection_id": collection_id,
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "pages": pages,
+            "files": records[start : start + per_page],
+        }
 
-    def query_by_target(self, raw_target: str) -> list[dict[str, object]]:
+    def query_by_target(
+        self,
+        raw_target: str,
+        *,
+        page: int,
+        per_page: int,
+    ) -> dict[str, object]:
+        from arc_core.domain.selectors import parse_target
+
+        target = parse_target(raw_target)
         selected = self.state.selected_files(raw_target, missing_ok=True)
-        result = [
-            {
-                "target": record.projected_target,
-                "collection": str(record.collection_id),
-                "path": record.path,
-                "bytes": record.bytes,
-                "sha256": str(record.sha256),
-                "hot": record.hot,
-                "archived": record.archived,
-            }
-            for record in selected
-        ]
-        return sorted(result, key=lambda r: str(r["target"]))
+        result = sorted(
+            [
+                {
+                    "target": record.projected_target,
+                    "collection": str(record.collection_id),
+                    "path": record.path,
+                    "bytes": record.bytes,
+                    "sha256": str(record.sha256),
+                    "hot": record.hot,
+                    "archived": record.archived,
+                }
+                for record in selected
+            ],
+            key=lambda r: str(r["target"]),
+        )
+        total = len(result)
+        pages = math.ceil(total / per_page) if total else 0
+        start = (page - 1) * per_page
+        return {
+            "target": target.canonical,
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "pages": pages,
+            "files": result[start : start + per_page],
+        }
 
     def get_content(self, raw_target: str) -> bytes:
         from arc_core.domain.errors import InvalidTarget, NotFound

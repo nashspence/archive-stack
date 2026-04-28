@@ -12,6 +12,10 @@ class CollectionFileOut(ArcModel):
 
 class CollectionFilesResponse(ArcModel):
     collection_id: str
+    page: int
+    per_page: int
+    total: int
+    pages: int
     files: list[CollectionFileOut]
 
 
@@ -26,4 +30,9 @@ class FileStateOut(ArcModel):
 
 
 class FilesResponse(ArcModel):
+    target: str
+    page: int
+    per_page: int
+    total: int
+    pages: int
     files: list[FileStateOut]

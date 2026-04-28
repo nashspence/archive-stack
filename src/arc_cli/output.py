@@ -213,7 +213,10 @@ def format_plan(payload: Mapping[str, Any]) -> str:
 def format_collection_files(payload: Mapping[str, Any]) -> str:
     lines = [
         f"collection: {payload.get('collection_id', 'unknown')}",
-        f"files: {len(payload.get('files', []))}",
+        "files: "
+        f"page {payload.get('page', 1)}/{payload.get('pages', 0)} "
+        f"per_page={payload.get('per_page', 25)} "
+        f"total={payload.get('total', 0)}",
     ]
     files = payload.get("files")
     if not isinstance(files, Sequence) or not files:
@@ -269,8 +272,22 @@ def format_collection_upload(payload: Mapping[str, Any]) -> str:
 def format_files(payload: Mapping[str, Any]) -> str:
     files = payload.get("files")
     if not isinstance(files, Sequence) or not files:
-        return "files: none"
-    lines = [f"files: {len(files)}"]
+        return (
+            "files: "
+            f"page {payload.get('page', 1)}/{payload.get('pages', 0)} "
+            f"per_page={payload.get('per_page', 25)} "
+            f"total={payload.get('total', 0)}\n"
+            "target: "
+            f"{payload.get('target', 'unknown')}\n"
+            "- none"
+        )
+    lines = [
+        "files: "
+        f"page {payload.get('page', 1)}/{payload.get('pages', 0)} "
+        f"per_page={payload.get('per_page', 25)} "
+        f"total={payload.get('total', 0)}",
+        f"target: {payload.get('target', 'unknown')}",
+    ]
     for file in files:
         if not isinstance(file, Mapping):
             continue

@@ -256,7 +256,7 @@ paths:
   /collection-files/{collection_id}:
     get:
       summary: List files in a collection with per-file state
-      description: Returns all files belonging to a collection with their hot/archived state.
+      description: Returns one page of files belonging to a collection with their hot/archived state.
       operationId: listCollectionFiles
       parameters:
         - in: path
@@ -264,6 +264,14 @@ paths:
           required: true
           description: Canonical collection id. Slash-bearing ids occupy multiple path segments.
           schema: { type: string }
+        - in: query
+          name: page
+          required: false
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: per_page
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
       responses:
         "200":
           description: Collection file listing
@@ -276,7 +284,7 @@ paths:
   /files:
     get:
       summary: Query files matching a target selector
-      description: Returns files whose projected path matches the given target selector with their full state. Returns an empty list when no files match; never 404.
+      description: Returns one page of files whose projected path matches the given target selector with their full state. Returns an empty list when no files match; never 404.
       operationId: queryFiles
       parameters:
         - in: query
@@ -284,6 +292,14 @@ paths:
           required: true
           schema: { type: string }
           description: Canonical projected-path selector. File selectors return exactly matching files; directory selectors (ending with `/`) return all files under that prefix.
+        - in: query
+          name: page
+          required: false
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: per_page
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
       responses:
         "200":
           description: Files matching the target selector
@@ -1555,11 +1571,23 @@ components:
         archived: { type: boolean }
     CollectionFilesResponse:
       type: object
-      required: [collection_id, files]
+      required: [collection_id, page, per_page, total, pages, files]
       properties:
         collection_id:
           type: string
           description: Canonical collection id.
+        page:
+          type: integer
+          minimum: 1
+        per_page:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+        pages:
+          type: integer
+          minimum: 0
         files:
           type: array
           items:
@@ -1584,8 +1612,22 @@ components:
         archived: { type: boolean }
     FilesResponse:
       type: object
-      required: [files]
+      required: [target, page, per_page, total, pages, files]
       properties:
+        target:
+          $ref: "#/components/schemas/Target"
+        page:
+          type: integer
+          minimum: 1
+        per_page:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+        pages:
+          type: integer
+          minimum: 0
         files:
           type: array
           items:

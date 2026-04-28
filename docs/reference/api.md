@@ -132,9 +132,15 @@ Required behavior:
 
 Lists the logical files in one collection.
 
+Supported query parameters:
+
+- `page` — 1-based page number, default `1`
+- `per_page` — page size, default `25`, max `100`
+
 Required behavior:
 
 - collection ids may span multiple path segments, for example `GET /v1/collection-files/photos/2024`
+- the response includes pagination metadata and a `files` array
 - each returned file includes its projected path and current hot or archived state
 - each returned file includes available copies, if any
 
@@ -142,9 +148,16 @@ Required behavior:
 
 Returns logical files selected by one canonical target selector.
 
+Supported query parameters:
+
+- `target` — canonical projected-path selector
+- `page` — 1-based page number, default `1`
+- `per_page` — page size, default `25`, max `100`
+
 Required behavior:
 
 - the `target` query parameter carries one canonical selector over the projected hot namespace
+- the response includes pagination metadata, the canonical `target`, and a `files` array
 - returned files use the same projected-path syntax accepted by `pin` and `release`
 - file results include current hot availability
 - file results include available copies, if any

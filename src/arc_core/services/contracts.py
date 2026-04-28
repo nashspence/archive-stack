@@ -106,6 +106,18 @@ class FetchService(Protocol):
 
 
 class FileService(Protocol):
-    def list_collection_files(self, collection_id: str) -> list[dict[str, object]]: ...
-    def query_by_target(self, raw_target: str) -> list[dict[str, object]]: ...
+    def list_collection_files(
+        self,
+        collection_id: str,
+        *,
+        page: int,
+        per_page: int,
+    ) -> dict[str, object]: ...
+    def query_by_target(
+        self,
+        raw_target: str,
+        *,
+        page: int,
+        per_page: int,
+    ) -> dict[str, object]: ...
     def get_content(self, raw_target: str) -> bytes: ...

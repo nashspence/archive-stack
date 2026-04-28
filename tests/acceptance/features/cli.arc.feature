@@ -56,19 +56,19 @@ Feature: arc CLI
 
     Scenario: arc show --files emits the collection files payload
       Given an archive containing collection "docs"
-      When the operator runs 'arc show docs --files --json'
+      When the operator runs 'arc show docs --files --page 2 --per-page 2 --json'
       Then the command exits with code 0
       And stdout is valid JSON
       And stdout matches the structure of GET "/v1/collection-files/docs"
-      And stdout mentions "invoice-123.pdf"
+      And stdout mentions "receipt-456.pdf"
 
     Scenario: arc status emits the files query payload
       Given an archive containing collection "docs"
-      When the operator runs 'arc status "docs/tax/2022/invoice-123.pdf" --json'
+      When the operator runs 'arc status "docs/" --page 2 --per-page 2 --json'
       Then the command exits with code 0
       And stdout is valid JSON
       And stdout matches the structure of GET "/v1/files"
-      And stdout mentions "invoice-123.pdf"
+      And stdout mentions "receipt-456.pdf"
 
     Scenario: arc copy add emits the generated-copy registration payload
       Given candidate "img_2026-04-20_01" is finalized

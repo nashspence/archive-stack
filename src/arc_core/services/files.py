@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -23,11 +25,41 @@ def _read_collection_file_content(
         raise NotFound(f"file not found in hot store: {collection_id}/{path}") from exc
 
 
+def _paginate_file_records(
+    records: list[dict[str, object]],
+    *,
+    page: int,
+    per_page: int,
+) -> dict[str, object]:
+    total = len(records)
+    pages = math.ceil(total / per_page) if total else 0
+    start = (page - 1) * per_page
+    return {
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "pages": pages,
+        "files": records[start : start + per_page],
+    }
+
+
 class StubFileService:
-    def list_collection_files(self, collection_id: str) -> list[dict[str, object]]:
+    def list_collection_files(
+        self,
+        collection_id: str,
+        *,
+        page: int,
+        per_page: int,
+    ) -> dict[str, object]:
         raise NotImplementedError("StubFileService is not implemented yet")
 
-    def query_by_target(self, raw_target: str) -> list[dict[str, object]]:
+    def query_by_target(
+        self,
+        raw_target: str,
+        *,
+        page: int,
+        per_page: int,
+    ) -> dict[str, object]:
         raise NotImplementedError("StubFileService is not implemented yet")
 
     def get_content(self, raw_target: str) -> bytes:
@@ -40,7 +72,13 @@ class SqlAlchemyFileService:
         self._hot_store = hot_store
         self._session_factory = make_session_factory(str(config.sqlite_path))
 
-    def list_collection_files(self, collection_id: str) -> list[dict[str, object]]:
+    def list_collection_files(
+        self,
+        collection_id: str,
+        *,
+        page: int,
+        per_page: int,
+    ) -> dict[str, object]:
         try:
             normalized = normalize_collection_id(collection_id)
         except PathNormalizationError as exc:
@@ -50,7 +88,7 @@ class SqlAlchemyFileService:
             collection = session.get(CollectionRecord, normalized)
             if collection is None:
                 raise NotFound(f"collection not found: {normalized}")
-            return sorted(
+            records = sorted(
                 [
                     {
                         "path": f.path,
@@ -62,8 +100,18 @@ class SqlAlchemyFileService:
                 ],
                 key=lambda r: str(r["path"]),
             )
+        return {
+            "collection_id": normalized,
+            **_paginate_file_records(records, page=page, per_page=per_page),
+        }
 
-    def query_by_target(self, raw_target: str) -> list[dict[str, object]]:
+    def query_by_target(
+        self,
+        raw_target: str,
+        *,
+        page: int,
+        per_page: int,
+    ) -> dict[str, object]:
         target = parse_target(raw_target)
 
         with session_scope(self._session_factory) as session:
@@ -91,7 +139,11 @@ class SqlAlchemyFileService:
                     "archived": file_record.archived,
                 }
             )
-        return sorted(result, key=lambda r: str(r["target"]))
+        records = sorted(result, key=lambda r: str(r["target"]))
+        return {
+            "target": target.canonical,
+            **_paginate_file_records(records, page=page, per_page=per_page),
+        }
 
     def get_content(self, raw_target: str) -> bytes:
         target = parse_target(raw_target)

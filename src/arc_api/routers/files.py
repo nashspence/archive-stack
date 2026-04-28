@@ -17,21 +17,32 @@ router = APIRouter(tags=["files"])
 def list_collection_files(
     collection_id: str,
     container: ContainerDep,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=100),
 ) -> CollectionFilesResponse:
-    records = container.files.list_collection_files(collection_id)
-    return CollectionFilesResponse(
-        collection_id=collection_id,
-        files=[CollectionFileOut.model_validate(r) for r in records],
+    payload = container.files.list_collection_files(
+        collection_id,
+        page=page,
+        per_page=per_page,
     )
+    payload["files"] = [CollectionFileOut.model_validate(r) for r in payload["files"]]
+    return CollectionFilesResponse.model_validate(payload)
 
 
 @router.get("/files", response_model=FilesResponse)
 def query_files(
     container: ContainerDep,
     target: str = Query(..., min_length=1),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=100),
 ) -> FilesResponse:
-    records = container.files.query_by_target(target)
-    return FilesResponse(files=[FileStateOut.model_validate(r) for r in records])
+    payload = container.files.query_by_target(
+        target,
+        page=page,
+        per_page=per_page,
+    )
+    payload["files"] = [FileStateOut.model_validate(r) for r in payload["files"]]
+    return FilesResponse.model_validate(payload)
 
 
 @router.get("/files/{target:path}/content")

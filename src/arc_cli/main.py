@@ -149,10 +149,12 @@ def find_cmd(
 def show_cmd(
     collection: Annotated[str, typer.Argument(help="Collection id")],
     files: Annotated[bool, typer.Option("--files", help="List files in the collection")] = False,
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     if files:
-        payload = client().list_collection_files(collection)
+        payload = client().list_collection_files(collection, page=page, per_page=per_page)
         emit(payload if json_mode else format_collection_files(payload), json_mode=json_mode)
     else:
         emit(client().get_collection(collection), json_mode=json_mode)
@@ -161,9 +163,11 @@ def show_cmd(
 @app.command("status")
 def status_cmd(
     target: Annotated[str, typer.Argument(help="Target selector")],
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    payload = client().query_files(target)
+    payload = client().query_files(target, page=page, per_page=per_page)
     emit(payload if json_mode else format_files(payload), json_mode=json_mode)
 
 
