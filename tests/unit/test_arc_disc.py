@@ -399,6 +399,644 @@ def test_discover_recovery_handoffs_for_images_that_require_recovery() -> None:
     ]
 
 
+def test_discover_active_recovery_sessions_dedupes_multi_image_sessions() -> None:
+    class FakeClient:
+        def list_images(self, *, page: int, per_page: int, sort: str, order: str):
+            return {
+                "page": 1,
+                "pages": 1,
+                "images": [
+                    {
+                        "id": "20260420T040001Z",
+                        "filename": "20260420T040001Z.iso",
+                        "fill": 0.9,
+                        "physical_copies_registered": 0,
+                        "physical_copies_required": 2,
+                    },
+                    {
+                        "id": "20260420T040003Z",
+                        "filename": "20260420T040003Z.iso",
+                        "fill": 0.7,
+                        "physical_copies_registered": 0,
+                        "physical_copies_required": 2,
+                    },
+                ],
+            }
+
+        def list_copies(self, image_id: str) -> dict[str, object]:
+            return {
+                "copies": [
+                    {"id": f"{image_id}-1", "state": "lost"},
+                    {"id": f"{image_id}-2", "state": "damaged"},
+                    {"id": f"{image_id}-3", "state": "needed"},
+                ]
+            }
+
+        def get_recovery_session_for_image(self, image_id: str) -> dict[str, object]:
+            assert image_id in {"20260420T040001Z", "20260420T040003Z"}
+            return {
+                "id": "rs-20260420T040001Z-1",
+                "state": "pending_approval",
+                "latest_message": (
+                    "Approve the estimated restore cost before Riverhog requests archive "
+                    "restore."
+                ),
+                "images": [
+                    {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"},
+                    {"id": "20260420T040003Z", "filename": "20260420T040003Z.iso"},
+                ],
+            }
+
+    sessions = arc_disc_main._discover_active_recovery_sessions(FakeClient())
+
+    assert sessions == [
+        arc_disc_main.RecoverySessionHint(
+            session_id="rs-20260420T040001Z-1",
+            state="pending_approval",
+            latest_message=(
+                "Approve the estimated restore cost before Riverhog requests archive "
+                "restore."
+            ),
+            images=(
+                arc_disc_main.RecoverySessionImageHint(
+                    image_id="20260420T040001Z",
+                    filename="20260420T040001Z.iso",
+                ),
+                arc_disc_main.RecoverySessionImageHint(
+                    image_id="20260420T040003Z",
+                    filename="20260420T040003Z.iso",
+                ),
+            ),
+        )
+    ]
+
+
+def test_all_pending_recovery_seed_slots_do_not_reenter_standard_burn_backlog() -> None:
+    class FakeClient:
+        def get_recovery_session_for_image(self, image_id: str) -> dict[str, object]:
+            assert image_id == "20260420T040001Z"
+            return {
+                "id": "rs-20260420T040001Z-1",
+                "state": "ready",
+                "latest_message": "Restored ISO data is ready.",
+                "images": [{"id": image_id, "filename": f"{image_id}.iso"}],
+            }
+
+        def list_copies(self, image_id: str) -> dict[str, object]:
+            assert image_id == "20260420T040001Z"
+            return {
+                "copies": [
+                    {"id": "20260420T040001Z-3", "state": "needed"},
+                ]
+            }
+
+    assert not arc_disc_main._is_standard_burn_backlog_image(
+        FakeClient(),
+        "20260420T040001Z",
+    )
+
+
+def test_arc_disc_recover_lists_active_sessions(monkeypatch) -> None:
+    class FakeClient:
+        def list_images(self, *, page: int, per_page: int, sort: str, order: str):
+            return {
+                "page": 1,
+                "pages": 1,
+                "images": [
+                    {
+                        "id": "20260420T040001Z",
+                        "filename": "20260420T040001Z.iso",
+                        "fill": 0.9,
+                        "physical_copies_registered": 0,
+                        "physical_copies_required": 2,
+                    }
+                ],
+            }
+
+        def list_copies(self, image_id: str) -> dict[str, object]:
+            return {
+                "copies": [
+                    {"id": "20260420T040001Z-1", "state": "lost"},
+                    {"id": "20260420T040001Z-2", "state": "damaged"},
+                    {"id": "20260420T040001Z-3", "state": "needed"},
+                ]
+            }
+
+        def get_recovery_session_for_image(self, image_id: str) -> dict[str, object]:
+            return {
+                "id": "rs-20260420T040001Z-1",
+                "state": "pending_approval",
+                "latest_message": (
+                    "Approve the estimated restore cost before Riverhog requests archive "
+                    "restore."
+                ),
+                "images": [
+                    {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"},
+                ],
+            }
+
+    monkeypatch.setattr(arc_disc_main, "ApiClient", FakeClient)
+
+    result = runner.invoke(arc_disc_main.app, ["recover"])
+
+    assert result.exit_code == 0
+    assert "rs-20260420T040001Z-1" in result.stdout
+    assert "pending_approval" in result.stdout
+    assert "20260420T040001Z" in result.stdout
+
+
+def test_arc_disc_recover_approves_waiting_session(monkeypatch, tmp_path: Path) -> None:
+    class FakeClient:
+        def list_images(self, *, page: int, per_page: int, sort: str, order: str):
+            return {"page": 1, "pages": 0, "images": []}
+
+        def get_recovery_session(self, session_id: str) -> dict[str, object]:
+            assert session_id == "rs-20260420T040001Z-1"
+            return {
+                "id": session_id,
+                "state": "pending_approval",
+                "latest_message": (
+                    "Approve the estimated restore cost before Riverhog requests archive "
+                    "restore."
+                ),
+                "images": [
+                    {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"},
+                ],
+            }
+
+        def approve_recovery_session(self, session_id: str) -> dict[str, object]:
+            assert session_id == "rs-20260420T040001Z-1"
+            return {
+                "id": session_id,
+                "state": "restore_requested",
+                "latest_message": (
+                    "Archive restore requested; wait for the ready notification before "
+                    "downloading or burning replacement media."
+                ),
+                "images": [
+                    {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"},
+                ],
+            }
+
+    monkeypatch.setattr(arc_disc_main, "ApiClient", FakeClient)
+    monkeypatch.setattr(arc_disc_main, "build_iso_verifier", lambda: object())
+    monkeypatch.setattr(arc_disc_main, "build_disc_burner", lambda: object())
+    monkeypatch.setattr(arc_disc_main, "build_burned_media_verifier", lambda: object())
+    monkeypatch.setattr(arc_disc_main, "build_burn_prompts", lambda: object())
+
+    result = runner.invoke(
+        arc_disc_main.app,
+        ["recover", "rs-20260420T040001Z-1", "--staging-dir", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    assert "recovery session rs-20260420T040001Z-1 is restore_requested" in result.stdout
+    assert "Archive restore requested" in result.stdout
+
+
+def test_arc_disc_recover_ready_session_burns_replacements_and_cleans_staging(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    image_id = "20260420T040001Z"
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.iso_bytes = b"fixture-iso\n"
+            self.completed_sessions: list[str] = []
+            self.copy_states = {
+                f"{image_id}-1": {
+                    "id": f"{image_id}-1",
+                    "label_text": f"{image_id}-1",
+                    "state": "lost",
+                    "verification_state": "pending",
+                    "location": None,
+                },
+                f"{image_id}-2": {
+                    "id": f"{image_id}-2",
+                    "label_text": f"{image_id}-2",
+                    "state": "damaged",
+                    "verification_state": "pending",
+                    "location": None,
+                },
+                f"{image_id}-3": {
+                    "id": f"{image_id}-3",
+                    "label_text": f"{image_id}-3",
+                    "state": "needed",
+                    "verification_state": "pending",
+                    "location": None,
+                },
+            }
+
+        def _verified_count(self) -> int:
+            return sum(
+                1
+                for copy in self.copy_states.values()
+                if copy["state"] in {"registered", "verified"}
+            )
+
+        def _ensure_followup_copy(self) -> None:
+            if self._verified_count() == 1 and f"{image_id}-4" not in self.copy_states:
+                self.copy_states[f"{image_id}-4"] = {
+                    "id": f"{image_id}-4",
+                    "label_text": f"{image_id}-4",
+                    "state": "needed",
+                    "verification_state": "pending",
+                    "location": None,
+                }
+
+        def list_images(self, *, page: int, per_page: int, sort: str, order: str):
+            return {"page": 1, "pages": 0, "images": []}
+
+        def get_recovery_session(self, session_id: str) -> dict[str, object]:
+            return {
+                "id": session_id,
+                "state": "ready",
+                "latest_message": "Restored ISO data is ready.",
+                "images": [{"id": image_id, "filename": f"{image_id}.iso"}],
+            }
+
+        def list_copies(self, image_id_arg: str) -> dict[str, object]:
+            assert image_id_arg == image_id
+            self._ensure_followup_copy()
+            return {"copies": list(self.copy_states.values())}
+
+        def download_iso(self, image_id_arg: str, output: Path) -> bytes:
+            assert image_id_arg == image_id
+            output.write_bytes(self.iso_bytes)
+            return self.iso_bytes
+
+        def register_copy(self, image_id_arg: str, location: str, *, copy_id: str | None = None):
+            assert image_id_arg == image_id
+            assert copy_id is not None
+            self.copy_states[copy_id]["state"] = "registered"
+            self.copy_states[copy_id]["location"] = location
+            return {"copy": self.copy_states[copy_id]}
+
+        def update_copy(
+            self,
+            image_id_arg: str,
+            copy_id: str,
+            *,
+            location: str | None = None,
+            state: str | None = None,
+            verification_state: str | None = None,
+        ):
+            assert image_id_arg == image_id
+            copy = self.copy_states[copy_id]
+            if location is not None:
+                copy["location"] = location
+            if state is not None:
+                copy["state"] = state
+            if verification_state is not None:
+                copy["verification_state"] = verification_state
+            return {"copy": copy}
+
+        def complete_recovery_session(self, session_id: str) -> dict[str, object]:
+            self.completed_sessions.append(session_id)
+            return {"id": session_id, "state": "completed"}
+
+    class FakeIsoVerifier:
+        def verify(self, iso_path: Path) -> None:
+            assert iso_path.read_bytes() == b"fixture-iso\n"
+
+    class FakeBurner:
+        def burn(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+            assert iso_path.exists()
+
+    class FakeMediaVerifier:
+        def verify(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+            assert iso_path.read_bytes() == b"fixture-iso\n"
+
+    class FakePrompts:
+        def __init__(self) -> None:
+            self.locations = {
+                f"{image_id}-3": "vault-a/shelf-02",
+                f"{image_id}-4": "vault-b/shelf-02",
+            }
+
+        def wait_for_blank_disc(self, copy_id: str, *, device: str) -> None:
+            assert device == "/dev/fake-sr0"
+
+        def confirm_label(self, copy_id: str, *, label_text: str) -> None:
+            assert label_text == copy_id
+
+        def prompt_location(self, copy_id: str) -> str:
+            return self.locations[copy_id]
+
+        def confirm_unlabeled_copy_available(self, copy_id: str) -> bool:
+            return True
+
+    client = FakeClient()
+    monkeypatch.setattr(arc_disc_main, "ApiClient", lambda: client)
+    monkeypatch.setattr(arc_disc_main, "build_iso_verifier", lambda: FakeIsoVerifier())
+    monkeypatch.setattr(arc_disc_main, "build_disc_burner", lambda: FakeBurner())
+    monkeypatch.setattr(arc_disc_main, "build_burned_media_verifier", lambda: FakeMediaVerifier())
+    monkeypatch.setattr(arc_disc_main, "build_burn_prompts", lambda: FakePrompts())
+
+    result = runner.invoke(
+        arc_disc_main.app,
+        [
+            "recover",
+            "rs-20260420T040001Z-1",
+            "--device",
+            "/dev/fake-sr0",
+            "--staging-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "recovery session rs-20260420T040001Z-1 completed" in result.stdout
+    assert f"{image_id}-3" in result.stdout
+    assert f"{image_id}-4" in result.stdout
+    assert client.completed_sessions == ["rs-20260420T040001Z-1"]
+    assert client.copy_states[f"{image_id}-3"]["state"] == "verified"
+    assert client.copy_states[f"{image_id}-4"]["state"] == "verified"
+    assert not (tmp_path / image_id).exists()
+    assert not (tmp_path / "burn-session.json").exists()
+
+
+def test_arc_disc_recover_can_finish_expired_session_from_local_staging(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    image_id = "20260420T040001Z"
+    iso_path = tmp_path / image_id / f"{image_id}.iso"
+    iso_path.parent.mkdir(parents=True, exist_ok=True)
+    iso_path.write_bytes(b"fixture-iso\n")
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.completed_sessions: list[str] = []
+            self.copy_states = {
+                f"{image_id}-1": {
+                    "id": f"{image_id}-1",
+                    "label_text": f"{image_id}-1",
+                    "state": "lost",
+                    "verification_state": "pending",
+                    "location": None,
+                },
+                f"{image_id}-2": {
+                    "id": f"{image_id}-2",
+                    "label_text": f"{image_id}-2",
+                    "state": "damaged",
+                    "verification_state": "pending",
+                    "location": None,
+                },
+                f"{image_id}-3": {
+                    "id": f"{image_id}-3",
+                    "label_text": f"{image_id}-3",
+                    "state": "needed",
+                    "verification_state": "pending",
+                    "location": None,
+                },
+            }
+
+        def list_images(self, *, page: int, per_page: int, sort: str, order: str):
+            return {"page": 1, "pages": 0, "images": []}
+
+        def get_recovery_session(self, session_id: str) -> dict[str, object]:
+            return {
+                "id": session_id,
+                "state": "expired",
+                "latest_message": (
+                    "Restored ISO data expired and was cleaned up; re-initiate recovery to "
+                    "request a new restore."
+                ),
+                "images": [{"id": image_id, "filename": f"{image_id}.iso"}],
+            }
+
+        def list_copies(self, image_id_arg: str) -> dict[str, object]:
+            assert image_id_arg == image_id
+            return {"copies": list(self.copy_states.values())}
+
+        def download_iso(self, image_id_arg: str, output: Path) -> bytes:
+            raise AssertionError("expired-session resume should not re-download ISO data")
+
+        def register_copy(self, image_id_arg: str, location: str, *, copy_id: str | None = None):
+            assert image_id_arg == image_id
+            assert copy_id is not None
+            self.copy_states[copy_id]["state"] = "registered"
+            self.copy_states[copy_id]["location"] = location
+            return {"copy": self.copy_states[copy_id]}
+
+        def update_copy(
+            self,
+            image_id_arg: str,
+            copy_id: str,
+            *,
+            location: str | None = None,
+            state: str | None = None,
+            verification_state: str | None = None,
+        ):
+            assert image_id_arg == image_id
+            copy = self.copy_states[copy_id]
+            if location is not None:
+                copy["location"] = location
+            if state is not None:
+                copy["state"] = state
+            if verification_state is not None:
+                copy["verification_state"] = verification_state
+            return {"copy": copy}
+
+        def complete_recovery_session(self, session_id: str) -> dict[str, object]:
+            self.completed_sessions.append(session_id)
+            return {"id": session_id, "state": "completed"}
+
+    class FakeIsoVerifier:
+        def verify(self, local_iso_path: Path) -> None:
+            assert local_iso_path.read_bytes() == b"fixture-iso\n"
+
+    class FakeBurner:
+        def burn(self, local_iso_path: Path, *, device: str, copy_id: str) -> None:
+            assert device == "/dev/fake-sr0"
+            assert local_iso_path.read_bytes() == b"fixture-iso\n"
+            assert copy_id == f"{image_id}-3"
+
+    class FakeMediaVerifier:
+        def verify(self, local_iso_path: Path, *, device: str, copy_id: str) -> None:
+            assert device == "/dev/fake-sr0"
+            assert local_iso_path.read_bytes() == b"fixture-iso\n"
+            assert copy_id == f"{image_id}-3"
+
+    class FakePrompts:
+        def wait_for_blank_disc(self, copy_id: str, *, device: str) -> None:
+            assert (copy_id, device) == (f"{image_id}-3", "/dev/fake-sr0")
+
+        def confirm_label(self, copy_id: str, *, label_text: str) -> None:
+            assert (copy_id, label_text) == (f"{image_id}-3", f"{image_id}-3")
+
+        def prompt_location(self, copy_id: str) -> str:
+            assert copy_id == f"{image_id}-3"
+            return "vault-a/shelf-02"
+
+        def confirm_unlabeled_copy_available(self, copy_id: str) -> bool:
+            return True
+
+    client = FakeClient()
+    monkeypatch.setattr(arc_disc_main, "ApiClient", lambda: client)
+    monkeypatch.setattr(arc_disc_main, "build_iso_verifier", lambda: FakeIsoVerifier())
+    monkeypatch.setattr(arc_disc_main, "build_disc_burner", lambda: FakeBurner())
+    monkeypatch.setattr(arc_disc_main, "build_burned_media_verifier", lambda: FakeMediaVerifier())
+    monkeypatch.setattr(arc_disc_main, "build_burn_prompts", lambda: FakePrompts())
+
+    result = runner.invoke(
+        arc_disc_main.app,
+        [
+            "recover",
+            "rs-20260420T040001Z-1",
+            "--device",
+            "/dev/fake-sr0",
+            "--staging-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "recovery session rs-20260420T040001Z-1 completed" in result.stdout
+    assert (
+        "restore window expired remotely; resuming from local staged ISO artifacts"
+        in result.stderr
+    )
+    assert client.completed_sessions == ["rs-20260420T040001Z-1"]
+    assert client.copy_states[f"{image_id}-3"]["state"] == "verified"
+    assert not (tmp_path / image_id).exists()
+    assert not (tmp_path / "burn-session.json").exists()
+
+
+def test_arc_disc_recover_stages_all_pending_session_images_before_first_burn(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    image_one = "20260420T040001Z"
+    image_two = "20260420T040003Z"
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.iso_downloads: list[str] = []
+            self.copy_states = {
+                image_one: {
+                    f"{image_one}-3": {
+                        "id": f"{image_one}-3",
+                        "label_text": f"{image_one}-3",
+                        "state": "needed",
+                        "verification_state": "pending",
+                        "location": None,
+                    }
+                },
+                image_two: {
+                    f"{image_two}-3": {
+                        "id": f"{image_two}-3",
+                        "label_text": f"{image_two}-3",
+                        "state": "needed",
+                        "verification_state": "pending",
+                        "location": None,
+                    }
+                },
+            }
+
+        def list_images(self, *, page: int, per_page: int, sort: str, order: str):
+            return {"page": 1, "pages": 0, "images": []}
+
+        def get_recovery_session(self, session_id: str) -> dict[str, object]:
+            return {
+                "id": session_id,
+                "state": "ready",
+                "latest_message": "Restored ISO data is ready.",
+                "images": [
+                    {"id": image_one, "filename": f"{image_one}.iso"},
+                    {"id": image_two, "filename": f"{image_two}.iso"},
+                ],
+            }
+
+        def list_copies(self, image_id: str) -> dict[str, object]:
+            return {"copies": list(self.copy_states[image_id].values())}
+
+        def download_iso(self, image_id: str, output: Path) -> bytes:
+            self.iso_downloads.append(image_id)
+            output.write_bytes(f"{image_id}\n".encode())
+            return output.read_bytes()
+
+        def register_copy(self, image_id: str, location: str, *, copy_id: str | None = None):
+            assert copy_id is not None
+            copy = self.copy_states[image_id][copy_id]
+            copy["state"] = "registered"
+            copy["location"] = location
+            return {"copy": copy}
+
+        def update_copy(
+            self,
+            image_id: str,
+            copy_id: str,
+            *,
+            location: str | None = None,
+            state: str | None = None,
+            verification_state: str | None = None,
+        ):
+            copy = self.copy_states[image_id][copy_id]
+            if location is not None:
+                copy["location"] = location
+            if state is not None:
+                copy["state"] = state
+            if verification_state is not None:
+                copy["verification_state"] = verification_state
+            return {"copy": copy}
+
+    class FakeIsoVerifier:
+        def verify(self, iso_path: Path) -> None:
+            assert iso_path.is_file()
+
+    class FakeBurner:
+        def burn(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+            assert device == "/dev/fake-sr0"
+            assert iso_path.is_file()
+            assert copy_id == f"{image_one}-3"
+
+    class FakeMediaVerifier:
+        def verify(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+            assert device == "/dev/fake-sr0"
+            assert iso_path.is_file()
+            raise RuntimeError(f"fixture burned-media verification failed for {copy_id}")
+
+    class FakePrompts:
+        def wait_for_blank_disc(self, copy_id: str, *, device: str) -> None:
+            assert copy_id == f"{image_one}-3"
+
+        def confirm_label(self, copy_id: str, *, label_text: str) -> None:
+            raise AssertionError("label confirmation should not run after verification failure")
+
+        def prompt_location(self, copy_id: str) -> str:
+            raise AssertionError("storage prompt should not run after verification failure")
+
+        def confirm_unlabeled_copy_available(self, copy_id: str) -> bool:
+            return True
+
+    client = FakeClient()
+    monkeypatch.setattr(arc_disc_main, "ApiClient", lambda: client)
+    monkeypatch.setattr(arc_disc_main, "build_iso_verifier", lambda: FakeIsoVerifier())
+    monkeypatch.setattr(arc_disc_main, "build_disc_burner", lambda: FakeBurner())
+    monkeypatch.setattr(arc_disc_main, "build_burned_media_verifier", lambda: FakeMediaVerifier())
+    monkeypatch.setattr(arc_disc_main, "build_burn_prompts", lambda: FakePrompts())
+
+    result = runner.invoke(
+        arc_disc_main.app,
+        [
+            "recover",
+            "rs-20260420T040001Z-1",
+            "--device",
+            "/dev/fake-sr0",
+            "--staging-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert client.iso_downloads == [image_one, image_two]
+    assert (tmp_path / image_one / f"{image_one}.iso").is_file()
+    assert (tmp_path / image_two / f"{image_two}.iso").is_file()
+
+
 def test_arc_disc_burn_reports_recovery_handoffs_when_no_standard_backlog_exists(
     monkeypatch,
     tmp_path: Path,

@@ -7,6 +7,8 @@ from arc_core.catalog_models import (
     CollectionRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
+    GlacierRecoverySessionImageRecord,
+    GlacierRecoverySessionRecord,
 )
 from arc_core.domain.enums import CopyState
 from arc_core.runtime_config import RuntimeConfig
@@ -108,3 +110,67 @@ def test_marking_one_confirmed_copy_lost_creates_a_fresh_replacement_slot(tmp_pa
         CopyState.REGISTERED,
         CopyState.NEEDED,
     ]
+
+
+def test_recovery_session_seeds_and_tops_up_replacement_slots_for_unprotected_image(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    image_root = tmp_path / "image-root"
+    initialize_db(str(sqlite_path))
+    write_tree(image_root, IMAGE_ONE_FILES)
+    _seed_finalized_image(sqlite_path, image_root)
+
+    service = SqlAlchemyCopyService(_config(sqlite_path), _FakeHotStore())
+    service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
+    service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
+    service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
+    service.update("20260420T040001Z", "20260420T040001Z-2", state="damaged")
+
+    session_factory = make_session_factory(str(sqlite_path))
+    with session_scope(session_factory) as session:
+        record = session.get(GlacierRecoverySessionRecord, "rs-20260420T040001Z-1")
+        assert record is not None
+        record.state = "ready"
+        record.restore_requested_at = "2026-04-20T04:00:01Z"
+        record.restore_ready_at = "2026-04-20T04:00:03Z"
+        record.restore_expires_at = "2026-04-20T04:10:03Z"
+        assert (
+            session.get(
+                GlacierRecoverySessionImageRecord,
+                {
+                    "session_id": "rs-20260420T040001Z-1",
+                    "image_id": "20260420T040001Z",
+                },
+            )
+            is not None
+        )
+
+    copies = service.list_for_image("20260420T040001Z")
+    assert [str(copy.id) for copy in copies] == [
+        "20260420T040001Z-1",
+        "20260420T040001Z-2",
+        "20260420T040001Z-3",
+    ]
+    assert [copy.state for copy in copies] == [
+        CopyState.LOST,
+        CopyState.DAMAGED,
+        CopyState.NEEDED,
+    ]
+
+    service.register("20260420T040001Z", "Shelf C1", copy_id="20260420T040001Z-3")
+    service.update(
+        "20260420T040001Z",
+        "20260420T040001Z-3",
+        state="verified",
+        verification_state="verified",
+    )
+
+    topped_up = service.list_for_image("20260420T040001Z")
+    assert [str(copy.id) for copy in topped_up] == [
+        "20260420T040001Z-1",
+        "20260420T040001Z-2",
+        "20260420T040001Z-3",
+        "20260420T040001Z-4",
+    ]
+    assert topped_up[-1].state == CopyState.NEEDED

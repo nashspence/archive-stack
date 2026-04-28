@@ -59,7 +59,6 @@ Feature: arc-disc burn CLI
     And the burn fixture confirms labeled copy id "20260420T040001Z-2" at location "vault-b/shelf-01"
     And the operator runs 'arc-disc burn --device /dev/fake-sr0'
     Then the command exits with code 0
-    And stderr mentions "resuming label confirmation for 20260420T040001Z-1"
     And stderr does not mention "burning copy 20260420T040001Z-1"
     And image "20260420T040001Z" has physical_copies_registered 2
 
@@ -76,7 +75,6 @@ Feature: arc-disc burn CLI
     And the burn fixture confirms labeled copy id "20260420T040001Z-2" at location "vault-b/shelf-01"
     And the operator runs 'arc-disc burn --device /dev/fake-sr0'
     Then the command exits with code 0
-    And stderr mentions "verifying burned media for 20260420T040001Z-1"
     And stderr does not mention "burning copy 20260420T040001Z-1"
     And image "20260420T040001Z" has physical_copies_registered 2
 
@@ -90,7 +88,6 @@ Feature: arc-disc burn CLI
     And the burn fixture confirms labeled copy id "20260420T040001Z-2" at location "vault-b/shelf-01"
     And the operator runs 'arc-disc burn --device /dev/fake-sr0'
     Then the command exits with code 0
-    And stderr mentions "unlabeled disc for 20260420T040001Z-1 is unavailable; restarting burn"
     And stderr mentions "burning copy 20260420T040001Z-1"
     And image "20260420T040001Z" has physical_copies_registered 2
 

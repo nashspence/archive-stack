@@ -889,6 +889,8 @@ def given_burn_fixture_says_unlabeled_copy_is_unavailable(
 
 
 @given(parsers.parse('the burn fixture fails while burning copy id "{copy_id}"'))
+@when(parsers.parse('the burn fixture fails while burning copy id "{copy_id}"'))
+@then(parsers.parse('the burn fixture fails while burning copy id "{copy_id}"'))
 def given_burn_fixture_fails_while_burning_copy(
     acceptance_system: AcceptanceSystem,
     copy_id: str,
@@ -897,6 +899,8 @@ def given_burn_fixture_fails_while_burning_copy(
 
 
 @given(parsers.parse('the burn fixture fails while verifying burned media for copy id "{copy_id}"'))
+@when(parsers.parse('the burn fixture fails while verifying burned media for copy id "{copy_id}"'))
+@then(parsers.parse('the burn fixture fails while verifying burned media for copy id "{copy_id}"'))
 def given_burn_fixture_fails_while_verifying_burned_media(
     acceptance_system: AcceptanceSystem,
     copy_id: str,
@@ -915,6 +919,14 @@ def when_staged_iso_is_corrupted(
     image_id: str,
 ) -> None:
     acceptance_system.corrupt_arc_disc_staged_iso(image_id)
+
+
+@then(parsers.parse('the staged ISO for image "{image_id}" is absent'))
+def then_staged_iso_is_absent(
+    acceptance_system: AcceptanceSystem,
+    image_id: str,
+) -> None:
+    assert not acceptance_system.arc_disc_staged_iso_exists(image_id)
 
 
 @given(parsers.parse('fetch "{fetch_id}" exists with entry "{entry_id}"'))
@@ -1072,6 +1084,7 @@ def given_collection_contains_directory(
 
 
 @when(parsers.parse('the client gets "{url}"'))
+@then(parsers.parse('the client gets "{url}"'))
 def when_client_gets_url(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,

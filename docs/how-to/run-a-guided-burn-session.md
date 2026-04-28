@@ -37,3 +37,24 @@ Optional staging-root example:
 ```bash
 arc-disc burn --device /dev/sr0 --staging-dir /operator/arc-disc-staging
 ```
+
+## Recover a Glacier-backed session
+
+Use `arc-disc recover` when `arc-disc burn` reports that ordinary backlog is clear but Glacier-backed recovery work
+remains.
+
+1. Run `arc-disc recover` with no session id to list the active recovery sessions.
+2. Run `arc-disc recover <session-id>` once to approve the restore request if the session is still
+   `pending_approval`.
+3. Wait until the session reports `ready`.
+4. Run `arc-disc recover <session-id> --device /dev/sr0` to stage the restored ISO data and burn the needed
+   replacement copies.
+5. If that run is interrupted after staging or after partial burn work, run the same command again to resume from the
+   local checkpoints and staged ISO artifacts.
+
+Examples:
+
+```bash
+arc-disc recover
+arc-disc recover rs-20260420T040001Z-1 --device /dev/sr0
+```

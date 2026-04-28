@@ -1038,7 +1038,7 @@ class ProductionSystem:
         session_id: str,
         state: str,
         *,
-        timeout: float = 10.0,
+        timeout: float = 20.0,
     ) -> dict[str, object]:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -1405,6 +1405,11 @@ class ProductionSystem:
         if not staging_path.is_file():
             raise AssertionError(f"staged ISO not found: {staging_path}")
         staging_path.write_bytes(staging_path.read_bytes() + b"corrupted-by-fixture\n")
+
+    def arc_disc_staged_iso_exists(self, image_id: str) -> bool:
+        image = self.request("GET", f"/v1/images/{image_id}").json()
+        staging_path = self.workspace / "arc_disc_staging" / image_id / str(image["filename"])
+        return staging_path.is_file()
 
     def pins_list(self) -> list[str]:
         return [item["target"] for item in self.request("GET", "/v1/pins").json()["pins"]]

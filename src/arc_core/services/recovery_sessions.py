@@ -1,20 +1,25 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import asdict
 from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import or_, select
 
-from arc_core.archive_compliance import copy_counts_toward_protection, normalize_glacier_state
+from arc_core.archive_compliance import (
+    copy_counts_toward_protection,
+    normalize_copy_state,
+    normalize_glacier_state,
+)
 from arc_core.catalog_models import (
     FinalizedImageRecord,
     GlacierRecoverySessionImageRecord,
     GlacierRecoverySessionRecord,
     ImageCopyRecord,
 )
-from arc_core.domain.enums import GlacierState, RecoverySessionState
+from arc_core.domain.enums import CopyState, GlacierState, RecoverySessionState
 from arc_core.domain.errors import Conflict, InvalidState, NotFound
 from arc_core.domain.models import (
     GlacierArchiveStatus,
@@ -71,6 +76,15 @@ class SqlAlchemyRecoverySessionService:
                     "image still has protected copies and does not require "
                     f"archive recovery: {image_id}"
                 )
+            reusable = _reusable_pending_approval_session(session)
+            if reusable is not None:
+                attached = _attach_image_to_session(
+                    session,
+                    record=reusable,
+                    image=image,
+                    config=self._config,
+                )
+                return _session_summary(session, attached, config=self._config)
             created = _create_recovery_session(session, config=self._config, image=image)
             return _session_summary(session, created, config=self._config)
 
@@ -104,7 +118,10 @@ class SqlAlchemyRecoverySessionService:
             record = session.get(GlacierRecoverySessionRecord, session_id)
             if record is None:
                 raise NotFound(f"recovery session not found: {session_id}")
-            if record.state != RecoverySessionState.READY.value:
+            if record.state not in {
+                RecoverySessionState.READY.value,
+                RecoverySessionState.EXPIRED.value,
+            }:
                 raise InvalidState("recovery session is not ready to complete")
             record.state = RecoverySessionState.COMPLETED.value
             record.completed_at = now
@@ -234,7 +251,13 @@ def ensure_glacier_recovery_session_for_image(
         return
     if _protected_copy_count(session, image_id) > 0:
         return
+    if not _has_recovery_triggering_copy_history(session, image_id):
+        return
     if _active_session_for_image(session, image_id) is not None:
+        return
+    reusable = _reusable_pending_approval_session(session)
+    if reusable is not None:
+        _attach_image_to_session(session, record=reusable, image=image, config=config)
         return
     _create_recovery_session(session, config=config, image=image)
 
@@ -275,7 +298,7 @@ def _create_recovery_session(
     ).all()
     session_id = _generated_recovery_session_id(image.image_id, existing_ids=existing_ids)
     created_at = _isoformat_z(utcnow())
-    estimate = _estimate_recovery_costs(config=config, image=image)
+    estimate = _estimate_recovery_costs(config=config, images=(image,))
     warnings = _build_warnings(config=config)
     record = GlacierRecoverySessionRecord(
         session_id=session_id,
@@ -310,6 +333,36 @@ def _create_recovery_session(
     return record
 
 
+def _attach_image_to_session(
+    session,
+    *,
+    record: GlacierRecoverySessionRecord,
+    image: FinalizedImageRecord,
+    config: RuntimeConfig,
+) -> GlacierRecoverySessionRecord:
+    existing_image_ids = {
+        row.image_id
+        for row in session.scalars(
+            select(GlacierRecoverySessionImageRecord).where(
+                GlacierRecoverySessionImageRecord.session_id == record.session_id
+            )
+        ).all()
+    }
+    if image.image_id in existing_image_ids:
+        return record
+    next_order = len(existing_image_ids)
+    session.add(
+        GlacierRecoverySessionImageRecord(
+            session_id=record.session_id,
+            image_id=image.image_id,
+            image_order=next_order,
+        )
+    )
+    session.flush()
+    _refresh_recovery_session_metadata(session, record=record, config=config)
+    return record
+
+
 def _require_image(session, image_id: str) -> FinalizedImageRecord:
     image = session.get(FinalizedImageRecord, image_id)
     if image is None:
@@ -329,6 +382,16 @@ def _protected_copy_count(session, image_id: str) -> int:
         select(ImageCopyRecord.state).where(ImageCopyRecord.image_id == image_id)
     ).all()
     return sum(1 for state in rows if copy_counts_toward_protection(state))
+
+
+def _has_recovery_triggering_copy_history(session, image_id: str) -> bool:
+    rows = session.scalars(
+        select(ImageCopyRecord.state).where(ImageCopyRecord.image_id == image_id)
+    ).all()
+    return any(
+        normalize_copy_state(state) not in {CopyState.NEEDED, CopyState.BURNING}
+        for state in rows
+    )
 
 
 def _active_session_for_image(session, image_id: str) -> GlacierRecoverySessionRecord | None:
@@ -358,20 +421,36 @@ def _latest_session_for_image(session, image_id: str) -> GlacierRecoverySessionR
     )
 
 
+def _reusable_pending_approval_session(session) -> GlacierRecoverySessionRecord | None:
+    return session.scalar(
+        select(GlacierRecoverySessionRecord)
+        .where(GlacierRecoverySessionRecord.state == RecoverySessionState.PENDING_APPROVAL.value)
+        .order_by(GlacierRecoverySessionRecord.created_at.desc())
+        .limit(1)
+    )
+
+
+def _session_images(
+    session,
+    *,
+    record: GlacierRecoverySessionRecord,
+) -> list[FinalizedImageRecord]:
+    image_rows = session.scalars(
+        select(GlacierRecoverySessionImageRecord)
+        .where(GlacierRecoverySessionImageRecord.session_id == record.session_id)
+        .order_by(GlacierRecoverySessionImageRecord.image_order)
+    ).all()
+    return [_require_image(session, image_row.image_id) for image_row in image_rows]
+
+
 def _session_summary(
     session,
     record: GlacierRecoverySessionRecord,
     *,
     config: RuntimeConfig,
 ) -> RecoverySessionSummary:
-    image_rows = session.scalars(
-        select(GlacierRecoverySessionImageRecord)
-        .where(GlacierRecoverySessionImageRecord.session_id == record.session_id)
-        .order_by(GlacierRecoverySessionImageRecord.image_order)
-    ).all()
     images: list[RecoverySessionImage] = []
-    for image_row in image_rows:
-        image = _require_image(session, image_row.image_id)
+    for image in _session_images(session, record=record):
         images.append(
             RecoverySessionImage(
                 id=image.image_id,
@@ -414,18 +493,36 @@ def _session_summary(
     )
 
 
+def _refresh_recovery_session_metadata(
+    session,
+    *,
+    record: GlacierRecoverySessionRecord,
+    config: RuntimeConfig,
+) -> None:
+    images = _session_images(session, record=record)
+    estimate = _estimate_recovery_costs(config=config, images=images)
+    record.estimate_json = json.dumps(asdict(estimate), sort_keys=True)
+    record.warnings_json = json.dumps(list(_build_warnings(config=config)))
+    record.hold_days = max(int(config.glacier_recovery_ready_ttl.total_seconds() // 86400), 1)
+    record.retrieval_tier = config.glacier_recovery_retrieval_tier
+
+
 def _estimate_recovery_costs(
     *,
     config: RuntimeConfig,
-    image: FinalizedImageRecord,
+    images: Iterable[FinalizedImageRecord],
 ) -> RecoveryCostEstimate:
     pricing_basis = resolve_glacier_pricing(config)
-    total_bytes = int(image.glacier_stored_bytes or image.bytes)
+    image_list = list(images)
+    total_bytes = sum(int(image.glacier_stored_bytes or image.bytes) for image in image_list)
     total_gib = Decimal(total_bytes) / Decimal(1024**3)
     hold_days = max(int(config.glacier_recovery_ready_ttl.total_seconds() // 86400), 1)
     retrieval_rate, request_rate = _retrieval_rates(config)
     retrieval_cost = _usd(total_gib * Decimal(str(retrieval_rate)))
-    request_fees = _usd(Decimal("0.001") * Decimal(str(request_rate)))
+    restore_request_count = max(len(image_list), 1)
+    request_fees = _usd(
+        Decimal("0.001") * Decimal(str(request_rate)) * Decimal(restore_request_count)
+    )
     temporary_storage_cost = _usd(
         total_gib
         * Decimal(str(pricing_basis.standard_storage_rate_usd_per_gib_month))
@@ -436,9 +533,9 @@ def _estimate_recovery_costs(
         currency_code=pricing_basis.currency_code or "USD",
         retrieval_tier=config.glacier_recovery_retrieval_tier,
         hold_days=hold_days,
-        image_count=1,
+        image_count=len(image_list),
         total_bytes=total_bytes,
-        restore_request_count=1,
+        restore_request_count=restore_request_count,
         retrieval_rate_usd_per_gib=retrieval_rate,
         request_rate_usd_per_1000=request_rate,
         standard_storage_rate_usd_per_gib_month=(

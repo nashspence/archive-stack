@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import json
 import os
+import shutil
 import subprocess
 import time
 from collections.abc import Iterator
@@ -82,8 +83,23 @@ class RecoveryHandoff:
     latest_message: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class RecoverySessionImageHint:
+    image_id: str
+    filename: str
+
+
+@dataclass(frozen=True, slots=True)
+class RecoverySessionHint:
+    session_id: str
+    state: str
+    latest_message: str | None
+    images: tuple[RecoverySessionImageHint, ...]
+
+
 _PENDING_BURN_STATES = {"needed", "burning"}
 _PROTECTED_COPY_STATES = {"registered", "verified"}
+_ACTIVE_RECOVERY_SESSION_STATES = {"pending_approval", "restore_requested", "ready"}
 
 
 @dataclass(slots=True)
@@ -467,6 +483,16 @@ def _is_standard_burn_backlog_image(client: ApiClient, image_id: str) -> bool:
     all_pending = bool(states) and states <= _PENDING_BURN_STATES
     if not has_pending:
         return False
+    if all_pending and not has_protected:
+        if not hasattr(client, "get_recovery_session_for_image"):
+            return True
+        try:
+            payload = client.get_recovery_session_for_image(image_id)
+        except NotFound:
+            return True
+        recovery_state = str(payload.get("state"))
+        if recovery_state in {"pending_approval", "restore_requested", "ready", "expired"}:
+            return False
     if all_pending:
         return True
     if has_protected:
@@ -555,6 +581,255 @@ def _report_recovery_handoffs(handoffs: list[RecoveryHandoff]) -> None:
             typer.echo(handoff.latest_message)
 
 
+def _recovery_session_hint_from_payload(payload: dict[str, Any]) -> RecoverySessionHint:
+    images_payload = payload.get("images", [])
+    images = tuple(
+        RecoverySessionImageHint(
+            image_id=str(image["id"]),
+            filename=str(image["filename"]),
+        )
+        for image in images_payload
+        if isinstance(image, dict)
+    )
+    return RecoverySessionHint(
+        session_id=str(payload["id"]),
+        state=str(payload["state"]),
+        latest_message=(
+            str(payload["latest_message"]) if payload.get("latest_message") is not None else None
+        ),
+        images=images,
+    )
+
+
+def _discover_active_recovery_sessions(client: ApiClient) -> list[RecoverySessionHint]:
+    sessions_by_id: dict[str, RecoverySessionHint] = {}
+    for image in _images_missing_copy_coverage(client):
+        image_id = str(image["id"])
+        try:
+            payload = client.get_recovery_session_for_image(image_id)
+        except NotFound:
+            continue
+        hint = _recovery_session_hint_from_payload(payload)
+        if hint.state not in _ACTIVE_RECOVERY_SESSION_STATES:
+            continue
+        sessions_by_id.setdefault(hint.session_id, hint)
+    return sorted(sessions_by_id.values(), key=lambda current: current.session_id)
+
+
+def _report_recovery_sessions(sessions: list[RecoverySessionHint]) -> None:
+    if not sessions:
+        typer.echo("no active recovery sessions")
+        return
+    for session in sessions:
+        image_ids = ", ".join(image.image_id for image in session.images) or "(no images)"
+        typer.echo(f"recovery session {session.session_id} is {session.state}")
+        typer.echo(f"images: {image_ids}")
+        if session.latest_message:
+            typer.echo(session.latest_message)
+
+
+def _clear_recovery_artifacts(
+    session_state: BurnSessionState,
+    *,
+    staging_dir: Path,
+    images: tuple[RecoverySessionImageHint, ...],
+) -> None:
+    mutated = False
+    for image in images:
+        staging_root = staging_dir / image.image_id
+        if staging_root.exists():
+            shutil.rmtree(staging_root)
+        if image.image_id in session_state.images:
+            del session_state.images[image.image_id]
+            mutated = True
+    if not mutated:
+        return
+    if session_state.images:
+        session_state.save()
+        return
+    if session_state.path.exists():
+        session_state.path.unlink()
+
+
+def _image_requires_recovery_burn(client: ApiClient, image_id: str) -> bool:
+    copies_payload = client.list_copies(image_id)
+    return any(
+        isinstance(copy_payload, dict)
+        and str(copy_payload.get("state")) in _PENDING_BURN_STATES
+        for copy_payload in copies_payload.get("copies", [])
+    )
+
+
+def _can_resume_expired_recovery_session(
+    recovery_session: RecoverySessionHint,
+    *,
+    client: ApiClient,
+    staging_dir: Path,
+) -> bool:
+    for image in recovery_session.images:
+        if not _image_requires_recovery_burn(client, image.image_id):
+            continue
+        iso_path = _staged_iso_path(
+            staging_dir,
+            image_id=image.image_id,
+            filename=image.filename,
+        )
+        if not iso_path.is_file():
+            return False
+    return True
+
+
+def _recover_session_image(
+    image: RecoverySessionImageHint,
+    *,
+    client: ApiClient,
+    staging_dir: Path,
+    session_state: BurnSessionState,
+    iso_verifier: Any,
+    burner: Any,
+    media_verifier: Any,
+    prompts: Any,
+    device: str,
+) -> list[str]:
+    typer.echo(f"recovering image {image.image_id}", err=True)
+    completed: list[str] = []
+    while True:
+        copies_payload = client.list_copies(image.image_id)
+        pending_copies = [
+            copy_payload
+            for copy_payload in copies_payload.get("copies", [])
+            if isinstance(copy_payload, dict)
+            and str(copy_payload.get("state")) in _PENDING_BURN_STATES
+        ]
+        if not pending_copies:
+            return completed
+        completed.append(
+            _burn_pending_copy(
+                pending_copies[0],
+                client=client,
+                image_id=image.image_id,
+                filename=image.filename,
+                staging_dir=staging_dir,
+                session_state=session_state,
+                iso_verifier=iso_verifier,
+                burner=burner,
+                media_verifier=media_verifier,
+                prompts=prompts,
+                device=device,
+            )
+        )
+
+
+def _stage_recovery_session_images(
+    recovery_session: RecoverySessionHint,
+    *,
+    client: ApiClient,
+    staging_dir: Path,
+    session_state: BurnSessionState,
+    iso_verifier: Any,
+) -> None:
+    for image in recovery_session.images:
+        if not _image_requires_recovery_burn(client, image.image_id):
+            continue
+        _ensure_staged_iso(
+            client,
+            image.image_id,
+            image.filename,
+            staging_dir=staging_dir,
+            verifier=iso_verifier,
+            session_state=session_state,
+        )
+
+
+def _process_recovery_session(
+    recovery_session: RecoverySessionHint,
+    *,
+    client: ApiClient,
+    staging_dir: Path,
+    session_state: BurnSessionState,
+    iso_verifier: Any,
+    burner: Any,
+    media_verifier: Any,
+    prompts: Any,
+    device: str,
+) -> tuple[RecoverySessionHint, list[str]]:
+    session_id = recovery_session.session_id
+    state = recovery_session.state
+    typer.echo(f"selected recovery session {session_id}", err=True)
+
+    if state == "expired":
+        if not _can_resume_expired_recovery_session(
+            recovery_session,
+            client=client,
+            staging_dir=staging_dir,
+        ):
+            raise RuntimeError(
+                recovery_session.latest_message
+                or f"recovery session expired and must be re-initiated: {session_id}"
+            )
+        typer.echo(
+            "restore window expired remotely; resuming from local staged ISO artifacts",
+            err=True,
+        )
+        state = "ready"
+    if state == "completed":
+        return (recovery_session, [])
+
+    if state == "pending_approval":
+        typer.echo(f"approving recovery session {session_id}", err=True)
+        payload = client.approve_recovery_session(session_id)
+        recovery_session = _recovery_session_hint_from_payload(payload)
+        state = recovery_session.state
+
+    if state == "restore_requested":
+        return (recovery_session, [])
+
+    if state != "ready":
+        raise RuntimeError(f"unsupported recovery session state for {session_id}: {state}")
+
+    _stage_recovery_session_images(
+        recovery_session,
+        client=client,
+        staging_dir=staging_dir,
+        session_state=session_state,
+        iso_verifier=iso_verifier,
+    )
+
+    completed_copy_ids: list[str] = []
+    for image in recovery_session.images:
+        completed_copy_ids.extend(
+            _recover_session_image(
+                image,
+                client=client,
+                staging_dir=staging_dir,
+                session_state=session_state,
+                iso_verifier=iso_verifier,
+                burner=burner,
+                media_verifier=media_verifier,
+                prompts=prompts,
+                device=device,
+            )
+        )
+    client.complete_recovery_session(session_id)
+    _clear_recovery_artifacts(
+        session_state,
+        staging_dir=staging_dir,
+        images=recovery_session.images,
+    )
+    return (
+        RecoverySessionHint(
+            session_id=recovery_session.session_id,
+            state="completed",
+            latest_message=(
+                "Recovery session completed and restored ISO data was cleaned up "
+                "immediately."
+            ),
+            images=recovery_session.images,
+        ),
+        completed_copy_ids,
+    )
+
+
 def _ensure_staged_iso(
     client: ApiClient,
     image_id: str,
@@ -574,7 +849,11 @@ def _ensure_staged_iso(
             return iso_path
         typer.echo(f"staged ISO is invalid at {iso_path}; re-downloading", err=True)
     elif iso_path.is_file():
-        typer.echo(f"staged ISO is unverified at {iso_path}; re-downloading", err=True)
+        typer.echo(f"verifying existing staged ISO {iso_path}", err=True)
+        verifier.verify(iso_path)
+        image_progress.verified_sha256 = _sha256_file(iso_path)
+        session_state.save()
+        return iso_path
     else:
         typer.echo(f"staged ISO is missing at {iso_path}; re-downloading", err=True)
 
@@ -943,6 +1222,66 @@ def burn_cmd(
         return
     typer.echo("burn backlog already clear")
     _report_recovery_handoffs(recovery_handoffs)
+
+
+@app.command("recover")
+def recover_cmd(
+    session_id: Annotated[
+        str | None,
+        typer.Argument(help="Recovery session id", show_default=False),
+    ] = None,
+    device: Annotated[str, typer.Option("--device", help="Optical device path")] = "/dev/sr0",
+    staging_dir: Annotated[
+        Path | None,
+        typer.Option("--staging-dir", help="Local staging directory for ISO downloads"),
+    ] = None,
+) -> None:
+    try:
+        client = ApiClient()
+        sessions = _discover_active_recovery_sessions(client)
+        if session_id is None:
+            _report_recovery_sessions(sessions)
+            return
+
+        payload = client.get_recovery_session(session_id)
+        recovery_session = _recovery_session_hint_from_payload(payload)
+        iso_verifier = build_iso_verifier()
+        burner = build_disc_burner()
+        media_verifier = build_burned_media_verifier()
+        prompts = build_burn_prompts()
+        resolved_staging_dir = (
+            staging_dir
+            or (
+                Path(os.getenv("ARC_DISC_STAGING_DIR"))
+                if os.getenv("ARC_DISC_STAGING_DIR")
+                else Path(".arc-disc-staging")
+            )
+        ).expanduser()
+        session_state = BurnSessionState.load(_burn_state_path(resolved_staging_dir))
+        recovery_session, completed_copy_ids = _process_recovery_session(
+            recovery_session,
+            client=client,
+            staging_dir=resolved_staging_dir,
+            session_state=session_state,
+            iso_verifier=iso_verifier,
+            burner=burner,
+            media_verifier=media_verifier,
+            prompts=prompts,
+            device=device,
+        )
+    except (ArcError, RuntimeError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if recovery_session.state == "restore_requested":
+        typer.echo(f"recovery session {session_id} is restore_requested")
+        if recovery_session.latest_message:
+            typer.echo(recovery_session.latest_message)
+        return
+
+    typer.echo(f"recovery session {session_id} completed")
+    for copy_id in completed_copy_ids:
+        typer.echo(copy_id)
 
 
 def main() -> None:

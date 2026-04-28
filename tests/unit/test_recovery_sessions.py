@@ -4,6 +4,8 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from arc_core.catalog_models import (
     CollectionFileRecord,
     CollectionRecord,
@@ -11,6 +13,7 @@ from arc_core.catalog_models import (
     FinalizedImageRecord,
 )
 from arc_core.domain.enums import RecoverySessionState
+from arc_core.domain.errors import NotFound
 from arc_core.ports.archive_store import ArchiveUploadReceipt
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.copies import SqlAlchemyCopyService
@@ -70,28 +73,39 @@ def _seed_finalized_image(
     sqlite_path: Path,
     image_root: Path,
     *,
+    image_id: str = "20260420T040001Z",
+    candidate_id: str = "img_2026-04-20_01",
+    filename: str = "20260420T040001Z.iso",
     glacier_state: str,
 ) -> None:
     session_factory = make_session_factory(str(sqlite_path))
     with session_scope(session_factory) as session:
-        session.add(CollectionRecord(id="docs"))
+        if session.get(CollectionRecord, "docs") is None:
+            session.add(CollectionRecord(id="docs"))
         for relative_path, content in DOCS_FILES.items():
-            session.add(
-                CollectionFileRecord(
-                    collection_id="docs",
-                    path=relative_path,
-                    bytes=len(content),
-                    sha256="a" * 64,
-                    hot=True,
-                    archived=False,
+            if (
+                session.get(
+                    CollectionFileRecord,
+                    {"collection_id": "docs", "path": relative_path},
                 )
-            )
+                is None
+            ):
+                session.add(
+                    CollectionFileRecord(
+                        collection_id="docs",
+                        path=relative_path,
+                        bytes=len(content),
+                        sha256="a" * 64,
+                        hot=True,
+                        archived=False,
+                    )
+                )
 
         session.add(
             FinalizedImageRecord(
-                image_id="20260420T040001Z",
-                candidate_id="img_2026-04-20_01",
-                filename="20260420T040001Z.iso",
+                image_id=image_id,
+                candidate_id=candidate_id,
+                filename=filename,
                 bytes=sum(len(content) for content in DOCS_FILES.values()),
                 image_root=str(image_root),
                 target_bytes=10_000,
@@ -105,7 +119,7 @@ def _seed_finalized_image(
         ):
             session.add(
                 FinalizedImageCoveredPathRecord(
-                    image_id="20260420T040001Z",
+                    image_id=image_id,
                     collection_id="docs",
                     path=relative_path,
                 )
@@ -183,6 +197,9 @@ def test_recovery_session_processes_ready_and_expired_states(
     expired = recovery_service.get("rs-20260420T040001Z-1")
     assert expired.state == RecoverySessionState.EXPIRED
 
+    completed = recovery_service.complete("rs-20260420T040001Z-1")
+    assert completed.state == RecoverySessionState.COMPLETED
+
 
 def test_glacier_upload_completion_backfills_recovery_session_for_unprotected_image(
     tmp_path: Path,
@@ -220,3 +237,79 @@ def test_glacier_upload_completion_backfills_recovery_session_for_unprotected_im
     assert upload_service.process_due_uploads() == 1
     session = recovery_service.get_for_image("20260420T040001Z")
     assert session.state == RecoverySessionState.PENDING_APPROVAL
+
+
+def test_glacier_upload_completion_does_not_create_recovery_session_for_ordinary_burn_backlog(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    image_root = tmp_path / "image-root"
+    initialize_db(str(sqlite_path))
+    write_tree(image_root, IMAGE_ONE_FILES)
+    _seed_finalized_image(sqlite_path, image_root, glacier_state="pending")
+
+    config = _config(sqlite_path)
+    upload_service = SqlAlchemyGlacierUploadService(config, _FakeArchiveStore())
+    recovery_service = SqlAlchemyRecoverySessionService(config)
+
+    session_factory = make_session_factory(str(sqlite_path))
+    with session_scope(session_factory) as session:
+        enqueue_glacier_upload_job(
+            session,
+            image_id="20260420T040001Z",
+            next_attempt_at="2026-04-20T04:00:00Z",
+        )
+
+    monkeypatch.setattr(
+        "arc_core.services.glacier_uploads.record_glacier_usage_snapshot",
+        lambda session, config: None,
+    )
+
+    assert upload_service.process_due_uploads() == 1
+    with pytest.raises(NotFound, match="recovery session not found for image"):
+        recovery_service.get_for_image("20260420T040001Z")
+
+
+def test_pending_recovery_session_can_group_multiple_images_before_approval(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    image_root_one = tmp_path / "image-root-one"
+    image_root_two = tmp_path / "image-root-two"
+    initialize_db(str(sqlite_path))
+    write_tree(image_root_one, IMAGE_ONE_FILES)
+    write_tree(image_root_two, IMAGE_ONE_FILES)
+    _seed_finalized_image(sqlite_path, image_root_one, glacier_state="uploaded")
+    _seed_finalized_image(
+        sqlite_path,
+        image_root_two,
+        image_id="20260420T040003Z",
+        candidate_id="img_2026-04-20_03",
+        filename="20260420T040003Z.iso",
+        glacier_state="uploaded",
+    )
+
+    config = _config(sqlite_path)
+    copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
+    recovery_service = SqlAlchemyRecoverySessionService(config)
+
+    copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
+    copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
+    copy_service.register("20260420T040003Z", "Shelf C1", copy_id="20260420T040003Z-1")
+    copy_service.register("20260420T040003Z", "Shelf D1", copy_id="20260420T040003Z-2")
+
+    copy_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
+    copy_service.update("20260420T040001Z", "20260420T040001Z-2", state="damaged")
+    copy_service.update("20260420T040003Z", "20260420T040003Z-1", state="lost")
+    copy_service.update("20260420T040003Z", "20260420T040003Z-2", state="damaged")
+
+    session = recovery_service.get("rs-20260420T040001Z-1")
+
+    assert session.state == RecoverySessionState.PENDING_APPROVAL
+    assert [str(image.id) for image in session.images] == [
+        "20260420T040001Z",
+        "20260420T040003Z",
+    ]
+    assert session.cost_estimate.image_count == 2
+    assert session.cost_estimate.restore_request_count == 2

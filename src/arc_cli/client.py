@@ -170,6 +170,21 @@ class ApiClient:
             f"/v1/images/{quote(image_id, safe='/')}/recovery-session",
         )
 
+    def get_recovery_session(self, session_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/v1/recovery-sessions/{quote(session_id, safe='/')}")
+
+    def approve_recovery_session(self, session_id: str) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/recovery-sessions/{quote(session_id, safe='/')}/approve",
+        )
+
+    def complete_recovery_session(self, session_id: str) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/recovery-sessions/{quote(session_id, safe='/')}/complete",
+        )
+
     def download_iso(self, image_id: str, output: Path | None = None) -> bytes:
         with self._client() as client:
             response = client.get(f"/v1/images/{image_id}/iso")

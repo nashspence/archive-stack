@@ -19,6 +19,8 @@ from arc_core.catalog_models import (
     FileCopyRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
+    GlacierRecoverySessionImageRecord,
+    GlacierRecoverySessionRecord,
     ImageCopyEventRecord,
     ImageCopyRecord,
 )
@@ -165,6 +167,10 @@ class SqlAlchemyCopyService:
         )
         if protected_copy_count > 0:
             while active_slot_count < required_copy_count:
+                copies.append(self._create_generated_copy_slot(session, image, used_ids=used_ids))
+                active_slot_count += 1
+        elif _has_recoverable_session(session, image.image_id):
+            while active_slot_count < 1:
                 copies.append(self._create_generated_copy_slot(session, image, used_ids=used_ids))
                 active_slot_count += 1
         return sorted(copies, key=lambda current: current.copy_id)
@@ -394,6 +400,24 @@ class StubCopyService:
 
 def _generated_copy_id(image_id: str, ordinal: int) -> str:
     return f"{image_id}-{ordinal}"
+
+
+def _has_recoverable_session(session, image_id: str) -> bool:
+    recoverable_states = {"restore_requested", "ready", "expired"}
+    session_id = session.scalar(
+        select(GlacierRecoverySessionRecord.session_id)
+        .join(
+            GlacierRecoverySessionImageRecord,
+            GlacierRecoverySessionImageRecord.session_id == GlacierRecoverySessionRecord.session_id,
+        )
+        .where(
+            GlacierRecoverySessionImageRecord.image_id == image_id,
+            GlacierRecoverySessionRecord.state.in_(recoverable_states),
+        )
+        .order_by(GlacierRecoverySessionRecord.created_at.desc())
+        .limit(1)
+    )
+    return session_id is not None
 
 
 def _label_text(copy_id: str) -> str:

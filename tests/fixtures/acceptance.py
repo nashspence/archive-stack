@@ -30,6 +30,7 @@ from arc_core.archive_compliance import (
     collection_protection_state,
     copy_counts_toward_protection,
     image_protection_state,
+    normalize_copy_state,
     normalize_required_copy_count,
     registered_copy_shortfall,
 )
@@ -121,7 +122,7 @@ _UPLOAD_EXPIRY_SWEEP_INTERVAL_SECONDS = 0.05
 _GLACIER_UPLOAD_SWEEP_INTERVAL_SECONDS = 1.0
 _GLACIER_RECOVERY_SWEEP_INTERVAL_SECONDS = 0.05
 _GLACIER_RECOVERY_RESTORE_LATENCY_SECONDS = 0.2
-_GLACIER_RECOVERY_READY_TTL_SECONDS = 1.0
+_GLACIER_RECOVERY_READY_TTL_SECONDS = 4.0
 
 
 def _generated_copy_id(image_id: str, ordinal: int) -> str:
@@ -445,6 +446,8 @@ class AcceptanceState:
             return
         if self._protected_copy_count(image_id) > 0:
             return
+        if not self._has_recovery_triggering_copy_history(image_id):
+            return
         if self.active_recovery_session(image_id) is not None:
             return
         session_id = self._generated_recovery_session_id(image_id)
@@ -501,6 +504,14 @@ class AcceptanceState:
             1
             for (volume_id, _copy_id), summary in self.copy_summaries.items()
             if volume_id == image_id and copy_counts_toward_protection(summary.state.value)
+        )
+
+    def _has_recovery_triggering_copy_history(self, image_id: str) -> bool:
+        return any(
+            volume_id == image_id
+            and normalize_copy_state(summary.state.value)
+            not in {CopyState.NEEDED, CopyState.BURNING}
+            for (volume_id, _copy_id), summary in self.copy_summaries.items()
         )
 
     def ensure_required_copy_slots(self, image_id: str) -> None:
@@ -1436,7 +1447,10 @@ class AcceptanceRecoverySessionService:
         record = self.state.recovery_sessions_by_id.get(session_id)
         if record is None:
             raise NotFound(f"recovery session not found: {session_id}")
-        if record.state != RecoverySessionState.READY:
+        if record.state not in {
+            RecoverySessionState.READY,
+            RecoverySessionState.EXPIRED,
+        }:
             raise InvalidState("recovery session is not ready to complete")
         current_text = _acceptance_isoformat(datetime.now(UTC))
         record.state = RecoverySessionState.COMPLETED
@@ -3654,6 +3668,11 @@ class AcceptanceSystem:
         if not staging_path.is_file():
             raise AssertionError(f"staged ISO not found: {staging_path}")
         staging_path.write_bytes(staging_path.read_bytes() + b"corrupted-by-fixture\n")
+
+    def arc_disc_staged_iso_exists(self, image_id: str) -> bool:
+        image = self.planning.get_image(image_id)
+        staging_path = self.workspace / "arc_disc_staging" / image_id / str(image["filename"])
+        return staging_path.is_file()
 
     def _subprocess_env(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
         env = os.environ.copy()

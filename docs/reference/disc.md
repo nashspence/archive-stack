@@ -205,6 +205,23 @@ Expected multipart flow:
 - if no ordinary burn backlog remains but one or more images are waiting on Glacier-backed recovery work, `arc-disc burn`
   reports those recovery sessions instead of treating them as ordinary replacement burns
 
+## Recovery Sessions
+
+`arc-disc recover` is the guided workflow for Glacier-backed recovery sessions after one or more finalized images lose
+all protected copies.
+
+- without a session id, `arc-disc recover` lists active recovery sessions and the finalized images attached to each one
+- with a session id in `pending_approval`, `arc-disc recover` approves the estimated restore cost and exits after the
+  restore request is submitted
+- with a session id in `ready`, `arc-disc recover` stages every still-needed image ISO in that session before burn work
+  starts so a later retry can resume from local artifacts
+- if the restore window expires after local staging succeeded, `arc-disc recover` can still resume from the staged ISO
+  artifacts already on disk
+- recovery burns reuse the same local checkpoint behavior as `arc-disc burn`, including resume from unfinished
+  burned-media verification or label confirmation
+- when the recovery session finishes, Riverhog marks the session completed and deletes the staged ISO artifacts for the
+  recovered images immediately
+
 ## Manual Recovery
 
 Without `arc-disc`, the intended recovery path is:
