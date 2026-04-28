@@ -120,6 +120,30 @@ def _generated_copy_id(image_id: str, ordinal: int) -> str:
     return f"{image_id}-{ordinal}"
 
 
+def _copy_counts_toward_slot_pool(state: CopyState) -> bool:
+    return state in {CopyState.NEEDED, CopyState.BURNING} or copy_counts_toward_protection(
+        state.value
+    )
+
+
+def _history_event_name(
+    *,
+    location_changed: bool,
+    state_changed: bool,
+    verification_changed: bool,
+) -> str:
+    changed = sum(int(flag) for flag in (location_changed, state_changed, verification_changed))
+    if changed > 1:
+        return "updated"
+    if location_changed:
+        return "location_updated"
+    if state_changed:
+        return "state_updated"
+    if verification_changed:
+        return "verification_updated"
+    return "updated"
+
+
 def _copy_history(
     *,
     at: str,
@@ -393,16 +417,41 @@ class AcceptanceState:
         if image is None:
             raise NotFound(f"image not found: {image_id}")
         required_copy_count = normalize_required_copy_count(None)
+        copies = [
+            summary
+            for (volume_id, _copy_id), summary in sorted(self.copy_summaries.items())
+            if volume_id == image_id
+        ]
         existing_ids = {
-            str(copy_id) for volume_id, copy_id in self.copy_summaries if volume_id == image_id
+            str(copy_id)
+            for volume_id, copy_id in self.copy_summaries
+            if volume_id == image_id
         }
+
+        if not copies:
+            while len(existing_ids) < required_copy_count:
+                self._create_generated_copy_slot(image_id, existing_ids=existing_ids)
+            return
+
+        active_slot_count = sum(
+            1 for summary in copies if _copy_counts_toward_slot_pool(summary.state)
+        )
+        protected_copy_count = sum(
+            1 for summary in copies if copy_counts_toward_protection(summary.state.value)
+        )
+        if protected_copy_count > 0:
+            while active_slot_count < required_copy_count:
+                self._create_generated_copy_slot(image_id, existing_ids=existing_ids)
+                active_slot_count += 1
+
+    def _create_generated_copy_slot(self, image_id: str, *, existing_ids: set[str]) -> CopySummary:
         ordinal = 1
-        while len(existing_ids) < required_copy_count:
+        while True:
             copy_id = _generated_copy_id(image_id, ordinal)
             ordinal += 1
             if copy_id in existing_ids:
                 continue
-            self.copy_summaries[(image_id, CopyId(copy_id))] = CopySummary(
+            summary = CopySummary(
                 id=CopyId(copy_id),
                 volume_id=image_id,
                 label_text=copy_id,
@@ -418,7 +467,9 @@ class AcceptanceState:
                     location=None,
                 ),
             )
+            self.copy_summaries[(image_id, CopyId(copy_id))] = summary
             existing_ids.add(copy_id)
+            return summary
 
     def collection_files(self, collection_id: str | CollectionId) -> list[StoredFile]:
         collection_key = CollectionId(str(collection_id))
@@ -1856,6 +1907,7 @@ class AcceptanceCopyService:
         summary = self.state.copy_summaries.get(scoped_key)
         if summary is None:
             raise NotFound(f"copy not found for image: {copy_id}")
+        previous_state = summary.state
         next_state = CopyState(state) if state is not None else summary.state
         next_verification_state = (
             VerificationState(verification_state)
@@ -1863,6 +1915,9 @@ class AcceptanceCopyService:
             else summary.verification_state
         )
         next_location = location if location is not None else summary.location
+        location_changed = location is not None and location != summary.location
+        state_changed = next_state != summary.state
+        verification_changed = next_verification_state != summary.verification_state
         updated = CopySummary(
             id=summary.id,
             volume_id=summary.volume_id,
@@ -1875,7 +1930,11 @@ class AcceptanceCopyService:
                 *summary.history,
                 CopyHistoryEntry(
                     at=DEFAULT_COPY_CREATED_AT,
-                    event="updated",
+                    event=_history_event_name(
+                        location_changed=location_changed,
+                        state_changed=state_changed,
+                        verification_changed=verification_changed,
+                    ),
                     state=next_state,
                     verification_state=next_verification_state,
                     location=next_location,
@@ -1884,6 +1943,11 @@ class AcceptanceCopyService:
         )
         self.state.copy_summaries[scoped_key] = updated
         self._sync_file_copy_visibility(updated)
+        if copy_counts_toward_protection(previous_state.value) and next_state in {
+            CopyState.LOST,
+            CopyState.DAMAGED,
+        }:
+            self.state.ensure_required_copy_slots(image_id)
         return updated
 
     def _registration_target(self, image_id: str, copy_id: str | None) -> CopySummary:

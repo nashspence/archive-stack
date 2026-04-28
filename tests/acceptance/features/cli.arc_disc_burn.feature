@@ -15,6 +15,21 @@ Feature: arc-disc burn CLI
     And copy "20260420T040001Z-1" for image "20260420T040001Z" state is "verified"
     And copy "20260420T040001Z-2" for image "20260420T040001Z" verification_state is "verified"
 
+  Scenario: arc-disc burn uses a fresh replacement id after one confirmed copy is reported lost
+    Given an archive with planner fixtures
+    And copy "20260420T040001Z-1" already exists
+    And copy "20260420T040001Z-2" already exists
+    And the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-1" with state "lost"
+    Then the response status is 200
+    And the burn fixture confirms labeled copy id "20260420T040001Z-3" at location "vault-c/shelf-01"
+    When the operator runs 'arc-disc burn --device /dev/fake-sr0'
+    Then the command exits with code 0
+    And stdout mentions "20260420T040001Z-3"
+    And stderr does not mention copy id "20260420T040001Z-1"
+    And image "20260420T040001Z" has physical_copies_registered 2
+    And copy "20260420T040001Z-1" for image "20260420T040001Z" state is "lost"
+    And copy "20260420T040001Z-3" for image "20260420T040001Z" state is "verified"
+
   Scenario: arc-disc burn does not register a copy before labeled confirmation and resumes there
     Given an archive with planner fixtures
     When the operator runs 'arc-disc burn --device /dev/fake-sr0'

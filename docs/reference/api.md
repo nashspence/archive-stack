@@ -343,6 +343,8 @@ Lists the generated copy slots for one finalized image.
 Required behavior:
 
 - finalizing an image creates exactly two required copy slots by default
+- if a confirmed copy is later reported `lost` or `damaged`, Riverhog preserves that historical record and may create a
+  fresh generated replacement slot with a new `copy_id`
 - each copy summary exposes generated identity, exact label text, current location, lifecycle state, verification state,
   and history
 
@@ -355,6 +357,8 @@ Required behavior:
 - location updates never mutate copy identity
 - copy lifecycle state and verification state persist across service restart
 - every location or state change is appended to copy history
+- reporting one confirmed copy `lost` or `damaged` never reuses that same `copy_id` for replacement burn work
+- when another protected copy still exists, replacement burn work is represented as a new generated `copy_id`
 
 ### Pins
 

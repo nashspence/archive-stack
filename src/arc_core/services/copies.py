@@ -85,6 +85,7 @@ class SqlAlchemyCopyService:
             if target is None:
                 raise NotFound(f"copy not found for image: {copy_id}")
 
+            previous_state = normalize_copy_state(target.state)
             location_changed = location is not None and location != target.location
             state_changed = False
             verification_changed = False
@@ -116,6 +117,11 @@ class SqlAlchemyCopyService:
                         verification_changed=verification_changed,
                     ),
                 )
+            if _should_top_up_replacement_slots(
+                previous_state=previous_state,
+                next_state=target.state,
+            ):
+                self._ensure_required_copy_slots(session, image)
             session.flush()
             return self._copy_summary(session, target)
 
@@ -137,8 +143,31 @@ class SqlAlchemyCopyService:
         ).all()
         required_copy_count = normalize_required_copy_count(image.required_copy_count)
         used_ids = {copy.copy_id for copy in copies}
+
+        if not copies:
+            while len(copies) < required_copy_count:
+                copies.append(self._create_generated_copy_slot(session, image, used_ids=used_ids))
+            return sorted(copies, key=lambda current: current.copy_id)
+
+        active_slot_count = sum(1 for copy in copies if _copy_counts_toward_slot_pool(copy.state))
+        protected_copy_count = sum(
+            1 for copy in copies if copy_counts_toward_protection(copy.state)
+        )
+        if protected_copy_count > 0:
+            while active_slot_count < required_copy_count:
+                copies.append(self._create_generated_copy_slot(session, image, used_ids=used_ids))
+                active_slot_count += 1
+        return sorted(copies, key=lambda current: current.copy_id)
+
+    def _create_generated_copy_slot(
+        self,
+        session,
+        image: FinalizedImageRecord,
+        *,
+        used_ids: set[str],
+    ) -> ImageCopyRecord:
         ordinal = 1
-        while len(copies) < required_copy_count:
+        while True:
             candidate_id = _generated_copy_id(image.image_id, ordinal)
             ordinal += 1
             if candidate_id in used_ids:
@@ -156,9 +185,8 @@ class SqlAlchemyCopyService:
             session.add(copy)
             session.flush()
             self._append_history(session, copy, event="created")
-            copies.append(copy)
             used_ids.add(candidate_id)
-        return sorted(copies, key=lambda current: current.copy_id)
+            return copy
 
     def _resolve_registration_target(
         self,
@@ -382,6 +410,20 @@ def _history_event_name(
     if verification_changed:
         return "verification_updated"
     return "updated"
+
+
+def _copy_counts_toward_slot_pool(state: str | None) -> bool:
+    normalized = normalize_copy_state(state)
+    return normalized in _REGISTERABLE_STATES or copy_counts_toward_protection(normalized.value)
+
+
+def _should_top_up_replacement_slots(*, previous_state: CopyState, next_state: str | None) -> bool:
+    return copy_counts_toward_protection(previous_state.value) and normalize_copy_state(
+        next_state
+    ) in {
+        CopyState.LOST,
+        CopyState.DAMAGED,
+    }
 
 
 def _parse_copy_state(raw_state: str) -> CopyState:

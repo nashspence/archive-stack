@@ -859,6 +859,9 @@ def given_arc_disc_reader_failure_for_copy(
 @when(
     parsers.parse('the burn fixture confirms labeled copy id "{copy_id}" at location "{location}"')
 )
+@then(
+    parsers.parse('the burn fixture confirms labeled copy id "{copy_id}" at location "{location}"')
+)
 def given_burn_fixture_confirms_labeled_copy(
     acceptance_system: AcceptanceSystem,
     copy_id: str,
@@ -1342,6 +1345,18 @@ def when_client_patches_copy(
             "verification_state": verification_state,
         },
     )
+    _set_response(acceptance_context, response)
+
+
+@given(parsers.parse('the client patches "{path}" with state "{state}"'))
+@when(parsers.parse('the client patches "{path}" with state "{state}"'))
+def when_client_patches_copy_state_only(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+    path: str,
+    state: str,
+) -> None:
+    response = acceptance_system.request("PATCH", path, json_body={"state": state})
     _set_response(acceptance_context, response)
 
 

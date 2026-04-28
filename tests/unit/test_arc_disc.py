@@ -298,12 +298,54 @@ def test_discover_burn_backlog_prefers_fullest_ready_candidate() -> None:
                 ],
             }
 
+        def list_copies(self, image_id: str) -> dict[str, object]:
+            assert image_id == "20260420T040003Z"
+            return {
+                "copies": [
+                    {"id": "20260420T040003Z-1", "state": "verified"},
+                    {"id": "20260420T040003Z-3", "state": "needed"},
+                ]
+            }
+
     backlog = arc_disc_main._discover_burn_backlog(FakeClient())
 
     assert [(item.candidate_id, item.image_id) for item in backlog] == [
         ("img_2026-04-20_01", None),
         (None, "20260420T040003Z"),
     ]
+
+
+def test_discover_burn_backlog_skips_images_that_now_require_recovery_flow() -> None:
+    class FakeClient:
+        def get_plan(self, *, page: int, per_page: int, sort: str, order: str, iso_ready: bool):
+            return {"page": 1, "pages": 0, "candidates": []}
+
+        def list_images(self, *, page: int, per_page: int, sort: str, order: str):
+            return {
+                "page": 1,
+                "pages": 1,
+                "images": [
+                    {
+                        "id": "20260420T040001Z",
+                        "filename": "20260420T040001Z.iso",
+                        "fill": 0.9,
+                        "physical_copies_registered": 0,
+                        "physical_copies_required": 2,
+                    }
+                ],
+            }
+
+        def list_copies(self, image_id: str) -> dict[str, object]:
+            assert image_id == "20260420T040001Z"
+            return {
+                "copies": [
+                    {"id": "20260420T040001Z-1", "state": "lost"},
+                    {"id": "20260420T040001Z-2", "state": "damaged"},
+                    {"id": "20260420T040001Z-3", "state": "needed"},
+                ]
+            }
+
+    assert arc_disc_main._discover_burn_backlog(FakeClient()) == []
 
 
 def test_arc_disc_burn_waits_for_label_confirmation_before_registration_and_resumes(

@@ -181,6 +181,8 @@ Expected multipart flow:
 
 - the burn backlog includes ready provisional candidates plus finalized images whose required copy backlog is not yet
   complete
+- historical `lost` or `damaged` copy records are not burned again in place; replacement work uses fresh generated
+  `copy_id` values in state `needed` or `burning`
 - the session selects the fullest ready backlog item first
 - if that item is still provisional, `arc-disc burn` finalizes it before continuing
 - the session downloads and stages the image ISO locally before burn work

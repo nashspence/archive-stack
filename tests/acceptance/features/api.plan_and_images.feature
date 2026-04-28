@@ -225,6 +225,21 @@ Feature: Plan and images API
       And the response copy state is "verified"
       And the response copy verification_state is "verified"
 
+    Scenario: Reporting one confirmed copy lost preserves history and creates a fresh replacement slot
+      Given copy "20260420T040001Z-1" already exists
+      And copy "20260420T040001Z-2" already exists
+      When the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-1" with state "lost"
+      Then the response status is 200
+      And the response contains copy id "20260420T040001Z-1"
+      And the response copy state is "lost"
+      And the response copy history contains events "created", "registered", and "state_updated" in order
+      And the response copy history entry 3 has event "state_updated", state "lost", verification_state "pending", and location "Shelf B1"
+      When the client gets "/v1/images/20260420T040001Z/copies"
+      Then the response status is 200
+      And copy "20260420T040001Z-1" for image "20260420T040001Z" state is "lost"
+      And copy "20260420T040001Z-3" for image "20260420T040001Z" state is "needed"
+      And image "20260420T040001Z" has physical_copies_registered 1
+
     Scenario: Updating a generated copy appends lifecycle history
       Given copy "20260420T040001Z-1" already exists
       When the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-1" with location "Shelf B2", state "verified", and verification_state "verified"

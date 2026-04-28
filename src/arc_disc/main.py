@@ -74,6 +74,10 @@ class BurnBacklogItem:
     fill: float
 
 
+_PENDING_BURN_STATES = {"needed", "burning"}
+_PROTECTED_COPY_STATES = {"registered", "verified"}
+
+
 @dataclass(slots=True)
 class BurnCopyProgress:
     burned: bool = False
@@ -424,6 +428,28 @@ def _iter_paged_payloads(fetch_page) -> list[dict[str, Any]]:
     return results
 
 
+def _is_standard_burn_backlog_image(client: ApiClient, image_id: str) -> bool:
+    copies = client.list_copies(image_id).get("copies", [])
+    if not isinstance(copies, list) or not copies:
+        return False
+
+    states = {
+        str(copy.get("state"))
+        for copy in copies
+        if isinstance(copy, dict) and copy.get("state") is not None
+    }
+    has_pending = bool(states & _PENDING_BURN_STATES)
+    has_protected = bool(states & _PROTECTED_COPY_STATES)
+    all_pending = bool(states) and states <= _PENDING_BURN_STATES
+    if not has_pending:
+        return False
+    if all_pending:
+        return True
+    if has_protected:
+        return True
+    return False
+
+
 def _discover_burn_backlog(client: ApiClient) -> list[BurnBacklogItem]:
     items: list[BurnBacklogItem] = []
 
@@ -458,9 +484,12 @@ def _discover_burn_backlog(client: ApiClient) -> list[BurnBacklogItem]:
             required = int(image.get("physical_copies_required", 0))
             if registered >= required:
                 continue
+            image_id = str(image["id"])
+            if not _is_standard_burn_backlog_image(client, image_id):
+                continue
             items.append(
                 BurnBacklogItem(
-                    image_id=str(image["id"]),
+                    image_id=image_id,
                     candidate_id=None,
                     filename=str(image["filename"]),
                     fill=float(image.get("fill", 0)),
@@ -627,7 +656,7 @@ def _process_burn_backlog_item(
     for copy_payload in payload.get("copies", []):
         if not isinstance(copy_payload, dict):
             continue
-        if str(copy_payload.get("state")) in {"registered", "verified"}:
+        if str(copy_payload.get("state")) not in _PENDING_BURN_STATES:
             continue
         completed.append(
             _burn_pending_copy(
