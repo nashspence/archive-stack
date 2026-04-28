@@ -22,6 +22,7 @@ from arc_api.routers.images import router as images_router
 from arc_api.routers.internal import router as internal_router
 from arc_api.routers.pins import router as pins_router
 from arc_api.routers.plan import router as plan_router
+from arc_api.routers.recovery_sessions import router as recovery_sessions_router
 from arc_api.routers.search import router as search_router
 from arc_api.schemas.common import ErrorBody, ErrorResponse
 from arc_core.domain.errors import ArcError
@@ -82,6 +83,10 @@ def _process_glacier_uploads(container: ServiceContainer) -> None:
     container.glacier_uploads.process_due_uploads(limit=1)
 
 
+def _process_glacier_recovery_sessions(container: ServiceContainer) -> None:
+    container.recovery_sessions.process_due_sessions(limit=10)
+
+
 async def _run_upload_expiry_reaper(
     container_provider: Callable[[], ServiceContainer | None],
     *,
@@ -120,11 +125,31 @@ async def _run_glacier_upload_reaper(
             _LOG.exception("glacier upload reaper sweep failed")
 
 
+async def _run_glacier_recovery_reaper(
+    container_provider: Callable[[], ServiceContainer | None],
+    *,
+    sweep_interval: timedelta,
+) -> None:
+    interval_seconds = max(sweep_interval.total_seconds(), 0.1)
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            container = container_provider()
+            if container is None:
+                continue
+            await asyncio.to_thread(_process_glacier_recovery_sessions, container)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover - defensive background task logging
+            _LOG.exception("glacier recovery reaper sweep failed")
+
+
 def create_app(
     *,
     container: ServiceContainer | None = None,
     upload_expiry_reaper_interval: float | None = None,
     glacier_upload_reaper_interval: float | None = None,
+    glacier_recovery_reaper_interval: float | None = None,
 ) -> FastAPI:
     config = load_runtime_config()
     app_container: ServiceContainer | None = container
@@ -137,6 +162,11 @@ def create_app(
         timedelta(seconds=glacier_upload_reaper_interval)
         if glacier_upload_reaper_interval is not None
         else config.glacier_upload_sweep_interval
+    )
+    glacier_recovery_sweep_interval = (
+        timedelta(seconds=glacier_recovery_reaper_interval)
+        if glacier_recovery_reaper_interval is not None
+        else config.glacier_recovery_sweep_interval
     )
 
     def get_or_create_container() -> ServiceContainer:
@@ -159,15 +189,24 @@ def create_app(
                 sweep_interval=glacier_sweep_interval,
             )
         )
+        glacier_recovery_task = asyncio.create_task(
+            _run_glacier_recovery_reaper(
+                lambda: app_container,
+                sweep_interval=glacier_recovery_sweep_interval,
+            )
+        )
         try:
             yield
         finally:
             upload_task.cancel()
             glacier_task.cancel()
+            glacier_recovery_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await upload_task
             with contextlib.suppress(asyncio.CancelledError):
                 await glacier_task
+            with contextlib.suppress(asyncio.CancelledError):
+                await glacier_recovery_task
 
     app = FastAPI(title="arc API", version="0.1.0", lifespan=lifespan)
     app.state.instance_id = f"{os.getpid()}-{time.time_ns()}"
@@ -224,6 +263,7 @@ def create_app(
     app.include_router(plan_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(images_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(glacier_router, prefix="/v1", dependencies=auth_deps)
+    app.include_router(recovery_sessions_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(pins_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(fetches_router, prefix="/v1", dependencies=auth_deps)
     return app

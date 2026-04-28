@@ -247,6 +247,55 @@ Required behavior:
 - finalized image summaries always report `iso_ready = true`
 - provisional plan candidates are not addressable through `GET /v1/images/{image_id}`
 
+#### `GET /v1/images/{image_id}/recovery-session`
+
+Returns the latest Glacier recovery session for one finalized image.
+
+Required behavior:
+
+- returns the latest durable recovery session for that finalized image, including expired or completed sessions
+- returns `not_found` when no recovery session has been created for that image
+
+#### `POST /v1/images/{image_id}/recovery-session`
+
+Creates or resumes one Glacier recovery session for one finalized image.
+
+Required behavior:
+
+- creates a new `pending_approval` session only when the finalized image has no remaining protected copies and its
+  Glacier archive is uploaded
+- repeated calls while one active session exists return that same active session rather than creating duplicates
+- an expired or completed session does not block creating a new session id for the same image
+
+#### `GET /v1/recovery-sessions/{session_id}`
+
+Returns one Glacier recovery session by durable session id.
+
+Required behavior:
+
+- recovery sessions remain addressable across service restart
+- the response includes cost estimate, operator warnings, notification state, and the covered finalized image list
+
+#### `POST /v1/recovery-sessions/{session_id}/approve`
+
+Approves one pending recovery session cost estimate.
+
+Required behavior:
+
+- approval is required before Riverhog requests restore work
+- approval transitions the session from `pending_approval` to `restore_requested`
+- approving an expired session is rejected with `invalid_state` and explains that recovery must be re-initiated
+
+#### `POST /v1/recovery-sessions/{session_id}/complete`
+
+Completes one ready recovery session.
+
+Required behavior:
+
+- completion is only valid from `ready`
+- completion transitions the session to `completed`
+- completion cleans up the restored Standard-storage window immediately instead of waiting for expiry
+
 #### `GET /v1/glacier`
 
 Returns Glacier usage totals, per-image archive state, derived per-collection attribution, pricing

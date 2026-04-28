@@ -1135,6 +1135,7 @@ def when_client_downloads_and_inspects_iso(
     acceptance_context.current_iso = inspected
 
 
+@given(parsers.parse('the client posts to "{path}"'))
 @when(parsers.parse('the client posts to "{path}"'))
 def when_client_posts(
     acceptance_system: AcceptanceSystem,
@@ -1256,6 +1257,7 @@ def when_client_refreshes_collection_upload(
     _set_response(acceptance_context, response)
 
 
+@given(parsers.parse('the client posts to "{path}" with target "{target}"'))
 @when(parsers.parse('the client posts to "{path}" with target "{target}"'))
 def when_client_posts_with_target(
     acceptance_system: AcceptanceSystem,
@@ -1267,6 +1269,7 @@ def when_client_posts_with_target(
     _set_response(acceptance_context, response)
 
 
+@given(parsers.parse('the client posts to "{path}" with id "{copy_id}" and location "{location}"'))
 @when(parsers.parse('the client posts to "{path}" with id "{copy_id}" and location "{location}"'))
 def when_client_registers_copy(
     acceptance_system: AcceptanceSystem,
@@ -1295,6 +1298,7 @@ def when_client_registers_copy(
         acceptance_context.after_collections[acceptance_context.tracked_collection_id] = after
 
 
+@given(parsers.parse('the client posts to "{path}" with location "{location}"'))
 @when(parsers.parse('the client posts to "{path}" with location "{location}"'))
 def when_client_registers_generated_copy(
     acceptance_system: AcceptanceSystem,
@@ -1365,6 +1369,7 @@ def when_api_process_restarts(acceptance_system: AcceptanceSystem) -> None:
     acceptance_system.restart()
 
 
+@given(parsers.parse('the client waits for image "{image_id}" glacier state "{state}"'))
 @when(parsers.parse('the client waits for image "{image_id}" glacier state "{state}"'))
 def when_the_client_waits_for_image_glacier_state(
     acceptance_system: AcceptanceSystem,
@@ -1374,6 +1379,19 @@ def when_the_client_waits_for_image_glacier_state(
 ) -> None:
     acceptance_system.wait_for_image_glacier_state(image_id, state)
     response = acceptance_system.request("GET", f"/v1/images/{image_id}")
+    _set_response(acceptance_context, response)
+
+
+@given(parsers.parse('the client waits for recovery session "{session_id}" state "{state}"'))
+@when(parsers.parse('the client waits for recovery session "{session_id}" state "{state}"'))
+def when_the_client_waits_for_recovery_session_state(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+    session_id: str,
+    state: str,
+) -> None:
+    acceptance_system.wait_for_recovery_session_state(session_id, state)
+    response = acceptance_system.request("GET", f"/v1/recovery-sessions/{session_id}")
     _set_response(acceptance_context, response)
 
 
@@ -2216,6 +2234,15 @@ def then_error_code_is(
     assert payload["error"]["code"] == code
 
 
+@then(parsers.parse('the error message contains "{text}"'))
+def then_error_message_contains(
+    acceptance_context: AcceptanceScenarioContext,
+    text: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert text in payload["error"]["message"]
+
+
 @then(
     'each plan candidate contains "candidate_id", "bytes", "fill", "files", '
     '"collections", "collection_ids", and "iso_ready"'
@@ -2444,6 +2471,50 @@ def then_response_image_glacier_stored_bytes_is_greater_than_zero(
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     assert int(payload["glacier"]["stored_bytes"]) > 0
+
+
+@then(parsers.parse('the response recovery session id is "{session_id}"'))
+def then_response_recovery_session_id_is(
+    acceptance_context: AcceptanceScenarioContext,
+    session_id: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert payload["id"] == session_id
+
+
+@then(parsers.parse('the response recovery session state is "{state}"'))
+def then_response_recovery_session_state_is(
+    acceptance_context: AcceptanceScenarioContext,
+    state: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert payload["state"] == state
+
+
+@then("the response recovery session estimated cost is greater than 0")
+def then_response_recovery_session_estimated_cost_is_greater_than_zero(
+    acceptance_context: AcceptanceScenarioContext,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert float(payload["cost_estimate"]["total_estimated_cost_usd"]) > 0
+
+
+@then(parsers.parse('the response recovery session images contain only "{image_id}"'))
+def then_response_recovery_session_images_contain_only(
+    acceptance_context: AcceptanceScenarioContext,
+    image_id: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert [image["id"] for image in payload["images"]] == [image_id]
+
+
+@then(parsers.parse('the response recovery session latest_message contains "{text}"'))
+def then_response_recovery_session_latest_message_contains(
+    acceptance_context: AcceptanceScenarioContext,
+    text: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert text in str(payload["latest_message"])
 
 
 @then("the response Glacier totals measured_storage_bytes is greater than 0")

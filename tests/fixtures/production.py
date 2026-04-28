@@ -1033,6 +1033,25 @@ class ProductionSystem:
             time.sleep(0.05)
         raise AssertionError(f"timed out waiting for image glacier state {image_id} -> {state}")
 
+    def wait_for_recovery_session_state(
+        self,
+        session_id: str,
+        state: str,
+        *,
+        timeout: float = 10.0,
+    ) -> dict[str, object]:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            response = self.request("GET", f"/v1/recovery-sessions/{session_id}")
+            assert response.status_code == 200, response.text
+            payload = response.json()
+            if payload["state"] == state:
+                return payload
+            time.sleep(0.05)
+        raise AssertionError(
+            f"timed out waiting for recovery session state {session_id} -> {state}"
+        )
+
     def seed_nested_photos_hot(self) -> None:
         with time_block("fixture.seed_nested_photos_hot"):
             if not self._collection_exists("photos/2024"):

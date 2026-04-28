@@ -168,6 +168,97 @@ persistent failure after automatic retries.
 The payload includes the finalized `image_id`, failure timestamp, attempt count,
 and error context.
 
+## `ARC_GLACIER_RECOVERY_SWEEP_INTERVAL`
+
+- type: duration
+- default: `30s`
+
+How often Riverhog scans for due Glacier recovery-session transitions such as
+restore-ready and expiry cleanup.
+
+## `ARC_GLACIER_RECOVERY_RESTORE_LATENCY`
+
+- type: duration
+- default: `48h`
+
+Operator-facing restore-latency estimate that Riverhog uses when one approved
+recovery session waits for Glacier restore completion.
+
+## `ARC_GLACIER_RECOVERY_READY_TTL`
+
+- type: duration
+- default: `24h`
+
+How long Riverhog keeps restored Standard-storage ISO data available after the
+archive becomes ready before automatic cleanup expires that recovery session.
+
+## `ARC_GLACIER_RECOVERY_WEBHOOK_URL`
+
+- type: URL
+- default: unset
+
+Optional webhook endpoint notified when restored ISO data becomes ready and when
+reminders are sent before cleanup expiry.
+
+## `ARC_GLACIER_RECOVERY_WEBHOOK_RETRY_DELAY`
+
+- type: duration
+- default: `60s`
+
+Delay before Riverhog retries a failed recovery-ready webhook delivery.
+
+## `ARC_GLACIER_RECOVERY_WEBHOOK_REMINDER_INTERVAL`
+
+- type: duration
+- default: `1h`
+
+Interval between repeated ready reminders while restored ISO data remains
+available and the recovery session is still incomplete.
+
+## `ARC_GLACIER_RECOVERY_RETRIEVAL_TIER`
+
+- type: enum
+- default: `bulk`
+
+Retrieval tier used for recovery-session cost estimates.
+
+Allowed values:
+
+- `bulk`
+- `standard`
+
+## `ARC_GLACIER_BULK_RETRIEVAL_RATE_USD_PER_GIB`
+
+- type: number
+- default: `0.0025`
+
+Manual per-GiB rate used when Riverhog estimates bulk Glacier retrieval cost
+for one recovery session.
+
+## `ARC_GLACIER_BULK_REQUEST_RATE_USD_PER_1000`
+
+- type: number
+- default: `0.025`
+
+Manual request-fee rate used when Riverhog estimates bulk Glacier restore
+request charges for one recovery session.
+
+## `ARC_GLACIER_STANDARD_RETRIEVAL_RATE_USD_PER_GIB`
+
+- type: number
+- default: `0.02`
+
+Manual per-GiB rate used when Riverhog estimates standard Glacier retrieval
+cost for one recovery session.
+
+## `ARC_GLACIER_STANDARD_REQUEST_RATE_USD_PER_1000`
+
+- type: number
+- default: `0.10`
+
+Manual request-fee rate used when Riverhog estimates standard Glacier restore
+request charges for one recovery session.
+
 ## `ARC_GLACIER_PRICING_LABEL`
 
 - type: string

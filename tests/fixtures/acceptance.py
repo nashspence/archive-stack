@@ -13,7 +13,7 @@ import time
 from collections import defaultdict
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, cast
@@ -38,6 +38,7 @@ from arc_core.domain.enums import (
     FetchState,
     GlacierState,
     ProtectionState,
+    RecoverySessionState,
     VerificationState,
 )
 from arc_core.domain.errors import Conflict, HashMismatch, InvalidState, NotFound
@@ -66,6 +67,10 @@ from arc_core.domain.models import (
     GlacierUsageSnapshot,
     GlacierUsageTotals,
     PinSummary,
+    RecoveryCostEstimate,
+    RecoveryNotificationStatus,
+    RecoverySessionImage,
+    RecoverySessionSummary,
 )
 from arc_core.domain.selectors import parse_target
 from arc_core.domain.types import (
@@ -114,6 +119,9 @@ SRC_ROOT = REPO_ROOT / "src"
 FIXTURE_UPLOAD_EXPIRES_AT = "2099-12-31T23:59:59Z"
 _UPLOAD_EXPIRY_SWEEP_INTERVAL_SECONDS = 0.05
 _GLACIER_UPLOAD_SWEEP_INTERVAL_SECONDS = 1.0
+_GLACIER_RECOVERY_SWEEP_INTERVAL_SECONDS = 0.05
+_GLACIER_RECOVERY_RESTORE_LATENCY_SECONDS = 0.2
+_GLACIER_RECOVERY_READY_TTL_SECONDS = 1.0
 
 
 def _generated_copy_id(image_id: str, ordinal: int) -> str:
@@ -344,6 +352,23 @@ class AcceptanceGlacierUploadJob:
 
 
 @dataclass(slots=True)
+class AcceptanceRecoverySessionRecord:
+    session_id: str
+    image_id: ImageId
+    state: RecoverySessionState
+    created_at: str
+    approved_at: str | None = None
+    restore_requested_at: str | None = None
+    restore_ready_at: str | None = None
+    restore_expires_at: str | None = None
+    completed_at: str | None = None
+    latest_message: str | None = None
+    reminder_count: int = 0
+    next_reminder_at: str | None = None
+    last_notified_at: str | None = None
+
+
+@dataclass(slots=True)
 class AcceptanceState:
     local_collection_sources: dict[CollectionId, Path] = field(default_factory=dict)
     files_by_collection: dict[CollectionId, dict[str, StoredFile]] = field(default_factory=dict)
@@ -356,6 +381,9 @@ class AcceptanceState:
     glacier_status_by_image: dict[ImageId, GlacierArchiveStatus] = field(default_factory=dict)
     glacier_jobs_by_image: dict[ImageId, AcceptanceGlacierUploadJob] = field(default_factory=dict)
     glacier_usage_snapshots: list[GlacierUsageSnapshot] = field(default_factory=list)
+    recovery_sessions_by_id: dict[str, AcceptanceRecoverySessionRecord] = field(
+        default_factory=dict
+    )
     glacier_billing_metadata_available: bool = False
     next_fetch_number: int = 0
 
@@ -410,6 +438,69 @@ class AcceptanceState:
         return self.glacier_status_by_image.get(
             ImageId(image_id),
             GlacierArchiveStatus(state=GlacierState.PENDING),
+        )
+
+    def ensure_glacier_recovery_session(self, image_id: str) -> None:
+        if self.glacier_status(image_id).state != GlacierState.UPLOADED:
+            return
+        if self._protected_copy_count(image_id) > 0:
+            return
+        if self.active_recovery_session(image_id) is not None:
+            return
+        session_id = self._generated_recovery_session_id(image_id)
+        self.recovery_sessions_by_id[session_id] = AcceptanceRecoverySessionRecord(
+            session_id=session_id,
+            image_id=ImageId(image_id),
+            state=RecoverySessionState.PENDING_APPROVAL,
+            created_at=_acceptance_isoformat(datetime.now(UTC)),
+            latest_message=(
+                "Approve the estimated restore cost before Riverhog requests archive restore."
+            ),
+        )
+
+    def active_recovery_session(self, image_id: str) -> AcceptanceRecoverySessionRecord | None:
+        active_states = {
+            RecoverySessionState.PENDING_APPROVAL,
+            RecoverySessionState.RESTORE_REQUESTED,
+            RecoverySessionState.READY,
+        }
+        sessions = [
+            record
+            for record in self.recovery_sessions_by_id.values()
+            if str(record.image_id) == image_id and record.state in active_states
+        ]
+        if not sessions:
+            return None
+        return sorted(sessions, key=lambda current: current.created_at, reverse=True)[0]
+
+    def latest_recovery_session(self, image_id: str) -> AcceptanceRecoverySessionRecord | None:
+        sessions = [
+            record
+            for record in self.recovery_sessions_by_id.values()
+            if str(record.image_id) == image_id
+        ]
+        if not sessions:
+            return None
+        return sorted(sessions, key=lambda current: current.created_at, reverse=True)[0]
+
+    def _generated_recovery_session_id(self, image_id: str) -> str:
+        existing_ids = {
+            record.session_id
+            for record in self.recovery_sessions_by_id.values()
+            if str(record.image_id) == image_id
+        }
+        ordinal = 1
+        while True:
+            candidate = f"rs-{image_id}-{ordinal}"
+            ordinal += 1
+            if candidate not in existing_ids:
+                return candidate
+
+    def _protected_copy_count(self, image_id: str) -> int:
+        return sum(
+            1
+            for (volume_id, _copy_id), summary in self.copy_summaries.items()
+            if volume_id == image_id and copy_counts_toward_protection(summary.state.value)
         )
 
     def ensure_required_copy_slots(self, image_id: str) -> None:
@@ -1275,10 +1366,203 @@ class AcceptanceGlacierUploadService:
                 last_verified_at=now,
                 failure=None,
             )
+            self.state.ensure_glacier_recovery_session(image.finalized_id)
             self.state.glacier_usage_snapshots.append(_acceptance_glacier_snapshot(self.state))
             job.completed = True
             attempted += 1
         return attempted
+
+
+class AcceptanceRecoverySessionService:
+    def __init__(self, state: AcceptanceState) -> None:
+        self.state = state
+
+    def get(self, session_id: str) -> RecoverySessionSummary:
+        record = self.state.recovery_sessions_by_id.get(session_id)
+        if record is None:
+            raise NotFound(f"recovery session not found: {session_id}")
+        return self._summary(record)
+
+    def get_for_image(self, image_id: str) -> RecoverySessionSummary:
+        record = self.state.latest_recovery_session(image_id)
+        if record is None:
+            raise NotFound(f"recovery session not found for image: {image_id}")
+        return self._summary(record)
+
+    def create_or_resume_for_image(self, image_id: str) -> RecoverySessionSummary:
+        image = self.state.finalized_images_by_id.get(ImageId(image_id))
+        if image is None:
+            raise NotFound(f"image not found: {image_id}")
+        active = self.state.active_recovery_session(image_id)
+        if active is not None:
+            return self._summary(active)
+        if self.state.glacier_status(image_id).state != GlacierState.UPLOADED:
+            raise InvalidState(
+                f"image archive is not uploaded and cannot be restored yet: {image_id}"
+            )
+        if self.state._protected_copy_count(image_id) > 0:
+            raise Conflict(
+                "image still has protected copies and does not require "
+                f"archive recovery: {image_id}"
+            )
+        self.state.ensure_glacier_recovery_session(image_id)
+        record = self.state.active_recovery_session(image_id)
+        assert record is not None
+        return self._summary(record)
+
+    def approve(self, session_id: str) -> RecoverySessionSummary:
+        record = self.state.recovery_sessions_by_id.get(session_id)
+        if record is None:
+            raise NotFound(f"recovery session not found: {session_id}")
+        if record.state == RecoverySessionState.EXPIRED:
+            raise InvalidState("recovery session expired; re-initiate recovery to request restore")
+        if record.state != RecoverySessionState.PENDING_APPROVAL:
+            raise InvalidState("recovery session is not waiting for approval")
+        current = datetime.now(UTC)
+        current_text = _acceptance_isoformat(current)
+        record.state = RecoverySessionState.RESTORE_REQUESTED
+        record.approved_at = current_text
+        record.restore_requested_at = current_text
+        record.restore_ready_at = _acceptance_isoformat(
+            current + timedelta(seconds=_GLACIER_RECOVERY_RESTORE_LATENCY_SECONDS)
+        )
+        record.latest_message = (
+            "Archive restore requested; wait for the ready notification before downloading or "
+            "burning replacement media."
+        )
+        return self._summary(record)
+
+    def complete(self, session_id: str) -> RecoverySessionSummary:
+        record = self.state.recovery_sessions_by_id.get(session_id)
+        if record is None:
+            raise NotFound(f"recovery session not found: {session_id}")
+        if record.state != RecoverySessionState.READY:
+            raise InvalidState("recovery session is not ready to complete")
+        current_text = _acceptance_isoformat(datetime.now(UTC))
+        record.state = RecoverySessionState.COMPLETED
+        record.completed_at = current_text
+        record.restore_expires_at = current_text
+        record.next_reminder_at = None
+        record.latest_message = (
+            "Recovery session completed and restored ISO data was cleaned up immediately."
+        )
+        return self._summary(record)
+
+    def process_due_sessions(self, *, limit: int = 100) -> int:
+        if limit < 1:
+            return 0
+        current = datetime.now(UTC)
+        current_text = _acceptance_isoformat(current)
+        processed = 0
+        for record in sorted(
+            self.state.recovery_sessions_by_id.values(),
+            key=lambda current_record: (current_record.created_at, current_record.session_id),
+        ):
+            if processed >= limit:
+                break
+            if (
+                record.state == RecoverySessionState.RESTORE_REQUESTED
+                and record.restore_ready_at is not None
+                and record.restore_ready_at <= current_text
+            ):
+                record.state = RecoverySessionState.READY
+                record.restore_expires_at = _acceptance_isoformat(
+                    current + timedelta(seconds=_GLACIER_RECOVERY_READY_TTL_SECONDS)
+                )
+                record.latest_message = (
+                    "Restored ISO data is ready; reopen the session to complete download, verify "
+                    "the ISO, and burn replacement media before cleanup."
+                )
+                processed += 1
+                continue
+            if (
+                record.state == RecoverySessionState.READY
+                and record.restore_expires_at is not None
+                and record.restore_expires_at <= current_text
+            ):
+                record.state = RecoverySessionState.EXPIRED
+                record.next_reminder_at = None
+                record.latest_message = (
+                    "Restored ISO data expired and was cleaned up; re-initiate recovery to "
+                    "request a new restore."
+                )
+                processed += 1
+        return processed
+
+    def _summary(self, record: AcceptanceRecoverySessionRecord) -> RecoverySessionSummary:
+        image = self.state.finalized_images_by_id[record.image_id]
+        glacier = self.state.glacier_status(image.finalized_id)
+        pricing_basis = _acceptance_pricing_basis()
+        stored_bytes = int(glacier.stored_bytes or image.bytes)
+        total_gib = Decimal(stored_bytes) / _BYTES_PER_GIB
+        hold_days = 1
+        retrieval_cost = (total_gib * Decimal("0.0025")).quantize(_USD_QUANTUM)
+        request_fees = Decimal("0.000025").quantize(_USD_QUANTUM)
+        temporary_storage_cost = (
+            total_gib
+            * Decimal(str(pricing_basis.standard_storage_rate_usd_per_gib_month))
+            * Decimal(hold_days)
+            / Decimal(30)
+        ).quantize(_USD_QUANTUM)
+        estimate = RecoveryCostEstimate(
+            currency_code=pricing_basis.currency_code or "USD",
+            retrieval_tier="bulk",
+            hold_days=hold_days,
+            image_count=1,
+            total_bytes=stored_bytes,
+            restore_request_count=1,
+            retrieval_rate_usd_per_gib=0.0025,
+            request_rate_usd_per_1000=0.025,
+            standard_storage_rate_usd_per_gib_month=(
+                pricing_basis.standard_storage_rate_usd_per_gib_month
+            ),
+            retrieval_cost_usd=float(retrieval_cost),
+            request_fees_usd=float(request_fees),
+            temporary_storage_cost_usd=float(temporary_storage_cost),
+            total_estimated_cost_usd=float(
+                (retrieval_cost + request_fees + temporary_storage_cost).quantize(_USD_QUANTUM)
+            ),
+            assumptions=(
+                "Excludes network egress or operator-local media costs.",
+                "Uses the configured ready-to-download cleanup window.",
+                "Assumes one archive restore request per image.",
+            ),
+        )
+        warnings = (
+            "Archive restore requests take time; the configured restore latency "
+            "estimate is short in test fixtures.",
+            "No recovery webhook URL is configured; operators must poll the "
+            "recovery session manually for readiness.",
+            "Restored ISO data will be cleaned up after the configured ready "
+            "window if recovery is not completed sooner.",
+        )
+        return RecoverySessionSummary(
+            id=record.session_id,
+            state=record.state,
+            created_at=record.created_at,
+            approved_at=record.approved_at,
+            restore_requested_at=record.restore_requested_at,
+            restore_ready_at=record.restore_ready_at,
+            restore_expires_at=record.restore_expires_at,
+            completed_at=record.completed_at,
+            latest_message=record.latest_message,
+            warnings=warnings,
+            cost_estimate=estimate,
+            notification=RecoveryNotificationStatus(
+                webhook_configured=False,
+                reminder_count=record.reminder_count,
+                next_reminder_at=record.next_reminder_at,
+                last_notified_at=record.last_notified_at,
+            ),
+            images=(
+                RecoverySessionImage(
+                    id=record.image_id,
+                    filename=image.filename,
+                    glacier=glacier,
+                    stored_bytes=stored_bytes,
+                ),
+            ),
+        )
 
 
 class AcceptanceGlacierReportingService:
@@ -1377,6 +1661,10 @@ class AcceptanceGlacierReportingService:
             history=history,
             billing=billing,
         )
+
+
+def _acceptance_isoformat(value: datetime) -> str:
+    return value.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 _BYTES_PER_GIB = Decimal(1024**3)
@@ -1948,6 +2236,7 @@ class AcceptanceCopyService:
             CopyState.DAMAGED,
         }:
             self.state.ensure_required_copy_slots(image_id)
+            self.state.ensure_glacier_recovery_session(image_id)
         return updated
 
     def _registration_target(self, image_id: str, copy_id: str | None) -> CopySummary:
@@ -2676,6 +2965,7 @@ class AcceptanceSystem:
     planning: AcceptancePlanningService
     glacier_uploads: AcceptanceGlacierUploadService
     glacier_reporting: AcceptanceGlacierReportingService
+    recovery_sessions: AcceptanceRecoverySessionService
     copies: AcceptanceCopyService
     pins: AcceptancePinService
     fetches: AcceptanceFetchService
@@ -2693,6 +2983,7 @@ class AcceptanceSystem:
         planning = AcceptancePlanningService(state)
         glacier_uploads = AcceptanceGlacierUploadService(state)
         glacier_reporting = AcceptanceGlacierReportingService(state)
+        recovery_sessions = AcceptanceRecoverySessionService(state)
         copies = AcceptanceCopyService(state)
         fetches = AcceptanceFetchService(state)
         pins = AcceptancePinService(state, fetches)
@@ -2704,6 +2995,7 @@ class AcceptanceSystem:
             planning=planning,
             glacier_uploads=glacier_uploads,
             glacier_reporting=glacier_reporting,
+            recovery_sessions=recovery_sessions,
             copies=copies,
             pins=pins,
             fetches=fetches,
@@ -2713,6 +3005,7 @@ class AcceptanceSystem:
             container=container,
             upload_expiry_reaper_interval=_UPLOAD_EXPIRY_SWEEP_INTERVAL_SECONDS,
             glacier_upload_reaper_interval=_GLACIER_UPLOAD_SWEEP_INTERVAL_SECONDS,
+            glacier_recovery_reaper_interval=_GLACIER_RECOVERY_SWEEP_INTERVAL_SECONDS,
         )
         app.dependency_overrides[get_container] = lambda: container
 
@@ -2732,6 +3025,7 @@ class AcceptanceSystem:
             planning=planning,
             glacier_uploads=glacier_uploads,
             glacier_reporting=glacier_reporting,
+            recovery_sessions=recovery_sessions,
             copies=copies,
             pins=pins,
             fetches=fetches,
@@ -2750,6 +3044,7 @@ class AcceptanceSystem:
         self.planning = restarted.planning
         self.glacier_uploads = restarted.glacier_uploads
         self.glacier_reporting = restarted.glacier_reporting
+        self.recovery_sessions = restarted.recovery_sessions
         self.copies = restarted.copies
         self.pins = restarted.pins
         self.fetches = restarted.fetches
@@ -2819,6 +3114,25 @@ class AcceptanceSystem:
                 return payload
             time.sleep(0.05)
         raise AssertionError(f"timed out waiting for image glacier state {image_id} -> {state}")
+
+    def wait_for_recovery_session_state(
+        self,
+        session_id: str,
+        state: str,
+        *,
+        timeout: float = 5.0,
+    ) -> dict[str, object]:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            response = self.request("GET", f"/v1/recovery-sessions/{session_id}")
+            assert response.status_code == 200, response.text
+            payload = response.json()
+            if payload["state"] == state:
+                return payload
+            time.sleep(0.05)
+        raise AssertionError(
+            f"timed out waiting for recovery session state {session_id} -> {state}"
+        )
 
     def run_arc(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -2963,7 +3277,10 @@ class AcceptanceSystem:
         for file_payload in payload["files"]:
             upload = self.request(
                 "POST",
-                f"/v1/collection-uploads/{normalized_collection_id}/files/{file_payload['path']}/upload",
+                (
+                    f"/v1/collection-uploads/{normalized_collection_id}/files/"
+                    f"{file_payload['path']}/upload"
+                ),
             )
             assert upload.status_code == 200, upload.text
             upload_payload = upload.json()

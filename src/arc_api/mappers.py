@@ -24,6 +24,10 @@ from arc_core.domain.models import (
     GlacierUsageSnapshot,
     GlacierUsageTotals,
     PinSummary,
+    RecoveryCostEstimate,
+    RecoveryNotificationStatus,
+    RecoverySessionImage,
+    RecoverySessionSummary,
 )
 
 
@@ -285,6 +289,63 @@ def map_collection(summary: CollectionSummary) -> dict[str, object]:
         "image_coverage": [
             map_collection_coverage_image(image) for image in summary.image_coverage
         ],
+    }
+
+
+def map_recovery_cost_estimate(summary: RecoveryCostEstimate) -> dict[str, object]:
+    return {
+        "currency_code": summary.currency_code,
+        "retrieval_tier": summary.retrieval_tier,
+        "hold_days": summary.hold_days,
+        "image_count": summary.image_count,
+        "total_bytes": summary.total_bytes,
+        "restore_request_count": summary.restore_request_count,
+        "retrieval_rate_usd_per_gib": summary.retrieval_rate_usd_per_gib,
+        "request_rate_usd_per_1000": summary.request_rate_usd_per_1000,
+        "standard_storage_rate_usd_per_gib_month": (
+            summary.standard_storage_rate_usd_per_gib_month
+        ),
+        "retrieval_cost_usd": summary.retrieval_cost_usd,
+        "request_fees_usd": summary.request_fees_usd,
+        "temporary_storage_cost_usd": summary.temporary_storage_cost_usd,
+        "total_estimated_cost_usd": summary.total_estimated_cost_usd,
+        "assumptions": list(summary.assumptions),
+    }
+
+
+def map_recovery_notification(summary: RecoveryNotificationStatus) -> dict[str, object]:
+    return {
+        "webhook_configured": summary.webhook_configured,
+        "reminder_count": summary.reminder_count,
+        "next_reminder_at": summary.next_reminder_at,
+        "last_notified_at": summary.last_notified_at,
+    }
+
+
+def map_recovery_session_image(summary: RecoverySessionImage) -> dict[str, object]:
+    return {
+        "id": str(summary.id),
+        "filename": summary.filename,
+        "glacier": map_glacier(summary.glacier),
+        "stored_bytes": summary.stored_bytes,
+    }
+
+
+def map_recovery_session(summary: RecoverySessionSummary) -> dict[str, object]:
+    return {
+        "id": summary.id,
+        "state": summary.state.value,
+        "created_at": summary.created_at,
+        "approved_at": summary.approved_at,
+        "restore_requested_at": summary.restore_requested_at,
+        "restore_ready_at": summary.restore_ready_at,
+        "restore_expires_at": summary.restore_expires_at,
+        "completed_at": summary.completed_at,
+        "latest_message": summary.latest_message,
+        "warnings": list(summary.warnings),
+        "cost_estimate": map_recovery_cost_estimate(summary.cost_estimate),
+        "notification": map_recovery_notification(summary.notification),
+        "images": [map_recovery_session_image(image) for image in summary.images],
     }
 
 

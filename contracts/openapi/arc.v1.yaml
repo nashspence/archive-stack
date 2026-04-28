@@ -464,6 +464,100 @@ paths:
                 $ref: "#/components/schemas/FinalizedImageSummary"
         default:
           $ref: "#/components/responses/Error"
+  /images/{image_id}/recovery-session:
+    get:
+      summary: Get the latest recovery session for one image
+      description: Returns the latest Glacier recovery session for one finalized image, including expired or completed sessions.
+      operationId: getRecoverySessionForImage
+      parameters:
+        - in: path
+          name: image_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Recovery session summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoverySession"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      summary: Create or resume one recovery session for an image
+      description: Creates one pending-approval Glacier recovery session when a finalized image has no remaining protected copies, or returns the active session if one already exists.
+      operationId: createOrResumeRecoverySession
+      parameters:
+        - in: path
+          name: image_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Recovery session summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoverySession"
+        default:
+          $ref: "#/components/responses/Error"
+  /recovery-sessions/{session_id}:
+    get:
+      summary: Get one recovery session
+      description: Returns one Glacier recovery session by durable session id.
+      operationId: getRecoverySession
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Recovery session summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoverySession"
+        default:
+          $ref: "#/components/responses/Error"
+  /recovery-sessions/{session_id}/approve:
+    post:
+      summary: Approve one recovery session cost estimate
+      description: Approves one pending recovery session so Riverhog can request Glacier restore work for the archived image.
+      operationId: approveRecoverySession
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Approved recovery session summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoverySession"
+        default:
+          $ref: "#/components/responses/Error"
+  /recovery-sessions/{session_id}/complete:
+    post:
+      summary: Complete one ready recovery session
+      description: Marks one ready recovery session complete and cleans up the restored Standard-storage window immediately.
+      operationId: completeRecoverySession
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Completed recovery session summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoverySession"
+        default:
+          $ref: "#/components/responses/Error"
   /glacier:
     get:
       summary: Get Glacier usage and cost reporting
@@ -1831,6 +1925,126 @@ components:
         location:
           type: string
           nullable: true
+    RecoverySession:
+      type: object
+      required:
+        [id, state, created_at, warnings, cost_estimate, notification, images]
+      properties:
+        id:
+          type: string
+        state:
+          type: string
+          enum: [pending_approval, restore_requested, ready, expired, completed]
+        created_at:
+          type: string
+          format: date-time
+        approved_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        restore_requested_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        restore_ready_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        restore_expires_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        completed_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        latest_message:
+          oneOf:
+            - type: string
+            - type: "null"
+        warnings:
+          type: array
+          items:
+            type: string
+        cost_estimate:
+          $ref: "#/components/schemas/RecoveryCostEstimate"
+        notification:
+          $ref: "#/components/schemas/RecoveryNotificationStatus"
+        images:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecoverySessionImage"
+    RecoveryCostEstimate:
+      type: object
+      required:
+        [currency_code, retrieval_tier, hold_days, image_count, total_bytes, restore_request_count, retrieval_rate_usd_per_gib, request_rate_usd_per_1000, standard_storage_rate_usd_per_gib_month, retrieval_cost_usd, request_fees_usd, temporary_storage_cost_usd, total_estimated_cost_usd, assumptions]
+      properties:
+        currency_code:
+          type: string
+        retrieval_tier:
+          type: string
+          enum: [bulk, standard]
+        hold_days:
+          type: integer
+        image_count:
+          type: integer
+        total_bytes:
+          type: integer
+        restore_request_count:
+          type: integer
+        retrieval_rate_usd_per_gib:
+          type: number
+        request_rate_usd_per_1000:
+          type: number
+        standard_storage_rate_usd_per_gib_month:
+          type: number
+        retrieval_cost_usd:
+          type: number
+        request_fees_usd:
+          type: number
+        temporary_storage_cost_usd:
+          type: number
+        total_estimated_cost_usd:
+          type: number
+        assumptions:
+          type: array
+          items:
+            type: string
+    RecoveryNotificationStatus:
+      type: object
+      required: [webhook_configured, reminder_count, next_reminder_at, last_notified_at]
+      properties:
+        webhook_configured:
+          type: boolean
+        reminder_count:
+          type: integer
+        next_reminder_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        last_notified_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+    RecoverySessionImage:
+      type: object
+      required: [id, filename, glacier, stored_bytes]
+      properties:
+        id:
+          type: string
+        filename:
+          type: string
+        glacier:
+          $ref: "#/components/schemas/GlacierArchive"
+        stored_bytes:
+          type: integer
     HotStatus:
       type: object
       required: [state, present_bytes, missing_bytes]

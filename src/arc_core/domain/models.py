@@ -8,6 +8,7 @@ from arc_core.domain.enums import (
     FetchState,
     GlacierState,
     ProtectionState,
+    RecoverySessionState,
     VerificationState,
 )
 from arc_core.domain.types import CollectionId, CopyId, FetchId, ImageId, Sha256Hex, TargetStr
@@ -236,6 +237,57 @@ class GlacierUsageReport:
 class GlacierReportingContext:
     pricing_basis: GlacierPricingBasis
     billing: GlacierBillingSummary | None = None
+
+
+@dataclass(frozen=True)
+class RecoveryCostEstimate:
+    currency_code: str
+    retrieval_tier: str
+    hold_days: int
+    image_count: int
+    total_bytes: int
+    restore_request_count: int
+    retrieval_rate_usd_per_gib: float
+    request_rate_usd_per_1000: float
+    standard_storage_rate_usd_per_gib_month: float
+    retrieval_cost_usd: float
+    request_fees_usd: float
+    temporary_storage_cost_usd: float
+    total_estimated_cost_usd: float
+    assumptions: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class RecoveryNotificationStatus:
+    webhook_configured: bool
+    reminder_count: int
+    next_reminder_at: str | None
+    last_notified_at: str | None
+
+
+@dataclass(frozen=True)
+class RecoverySessionImage:
+    id: ImageId
+    filename: str
+    glacier: GlacierArchiveStatus
+    stored_bytes: int
+
+
+@dataclass(frozen=True)
+class RecoverySessionSummary:
+    id: str
+    state: RecoverySessionState
+    created_at: str
+    approved_at: str | None
+    restore_requested_at: str | None
+    restore_ready_at: str | None
+    restore_expires_at: str | None
+    completed_at: str | None
+    latest_message: str | None
+    warnings: tuple[str, ...]
+    cost_estimate: RecoveryCostEstimate
+    notification: RecoveryNotificationStatus
+    images: tuple[RecoverySessionImage, ...]
 
 
 @dataclass(frozen=True)

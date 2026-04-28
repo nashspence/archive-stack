@@ -440,6 +440,31 @@ class _StubGlacierReporting:
         return {}
 
 
+class _StubRecoverySessions:
+    def get(self, session_id: str) -> dict[str, object]:
+        _ = session_id
+        return {}
+
+    def get_for_image(self, image_id: str) -> dict[str, object]:
+        _ = image_id
+        return {}
+
+    def create_or_resume_for_image(self, image_id: str) -> dict[str, object]:
+        _ = image_id
+        return {}
+
+    def approve(self, session_id: str) -> dict[str, object]:
+        _ = session_id
+        return {}
+
+    def complete(self, session_id: str) -> dict[str, object]:
+        _ = session_id
+        return {}
+
+    def process_due_sessions(self, *, limit: int) -> None:
+        assert limit >= 0
+
+
 def _contract_runtime_client() -> TestClient:
     container = ServiceContainer(
         collections=_StubCollectionUploads(),  # type: ignore[arg-type]
@@ -447,6 +472,7 @@ def _contract_runtime_client() -> TestClient:
         planning=_StubPlanning(),  # type: ignore[arg-type]
         glacier_uploads=_StubGlacierUploads(),  # type: ignore[arg-type]
         glacier_reporting=_StubGlacierReporting(),  # type: ignore[arg-type]
+        recovery_sessions=_StubRecoverySessions(),  # type: ignore[arg-type]
         copies=SimpleNamespace(),
         pins=SimpleNamespace(),
         fetches=_StubFetchUploads(),  # type: ignore[arg-type]

@@ -1,0 +1,222 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+from arc_core.catalog_models import (
+    CollectionFileRecord,
+    CollectionRecord,
+    FinalizedImageCoveredPathRecord,
+    FinalizedImageRecord,
+)
+from arc_core.domain.enums import RecoverySessionState
+from arc_core.ports.archive_store import ArchiveUploadReceipt
+from arc_core.runtime_config import RuntimeConfig
+from arc_core.services.copies import SqlAlchemyCopyService
+from arc_core.services.glacier_uploads import (
+    SqlAlchemyGlacierUploadService,
+    enqueue_glacier_upload_job,
+)
+from arc_core.services.recovery_sessions import SqlAlchemyRecoverySessionService
+from arc_core.sqlite_db import initialize_db, make_session_factory, session_scope
+from tests.fixtures.data import DOCS_FILES, IMAGE_ONE_FILES, write_tree
+
+
+class _FakeHotStore:
+    def get_collection_file(self, collection_id: str, path: str) -> bytes:
+        assert collection_id == "docs"
+        return DOCS_FILES[path]
+
+
+class _FakeArchiveStore:
+    def upload_finalized_image(
+        self,
+        *,
+        image_id: str,
+        filename: str,
+        image_root: Path,
+    ) -> ArchiveUploadReceipt:
+        assert image_id == "20260420T040001Z"
+        assert filename == "20260420T040001Z.iso"
+        assert image_root.exists()
+        return ArchiveUploadReceipt(
+            object_path="glacier/finalized-images/20260420T040001Z/20260420T040001Z.iso",
+            stored_bytes=1234,
+            backend="s3",
+            storage_class="DEEP_ARCHIVE",
+            uploaded_at="2026-04-20T04:10:00Z",
+            verified_at="2026-04-20T04:11:00Z",
+        )
+
+
+def _config(sqlite_path: Path, **overrides: object) -> RuntimeConfig:
+    config = RuntimeConfig(
+        object_store="s3",
+        s3_endpoint_url="http://example.invalid:9000",
+        s3_region="us-east-1",
+        s3_bucket="riverhog",
+        s3_access_key_id="test-access",
+        s3_secret_access_key="test-secret",
+        s3_force_path_style=True,
+        tusd_base_url="http://example.invalid:1080/files",
+        tusd_hook_secret="hook-secret",
+        sqlite_path=sqlite_path,
+    )
+    return replace(config, **overrides)
+
+
+def _seed_finalized_image(
+    sqlite_path: Path,
+    image_root: Path,
+    *,
+    glacier_state: str,
+) -> None:
+    session_factory = make_session_factory(str(sqlite_path))
+    with session_scope(session_factory) as session:
+        session.add(CollectionRecord(id="docs"))
+        for relative_path, content in DOCS_FILES.items():
+            session.add(
+                CollectionFileRecord(
+                    collection_id="docs",
+                    path=relative_path,
+                    bytes=len(content),
+                    sha256="a" * 64,
+                    hot=True,
+                    archived=False,
+                )
+            )
+
+        session.add(
+            FinalizedImageRecord(
+                image_id="20260420T040001Z",
+                candidate_id="img_2026-04-20_01",
+                filename="20260420T040001Z.iso",
+                bytes=sum(len(content) for content in DOCS_FILES.values()),
+                image_root=str(image_root),
+                target_bytes=10_000,
+                required_copy_count=2,
+                glacier_state=glacier_state,
+            )
+        )
+        for relative_path in (
+            "tax/2022/invoice-123.pdf",
+            "tax/2022/receipt-456.pdf",
+        ):
+            session.add(
+                FinalizedImageCoveredPathRecord(
+                    image_id="20260420T040001Z",
+                    collection_id="docs",
+                    path=relative_path,
+                )
+            )
+
+
+def test_double_copy_loss_creates_pending_recovery_session(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    image_root = tmp_path / "image-root"
+    initialize_db(str(sqlite_path))
+    write_tree(image_root, IMAGE_ONE_FILES)
+    _seed_finalized_image(sqlite_path, image_root, glacier_state="uploaded")
+
+    config = _config(sqlite_path)
+    copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
+    recovery_service = SqlAlchemyRecoverySessionService(config)
+
+    copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
+    copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
+    copy_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
+    copy_service.update("20260420T040001Z", "20260420T040001Z-2", state="damaged")
+
+    session = recovery_service.get_for_image("20260420T040001Z")
+
+    assert session.id == "rs-20260420T040001Z-1"
+    assert session.state == RecoverySessionState.PENDING_APPROVAL
+    assert session.cost_estimate.total_estimated_cost_usd > 0
+    assert session.notification.webhook_configured is False
+    assert [str(image.id) for image in session.images] == ["20260420T040001Z"]
+
+
+def test_recovery_session_processes_ready_and_expired_states(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    image_root = tmp_path / "image-root"
+    initialize_db(str(sqlite_path))
+    write_tree(image_root, IMAGE_ONE_FILES)
+    _seed_finalized_image(sqlite_path, image_root, glacier_state="uploaded")
+
+    config = _config(
+        sqlite_path,
+        glacier_recovery_restore_latency=timedelta(seconds=10),
+        glacier_recovery_ready_ttl=timedelta(seconds=5),
+    )
+    copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
+    recovery_service = SqlAlchemyRecoverySessionService(config)
+
+    copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
+    copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
+    copy_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
+    copy_service.update("20260420T040001Z", "20260420T040001Z-2", state="lost")
+
+    start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
+    monkeypatch.setattr("arc_core.services.recovery_sessions.utcnow", lambda: start)
+    approved = recovery_service.approve("rs-20260420T040001Z-1")
+    assert approved.state == RecoverySessionState.RESTORE_REQUESTED
+    assert approved.restore_ready_at == "2026-04-20T04:00:10Z"
+
+    monkeypatch.setattr(
+        "arc_core.services.recovery_sessions.utcnow",
+        lambda: start + timedelta(seconds=11),
+    )
+    assert recovery_service.process_due_sessions() == 1
+    ready = recovery_service.get("rs-20260420T040001Z-1")
+    assert ready.state == RecoverySessionState.READY
+    assert ready.restore_expires_at == "2026-04-20T04:00:16Z"
+
+    monkeypatch.setattr(
+        "arc_core.services.recovery_sessions.utcnow",
+        lambda: start + timedelta(seconds=17),
+    )
+    assert recovery_service.process_due_sessions() == 1
+    expired = recovery_service.get("rs-20260420T040001Z-1")
+    assert expired.state == RecoverySessionState.EXPIRED
+
+
+def test_glacier_upload_completion_backfills_recovery_session_for_unprotected_image(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    image_root = tmp_path / "image-root"
+    initialize_db(str(sqlite_path))
+    write_tree(image_root, IMAGE_ONE_FILES)
+    _seed_finalized_image(sqlite_path, image_root, glacier_state="pending")
+
+    config = _config(sqlite_path)
+    copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
+    upload_service = SqlAlchemyGlacierUploadService(config, _FakeArchiveStore())
+    recovery_service = SqlAlchemyRecoverySessionService(config)
+
+    copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
+    copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
+    copy_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
+    copy_service.update("20260420T040001Z", "20260420T040001Z-2", state="damaged")
+
+    session_factory = make_session_factory(str(sqlite_path))
+    with session_scope(session_factory) as session:
+        enqueue_glacier_upload_job(
+            session,
+            image_id="20260420T040001Z",
+            next_attempt_at="2026-04-20T04:00:00Z",
+        )
+
+    monkeypatch.setattr(
+        "arc_core.services.glacier_uploads.record_glacier_usage_snapshot",
+        lambda session, config: None,
+    )
+
+    assert upload_service.process_due_uploads() == 1
+    session = recovery_service.get_for_image("20260420T040001Z")
+    assert session.state == RecoverySessionState.PENDING_APPROVAL

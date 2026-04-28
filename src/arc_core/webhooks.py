@@ -67,6 +67,14 @@ def image_summary_url(base_url: str, image_id: str) -> str:
     return f"{base_url.rstrip('/')}{image_summary_path(image_id)}"
 
 
+def recovery_session_path(session_id: str) -> str:
+    return f"/v1/recovery-sessions/{session_id}"
+
+
+def recovery_session_url(base_url: str, session_id: str) -> str:
+    return f"{base_url.rstrip('/')}{recovery_session_path(session_id)}"
+
+
 def build_images_ready_payload(
     *, config: WebhookConfig, batch: ImagesReadyBatch, delivered_at: datetime
 ) -> dict[str, object]:
@@ -107,6 +115,41 @@ def build_glacier_upload_failed_payload(
     if config.base_url:
         payload["image_url"] = image_summary_url(config.base_url, image_id)
         payload["download_url"] = image_iso_download_url(config.base_url, image_id)
+    return payload
+
+
+def build_recovery_ready_payload(
+    *,
+    config: WebhookConfig,
+    session_id: str,
+    restore_expires_at: str | None,
+    images: list[dict[str, str]],
+    delivered_at: datetime,
+    reminder_count: int,
+    reminder: bool,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "event": "images.recovery_ready.reminder" if reminder else "images.recovery_ready",
+        "session_id": session_id,
+        "delivered_at": isoformat_z(delivered_at),
+        "restore_expires_at": restore_expires_at,
+        "reminder_count": reminder_count + (1 if reminder else 0),
+        "reminder_interval_seconds": config.reminder_interval_seconds,
+        "images": [
+            {
+                "image_id": image["image_id"],
+                "filename": image["filename"],
+                **(
+                    {"image_url": image_summary_url(config.base_url, image["image_id"])}
+                    if config.base_url
+                    else {}
+                ),
+            }
+            for image in images
+        ],
+    }
+    if config.base_url:
+        payload["session_url"] = recovery_session_url(config.base_url, session_id)
     return payload
 
 

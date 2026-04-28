@@ -25,6 +25,14 @@ class GlacierState(StrEnum):
     FAILED = "failed"
 
 
+class RecoverySessionState(StrEnum):
+    PENDING_APPROVAL = "pending_approval"
+    RESTORE_REQUESTED = "restore_requested"
+    READY = "ready"
+    EXPIRED = "expired"
+    COMPLETED = "completed"
+
+
 class CopyState(StrEnum):
     NEEDED = "needed"
     BURNING = "burning"

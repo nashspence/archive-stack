@@ -30,6 +30,7 @@ from arc_core.planner.manifest import MANIFEST_FILENAME
 from arc_core.ports.hot_store import HotStore
 from arc_core.recovery_payloads import decrypt_recovery_payload
 from arc_core.runtime_config import RuntimeConfig
+from arc_core.services.recovery_sessions import ensure_glacier_recovery_session_for_image
 from arc_core.sqlite_db import make_session_factory, session_scope
 
 _ENC_JSON = json.dumps({"alg": "fixture-age-plugin-batchpass/v1"}, sort_keys=True)
@@ -123,6 +124,15 @@ class SqlAlchemyCopyService:
             ):
                 self._ensure_required_copy_slots(session, image)
             session.flush()
+            if copy_counts_toward_protection(previous_state.value) and target.state in {
+                CopyState.LOST.value,
+                CopyState.DAMAGED.value,
+            }:
+                ensure_glacier_recovery_session_for_image(
+                    session,
+                    config=self._config,
+                    image_id=image_id,
+                )
             return self._copy_summary(session, target)
 
     def _require_image(self, session, image_id: str) -> FinalizedImageRecord:

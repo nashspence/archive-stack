@@ -84,6 +84,25 @@ class RuntimeConfig:
     glacier_upload_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=5))
     glacier_upload_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
     glacier_failure_webhook_url: str | None = None
+    glacier_recovery_sweep_interval: timedelta = field(
+        default_factory=lambda: timedelta(seconds=30)
+    )
+    glacier_recovery_restore_latency: timedelta = field(
+        default_factory=lambda: timedelta(hours=48)
+    )
+    glacier_recovery_ready_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
+    glacier_recovery_webhook_url: str | None = None
+    glacier_recovery_webhook_retry_delay: timedelta = field(
+        default_factory=lambda: timedelta(minutes=1)
+    )
+    glacier_recovery_webhook_reminder_interval: timedelta = field(
+        default_factory=lambda: timedelta(hours=1)
+    )
+    glacier_recovery_retrieval_tier: str = "bulk"
+    glacier_bulk_retrieval_rate_usd_per_gib: float = 0.0025
+    glacier_bulk_request_rate_usd_per_1000: float = 0.025
+    glacier_standard_retrieval_rate_usd_per_gib: float = 0.02
+    glacier_standard_request_rate_usd_per_1000: float = 0.10
     glacier_pricing_label: str = "aws-s3-us-west-2-public"
     glacier_pricing_mode: str = "auto"
     glacier_pricing_api_region: str = "us-east-1"
@@ -143,6 +162,45 @@ def load_runtime_config() -> RuntimeConfig:
         os.getenv("ARC_GLACIER_UPLOAD_SWEEP_INTERVAL", "30s")
     )
     glacier_failure_webhook_url = os.getenv("ARC_GLACIER_FAILURE_WEBHOOK_URL", "").strip() or None
+    glacier_recovery_sweep_interval = _parse_duration(
+        os.getenv("ARC_GLACIER_RECOVERY_SWEEP_INTERVAL", "30s")
+    )
+    glacier_recovery_restore_latency = _parse_duration(
+        os.getenv("ARC_GLACIER_RECOVERY_RESTORE_LATENCY", "48h")
+    )
+    glacier_recovery_ready_ttl = _parse_duration(
+        os.getenv("ARC_GLACIER_RECOVERY_READY_TTL", "24h")
+    )
+    glacier_recovery_webhook_url = (
+        os.getenv("ARC_GLACIER_RECOVERY_WEBHOOK_URL", "").strip() or None
+    )
+    glacier_recovery_webhook_retry_delay = _parse_duration(
+        os.getenv("ARC_GLACIER_RECOVERY_WEBHOOK_RETRY_DELAY", "60s")
+    )
+    glacier_recovery_webhook_reminder_interval = _parse_duration(
+        os.getenv("ARC_GLACIER_RECOVERY_WEBHOOK_REMINDER_INTERVAL", "1h")
+    )
+    glacier_recovery_retrieval_tier = _parse_choice(
+        os.getenv("ARC_GLACIER_RECOVERY_RETRIEVAL_TIER", "bulk"),
+        name="ARC_GLACIER_RECOVERY_RETRIEVAL_TIER",
+        allowed={"bulk", "standard"},
+    )
+    glacier_bulk_retrieval_rate_usd_per_gib = _parse_float(
+        os.getenv("ARC_GLACIER_BULK_RETRIEVAL_RATE_USD_PER_GIB", "0.0025"),
+        name="ARC_GLACIER_BULK_RETRIEVAL_RATE_USD_PER_GIB",
+    )
+    glacier_bulk_request_rate_usd_per_1000 = _parse_float(
+        os.getenv("ARC_GLACIER_BULK_REQUEST_RATE_USD_PER_1000", "0.025"),
+        name="ARC_GLACIER_BULK_REQUEST_RATE_USD_PER_1000",
+    )
+    glacier_standard_retrieval_rate_usd_per_gib = _parse_float(
+        os.getenv("ARC_GLACIER_STANDARD_RETRIEVAL_RATE_USD_PER_GIB", "0.02"),
+        name="ARC_GLACIER_STANDARD_RETRIEVAL_RATE_USD_PER_GIB",
+    )
+    glacier_standard_request_rate_usd_per_1000 = _parse_float(
+        os.getenv("ARC_GLACIER_STANDARD_REQUEST_RATE_USD_PER_1000", "0.10"),
+        name="ARC_GLACIER_STANDARD_REQUEST_RATE_USD_PER_1000",
+    )
     glacier_pricing_label = (
         os.getenv("ARC_GLACIER_PRICING_LABEL", "aws-s3-us-west-2-public").strip()
         or "aws-s3-us-west-2-public"
@@ -274,6 +332,17 @@ def load_runtime_config() -> RuntimeConfig:
         glacier_upload_retry_delay=glacier_retry_delay,
         glacier_upload_sweep_interval=glacier_upload_sweep_interval,
         glacier_failure_webhook_url=glacier_failure_webhook_url,
+        glacier_recovery_sweep_interval=glacier_recovery_sweep_interval,
+        glacier_recovery_restore_latency=glacier_recovery_restore_latency,
+        glacier_recovery_ready_ttl=glacier_recovery_ready_ttl,
+        glacier_recovery_webhook_url=glacier_recovery_webhook_url,
+        glacier_recovery_webhook_retry_delay=glacier_recovery_webhook_retry_delay,
+        glacier_recovery_webhook_reminder_interval=glacier_recovery_webhook_reminder_interval,
+        glacier_recovery_retrieval_tier=glacier_recovery_retrieval_tier,
+        glacier_bulk_retrieval_rate_usd_per_gib=glacier_bulk_retrieval_rate_usd_per_gib,
+        glacier_bulk_request_rate_usd_per_1000=glacier_bulk_request_rate_usd_per_1000,
+        glacier_standard_retrieval_rate_usd_per_gib=glacier_standard_retrieval_rate_usd_per_gib,
+        glacier_standard_request_rate_usd_per_1000=glacier_standard_request_rate_usd_per_1000,
         glacier_pricing_label=glacier_pricing_label,
         glacier_pricing_mode=glacier_pricing_mode,
         glacier_pricing_api_region=glacier_pricing_api_region,

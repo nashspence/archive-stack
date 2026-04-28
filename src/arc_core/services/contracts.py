@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from arc_core.domain.models import CollectionSummary, FetchSummary, GlacierUsageReport, PinSummary
+from arc_core.domain.models import (
+    CollectionSummary,
+    FetchSummary,
+    GlacierUsageReport,
+    PinSummary,
+    RecoverySessionSummary,
+)
 
 
 class CollectionService(Protocol):
@@ -73,6 +79,15 @@ class GlacierReportingService(Protocol):
         image_id: str | None = None,
         collection: str | None = None,
     ) -> GlacierUsageReport: ...
+
+
+class RecoverySessionService(Protocol):
+    def get(self, session_id: str) -> RecoverySessionSummary: ...
+    def get_for_image(self, image_id: str) -> RecoverySessionSummary: ...
+    def create_or_resume_for_image(self, image_id: str) -> RecoverySessionSummary: ...
+    def approve(self, session_id: str) -> RecoverySessionSummary: ...
+    def complete(self, session_id: str) -> RecoverySessionSummary: ...
+    def process_due_sessions(self, *, limit: int = 100) -> int: ...
 
 
 class CopyService(Protocol):
