@@ -175,6 +175,22 @@ class GlacierUploadJobRecord(Base):
     )
 
 
+class GlacierUsageSnapshotRecord(Base):
+    __tablename__ = "glacier_usage_snapshots"
+
+    captured_at: Mapped[str] = mapped_column(String, primary_key=True)
+    uploaded_images: Mapped[int] = mapped_column(Integer)
+    measured_storage_bytes: Mapped[int] = mapped_column(Integer)
+    estimated_billable_bytes: Mapped[int] = mapped_column(Integer)
+    estimated_monthly_cost_usd: Mapped[float] = mapped_column()
+    pricing_label: Mapped[str] = mapped_column(String)
+    glacier_storage_rate_usd_per_gib_month: Mapped[float] = mapped_column()
+    standard_storage_rate_usd_per_gib_month: Mapped[float] = mapped_column()
+    archived_metadata_bytes_per_object: Mapped[int] = mapped_column(Integer)
+    standard_metadata_bytes_per_object: Mapped[int] = mapped_column(Integer)
+    minimum_storage_duration_days: Mapped[int] = mapped_column(Integer)
+
+
 class ImageCopyRecord(Base):
     __tablename__ = "image_copies"
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from arc_core.domain.models import CollectionSummary, FetchSummary, PinSummary
+from arc_core.domain.models import CollectionSummary, FetchSummary, GlacierUsageReport, PinSummary
 
 
 class CollectionService(Protocol):
@@ -64,6 +64,15 @@ class PlanningService(Protocol):
 
 class GlacierUploadService(Protocol):
     def process_due_uploads(self, *, limit: int = 1) -> int: ...
+
+
+class GlacierReportingService(Protocol):
+    def get_report(
+        self,
+        *,
+        image_id: str | None = None,
+        collection: str | None = None,
+    ) -> GlacierUsageReport: ...
 
 
 class CopyService(Protocol):

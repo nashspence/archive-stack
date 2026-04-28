@@ -168,6 +168,36 @@ Finalized-image summary rules:
 - after restart, an `uploading` job either reconciles an already completed object at that privacy-safe key or starts a
   fresh upload attempt; Riverhog does not resume one in-flight remote multipart stream
 
+### Glacier usage report
+
+A Glacier-usage report exposes at least:
+
+- `scope`
+- `measured_at`
+- `pricing_basis`
+- `totals`
+- `images`
+- `collections`
+- `billing`
+- `history`
+
+Glacier-usage-report rules:
+
+- `totals.measured_storage_bytes` sums measured uploaded Glacier object bytes only
+- `totals.estimated_billable_bytes` adds configured Glacier metadata overhead to that measured storage
+- `totals.estimated_monthly_cost_usd` is a derived estimate from the emitted pricing basis
+- `images` list current finalized-image Glacier state together with measured and estimated billing values
+- `collections` expose derived attribution from represented plaintext bytes on the finalized-image disc manifest
+- `billing` reports AWS-native actual cost periods and forecast periods separately from Riverhog's own storage
+  snapshots when Cost Explorer data is available
+- `billing.scope` records whether the AWS billing view is `tag`-scoped, `service`-scoped, or unavailable
+- `history` stores overall Glacier-usage snapshots rather than collection-scoped estimates
+- `pricing_basis.source` distinguishes AWS-resolved storage rates from manual fallback
+- `pricing_basis.currency_code`, `pricing_basis.region_code`, and `pricing_basis.effective_at` identify the AWS
+  lookup basis when Riverhog resolves live pricing
+- `pricing_basis.archived_metadata_bytes_per_object`, `pricing_basis.standard_metadata_bytes_per_object`, and
+  `pricing_basis.minimum_storage_duration_days` remain explicit Glacier storage-class constants
+
 ### Copy summary
 
 A copy summary exposes at least:

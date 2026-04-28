@@ -440,6 +440,22 @@ def _prepare_arc_expectation(
         ).json()
         return
 
+    if argv[1] == "glacier":
+        context.expected_api_endpoint = ("GET", "/v1/glacier")
+        params: dict[str, object] = {}
+        image_id = _arc_option_value(argv, "--image")
+        collection = _arc_option_value(argv, "--collection")
+        if image_id is not None:
+            params["image_id"] = image_id
+        if collection is not None:
+            params["collection"] = collection
+        context.expected_api_payload = acceptance_system.request(
+            "GET",
+            "/v1/glacier",
+            params=params,
+        ).json()
+        return
+
     if argv[1] == "copy" and argv[2] == "add":
         image_id = argv[3]
         context.expected_api_endpoint = ("POST", f"/v1/images/{image_id}/copies")
@@ -831,14 +847,10 @@ def given_arc_disc_reader_failure_for_copy(
 
 
 @given(
-    parsers.parse(
-        'the burn fixture confirms labeled copy id "{copy_id}" at location "{location}"'
-    )
+    parsers.parse('the burn fixture confirms labeled copy id "{copy_id}" at location "{location}"')
 )
 @when(
-    parsers.parse(
-        'the burn fixture confirms labeled copy id "{copy_id}" at location "{location}"'
-    )
+    parsers.parse('the burn fixture confirms labeled copy id "{copy_id}" at location "{location}"')
 )
 def given_burn_fixture_confirms_labeled_copy(
     acceptance_system: AcceptanceSystem,
@@ -2412,6 +2424,81 @@ def then_response_image_glacier_stored_bytes_is_greater_than_zero(
     assert int(payload["glacier"]["stored_bytes"]) > 0
 
 
+@then("the response Glacier totals measured_storage_bytes is greater than 0")
+def then_response_glacier_totals_measured_storage_bytes_is_greater_than_zero(
+    acceptance_context: AcceptanceScenarioContext,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert int(payload["totals"]["measured_storage_bytes"]) > 0
+
+
+@then("the response Glacier totals estimated_monthly_cost_usd is greater than 0")
+def then_response_glacier_totals_estimated_monthly_cost_is_greater_than_zero(
+    acceptance_context: AcceptanceScenarioContext,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert float(payload["totals"]["estimated_monthly_cost_usd"]) > 0
+
+
+@then(parsers.parse('the response Glacier image "{image_id}" glacier state is "{state}"'))
+def then_response_glacier_image_state_is(
+    acceptance_context: AcceptanceScenarioContext,
+    image_id: str,
+    state: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    image = next(item for item in payload["images"] if item["id"] == image_id)
+    assert image["glacier"]["state"] == state
+
+
+@then(parsers.parse('the response Glacier images contain only "{image_id}"'))
+def then_response_glacier_images_contain_only(
+    acceptance_context: AcceptanceScenarioContext,
+    image_id: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert [image["id"] for image in payload["images"]] == [image_id]
+
+
+@then(
+    parsers.parse(
+        'the response Glacier collection "{collection_id}" attribution_state is "{state}"'
+    )
+)
+def then_response_glacier_collection_attribution_state_is(
+    acceptance_context: AcceptanceScenarioContext,
+    collection_id: str,
+    state: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    collection = next(item for item in payload["collections"] if item["id"] == collection_id)
+    assert collection["attribution_state"] == state
+
+
+@then(
+    parsers.parse(
+        'the response Glacier collection "{collection_id}" '
+        "derived_stored_bytes is greater than 0"
+    )
+)
+def then_response_glacier_collection_derived_stored_bytes_is_greater_than_zero(
+    acceptance_context: AcceptanceScenarioContext,
+    collection_id: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    collection = next(item for item in payload["collections"] if item["id"] == collection_id)
+    assert int(collection["derived_stored_bytes"]) > 0
+
+
+@then(parsers.parse('the response Glacier collections contain only "{collection_id}"'))
+def then_response_glacier_collections_contain_only(
+    acceptance_context: AcceptanceScenarioContext,
+    collection_id: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert [item["id"] for item in payload["collections"]] == [collection_id]
+
+
 @then(parsers.parse('the response contains image id "{image_id}"'))
 def then_response_contains_image_id(
     acceptance_context: AcceptanceScenarioContext,
@@ -2485,7 +2572,7 @@ def then_response_copies_contain_only(
 
 @then(
     parsers.re(
-        r'the response copy history contains events '
+        r"the response copy history contains events "
         r'"(?P<first>[^"]+)"(?P<rest>.*) in order'
     )
 )
@@ -2749,7 +2836,21 @@ def then_stdout_matches_expected_api_payload(
     path: str,
 ) -> None:
     assert acceptance_context.expected_api_endpoint == (method, path)
-    assert acceptance_context.stdout_json == acceptance_context.expected_api_payload
+    actual = acceptance_context.stdout_json
+    expected = acceptance_context.expected_api_payload
+    if path == "/v1/glacier":
+        actual = _normalized_glacier_payload(actual)
+        expected = _normalized_glacier_payload(expected)
+    assert actual == expected
+
+
+def _normalized_glacier_payload(payload: object) -> object:
+    if not isinstance(payload, dict):
+        return payload
+    normalized = dict(payload)
+    if "measured_at" in normalized:
+        normalized["measured_at"] = "<normalized>"
+    return normalized
 
 
 @then(parsers.parse('stdout mentions target "{target}"'))

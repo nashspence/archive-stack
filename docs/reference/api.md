@@ -247,6 +247,38 @@ Required behavior:
 - finalized image summaries always report `iso_ready = true`
 - provisional plan candidates are not addressable through `GET /v1/images/{image_id}`
 
+#### `GET /v1/glacier`
+
+Returns Glacier usage totals, per-image archive state, derived per-collection attribution, pricing
+assumptions, AWS-native billing history/forecast when available, and overall usage snapshots.
+
+Supported query parameters:
+
+- `image_id` — narrows the image list to one finalized image id
+- `collection` — narrows image and collection reporting to one exact collection id
+
+Required behavior:
+
+- the response always exposes `scope`, `measured_at`, `pricing_basis`, `totals`, `images`, `collections`, `billing`,
+  and `history`
+- `pricing_basis` states the assumptions used for cost estimates, including whether Riverhog resolved the storage
+  rates from the AWS price-list API or from manual fallback values
+- `pricing_basis.currency_code`, `pricing_basis.region_code`, and `pricing_basis.effective_at` make the AWS lookup
+  basis explicit when Riverhog resolves live pricing
+- `totals.measured_storage_bytes` reports measured uploaded Glacier object bytes, not billing overhead
+- `totals.estimated_billable_bytes` includes configured Glacier metadata overhead on top of measured uploaded bytes
+- `totals.estimated_monthly_cost_usd` is derived from the emitted pricing basis rather than observed cloud bills
+- each returned image exposes current Glacier state, object path, measured uploaded bytes, and estimated monthly cost
+- each returned collection exposes derived Glacier attribution only when Riverhog can attribute one image's stored bytes
+  from the disc manifest's represented plaintext bytes
+- collection attribution stays explicit about being derived rather than measured directly from the archive backend
+- `billing` is separate from `history`: `history` tracks Riverhog's own stored-usage snapshots, while `billing`
+  reports AWS Cost Explorer actuals and forecast when Riverhog can resolve them
+- `billing.scope` makes the AWS billing filter explicit, such as `tag` for cost-allocation tag scope or `service`
+  when Riverhog can only report Amazon S3 service-level spend for the configured region
+- unfiltered `GET /v1/glacier` returns overall usage snapshots that reflect changes in total uploaded Glacier usage over
+  time
+
 #### `POST /v1/plan/candidates/{candidate_id}/finalize`
 
 Explicitly finalizes one ready provisional candidate and creates one finalized image resource.
@@ -465,6 +497,7 @@ The `arc` CLI is a thin API client and should provide at least:
 - `arc get TARGET [-o FILE]`
 - `arc plan [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--iso-ready|--not-ready]`
 - `arc images [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--has-copies|--no-copies]`
+- `arc glacier [--image IMAGE_ID] [--collection ID]`
 - `arc iso get IMAGE_ID [-o FILE]`
 - `arc copy add IMAGE_ID --at LOCATION [--copy-id GENERATED_ID]`
 - `arc copy list IMAGE_ID`
@@ -492,11 +525,14 @@ For finalized-image commands:
 - `IMAGE_ID` means the finalized image id
 - finalized image ids use compact UTC basic form `YYYYMMDDTHHMMSSZ`
 - `arc images --json` mirrors the `GET /v1/images` response payload
+- `arc glacier --json` mirrors the `GET /v1/glacier` response payload
 - `arc plan --json` mirrors the `GET /v1/plan` response payload
 - non-JSON `arc plan` output stays concise and line-oriented while surfacing candidate id, fill, readiness, and
   contained collections
 - non-JSON `arc images` output stays concise and line-oriented while surfacing finalized id, filename, copy count,
   and contained collections
+- non-JSON `arc glacier` output stays line-oriented while surfacing measured usage totals, configured pricing basis,
+  per-image Glacier state, and derived collection attribution
 
 ### `arc-disc`
 

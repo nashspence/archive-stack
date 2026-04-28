@@ -229,10 +229,7 @@ class PlaceholderBurnedMediaVerifier:
 class TerminalBurnPrompts:
     def wait_for_blank_disc(self, copy_id: str, *, device: str) -> None:
         typer.echo(
-            (
-                f"Insert blank media for {copy_id} into {device}, "
-                "then press Enter to continue."
-            ),
+            (f"Insert blank media for {copy_id} into {device}, then press Enter to continue."),
             err=True,
         )
         try:

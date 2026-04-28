@@ -48,11 +48,7 @@ def _contract_request_headers(path: str, method: str) -> dict[str, dict[str, Any
 
 def _contract_required_request_headers(path: str, method: str) -> set[str]:
     headers = _contract_request_headers(path, method)
-    return {
-        name
-        for name, parameter in headers.items()
-        if parameter.get("required", False)
-    }
+    return {name for name, parameter in headers.items() if parameter.get("required", False)}
 
 
 def _contract_request_header_enum(
@@ -433,12 +429,24 @@ class _StubGlacierUploads:
         assert limit >= 0
 
 
+class _StubGlacierReporting:
+    def get_report(
+        self,
+        *,
+        image_id: str | None = None,
+        collection: str | None = None,
+    ) -> dict[str, object]:
+        _ = image_id, collection
+        return {}
+
+
 def _contract_runtime_client() -> TestClient:
     container = ServiceContainer(
         collections=_StubCollectionUploads(),  # type: ignore[arg-type]
         search=SimpleNamespace(),
         planning=_StubPlanning(),  # type: ignore[arg-type]
         glacier_uploads=_StubGlacierUploads(),  # type: ignore[arg-type]
+        glacier_reporting=_StubGlacierReporting(),  # type: ignore[arg-type]
         copies=SimpleNamespace(),
         pins=SimpleNamespace(),
         fetches=_StubFetchUploads(),  # type: ignore[arg-type]

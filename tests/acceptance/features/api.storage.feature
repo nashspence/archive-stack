@@ -54,3 +54,36 @@ Feature: Read-only hot storage browsing
       And the archive credentials cannot read object "collections/docs/tax/2022/invoice-123.pdf" from the hot bucket
       And the archive credentials cannot list prefix "collections/" in the hot bucket
       And the archive credentials cannot list prefix ".arc/uploads/" in the hot bucket
+
+  Rule: Glacier usage reporting distinguishes measured storage from estimated billing
+    Scenario: Glacier usage report shows totals, image state, derived collection cost, and pricing basis
+      Given an archive with planner fixtures
+      And an archive with split planner fixtures
+      And candidate "img_2026-04-20_01" is finalized
+      And candidate "img_2026-04-20_03" is finalized
+      When the client waits for image "20260420T040001Z" glacier state "uploaded"
+      And the client waits for image "20260420T040003Z" glacier state "uploaded"
+      And the client gets "/v1/glacier"
+      Then the response status is 200
+      And the response contains "scope", "measured_at", "pricing_basis", "totals", "images", "collections", "billing", and "history"
+      And the response Glacier totals measured_storage_bytes is greater than 0
+      And the response Glacier totals estimated_monthly_cost_usd is greater than 0
+      And the response Glacier image "20260420T040001Z" glacier state is "uploaded"
+      And the response Glacier collection "docs" attribution_state is "derived"
+      And the response Glacier collection "docs" derived_stored_bytes is greater than 0
+
+    Scenario: Glacier usage report can focus on one finalized image
+      Given candidate "img_2026-04-20_01" is finalized
+      When the client waits for image "20260420T040001Z" glacier state "uploaded"
+      And the client gets "/v1/glacier?image_id=20260420T040001Z"
+      Then the response status is 200
+      And the response Glacier images contain only "20260420T040001Z"
+
+    Scenario: Glacier usage report can focus on one collection
+      Given an archive with split planner fixtures
+      And candidate "img_2026-04-20_03" is finalized
+      When the client waits for image "20260420T040003Z" glacier state "uploaded"
+      And the client gets "/v1/glacier?collection=docs"
+      Then the response status is 200
+      And the response Glacier collections contain only "docs"
+      And the response Glacier collection "docs" attribution_state is "derived"

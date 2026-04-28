@@ -35,6 +35,21 @@ def _parse_int(value: str, *, name: str, minimum: int = 0) -> int:
     return parsed
 
 
+def _parse_float(value: str, *, name: str, minimum: float = 0.0) -> float:
+    parsed = float(value.strip())
+    if parsed < minimum:
+        raise ValueError(f"invalid {name} {value!r}: expected >= {minimum}")
+    return parsed
+
+
+def _parse_choice(value: str, *, name: str, allowed: set[str]) -> str:
+    normalized = value.strip().casefold().replace("-", "_")
+    if normalized not in allowed:
+        expected = ", ".join(sorted(allowed))
+        raise ValueError(f"invalid {name} {value!r}: expected one of {expected}")
+    return normalized
+
+
 def _normalize_prefix(value: str) -> str:
     parts = [part for part in value.strip().strip("/").split("/") if part]
     if not parts:
@@ -69,6 +84,24 @@ class RuntimeConfig:
     glacier_upload_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=5))
     glacier_upload_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
     glacier_failure_webhook_url: str | None = None
+    glacier_pricing_label: str = "aws-s3-us-west-2-public"
+    glacier_pricing_mode: str = "auto"
+    glacier_pricing_api_region: str = "us-east-1"
+    glacier_pricing_region_code: str = "us-west-2"
+    glacier_pricing_currency_code: str = "USD"
+    glacier_pricing_cache_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
+    glacier_billing_mode: str = "auto"
+    glacier_billing_api_region: str = "us-east-1"
+    glacier_billing_currency_code: str = "USD"
+    glacier_billing_lookback_months: int = 3
+    glacier_billing_forecast_months: int = 1
+    glacier_billing_tag_key: str | None = None
+    glacier_billing_tag_value: str | None = None
+    glacier_storage_rate_usd_per_gib_month: float = 0.00099
+    glacier_standard_rate_usd_per_gib_month: float = 0.023
+    glacier_archived_metadata_bytes_per_object: int = 32 * 1024
+    glacier_standard_metadata_bytes_per_object: int = 8 * 1024
+    glacier_minimum_storage_duration_days: int = 180
     public_base_url: str | None = None
 
 
@@ -101,8 +134,75 @@ def load_runtime_config() -> RuntimeConfig:
     glacier_upload_sweep_interval = _parse_duration(
         os.getenv("ARC_GLACIER_UPLOAD_SWEEP_INTERVAL", "30s")
     )
-    glacier_failure_webhook_url = (
-        os.getenv("ARC_GLACIER_FAILURE_WEBHOOK_URL", "").strip() or None
+    glacier_failure_webhook_url = os.getenv("ARC_GLACIER_FAILURE_WEBHOOK_URL", "").strip() or None
+    glacier_pricing_label = (
+        os.getenv("ARC_GLACIER_PRICING_LABEL", "aws-s3-us-west-2-public").strip()
+        or "aws-s3-us-west-2-public"
+    )
+    glacier_pricing_mode = _parse_choice(
+        os.getenv("ARC_GLACIER_PRICING_MODE", "auto"),
+        name="ARC_GLACIER_PRICING_MODE",
+        allowed={"auto", "aws", "manual"},
+    )
+    glacier_pricing_api_region = (
+        os.getenv("ARC_GLACIER_PRICING_API_REGION", "us-east-1").strip() or "us-east-1"
+    )
+    glacier_pricing_region_code = (
+        os.getenv(
+            "ARC_GLACIER_PRICING_REGION_CODE",
+            os.getenv("ARC_GLACIER_REGION", s3_region),
+        ).strip()
+        or os.getenv("ARC_GLACIER_REGION", s3_region)
+    )
+    glacier_pricing_currency_code = (
+        os.getenv("ARC_GLACIER_PRICING_CURRENCY_CODE", "USD").strip().upper() or "USD"
+    )
+    glacier_pricing_cache_ttl = _parse_duration(
+        os.getenv("ARC_GLACIER_PRICING_CACHE_TTL", "24h")
+    )
+    glacier_billing_mode = _parse_choice(
+        os.getenv("ARC_GLACIER_BILLING_MODE", "auto"),
+        name="ARC_GLACIER_BILLING_MODE",
+        allowed={"auto", "aws", "disabled"},
+    )
+    glacier_billing_api_region = (
+        os.getenv("ARC_GLACIER_BILLING_API_REGION", "us-east-1").strip() or "us-east-1"
+    )
+    glacier_billing_currency_code = (
+        os.getenv("ARC_GLACIER_BILLING_CURRENCY_CODE", "USD").strip().upper() or "USD"
+    )
+    glacier_billing_lookback_months = _parse_int(
+        os.getenv("ARC_GLACIER_BILLING_LOOKBACK_MONTHS", "3"),
+        name="ARC_GLACIER_BILLING_LOOKBACK_MONTHS",
+        minimum=1,
+    )
+    glacier_billing_forecast_months = _parse_int(
+        os.getenv("ARC_GLACIER_BILLING_FORECAST_MONTHS", "1"),
+        name="ARC_GLACIER_BILLING_FORECAST_MONTHS",
+        minimum=1,
+    )
+    glacier_billing_tag_key = os.getenv("ARC_GLACIER_BILLING_TAG_KEY", "").strip() or None
+    glacier_billing_tag_value = os.getenv("ARC_GLACIER_BILLING_TAG_VALUE", "").strip() or None
+    glacier_storage_rate_usd_per_gib_month = _parse_float(
+        os.getenv("ARC_GLACIER_STORAGE_RATE_USD_PER_GIB_MONTH", "0.00099"),
+        name="ARC_GLACIER_STORAGE_RATE_USD_PER_GIB_MONTH",
+    )
+    glacier_standard_rate_usd_per_gib_month = _parse_float(
+        os.getenv("ARC_GLACIER_STANDARD_RATE_USD_PER_GIB_MONTH", "0.023"),
+        name="ARC_GLACIER_STANDARD_RATE_USD_PER_GIB_MONTH",
+    )
+    glacier_archived_metadata_bytes_per_object = _parse_int(
+        os.getenv("ARC_GLACIER_ARCHIVED_METADATA_BYTES_PER_OBJECT", str(32 * 1024)),
+        name="ARC_GLACIER_ARCHIVED_METADATA_BYTES_PER_OBJECT",
+    )
+    glacier_standard_metadata_bytes_per_object = _parse_int(
+        os.getenv("ARC_GLACIER_STANDARD_METADATA_BYTES_PER_OBJECT", str(8 * 1024)),
+        name="ARC_GLACIER_STANDARD_METADATA_BYTES_PER_OBJECT",
+    )
+    glacier_minimum_storage_duration_days = _parse_int(
+        os.getenv("ARC_GLACIER_MINIMUM_STORAGE_DURATION_DAYS", "180"),
+        name="ARC_GLACIER_MINIMUM_STORAGE_DURATION_DAYS",
+        minimum=1,
     )
     public_base_url = os.getenv("ARC_PUBLIC_BASE_URL", "").strip() or None
 
@@ -140,5 +240,23 @@ def load_runtime_config() -> RuntimeConfig:
         glacier_upload_retry_delay=glacier_retry_delay,
         glacier_upload_sweep_interval=glacier_upload_sweep_interval,
         glacier_failure_webhook_url=glacier_failure_webhook_url,
+        glacier_pricing_label=glacier_pricing_label,
+        glacier_pricing_mode=glacier_pricing_mode,
+        glacier_pricing_api_region=glacier_pricing_api_region,
+        glacier_pricing_region_code=glacier_pricing_region_code,
+        glacier_pricing_currency_code=glacier_pricing_currency_code,
+        glacier_pricing_cache_ttl=glacier_pricing_cache_ttl,
+        glacier_billing_mode=glacier_billing_mode,
+        glacier_billing_api_region=glacier_billing_api_region,
+        glacier_billing_currency_code=glacier_billing_currency_code,
+        glacier_billing_lookback_months=glacier_billing_lookback_months,
+        glacier_billing_forecast_months=glacier_billing_forecast_months,
+        glacier_billing_tag_key=glacier_billing_tag_key,
+        glacier_billing_tag_value=glacier_billing_tag_value,
+        glacier_storage_rate_usd_per_gib_month=glacier_storage_rate_usd_per_gib_month,
+        glacier_standard_rate_usd_per_gib_month=glacier_standard_rate_usd_per_gib_month,
+        glacier_archived_metadata_bytes_per_object=glacier_archived_metadata_bytes_per_object,
+        glacier_standard_metadata_bytes_per_object=glacier_standard_metadata_bytes_per_object,
+        glacier_minimum_storage_duration_days=glacier_minimum_storage_duration_days,
         public_base_url=public_base_url,
     )

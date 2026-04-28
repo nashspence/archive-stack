@@ -4,7 +4,11 @@ from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import Path
 
-from arc_core.catalog_models import FinalizedImageRecord, GlacierUploadJobRecord
+from arc_core.catalog_models import (
+    FinalizedImageRecord,
+    GlacierUploadJobRecord,
+    GlacierUsageSnapshotRecord,
+)
 from arc_core.ports.archive_store import ArchiveUploadReceipt
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.glacier_uploads import (
@@ -150,6 +154,9 @@ def test_process_due_uploads_records_success_metadata(tmp_path: Path) -> None:
         assert image.glacier_last_uploaded_at == "2026-04-20T04:01:00Z"
         assert image.glacier_last_verified_at == "2026-04-20T04:01:01Z"
         assert image.glacier_failure is None
+        snapshots = session.query(GlacierUsageSnapshotRecord).all()
+        assert len(snapshots) == 1
+        assert snapshots[0].measured_storage_bytes == 456
     assert store.calls == [
         ("20260420T040001Z", "20260420T040001Z.iso", image_root),
     ]

@@ -145,6 +145,19 @@ class ApiClient:
             params["has_copies"] = has_copies
         return self._json("GET", "/v1/images", params=params)
 
+    def get_glacier_report(
+        self,
+        *,
+        image_id: str | None = None,
+        collection: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if image_id:
+            params["image_id"] = image_id
+        if collection:
+            params["collection"] = collection
+        return self._json("GET", "/v1/glacier", params=params)
+
     def finalize_image(self, candidate_id: str) -> dict[str, Any]:
         return self._json("POST", f"/v1/plan/candidates/{candidate_id}/finalize")
 

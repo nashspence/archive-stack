@@ -7,6 +7,16 @@ from arc_core.domain.models import (
     CopySummary,
     FetchSummary,
     GlacierArchiveStatus,
+    GlacierBillingActual,
+    GlacierBillingForecast,
+    GlacierBillingSummary,
+    GlacierCollectionContribution,
+    GlacierPricingBasis,
+    GlacierUsageCollection,
+    GlacierUsageImage,
+    GlacierUsageReport,
+    GlacierUsageSnapshot,
+    GlacierUsageTotals,
     PinSummary,
 )
 
@@ -21,6 +31,135 @@ def map_glacier(summary: GlacierArchiveStatus) -> dict[str, object]:
         "last_uploaded_at": summary.last_uploaded_at,
         "last_verified_at": summary.last_verified_at,
         "failure": summary.failure,
+    }
+
+
+def map_glacier_pricing_basis(summary: GlacierPricingBasis) -> dict[str, object]:
+    return {
+        "label": summary.label,
+        "source": summary.source,
+        "storage_class": summary.storage_class,
+        "glacier_storage_rate_usd_per_gib_month": summary.glacier_storage_rate_usd_per_gib_month,
+        "standard_storage_rate_usd_per_gib_month": summary.standard_storage_rate_usd_per_gib_month,
+        "archived_metadata_bytes_per_object": summary.archived_metadata_bytes_per_object,
+        "standard_metadata_bytes_per_object": summary.standard_metadata_bytes_per_object,
+        "minimum_storage_duration_days": summary.minimum_storage_duration_days,
+        "currency_code": summary.currency_code,
+        "region_code": summary.region_code,
+        "effective_at": summary.effective_at,
+        "price_list_arn": summary.price_list_arn,
+    }
+
+
+def map_glacier_usage_totals(summary: GlacierUsageTotals) -> dict[str, object]:
+    return {
+        "images": summary.images,
+        "uploaded_images": summary.uploaded_images,
+        "measured_storage_bytes": summary.measured_storage_bytes,
+        "estimated_billable_bytes": summary.estimated_billable_bytes,
+        "estimated_monthly_cost_usd": summary.estimated_monthly_cost_usd,
+    }
+
+
+def map_glacier_usage_image(summary: GlacierUsageImage) -> dict[str, object]:
+    return {
+        "id": str(summary.id),
+        "filename": summary.filename,
+        "collection_ids": list(summary.collection_ids),
+        "glacier": map_glacier(summary.glacier),
+        "measured_storage_bytes": summary.measured_storage_bytes,
+        "estimated_billable_bytes": summary.estimated_billable_bytes,
+        "estimated_monthly_cost_usd": summary.estimated_monthly_cost_usd,
+    }
+
+
+def map_glacier_collection_contribution(
+    summary: GlacierCollectionContribution,
+) -> dict[str, object]:
+    return {
+        "image_id": str(summary.image_id),
+        "filename": summary.filename,
+        "glacier": map_glacier(summary.glacier),
+        "represented_bytes": summary.represented_bytes,
+        "represented_fraction": summary.represented_fraction,
+        "derived_stored_bytes": summary.derived_stored_bytes,
+        "derived_billable_bytes": summary.derived_billable_bytes,
+        "estimated_monthly_cost_usd": summary.estimated_monthly_cost_usd,
+    }
+
+
+def map_glacier_usage_collection(summary: GlacierUsageCollection) -> dict[str, object]:
+    return {
+        "id": str(summary.id),
+        "bytes": summary.bytes,
+        "represented_bytes": summary.represented_bytes,
+        "attribution_state": summary.attribution_state,
+        "derived_stored_bytes": summary.derived_stored_bytes,
+        "derived_billable_bytes": summary.derived_billable_bytes,
+        "estimated_monthly_cost_usd": summary.estimated_monthly_cost_usd,
+        "images": [map_glacier_collection_contribution(image) for image in summary.images],
+    }
+
+
+def map_glacier_usage_snapshot(summary: GlacierUsageSnapshot) -> dict[str, object]:
+    return {
+        "captured_at": summary.captured_at,
+        "uploaded_images": summary.uploaded_images,
+        "measured_storage_bytes": summary.measured_storage_bytes,
+        "estimated_billable_bytes": summary.estimated_billable_bytes,
+        "estimated_monthly_cost_usd": summary.estimated_monthly_cost_usd,
+    }
+
+
+def map_glacier_billing_actual(summary: GlacierBillingActual) -> dict[str, object]:
+    return {
+        "start": summary.start,
+        "end": summary.end,
+        "estimated": summary.estimated,
+        "unblended_cost_usd": summary.unblended_cost_usd,
+        "usage_quantity": summary.usage_quantity,
+        "usage_unit": summary.usage_unit,
+    }
+
+
+def map_glacier_billing_forecast(summary: GlacierBillingForecast) -> dict[str, object]:
+    return {
+        "start": summary.start,
+        "end": summary.end,
+        "mean_cost_usd": summary.mean_cost_usd,
+        "lower_bound_cost_usd": summary.lower_bound_cost_usd,
+        "upper_bound_cost_usd": summary.upper_bound_cost_usd,
+        "currency_code": summary.currency_code,
+    }
+
+
+def map_glacier_billing_summary(summary: GlacierBillingSummary | None) -> dict[str, object] | None:
+    if summary is None:
+        return None
+    return {
+        "source": summary.source,
+        "scope": summary.scope,
+        "filter_label": summary.filter_label,
+        "service": summary.service,
+        "currency_code": summary.currency_code,
+        "history_granularity": summary.history_granularity,
+        "forecast_granularity": summary.forecast_granularity,
+        "actuals": [map_glacier_billing_actual(item) for item in summary.actuals],
+        "forecast": [map_glacier_billing_forecast(item) for item in summary.forecast],
+        "notes": list(summary.notes),
+    }
+
+
+def map_glacier_usage_report(summary: GlacierUsageReport) -> dict[str, object]:
+    return {
+        "scope": summary.scope,
+        "measured_at": summary.measured_at,
+        "pricing_basis": map_glacier_pricing_basis(summary.pricing_basis),
+        "totals": map_glacier_usage_totals(summary.totals),
+        "images": [map_glacier_usage_image(image) for image in summary.images],
+        "collections": [map_glacier_usage_collection(item) for item in summary.collections],
+        "history": [map_glacier_usage_snapshot(item) for item in summary.history],
+        "billing": map_glacier_billing_summary(summary.billing),
     }
 
 

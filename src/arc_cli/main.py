@@ -15,6 +15,7 @@ from arc_cli.output import (
     format_copy,
     format_fetch,
     format_files,
+    format_glacier_report,
     format_images,
     format_pin,
     format_plan,
@@ -252,6 +253,20 @@ def images_cmd(
         has_copies=has_copies,
     )
     emit(payload if json_mode else format_images(payload), json_mode=json_mode)
+
+
+@app.command("glacier")
+def glacier_cmd(
+    image_id: Annotated[
+        str | None, typer.Option("--image", help="Filter to one finalized image id")
+    ] = None,
+    collection: Annotated[
+        str | None, typer.Option("--collection", help="Filter to one exact collection id")
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    payload = client().get_glacier_report(image_id=image_id, collection=collection)
+    emit(payload if json_mode else format_glacier_report(payload), json_mode=json_mode)
 
 
 @iso_app.command("get")

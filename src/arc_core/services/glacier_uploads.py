@@ -7,6 +7,7 @@ from sqlalchemy import or_, select
 from arc_core.catalog_models import FinalizedImageRecord, GlacierUploadJobRecord
 from arc_core.ports.archive_store import ArchiveStore
 from arc_core.runtime_config import RuntimeConfig
+from arc_core.services.glacier_reporting import record_glacier_usage_snapshot
 from arc_core.sqlite_db import make_session_factory, session_scope
 from arc_core.webhooks import (
     WebhookConfig,
@@ -96,6 +97,7 @@ class SqlAlchemyGlacierUploadService:
             image.glacier_last_uploaded_at = receipt.uploaded_at
             image.glacier_last_verified_at = receipt.verified_at
             image.glacier_failure = None
+            record_glacier_usage_snapshot(session, config=self._config)
 
     def _record_failure(self, *, image_id: str, error: str) -> None:
         current = utcnow()

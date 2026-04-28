@@ -12,6 +12,7 @@ from arc_core.services.contracts import (
     CopyService,
     FetchService,
     FileService,
+    GlacierReportingService,
     GlacierUploadService,
     PinService,
     PlanningService,
@@ -20,6 +21,7 @@ from arc_core.services.contracts import (
 from arc_core.services.copies import SqlAlchemyCopyService
 from arc_core.services.fetches import SqlAlchemyFetchService
 from arc_core.services.files import SqlAlchemyFileService
+from arc_core.services.glacier_reporting import SqlAlchemyGlacierReportingService
 from arc_core.services.glacier_uploads import SqlAlchemyGlacierUploadService
 from arc_core.services.pins import SqlAlchemyPinService
 from arc_core.services.planning import SqlAlchemyPlanningService
@@ -37,6 +39,7 @@ class ServiceContainer:
     search: SearchService
     planning: PlanningService
     glacier_uploads: GlacierUploadService
+    glacier_reporting: GlacierReportingService
     copies: CopyService
     pins: PinService
     fetches: FetchService
@@ -55,6 +58,7 @@ def default_container() -> ServiceContainer:
         search=SqlAlchemySearchService(config),
         planning=SqlAlchemyPlanningService(config),
         glacier_uploads=SqlAlchemyGlacierUploadService(config, archive_store),
+        glacier_reporting=SqlAlchemyGlacierReportingService(config),
         copies=SqlAlchemyCopyService(config, hot_store),
         pins=SqlAlchemyPinService(config, hot_store, upload_store),
         fetches=SqlAlchemyFetchService(config, hot_store, upload_store),

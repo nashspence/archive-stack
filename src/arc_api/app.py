@@ -17,6 +17,7 @@ from arc_api.deps import ServiceContainer, default_container, get_container
 from arc_api.routers.collections import router as collections_router
 from arc_api.routers.fetches import router as fetches_router
 from arc_api.routers.files import router as files_router
+from arc_api.routers.glacier import router as glacier_router
 from arc_api.routers.images import router as images_router
 from arc_api.routers.internal import router as internal_router
 from arc_api.routers.pins import router as pins_router
@@ -222,6 +223,7 @@ def create_app(
     app.include_router(search_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(plan_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(images_router, prefix="/v1", dependencies=auth_deps)
+    app.include_router(glacier_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(pins_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(fetches_router, prefix="/v1", dependencies=auth_deps)
     return app

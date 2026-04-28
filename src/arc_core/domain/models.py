@@ -39,6 +39,127 @@ class GlacierArchiveStatus:
 
 
 @dataclass(frozen=True)
+class GlacierPricingBasis:
+    label: str
+    storage_class: str
+    glacier_storage_rate_usd_per_gib_month: float
+    standard_storage_rate_usd_per_gib_month: float
+    archived_metadata_bytes_per_object: int
+    standard_metadata_bytes_per_object: int
+    minimum_storage_duration_days: int
+    source: str = "manual"
+    currency_code: str | None = None
+    region_code: str | None = None
+    effective_at: str | None = None
+    price_list_arn: str | None = None
+
+
+@dataclass(frozen=True)
+class GlacierUsageTotals:
+    images: int
+    uploaded_images: int
+    measured_storage_bytes: int
+    estimated_billable_bytes: int
+    estimated_monthly_cost_usd: float
+
+
+@dataclass(frozen=True)
+class GlacierUsageImage:
+    id: ImageId
+    filename: str
+    collection_ids: list[str]
+    glacier: GlacierArchiveStatus
+    measured_storage_bytes: int
+    estimated_billable_bytes: int
+    estimated_monthly_cost_usd: float
+
+
+@dataclass(frozen=True)
+class GlacierCollectionContribution:
+    image_id: ImageId
+    filename: str
+    glacier: GlacierArchiveStatus
+    represented_bytes: int
+    represented_fraction: float | None
+    derived_stored_bytes: int | None
+    derived_billable_bytes: int | None
+    estimated_monthly_cost_usd: float | None
+
+
+@dataclass(frozen=True)
+class GlacierUsageCollection:
+    id: CollectionId
+    bytes: int
+    represented_bytes: int
+    attribution_state: str
+    derived_stored_bytes: int
+    derived_billable_bytes: int
+    estimated_monthly_cost_usd: float
+    images: tuple[GlacierCollectionContribution, ...] = ()
+
+
+@dataclass(frozen=True)
+class GlacierUsageSnapshot:
+    captured_at: str
+    uploaded_images: int
+    measured_storage_bytes: int
+    estimated_billable_bytes: int
+    estimated_monthly_cost_usd: float
+
+
+@dataclass(frozen=True)
+class GlacierBillingActual:
+    start: str
+    end: str
+    estimated: bool
+    unblended_cost_usd: float
+    usage_quantity: float | None = None
+    usage_unit: str | None = None
+
+
+@dataclass(frozen=True)
+class GlacierBillingForecast:
+    start: str
+    end: str
+    mean_cost_usd: float
+    lower_bound_cost_usd: float | None = None
+    upper_bound_cost_usd: float | None = None
+    currency_code: str | None = None
+
+
+@dataclass(frozen=True)
+class GlacierBillingSummary:
+    source: str
+    scope: str
+    filter_label: str | None = None
+    service: str | None = None
+    currency_code: str | None = None
+    history_granularity: str | None = None
+    forecast_granularity: str | None = None
+    actuals: tuple[GlacierBillingActual, ...] = ()
+    forecast: tuple[GlacierBillingForecast, ...] = ()
+    notes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class GlacierUsageReport:
+    scope: str
+    measured_at: str
+    pricing_basis: GlacierPricingBasis
+    totals: GlacierUsageTotals
+    images: tuple[GlacierUsageImage, ...]
+    collections: tuple[GlacierUsageCollection, ...]
+    history: tuple[GlacierUsageSnapshot, ...] = ()
+    billing: GlacierBillingSummary | None = None
+
+
+@dataclass(frozen=True)
+class GlacierReportingContext:
+    pricing_basis: GlacierPricingBasis
+    billing: GlacierBillingSummary | None = None
+
+
+@dataclass(frozen=True)
 class CollectionCoverageImage:
     id: ImageId
     filename: str

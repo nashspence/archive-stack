@@ -168,6 +168,157 @@ persistent failure after automatic retries.
 The payload includes the finalized `image_id`, failure timestamp, attempt count,
 and error context.
 
+## `ARC_GLACIER_PRICING_LABEL`
+
+- type: string
+- default: `aws-s3-us-west-2-public`
+
+Operator-facing label emitted when Glacier reporting stays on manual pricing or
+falls back from AWS lookup.
+
+## `ARC_GLACIER_PRICING_MODE`
+
+- type: string
+- default: `auto`
+
+Controls how Riverhog resolves the Glacier storage-rate fields:
+
+- `auto` tries AWS price-list lookup when the Glacier backend points at AWS S3,
+  then falls back to the configured manual values
+- `aws` requires AWS price-list lookup and fails if Riverhog cannot resolve the
+  expected S3 pricing terms
+- `manual` skips AWS lookup and always uses the configured values below
+
+## `ARC_GLACIER_PRICING_API_REGION`
+
+- type: string
+- default: `us-east-1`
+
+AWS Region for the Price List Bulk API endpoint. This is the pricing-API Region,
+not the S3 product Region being priced.
+
+## `ARC_GLACIER_PRICING_REGION_CODE`
+
+- type: string
+- default: `ARC_GLACIER_REGION`
+
+AWS product RegionCode that Riverhog requests when it resolves S3 pricing from
+AWS.
+
+## `ARC_GLACIER_PRICING_CURRENCY_CODE`
+
+- type: string
+- default: `USD`
+
+CurrencyCode that Riverhog requests when it resolves S3 pricing from AWS.
+
+## `ARC_GLACIER_PRICING_CACHE_TTL`
+
+- type: duration
+- default: `24h`
+
+How long one process keeps resolved AWS Glacier pricing before refreshing it.
+
+## `ARC_GLACIER_BILLING_MODE`
+
+- type: string
+- default: `auto`
+
+Controls whether Riverhog tries to resolve AWS Cost Explorer actuals and
+forecast for Glacier reporting:
+
+- `auto` tries AWS billing queries when the Glacier backend points at AWS S3
+- `aws` requires AWS billing queries and fails if Cost Explorer data cannot be
+  resolved
+- `disabled` skips AWS billing queries and emits an unavailable billing summary
+
+## `ARC_GLACIER_BILLING_API_REGION`
+
+- type: string
+- default: `us-east-1`
+
+AWS Region for Cost Explorer API calls.
+
+## `ARC_GLACIER_BILLING_CURRENCY_CODE`
+
+- type: string
+- default: `USD`
+
+Currency that Riverhog expects from AWS billing responses.
+
+## `ARC_GLACIER_BILLING_LOOKBACK_MONTHS`
+
+- type: integer
+- default: `3`
+
+How many monthly Cost Explorer actual periods Riverhog requests for Glacier
+reporting.
+
+## `ARC_GLACIER_BILLING_FORECAST_MONTHS`
+
+- type: integer
+- default: `1`
+
+How many future monthly Cost Explorer forecast periods Riverhog requests.
+
+## `ARC_GLACIER_BILLING_TAG_KEY`
+
+- type: string
+- default: unset
+
+Optional cost-allocation tag key for Glacier billing scope. When paired with
+`ARC_GLACIER_BILLING_TAG_VALUE`, Riverhog uses tag-scoped Cost Explorer history
+and forecast instead of the broader Amazon S3 service scope.
+
+## `ARC_GLACIER_BILLING_TAG_VALUE`
+
+- type: string
+- default: unset
+
+Optional cost-allocation tag value for Glacier billing scope.
+
+## `ARC_GLACIER_STORAGE_RATE_USD_PER_GIB_MONTH`
+
+- type: number
+- default: `0.00099`
+
+Manual override and fallback for the Glacier storage rate used when Riverhog
+estimates recurring monthly archive cost from measured uploaded bytes.
+
+## `ARC_GLACIER_STANDARD_RATE_USD_PER_GIB_MONTH`
+
+- type: number
+- default: `0.023`
+
+Manual override and fallback for the S3 Standard storage rate used for the
+8 KiB per-object metadata overhead component in Glacier usage estimates.
+
+## `ARC_GLACIER_ARCHIVED_METADATA_BYTES_PER_OBJECT`
+
+- type: integer
+- default: `32768`
+
+Configured Glacier-billed metadata overhead bytes added per archived object when
+Riverhog estimates billable storage.
+
+## `ARC_GLACIER_STANDARD_METADATA_BYTES_PER_OBJECT`
+
+- type: integer
+- default: `8192`
+
+Configured S3 Standard-billed metadata overhead bytes added per archived object
+when Riverhog estimates billable storage.
+
+## `ARC_GLACIER_MINIMUM_STORAGE_DURATION_DAYS`
+
+- type: integer
+- default: `180`
+
+Configured minimum storage-duration assumption published with Glacier usage
+reporting. Riverhog emits this as part of the pricing basis but does not fold
+it into recurring monthly storage totals. Riverhog keeps this constant explicit
+instead of resolving it from the price-list API.
+
 ## `ARC_TUSD_BASE_URL`
 
 - type: URL

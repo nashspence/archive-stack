@@ -464,6 +464,29 @@ paths:
                 $ref: "#/components/schemas/FinalizedImageSummary"
         default:
           $ref: "#/components/responses/Error"
+  /glacier:
+    get:
+      summary: Get Glacier usage and cost reporting
+      description: Returns Glacier usage totals, per-image archive state, derived per-collection attribution, configured pricing assumptions, and overall usage snapshots.
+      operationId: getGlacierReport
+      parameters:
+        - in: query
+          name: image_id
+          required: false
+          schema: { type: string }
+        - in: query
+          name: collection
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: Glacier usage report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GlacierUsageReport"
+        default:
+          $ref: "#/components/responses/Error"
   /plan/candidates/{candidate_id}/finalize:
     post:
       summary: Explicitly finalize one provisional candidate
@@ -951,6 +974,317 @@ components:
         failure:
           oneOf:
             - type: string
+            - type: "null"
+    GlacierPricingBasis:
+      type: object
+      required:
+        [
+          label,
+          source,
+          storage_class,
+          glacier_storage_rate_usd_per_gib_month,
+          standard_storage_rate_usd_per_gib_month,
+          archived_metadata_bytes_per_object,
+          standard_metadata_bytes_per_object,
+          minimum_storage_duration_days,
+        ]
+      properties:
+        label: { type: string }
+        source: { type: string }
+        storage_class: { type: string }
+        glacier_storage_rate_usd_per_gib_month: { type: number }
+        standard_storage_rate_usd_per_gib_month: { type: number }
+        archived_metadata_bytes_per_object: { type: integer }
+        standard_metadata_bytes_per_object: { type: integer }
+        minimum_storage_duration_days:
+          type: integer
+          minimum: 1
+        currency_code:
+          oneOf:
+            - type: string
+            - type: "null"
+        region_code:
+          oneOf:
+            - type: string
+            - type: "null"
+        effective_at:
+          oneOf:
+            - type: string
+            - type: "null"
+        price_list_arn:
+          oneOf:
+            - type: string
+            - type: "null"
+    GlacierUsageTotals:
+      type: object
+      required:
+        [images, uploaded_images, measured_storage_bytes, estimated_billable_bytes, estimated_monthly_cost_usd]
+      properties:
+        images:
+          type: integer
+          minimum: 0
+        uploaded_images:
+          type: integer
+          minimum: 0
+        measured_storage_bytes:
+          type: integer
+          minimum: 0
+        estimated_billable_bytes:
+          type: integer
+          minimum: 0
+        estimated_monthly_cost_usd:
+          type: number
+          minimum: 0
+    GlacierUsageImage:
+      type: object
+      required:
+        [
+          id,
+          filename,
+          collection_ids,
+          glacier,
+          measured_storage_bytes,
+          estimated_billable_bytes,
+          estimated_monthly_cost_usd,
+        ]
+      properties:
+        id:
+          type: string
+          pattern: "^[0-9]{8}T[0-9]{6}Z$"
+        filename: { type: string }
+        collection_ids:
+          type: array
+          items: { type: string }
+        glacier:
+          $ref: "#/components/schemas/GlacierArchive"
+        measured_storage_bytes:
+          type: integer
+          minimum: 0
+        estimated_billable_bytes:
+          type: integer
+          minimum: 0
+        estimated_monthly_cost_usd:
+          type: number
+          minimum: 0
+    GlacierCollectionContribution:
+      type: object
+      required:
+        [
+          image_id,
+          filename,
+          glacier,
+          represented_bytes,
+          represented_fraction,
+          derived_stored_bytes,
+          derived_billable_bytes,
+          estimated_monthly_cost_usd,
+        ]
+      properties:
+        image_id:
+          type: string
+          pattern: "^[0-9]{8}T[0-9]{6}Z$"
+        filename: { type: string }
+        glacier:
+          $ref: "#/components/schemas/GlacierArchive"
+        represented_bytes:
+          type: integer
+          minimum: 0
+        represented_fraction:
+          oneOf:
+            - type: number
+            - type: "null"
+        derived_stored_bytes:
+          oneOf:
+            - type: integer
+              minimum: 0
+            - type: "null"
+        derived_billable_bytes:
+          oneOf:
+            - type: integer
+              minimum: 0
+            - type: "null"
+        estimated_monthly_cost_usd:
+          oneOf:
+            - type: number
+              minimum: 0
+            - type: "null"
+    GlacierUsageCollection:
+      type: object
+      required:
+        [
+          id,
+          bytes,
+          represented_bytes,
+          attribution_state,
+          derived_stored_bytes,
+          derived_billable_bytes,
+          estimated_monthly_cost_usd,
+          images,
+        ]
+      properties:
+        id: { type: string }
+        bytes:
+          type: integer
+          minimum: 0
+        represented_bytes:
+          type: integer
+          minimum: 0
+        attribution_state:
+          type: string
+          enum: [derived, unavailable]
+        derived_stored_bytes:
+          type: integer
+          minimum: 0
+        derived_billable_bytes:
+          type: integer
+          minimum: 0
+        estimated_monthly_cost_usd:
+          type: number
+          minimum: 0
+        images:
+          type: array
+          items:
+            $ref: "#/components/schemas/GlacierCollectionContribution"
+    GlacierUsageSnapshot:
+      type: object
+      required:
+        [captured_at, uploaded_images, measured_storage_bytes, estimated_billable_bytes, estimated_monthly_cost_usd]
+      properties:
+        captured_at:
+          type: string
+          format: date-time
+        uploaded_images:
+          type: integer
+          minimum: 0
+        measured_storage_bytes:
+          type: integer
+          minimum: 0
+        estimated_billable_bytes:
+          type: integer
+          minimum: 0
+        estimated_monthly_cost_usd:
+          type: number
+          minimum: 0
+    GlacierBillingActual:
+      type: object
+      required: [start, end, estimated, unblended_cost_usd]
+      properties:
+        start:
+          type: string
+          format: date
+        end:
+          type: string
+          format: date
+        estimated:
+          type: boolean
+        unblended_cost_usd:
+          type: number
+          minimum: 0
+        usage_quantity:
+          oneOf:
+            - type: number
+            - type: "null"
+        usage_unit:
+          oneOf:
+            - type: string
+            - type: "null"
+    GlacierBillingForecast:
+      type: object
+      required: [start, end, mean_cost_usd]
+      properties:
+        start:
+          type: string
+          format: date
+        end:
+          type: string
+          format: date
+        mean_cost_usd:
+          type: number
+          minimum: 0
+        lower_bound_cost_usd:
+          oneOf:
+            - type: number
+              minimum: 0
+            - type: "null"
+        upper_bound_cost_usd:
+          oneOf:
+            - type: number
+              minimum: 0
+            - type: "null"
+        currency_code:
+          oneOf:
+            - type: string
+            - type: "null"
+    GlacierBillingSummary:
+      type: object
+      required: [source, scope, actuals, forecast, notes]
+      properties:
+        source:
+          type: string
+        scope:
+          type: string
+        filter_label:
+          oneOf:
+            - type: string
+            - type: "null"
+        service:
+          oneOf:
+            - type: string
+            - type: "null"
+        currency_code:
+          oneOf:
+            - type: string
+            - type: "null"
+        history_granularity:
+          oneOf:
+            - type: string
+            - type: "null"
+        forecast_granularity:
+          oneOf:
+            - type: string
+            - type: "null"
+        actuals:
+          type: array
+          items:
+            $ref: "#/components/schemas/GlacierBillingActual"
+        forecast:
+          type: array
+          items:
+            $ref: "#/components/schemas/GlacierBillingForecast"
+        notes:
+          type: array
+          items:
+            type: string
+    GlacierUsageReport:
+      type: object
+      required:
+        [scope, measured_at, pricing_basis, totals, images, collections, history, billing]
+      properties:
+        scope:
+          type: string
+          enum: [all, image, collection, filtered]
+        measured_at:
+          type: string
+          format: date-time
+        pricing_basis:
+          $ref: "#/components/schemas/GlacierPricingBasis"
+        totals:
+          $ref: "#/components/schemas/GlacierUsageTotals"
+        images:
+          type: array
+          items:
+            $ref: "#/components/schemas/GlacierUsageImage"
+        collections:
+          type: array
+          items:
+            $ref: "#/components/schemas/GlacierUsageCollection"
+        history:
+          type: array
+          items:
+            $ref: "#/components/schemas/GlacierUsageSnapshot"
+        billing:
+          oneOf:
+            - $ref: "#/components/schemas/GlacierBillingSummary"
             - type: "null"
     CollectionSummary:
       type: object

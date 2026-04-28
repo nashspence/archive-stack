@@ -10,9 +10,11 @@ import subprocess
 import sys
 import threading
 import time
+from collections import defaultdict
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import quote
@@ -47,6 +49,14 @@ from arc_core.domain.models import (
     FetchCopyHint,
     FetchSummary,
     GlacierArchiveStatus,
+    GlacierBillingSummary,
+    GlacierCollectionContribution,
+    GlacierPricingBasis,
+    GlacierUsageCollection,
+    GlacierUsageImage,
+    GlacierUsageReport,
+    GlacierUsageSnapshot,
+    GlacierUsageTotals,
     PinSummary,
 )
 from arc_core.domain.selectors import parse_target
@@ -65,6 +75,7 @@ from arc_core.fs_paths import (
     normalize_relpath,
 )
 from arc_core.planner.manifest import MANIFEST_FILENAME
+from arc_core.runtime_config import load_runtime_config
 from arc_core.services.planning import ImageRootPlanningService, ImageRootRecord
 from tests.fixtures.data import (
     DEFAULT_COPY_CREATED_AT,
@@ -312,6 +323,7 @@ class AcceptanceState:
     collection_uploads: dict[CollectionId, CollectionUploadRecord] = field(default_factory=dict)
     glacier_status_by_image: dict[ImageId, GlacierArchiveStatus] = field(default_factory=dict)
     glacier_jobs_by_image: dict[ImageId, AcceptanceGlacierUploadJob] = field(default_factory=dict)
+    glacier_usage_snapshots: list[GlacierUsageSnapshot] = field(default_factory=list)
     next_fetch_number: int = 0
 
     def register_local_collection_source(self, collection_id: str, root: Path) -> None:
@@ -426,8 +438,7 @@ class AcceptanceState:
         for record in records:
             image_ids = covered_paths.get(record.path, set())
             if image_ids and all(
-                image_states.get(image_id) == ProtectionState.PROTECTED
-                for image_id in image_ids
+                image_states.get(image_id) == ProtectionState.PROTECTED for image_id in image_ids
             ):
                 protected_bytes += record.bytes
         archived_bytes = sum(record.bytes for record in records if record.archived)
@@ -1204,9 +1215,383 @@ class AcceptanceGlacierUploadService:
                 last_verified_at=now,
                 failure=None,
             )
+            self.state.glacier_usage_snapshots.append(_acceptance_glacier_snapshot(self.state))
             job.completed = True
             attempted += 1
         return attempted
+
+
+class AcceptanceGlacierReportingService:
+    def __init__(self, state: AcceptanceState) -> None:
+        self.state = state
+
+    def get_report(
+        self,
+        *,
+        image_id: str | None = None,
+        collection: str | None = None,
+    ) -> GlacierUsageReport:
+        pricing_basis = _acceptance_pricing_basis()
+        images = [
+            image
+            for image in self.state.finalized_images_by_id.values()
+            if (image_id is None or image.finalized_id == image_id)
+            and (
+                collection is None
+                or any(
+                    current_collection == collection
+                    for current_collection, _ in image.covered_paths
+                )
+            )
+        ]
+        images.sort(key=lambda current: current.finalized_id, reverse=True)
+        image_reports = tuple(
+            _acceptance_glacier_image(image, self.state, pricing_basis)
+            for image in images
+        )
+        collection_reports = tuple(
+            _acceptance_glacier_collections(
+                images=images,
+                state=self.state,
+                collection_filter=collection,
+                pricing_basis=pricing_basis,
+            )
+        )
+        if collection is None:
+            totals = GlacierUsageTotals(
+                images=len(image_reports),
+                uploaded_images=sum(
+                    1 for image in image_reports if image.measured_storage_bytes > 0
+                ),
+                measured_storage_bytes=sum(image.measured_storage_bytes for image in image_reports),
+                estimated_billable_bytes=sum(
+                    image.estimated_billable_bytes for image in image_reports
+                ),
+                estimated_monthly_cost_usd=_round_usd(
+                    sum(image.estimated_monthly_cost_usd for image in image_reports)
+                ),
+            )
+        else:
+            totals = GlacierUsageTotals(
+                images=len(
+                    {
+                        contribution.image_id
+                        for report in collection_reports
+                        for contribution in report.images
+                    }
+                ),
+                uploaded_images=len(
+                    {
+                        contribution.image_id
+                        for report in collection_reports
+                        for contribution in report.images
+                        if contribution.derived_stored_bytes is not None
+                    }
+                ),
+                measured_storage_bytes=sum(
+                    report.derived_stored_bytes for report in collection_reports
+                ),
+                estimated_billable_bytes=sum(
+                    report.derived_billable_bytes for report in collection_reports
+                ),
+                estimated_monthly_cost_usd=_round_usd(
+                    sum(report.estimated_monthly_cost_usd for report in collection_reports)
+                ),
+            )
+        history = (
+            tuple(self.state.glacier_usage_snapshots)
+            if image_id is None and collection is None
+            else ()
+        )
+        billing = _acceptance_glacier_billing(include=image_id is None and collection is None)
+        return GlacierUsageReport(
+            scope=_acceptance_glacier_scope(image_id=image_id, collection=collection),
+            measured_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            pricing_basis=pricing_basis,
+            totals=totals,
+            images=image_reports,
+            collections=collection_reports,
+            history=history,
+            billing=billing,
+        )
+
+
+_BYTES_PER_GIB = Decimal(1024**3)
+_USD_QUANTUM = Decimal("0.000000000001")
+
+
+def _acceptance_glacier_scope(*, image_id: str | None, collection: str | None) -> str:
+    if image_id is not None and collection is not None:
+        return "filtered"
+    if image_id is not None:
+        return "image"
+    if collection is not None:
+        return "collection"
+    return "all"
+
+
+def _acceptance_glacier_billing(*, include: bool) -> GlacierBillingSummary | None:
+    if not include:
+        return None
+    return GlacierBillingSummary(
+        source="unavailable",
+        scope="unavailable",
+        notes=("AWS Cost Explorer billing is unavailable for this runtime.",),
+    )
+
+
+def _acceptance_pricing_basis() -> GlacierPricingBasis:
+    config = load_runtime_config()
+    return GlacierPricingBasis(
+        label=config.glacier_pricing_label,
+        source="manual",
+        storage_class=config.glacier_storage_class,
+        currency_code=config.glacier_pricing_currency_code,
+        region_code=config.glacier_pricing_region_code,
+        effective_at=None,
+        price_list_arn=None,
+        glacier_storage_rate_usd_per_gib_month=config.glacier_storage_rate_usd_per_gib_month,
+        standard_storage_rate_usd_per_gib_month=config.glacier_standard_rate_usd_per_gib_month,
+        archived_metadata_bytes_per_object=config.glacier_archived_metadata_bytes_per_object,
+        standard_metadata_bytes_per_object=config.glacier_standard_metadata_bytes_per_object,
+        minimum_storage_duration_days=config.glacier_minimum_storage_duration_days,
+    )
+
+
+def _acceptance_glacier_status(
+    state: AcceptanceState,
+    image_id: str,
+) -> GlacierArchiveStatus:
+    return state.glacier_status(image_id)
+
+
+def _acceptance_glacier_image(
+    image: CandidateRecord,
+    state: AcceptanceState,
+    pricing_basis: GlacierPricingBasis,
+) -> GlacierUsageImage:
+    glacier = _acceptance_glacier_status(state, image.finalized_id)
+    measured_storage_bytes = (
+        int(glacier.stored_bytes or 0) if glacier.state == GlacierState.UPLOADED else 0
+    )
+    return GlacierUsageImage(
+        id=image.finalized_id,
+        filename=image.filename,
+        collection_ids=image.collections,
+        glacier=glacier,
+        measured_storage_bytes=measured_storage_bytes,
+        estimated_billable_bytes=_acceptance_billable_bytes(
+            measured_storage_bytes,
+            pricing_basis=pricing_basis,
+        ),
+        estimated_monthly_cost_usd=_acceptance_estimated_monthly_cost_usd(
+            measured_storage_bytes,
+            object_count=1 if measured_storage_bytes > 0 else 0,
+            pricing_basis=pricing_basis,
+        ),
+    )
+
+
+def _acceptance_glacier_collections(
+    *,
+    images: list[CandidateRecord],
+    state: AcceptanceState,
+    collection_filter: str | None,
+    pricing_basis: GlacierPricingBasis,
+) -> list[GlacierUsageCollection]:
+    collections: dict[str, list[GlacierCollectionContribution]] = defaultdict(list)
+    collection_total_bytes: dict[str, int] = {}
+    for collection_id, records in state.files_by_collection.items():
+        collection_total_bytes[str(collection_id)] = sum(
+            record.bytes for record in records.values()
+        )
+
+    for image in images:
+        represented_by_collection = _acceptance_represented_bytes_by_collection(state, image)
+        if collection_filter is not None:
+            represented_by_collection = {
+                collection_id: represented
+                for collection_id, represented in represented_by_collection.items()
+                if collection_id == collection_filter
+            }
+        total_represented_bytes = sum(represented_by_collection.values())
+        glacier = _acceptance_glacier_status(state, image.finalized_id)
+        measured_storage_bytes = (
+            int(glacier.stored_bytes or 0) if glacier.state == GlacierState.UPLOADED else 0
+        )
+        billable_bytes = _acceptance_billable_bytes(
+            measured_storage_bytes,
+            pricing_basis=pricing_basis,
+        )
+        for collection_id, represented_bytes in represented_by_collection.items():
+            represented_fraction = (
+                represented_bytes / total_represented_bytes if total_represented_bytes > 0 else None
+            )
+            if represented_fraction is None or measured_storage_bytes <= 0:
+                derived_stored_bytes = None
+                derived_billable_bytes = None
+                estimated_monthly_cost_usd = None
+            else:
+                derived_stored_bytes = _round_int(measured_storage_bytes * represented_fraction)
+                derived_billable_bytes = _round_int(billable_bytes * represented_fraction)
+                estimated_monthly_cost_usd = _round_usd(
+                    _acceptance_estimated_monthly_cost_usd(
+                        derived_stored_bytes,
+                        object_count=0,
+                        pricing_basis=pricing_basis,
+                        archived_metadata_bytes=pricing_basis.archived_metadata_bytes_per_object
+                        * represented_fraction,
+                        standard_metadata_bytes=pricing_basis.standard_metadata_bytes_per_object
+                        * represented_fraction,
+                    )
+                )
+            collections[collection_id].append(
+                GlacierCollectionContribution(
+                    image_id=image.finalized_id,
+                    filename=image.filename,
+                    glacier=glacier,
+                    represented_bytes=represented_bytes,
+                    represented_fraction=represented_fraction,
+                    derived_stored_bytes=derived_stored_bytes,
+                    derived_billable_bytes=derived_billable_bytes,
+                    estimated_monthly_cost_usd=estimated_monthly_cost_usd,
+                )
+            )
+
+    reports: list[GlacierUsageCollection] = []
+    for collection_id in sorted(collections):
+        contributions = sorted(
+            collections[collection_id],
+            key=lambda current: str(current.image_id),
+            reverse=True,
+        )
+        reports.append(
+            GlacierUsageCollection(
+                id=collection_id,
+                bytes=collection_total_bytes.get(collection_id, 0),
+                represented_bytes=sum(item.represented_bytes for item in contributions),
+                attribution_state=(
+                    "derived"
+                    if any(item.derived_stored_bytes is not None for item in contributions)
+                    else "unavailable"
+                ),
+                derived_stored_bytes=sum(item.derived_stored_bytes or 0 for item in contributions),
+                derived_billable_bytes=sum(
+                    item.derived_billable_bytes or 0 for item in contributions
+                ),
+                estimated_monthly_cost_usd=_round_usd(
+                    sum(item.estimated_monthly_cost_usd or 0.0 for item in contributions)
+                ),
+                images=tuple(contributions),
+            )
+        )
+    return reports
+
+
+def _acceptance_represented_bytes_by_collection(
+    state: AcceptanceState,
+    image: CandidateRecord,
+) -> dict[str, int]:
+    manifest_path = image.image_root / MANIFEST_FILENAME
+    disc_manifest = yaml.safe_load(fixture_decrypt_bytes(manifest_path.read_bytes()))
+    represented_by_collection: dict[str, int] = defaultdict(int)
+    for collection in disc_manifest.get("collections", []):
+        collection_id = str(collection["id"])
+        for file_entry in collection.get("files", []):
+            path = str(file_entry["path"]).lstrip("/")
+            record = state.files_by_collection[CollectionId(collection_id)][path]
+            parts_block = file_entry.get("parts")
+            if parts_block is None:
+                represented_by_collection[collection_id] += record.bytes
+                continue
+            part_count = int(parts_block["count"])
+            for present in parts_block.get("present", []):
+                represented_by_collection[collection_id] += _split_part_length(
+                    record.bytes,
+                    part_count=part_count,
+                    part_index=int(present["index"]) - 1,
+                )
+    return dict(represented_by_collection)
+
+
+def _acceptance_glacier_snapshot(state: AcceptanceState) -> GlacierUsageSnapshot:
+    pricing_basis = _acceptance_pricing_basis()
+    image_reports = tuple(
+        _acceptance_glacier_image(image, state, pricing_basis)
+        for image in sorted(
+            state.finalized_images_by_id.values(),
+            key=lambda current: current.finalized_id,
+            reverse=True,
+        )
+    )
+    return GlacierUsageSnapshot(
+        captured_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        uploaded_images=sum(1 for image in image_reports if image.measured_storage_bytes > 0),
+        measured_storage_bytes=sum(image.measured_storage_bytes for image in image_reports),
+        estimated_billable_bytes=sum(image.estimated_billable_bytes for image in image_reports),
+        estimated_monthly_cost_usd=_round_usd(
+            sum(image.estimated_monthly_cost_usd for image in image_reports)
+        ),
+    )
+
+
+def _acceptance_billable_bytes(
+    measured_storage_bytes: int,
+    *,
+    pricing_basis: GlacierPricingBasis,
+) -> int:
+    if measured_storage_bytes <= 0:
+        return 0
+    return (
+        measured_storage_bytes
+        + pricing_basis.archived_metadata_bytes_per_object
+        + pricing_basis.standard_metadata_bytes_per_object
+    )
+
+
+def _acceptance_estimated_monthly_cost_usd(
+    measured_storage_bytes: int,
+    *,
+    object_count: int,
+    pricing_basis: GlacierPricingBasis,
+    archived_metadata_bytes: float | None = None,
+    standard_metadata_bytes: float | None = None,
+) -> float:
+    archived_bytes = Decimal(measured_storage_bytes) + Decimal(
+        str(
+            archived_metadata_bytes
+            if archived_metadata_bytes is not None
+            else pricing_basis.archived_metadata_bytes_per_object * object_count
+        )
+    )
+    standard_bytes = Decimal(
+        str(
+            standard_metadata_bytes
+            if standard_metadata_bytes is not None
+            else pricing_basis.standard_metadata_bytes_per_object * object_count
+        )
+    )
+    glacier_rate = Decimal(str(pricing_basis.glacier_storage_rate_usd_per_gib_month))
+    standard_rate = Decimal(str(pricing_basis.standard_storage_rate_usd_per_gib_month))
+    return float(
+        (
+            (archived_bytes / _BYTES_PER_GIB * glacier_rate)
+            + (standard_bytes / _BYTES_PER_GIB * standard_rate)
+        ).quantize(_USD_QUANTUM, rounding=ROUND_HALF_UP)
+    )
+
+
+def _split_part_length(total_bytes: int, *, part_count: int, part_index: int) -> int:
+    base, remainder = divmod(total_bytes, part_count)
+    return base + int(part_index < remainder)
+
+
+def _round_usd(value: float) -> float:
+    return float(Decimal(str(value)).quantize(_USD_QUANTUM, rounding=ROUND_HALF_UP))
+
+
+def _round_int(value: float) -> int:
+    return int(Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 class AcceptanceCopyService:
@@ -2074,6 +2459,7 @@ class AcceptanceSystem:
     search: AcceptanceSearchService
     planning: AcceptancePlanningService
     glacier_uploads: AcceptanceGlacierUploadService
+    glacier_reporting: AcceptanceGlacierReportingService
     copies: AcceptanceCopyService
     pins: AcceptancePinService
     fetches: AcceptanceFetchService
@@ -2090,6 +2476,7 @@ class AcceptanceSystem:
         search = AcceptanceSearchService(state)
         planning = AcceptancePlanningService(state)
         glacier_uploads = AcceptanceGlacierUploadService(state)
+        glacier_reporting = AcceptanceGlacierReportingService(state)
         copies = AcceptanceCopyService(state)
         fetches = AcceptanceFetchService(state)
         pins = AcceptancePinService(state, fetches)
@@ -2100,6 +2487,7 @@ class AcceptanceSystem:
             search=search,
             planning=planning,
             glacier_uploads=glacier_uploads,
+            glacier_reporting=glacier_reporting,
             copies=copies,
             pins=pins,
             fetches=fetches,
@@ -2127,6 +2515,7 @@ class AcceptanceSystem:
             search=search,
             planning=planning,
             glacier_uploads=glacier_uploads,
+            glacier_reporting=glacier_reporting,
             copies=copies,
             pins=pins,
             fetches=fetches,
@@ -2144,6 +2533,7 @@ class AcceptanceSystem:
         self.search = restarted.search
         self.planning = restarted.planning
         self.glacier_uploads = restarted.glacier_uploads
+        self.glacier_reporting = restarted.glacier_reporting
         self.copies = restarted.copies
         self.pins = restarted.pins
         self.fetches = restarted.fetches
@@ -2529,11 +2919,7 @@ class AcceptanceSystem:
                 key_for_file = (
                     f"collections/{normalize_collection_id(str(file.collection_id))}/{file.path}"
                 )
-                if (
-                    key_for_file == key
-                    and file.hot
-                    and not file.hot_backing_missing
-                ):
+                if key_for_file == key and file.hot and not file.hot_backing_missing:
                     return True
         return False
 

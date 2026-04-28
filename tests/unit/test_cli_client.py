@@ -188,9 +188,38 @@ def test_finalize_image_uses_candidate_finalize_endpoint(monkeypatch) -> None:
     payload = client.finalize_image("img_2026-04-20_01")
 
     assert payload["id"] == "20260420T040001Z"
-    assert captured == [
-        ("POST", "https://api.test/v1/plan/candidates/img_2026-04-20_01/finalize")
-    ]
+    assert captured == [("POST", "https://api.test/v1/plan/candidates/img_2026-04-20_01/finalize")]
+
+
+def test_get_glacier_report_uses_glacier_endpoint_with_filters(monkeypatch) -> None:
+    captured: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(str(request.url))
+        return httpx.Response(
+            200,
+            json={
+                "scope": "image",
+                "measured_at": "2026-04-28T00:00:00Z",
+                "pricing_basis": {},
+                "totals": {},
+                "images": [],
+                "collections": [],
+                "history": [],
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_client(self: ApiClient) -> httpx.Client:
+        return httpx.Client(base_url=self.base_url, transport=transport)
+
+    monkeypatch.setattr(ApiClient, "_client", fake_client)
+
+    client = ApiClient(base_url="https://api.test")
+    client.get_glacier_report(image_id="20260420T040001Z", collection="docs")
+
+    assert captured == ["https://api.test/v1/glacier?image_id=20260420T040001Z&collection=docs"]
 
 
 def test_create_or_resume_fetch_entry_upload_uses_manifest_entry_endpoint(monkeypatch) -> None:

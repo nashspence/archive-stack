@@ -140,9 +140,7 @@ def format_images(payload: Mapping[str, Any]) -> str:
         collection_ids = image.get("collection_ids")
         glacier = image.get("glacier")
         glacier_state = (
-            glacier.get("state", "unknown")
-            if isinstance(glacier, Mapping)
-            else "unknown"
+            glacier.get("state", "unknown") if isinstance(glacier, Mapping) else "unknown"
         )
         collection_text = (
             ", ".join(str(item) for item in collection_ids)
@@ -166,6 +164,139 @@ def format_images(payload: Mapping[str, Any]) -> str:
         if isinstance(glacier, Mapping) and glacier.get("failure"):
             lines.append(f"  glacier_failure: {glacier.get('failure')}")
 
+    return "\n".join(lines)
+
+
+def format_glacier_report(payload: Mapping[str, Any]) -> str:
+    totals = payload.get("totals")
+    pricing_basis = payload.get("pricing_basis")
+    lines = [
+        "glacier: "
+        f"scope={payload.get('scope', 'all')} "
+        f"measured_at={payload.get('measured_at', 'unknown')}",
+    ]
+    if isinstance(totals, Mapping):
+        lines.append(
+            "totals: "
+            f"images={totals.get('images', 0)} "
+            f"uploaded={totals.get('uploaded_images', 0)} "
+            f"measured_storage_bytes={totals.get('measured_storage_bytes', 0)} "
+            f"estimated_billable_bytes={totals.get('estimated_billable_bytes', 0)} "
+            f"estimated_monthly_cost_usd={totals.get('estimated_monthly_cost_usd', 0.0)}"
+        )
+    if isinstance(pricing_basis, Mapping):
+        lines.extend(
+            [
+                "pricing_basis: "
+                f"{pricing_basis.get('label', 'unknown')} "
+                f"source={pricing_basis.get('source', 'unknown')} "
+                f"storage_class={pricing_basis.get('storage_class', 'unknown')} "
+                f"region={pricing_basis.get('region_code') or 'unknown'} "
+                f"effective_at={pricing_basis.get('effective_at') or 'unknown'} "
+                f"glacier_rate={pricing_basis.get('glacier_storage_rate_usd_per_gib_month', 0.0)} "
+                "standard_rate="
+                f"{pricing_basis.get('standard_storage_rate_usd_per_gib_month', 0.0)}",
+                "pricing_details: "
+                f"archived_metadata_bytes_per_object="
+                f"{pricing_basis.get('archived_metadata_bytes_per_object', 0)} "
+                f"standard_metadata_bytes_per_object="
+                f"{pricing_basis.get('standard_metadata_bytes_per_object', 0)} "
+                f"minimum_storage_duration_days="
+                f"{pricing_basis.get('minimum_storage_duration_days', 0)}",
+            ]
+        )
+
+    images = payload.get("images")
+    lines.append("images:")
+    if not isinstance(images, Sequence) or not images:
+        lines.append("- none")
+    else:
+        for image in images:
+            if not isinstance(image, Mapping):
+                continue
+            glacier = image.get("glacier")
+            glacier_state = (
+                glacier.get("state", "unknown") if isinstance(glacier, Mapping) else "unknown"
+            )
+            lines.append(
+                f"- {image.get('id', 'unknown')} ({image.get('filename', 'unknown')}) "
+                f"glacier={glacier_state} "
+                f"measured_storage_bytes={image.get('measured_storage_bytes', 0)} "
+                f"estimated_billable_bytes={image.get('estimated_billable_bytes', 0)} "
+                f"estimated_monthly_cost_usd={image.get('estimated_monthly_cost_usd', 0.0)}"
+            )
+            if isinstance(glacier, Mapping) and glacier.get("object_path"):
+                lines.append(f"  glacier_path: {glacier.get('object_path')}")
+
+    collections = payload.get("collections")
+    lines.append("collections:")
+    if not isinstance(collections, Sequence) or not collections:
+        lines.append("- none")
+    else:
+        for collection in collections:
+            if not isinstance(collection, Mapping):
+                continue
+            lines.append(
+                f"- {collection.get('id', 'unknown')} "
+                f"attribution={collection.get('attribution_state', 'unknown')} "
+                f"represented_bytes={collection.get('represented_bytes', 0)} "
+                f"derived_stored_bytes={collection.get('derived_stored_bytes', 0)} "
+                f"estimated_monthly_cost_usd={collection.get('estimated_monthly_cost_usd', 0.0)}"
+            )
+
+    billing = payload.get("billing")
+    lines.append("billing:")
+    if not isinstance(billing, Mapping):
+        lines.append("- unavailable")
+    else:
+        lines.append(
+            "- "
+            f"source={billing.get('source', 'unknown')} "
+            f"scope={billing.get('scope', 'unknown')} "
+            f"filter={billing.get('filter_label') or 'none'}"
+        )
+        actuals = billing.get("actuals")
+        if isinstance(actuals, Sequence) and actuals:
+            for actual in actuals:
+                if not isinstance(actual, Mapping):
+                    continue
+                lines.append(
+                    "  actual: "
+                    f"{actual.get('start', 'unknown')}..{actual.get('end', 'unknown')} "
+                    f"estimated={actual.get('estimated', False)} "
+                    f"unblended_cost_usd={actual.get('unblended_cost_usd', 0.0)} "
+                    f"usage_quantity={actual.get('usage_quantity', 0.0)} "
+                    f"usage_unit={actual.get('usage_unit') or 'unknown'}"
+                )
+        forecast = billing.get("forecast")
+        if isinstance(forecast, Sequence) and forecast:
+            for period in forecast:
+                if not isinstance(period, Mapping):
+                    continue
+                lines.append(
+                    "  forecast: "
+                    f"{period.get('start', 'unknown')}..{period.get('end', 'unknown')} "
+                    f"mean_cost_usd={period.get('mean_cost_usd', 0.0)} "
+                    f"lower_bound_cost_usd={period.get('lower_bound_cost_usd', 0.0)} "
+                    f"upper_bound_cost_usd={period.get('upper_bound_cost_usd', 0.0)}"
+                )
+        notes = billing.get("notes")
+        if isinstance(notes, Sequence):
+            for note in notes:
+                lines.append(f"  note: {note}")
+
+    history = payload.get("history")
+    if isinstance(history, Sequence) and history:
+        lines.append("history:")
+        for item in history:
+            if not isinstance(item, Mapping):
+                continue
+            lines.append(
+                f"- {item.get('captured_at', 'unknown')} "
+                f"uploaded={item.get('uploaded_images', 0)} "
+                f"measured_storage_bytes={item.get('measured_storage_bytes', 0)} "
+                f"estimated_monthly_cost_usd={item.get('estimated_monthly_cost_usd', 0.0)}"
+            )
     return "\n".join(lines)
 
 

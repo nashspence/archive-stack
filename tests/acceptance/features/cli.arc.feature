@@ -44,6 +44,16 @@ Feature: arc CLI
       And stdout matches the structure of GET "/v1/images"
       And stdout mentions "20260420T040001Z"
 
+    Scenario: arc glacier emits the Glacier usage payload
+      Given an archive with planner fixtures
+      And candidate "img_2026-04-20_01" is finalized
+      When the client waits for image "20260420T040001Z" glacier state "uploaded"
+      And the operator runs 'arc glacier --image 20260420T040001Z --json'
+      Then the command exits with code 0
+      And stdout is valid JSON
+      And stdout matches the structure of GET "/v1/glacier"
+      And stdout mentions "20260420T040001Z"
+
     Scenario: arc pins emits fetch associations for active pins
       Given archived target "docs/tax/2022/invoice-123.pdf" is pinned with fetch "fx-1"
       When the operator runs 'arc pins --json'
@@ -127,6 +137,17 @@ Feature: arc CLI
       And stdout mentions "20260420T040001Z.iso"
       And stdout mentions "protection: partially_protected copies=1/2 glacier="
       And stdout mentions "collections: 1 [docs]"
+
+    Scenario: arc glacier prints pricing basis and derived collection attribution
+      Given an archive with split planner fixtures
+      And candidate "img_2026-04-20_03" is finalized
+      When the client waits for image "20260420T040003Z" glacier state "uploaded"
+      And the operator runs 'arc glacier --collection docs'
+      Then the command exits with code 0
+      And stdout mentions "pricing_basis:"
+      And stdout mentions "billing:"
+      And stdout mentions "attribution=derived"
+      And stdout mentions "estimated_monthly_cost_usd="
 
     Scenario: arc copy add prints the generated label text and state
       Given candidate "img_2026-04-20_01" is finalized
