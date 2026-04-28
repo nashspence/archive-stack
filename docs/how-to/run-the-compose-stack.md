@@ -16,6 +16,10 @@ cp .env.compose.example .env.compose
 The canonical `./test` script prefers `./.env.compose` when it exists and otherwise
 falls back to `./.env.compose.example`.
 
+The checked-in example env now keeps product-facing Glacier recovery timing
+defaults. The short recovery timing values that keep the prod-backed acceptance
+lane fast live only in `tests/harness/prod-harness.env`.
+
 Each `./test ...` invocation also chooses an isolated Compose project name by
 default. Export `TEST_COMPOSE_PROJECT_NAME` first if you intentionally want test
 runs to reuse one Compose project.
@@ -52,6 +56,10 @@ the canonical test container while using the same compose surface for the checke
 `./test` also performs the deterministic Garage bootstrap that creates the
 canonical bucket set, grants the checked-in test credentials, and verifies the
 incomplete multipart lifecycle configuration before the prod lane runs.
+
+When `./test` starts the prod-backed lane, it layers the short recovery timing
+values from `tests/harness/prod-harness.env` over the shared compose env so
+local compose runs stay aligned with product-facing defaults.
 
 If `ARC_GLACIER_BUCKET` differs from `ARC_S3_BUCKET`, that bootstrap applies and
 verifies the same lifecycle rule on both buckets.

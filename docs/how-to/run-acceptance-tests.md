@@ -48,6 +48,11 @@ Run the non-production lanes together:
 The canonical `./test` flow reads `./.env.compose` when present, otherwise it falls
 back to `./.env.compose.example`.
 
+For prod-backed lanes, `./test` also loads the short recovery timing overrides
+from `tests/harness/prod-harness.env`. That keeps the checked-in compose env
+product-facing while still giving the acceptance harness the smaller timing
+window it needs.
+
 Each `./test ...` invocation uses its own Compose project name by default so
 `./test spec` and `./test prod` can run side by side without tearing down each
 other's one-off containers, networks, or sidecars.
