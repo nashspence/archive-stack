@@ -15,7 +15,7 @@ import typer
 
 from arc_cli.client import ApiClient
 from arc_cli.output import emit
-from arc_core.domain.errors import ArcError
+from arc_core.domain.errors import ArcError, NotFound
 
 app = typer.Typer(help="arc optical recovery CLI")
 
@@ -72,6 +72,14 @@ class BurnBacklogItem:
     candidate_id: str | None
     filename: str
     fill: float
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryHandoff:
+    image_id: str
+    session_id: str
+    state: str
+    latest_message: str | None
 
 
 _PENDING_BURN_STATES = {"needed", "burning"}
@@ -428,6 +436,22 @@ def _iter_paged_payloads(fetch_page) -> list[dict[str, Any]]:
     return results
 
 
+def _images_missing_copy_coverage(client: ApiClient) -> list[dict[str, Any]]:
+    images: list[dict[str, Any]] = []
+    for payload in _iter_paged_payloads(
+        lambda page: client.list_images(page=page, per_page=100, sort="finalized_at", order="desc")
+    ):
+        for image in payload.get("images", []):
+            if not isinstance(image, dict):
+                continue
+            registered = int(image.get("physical_copies_registered", 0))
+            required = int(image.get("physical_copies_required", 0))
+            if registered >= required:
+                continue
+            images.append(image)
+    return images
+
+
 def _is_standard_burn_backlog_image(client: ApiClient, image_id: str) -> bool:
     copies = client.list_copies(image_id).get("copies", [])
     if not isinstance(copies, list) or not copies:
@@ -474,33 +498,61 @@ def _discover_burn_backlog(client: ApiClient) -> list[BurnBacklogItem]:
                 )
             )
 
-    for payload in _iter_paged_payloads(
-        lambda page: client.list_images(page=page, per_page=100, sort="finalized_at", order="desc")
-    ):
-        for image in payload.get("images", []):
-            if not isinstance(image, dict):
-                continue
-            registered = int(image.get("physical_copies_registered", 0))
-            required = int(image.get("physical_copies_required", 0))
-            if registered >= required:
-                continue
-            image_id = str(image["id"])
-            if not _is_standard_burn_backlog_image(client, image_id):
-                continue
-            items.append(
-                BurnBacklogItem(
-                    image_id=image_id,
-                    candidate_id=None,
-                    filename=str(image["filename"]),
-                    fill=float(image.get("fill", 0)),
-                )
+    for image in _images_missing_copy_coverage(client):
+        image_id = str(image["id"])
+        if not _is_standard_burn_backlog_image(client, image_id):
+            continue
+        items.append(
+            BurnBacklogItem(
+                image_id=image_id,
+                candidate_id=None,
+                filename=str(image["filename"]),
+                fill=float(image.get("fill", 0)),
             )
+        )
 
     return sorted(
         items,
         key=lambda item: (item.fill, item.image_id or item.candidate_id or ""),
         reverse=True,
     )
+
+
+def _discover_recovery_handoffs(client: ApiClient) -> list[RecoveryHandoff]:
+    handoffs: list[RecoveryHandoff] = []
+    for image in _images_missing_copy_coverage(client):
+        image_id = str(image["id"])
+        if _is_standard_burn_backlog_image(client, image_id):
+            continue
+        try:
+            payload = client.get_recovery_session_for_image(image_id)
+        except NotFound:
+            continue
+        handoffs.append(
+            RecoveryHandoff(
+                image_id=image_id,
+                session_id=str(payload["id"]),
+                state=str(payload["state"]),
+                latest_message=(
+                    str(payload["latest_message"])
+                    if payload.get("latest_message") is not None
+                    else None
+                ),
+            )
+        )
+    return handoffs
+
+
+def _report_recovery_handoffs(handoffs: list[RecoveryHandoff]) -> None:
+    if not handoffs:
+        return
+    typer.echo("ordinary burn backlog is clear, but Glacier recovery work remains")
+    for handoff in handoffs:
+        typer.echo(
+            f"{handoff.image_id}: recovery session {handoff.session_id} is {handoff.state}"
+        )
+        if handoff.latest_message:
+            typer.echo(handoff.latest_message)
 
 
 def _ensure_staged_iso(
@@ -882,12 +934,15 @@ def burn_cmd(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
+    recovery_handoffs = _discover_recovery_handoffs(client)
     if completed_copy_ids:
         typer.echo("burn backlog cleared")
         for copy_id in completed_copy_ids:
             typer.echo(copy_id)
+        _report_recovery_handoffs(recovery_handoffs)
         return
     typer.echo("burn backlog already clear")
+    _report_recovery_handoffs(recovery_handoffs)
 
 
 def main() -> None:

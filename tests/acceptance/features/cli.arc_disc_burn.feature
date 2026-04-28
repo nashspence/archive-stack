@@ -30,6 +30,23 @@ Feature: arc-disc burn CLI
     And copy "20260420T040001Z-1" for image "20260420T040001Z" state is "lost"
     And copy "20260420T040001Z-3" for image "20260420T040001Z" state is "verified"
 
+  Scenario: arc-disc burn reports Glacier-backed recovery work instead of ordinary replacement backlog
+    Given an archive with planner fixtures
+    And candidate "img_2026-04-20_01" is finalized
+    And the client waits for image "20260420T040001Z" glacier state "uploaded"
+    And the client posts to "/v1/images/20260420T040001Z/copies" with id "20260420T040001Z-1" and location "Shelf A1"
+    And the client posts to "/v1/images/20260420T040001Z/copies" with id "20260420T040001Z-2" and location "Shelf B1"
+    And the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-1" with state "lost"
+    And the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-2" with state "damaged"
+    When the operator runs 'arc-disc burn --device /dev/fake-sr0'
+    Then the command exits with code 0
+    And stdout mentions "burn backlog already clear"
+    And stdout mentions "Glacier recovery work remains"
+    And stdout mentions "rs-20260420T040001Z-1"
+    And stdout mentions "pending_approval"
+    And stdout does not mention "20260420T040001Z-3"
+    And copy "20260420T040001Z-3" for image "20260420T040001Z" state is "needed"
+
   Scenario: arc-disc burn does not register a copy before labeled confirmation and resumes there
     Given an archive with planner fixtures
     When the operator runs 'arc-disc burn --device /dev/fake-sr0'

@@ -348,6 +348,118 @@ def test_discover_burn_backlog_skips_images_that_now_require_recovery_flow() -> 
     assert arc_disc_main._discover_burn_backlog(FakeClient()) == []
 
 
+def test_discover_recovery_handoffs_for_images_that_require_recovery() -> None:
+    class FakeClient:
+        def list_images(self, *, page: int, per_page: int, sort: str, order: str):
+            return {
+                "page": 1,
+                "pages": 1,
+                "images": [
+                    {
+                        "id": "20260420T040001Z",
+                        "filename": "20260420T040001Z.iso",
+                        "fill": 0.9,
+                        "physical_copies_registered": 0,
+                        "physical_copies_required": 2,
+                    }
+                ],
+            }
+
+        def list_copies(self, image_id: str) -> dict[str, object]:
+            assert image_id == "20260420T040001Z"
+            return {
+                "copies": [
+                    {"id": "20260420T040001Z-1", "state": "lost"},
+                    {"id": "20260420T040001Z-2", "state": "damaged"},
+                    {"id": "20260420T040001Z-3", "state": "needed"},
+                ]
+            }
+
+        def get_recovery_session_for_image(self, image_id: str) -> dict[str, object]:
+            assert image_id == "20260420T040001Z"
+            return {
+                "id": "rs-20260420T040001Z-1",
+                "state": "pending_approval",
+                "latest_message": (
+                    "Approve the estimated restore cost before Riverhog requests archive "
+                    "restore."
+                ),
+            }
+
+    assert arc_disc_main._discover_recovery_handoffs(FakeClient()) == [
+        arc_disc_main.RecoveryHandoff(
+            image_id="20260420T040001Z",
+            session_id="rs-20260420T040001Z-1",
+            state="pending_approval",
+            latest_message=(
+                "Approve the estimated restore cost before Riverhog requests archive "
+                "restore."
+            ),
+        )
+    ]
+
+
+def test_arc_disc_burn_reports_recovery_handoffs_when_no_standard_backlog_exists(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    class FakeClient:
+        def get_plan(self, *, page: int, per_page: int, sort: str, order: str, iso_ready: bool):
+            return {"page": 1, "pages": 0, "candidates": []}
+
+        def list_images(self, *, page: int, per_page: int, sort: str, order: str):
+            assert (page, per_page, sort, order) == (1, 100, "finalized_at", "desc")
+            return {
+                "page": 1,
+                "pages": 1,
+                "images": [
+                    {
+                        "id": "20260420T040001Z",
+                        "filename": "20260420T040001Z.iso",
+                        "fill": 0.9,
+                        "physical_copies_registered": 0,
+                        "physical_copies_required": 2,
+                    }
+                ],
+            }
+
+        def list_copies(self, image_id: str) -> dict[str, object]:
+            assert image_id == "20260420T040001Z"
+            return {
+                "copies": [
+                    {"id": "20260420T040001Z-1", "state": "lost"},
+                    {"id": "20260420T040001Z-2", "state": "damaged"},
+                    {"id": "20260420T040001Z-3", "state": "needed"},
+                ]
+            }
+
+        def get_recovery_session_for_image(self, image_id: str) -> dict[str, object]:
+            assert image_id == "20260420T040001Z"
+            return {
+                "id": "rs-20260420T040001Z-1",
+                "state": "pending_approval",
+                "latest_message": (
+                    "Approve the estimated restore cost before Riverhog requests archive "
+                    "restore."
+                ),
+            }
+
+    monkeypatch.setattr(arc_disc_main, "ApiClient", FakeClient)
+
+    result = runner.invoke(
+        arc_disc_main.app,
+        ["burn", "--device", "/dev/fake-sr0", "--staging-dir", str(tmp_path)],
+        input="\n",
+    )
+
+    assert result.exit_code == 0
+    assert "burn backlog already clear" in result.stdout
+    assert "Glacier recovery work remains" in result.stdout
+    assert "rs-20260420T040001Z-1" in result.stdout
+    assert "pending_approval" in result.stdout
+    assert "Approve the estimated restore cost" in result.stdout
+
+
 def test_arc_disc_burn_waits_for_label_confirmation_before_registration_and_resumes(
     monkeypatch,
     tmp_path: Path,

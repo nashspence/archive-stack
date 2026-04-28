@@ -164,6 +164,12 @@ class ApiClient:
     def get_image(self, image_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/images/{image_id}")
 
+    def get_recovery_session_for_image(self, image_id: str) -> dict[str, Any]:
+        return self._json(
+            "GET",
+            f"/v1/images/{quote(image_id, safe='/')}/recovery-session",
+        )
+
     def download_iso(self, image_id: str, output: Path | None = None) -> bytes:
         with self._client() as client:
             response = client.get(f"/v1/images/{image_id}/iso")

@@ -1,6 +1,8 @@
 # Run a guided burn session
 
 The `arc-disc burn` command walks the current burn backlog from the fullest ready image downward.
+If a finalized image has lost all protected copies, Riverhog tracks that image through a Glacier-backed recovery
+session instead; `arc-disc burn` reports that recovery handoff and does not treat it as ordinary replacement backlog.
 
 ## Flow
 

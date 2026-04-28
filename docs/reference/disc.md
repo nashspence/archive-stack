@@ -180,7 +180,9 @@ Expected multipart flow:
 `arc-disc burn` is the guided workflow for clearing the current finalized-image burn backlog.
 
 - the burn backlog includes ready provisional candidates plus finalized images whose required copy backlog is not yet
-  complete
+  complete while at least one protected copy still exists or every generated copy is still pending local burn work
+- if a finalized image loses all protected copies, Riverhog opens a Glacier-backed recovery session and removes that
+  image from the ordinary burn backlog until recovery proceeds through the recovery-session flow
 - historical `lost` or `damaged` copy records are not burned again in place; replacement work uses fresh generated
   `copy_id` values in state `needed` or `burning`
 - the session selects the fullest ready backlog item first
@@ -200,6 +202,8 @@ Expected multipart flow:
   replacement
 - after label confirmation, `arc-disc burn` records the storage location, registers the generated copy id, and marks the
   copy verified before moving on
+- if no ordinary burn backlog remains but one or more images are waiting on Glacier-backed recovery work, `arc-disc burn`
+  reports those recovery sessions instead of treating them as ordinary replacement burns
 
 ## Manual Recovery
 
