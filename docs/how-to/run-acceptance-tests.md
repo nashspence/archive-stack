@@ -48,6 +48,13 @@ Run the non-production lanes together:
 The canonical `./test` flow reads `./.env.compose` when present, otherwise it falls
 back to `./.env.compose.example`.
 
+Each `./test ...` invocation uses its own Compose project name by default so
+`./test spec` and `./test prod` can run side by side without tearing down each
+other's one-off containers, networks, or sidecars.
+
+If you need to reuse one Compose project explicitly, export
+`TEST_COMPOSE_PROJECT_NAME` before running `./test`.
+
 
 ## What lives where
 

@@ -16,6 +16,10 @@ cp .env.compose.example .env.compose
 The canonical `./test` script prefers `./.env.compose` when it exists and otherwise
 falls back to `./.env.compose.example`.
 
+Each `./test ...` invocation also chooses an isolated Compose project name by
+default. Export `TEST_COMPOSE_PROJECT_NAME` first if you intentionally want test
+runs to reuse one Compose project.
+
 ## Start the stack
 
 Build and run the active stack:

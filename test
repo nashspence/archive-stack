@@ -12,8 +12,6 @@ else
   COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE:-${DEFAULT_ENV_FILE}}"
 fi
 
-export COMPOSE_PROJECT_NAME="${TEST_COMPOSE_PROJECT_NAME:-archive-stack-test}"
-
 compose() {
   docker compose \
     --file "${COMPOSE_FILE}" \
@@ -37,6 +35,35 @@ compose_env_value() {
   printf '%s' "${default}"
 }
 
+sanitize_compose_project_component() {
+  local value="${1:-}"
+  value="$(printf '%s' "${value}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-')"
+  value="${value#-}"
+  value="${value%-}"
+  if [[ -z "${value}" ]]; then
+    printf 'user'
+    return
+  fi
+  printf '%s' "${value}"
+}
+
+default_test_compose_project_name() {
+  local user_component
+  user_component="$(sanitize_compose_project_component "${USER:-}")"
+  printf 'archive-stack-test-%s-%s' "${user_component}" "$$"
+}
+
+TEST_COMPOSE_PROJECT_NAME_VALUE="${TEST_COMPOSE_PROJECT_NAME:-}"
+if [[ -z "${TEST_COMPOSE_PROJECT_NAME_VALUE}" ]]; then
+  TEST_COMPOSE_PROJECT_NAME_VALUE="$(compose_env_value TEST_COMPOSE_PROJECT_NAME)"
+fi
+
+if [[ -n "${TEST_COMPOSE_PROJECT_NAME_VALUE}" ]]; then
+  export COMPOSE_PROJECT_NAME="${TEST_COMPOSE_PROJECT_NAME_VALUE}"
+else
+  export COMPOSE_PROJECT_NAME="$(default_test_compose_project_name)"
+fi
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -58,6 +85,8 @@ Modes:
 
 Compose env:
   Defaults to ./.env.compose if present, otherwise ./.env.compose.example.
+  Test runs use an isolated compose project by default.
+  Set TEST_COMPOSE_PROJECT_NAME to reuse a specific project name.
 EOF
 }
 
@@ -71,6 +100,8 @@ PROGRESS_REPORT_SECONDS="${PROGRESS_REPORT_SECONDS:-300}"
 cleanup() {
   if [[ "${REQUIRES_SIDECARS}" == "1" ]]; then
     compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+  else
+    compose down --remove-orphans >/dev/null 2>&1 || true
   fi
 }
 
