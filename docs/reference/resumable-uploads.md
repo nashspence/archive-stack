@@ -22,7 +22,7 @@ collection file.
 The returned `upload_url` is a Riverhog-managed tus-compatible upload resource for that logical file. Riverhog supports:
 
 - `HEAD` to read `Upload-Offset`, `Upload-Length`, `Upload-Expires`, and `Location`
-- `PATCH` to append bytes using `Tus-Resumable`, `Upload-Offset`, and `Upload-Checksum`
+- `PATCH` to append bytes using `Content-Type: application/offset+octet-stream` plus `Tus-Resumable`, `Upload-Offset`, and `Upload-Checksum`
 - `DELETE` to cancel the current upload resource and reset that file back to `pending`
 - `OPTIONS` to advertise the supported tus capability headers
 
@@ -45,7 +45,7 @@ The returned `upload_url` is a Riverhog-managed tus-compatible upload resource f
 supports:
 
 - `HEAD` to read `Upload-Offset`, `Upload-Length`, `Upload-Expires`, and `Location`
-- `PATCH` to append bytes using `Tus-Resumable`, `Upload-Offset`, and `Upload-Checksum`
+- `PATCH` to append bytes using `Content-Type: application/offset+octet-stream` plus `Tus-Resumable`, `Upload-Offset`, and `Upload-Checksum`
 - `DELETE` to cancel the current upload resource and reset that manifest entry back to `pending`
 - `OPTIONS` to advertise the supported tus capability headers
 

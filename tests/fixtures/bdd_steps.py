@@ -189,17 +189,26 @@ def _upload_collection_file(
     response = acceptance_system.request(
         "PATCH",
         str(upload["upload_url"]),
-        headers={
-            "Content-Type": "application/offset+octet-stream",
-            "Tus-Resumable": "1.0.0",
-            "Upload-Offset": str(start),
-            "Upload-Checksum": "sha256 "
-            + base64.b64encode(hashlib.sha256(chunk).digest()).decode("ascii"),
-        },
+        headers=_tus_chunk_headers(chunk=chunk, offset=start),
         content=chunk,
     )
     assert response.status_code == 204, response.text
     return int(response.headers["Upload-Offset"])
+
+
+def _tus_chunk_headers(
+    *,
+    chunk: bytes,
+    offset: int,
+    content_type: str = "application/offset+octet-stream",
+) -> dict[str, str]:
+    return {
+        "Content-Type": content_type,
+        "Tus-Resumable": "1.0.0",
+        "Upload-Offset": str(offset),
+        "Upload-Checksum": "sha256 "
+        + base64.b64encode(hashlib.sha256(chunk).digest()).decode("ascii"),
+    }
 
 
 def _json_payload(response: httpx.Response) -> dict[str, Any]:
@@ -1111,6 +1120,27 @@ def when_client_posts_again(
 ) -> None:
     response = acceptance_system.request("POST", path)
     _set_response(acceptance_context, response, append=True)
+
+
+@when(
+    parsers.parse(
+        'the client sends PATCH to "{path}" with upload chunk content type "{content_type}"'
+    )
+)
+def when_client_patches_upload_path_with_chunk_content_type(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+    path: str,
+    content_type: str,
+) -> None:
+    chunk = b"chunk-bytes"
+    response = acceptance_system.request(
+        "PATCH",
+        path,
+        headers=_tus_chunk_headers(chunk=chunk, offset=0, content_type=content_type),
+        content=chunk,
+    )
+    _set_response(acceptance_context, response)
 
 
 @when(parsers.parse('the client creates or resumes collection upload "{collection_id}"'))

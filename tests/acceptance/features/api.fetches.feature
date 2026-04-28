@@ -136,6 +136,13 @@ Feature: Fetches API
       And fetch manifest entry "e1" upload state is "pending"
       And fetch manifest entry "e1" uploaded bytes is 0
 
+    Scenario: Fetch entry upload chunks require the tus chunk media type
+      When the client posts to "/v1/fetches/fx-1/entries/e1/upload"
+      Then the response status is 200
+      When the client sends PATCH to "/v1/fetches/fx-1/entries/e1/upload" with upload chunk content type "application/json"
+      Then the response status is 400
+      And the error code is "bad_request"
+
     Scenario: Completing before all required entries are present fails
       When the client posts to "/v1/fetches/fx-1/complete"
       Then the response status is 409

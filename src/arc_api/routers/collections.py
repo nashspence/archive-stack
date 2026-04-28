@@ -10,25 +10,14 @@ from arc_api.schemas.collections import (
     CollectionUploadSessionOut,
     CreateOrResumeCollectionUploadRequest,
 )
-from arc_core.domain.errors import BadRequest
+from arc_api.tus import (
+    tus_delete_headers,
+    tus_options_headers,
+    tus_upload_headers,
+    validate_tus_chunk_request,
+)
 
 router = APIRouter(tags=["collections"])
-_TUS_RESUMABLE = "1.0.0"
-_TUS_EXTENSIONS = "checksum,expiration,termination"
-_TUS_CHECKSUM_ALGORITHMS = "sha256"
-
-
-def _collection_upload_headers(payload: dict[str, object], *, request: Request) -> dict[str, str]:
-    headers = {
-        "Tus-Resumable": _TUS_RESUMABLE,
-        "Cache-Control": "no-store",
-        "Upload-Offset": str(payload["offset"]),
-        "Upload-Length": str(payload["length"]),
-        "Location": str(request.url),
-    }
-    if payload.get("expires_at") is not None:
-        headers["Upload-Expires"] = str(payload["expires_at"])
-    return headers
 
 
 @router.post("/collection-uploads", response_model=CollectionUploadSessionOut)
@@ -66,7 +55,7 @@ def create_or_resume_collection_file_upload(
 ) -> CollectionFileUploadSessionOut:
     payload = container.collections.create_or_resume_file_upload(collection_id, path)
     payload["upload_url"] = str(request.url)
-    response.headers.update(_collection_upload_headers(payload, request=request))
+    response.headers.update(tus_upload_headers(payload, request=request))
     return CollectionFileUploadSessionOut.model_validate(payload)
 
 
@@ -77,28 +66,15 @@ async def append_collection_file_upload_chunk(
     request: Request,
     container: ContainerDep,
 ) -> Response:
-    raw_offset = request.headers.get("Upload-Offset")
-    raw_checksum = request.headers.get("Upload-Checksum")
-    tus_resumable = request.headers.get("Tus-Resumable")
-    if raw_offset is None:
-        raise BadRequest("missing Upload-Offset header")
-    if raw_checksum is None:
-        raise BadRequest("missing Upload-Checksum header")
-    if tus_resumable != _TUS_RESUMABLE:
-        raise BadRequest(f"Tus-Resumable header must be {_TUS_RESUMABLE}")
-    try:
-        offset = int(raw_offset)
-    except ValueError as exc:
-        raise BadRequest("Upload-Offset header must be an integer") from exc
-
+    offset, checksum = validate_tus_chunk_request(request)
     payload = container.collections.append_upload_chunk(
         collection_id,
         path,
         offset=offset,
-        checksum=raw_checksum,
+        checksum=checksum,
         content=await request.body(),
     )
-    headers = _collection_upload_headers(payload, request=request)
+    headers = tus_upload_headers(payload, request=request)
     return Response(status_code=204, headers=headers)
 
 
@@ -110,7 +86,7 @@ def head_collection_file_upload(
     container: ContainerDep,
 ) -> Response:
     payload = container.collections.get_file_upload(collection_id, path)
-    return Response(status_code=204, headers=_collection_upload_headers(payload, request=request))
+    return Response(status_code=204, headers=tus_upload_headers(payload, request=request))
 
 
 @router.delete("/collection-uploads/{collection_id:path}/files/{path:path}/upload", status_code=204)
@@ -120,13 +96,7 @@ def delete_collection_file_upload(
     container: ContainerDep,
 ) -> Response:
     container.collections.cancel_file_upload(collection_id, path)
-    return Response(
-        status_code=204,
-        headers={
-            "Tus-Resumable": _TUS_RESUMABLE,
-            "Cache-Control": "no-store",
-        },
-    )
+    return Response(status_code=204, headers=tus_delete_headers())
 
 
 @router.options(
@@ -134,15 +104,7 @@ def delete_collection_file_upload(
     status_code=204,
 )
 def options_collection_file_upload() -> Response:
-    return Response(
-        status_code=204,
-        headers={
-            "Tus-Resumable": _TUS_RESUMABLE,
-            "Tus-Version": _TUS_RESUMABLE,
-            "Tus-Extension": _TUS_EXTENSIONS,
-            "Tus-Checksum-Algorithm": _TUS_CHECKSUM_ALGORITHMS,
-        },
-    )
+    return Response(status_code=204, headers=tus_options_headers())
 
 
 @router.get("/collections/{collection_id:path}", response_model=CollectionSummaryOut)

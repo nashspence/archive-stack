@@ -101,6 +101,10 @@ paths:
           description: Relative logical file path within the collection.
           schema: { type: string }
         - in: header
+          name: Tus-Resumable
+          required: true
+          schema: { type: string, enum: ["1.0.0"] }
+        - in: header
           name: Upload-Offset
           required: true
           schema: { type: integer, minimum: 0 }

@@ -29,6 +29,15 @@ Feature: Collections API
       Then the response status is 200
       And collection upload "photos-2024" file "albums/japan/day-01.txt" is "pending"
 
+    Scenario: Collection file upload chunks require the tus chunk media type
+      Given a local collection source "photos-2024" with deterministic fixture contents
+      When the client creates or resumes collection upload "photos-2024"
+      When the client posts to "/v1/collection-uploads/photos-2024/files/albums/japan/day-01.txt/upload"
+      Then the response status is 200
+      When the client sends PATCH to "/v1/collection-uploads/photos-2024/files/albums/japan/day-01.txt/upload" with upload chunk content type "application/json"
+      Then the response status is 400
+      And the error code is "bad_request"
+
     Scenario: Uploading every required file auto-finalizes the collection from the terminal upload step and survives restart
       Given a local collection source "photos-2024" with deterministic fixture contents
       When the client uploads every required file for collection "photos-2024"
