@@ -14,6 +14,8 @@ For the fastest full check, run `make lint`, `make unit`, `make spec`, and
 locally in the same locked `uv` environment, and the prod-backed lane stays on
 the checked-in Compose surface with per-run project names and ephemeral host
 ports, plus project-scoped harness state and workspaces under `.compose/`.
+Successful isolated prod-backed runs remove their generated `.compose/` state;
+explicit shared project runs keep it.
 
 Run the serial aggregate flow with `make test` when one command is more
 convenient. That target runs lint first, then the unit, spec, and prod-backed

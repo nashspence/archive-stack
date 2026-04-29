@@ -8,7 +8,10 @@ configure_compose_tty
 isolate_test_compose_runtime
 
 cleanup() {
+  local status="$?"
   compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+  cleanup_test_compose_runtime "${status}"
+  return "${status}"
 }
 
 trap cleanup EXIT

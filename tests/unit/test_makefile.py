@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -23,8 +24,16 @@ def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
                     "#!/usr/bin/env bash",
                     "set -euo pipefail",
                     (
-                        "printf '%s|%s|%s|%s|%s|%s|%s|%s|%s\\n' "
+                        "if [[ \"${FAKE_CREATE_STATE_ROOT:-0}\" == \"1\" "
+                        "&& -n \"${ARC_TEST_HOST_STATE_ROOT:-}\" ]]; then"
+                    ),
+                    "  mkdir -p \"${ARC_TEST_HOST_STATE_ROOT}\"",
+                    "  touch \"${ARC_TEST_HOST_STATE_ROOT}/marker\"",
+                    "fi",
+                    (
+                        "printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\\n' "
                         "\"${COMPOSE_PROJECT_NAME:-}\" "
+                        "\"${TEST_COMPOSE_PROJECT_ISOLATED:-}\" "
                         "\"${ARC_ENABLE_TEST_CONTROL:-}\" "
                         "\"$*\" "
                         "\"${ARC_API_PORT:-}\" "
@@ -32,9 +41,16 @@ def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
                         "\"${ARC_DB_PATH:-}\" "
                         "\"${ARC_TEST_EXTERNAL_APP_DB_PATH:-}\" "
                         "\"${ARC_TEST_WEBHOOK_CAPTURE_PATH:-}\" "
-                        "\"${ARC_TEST_ACCEPTANCE_ROOT:-}\" >> "
+                        "\"${ARC_TEST_ACCEPTANCE_ROOT:-}\" "
+                        "\"${ARC_TEST_HOST_STATE_ROOT:-}\" >> "
                         f"{log_path}"
                     ),
+                    (
+                        "if [[ \"$*\" == *\" --entrypoint rm \"* "
+                        "&& -n \"${ARC_TEST_HOST_STATE_ROOT:-}\" ]]; then"
+                    ),
+                    "  rm -rf -- \"${ARC_TEST_HOST_STATE_ROOT}\"",
+                    "fi",
                     "if [[ \"$1\" == \"image\" && \"$2\" == \"inspect\" ]]; then",
                     "  if [[ \"${FAKE_DOCKER_HAVE_IMAGES:-0}\" == \"1\" ]]; then",
                     "    printf 'fake-image-id\\n'",
@@ -59,8 +75,9 @@ def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
                     "#!/usr/bin/env bash",
                     "set -euo pipefail",
                     (
-                        "printf '%s|%s|%s|%s|%s|%s|%s|%s|%s\\n' "
+                        "printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\\n' "
                         "\"${COMPOSE_PROJECT_NAME:-}\" "
+                        "\"${TEST_COMPOSE_PROJECT_ISOLATED:-}\" "
                         "\"${ARC_ENABLE_TEST_CONTROL:-}\" "
                         "\"$*\" "
                         "\"${ARC_API_PORT:-}\" "
@@ -68,7 +85,8 @@ def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
                         "\"${ARC_DB_PATH:-}\" "
                         "\"${ARC_TEST_EXTERNAL_APP_DB_PATH:-}\" "
                         "\"${ARC_TEST_WEBHOOK_CAPTURE_PATH:-}\" "
-                        "\"${ARC_TEST_ACCEPTANCE_ROOT:-}\" >> "
+                        "\"${ARC_TEST_ACCEPTANCE_ROOT:-}\" "
+                        "\"${ARC_TEST_HOST_STATE_ROOT:-}\" >> "
                         f"{log_path}"
                     ),
                 ]
@@ -104,6 +122,35 @@ def _read_log_lines(log_path: Path) -> list[str]:
     if not log_path.exists():
         return []
     return log_path.read_text().splitlines()
+
+
+def _split_docker_log_line(line: str) -> tuple[str, ...]:
+    return tuple(line.split("|", 10))
+
+
+def _assert_isolated_prod_runtime(line: str) -> str:
+    (
+        project,
+        isolated,
+        _,
+        _,
+        api_port,
+        webdav_port,
+        db_path,
+        external_db_path,
+        webhook_path,
+        acceptance_root,
+        host_state_root,
+    ) = _split_docker_log_line(line)
+    assert isolated == "1"
+    assert api_port == "0"
+    assert webdav_port == "0"
+    assert db_path == f"/app/.compose/{project}/state.sqlite3"
+    assert external_db_path == db_path
+    assert webhook_path == f"/app/.compose/{project}/webhook-captures.jsonl"
+    assert acceptance_root == f"/app/.compose/{project}/acceptance"
+    assert host_state_root == str(REPO_ROOT / ".compose" / project)
+    return project
 
 
 @pytest.mark.parametrize(
@@ -204,23 +251,52 @@ def test_prod_builds_images_and_uses_isolated_compose_project_name(
     assert "tests/harness/test_prod_harness.py -k glacier" in docker_log
     assert " down --volumes --remove-orphans" in docker_log
     for line in log_lines:
-        (
-            project,
-            _,
-            _,
-            api_port,
-            webdav_port,
-            db_path,
-            external_db_path,
-            webhook_path,
-            acceptance_root,
-        ) = line.split("|", 8)
-        assert api_port == "0"
-        assert webdav_port == "0"
-        assert db_path == f"/app/.compose/{project}/state.sqlite3"
-        assert external_db_path == db_path
-        assert webhook_path == f"/app/.compose/{project}/webhook-captures.jsonl"
-        assert acceptance_root == f"/app/.compose/{project}/acceptance"
+        _assert_isolated_prod_runtime(line)
+
+
+def test_prod_removes_generated_bind_mount_state_on_success(tmp_path: Path) -> None:
+    state_root = tmp_path / "generated-state"
+    completed, docker_log_path, uv_log_path = _run_make(
+        tmp_path,
+        "prod",
+        "PYTEST_ARGS=-k glacier",
+        extra_env={
+            "FAKE_DOCKER_HAVE_IMAGES": "1",
+            "FAKE_CREATE_STATE_ROOT": "1",
+            "ARC_TEST_HOST_STATE_ROOT": str(state_root),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert _read_log_lines(uv_log_path) == []
+    assert not state_root.exists()
+
+
+def test_prod_preserves_explicit_shared_bind_mount_state(tmp_path: Path) -> None:
+    shared_project = "archive-stack-shared-unit"
+    shared_root = tmp_path / "shared-state"
+    shutil.rmtree(shared_root, ignore_errors=True)
+    try:
+        completed, docker_log_path, uv_log_path = _run_make(
+            tmp_path,
+            "prod",
+            "PYTEST_ARGS=-k glacier",
+            extra_env={
+                "FAKE_DOCKER_HAVE_IMAGES": "1",
+                "FAKE_CREATE_STATE_ROOT": "1",
+                "ARC_TEST_HOST_STATE_ROOT": str(shared_root),
+                "TEST_COMPOSE_PROJECT_NAME": shared_project,
+            },
+        )
+
+        assert completed.returncode == 0, completed.stderr
+        assert _read_log_lines(uv_log_path) == []
+        log_lines = _read_log_lines(docker_log_path)
+        assert {line.split("|", 1)[0] for line in log_lines} == {shared_project}
+        assert {line.split("|", 2)[1] for line in log_lines} == {"0"}
+        assert (shared_root / "marker").exists()
+    finally:
+        shutil.rmtree(shared_root, ignore_errors=True)
 
 
 def test_prod_profile_enables_profile_output_and_builds_images(tmp_path: Path) -> None:
@@ -240,23 +316,25 @@ def test_prod_profile_enables_profile_output_and_builds_images(tmp_path: Path) -
     assert " -e ARC_TEST_PROFILE=1 " in docker_log
     assert " --durations=0 --durations-min=0.5 " in docker_log
     for line in log_lines:
-        (
-            project,
-            _,
-            _,
-            api_port,
-            webdav_port,
-            db_path,
-            external_db_path,
-            webhook_path,
-            acceptance_root,
-        ) = line.split("|", 8)
-        assert api_port == "0"
-        assert webdav_port == "0"
-        assert db_path == f"/app/.compose/{project}/state.sqlite3"
-        assert external_db_path == db_path
-        assert webhook_path == f"/app/.compose/{project}/webhook-captures.jsonl"
-        assert acceptance_root == f"/app/.compose/{project}/acceptance"
+        _assert_isolated_prod_runtime(line)
+
+
+def test_dockerfiles_keep_dependency_layers_independent_of_docs_and_tests() -> None:
+    app_dockerfile = (REPO_ROOT / "Dockerfile.app").read_text()
+    test_dockerfile = (REPO_ROOT / "Dockerfile.test").read_text()
+    dockerignore = (REPO_ROOT / ".dockerignore").read_text().splitlines()
+
+    assert "COPY . ." not in app_dockerfile
+    assert "COPY . ." not in test_dockerfile
+    assert app_dockerfile.index("RUN mkdir -p src/arc_api") < app_dockerfile.index(
+        "COPY src ./src"
+    )
+    assert test_dockerfile.index("RUN mkdir -p src/arc_api") < test_dockerfile.index(
+        "COPY src ./src"
+    )
+    assert "COPY tests ./tests" in test_dockerfile
+    assert "COPY contracts ./contracts" in test_dockerfile
+    assert "docs/" in dockerignore
 
 
 def test_test_aggregate_runs_lint_unit_spec_then_prod(tmp_path: Path) -> None:

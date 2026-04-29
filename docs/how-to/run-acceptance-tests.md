@@ -92,11 +92,20 @@ whether host ports `8000` and `8080` are already occupied. Harness SQLite state
 files, webhook captures, and acceptance workspaces live under
 `/app/.compose/<compose-project>/` so the shared source bind mount does not make
 concurrent prod-backed runs share catalog files or fixture trees.
+Successful isolated prod-backed runs remove that generated project directory
+after Compose teardown. Runs that explicitly set `TEST_COMPOSE_PROJECT_NAME`
+preserve the directory because they are intentionally reusing one stack.
 
 If you need to reuse one Compose project explicitly, export
 `TEST_COMPOSE_PROJECT_NAME` before running `make`.
 Do that before `make bootstrap-garage` or `make down` as well when you want
 those standalone targets to act on the same compose-managed stack.
+
+The prod-backed app image installs package metadata and dependencies from
+`pyproject.toml` and `README.md` before source files are copied. The test image
+does the same after installing `requirements-test.txt`, then copies only `src/`,
+`contracts/`, and `tests/`. Documentation edits, source edits, and prod-harness
+state under `.compose/` do not invalidate the dependency-install layers.
 
 
 ## What lives where

@@ -79,6 +79,7 @@ sanitize_compose_project_component() {
 setup_test_compose_project() {
   if [[ -n "${COMPOSE_PROJECT_NAME:-}" ]]; then
     export COMPOSE_PROJECT_NAME
+    export TEST_COMPOSE_PROJECT_ISOLATED="${TEST_COMPOSE_PROJECT_ISOLATED:-0}"
     return
   fi
   local project_name="${TEST_COMPOSE_PROJECT_NAME:-}"
@@ -87,9 +88,11 @@ setup_test_compose_project() {
   fi
   if [[ -n "${project_name}" ]]; then
     export COMPOSE_PROJECT_NAME="${project_name}"
+    export TEST_COMPOSE_PROJECT_ISOLATED=0
     return
   fi
   export COMPOSE_PROJECT_NAME="archive-stack-test-$(sanitize_compose_project_component "${USER:-}")-$$"
+  export TEST_COMPOSE_PROJECT_ISOLATED=1
 }
 
 configure_compose_tty() {
@@ -102,12 +105,30 @@ configure_compose_tty() {
 isolate_test_compose_runtime() {
   local state_root="/app/.compose/${COMPOSE_PROJECT_NAME}"
 
+  export ARC_TEST_HOST_STATE_ROOT="${ARC_TEST_HOST_STATE_ROOT:-${ROOT_DIR}/.compose/${COMPOSE_PROJECT_NAME}}"
   export ARC_API_PORT=0
   export ARC_WEBDAV_PORT=0
   export ARC_DB_PATH="${state_root}/state.sqlite3"
   export ARC_TEST_EXTERNAL_APP_DB_PATH="${ARC_DB_PATH}"
   export ARC_TEST_WEBHOOK_CAPTURE_PATH="${state_root}/webhook-captures.jsonl"
   export ARC_TEST_ACCEPTANCE_ROOT="${state_root}/acceptance"
+}
+
+cleanup_test_compose_runtime() {
+  local status="${1:-0}"
+  if [[ "${status}" != "0" || "${TEST_COMPOSE_PROJECT_ISOLATED:-0}" != "1" ]]; then
+    return
+  fi
+  if [[ -z "${ARC_TEST_HOST_STATE_ROOT:-}" || "${ARC_TEST_HOST_STATE_ROOT}" == "/" ]]; then
+    return
+  fi
+  docker run \
+    --rm \
+    --volume "${ROOT_DIR}:/app" \
+    --entrypoint rm \
+    "${TEST_IMAGE_NAME}" \
+    -rf \
+    "/app/.compose/${COMPOSE_PROJECT_NAME}"
 }
 
 ensure_compose_image() {

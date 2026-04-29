@@ -13,9 +13,14 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY pyproject.toml README.md ./
-COPY src ./src
-RUN pip install --no-cache-dir -e .[db]
+RUN mkdir -p src/arc_api src/arc_cli src/arc_core src/arc_disc \
+    && touch \
+        src/arc_api/__init__.py \
+        src/arc_cli/__init__.py \
+        src/arc_core/__init__.py \
+        src/arc_disc/__init__.py \
+    && pip install --no-cache-dir -e .[db]
 
-COPY . .
+COPY src ./src
 
 ENTRYPOINT ["uvicorn", "arc_api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]

@@ -81,7 +81,17 @@ runs stay aligned with product-facing defaults. It also overrides the host API
 and WebDAV ports with ephemeral bindings so concurrent prod-backed runs do not
 compete for `8000` or `8080`, and it scopes harness state paths to the active
 Compose project so overlapping runs do not share SQLite files, webhook files,
-or fixture workspaces.
+or fixture workspaces. Successful isolated prod-backed runs remove their
+generated `.compose/<compose-project>/` directory after Compose teardown.
+Explicit shared project runs keep that directory because they are intended to be
+reused across commands.
+
+The checked-in Dockerfiles install package metadata and dependencies before
+copying `src/`, `contracts/`, or `tests/`, and they do not copy docs or
+prod-harness state into the images. This keeps targeted prod-backed checks from
+rebuilding dependency-install layers after source, documentation, or local
+harness-state changes while still building the app and test images before the
+prod lane runs.
 
 If `ARC_GLACIER_BUCKET` differs from `ARC_S3_BUCKET`, that bootstrap applies and
 verifies the same lifecycle rule on both buckets.
