@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
+from fastapi.params import Depends as DependsParam
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 _bearer = HTTPBearer(auto_error=False)
@@ -28,7 +29,7 @@ def require_api_auth(
         )
 
 
-def api_auth_dependencies() -> Sequence[Depends]:
+def api_auth_dependencies() -> Sequence[DependsParam]:
     if not os.getenv("ARC_API_TOKEN"):
         return []
     return [Depends(require_api_auth)]

@@ -29,6 +29,7 @@ dev = [
   "jsonschema>=4.25,<5.0",
   "ruff>=0.5,<1.0",
   "mypy>=1.10,<2.0",
+  "types-PyYAML>=6.0,<7.0",
 ]
 
 planner = ["numpy>=2.0,<3.0", "scipy>=1.13,<2.0"]

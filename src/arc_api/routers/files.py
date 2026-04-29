@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 from fastapi import APIRouter, Query, Response
 
 from arc_api.deps import ContainerDep
@@ -25,8 +27,13 @@ def list_collection_files(
         page=page,
         per_page=per_page,
     )
-    payload["files"] = [CollectionFileOut.model_validate(r) for r in payload["files"]]
-    return CollectionFilesResponse.model_validate(payload)
+    files = cast(list[dict[str, object]], payload["files"])
+    return CollectionFilesResponse.model_validate(
+        {
+            **payload,
+            "files": [CollectionFileOut.model_validate(record) for record in files],
+        }
+    )
 
 
 @router.get("/files", response_model=FilesResponse)
@@ -41,8 +48,13 @@ def query_files(
         page=page,
         per_page=per_page,
     )
-    payload["files"] = [FileStateOut.model_validate(r) for r in payload["files"]]
-    return FilesResponse.model_validate(payload)
+    files = cast(list[dict[str, object]], payload["files"])
+    return FilesResponse.model_validate(
+        {
+            **payload,
+            "files": [FileStateOut.model_validate(record) for record in files],
+        }
+    )
 
 
 @router.get("/files/{target:path}/content")

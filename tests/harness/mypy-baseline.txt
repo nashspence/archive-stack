@@ -1,80 +1,13 @@
 # Normalized mypy regression baseline.
 # Format: path<TAB>[error-code]<TAB>message
-src/arc_api/app.py	[arg-type]	Argument 1 to "float" has incompatible type "object"; expected "str | Buffer | SupportsFloat | SupportsIndex"
-src/arc_api/app.py	[call-overload]	No overload variant of "int" matches argument type "object"
-src/arc_api/app.py	[call-overload]	No overload variant of "int" matches argument type "object"
-src/arc_api/auth.py	[valid-type]	Function "fastapi.param_functions.Depends" is not valid as a type
-src/arc_api/deps.py	[arg-type]	Argument "copies" to "ServiceContainer" has incompatible type "SqlAlchemyCopyService"; expected "CopyService"
-src/arc_api/routers/collections.py	[arg-type]	Argument 1 to "tus_upload_headers" has incompatible type "object"; expected "dict[str, object]"
-src/arc_api/routers/collections.py	[arg-type]	Argument 1 to "tus_upload_headers" has incompatible type "object"; expected "dict[str, object]"
-src/arc_api/routers/collections.py	[arg-type]	Argument 1 to "tus_upload_headers" has incompatible type "object"; expected "dict[str, object]"
-src/arc_api/routers/collections.py	[index]	Unsupported target for indexed assignment ("object")
-src/arc_api/routers/collections.py	[unused-ignore]	Unused "type: ignore" comment
-src/arc_api/routers/fetches.py	[arg-type]	Argument 1 to "tus_upload_headers" has incompatible type "object"; expected "dict[str, object]"
-src/arc_api/routers/fetches.py	[arg-type]	Argument 1 to "tus_upload_headers" has incompatible type "object"; expected "dict[str, object]"
-src/arc_api/routers/fetches.py	[arg-type]	Argument 1 to "tus_upload_headers" has incompatible type "object"; expected "dict[str, object]"
-src/arc_api/routers/fetches.py	[index]	Unsupported target for indexed assignment ("object")
-src/arc_api/routers/files.py	[attr-defined]	"object" has no attribute "__iter__"; maybe "__dir__" or "__str__"? (not iterable)
-src/arc_api/routers/files.py	[attr-defined]	"object" has no attribute "__iter__"; maybe "__dir__" or "__str__"? (not iterable)
-src/arc_api/routers/images.py	[arg-type]	Argument 1 to "StreamingResponse" has incompatible type "object"; expected "AsyncIterable[str | bytes | memoryview[int]] | Iterable[str | bytes | memoryview[int]]"
-src/arc_api/routers/images.py	[arg-type]	Argument 1 to "map_copy" has incompatible type "object"; expected "CopySummary"
-src/arc_api/routers/images.py	[arg-type]	Argument 1 to "map_copy" has incompatible type "object"; expected "CopySummary"
-src/arc_api/routers/images.py	[arg-type]	Argument 1 to "map_copy" has incompatible type "object"; expected "CopySummary"
-src/arc_api/routers/pins.py	[arg-type]	Argument "pins" to "PinsResponse" has incompatible type "list[dict[str, object]]"; expected "list[PinSummaryOut]"
-src/arc_cli/client.py	[no-any-return]	Returning Any from function declared to return "dict[str, Any]"
-src/arc_cli/main.py	[call-overload]	No overload variant of "int" matches argument type "object"
-src/arc_cli/main.py	[call-overload]	No overload variant of "int" matches argument type "object"
-src/arc_cli/main.py	[call-overload]	No overload variant of "int" matches argument type "object"
-src/arc_core/archive_artifacts.py	[import-missing-typing]	yaml
 src/arc_core/imports/tar_stream.py	[override]	Argument 1 of "readinto" is incompatible with supertype "_io._RawIOBase"; supertype defines the argument type as "Buffer"
-src/arc_core/iso/streaming.py	[arg-type]	Argument 2 to "create_subprocess_exec" has incompatible type "**dict[str, object]"; expected "Callable[[], Any] | None"
-src/arc_core/iso/streaming.py	[arg-type]	Argument 2 to "create_subprocess_exec" has incompatible type "**dict[str, object]"; expected "Collection[int]"
-src/arc_core/iso/streaming.py	[arg-type]	Argument 2 to "create_subprocess_exec" has incompatible type "**dict[str, object]"; expected "Collection[str | int] | None"
-src/arc_core/iso/streaming.py	[arg-type]	Argument 2 to "create_subprocess_exec" has incompatible type "**dict[str, object]"; expected "Literal[0]"
-src/arc_core/iso/streaming.py	[arg-type]	Argument 2 to "create_subprocess_exec" has incompatible type "**dict[str, object]"; expected "Literal[False] | None"
-src/arc_core/iso/streaming.py	[arg-type]	Argument 2 to "create_subprocess_exec" has incompatible type "**dict[str, object]"; expected "Literal[False]"
-src/arc_core/iso/streaming.py	[arg-type]	Argument 2 to "create_subprocess_exec" has incompatible type "**dict[str, object]"; expected "Mapping[bytes, str | bytes | PathLike[str] | PathLike[bytes]] | Mapping[str, str | bytes | PathLike[str] | PathLike[bytes]] | None"
-src/arc_core/iso/streaming.py	[arg-type]	Argument 2 to "create_subprocess_exec" has incompatible type "**dict[str, object]"; expected "None"
-src/arc_core/iso/streaming.py	[arg-type]	Argument 2 to "create_subprocess_exec" has incompatible type "**dict[str, object]"; expected "bool"
-src/arc_core/iso/streaming.py	[arg-type]	Argument 2 to "create_subprocess_exec" has incompatible type "**dict[str, object]"; expected "int | IO[Any] | None"
-src/arc_core/iso/streaming.py	[arg-type]	Argument 2 to "create_subprocess_exec" has incompatible type "**dict[str, object]"; expected "int | None"
-src/arc_core/iso/streaming.py	[arg-type]	Argument 2 to "create_subprocess_exec" has incompatible type "**dict[str, object]"; expected "int"
-src/arc_core/iso/streaming.py	[arg-type]	Argument 2 to "create_subprocess_exec" has incompatible type "**dict[str, object]"; expected "str | bytes | PathLike[str] | PathLike[bytes] | None"
-src/arc_core/iso/streaming.py	[arg-type]	Argument 2 to "create_subprocess_exec" has incompatible type "**dict[str, object]"; expected "str | bytes | PathLike[str] | PathLike[bytes]"
-src/arc_core/iso/streaming.py	[arg-type]	Argument 2 to "create_subprocess_exec" has incompatible type "**dict[str, object]"; expected "str | int | None"
-src/arc_core/iso/streaming.py	[union-attr]	Item "None" of "StreamReader | None" has no attribute "read"
-src/arc_core/planner/layout.py	[call-overload]	No overload variant of "int" matches argument type "object"
-src/arc_core/planner/layout.py	[call-overload]	No overload variant of "int" matches argument type "object"
-src/arc_core/planner/layout.py	[call-overload]	No overload variant of "int" matches argument type "object"
-src/arc_core/planner/layout.py	[call-overload]	No overload variant of "int" matches argument type "object"
-src/arc_core/planner/layout.py	[call-overload]	No overload variant of "int" matches argument type "object"
-src/arc_core/planner/layout.py	[call-overload]	No overload variant of "int" matches argument type "object"
-src/arc_core/planner/layout.py	[call-overload]	No overload variant of "int" matches argument type "object"
-src/arc_core/planner/layout.py	[call-overload]	No overload variant of "int" matches argument type "object"
-src/arc_core/planner/layout.py	[call-overload]	No overload variant of "int" matches argument type "object"
-src/arc_core/planner/layout.py	[call-overload]	No overload variant of "int" matches argument type "object"
-src/arc_core/planner/layout.py	[call-overload]	No overload variant of "int" matches argument type "object"
-src/arc_core/planner/layout.py	[call-overload]	No overload variant of "sorted" matches argument types "object", "Callable[[Any], int]"
-src/arc_core/planner/manifest.py	[arg-type]	Argument 2 to "manifest_dump" has incompatible type "list[dict[str, Sequence[Collection[str]]]]"; expected "list[dict[str, object]]"
-src/arc_core/planner/manifest.py	[import-missing-typing]	yaml
-src/arc_core/planner/manifest.py	[no-any-return]	Returning Any from function declared to return "bytes"
 src/arc_core/planner/packing.py	[assignment]	Incompatible types in assignment (expression has type "None", variable has type Module)
 src/arc_core/planner/packing.py	[import-missing-typing]	scipy.optimize
 src/arc_core/planner/packing.py	[import-missing-typing]	scipy.sparse
 src/arc_core/planner/packing.py	[no-any-return]	Returning Any from function declared to return "list[dict[str, Any]]"
 src/arc_core/planner/packing.py	[no-any-return]	Returning Any from function declared to return "list[dict[str, Any]]"
 src/arc_core/planner/packing.py	[no-any-return]	Returning Any from function declared to return "list[dict[str, Any]]"
-src/arc_core/planner/split.py	[arg-type]	Argument 1 to "tree_plan" has incompatible type "dict[object, list[object]]"; expected "dict[str, list[object]]"
-src/arc_core/planner/split.py	[attr-defined]	"object" has no attribute "__iter__"; maybe "__dir__" or "__str__"? (not iterable)
-src/arc_core/planner/split.py	[call-overload]	No overload variant of "int" matches argument type "object"
-src/arc_core/planner/split.py	[call-overload]	No overload variant of "int" matches argument type "object"
-src/arc_core/planner/split.py	[misc]	Value expression in dictionary comprehension has incompatible type "list[str]"; expected type "list[object]"
 src/arc_core/ports/crypto.py	[type-arg]	Missing type arguments for generic type "dict"
-src/arc_core/services/collections.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/collections.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/collections.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/collections.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/copies.py	[import-missing-typing]	yaml
 src/arc_core/services/copies.py	[no-any-return]	Returning Any from function declared to return "FinalizedImageRecord"
 src/arc_core/services/copies.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
 src/arc_core/services/copies.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
@@ -84,20 +17,6 @@ src/arc_core/services/copies.py	[no-untyped-def]	Function is missing a type anno
 src/arc_core/services/copies.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
 src/arc_core/services/copies.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
 src/arc_core/services/copies.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/fetches.py	[arg-type]	Argument 2 to "_expire_incomplete_uploads" has incompatible type "Sequence[FetchEntryRecord]"; expected "list[FetchEntryRecord]"
-src/arc_core/services/fetches.py	[arg-type]	Argument 2 to "_sync_upload_progress" has incompatible type "Sequence[FetchEntryRecord]"; expected "list[FetchEntryRecord]"
-src/arc_core/services/fetches.py	[no-any-return]	Returning Any from function declared to return "ActivePinRecord"
-src/arc_core/services/fetches.py	[no-any-return]	Returning Any from function declared to return "list[FetchEntryRecord]"
-src/arc_core/services/fetches.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/fetches.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/fetches.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/fetches.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/fetches.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/fetches.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/fetches.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/fetches.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/fetches.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/fetches.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
 src/arc_core/services/glacier_billing.py	[arg-type]	Argument "bucket" to "_ManifestSelection" has incompatible type "str | None"; expected "str"
 src/arc_core/services/glacier_billing.py	[arg-type]	Argument "bucket" to "_ManifestSelection" has incompatible type "str | None"; expected "str"
 src/arc_core/services/glacier_billing.py	[arg-type]	Argument "bucket" to "_load_manifest_json" has incompatible type "str | None"; expected "str"
@@ -119,7 +38,6 @@ src/arc_core/services/glacier_pricing.py	[no-any-return]	Returning Any from func
 src/arc_core/services/glacier_reporting.py	[arg-type]	Argument "id" to "GlacierUsageCollection" has incompatible type "str"; expected "CollectionId"
 src/arc_core/services/glacier_reporting.py	[arg-type]	Argument "id" to "GlacierUsageImage" has incompatible type "str"; expected "ImageId"
 src/arc_core/services/glacier_reporting.py	[arg-type]	Argument "image_id" to "GlacierCollectionContribution" has incompatible type "str"; expected "ImageId"
-src/arc_core/services/glacier_reporting.py	[import-missing-typing]	yaml
 src/arc_core/services/glacier_reporting.py	[no-any-return]	Returning Any from function declared to return "str"
 src/arc_core/services/glacier_reporting.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
 src/arc_core/services/glacier_reporting.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
@@ -131,16 +49,6 @@ src/arc_core/services/glacier_uploads.py	[no-untyped-def]	Function is missing a 
 src/arc_core/services/pins.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
 src/arc_core/services/pins.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
 src/arc_core/services/pins.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/planning.py	[attr-defined]	"object" has no attribute "__iter__"; maybe "__dir__" or "__str__"? (not iterable)
-src/arc_core/services/planning.py	[attr-defined]	"object" has no attribute "__iter__"; maybe "__dir__" or "__str__"? (not iterable)
-src/arc_core/services/planning.py	[attr-defined]	"object" has no attribute "__iter__"; maybe "__dir__" or "__str__"? (not iterable)
-src/arc_core/services/planning.py	[attr-defined]	"object" has no attribute "casefold"
-src/arc_core/services/planning.py	[attr-defined]	"object" has no attribute "casefold"
-src/arc_core/services/planning.py	[attr-defined]	"object" has no attribute "casefold"
-src/arc_core/services/planning.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/planning.py	[operator]	Unsupported operand types for < ("int" and "object")
-src/arc_core/services/planning.py	[operator]	Unsupported right operand type for in ("object")
-src/arc_core/services/planning.py	[operator]	Unsupported right operand type for in ("object")
 src/arc_core/services/recovery_sessions.py	[arg-type]	Argument "id" to "RecoverySessionImage" has incompatible type "str"; expected "ImageId"
 src/arc_core/services/recovery_sessions.py	[no-any-return]	Returning Any from function declared to return "FinalizedImageRecord"
 src/arc_core/services/recovery_sessions.py	[no-any-return]	Returning Any from function declared to return "GlacierRecoverySessionRecord | None"
@@ -180,7 +88,3 @@ src/arc_core/stores/s3_support.py	[import-missing-typing]	boto3
 src/arc_core/stores/s3_support.py	[import-missing-typing]	botocore.config
 src/arc_core/stores/tusd_upload_store.py	[no-any-return]	Returning Any from function declared to return "bytes"
 src/arc_core/stores/tusd_upload_store.py	[unused-ignore]	Unused "type: ignore" comment
-src/arc_disc/main.py	[arg-type]	Argument 1 to "Path" has incompatible type "str | None"; expected "str | PathLike[str]"
-src/arc_disc/main.py	[arg-type]	Argument 1 to "Path" has incompatible type "str | None"; expected "str | PathLike[str]"
-src/arc_disc/main.py	[attr-defined]	"object" has no attribute "items"
-src/arc_disc/main.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters

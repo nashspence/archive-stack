@@ -5,7 +5,7 @@ import re
 from collections.abc import Iterable, Sequence
 
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import Session, selectinload
 
 from arc_core.archive_compliance import (
     collection_protection_state,
@@ -62,13 +62,13 @@ class StubCollectionService:
         collection_id: str,
         files: Sequence[dict[str, object]],
         ingest_source: str | None = None,
-    ) -> object:
+    ) -> dict[str, object]:
         raise NotImplementedError("StubCollectionService is not implemented yet")
 
-    def get_upload(self, collection_id: str) -> object:
+    def get_upload(self, collection_id: str) -> dict[str, object]:
         raise NotImplementedError("StubCollectionService is not implemented yet")
 
-    def create_or_resume_file_upload(self, collection_id: str, path: str) -> object:
+    def create_or_resume_file_upload(self, collection_id: str, path: str) -> dict[str, object]:
         raise NotImplementedError("StubCollectionService is not implemented yet")
 
     def append_upload_chunk(
@@ -79,10 +79,10 @@ class StubCollectionService:
         offset: int,
         checksum: str,
         content: bytes,
-    ) -> object:
+    ) -> dict[str, object]:
         raise NotImplementedError("StubCollectionService is not implemented yet")
 
-    def get_file_upload(self, collection_id: str, path: str) -> object:
+    def get_file_upload(self, collection_id: str, path: str) -> dict[str, object]:
         raise NotImplementedError("StubCollectionService is not implemented yet")
 
     def cancel_file_upload(self, collection_id: str, path: str) -> None:
@@ -91,7 +91,7 @@ class StubCollectionService:
     def expire_stale_uploads(self) -> None:
         raise NotImplementedError("StubCollectionService is not implemented yet")
 
-    def get(self, collection_id: str) -> object:
+    def get(self, collection_id: str) -> CollectionSummary:
         raise NotImplementedError("StubCollectionService is not implemented yet")
 
 
@@ -434,7 +434,7 @@ def _normalize_upload_files(files: Sequence[dict[str, object]]) -> list[dict[str
     return sorted(normalized, key=lambda current: str(current["path"]))
 
 
-def _ensure_collection_upload_conflict_free(session, collection_id: str) -> None:
+def _ensure_collection_upload_conflict_free(session: Session, collection_id: str) -> None:
     committed_ids = session.scalars(select(CollectionRecord.id)).all()
     in_progress_ids = session.scalars(select(CollectionUploadRecord.collection_id)).all()
     conflict = find_collection_id_conflict(
@@ -539,7 +539,7 @@ def _expire_collection_upload_files(
 
 
 def _sync_and_expire_collection_upload(
-    session,
+    session: Session,
     upload: CollectionUploadRecord,
     *,
     upload_store: UploadStore,
@@ -586,7 +586,7 @@ def _collection_upload_is_complete(file_records: Sequence[CollectionUploadFileRe
 
 
 def _finalize_collection_upload(
-    session,
+    session: Session,
     upload: CollectionUploadRecord,
     *,
     hot_store: HotStore,
@@ -767,7 +767,7 @@ def _summary_from_records(
 
 
 def _collection_image_coverage(
-    session,
+    session: Session,
     collection_id: str,
 ) -> tuple[list[CollectionCoverageImage], dict[str, set[str]]]:
     images = (

@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass
 
 from sqlalchemy import delete, select
-from sqlalchemy.orm import object_session, selectinload
+from sqlalchemy.orm import Session, object_session, selectinload
 
 from arc_core.catalog_models import (
     ActivePinRecord,
@@ -208,11 +208,13 @@ class SqlAlchemyFetchService:
                 select(ActivePinRecord).where(ActivePinRecord.fetch_id.is_not(None))
             ).all()
             for pin_record in pin_records:
-                entries = session.scalars(
+                entries = list(
+                    session.scalars(
                     select(FetchEntryRecord)
                     .where(FetchEntryRecord.fetch_id == pin_record.fetch_id)
                     .order_by(FetchEntryRecord.entry_order)
                 ).all()
+                )
                 if not entries:
                     continue
                 _sync_upload_progress(pin_record, entries, self._upload_store)
@@ -297,14 +299,14 @@ class SqlAlchemyFetchService:
             }
 
 
-def _get_pin_record(session, fetch_id: str) -> ActivePinRecord:
+def _get_pin_record(session: Session, fetch_id: str) -> ActivePinRecord:
     pin_record = session.scalar(select(ActivePinRecord).where(ActivePinRecord.fetch_id == fetch_id))
     if pin_record is None:
         raise NotFound(f"fetch not found: {fetch_id}")
     return pin_record
 
 
-def _selected_files(session, raw_target: str) -> list[CollectionFileRecord]:
+def _selected_files(session: Session, raw_target: str) -> list[CollectionFileRecord]:
     target = parse_target(raw_target)
     records = session.scalars(
         select(CollectionFileRecord).options(selectinload(CollectionFileRecord.copies))
@@ -324,15 +326,17 @@ def _selected_files(session, raw_target: str) -> list[CollectionFileRecord]:
 
 
 def _ensure_fetch_entries(
-    session,
+    session: Session,
     pin_record: ActivePinRecord,
     hot_store: HotStore,
 ) -> list[FetchEntryRecord]:
-    existing = session.scalars(
+    existing = list(
+        session.scalars(
         select(FetchEntryRecord)
         .where(FetchEntryRecord.fetch_id == pin_record.fetch_id)
         .order_by(FetchEntryRecord.entry_order)
     ).all()
+    )
     if existing:
         return existing
 
@@ -437,7 +441,7 @@ def _summary_copies(entries: list[FetchEntryRecord]) -> list[FetchCopyHint]:
 
 def _manifest_entry_payload(
     hot_store: HotStore,
-    session,
+    session: Session,
     entry: FetchEntryRecord,
     *,
     fetch_state: FetchState,
@@ -459,7 +463,7 @@ def _manifest_entry_payload(
 
 
 def _manifest_parts_payload(
-    hot_store: HotStore, session, entry: FetchEntryRecord
+    hot_store: HotStore, session: Session, entry: FetchEntryRecord
 ) -> list[dict[str, object]]:
     copies = _entry_copies(entry)
     if not copies:
@@ -505,7 +509,7 @@ def _manifest_parts_payload(
 
 
 def _manifest_copy_payload(
-    hot_store: HotStore, session, entry: FetchEntryRecord, copy: _ManifestCopy
+    hot_store: HotStore, session: Session, entry: FetchEntryRecord, copy: _ManifestCopy
 ) -> dict[str, object]:
     recovery_payload = _copy_recovery_payload(hot_store, session, entry, copy)
     return {
@@ -553,7 +557,7 @@ def _entry_copies(entry: FetchEntryRecord) -> list[_ManifestCopy]:
 
 
 def _entry_recovery_payloads(
-    hot_store: HotStore, session, entry: FetchEntryRecord
+    hot_store: HotStore, session: Session, entry: FetchEntryRecord
 ) -> tuple[bytes, ...]:
     content = _read_collection_file_content(hot_store, entry.collection_id, entry.path)
     copies = _entry_copies(entry)
@@ -564,7 +568,7 @@ def _entry_recovery_payloads(
 
 
 def _copy_recovery_payload(
-    hot_store: HotStore, session, entry: FetchEntryRecord, copy: _ManifestCopy
+    hot_store: HotStore, session: Session, entry: FetchEntryRecord, copy: _ManifestCopy
 ) -> bytes:
     payloads = _entry_recovery_payloads(hot_store, session, entry)
     if copy.part_index is None:
@@ -667,7 +671,7 @@ def _entry_upload_target_path(entry: FetchEntryRecord) -> str:
     return f"/.arc/uploads/recovery/{entry.fetch_id}/{entry.entry_id}.enc"
 
 
-def _hot_payload(session, raw_target: str) -> dict[str, object]:
+def _hot_payload(session: Session, raw_target: str) -> dict[str, object]:
     selected = _selected_files(session, raw_target)
     present_bytes = sum(record.bytes for record in selected if record.hot)
     missing_bytes = sum(record.bytes for record in selected if not record.hot)
@@ -692,5 +696,5 @@ def _split_plaintext(content: bytes, piece_count: int) -> tuple[bytes, ...]:
     return tuple(out)
 
 
-def delete_fetch_entries(session, fetch_id: str) -> None:
+def delete_fetch_entries(session: Session, fetch_id: str) -> None:
     session.execute(delete(FetchEntryRecord).where(FetchEntryRecord.fetch_id == fetch_id))

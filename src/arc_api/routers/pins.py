@@ -8,6 +8,7 @@ from arc_api.schemas.pins import (
     PinRequest,
     PinResponse,
     PinsResponse,
+    PinSummaryOut,
     ReleaseRequest,
     ReleaseResponse,
 )
@@ -35,5 +36,5 @@ def release_target(
 
 @router.get("/pins", response_model=PinsResponse)
 def list_pins(container: ContainerDep) -> PinsResponse:
-    pins = [map_pin(item) for item in container.pins.list_pins()]
+    pins = [PinSummaryOut.model_validate(map_pin(item)) for item in container.pins.list_pins()]
     return PinsResponse(pins=pins)

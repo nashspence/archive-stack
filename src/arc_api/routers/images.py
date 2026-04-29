@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterable, Iterable
+from inspect import isawaitable
 from typing import Literal
 
 from fastapi import APIRouter, Query
@@ -60,12 +62,15 @@ def finalize_image(candidate_id: str, container: ContainerDep) -> FinalizedImage
 
 @router.get("/images/{image_id}/iso")
 async def get_iso(image_id: str, container: ContainerDep) -> StreamingResponse:
-    stream = container.planning.get_iso_stream(image_id)
-    if hasattr(stream, "__await__"):
-        stream = await stream
+    stream_or_awaitable = container.planning.get_iso_stream(image_id)
+    if isawaitable(stream_or_awaitable):
+        stream = await stream_or_awaitable
+    else:
+        stream = stream_or_awaitable
     if isinstance(stream, IsoStream):
         return StreamingResponse(stream.body, media_type=stream.media_type, headers=stream.headers)
-    return StreamingResponse(stream, media_type="application/octet-stream")
+    body: AsyncIterable[bytes] | Iterable[bytes] = stream
+    return StreamingResponse(body, media_type="application/octet-stream")
 
 
 @router.post("/images/{image_id}/copies", response_model=RegisterCopyResponse)

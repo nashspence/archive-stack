@@ -4,6 +4,7 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NotRequired, TypedDict
 
 from arc_core.iso import estimate_iso_size_from_root
 from arc_core.planner.manifest import (
@@ -17,6 +18,25 @@ from arc_core.planner.manifest import (
 
 EncryptSize = Callable[[int], int]
 IsoEstimator = Callable[..., int]
+
+
+class LayoutPiece(TypedDict):
+    collection: str
+    file_id: object
+    relpath: str
+    piece_index: int
+    piece_count: NotRequired[int]
+    stored_size_bytes: NotRequired[int]
+    sidecar_size_bytes: NotRequired[int]
+
+
+class LayoutFileMeta(TypedDict):
+    file_id: object
+    relpath: str
+    sha256: str
+    piece_count: int
+    pieces: list[LayoutPiece]
+    plaintext_bytes: NotRequired[int | None]
 
 
 @dataclass(frozen=True)
@@ -43,7 +63,7 @@ class IsoLayoutPreview:
     collections: list[str]
 
 
-def assign_paths(pieces: list[dict[str, object]]) -> dict[tuple[str, object, int], tuple[str, str]]:
+def assign_paths(pieces: list[LayoutPiece]) -> dict[tuple[str, object, int], tuple[str, str]]:
     files = sorted(
         {(str(piece["collection"]), piece["file_id"], str(piece["relpath"])) for piece in pieces},
         key=lambda item: (item[0], item[2], str(item[1])),
@@ -53,11 +73,11 @@ def assign_paths(pieces: list[dict[str, object]]) -> dict[tuple[str, object, int
     out: dict[tuple[str, object, int], tuple[str, str]] = {}
     for piece in pieces:
         base = base_index[(str(piece["collection"]), piece["file_id"])]
-        piece_width = max(3, len(str(int(piece["piece_count"]))))
+        piece_width = max(3, len(str(piece["piece_count"])))
         stem = f"files/{base + 1:0{file_width}d}"
-        if int(piece["piece_count"]) > 1:
-            stem += f".{int(piece['piece_index']) + 1:0{piece_width}d}"
-        out[(str(piece["collection"]), piece["file_id"], int(piece["piece_index"]))] = (
+        if piece["piece_count"] > 1:
+            stem += f".{piece['piece_index'] + 1:0{piece_width}d}"
+        out[(str(piece["collection"]), piece["file_id"], piece["piece_index"])] = (
             f"{stem}.age",
             f"{stem}.yml.age",
         )
@@ -66,7 +86,7 @@ def assign_paths(pieces: list[dict[str, object]]) -> dict[tuple[str, object, int
 
 def manifest_bytes(
     image_id: str,
-    collections: dict[str, list[dict[str, object]]],
+    collections: dict[str, list[LayoutFileMeta]],
     path_map: dict[tuple[str, object, int], tuple[str, str]],
     *,
     volume_id: str | None = None,
@@ -76,18 +96,18 @@ def manifest_bytes(
     for collection_id in sorted(collections):
         files_payload: list[dict[str, object]] = []
         for file_meta in sorted(collections[collection_id], key=lambda item: str(item["relpath"])):
-            present = sorted(file_meta["pieces"], key=lambda item: int(item["piece_index"]))
-            if int(file_meta["piece_count"]) > 1:
+            present = sorted(file_meta["pieces"], key=lambda item: item["piece_index"])
+            if file_meta["piece_count"] > 1:
                 parts: object = {
-                    "count": int(file_meta["piece_count"]),
+                    "count": file_meta["piece_count"],
                     "present": [
                         {
-                            "index": int(piece["piece_index"]) + 1,
+                            "index": piece["piece_index"] + 1,
                             "object": path_map[
-                                (collection_id, file_meta["file_id"], int(piece["piece_index"]))
+                                (collection_id, file_meta["file_id"], piece["piece_index"])
                             ][0],
                             "sidecar": path_map[
-                                (collection_id, file_meta["file_id"], int(piece["piece_index"]))
+                                (collection_id, file_meta["file_id"], piece["piece_index"])
                             ][1],
                         }
                         for piece in present
@@ -102,9 +122,7 @@ def manifest_bytes(
                     manifest_file_entry(
                         str(file_meta["relpath"]),
                         str(file_meta["sha256"]),
-                        plaintext_bytes=int(plaintext_bytes)
-                        if plaintext_bytes is not None
-                        else None,
+                        plaintext_bytes=plaintext_bytes,
                         object_path=object_path,
                         sidecar_path=sidecar_path,
                     )
@@ -114,9 +132,7 @@ def manifest_bytes(
                     manifest_file_entry(
                         str(file_meta["relpath"]),
                         str(file_meta["sha256"]),
-                        plaintext_bytes=int(plaintext_bytes)
-                        if plaintext_bytes is not None
-                        else None,
+                        plaintext_bytes=plaintext_bytes,
                         parts=parts,
                     )
                 )
@@ -139,8 +155,8 @@ def preview_image(
     *,
     image_id: str,
     target_bytes: int,
-    collections: dict[str, list[dict[str, object]]],
-    pieces: list[dict[str, object]],
+    collections: dict[str, list[LayoutFileMeta]],
+    pieces: list[LayoutPiece],
     encrypt_size: EncryptSize,
     estimate_iso_size: IsoEstimator | None = None,
     artifact_entries: list[PreviewEntry] | None = None,
@@ -169,16 +185,16 @@ def preview_image(
     payload_bytes = 0
     for piece in pieces:
         payload_relpath, sidecar_relpath = path_map[
-            (str(piece["collection"]), piece["file_id"], int(piece["piece_index"]))
+            (piece["collection"], piece["file_id"], piece["piece_index"])
         ]
-        payload_size = int(piece["stored_size_bytes"])
+        payload_size = piece["stored_size_bytes"]
         payload_bytes += payload_size
         entries.append(PreviewEntry(kind="payload", relpath=payload_relpath, size=payload_size))
         entries.append(
             PreviewEntry(
                 kind="sidecar",
                 relpath=sidecar_relpath,
-                size=int(piece["sidecar_size_bytes"]),
+                size=piece["sidecar_size_bytes"],
             )
         )
 

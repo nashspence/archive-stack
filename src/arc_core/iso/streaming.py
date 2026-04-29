@@ -159,18 +159,24 @@ async def _kill_proc(proc: asyncio.subprocess.Process) -> None:
 
 
 async def _stream_process(cmd: list[str], *, filename: str) -> IsoStream:
-    kwargs: dict[str, object] = {
-        "stdout": asyncio.subprocess.PIPE,
-        "stderr": asyncio.subprocess.PIPE,
-    }
     if os.name != "nt":
-        kwargs["start_new_session"] = True
-
-    proc = await asyncio.create_subprocess_exec(*cmd, **kwargs)
-    assert proc.stdout is not None
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+    else:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    stdout = proc.stdout
+    assert stdout is not None
     stderr_task = asyncio.create_task(_drain_stderr(proc.stderr))
 
-    first = await proc.stdout.read(CHUNK_BYTES)
+    first = await stdout.read(CHUNK_BYTES)
     if not first:
         rc = await proc.wait()
         stderr = await stderr_task
@@ -181,7 +187,7 @@ async def _stream_process(cmd: list[str], *, filename: str) -> IsoStream:
         try:
             yield first
             while True:
-                chunk = await proc.stdout.read(CHUNK_BYTES)
+                chunk = await stdout.read(CHUNK_BYTES)
                 if not chunk:
                     break
                 yield chunk

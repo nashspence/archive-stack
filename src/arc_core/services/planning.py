@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypedDict
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from arc_core.archive_compliance import (
     copy_counts_toward_protection,
@@ -27,6 +29,7 @@ from arc_core.domain.errors import InvalidState, NotFound, NotYetImplemented
 from arc_core.domain.models import GlacierArchiveStatus
 from arc_core.iso.streaming import IsoStream, stream_iso_from_root
 from arc_core.runtime_config import RuntimeConfig
+from arc_core.services.contracts import PlanningIsoResult
 from arc_core.services.glacier_uploads import enqueue_glacier_upload_job
 from arc_core.sqlite_db import make_session_factory, session_scope
 
@@ -225,7 +228,7 @@ class SqlAlchemyPlanningService:
                 )
             return _strip_internal(_finalized_image_view(existing, session))
 
-    async def get_iso_stream(self, image_id: str) -> object:
+    async def get_iso_stream(self, image_id: str) -> IsoStream:
         return await self._iso_service.get_iso_stream(image_id)
 
     def _image_root_record(self, image_id: str) -> ImageRootRecord:
@@ -241,7 +244,39 @@ class SqlAlchemyPlanningService:
             )
 
 
-def _candidate_plan_view(candidate: PlannedCandidateRecord, target_bytes: int) -> dict[str, object]:
+class CandidatePlanView(TypedDict):
+    candidate_id: str
+    bytes: int
+    fill: float
+    files: int
+    collections: int
+    collection_ids: list[str]
+    iso_ready: bool
+    _bytes: int
+    _collections: list[str]
+    _projected_paths: list[str]
+
+
+class FinalizedImageView(TypedDict):
+    id: str
+    filename: str
+    finalized_at: str
+    bytes: int
+    fill: float
+    files: int
+    collections: int
+    collection_ids: list[str]
+    iso_ready: bool
+    protection_state: str
+    physical_copies_required: int
+    physical_copies_registered: int
+    physical_copies_missing: int
+    glacier: dict[str, object]
+    _bytes: int
+    _collection_ids: list[str]
+
+
+def _candidate_plan_view(candidate: PlannedCandidateRecord, target_bytes: int) -> CandidatePlanView:
     collection_ids = sorted({cp.collection_id for cp in candidate.covered_paths})
     projected_paths = sorted(f"{cp.collection_id}/{cp.path}" for cp in candidate.covered_paths)
     fill = candidate.bytes / target_bytes if target_bytes else 0.0
@@ -259,10 +294,7 @@ def _candidate_plan_view(candidate: PlannedCandidateRecord, target_bytes: int) -
     }
 
 
-def _finalized_image_view(image: FinalizedImageRecord, session: object) -> dict[str, object]:
-    from sqlalchemy.orm import Session  # noqa: PLC0415
-
-    assert isinstance(session, Session)
+def _finalized_image_view(image: FinalizedImageRecord, session: Session) -> FinalizedImageView:
     copy_rows = session.scalars(
         select(ImageCopyRecord).where(ImageCopyRecord.image_id == image.image_id)
     ).all()
@@ -325,7 +357,7 @@ def _glacier_archive_status(image: FinalizedImageRecord) -> GlacierArchiveStatus
     )
 
 
-def _seed_required_copy_slots(session, image: FinalizedImageRecord) -> None:
+def _seed_required_copy_slots(session: Session, image: FinalizedImageRecord) -> None:
     existing_ids = {
         copy_id
         for copy_id in session.scalars(
@@ -379,7 +411,7 @@ def _image_id_to_finalized_at(image_id: str) -> str:
     )
 
 
-def _strip_internal(view: dict[str, object]) -> dict[str, object]:
+def _strip_internal(view: Mapping[str, object]) -> dict[str, object]:
     return {k: v for k, v in view.items() if not k.startswith("_")}
 
 
@@ -394,7 +426,7 @@ class StubPlanningService:
         q: str | None = None,
         collection: str | None = None,
         iso_ready: bool | None = None,
-    ) -> object:
+    ) -> dict[str, object]:
         raise NotYetImplemented("StubPlanningService is not implemented yet")
 
     def list_images(
@@ -407,16 +439,16 @@ class StubPlanningService:
         q: str | None,
         collection: str | None,
         has_copies: bool | None,
-    ) -> object:
+    ) -> dict[str, object]:
         raise NotYetImplemented("StubPlanningService is not implemented yet")
 
-    def get_image(self, image_id: str) -> object:
+    def get_image(self, image_id: str) -> dict[str, object]:
         raise NotYetImplemented("StubPlanningService is not implemented yet")
 
-    def finalize_image(self, image_id: str) -> object:
+    def finalize_image(self, image_id: str) -> dict[str, object]:
         raise NotYetImplemented("StubPlanningService is not implemented yet")
 
-    def get_iso_stream(self, image_id: str) -> object:
+    def get_iso_stream(self, image_id: str) -> PlanningIsoResult:
         raise NotYetImplemented("StubPlanningService is not implemented yet")
 
 
@@ -434,10 +466,10 @@ class ImageRootPlanningService:
     def __init__(
         self,
         *,
-        image_lookup: Callable[[str], object],
-        list_lookup: Callable[..., object] | None = None,
-        plan_lookup: Callable[..., object],
-        finalize_lookup: Callable[[str], object] | None = None,
+        image_lookup: Callable[[str], ImageRootRecord],
+        list_lookup: Callable[..., dict[str, object]] | None = None,
+        plan_lookup: Callable[..., dict[str, object]],
+        finalize_lookup: Callable[[str], dict[str, object]] | None = None,
     ) -> None:
         self._image_lookup = image_lookup
         self._list_lookup = list_lookup
@@ -454,7 +486,7 @@ class ImageRootPlanningService:
         q: str | None = None,
         collection: str | None = None,
         iso_ready: bool | None = None,
-    ) -> object:
+    ) -> dict[str, object]:
         return self._plan_lookup(
             page=page,
             per_page=per_page,
@@ -475,7 +507,7 @@ class ImageRootPlanningService:
         q: str | None,
         collection: str | None,
         has_copies: bool | None,
-    ) -> object:
+    ) -> dict[str, object]:
         if self._list_lookup is None:
             raise NotYetImplemented("ImageRootPlanningService list_images is not configured")
         return self._list_lookup(
@@ -488,10 +520,10 @@ class ImageRootPlanningService:
             has_copies=has_copies,
         )
 
-    def get_image(self, image_id: str) -> object:
+    def get_image(self, image_id: str) -> ImageRootRecord:
         return self._image_lookup(image_id)
 
-    def finalize_image(self, image_id: str) -> object:
+    def finalize_image(self, image_id: str) -> dict[str, object]:
         if self._finalize_lookup is None:
             raise NotYetImplemented("ImageRootPlanningService finalize_image is not configured")
         return self._finalize_lookup(image_id)

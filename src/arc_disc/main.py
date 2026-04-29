@@ -141,6 +141,8 @@ class BurnImageProgress:
     @classmethod
     def from_payload(cls, payload: dict[str, object]) -> BurnImageProgress:
         copies_raw = payload.get("copies", {})
+        if not isinstance(copies_raw, dict):
+            copies_raw = {}
         copies = {
             str(copy_id): BurnCopyProgress.from_payload(copy_payload)
             for copy_id, copy_payload in copies_raw.items()
@@ -327,6 +329,11 @@ def build_burn_prompts() -> object:
     return TerminalBurnPrompts()
 
 
+def _default_staging_dir() -> Path:
+    configured = os.getenv("ARC_DISC_STAGING_DIR")
+    return Path(configured) if configured else Path(".arc-disc-staging")
+
+
 def _copy_from_manifest(payload: dict[str, Any]) -> RecoveryCopyHint:
     return RecoveryCopyHint(
         copy_id=str(payload["copy"]),
@@ -441,7 +448,7 @@ def _copy_label(copy_payload: dict[str, Any]) -> str:
     return str(label if label is not None else copy_payload.get("id"))
 
 
-def _iter_paged_payloads(fetch_page) -> list[dict[str, Any]]:
+def _iter_paged_payloads(fetch_page: Any) -> list[dict[str, Any]]:
     page = 1
     payload = fetch_page(page)
     results = [payload]
@@ -1180,14 +1187,7 @@ def burn_cmd(
         burner = build_disc_burner()
         media_verifier = build_burned_media_verifier()
         prompts = build_burn_prompts()
-        resolved_staging_dir = (
-            staging_dir
-            or (
-                Path(os.getenv("ARC_DISC_STAGING_DIR"))
-                if os.getenv("ARC_DISC_STAGING_DIR")
-                else Path(".arc-disc-staging")
-            )
-        ).expanduser()
+        resolved_staging_dir = (staging_dir or _default_staging_dir()).expanduser()
         session_state = BurnSessionState.load(_burn_state_path(resolved_staging_dir))
         completed_copy_ids: list[str] = []
 
@@ -1249,14 +1249,7 @@ def recover_cmd(
         burner = build_disc_burner()
         media_verifier = build_burned_media_verifier()
         prompts = build_burn_prompts()
-        resolved_staging_dir = (
-            staging_dir
-            or (
-                Path(os.getenv("ARC_DISC_STAGING_DIR"))
-                if os.getenv("ARC_DISC_STAGING_DIR")
-                else Path(".arc-disc-staging")
-            )
-        ).expanduser()
+        resolved_staging_dir = (staging_dir or _default_staging_dir()).expanduser()
         session_state = BurnSessionState.load(_burn_state_path(resolved_staging_dir))
         recovery_session, completed_copy_ids = _process_recovery_session(
             recovery_session,

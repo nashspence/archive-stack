@@ -1,15 +1,41 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any
+from typing import TypedDict, cast
+
+NodeKey = str | tuple[str, int]
+
+
+class SplitPiece(TypedDict):
+    piece_index: int
+    piece_count: int
+    estimated_on_disc_bytes: int
+
+
+class SplitFileMeta(TypedDict):
+    relpath: str
+    pieces: list[SplitPiece]
+
+
+class TreePlanPart(TypedDict):
+    pieces: list[object]
+    bytes: int
+    reason: str
+    nodes: list[tuple[NodeKey, str]]
+
+
+class SplitPlanPart(TypedDict):
+    pieces: list[SplitPiece]
+    bytes: int
+    reason: str
 
 
 def tree_plan(
-    children: dict[str, list[object]], sizes: dict[object, int], cap: int
-) -> list[dict[str, object]]:
+    children: dict[NodeKey, list[NodeKey]], sizes: dict[NodeKey, int], cap: int
+) -> list[TreePlanPart]:
     free = [cap]
-    parts: dict[int, dict[str, object]] = {}
-    stack: list[tuple[object, str]] = [("", "dir")]
+    parts: dict[int, TreePlanPart] = {}
+    stack: list[tuple[NodeKey, str]] = [("", "dir")]
     while stack:
         node, reason = stack.pop()
         if node not in children or sizes[node] <= cap:
@@ -22,17 +48,15 @@ def tree_plan(
             bucket = parts.setdefault(
                 index, {"pieces": [], "bytes": 0, "reason": reason, "nodes": []}
             )
-            bucket["bytes"] = int(bucket["bytes"]) + sizes[node]
-            cast_nodes = bucket.setdefault("nodes", [])
-            assert isinstance(cast_nodes, list)
-            cast_nodes.append((node, reason))
+            bucket["bytes"] += sizes[node]
+            bucket["nodes"].append((node, reason))
             continue
         ordered = sorted(children[node], key=lambda item: (-sizes[item], str(item)))
         stack.extend((child, "split") for child in reversed(ordered))
     return [parts[index] for index in sorted(parts)]
 
 
-def leaves(node: object, children: dict[object, list[object]]) -> Iterable[object]:
+def leaves(node: NodeKey, children: dict[NodeKey, list[NodeKey]]) -> Iterable[NodeKey]:
     stack = [node]
     while stack:
         current = stack.pop()
@@ -44,15 +68,15 @@ def leaves(node: object, children: dict[object, list[object]]) -> Iterable[objec
 
 def split_collection(
     *,
-    files: list[dict[str, Any]],
+    files: list[SplitFileMeta],
     children: dict[str, list[str]],
     directories: list[str],
     cap: int,
-) -> list[dict[str, object]]:
-    mutable_children: dict[object, list[object]] = {
-        key: value[:] for key, value in children.items()
+) -> list[SplitPlanPart]:
+    mutable_children: dict[NodeKey, list[NodeKey]] = {
+        key: [cast(NodeKey, child) for child in value] for key, value in children.items()
     }
-    sizes: dict[object, int] = {}
+    sizes: dict[NodeKey, int] = {}
     by_rel = {file_meta["relpath"]: file_meta for file_meta in files}
 
     for file_meta in files:
@@ -76,20 +100,18 @@ def split_collection(
     }
 
     planned = tree_plan(mutable_children, sizes, cap)
-    output: list[dict[str, object]] = []
+    output: list[SplitPlanPart] = []
     for part in planned:
-        current: dict[str, object] = {"pieces": [], "bytes": 0, "reason": part["reason"]}
-        for node, reason in part.get("nodes", []):
+        current: SplitPlanPart = {"pieces": [], "bytes": 0, "reason": part["reason"]}
+        for node, reason in part["nodes"]:
             for leaf in leaves(node, mutable_children):
                 if leaf in by_leaf:
                     file_meta, piece = by_leaf[leaf]
                 else:
                     file_meta = by_rel[str(leaf)]
                     piece = file_meta["pieces"][0]
-                cast_pieces = current["pieces"]
-                assert isinstance(cast_pieces, list)
-                cast_pieces.append(piece)
-                current["bytes"] = int(current["bytes"]) + int(piece["estimated_on_disc_bytes"])
+                current["pieces"].append(piece)
+                current["bytes"] += piece["estimated_on_disc_bytes"]
                 if piece["piece_count"] > 1:
                     current["reason"] = "volume"
                 elif reason == "split" and current["reason"] == "dir":

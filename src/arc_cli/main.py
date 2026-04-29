@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, TypedDict
 
 import typer
 
@@ -34,12 +34,18 @@ PLAN_QUERY_HELP = (
 IMAGE_QUERY_HELP = "Substring match over id, filename, and collection ids"
 
 
+class CollectionManifestEntry(TypedDict):
+    path: str
+    bytes: int
+    sha256: str
+
+
 def client() -> ApiClient:
     return ApiClient()
 
 
-def _local_collection_manifest(root: Path) -> list[dict[str, object]]:
-    files: list[dict[str, object]] = []
+def _local_collection_manifest(root: Path) -> list[CollectionManifestEntry]:
+    files: list[CollectionManifestEntry] = []
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
@@ -58,17 +64,17 @@ def _local_collection_manifest(root: Path) -> list[dict[str, object]]:
 
 def _finalized_collection_upload_payload(
     collection_id: str,
-    manifest: list[dict[str, object]],
+    manifest: list[CollectionManifestEntry],
     collection: dict[str, object],
 ) -> dict[str, object]:
-    bytes_total = sum(int(item["bytes"]) for item in manifest)
+    bytes_total = sum(item["bytes"] for item in manifest)
     files = [
         {
-            "path": str(item["path"]),
-            "bytes": int(item["bytes"]),
-            "sha256": str(item["sha256"]),
+            "path": item["path"],
+            "bytes": item["bytes"],
+            "sha256": item["sha256"],
             "upload_state": "uploaded",
-            "uploaded_bytes": int(item["bytes"]),
+            "uploaded_bytes": item["bytes"],
             "upload_state_expires_at": None,
         }
         for item in manifest

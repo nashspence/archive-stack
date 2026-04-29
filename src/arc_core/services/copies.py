@@ -380,10 +380,12 @@ class SqlAlchemyCopyService:
 
 
 class StubCopyService:
-    def register(self, image_id: str, location: str, *, copy_id: str | None = None) -> object:
+    def register(
+        self, image_id: str, location: str, *, copy_id: str | None = None
+    ) -> CopySummary:
         raise NotYetImplemented("StubCopyService is not implemented yet")
 
-    def list_for_image(self, image_id: str) -> list[object]:
+    def list_for_image(self, image_id: str) -> list[CopySummary]:
         raise NotYetImplemented("StubCopyService is not implemented yet")
 
     def update(
@@ -394,7 +396,7 @@ class StubCopyService:
         location: str | None = None,
         state: str | None = None,
         verification_state: str | None = None,
-    ) -> object:
+    ) -> CopySummary:
         raise NotYetImplemented("StubCopyService is not implemented yet")
 
 

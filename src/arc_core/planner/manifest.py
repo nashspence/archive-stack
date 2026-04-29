@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
-from typing import Any
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any, NotRequired, Required, TypedDict
 
 import yaml
 
@@ -16,6 +16,27 @@ PLACEHOLDER_COLLECTION_PROOF = "collections/999999.ots.age"
 PLACEHOLDER_CHUNK_COUNT = 999999
 
 _MISSING = object()
+
+
+class ManifestPartRef(TypedDict):
+    index: int
+    object: str
+    sidecar: str
+
+
+class ManifestParts(TypedDict):
+    count: int
+    present: list[ManifestPartRef]
+
+
+class PlannerFileMeta(TypedDict, total=False):
+    relpath: Required[str]
+    sha256: Required[str]
+    plaintext_bytes: Required[int]
+    mode: NotRequired[int | None]
+    mtime: NotRequired[float | int | None]
+    uid: NotRequired[int | None]
+    gid: NotRequired[int | None]
 
 
 def yaml_bytes(obj: Any) -> bytes:
@@ -65,7 +86,7 @@ def manifest_file_entry(
     return entry
 
 
-def manifest_dump(image_id: str, collections_payload: list[dict[str, object]]) -> bytes:
+def manifest_dump(image_id: str, collections_payload: Sequence[Mapping[str, object]]) -> bytes:
     return yaml_bytes(
         {
             "schema": MANIFEST_SCHEMA,
@@ -81,7 +102,7 @@ EMPTY_MANIFEST_SIZE = len(manifest_dump(PLACEHOLDER_IMAGE_ID, []))
 
 
 def sidecar_dict(
-    file_meta: dict[str, Any],
+    file_meta: PlannerFileMeta,
     *,
     collection_id: str,
     part_index: int = 0,
@@ -90,23 +111,25 @@ def sidecar_dict(
     data: dict[str, Any] = {
         "schema": "file-sidecar/v1",
         "collection": collection_id,
-        "path": _manifest_relpath(str(file_meta["relpath"])),
+        "path": _manifest_relpath(file_meta["relpath"]),
         "sha256": file_meta["sha256"],
         "bytes": file_meta["plaintext_bytes"],
         "mode": file_meta.get("mode"),
         "mtime": file_meta.get("mtime"),
     }
-    if file_meta.get("uid") is not None:
-        data["uid"] = file_meta["uid"]
-    if file_meta.get("gid") is not None:
-        data["gid"] = file_meta["gid"]
+    uid = file_meta.get("uid")
+    if uid is not None:
+        data["uid"] = uid
+    gid = file_meta.get("gid")
+    if gid is not None:
+        data["gid"] = gid
     if part_count > 1:
         data["part"] = {"index": part_index + 1, "count": part_count}
     return data
 
 
 def sidecar_bytes(
-    file_meta: dict[str, Any],
+    file_meta: PlannerFileMeta,
     *,
     collection_id: str,
     part_index: int = 0,
@@ -122,7 +145,7 @@ def sidecar_bytes(
     )
 
 
-def manifest_collection_budget(collection_id: str, files: list[dict[str, Any]]) -> int:
+def manifest_collection_budget(collection_id: str, files: list[PlannerFileMeta]) -> int:
     payload = [
         {
             "id": collection_id,
@@ -132,7 +155,7 @@ def manifest_collection_budget(collection_id: str, files: list[dict[str, Any]]) 
                 manifest_file_entry(
                     file_meta["relpath"],
                     file_meta["sha256"],
-                    plaintext_bytes=file_meta.get("plaintext_bytes"),
+                    plaintext_bytes=file_meta["plaintext_bytes"],
                     parts={
                         "count": PLACEHOLDER_CHUNK_COUNT,
                         "present": [

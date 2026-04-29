@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -63,16 +63,22 @@ class ApiClient:
         return response
 
     def _json(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        return self._request(method, path, **kwargs).json()
+        payload = self._request(method, path, **kwargs).json()
+        if not isinstance(payload, dict):
+            raise BadRequest("API returned a non-object JSON payload")
+        return payload
 
     def create_or_resume_collection_upload(
         self,
         collection_id: str,
-        files: list[dict[str, Any]],
+        files: Sequence[Mapping[str, Any]],
         *,
         ingest_source: str | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"collection_id": collection_id, "files": files}
+        payload: dict[str, Any] = {
+            "collection_id": collection_id,
+            "files": [dict(file) for file in files],
+        }
         if ingest_source is not None:
             payload["ingest_source"] = ingest_source
         return self._json("POST", "/v1/collection-uploads", json=payload)

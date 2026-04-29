@@ -1,14 +1,57 @@
 from __future__ import annotations
 
-from typing import Protocol
+from collections.abc import AsyncIterable, Awaitable, Iterable
+from typing import Protocol, TypedDict
 
 from arc_core.domain.models import (
     CollectionSummary,
+    CopySummary,
     FetchSummary,
     GlacierUsageReport,
     PinSummary,
     RecoverySessionSummary,
 )
+from arc_core.iso.streaming import IsoStream
+
+JsonObject = dict[str, object]
+IsoBody = AsyncIterable[bytes] | Iterable[bytes]
+IsoStreamResult = IsoStream | IsoBody
+PlanningIsoResult = IsoStreamResult | Awaitable[IsoStreamResult]
+
+
+class CollectionFilePayload(TypedDict):
+    path: str
+    bytes: int
+    hot: bool
+    archived: bool
+
+
+class CollectionFilesPayload(TypedDict):
+    collection_id: str
+    page: int
+    per_page: int
+    total: int
+    pages: int
+    files: list[CollectionFilePayload]
+
+
+class FileStatePayload(TypedDict):
+    target: str
+    collection: str
+    path: str
+    bytes: int
+    sha256: str
+    hot: bool
+    archived: bool
+
+
+class FilesPayload(TypedDict):
+    target: str
+    page: int
+    per_page: int
+    total: int
+    pages: int
+    files: list[FileStatePayload]
 
 
 class CollectionService(Protocol):
@@ -18,9 +61,9 @@ class CollectionService(Protocol):
         collection_id: str,
         files: list[dict[str, object]],
         ingest_source: str | None = None,
-    ) -> object: ...
-    def get_upload(self, collection_id: str) -> object: ...
-    def create_or_resume_file_upload(self, collection_id: str, path: str) -> object: ...
+    ) -> JsonObject: ...
+    def get_upload(self, collection_id: str) -> JsonObject: ...
+    def create_or_resume_file_upload(self, collection_id: str, path: str) -> JsonObject: ...
     def append_upload_chunk(
         self,
         collection_id: str,
@@ -29,8 +72,8 @@ class CollectionService(Protocol):
         offset: int,
         checksum: str,
         content: bytes,
-    ) -> object: ...
-    def get_file_upload(self, collection_id: str, path: str) -> object: ...
+    ) -> JsonObject: ...
+    def get_file_upload(self, collection_id: str, path: str) -> JsonObject: ...
     def cancel_file_upload(self, collection_id: str, path: str) -> None: ...
     def expire_stale_uploads(self) -> None: ...
     def get(self, collection_id: str) -> CollectionSummary: ...
@@ -51,7 +94,7 @@ class PlanningService(Protocol):
         q: str | None,
         collection: str | None,
         iso_ready: bool | None,
-    ) -> object: ...
+    ) -> JsonObject: ...
     def list_images(
         self,
         *,
@@ -62,10 +105,10 @@ class PlanningService(Protocol):
         q: str | None,
         collection: str | None,
         has_copies: bool | None,
-    ) -> object: ...
-    def get_image(self, image_id: str) -> object: ...
-    def finalize_image(self, image_id: str) -> object: ...
-    def get_iso_stream(self, image_id: str) -> object: ...
+    ) -> JsonObject: ...
+    def get_image(self, image_id: str) -> JsonObject: ...
+    def finalize_image(self, image_id: str) -> JsonObject: ...
+    def get_iso_stream(self, image_id: str) -> PlanningIsoResult: ...
 
 
 class GlacierUploadService(Protocol):
@@ -91,8 +134,10 @@ class RecoverySessionService(Protocol):
 
 
 class CopyService(Protocol):
-    def register(self, image_id: str, location: str, *, copy_id: str | None = None) -> object: ...
-    def list_for_image(self, image_id: str) -> list[object]: ...
+    def register(
+        self, image_id: str, location: str, *, copy_id: str | None = None
+    ) -> CopySummary: ...
+    def list_for_image(self, image_id: str) -> list[CopySummary]: ...
     def update(
         self,
         image_id: str,
@@ -101,7 +146,7 @@ class CopyService(Protocol):
         location: str | None = None,
         state: str | None = None,
         verification_state: str | None = None,
-    ) -> object: ...
+    ) -> CopySummary: ...
 
 
 class PinService(Protocol):
@@ -112,8 +157,8 @@ class PinService(Protocol):
 
 class FetchService(Protocol):
     def get(self, fetch_id: str) -> FetchSummary: ...
-    def manifest(self, fetch_id: str) -> object: ...
-    def create_or_resume_upload(self, fetch_id: str, entry_id: str) -> object: ...
+    def manifest(self, fetch_id: str) -> JsonObject: ...
+    def create_or_resume_upload(self, fetch_id: str, entry_id: str) -> JsonObject: ...
     def append_upload_chunk(
         self,
         fetch_id: str,
@@ -122,11 +167,11 @@ class FetchService(Protocol):
         offset: int,
         checksum: str,
         content: bytes,
-    ) -> object: ...
-    def get_entry_upload(self, fetch_id: str, entry_id: str) -> object: ...
+    ) -> JsonObject: ...
+    def get_entry_upload(self, fetch_id: str, entry_id: str) -> JsonObject: ...
     def cancel_entry_upload(self, fetch_id: str, entry_id: str) -> None: ...
     def expire_stale_uploads(self) -> None: ...
-    def complete(self, fetch_id: str) -> object: ...
+    def complete(self, fetch_id: str) -> JsonObject: ...
 
 
 class FileService(Protocol):

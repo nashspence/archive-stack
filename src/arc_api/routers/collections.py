@@ -112,5 +112,5 @@ def get_collection(
     collection_id: str,
     container: ContainerDep,
 ) -> CollectionSummaryOut:
-    summary = container.collections.get(collection_id)  # type: ignore[attr-defined]
+    summary = container.collections.get(collection_id)
     return CollectionSummaryOut.model_validate(map_collection(summary))
