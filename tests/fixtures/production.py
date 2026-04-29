@@ -65,6 +65,7 @@ from tests.fixtures.data import (
     split_fixture_plaintext,
     write_tree,
 )
+from tests.fixtures.disc_contracts import InspectedIso, inspect_downloaded_iso
 from tests.timing_profile import time_block
 
 _APP_START_TIMEOUT = 15.0
@@ -1497,6 +1498,13 @@ class ProductionSystem:
         return (
             self.workspace / "collections-src" / normalize_collection_id(collection_id)
         ).resolve()
+
+    def inspect_downloaded_iso(self, *, image_id: str, iso_bytes: bytes) -> InspectedIso:
+        return inspect_downloaded_iso(
+            image_id=image_id,
+            iso_bytes=iso_bytes,
+            workspace=self.workspace,
+        )
 
     def expire_collection_upload(self, collection_id: str) -> None:
         normalized_collection_id = normalize_collection_id(collection_id)

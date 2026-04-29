@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 from collections import defaultdict
-from collections.abc import Iterator, Mapping
+from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -89,9 +89,9 @@ from arc_core.fs_paths import (
     normalize_collection_id,
     normalize_relpath,
 )
+from arc_core.iso.streaming import IsoStream
 from arc_core.planner.manifest import MANIFEST_FILENAME
 from arc_core.runtime_config import load_runtime_config
-from arc_core.services.planning import ImageRootPlanningService, ImageRootRecord
 from arc_core.webhooks import (
     WebhookConfig,
     build_glacier_upload_failed_payload,
@@ -120,6 +120,7 @@ from tests.fixtures.data import (
     split_fixture_plaintext,
     write_tree,
 )
+from tests.fixtures.disc_contracts import InspectedIso, inspect_fixture_image_root
 from tests.timing_profile import time_block
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -307,15 +308,6 @@ class CandidateRecord:
                 "failure": glacier.failure,
             },
         }
-
-    def image_root_record(self) -> ImageRootRecord:
-        return ImageRootRecord(
-            image_id=self.finalized_id,
-            volume_id=self.finalized_id,
-            filename=self.filename,
-            image_root=self.image_root,
-        )
-
 
 @dataclass(slots=True)
 class FetchEntryRecord:
@@ -1265,11 +1257,6 @@ class AcceptanceSearchService:
 class AcceptancePlanningService:
     def __init__(self, state: AcceptanceState) -> None:
         self.state = state
-        self._iso_service = ImageRootPlanningService(
-            image_lookup=self._image_root_record,
-            list_lookup=self.list_images,
-            plan_lookup=self.get_plan,
-        )
 
     def get_plan(
         self,
@@ -1453,8 +1440,21 @@ class AcceptancePlanningService:
             glacier=self.state.glacier_status(image.finalized_id),
         )
 
-    async def get_iso_stream(self, image_id: str) -> object:
-        return await self._iso_service.get_iso_stream(image_id)
+    async def get_iso_stream(self, image_id: str) -> IsoStream:
+        image = self._finalized_image_record(image_id)
+        payload = self._fixture_iso_bytes(image)
+
+        async def body() -> AsyncIterator[bytes]:
+            yield payload
+
+        return IsoStream(
+            body=body(),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="{image.filename}"',
+                "Cache-Control": "no-store",
+            },
+        )
 
     def _candidate_record(self, candidate_id: str) -> CandidateRecord:
         image = self.state.candidates_by_id.get(ImageId(candidate_id))
@@ -1468,9 +1468,6 @@ class AcceptancePlanningService:
             raise NotFound(f"image not found: {image_id}")
         return image
 
-    def _image_root_record(self, image_id: str) -> ImageRootRecord:
-        return self._finalized_image_record(image_id).image_root_record()
-
     def _physical_copies_registered(self, image: CandidateRecord) -> int:
         return sum(
             1
@@ -1478,6 +1475,19 @@ class AcceptancePlanningService:
             if volume_id == image.finalized_id
             and copy_counts_toward_protection(summary.state.value)
         )
+
+    def _fixture_iso_bytes(self, image: CandidateRecord) -> bytes:
+        payload = {
+            "fixture": "spec-iso",
+            "image_id": image.finalized_id,
+            "filename": image.filename,
+            "files": sorted(
+                path.relative_to(image.image_root).as_posix()
+                for path in image.image_root.rglob("*")
+                if path.is_file()
+            ),
+        }
+        return json.dumps(payload, sort_keys=True).encode("utf-8")
 
 
 class AcceptanceGlacierUploadService:
@@ -3548,6 +3558,17 @@ class AcceptanceSystem:
     def collection_source_root(self, collection_id: str) -> Path:
         collection_key = CollectionId(normalize_collection_id(collection_id))
         return self.state.local_collection_sources[collection_key]
+
+    def inspect_downloaded_iso(self, *, image_id: str, iso_bytes: bytes) -> InspectedIso:
+        image = self.state.finalized_images_by_id.get(ImageId(image_id))
+        if image is None:
+            raise AssertionError(f"image not found for inspection: {image_id}")
+        return inspect_fixture_image_root(
+            image_id=image_id,
+            image_root=image.image_root,
+            iso_bytes=iso_bytes,
+            workspace=self.workspace,
+        )
 
     def expire_collection_upload(self, collection_id: str) -> None:
         upload = self.state.collection_uploads[CollectionId(normalize_collection_id(collection_id))]

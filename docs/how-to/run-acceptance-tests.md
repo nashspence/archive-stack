@@ -5,19 +5,31 @@ The executable acceptance contract lives in the Gherkin feature files under
 
 ## Preferred commands
 
+Run the last full check in separate terminals:
+
+```bash
+./test lint
+./test unit
+./test spec
+./test prod
+```
+
+That keeps the local lanes and the prod-backed lane visible in parallel output
+windows without changing the checked-in test surfaces.
+
 Run the same acceptance contract inside the deterministic test container:
 
 ```bash
 ./test prod
 ```
 
-That path now keeps `pytest` in the canonical test container while `docker compose`
-manages the checked-in `app` service and its storage sidecars outside the
-container.
+That path keeps the prod-backed `pytest` run in the canonical test container
+while `docker compose` manages the checked-in `app` service and its storage
+sidecars outside the container.
 
 Do not run the production-backed harness with direct `pytest`. The supported
-entrypoints are `./test prod`, `./test prod-profile`, or the canonical `./test`,
-which prepare the compose-managed app and sidecars the harness expects.
+entrypoints are `./test prod`, `./test prod-profile`, or the serial `./test`
+wrapper, which prepare the compose-managed app and sidecars the harness expects.
 
 Run the production-backed harness lane with built-in timing output for scenario and fixture hotspots:
 
@@ -25,7 +37,8 @@ Run the production-backed harness lane with built-in timing output for scenario 
 ./test prod-profile
 ```
 
-Run the fixture-backed spec harness lane against the same contract:
+Run the fixture-backed spec harness lane against the same contract from a local
+locked `uv` environment:
 
 ```bash
 ./test spec
@@ -43,9 +56,15 @@ Run the non-production lanes together:
 ./test fast
 ```
 
+The non-production lanes resolve against the checked-in `requirements-test.txt`
+set plus the editable project, so they do not require Docker or BuildKit.
+
+Run the serial aggregate wrapper with `./test` when you want one supported
+command to run lint, then unit, spec, and prod in order.
+
 ## Compose-backed sidecars
 
-The canonical `./test` flow reads `./.env.compose` when present, otherwise it falls
+The serial `./test` wrapper reads `./.env.compose` when present, otherwise it falls
 back to `./.env.compose.example`.
 
 For prod-backed lanes, `./test` also loads the short recovery timing overrides
@@ -53,9 +72,9 @@ from `tests/harness/prod-harness.env`. That keeps the checked-in compose env
 product-facing while still giving the acceptance harness the smaller timing
 window it needs.
 
-Each `./test ...` invocation uses its own Compose project name by default so
-`./test spec` and `./test prod` can run side by side without tearing down each
-other's one-off containers, networks, or sidecars.
+Each prod-backed `./test ...` invocation uses its own Compose project name by
+default so independent prod-backed runs do not tear down each other's one-off
+containers, networks, or sidecars.
 
 If you need to reuse one Compose project explicitly, export
 `TEST_COMPOSE_PROJECT_NAME` before running `./test`.

@@ -43,10 +43,8 @@ from tests.fixtures.disc_contracts import (
     assert_root_layout_contract,
     assert_sidecar_semantics,
     decrypt_yaml_file,
-    inspect_downloaded_iso,
     manifest_entry_by_path,
     payload_bytes,
-    require_xorriso,
 )
 
 _CAPTURED_WEBHOOK_TIMEOUT_DELAY_SECONDS = 15.0
@@ -276,11 +274,6 @@ def _arc_bool_flag(argv: list[str], positive: str, negative: str) -> bool | None
     if negative in argv:
         return False
     return None
-
-
-def _maybe_skip_xorriso_for_url(url: str) -> None:
-    if urlsplit(url).path.endswith("/iso"):
-        require_xorriso()
 
 
 def _set_response(
@@ -1108,7 +1101,6 @@ def when_client_gets_url(
     acceptance_context: AcceptanceScenarioContext,
     url: str,
 ) -> None:
-    _maybe_skip_xorriso_for_url(url)
     parts = urlsplit(url)
     response = acceptance_system.request("GET", parts.path, params=_query_params(url))
     _set_response(acceptance_context, response)
@@ -1142,7 +1134,6 @@ def when_client_gets_url_again(
     acceptance_context: AcceptanceScenarioContext,
     url: str,
 ) -> None:
-    _maybe_skip_xorriso_for_url(url)
     parts = urlsplit(url)
     response = acceptance_system.request("GET", parts.path, params=_query_params(url))
     _set_response(acceptance_context, response, append=True)
@@ -1154,13 +1145,11 @@ def when_client_downloads_and_inspects_iso(
     acceptance_context: AcceptanceScenarioContext,
     image_id: str,
 ) -> None:
-    require_xorriso()
     response = acceptance_system.request("GET", f"/v1/images/{image_id}/iso")
     _set_response(acceptance_context, response)
-    inspected = inspect_downloaded_iso(
+    inspected = acceptance_system.inspect_downloaded_iso(
         image_id=image_id,
         iso_bytes=response.content,
-        workspace=acceptance_system.workspace,
     )
     acceptance_context.inspected_isos[image_id] = inspected
     acceptance_context.current_iso = inspected
@@ -1589,8 +1578,6 @@ def when_operator_runs_command(
         return
 
     if argv[0] == "arc-disc":
-        if len(argv) > 1 and argv[1] == "burn":
-            require_xorriso()
         acceptance_context.command = acceptance_system.run_arc_disc(*argv[1:])
         return
 
@@ -3373,7 +3360,7 @@ def then_copy_for_image_verification_state_is(
     assert copy["verification_state"] == verification_state
 
 
-@then("the downloaded ISO passes xorriso verification")
+@then("the downloaded ISO passes ISO verification")
 def then_downloaded_iso_passes_verification(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:

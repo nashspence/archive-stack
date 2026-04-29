@@ -14,6 +14,7 @@ else
 fi
 
 compose() {
+  COMPOSE_USED=1
   docker compose \
     --file "${COMPOSE_FILE}" \
     --env-file "${COMPOSE_ENV_FILE}" \
@@ -97,6 +98,10 @@ fi
 usage() {
   cat <<'EOF'
 Usage:
+  ./test lint
+  ./test unit
+  ./test spec
+  ./test prod
   ./test
   ./test lint [mypy args...]
   ./test prod [pytest args...]
@@ -106,19 +111,23 @@ Usage:
   ./test fast [pytest args...]
   ./test [pytest args...]
 
+Recommended full check:
+  Run `./test lint`, `./test unit`, `./test spec`, and `./test prod`
+  in separate terminals for the fastest end-to-end result.
+
 Modes:
   lint        Run the canonical lint flow (ruff + strict mypy).
   prod        Run the production-backed BDD harness lane.
   prod-profile  Run the production-backed harness lane with profiling output.
-  spec        Run the fixture-backed BDD spec harness lane.
-  unit        Run the unit test lane.
-  fast        Run the non-production lanes together (spec + unit).
-  no args     Run the canonical split test flow inside the test container.
+  spec        Run the fixture-backed BDD spec harness lane locally.
+  unit        Run the unit test lane locally.
+  fast        Run the local non-production lanes together (spec + unit).
+  no args     Run the supported serial aggregate flow: lint, unit, spec, then prod.
 
 Compose env:
   Defaults to ./.env.compose if present, otherwise ./.env.compose.example.
   Prod-backed lanes also layer tests/harness/prod-harness.env for short recovery timing values.
-  Test runs use an isolated compose project by default.
+  Prod-backed runs use an isolated compose project by default.
   Set TEST_COMPOSE_PROJECT_NAME to reuse a specific project name.
 EOF
 }
@@ -127,11 +136,16 @@ MODE="pytest"
 COMPOSE_RUN_ENV_ARGS=()
 LINT_ARGS=()
 REQUIRES_SIDECARS=0
+COMPOSE_USED=0
 
 PROGRESS_CHECK_SECONDS="${PROGRESS_CHECK_SECONDS:-1}"
 PROGRESS_REPORT_SECONDS="${PROGRESS_REPORT_SECONDS:-300}"
 
 cleanup() {
+  if [[ "${COMPOSE_USED}" != "1" ]]; then
+    return
+  fi
+
   if [[ "${REQUIRES_SIDECARS}" == "1" ]]; then
     compose down --volumes --remove-orphans >/dev/null 2>&1 || true
   else
@@ -154,25 +168,30 @@ else
       ;;
     prod)
       shift
+      MODE="prod-pytest"
       REQUIRES_SIDECARS=1
       set -- -q -m acceptance tests/harness/test_prod_harness.py "$@"
       ;;
     prod-profile)
       shift
+      MODE="prod-pytest"
       REQUIRES_SIDECARS=1
       COMPOSE_RUN_ENV_ARGS=(-e ARC_TEST_PROFILE=1)
       set -- -q --durations=0 --durations-min=0.5 -m acceptance tests/harness/test_prod_harness.py "$@"
       ;;
     spec)
       shift
+      MODE="local-pytest"
       set -- -q tests/harness/test_spec_harness.py "$@"
       ;;
     unit)
       shift
+      MODE="local-pytest"
       set -- -q tests/unit "$@"
       ;;
     fast)
       shift
+      MODE="local-pytest"
       set -- -q tests/harness/test_spec_harness.py tests/unit "$@"
       ;;
     -h|--help)
@@ -186,8 +205,6 @@ COMPOSE_RUN_TTY_ARGS=()
 if [[ ! -t 0 || ! -t 1 ]]; then
   COMPOSE_RUN_TTY_ARGS=(-T)
 fi
-
-compose build test
 
 run_with_progress() {
   local label="$1"
@@ -292,7 +309,11 @@ bootstrap_garage() {
     compose run --rm --entrypoint python "${COMPOSE_RUN_TTY_ARGS[@]}" test tests/harness/configure_garage.py
 }
 
-if [[ "${REQUIRES_SIDECARS}" == "1" ]]; then
+prepare_prod_environment() {
+  if [[ "${REQUIRES_SIDECARS}" != "1" ]]; then
+    return
+  fi
+
   export ARC_ENABLE_TEST_CONTROL="${ARC_ENABLE_TEST_CONTROL:-1}"
   export ARC_TEST_WEBHOOK_CAPTURE_PATH="${ARC_TEST_WEBHOOK_CAPTURE_PATH:-/app/.compose/webhook-captures.jsonl}"
   export UPLOAD_EXPIRY_SWEEP_INTERVAL="${UPLOAD_EXPIRY_SWEEP_INTERVAL:-1s}"
@@ -305,9 +326,10 @@ if [[ "${REQUIRES_SIDECARS}" == "1" ]]; then
   bootstrap_garage
   run_with_progress "sidecar startup" compose up --detach webdav tusd
   run_with_progress "app startup" compose up --detach --wait app
-fi
+}
 
 run_test_container() {
+  compose build test
   compose run \
     --rm \
     "${COMPOSE_RUN_TTY_ARGS[@]}" \
@@ -317,24 +339,26 @@ run_test_container() {
     "$@"
 }
 
-run_ruff_container() {
-  compose run \
-    --rm \
-    "${COMPOSE_RUN_TTY_ARGS[@]}" \
-    --entrypoint ruff \
-    "${COMPOSE_RUN_ENV_ARGS[@]}" \
-    test \
-    check \
-    .
+run_local_test_environment() {
+  uv run \
+    --python 3.11 \
+    --isolated \
+    --with-requirements "${ROOT_DIR}/requirements-test.txt" \
+    --with-editable ".[db]" \
+    "$@"
 }
 
-run_mypy_container() {
-  compose run \
-    --rm \
-    "${COMPOSE_RUN_TTY_ARGS[@]}" \
-    --entrypoint mypy \
-    "${COMPOSE_RUN_ENV_ARGS[@]}" \
-    test \
+run_local_pytest() {
+  run_local_test_environment python -m pytest "$@"
+}
+
+run_local_ruff() {
+  run_local_test_environment python -m ruff check .
+}
+
+run_local_mypy() {
+  run_local_test_environment \
+    python -m mypy \
     src \
     --show-error-codes \
     --hide-error-context \
@@ -345,10 +369,10 @@ run_mypy_container() {
 
 run_lint() {
   local mypy_args=("$@")
-  run_with_progress "ruff" run_ruff_container
+  run_with_progress "ruff" run_local_ruff
   run_with_progress \
     "mypy" \
-    run_mypy_container "${mypy_args[@]}"
+    run_local_mypy "${mypy_args[@]}"
 }
 
 if [[ "${MODE}" == "canonical" ]]; then
@@ -367,14 +391,26 @@ if [[ "${MODE}" == "canonical" ]]; then
   }
 
   run_phase "lint" run_lint
-  run_phase "unit" run_test_container -q tests/unit
-  run_phase "spec" run_test_container -q tests/harness/test_spec_harness.py
+  run_phase "unit" run_local_pytest -q tests/unit
+  run_phase "spec" run_local_pytest -q tests/harness/test_spec_harness.py
+  prepare_prod_environment
   run_phase "prod" run_test_container -q -m acceptance tests/harness/test_prod_harness.py
   exit 0
 fi
 
 if [[ "${MODE}" == "lint" ]]; then
   run_lint "${LINT_ARGS[@]}"
+  exit 0
+fi
+
+if [[ "${MODE}" == "local-pytest" ]]; then
+  run_with_progress "pytest" run_local_pytest "$@"
+  exit 0
+fi
+
+if [[ "${MODE}" == "prod-pytest" ]]; then
+  prepare_prod_environment
+  run_with_progress "pytest" run_test_container "$@"
   exit 0
 fi
 

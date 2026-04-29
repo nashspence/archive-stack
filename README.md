@@ -4,13 +4,19 @@
 
 Run the canonical lint flow with `./test lint`.
 
-That lane runs `ruff check .` and then runs strict `mypy` directly.
+That lane runs `ruff check .` and then runs strict `mypy` in a local locked `uv`
+environment built from `requirements-test.txt` plus the editable project.
 
 ## Testing
 
-Run the full suite with `./test`.
-The canonical `./test` flow runs the lint lane first, then the unit, spec, and
-prod-backed acceptance lanes.
+For the fastest full check, run `./test lint`, `./test unit`, `./test spec`,
+and `./test prod` in separate terminals. The lint, unit, and spec lanes run
+locally in the same locked `uv` environment, and the prod-backed lane stays on
+the checked-in Compose surface.
+
+Run the supported serial aggregate flow with `./test` when one command is more
+convenient. That wrapper runs lint first, then the unit, spec, and prod-backed
+acceptance lanes.
 
 Run the production-backed harness against the executable acceptance contract with `./test prod`.
 Profile the production-backed harness with `./test prod-profile`.

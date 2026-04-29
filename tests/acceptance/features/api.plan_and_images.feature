@@ -147,7 +147,7 @@ Feature: Plan and images API
       Given candidate "img_2026-04-20_01" is finalized
       When the client downloads and inspects ISO for image "20260420T040001Z"
       Then the response status is 200
-      And the downloaded ISO passes xorriso verification
+      And the downloaded ISO passes ISO verification
       And the extracted ISO root matches the disc layout contract
       And the decrypted disc manifest matches the disc manifest contract
       And every referenced collection manifest matches the collection hash manifest contract
@@ -161,7 +161,7 @@ Feature: Plan and images API
       And candidate "img_2026-04-20_04" is finalized
       When the client downloads and inspects ISO for image "20260420T040003Z"
       Then the response status is 200
-      And the downloaded ISO passes xorriso verification
+      And the downloaded ISO passes ISO verification
       And the extracted ISO root matches the disc layout contract
       And the decrypted disc manifest matches the disc manifest contract
       And every referenced collection manifest matches the collection hash manifest contract
@@ -170,7 +170,7 @@ Feature: Plan and images API
       And the current split payload for "/tax/2022/invoice-123.pdf" is recorded
       When the client downloads and inspects ISO for image "20260420T040004Z"
       Then the response status is 200
-      And the downloaded ISO passes xorriso verification
+      And the downloaded ISO passes ISO verification
       And the extracted ISO root matches the disc layout contract
       And the decrypted disc manifest matches the disc manifest contract
       And every referenced collection manifest matches the collection hash manifest contract

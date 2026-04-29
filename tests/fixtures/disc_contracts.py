@@ -39,6 +39,52 @@ def require_xorriso() -> str:
 
 def inspect_downloaded_iso(*, image_id: str, iso_bytes: bytes, workspace: Path) -> InspectedIso:
     require_xorriso()
+    image_root, iso_path = _prepare_inspection_workspace(
+        image_id=image_id,
+        iso_bytes=iso_bytes,
+        workspace=workspace,
+    )
+    _verify_iso(iso_path)
+
+    extract_root = image_root / "disc"
+    extract_root.mkdir()
+    _extract_iso(iso_path, extract_root)
+
+    return _inspect_extracted_root(
+        image_id=image_id,
+        iso_path=iso_path,
+        extract_root=extract_root,
+    )
+
+
+def inspect_fixture_image_root(
+    *,
+    image_id: str,
+    image_root: Path,
+    iso_bytes: bytes,
+    workspace: Path,
+) -> InspectedIso:
+    inspection_root, iso_path = _prepare_inspection_workspace(
+        image_id=image_id,
+        iso_bytes=iso_bytes,
+        workspace=workspace,
+    )
+    extract_root = inspection_root / "disc"
+    shutil.copytree(image_root, extract_root)
+
+    return _inspect_extracted_root(
+        image_id=image_id,
+        iso_path=iso_path,
+        extract_root=extract_root,
+    )
+
+
+def _prepare_inspection_workspace(
+    *,
+    image_id: str,
+    iso_bytes: bytes,
+    workspace: Path,
+) -> tuple[Path, Path]:
     image_root = workspace / "iso-inspection" / image_id
     if image_root.exists():
         shutil.rmtree(image_root)
@@ -46,11 +92,10 @@ def inspect_downloaded_iso(*, image_id: str, iso_bytes: bytes, workspace: Path) 
 
     iso_path = image_root / "image.iso"
     iso_path.write_bytes(iso_bytes)
-    _verify_iso(iso_path)
+    return image_root, iso_path
 
-    extract_root = image_root / "disc"
-    extract_root.mkdir()
-    _extract_iso(iso_path, extract_root)
+
+def _inspect_extracted_root(*, image_id: str, iso_path: Path, extract_root: Path) -> InspectedIso:
 
     files = sorted(
         path.relative_to(extract_root).as_posix()
