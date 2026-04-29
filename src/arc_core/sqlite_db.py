@@ -51,6 +51,11 @@ _COLUMN_MIGRATIONS: list[list[tuple[str, str, str]]] = [
         ("image_copies", "verification_state", "TEXT"),
         ("image_copies", "location", "TEXT"),
     ],
+    # version 6
+    [
+        ("finalized_image_coverage_parts", "object_path", "TEXT"),
+        ("finalized_image_coverage_parts", "sidecar_path", "TEXT"),
+    ],
 ]
 
 
@@ -125,6 +130,7 @@ def initialize_db(sqlite_path: str) -> None:
         CollectionUploadRecord,
         FetchEntryRecord,
         FileCopyRecord,
+        FinalizedImageCollectionArtifactRecord,
         FinalizedImageCoveragePartRecord,
         FinalizedImageCoveredPathRecord,
         FinalizedImageRecord,
@@ -144,6 +150,7 @@ def initialize_db(sqlite_path: str) -> None:
         CollectionRecord,
         FetchEntryRecord,
         FileCopyRecord,
+        FinalizedImageCollectionArtifactRecord,
         FinalizedImageCoveragePartRecord,
         FinalizedImageCoveredPathRecord,
         FinalizedImageRecord,
@@ -160,15 +167,17 @@ def initialize_db(sqlite_path: str) -> None:
     engine = create_sqlite_engine(sqlite_path)
     Base.metadata.create_all(engine)
     migrate_schema(engine)
-    _backfill_finalized_image_coverage_parts(sqlite_path)
+    _backfill_finalized_image_manifest_topology(sqlite_path)
 
 
-def _backfill_finalized_image_coverage_parts(sqlite_path: str) -> None:
+def _backfill_finalized_image_manifest_topology(sqlite_path: str) -> None:
     from arc_core.catalog_models import (  # noqa: PLC0415
+        FinalizedImageCollectionArtifactRecord,
         FinalizedImageCoveragePartRecord,
         FinalizedImageRecord,
     )
     from arc_core.finalized_image_coverage import (  # noqa: PLC0415
+        read_finalized_image_collection_artifacts,
         read_finalized_image_coverage_parts,
     )
 
@@ -176,29 +185,56 @@ def _backfill_finalized_image_coverage_parts(sqlite_path: str) -> None:
     with session_scope(session_factory) as session:
         images = session.query(FinalizedImageRecord).all()
         for image in images:
-            existing = session.scalar(
-                text(
-                    "SELECT 1 FROM finalized_image_coverage_parts "
-                    "WHERE image_id = :image_id LIMIT 1"
-                ),
-                {"image_id": image.image_id},
-            )
-            if existing is not None:
-                continue
             try:
+                collection_artifacts = read_finalized_image_collection_artifacts(image.image_root)
                 coverage_parts = read_finalized_image_coverage_parts(image.image_root)
             except Exception:
                 continue
-            for part in coverage_parts:
-                session.add(
-                    FinalizedImageCoveragePartRecord(
-                        image_id=image.image_id,
-                        collection_id=part.collection_id,
-                        path=part.path,
-                        part_index=part.part_index,
-                        part_count=part.part_count,
-                    )
+            existing_collection_artifacts = {
+                record.collection_id: record
+                for record in session.query(FinalizedImageCollectionArtifactRecord).filter_by(
+                    image_id=image.image_id
                 )
+            }
+            for artifact in collection_artifacts:
+                artifact_row = existing_collection_artifacts.get(artifact.collection_id)
+                if artifact_row is None:
+                    session.add(
+                        FinalizedImageCollectionArtifactRecord(
+                            image_id=image.image_id,
+                            collection_id=artifact.collection_id,
+                            manifest_path=artifact.manifest_path,
+                            proof_path=artifact.proof_path,
+                        )
+                    )
+                    continue
+                artifact_row.manifest_path = artifact.manifest_path
+                artifact_row.proof_path = artifact.proof_path
+
+            existing_parts = {
+                (record.collection_id, record.path, record.part_index): record
+                for record in session.query(FinalizedImageCoveragePartRecord).filter_by(
+                    image_id=image.image_id
+                )
+            }
+            for part in coverage_parts:
+                part_row = existing_parts.get((part.collection_id, part.path, part.part_index))
+                if part_row is None:
+                    session.add(
+                        FinalizedImageCoveragePartRecord(
+                            image_id=image.image_id,
+                            collection_id=part.collection_id,
+                            path=part.path,
+                            part_index=part.part_index,
+                            part_count=part.part_count,
+                            object_path=part.object_path,
+                            sidecar_path=part.sidecar_path,
+                        )
+                    )
+                    continue
+                part_row.part_count = part.part_count
+                part_row.object_path = part.object_path
+                part_row.sidecar_path = part.sidecar_path
 
 
 def make_session_factory(sqlite_path: str) -> sessionmaker[Session]:

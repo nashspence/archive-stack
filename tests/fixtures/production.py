@@ -28,6 +28,7 @@ from arc_core.catalog_models import (
     CollectionUploadFileRecord,
     FetchEntryRecord,
     FileCopyRecord,
+    FinalizedImageCollectionArtifactRecord,
     FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
@@ -38,7 +39,10 @@ from arc_core.domain.enums import CopyState, FetchState, ProtectionState, Verifi
 from arc_core.domain.models import CollectionSummary, CopySummary, FetchCopyHint, FetchSummary
 from arc_core.domain.selectors import parse_target
 from arc_core.domain.types import CollectionId, CopyId, FetchId, TargetStr
-from arc_core.finalized_image_coverage import read_finalized_image_coverage_parts
+from arc_core.finalized_image_coverage import (
+    read_finalized_image_collection_artifacts,
+    read_finalized_image_coverage_parts,
+)
 from arc_core.fs_paths import normalize_collection_id, normalize_relpath
 from arc_core.runtime_config import load_runtime_config
 from arc_core.services.glacier_uploads import enqueue_glacier_upload_job
@@ -1077,6 +1081,15 @@ class ProductionSystem:
                             path=cp.path,
                         )
                     )
+                for artifact in read_finalized_image_collection_artifacts(candidate.image_root):
+                    session.add(
+                        FinalizedImageCollectionArtifactRecord(
+                            image_id=candidate.finalized_id,
+                            collection_id=artifact.collection_id,
+                            manifest_path=artifact.manifest_path,
+                            proof_path=artifact.proof_path,
+                        )
+                    )
                 for part in read_finalized_image_coverage_parts(candidate.image_root):
                     session.add(
                         FinalizedImageCoveragePartRecord(
@@ -1085,6 +1098,8 @@ class ProductionSystem:
                             path=part.path,
                             part_index=part.part_index,
                             part_count=part.part_count,
+                            object_path=part.object_path,
+                            sidecar_path=part.sidecar_path,
                         )
                     )
                 enqueue_glacier_upload_job(

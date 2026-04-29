@@ -6,11 +6,15 @@ from pathlib import Path
 from arc_core.catalog_models import (
     CollectionFileRecord,
     CollectionRecord,
+    FinalizedImageCollectionArtifactRecord,
     FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
 )
-from arc_core.finalized_image_coverage import read_finalized_image_coverage_parts
+from arc_core.finalized_image_coverage import (
+    read_finalized_image_collection_artifacts,
+    read_finalized_image_coverage_parts,
+)
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.glacier_reporting import SqlAlchemyGlacierReportingService
 from arc_core.sqlite_db import initialize_db, make_session_factory, session_scope
@@ -98,6 +102,15 @@ def _seed_uploaded_image(
                     path=path,
                 )
             )
+        for artifact in read_finalized_image_collection_artifacts(image_root):
+            session.add(
+                FinalizedImageCollectionArtifactRecord(
+                    image_id=image_id,
+                    collection_id=artifact.collection_id,
+                    manifest_path=artifact.manifest_path,
+                    proof_path=artifact.proof_path,
+                )
+            )
         for part in read_finalized_image_coverage_parts(image_root):
             session.add(
                 FinalizedImageCoveragePartRecord(
@@ -106,6 +119,8 @@ def _seed_uploaded_image(
                     path=part.path,
                     part_index=part.part_index,
                     part_count=part.part_count,
+                    object_path=part.object_path,
+                    sidecar_path=part.sidecar_path,
                 )
             )
 

@@ -9,11 +9,17 @@ import pytest
 from arc_core.catalog_models import (
     CollectionFileRecord,
     CollectionRecord,
+    FinalizedImageCollectionArtifactRecord,
+    FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
 )
 from arc_core.domain.enums import RecoverySessionState
 from arc_core.domain.errors import NotFound
+from arc_core.finalized_image_coverage import (
+    read_finalized_image_collection_artifacts,
+    read_finalized_image_coverage_parts,
+)
 from arc_core.ports.archive_store import ArchiveUploadReceipt
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.copies import SqlAlchemyCopyService
@@ -122,6 +128,27 @@ def _seed_finalized_image(
                     image_id=image_id,
                     collection_id="docs",
                     path=relative_path,
+                )
+            )
+        for artifact in read_finalized_image_collection_artifacts(image_root):
+            session.add(
+                FinalizedImageCollectionArtifactRecord(
+                    image_id=image_id,
+                    collection_id=artifact.collection_id,
+                    manifest_path=artifact.manifest_path,
+                    proof_path=artifact.proof_path,
+                )
+            )
+        for part in read_finalized_image_coverage_parts(image_root):
+            session.add(
+                FinalizedImageCoveragePartRecord(
+                    image_id=image_id,
+                    collection_id=part.collection_id,
+                    path=part.path,
+                    part_index=part.part_index,
+                    part_count=part.part_count,
+                    object_path=part.object_path,
+                    sidecar_path=part.sidecar_path,
                 )
             )
 

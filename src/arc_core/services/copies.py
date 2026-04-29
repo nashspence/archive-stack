@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import cast
 
-import yaml
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
@@ -19,6 +18,7 @@ from arc_core.archive_compliance import (
 from arc_core.catalog_models import (
     CollectionFileRecord,
     FileCopyRecord,
+    FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
     GlacierRecoverySessionImageRecord,
@@ -27,12 +27,11 @@ from arc_core.catalog_models import (
     ImageCopyRecord,
 )
 from arc_core.domain.enums import CopyState, VerificationState
-from arc_core.domain.errors import BadRequest, Conflict, NotFound, NotYetImplemented
+from arc_core.domain.errors import BadRequest, Conflict, InvalidState, NotFound, NotYetImplemented
 from arc_core.domain.models import CopyHistoryEntry, CopySummary
 from arc_core.domain.types import CopyId
-from arc_core.planner.manifest import MANIFEST_FILENAME
+from arc_core.finalized_image_coverage import group_disc_manifest_entries
 from arc_core.ports.hot_store import HotStore
-from arc_core.recovery_payloads import decrypt_recovery_payload
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.recovery_sessions import ensure_glacier_recovery_session_for_image
 from arc_core.sqlite_db import make_session_factory, session_scope
@@ -243,7 +242,15 @@ class SqlAlchemyCopyService:
                 FinalizedImageCoveredPathRecord.image_id == image.image_id
             )
         ).all()
-        disc_entries = _read_disc_manifest_entries(image.image_root)
+        coverage_parts = session.scalars(
+            select(FinalizedImageCoveragePartRecord).where(
+                FinalizedImageCoveragePartRecord.image_id == image.image_id
+            )
+        ).all()
+        disc_entries = _disc_entries_from_coverage_parts(
+            image.image_id,
+            coverage_parts=coverage_parts,
+        )
         for covered_path in covered:
             file_record = session.get(
                 CollectionFileRecord,
@@ -480,26 +487,22 @@ def _parse_verification_state(raw_state: str) -> VerificationState:
         raise BadRequest(f"invalid verification state: {raw_state}") from exc
 
 
-def _read_disc_manifest_entries(
-    image_root: str,
+def _disc_entries_from_coverage_parts(
+    image_id: str,
+    *,
+    coverage_parts: Sequence[FinalizedImageCoveragePartRecord],
 ) -> dict[tuple[str, str], list[tuple[str, int | None, int]]]:
-    manifest_path = Path(image_root) / MANIFEST_FILENAME
-    manifest = yaml.safe_load(decrypt_recovery_payload(manifest_path.read_bytes()))
+    try:
+        grouped = group_disc_manifest_entries(coverage_parts)
+    except ValueError as exc:
+        raise InvalidState(f"incomplete finalized-image artifact mapping for {image_id}") from exc
+
     result: dict[tuple[str, str], list[tuple[str, int | None, int]]] = {}
-    for collection in manifest.get("collections", []):
-        collection_id = str(collection["id"])
-        for file_entry in collection.get("files", []):
-            path = str(file_entry["path"]).lstrip("/")
-            parts_block = file_entry.get("parts")
-            if parts_block is None:
-                items: list[tuple[str, int | None, int]] = [(str(file_entry["object"]), None, 1)]
-            else:
-                part_count = int(parts_block["count"])
-                items = [
-                    (str(p["object"]), int(p["index"]) - 1, part_count)
-                    for p in parts_block.get("present", [])
-                ]
-            result[(collection_id, path)] = items
+    for key, parts in grouped.items():
+        result[key] = [
+            (object_path, None if part_count == 1 else part_index, part_count)
+            for object_path, part_index, part_count, _sidecar_path in parts
+        ]
     return result
 
 

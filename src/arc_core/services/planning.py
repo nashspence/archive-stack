@@ -19,6 +19,7 @@ from arc_core.archive_compliance import (
 )
 from arc_core.catalog_models import (
     CollectionFileRecord,
+    FinalizedImageCollectionArtifactRecord,
     FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
@@ -29,7 +30,10 @@ from arc_core.catalog_models import (
 from arc_core.domain.enums import CopyState, GlacierState, VerificationState
 from arc_core.domain.errors import InvalidState, NotFound, NotYetImplemented
 from arc_core.domain.models import GlacierArchiveStatus
-from arc_core.finalized_image_coverage import read_finalized_image_coverage_parts
+from arc_core.finalized_image_coverage import (
+    read_finalized_image_collection_artifacts,
+    read_finalized_image_coverage_parts,
+)
 from arc_core.iso.streaming import IsoStream, stream_iso_from_root
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.contracts import PlanningIsoResult
@@ -214,6 +218,15 @@ class SqlAlchemyPlanningService:
                             path=cp.path,
                         )
                     )
+                for artifact in read_finalized_image_collection_artifacts(candidate.image_root):
+                    session.add(
+                        FinalizedImageCollectionArtifactRecord(
+                            image_id=candidate.finalized_id,
+                            collection_id=artifact.collection_id,
+                            manifest_path=artifact.manifest_path,
+                            proof_path=artifact.proof_path,
+                        )
+                    )
                 for part in read_finalized_image_coverage_parts(candidate.image_root):
                     session.add(
                         FinalizedImageCoveragePartRecord(
@@ -222,6 +235,8 @@ class SqlAlchemyPlanningService:
                             path=part.path,
                             part_index=part.part_index,
                             part_count=part.part_count,
+                            object_path=part.object_path,
+                            sidecar_path=part.sidecar_path,
                         )
                     )
                 _seed_required_copy_slots(session, image)

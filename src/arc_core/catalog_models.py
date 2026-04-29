@@ -135,6 +135,10 @@ class FinalizedImageRecord(Base):
         back_populates="image",
         cascade="all, delete-orphan",
     )
+    collection_artifacts: Mapped[list[FinalizedImageCollectionArtifactRecord]] = relationship(
+        back_populates="image",
+        cascade="all, delete-orphan",
+    )
     copies: Mapped[list[ImageCopyRecord]] = relationship(
         back_populates="image",
         cascade="all, delete-orphan",
@@ -167,6 +171,8 @@ class FinalizedImageCoveragePartRecord(Base):
     path: Mapped[str] = mapped_column(String, primary_key=True)
     part_index: Mapped[int] = mapped_column(Integer, primary_key=True)
     part_count: Mapped[int] = mapped_column(Integer)
+    object_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    sidecar_path: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -177,6 +183,25 @@ class FinalizedImageCoveragePartRecord(Base):
     )
 
     image: Mapped[FinalizedImageRecord] = relationship(back_populates="coverage_parts")
+
+
+class FinalizedImageCollectionArtifactRecord(Base):
+    __tablename__ = "finalized_image_collection_artifacts"
+
+    image_id: Mapped[str] = mapped_column(String, primary_key=True)
+    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    manifest_path: Mapped[str] = mapped_column(String)
+    proof_path: Mapped[str] = mapped_column(String)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["image_id"],
+            ["finalized_images.image_id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    image: Mapped[FinalizedImageRecord] = relationship(back_populates="collection_artifacts")
 
 
 class GlacierUploadJobRecord(Base):
