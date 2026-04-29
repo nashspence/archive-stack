@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pytest_bdd import scenarios
 
-from tests.fixtures.acceptance import acceptance_system  # noqa: F401
+from tests.fixtures.acceptance import acceptance_system, shared_acceptance_system  # noqa: F401
 from tests.fixtures.bdd_steps import *  # noqa: F403
 
 scenarios("../acceptance/features/api.collections.feature")

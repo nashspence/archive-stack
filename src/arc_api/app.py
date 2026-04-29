@@ -347,10 +347,14 @@ async def _run_glacier_recovery_reaper(
 def create_app(
     *,
     container: ServiceContainer | None = None,
+    container_provider: Callable[[], ServiceContainer] | None = None,
     upload_expiry_reaper_interval: float | None = None,
     glacier_upload_reaper_interval: float | None = None,
     glacier_recovery_reaper_interval: float | None = None,
 ) -> FastAPI:
+    if container is not None and container_provider is not None:
+        raise ValueError("create_app accepts either container or container_provider, not both")
+
     config = load_runtime_config()
     app_container: ServiceContainer | None = container
     sweep_interval = (
@@ -371,6 +375,8 @@ def create_app(
 
     def get_or_create_container() -> ServiceContainer:
         nonlocal app_container
+        if container_provider is not None:
+            return container_provider()
         if app_container is None:
             app_container = default_container()
         return app_container

@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -25,7 +26,7 @@ import uvicorn
 import yaml
 
 from arc_api.app import create_app
-from arc_api.deps import ServiceContainer, get_container
+from arc_api.deps import ServiceContainer
 from arc_core.archive_compliance import (
     collection_protection_state,
     copy_counts_toward_protection,
@@ -119,6 +120,7 @@ from tests.fixtures.data import (
     split_fixture_plaintext,
     write_tree,
 )
+from tests.timing_profile import time_block
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "src"
@@ -1191,6 +1193,17 @@ class AcceptanceCollectionService:
                 else None
             ),
         }
+
+
+@dataclass(slots=True)
+class _ContainerSlot:
+    container: ServiceContainer
+
+
+def _clear_workspace(workspace: Path) -> None:
+    if workspace.exists():
+        shutil.rmtree(workspace)
+    workspace.mkdir(parents=True, exist_ok=True)
 
 
 class AcceptanceSearchService:
@@ -3219,14 +3232,20 @@ class AcceptanceSystem:
     pins: AcceptancePinService
     fetches: AcceptanceFetchService
     files: AcceptanceFileService
+    _container_slot: _ContainerSlot
 
     @classmethod
     def create(cls, workspace: Path) -> AcceptanceSystem:
-        state = AcceptanceState()
-        return cls._create_with_state(workspace, state)
+        with time_block("fixture.acceptance_system.create"):
+            _clear_workspace(workspace)
+            state = AcceptanceState()
+            system = cls._build_runtime(workspace, state)
+            system.server.start()
+            system.state.public_base_url = system.server.base_url
+            return system
 
     @classmethod
-    def _create_with_state(cls, workspace: Path, state: AcceptanceState) -> AcceptanceSystem:
+    def _build_runtime(cls, workspace: Path, state: AcceptanceState) -> AcceptanceSystem:
         collections = AcceptanceCollectionService(state)
         search = AcceptanceSearchService(state)
         planning = AcceptancePlanningService(state)
@@ -3250,19 +3269,16 @@ class AcceptanceSystem:
             fetches=fetches,
             files=files,
         )
+        container_slot = _ContainerSlot(container=container)
         app = create_app(
-            container=container,
+            container_provider=lambda: container_slot.container,
             upload_expiry_reaper_interval=_UPLOAD_EXPIRY_SWEEP_INTERVAL_SECONDS,
             glacier_upload_reaper_interval=_GLACIER_UPLOAD_SWEEP_INTERVAL_SECONDS,
             glacier_recovery_reaper_interval=_GLACIER_RECOVERY_SWEEP_INTERVAL_SECONDS,
         )
-        app.dependency_overrides[get_container] = lambda: container
-
         fixture_path = workspace / "arc_disc_fixture.json"
         with _reserve_local_port() as reserved:
             server = _LiveServerHandle(app, host="127.0.0.1", port=reserved.port)
-        server.start()
-        state.public_base_url = server.base_url
         return cls(
             workspace=workspace,
             state=state,
@@ -3280,29 +3296,52 @@ class AcceptanceSystem:
             pins=pins,
             fetches=fetches,
             files=files,
+            _container_slot=container_slot,
         )
 
     def restart(self) -> None:
-        self.app.dependency_overrides.clear()
-        self.server.close()
-        restarted = self._create_with_state(self.workspace, self.state)
-        self.app = restarted.app
-        self.server = restarted.server
-        self.base_url = restarted.base_url
-        self.collections = restarted.collections
-        self.search = restarted.search
-        self.planning = restarted.planning
-        self.glacier_uploads = restarted.glacier_uploads
-        self.glacier_reporting = restarted.glacier_reporting
-        self.recovery_sessions = restarted.recovery_sessions
-        self.copies = restarted.copies
-        self.pins = restarted.pins
-        self.fetches = restarted.fetches
-        self.files = restarted.files
+        with time_block("fixture.acceptance_system.restart"):
+            state = self.state
+            self.server.close()
+            restarted = self._build_runtime(self.workspace, state)
+            restarted.server.start()
+            restarted.state.public_base_url = restarted.server.base_url
+            self.app = restarted.app
+            self.server = restarted.server
+            self.base_url = restarted.base_url
+            self.collections = restarted.collections
+            self.search = restarted.search
+            self.planning = restarted.planning
+            self.glacier_uploads = restarted.glacier_uploads
+            self.glacier_reporting = restarted.glacier_reporting
+            self.recovery_sessions = restarted.recovery_sessions
+            self.copies = restarted.copies
+            self.pins = restarted.pins
+            self.fetches = restarted.fetches
+            self.files = restarted.files
+            self._container_slot = restarted._container_slot
+
+    def reset(self) -> None:
+        with time_block("fixture.acceptance_system.reset"):
+            _clear_workspace(self.workspace)
+            reset = self._build_runtime(self.workspace, AcceptanceState())
+            reset.state.public_base_url = self.base_url
+            self.state = reset.state
+            self.collections = reset.collections
+            self.search = reset.search
+            self.planning = reset.planning
+            self.glacier_uploads = reset.glacier_uploads
+            self.glacier_reporting = reset.glacier_reporting
+            self.recovery_sessions = reset.recovery_sessions
+            self.copies = reset.copies
+            self.pins = reset.pins
+            self.fetches = reset.fetches
+            self.files = reset.files
+            self._container_slot.container = reset._container_slot.container
 
     def close(self) -> None:
-        self.app.dependency_overrides.clear()
-        self.server.close()
+        with time_block("fixture.acceptance_system.close"):
+            self.server.close()
 
     def request(
         self,
@@ -3314,21 +3353,22 @@ class AcceptanceSystem:
         headers: Mapping[str, str] | None = None,
         content: bytes | None = None,
     ) -> httpx.Response:
-        for attempt in range(3):
-            try:
-                with httpx.Client(base_url=self.base_url, timeout=5.0) as client:
-                    return client.request(
-                        method,
-                        path,
-                        params=params,
-                        json=json_body,
-                        headers=headers,
-                        content=content,
-                    )
-            except httpx.RemoteProtocolError:
-                if not path.endswith("/iso") or attempt == 2:
-                    raise
-                time.sleep(0.05)
+        with time_block(f"http {method} {path}"):
+            for attempt in range(3):
+                try:
+                    with httpx.Client(base_url=self.base_url, timeout=5.0) as client:
+                        return client.request(
+                            method,
+                            path,
+                            params=params,
+                            json=json_body,
+                            headers=headers,
+                            content=content,
+                        )
+                except httpx.RemoteProtocolError:
+                    if not path.endswith("/iso") or attempt == 2:
+                        raise
+                    time.sleep(0.05)
         raise RuntimeError("unreachable")
 
     def seed_finalized_image(self, candidate_id: str, *, force_ready: bool = False) -> None:
@@ -3452,14 +3492,15 @@ class AcceptanceSystem:
         self.state.glacier_upload_failures_by_image[ImageId(image_id)] = error
 
     def run_arc(self, *args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [sys.executable, "-m", "arc_cli.main", *args],
-            cwd=REPO_ROOT,
-            env=self._subprocess_env(),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        with time_block("subprocess arc"):
+            return subprocess.run(
+                [sys.executable, "-m", "arc_cli.main", *args],
+                cwd=REPO_ROOT,
+                env=self._subprocess_env(),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
 
     def run_arc_disc(
         self, *args: str, input_text: str = "\n" * 16
@@ -3479,15 +3520,16 @@ class AcceptanceSystem:
                 "ARC_DISC_STAGING_DIR": str(self.workspace / "arc_disc_staging"),
             }
         )
-        return subprocess.run(
-            [sys.executable, "-m", "arc_disc.main", *args],
-            cwd=REPO_ROOT,
-            env=env,
-            input=input_text,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        with time_block("subprocess arc-disc"):
+            return subprocess.run(
+                [sys.executable, "-m", "arc_disc.main", *args],
+                cwd=REPO_ROOT,
+                env=env,
+                input=input_text,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
 
     def delete_hot_backing_file(self, target: str) -> None:
         selected = self.state.selected_files(target)
@@ -3557,67 +3599,69 @@ class AcceptanceSystem:
     def seed_collection_source(
         self, collection_id: str, files: Mapping[str, bytes] | None = None
     ) -> None:
-        normalized_collection_id = normalize_collection_id(collection_id)
-        root = write_tree(
-            self.workspace / "collections-src" / normalized_collection_id,
-            files or PHOTOS_2024_FILES,
-        )
-        self.state.register_local_collection_source(normalized_collection_id, root)
+        with time_block("fixture.seed_collection_source"):
+            normalized_collection_id = normalize_collection_id(collection_id)
+            root = write_tree(
+                self.workspace / "collections-src" / normalized_collection_id,
+                files or PHOTOS_2024_FILES,
+            )
+            self.state.register_local_collection_source(normalized_collection_id, root)
 
     def upload_collection_source(
         self, collection_id: str, files: Mapping[str, bytes] | None = None
     ) -> dict[str, object]:
-        normalized_collection_id = normalize_collection_id(collection_id)
-        source_files = files or PHOTOS_2024_FILES
-        self.seed_collection_source(normalized_collection_id, source_files)
-        root = self.state.local_collection_sources[CollectionId(normalized_collection_id)]
-        manifest = []
-        for path, content in sorted(source_files.items()):
-            manifest.append(
-                {
-                    "path": path,
-                    "bytes": len(content),
-                    "sha256": hashlib.sha256(content).hexdigest(),
-                }
-            )
-        response = self.request(
-            "POST",
-            "/v1/collection-uploads",
-            json_body={
-                "collection_id": normalized_collection_id,
-                "ingest_source": str(root),
-                "files": manifest,
-            },
-        )
-        assert response.status_code == 200, response.text
-        payload = response.json()
-        for file_payload in payload["files"]:
-            upload = self.request(
-                "POST",
-                (
-                    f"/v1/collection-uploads/{normalized_collection_id}/files/"
-                    f"{file_payload['path']}/upload"
-                ),
-            )
-            assert upload.status_code == 200, upload.text
-            upload_payload = upload.json()
-            content = source_files[str(file_payload["path"])]
+        with time_block("fixture.upload_collection_source"):
+            normalized_collection_id = normalize_collection_id(collection_id)
+            source_files = files or PHOTOS_2024_FILES
+            self.seed_collection_source(normalized_collection_id, source_files)
+            root = self.state.local_collection_sources[CollectionId(normalized_collection_id)]
+            manifest = []
+            for path, content in sorted(source_files.items()):
+                manifest.append(
+                    {
+                        "path": path,
+                        "bytes": len(content),
+                        "sha256": hashlib.sha256(content).hexdigest(),
+                    }
+                )
             response = self.request(
-                "PATCH",
-                str(upload_payload["upload_url"]),
-                headers={
-                    "Content-Type": "application/offset+octet-stream",
-                    "Tus-Resumable": "1.0.0",
-                    "Upload-Offset": str(upload_payload["offset"]),
-                    "Upload-Checksum": "sha256 "
-                    + base64.b64encode(hashlib.sha256(content).digest()).decode("ascii"),
+                "POST",
+                "/v1/collection-uploads",
+                json_body={
+                    "collection_id": normalized_collection_id,
+                    "ingest_source": str(root),
+                    "files": manifest,
                 },
-                content=content,
             )
-            assert response.status_code == 204, response.text
-        final = self.request("GET", f"/v1/collections/{normalized_collection_id}")
-        assert final.status_code == 200, final.text
-        return cast(dict[str, object], final.json())
+            assert response.status_code == 200, response.text
+            payload = response.json()
+            for file_payload in payload["files"]:
+                upload = self.request(
+                    "POST",
+                    (
+                        f"/v1/collection-uploads/{normalized_collection_id}/files/"
+                        f"{file_payload['path']}/upload"
+                    ),
+                )
+                assert upload.status_code == 200, upload.text
+                upload_payload = upload.json()
+                content = source_files[str(file_payload["path"])]
+                response = self.request(
+                    "PATCH",
+                    str(upload_payload["upload_url"]),
+                    headers={
+                        "Content-Type": "application/offset+octet-stream",
+                        "Tus-Resumable": "1.0.0",
+                        "Upload-Offset": str(upload_payload["offset"]),
+                        "Upload-Checksum": "sha256 "
+                        + base64.b64encode(hashlib.sha256(content).digest()).decode("ascii"),
+                    },
+                    content=content,
+                )
+                assert response.status_code == 204, response.text
+            final = self.request("GET", f"/v1/collections/{normalized_collection_id}")
+            assert final.status_code == 200, final.text
+            return cast(dict[str, object], final.json())
 
     def seed_photos_hot(self) -> None:
         normalized = normalize_collection_id(PHOTOS_COLLECTION_ID)
@@ -3990,10 +4034,18 @@ class AcceptanceSystem:
         return env
 
 
-@pytest.fixture
-def acceptance_system(tmp_path: Path) -> Iterator[AcceptanceSystem]:
-    system = AcceptanceSystem.create(tmp_path)
+@pytest.fixture(scope="session")
+def shared_acceptance_system(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[AcceptanceSystem]:
+    system = AcceptanceSystem.create(tmp_path_factory.mktemp("acceptance-system"))
     try:
         yield system
     finally:
         system.close()
+
+
+@pytest.fixture
+def acceptance_system(shared_acceptance_system: AcceptanceSystem) -> Iterator[AcceptanceSystem]:
+    shared_acceptance_system.reset()
+    yield shared_acceptance_system
