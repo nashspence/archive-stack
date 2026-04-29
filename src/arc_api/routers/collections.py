@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Request, Response
+from typing import Literal
+
+from fastapi import APIRouter, Query, Request, Response
 
 from arc_api.deps import ContainerDep
-from arc_api.mappers import map_collection
+from arc_api.mappers import map_collection, map_collection_list_page
 from arc_api.schemas.collections import (
     CollectionFileUploadSessionOut,
     CollectionSummaryOut,
     CollectionUploadSessionOut,
     CreateOrResumeCollectionUploadRequest,
+    ListCollectionsResponse,
 )
 from arc_api.tus import (
     tus_delete_headers,
@@ -18,6 +21,25 @@ from arc_api.tus import (
 )
 
 router = APIRouter(tags=["collections"])
+
+
+@router.get("/collections", response_model=ListCollectionsResponse)
+def list_collections(
+    container: ContainerDep,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=100),
+    q: str | None = Query(None),
+    protection_state: Literal["unprotected", "partially_protected", "protected"] | None = Query(
+        None
+    ),
+) -> ListCollectionsResponse:
+    summary = container.collections.list(
+        page=page,
+        per_page=per_page,
+        q=q,
+        protection_state=protection_state,
+    )
+    return ListCollectionsResponse.model_validate(map_collection_list_page(summary))
 
 
 @router.post("/collection-uploads", response_model=CollectionUploadSessionOut)

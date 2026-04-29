@@ -297,7 +297,9 @@ class CollectionCoverageImage:
     protection_state: ProtectionState
     physical_copies_required: int
     physical_copies_registered: int
+    physical_copies_verified: int
     physical_copies_missing: int
+    covered_paths: list[str]
     copies: list[CopySummary]
     glacier: GlacierArchiveStatus
 
@@ -319,6 +321,15 @@ class CollectionSummary:
 
 
 @dataclass(frozen=True)
+class CollectionListPage:
+    page: int
+    per_page: int
+    total: int
+    pages: int
+    collections: list[CollectionSummary]
+
+
+@dataclass(frozen=True)
 class ImageSummary:
     id: ImageId
     filename: str
@@ -332,6 +343,7 @@ class ImageSummary:
     protection_state: ProtectionState
     physical_copies_required: int
     physical_copies_registered: int
+    physical_copies_verified: int
     physical_copies_missing: int
     glacier: GlacierArchiveStatus
 

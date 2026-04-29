@@ -29,6 +29,7 @@ from arc_api.app import create_app
 from arc_api.deps import ServiceContainer
 from arc_core.archive_compliance import (
     collection_protection_state,
+    copy_counts_as_verified,
     copy_counts_toward_protection,
     image_protection_state,
     normalize_copy_state,
@@ -46,6 +47,7 @@ from arc_core.domain.enums import (
 from arc_core.domain.errors import Conflict, HashMismatch, InvalidState, NotFound
 from arc_core.domain.models import (
     CollectionCoverageImage,
+    CollectionListPage,
     CollectionSummary,
     CopyHistoryEntry,
     CopySummary,
@@ -271,6 +273,7 @@ class CandidateRecord:
         self,
         *,
         physical_copies_registered: int = 0,
+        physical_copies_verified: int = 0,
         glacier: GlacierArchiveStatus | None = None,
     ) -> dict[str, object]:
         required_copy_count = normalize_required_copy_count(None)
@@ -293,6 +296,7 @@ class CandidateRecord:
             "protection_state": protection_state.value,
             "physical_copies_required": required_copy_count,
             "physical_copies_registered": physical_copies_registered,
+            "physical_copies_verified": physical_copies_verified,
             "physical_copies_missing": registered_copy_shortfall(
                 required_copy_count=required_copy_count,
                 registered_copy_count=physical_copies_registered,
@@ -754,6 +758,14 @@ class AcceptanceState:
             physical_copies_registered = sum(
                 1 for copy in copies if copy_counts_toward_protection(copy.state.value)
             )
+            physical_copies_verified = sum(
+                1
+                for copy in copies
+                if copy_counts_as_verified(
+                    state=copy.state.value,
+                    verification_state=copy.verification_state.value,
+                )
+            )
             physical_copies_required = normalize_required_copy_count(None)
             glacier = self.glacier_status(image.finalized_id)
             image_coverage.append(
@@ -767,9 +779,15 @@ class AcceptanceState:
                     ),
                     physical_copies_required=physical_copies_required,
                     physical_copies_registered=physical_copies_registered,
+                    physical_copies_verified=physical_copies_verified,
                     physical_copies_missing=registered_copy_shortfall(
                         required_copy_count=physical_copies_required,
                         registered_copy_count=physical_copies_registered,
+                    ),
+                    covered_paths=sorted(
+                        path
+                        for covered_collection_id, path in image.covered_paths
+                        if covered_collection_id == normalized_collection_id
                     ),
                     copies=copies,
                     glacier=glacier,
@@ -1043,6 +1061,41 @@ class AcceptanceCollectionService:
 
     def get(self, collection_id: str) -> CollectionSummary:
         return self.state.collection_summary(collection_id)
+
+    def list(
+        self,
+        *,
+        page: int,
+        per_page: int,
+        q: str | None,
+        protection_state: str | None,
+    ) -> CollectionListPage:
+        needle = q.casefold() if q else None
+        summaries = [
+            self.state.collection_summary(str(collection_id))
+            for collection_id in sorted(self.state.files_by_collection)
+        ]
+        if needle is not None:
+            summaries = [
+                summary for summary in summaries if needle in str(summary.id).casefold()
+            ]
+        if protection_state is not None:
+            summaries = [
+                summary
+                for summary in summaries
+                if summary.protection_state.value == protection_state
+            ]
+        total = len(summaries)
+        pages = math.ceil(total / per_page) if total else 0
+        start = (page - 1) * per_page
+        stop = start + per_page
+        return CollectionListPage(
+            page=page,
+            per_page=per_page,
+            total=total,
+            pages=pages,
+            collections=summaries[start:stop],
+        )
 
     @staticmethod
     def _normalize_files(files: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -1413,6 +1466,7 @@ class AcceptancePlanningService:
             "images": [
                 image.finalized_image_payload(
                     physical_copies_registered=self._physical_copies_registered(image),
+                    physical_copies_verified=self._physical_copies_verified(image),
                     glacier=self.state.glacier_status(image.finalized_id),
                 )
                 for image in page_images
@@ -1423,6 +1477,7 @@ class AcceptancePlanningService:
         image = self._finalized_image_record(image_id)
         return image.finalized_image_payload(
             physical_copies_registered=self._physical_copies_registered(image),
+            physical_copies_verified=self._physical_copies_verified(image),
             glacier=self.state.glacier_status(image.finalized_id),
         )
 
@@ -1437,6 +1492,7 @@ class AcceptancePlanningService:
         image = self.state.finalized_images_by_id[finalized_key]
         return image.finalized_image_payload(
             physical_copies_registered=self._physical_copies_registered(image),
+            physical_copies_verified=self._physical_copies_verified(image),
             glacier=self.state.glacier_status(image.finalized_id),
         )
 
@@ -1474,6 +1530,17 @@ class AcceptancePlanningService:
             for (volume_id, _copy_id), summary in self.state.copy_summaries.items()
             if volume_id == image.finalized_id
             and copy_counts_toward_protection(summary.state.value)
+        )
+
+    def _physical_copies_verified(self, image: CandidateRecord) -> int:
+        return sum(
+            1
+            for (volume_id, _copy_id), summary in self.state.copy_summaries.items()
+            if volume_id == image.finalized_id
+            and copy_counts_as_verified(
+                state=summary.state.value,
+                verification_state=summary.verification_state.value,
+            )
         )
 
     def _fixture_iso_bytes(self, image: CandidateRecord) -> bytes:

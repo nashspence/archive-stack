@@ -101,6 +101,24 @@ class ApiClient:
     def get_collection(self, collection_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/collections/{quote(collection_id, safe='/')}")
 
+    def list_collections(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        q: str | None = None,
+        protection_state: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "page": page,
+            "per_page": per_page,
+        }
+        if q:
+            params["q"] = q
+        if protection_state:
+            params["protection_state"] = protection_state
+        return self._json("GET", "/v1/collections", params=params)
+
     def get_plan(
         self,
         *,

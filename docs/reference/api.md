@@ -115,6 +115,23 @@ Required behavior:
 
 ### Collections summary
 
+#### `GET /v1/collections`
+
+Lists collection summaries.
+
+Supported query parameters:
+
+- `page` — 1-based page number, default `1`
+- `per_page` — page size, default `25`, max `100`
+- `q` — case-insensitive substring filter over collection ids
+- `protection_state` — exact filter over `unprotected`, `partially_protected`, or `protected`
+
+Required behavior:
+
+- the response includes pagination metadata and a `collections` array
+- returned collection summaries use the same shape as `GET /v1/collections/{collection_id}`
+- filtering by `protection_state=protected` can be used to answer which collections are already fully protected
+
 #### `GET /v1/collections/{collection_id}`
 
 Returns a collection summary with byte coverage values.
@@ -124,7 +141,10 @@ Required behavior:
 - collection ids may span multiple path segments, for example `GET /v1/collections/photos/2024`
 - API and CLI collection lookup treat slash-bearing ids as first-class
 - collection summaries expose `protection_state`, `protected_bytes`, and per-image coverage details
-- collection coverage explains which finalized images, registered copies, and Glacier state currently cover that collection
+- per-image coverage details expose `covered_paths`, `physical_copies_registered`,
+  `physical_copies_verified`, copy labels and locations, and Glacier archive metadata
+- collection coverage explains which finalized images, paths, registered copies, and Glacier state currently cover
+  that collection
 
 ### File introspection
 
@@ -231,7 +251,8 @@ Required behavior:
 - default ordering is latest finalized image first using `sort=finalized_at&order=desc`
 - the response includes pagination metadata and finalized-image summaries
 - finalized-image summaries expose `filename`, `finalized_at`, `collection_ids`, `protection_state`,
-  `physical_copies_required`, `physical_copies_registered`, `physical_copies_missing`, and `glacier`
+  `physical_copies_required`, `physical_copies_registered`, `physical_copies_verified`,
+  `physical_copies_missing`, and `glacier`
 - finalized-image summaries always report `iso_ready = true`
 
 #### `GET /v1/images/{image_id}`
@@ -570,6 +591,13 @@ The `arc` CLI is a thin API client and should provide at least:
 
 `arc show COLLECTION --files` should provide a concise human-readable listing of the collection's logical files, including current hot or archived state and available copies when applicable.
 
+`arc show COLLECTION` should provide a concise human-readable recovery and coverage view for one collection, including:
+
+- finalized images currently covering the collection
+- projected paths carried by each image
+- generated disc ids, exact label text, locations, and verification state
+- Glacier object paths plus any derived Glacier storage footprint or monthly cost attribution
+
 `arc status [TARGET]` should show file availability for either the whole projected namespace or one target selector.
 
 `arc get TARGET [-o FILE]` should download one hot file target and fail clearly when the target is archived-only or does not select exactly one file.
@@ -589,8 +617,9 @@ For finalized-image commands:
 - `arc plan --json` mirrors the `GET /v1/plan` response payload
 - non-JSON `arc plan` output stays concise and line-oriented while surfacing candidate id, fill, readiness, and
   contained collections
-- non-JSON `arc images` output stays concise and line-oriented while surfacing finalized id, filename, copy count,
-  and contained collections
+- non-JSON `arc images` acts as the default archive-status view and stays concise while surfacing:
+  ready-to-finalize provisional images, finalized-image burn and verification backlog, Glacier upload state, and
+  which collections are already fully protected
 - non-JSON `arc glacier` output stays line-oriented while surfacing measured usage totals, configured pricing basis,
   per-image Glacier state, and derived collection attribution
 

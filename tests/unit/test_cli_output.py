@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from arc_cli.output import format_glacier_report, format_images
+from arc_cli.output import (
+    format_archive_status,
+    format_collection_summary,
+    format_glacier_report,
+    format_images,
+)
 
 
 def test_format_images_surfaces_glacier_failure_context() -> None:
@@ -21,6 +26,7 @@ def test_format_images_surfaces_glacier_failure_context() -> None:
                     "collection_ids": ["docs"],
                     "protection_state": "partially_protected",
                     "physical_copies_registered": 1,
+                    "physical_copies_verified": 0,
                     "physical_copies_required": 2,
                     "glacier": {
                         "state": "failed",
@@ -32,7 +38,121 @@ def test_format_images_surfaces_glacier_failure_context() -> None:
         }
     )
     assert "glacier=failed" in rendered
+    assert "verified=0/2" in rendered
     assert "glacier_failure: s3 timeout" in rendered
+
+
+def test_format_archive_status_surfaces_pending_finalization_and_protected_collections() -> None:
+    rendered = format_archive_status(
+        {
+            "candidates": [
+                {
+                    "candidate_id": "img_2026-04-20_01",
+                    "fill": 0.84,
+                    "collections": 1,
+                    "collection_ids": ["docs"],
+                }
+            ]
+        },
+        {
+            "page": 1,
+            "per_page": 25,
+            "images": [
+                {
+                    "id": "20260420T040001Z",
+                    "filename": "20260420T040001Z.iso",
+                    "collections": 1,
+                    "collection_ids": ["docs"],
+                    "protection_state": "partially_protected",
+                    "physical_copies_registered": 1,
+                    "physical_copies_verified": 0,
+                    "physical_copies_required": 2,
+                    "glacier": {"state": "pending"},
+                }
+            ],
+        },
+        {
+            "collections": [
+                {
+                    "id": "receipts",
+                    "bytes": 40,
+                    "protected_bytes": 40,
+                }
+            ]
+        },
+    )
+    assert "waiting_finalization:" in rendered
+    assert "img_2026-04-20_01" in rendered
+    assert "next: burn, verify, glacier=pending" in rendered
+    assert "fully_protected_collections:" in rendered
+    assert "receipts protected_bytes=40/40" in rendered
+
+
+def test_format_collection_summary_surfaces_paths_labels_and_glacier_costs() -> None:
+    rendered = format_collection_summary(
+        {
+            "id": "docs",
+            "files": 2,
+            "bytes": 33,
+            "hot_bytes": 0,
+            "archived_bytes": 33,
+            "pending_bytes": 0,
+            "protection_state": "partially_protected",
+            "protected_bytes": 0,
+            "image_coverage": [
+                {
+                    "id": "20260420T040001Z",
+                    "filename": "20260420T040001Z.iso",
+                    "protection_state": "partially_protected",
+                    "physical_copies_registered": 1,
+                    "physical_copies_verified": 1,
+                    "physical_copies_required": 2,
+                    "glacier": {
+                        "state": "uploaded",
+                        "object_path": (
+                            "glacier/finalized-images/20260420T040001Z/"
+                            "20260420T040001Z.iso"
+                        ),
+                    },
+                    "covered_paths": ["tax/2022/invoice-123.pdf"],
+                    "copies": [
+                        {
+                            "id": "20260420T040001Z-1",
+                            "label_text": "20260420T040001Z-1",
+                            "location": "Shelf B1",
+                            "state": "verified",
+                            "verification_state": "verified",
+                        }
+                    ],
+                }
+            ],
+        },
+        {
+            "collections": [
+                {
+                    "id": "docs",
+                    "represented_bytes": 33,
+                    "derived_stored_bytes": 8200,
+                    "estimated_monthly_cost_usd": 0.000192,
+                    "images": [
+                        {
+                            "image_id": "20260420T040001Z",
+                            "represented_bytes": 33,
+                            "derived_stored_bytes": 8200,
+                            "estimated_monthly_cost_usd": 0.000192,
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    assert "glacier_footprint: represented_bytes=33 derived_stored_bytes=8200" in rendered
+    assert "paths: tax/2022/invoice-123.pdf" in rendered
+    assert "label=20260420T040001Z-1" in rendered
+    assert (
+        "glacier_path: glacier/finalized-images/20260420T040001Z/20260420T040001Z.iso"
+        in rendered
+    )
 
 
 def test_format_glacier_report_surfaces_pricing_basis_and_collection_derivation() -> None:

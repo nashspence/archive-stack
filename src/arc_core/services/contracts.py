@@ -4,6 +4,7 @@ from collections.abc import AsyncIterable, Awaitable, Iterable
 from typing import Protocol, TypedDict
 
 from arc_core.domain.models import (
+    CollectionListPage,
     CollectionSummary,
     CopySummary,
     FetchSummary,
@@ -77,6 +78,14 @@ class CollectionService(Protocol):
     def cancel_file_upload(self, collection_id: str, path: str) -> None: ...
     def expire_stale_uploads(self) -> None: ...
     def get(self, collection_id: str) -> CollectionSummary: ...
+    def list(
+        self,
+        *,
+        page: int,
+        per_page: int,
+        q: str | None,
+        protection_state: str | None,
+    ) -> CollectionListPage: ...
 
 
 class SearchService(Protocol):

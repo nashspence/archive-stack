@@ -21,6 +21,7 @@ class FinalizedImageSummaryResponse(ArcModel):
     protection_state: Literal["unprotected", "partially_protected", "protected"]
     physical_copies_required: int
     physical_copies_registered: int
+    physical_copies_verified: int
     physical_copies_missing: int
     glacier: GlacierArchiveOut
 

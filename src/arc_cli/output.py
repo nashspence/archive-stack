@@ -14,6 +14,55 @@ def _copy_label(copy: Mapping[str, object]) -> str:
     return f"{copy_id} ({volume_id} @ {location})"
 
 
+def _collection_ids_text(collection_ids: object) -> str:
+    if not isinstance(collection_ids, Sequence):
+        return ""
+    return ", ".join(str(item) for item in collection_ids)
+
+
+def _int_value(value: object, *, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        return int(value)
+    return default
+
+
+def _image_next_actions(image: Mapping[str, object]) -> str:
+    required = _int_value(image.get("physical_copies_required", 0))
+    registered = _int_value(image.get("physical_copies_registered", 0))
+    verified = _int_value(image.get("physical_copies_verified", 0))
+    actions: list[str] = []
+    if registered < required:
+        actions.append("burn")
+    if verified < required:
+        actions.append("verify")
+    glacier = image.get("glacier")
+    glacier_state = (
+        str(glacier.get("state", "unknown")) if isinstance(glacier, Mapping) else "unknown"
+    )
+    if glacier_state != "uploaded":
+        actions.append(f"glacier={glacier_state}")
+    return ", ".join(actions) if actions else "none"
+
+
+def _find_collection_glacier_entry(
+    collection_id: str,
+    glacier_payload: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    collections = glacier_payload.get("collections")
+    if not isinstance(collections, Sequence):
+        return None
+    for collection in collections:
+        if isinstance(collection, Mapping) and str(collection.get("id")) == collection_id:
+            return collection
+    return None
+
+
 def format_copy(payload: Mapping[str, Any]) -> str:
     history = payload.get("history")
     lines = [
@@ -137,15 +186,9 @@ def format_images(payload: Mapping[str, Any]) -> str:
     for image in images:
         if not isinstance(image, Mapping):
             continue
-        collection_ids = image.get("collection_ids")
         glacier = image.get("glacier")
         glacier_state = (
             glacier.get("state", "unknown") if isinstance(glacier, Mapping) else "unknown"
-        )
-        collection_text = (
-            ", ".join(str(item) for item in collection_ids)
-            if isinstance(collection_ids, Sequence)
-            else ""
         )
         lines.extend(
             [
@@ -153,10 +196,13 @@ def format_images(payload: Mapping[str, Any]) -> str:
                 f"  finalized_at: {image.get('finalized_at', 'unknown')}",
                 "  protection: "
                 f"{image.get('protection_state', 'unknown')} "
-                f"copies={image.get('physical_copies_registered', 0)}/"
+                f"registered={image.get('physical_copies_registered', 0)}/"
+                f"{image.get('physical_copies_required', 0)} "
+                f"verified={image.get('physical_copies_verified', 0)}/"
                 f"{image.get('physical_copies_required', 0)} "
                 f"glacier={glacier_state}",
-                f"  collections: {image.get('collections', 0)} [{collection_text}]",
+                f"  collections: {image.get('collections', 0)} "
+                f"[{_collection_ids_text(image.get('collection_ids'))}]",
             ]
         )
         if isinstance(glacier, Mapping) and glacier.get("object_path"):
@@ -164,6 +210,174 @@ def format_images(payload: Mapping[str, Any]) -> str:
         if isinstance(glacier, Mapping) and glacier.get("failure"):
             lines.append(f"  glacier_failure: {glacier.get('failure')}")
 
+    return "\n".join(lines)
+
+
+def format_archive_status(
+    plan_payload: Mapping[str, Any],
+    images_payload: Mapping[str, Any],
+    protected_collections_payload: Mapping[str, Any],
+) -> str:
+    lines = [
+        "archive: "
+        f"page={images_payload.get('page', 1)} "
+        f"per_page={images_payload.get('per_page', 25)}",
+        "waiting_finalization:",
+    ]
+
+    candidates = plan_payload.get("candidates")
+    if not isinstance(candidates, Sequence) or not candidates:
+        lines.append("- none")
+    else:
+        for candidate in candidates:
+            if not isinstance(candidate, Mapping):
+                continue
+            lines.append(
+                f"- {candidate.get('candidate_id', 'unknown')} "
+                f"fill={candidate.get('fill', 0)} "
+                f"collections={candidate.get('collections', 0)} "
+                f"[{_collection_ids_text(candidate.get('collection_ids'))}]"
+            )
+
+    lines.append("finalized_images:")
+    images = images_payload.get("images")
+    if not isinstance(images, Sequence) or not images:
+        lines.append("- none")
+    else:
+        for image in images:
+            if not isinstance(image, Mapping):
+                continue
+            glacier = image.get("glacier")
+            glacier_state = (
+                glacier.get("state", "unknown") if isinstance(glacier, Mapping) else "unknown"
+            )
+            lines.extend(
+                [
+                    f"- {image.get('id', 'unknown')} ({image.get('filename', 'unknown')})",
+                    f"  next: {_image_next_actions(image)}",
+                    "  protection: "
+                    f"{image.get('protection_state', 'unknown')} "
+                    f"registered={image.get('physical_copies_registered', 0)}/"
+                    f"{image.get('physical_copies_required', 0)} "
+                    f"verified={image.get('physical_copies_verified', 0)}/"
+                    f"{image.get('physical_copies_required', 0)} "
+                    f"glacier={glacier_state}",
+                    f"  collections: {image.get('collections', 0)} "
+                    f"[{_collection_ids_text(image.get('collection_ids'))}]",
+                ]
+            )
+            if isinstance(glacier, Mapping) and glacier.get("object_path"):
+                lines.append(f"  glacier_path: {glacier.get('object_path')}")
+            if isinstance(glacier, Mapping) and glacier.get("failure"):
+                lines.append(f"  glacier_failure: {glacier.get('failure')}")
+
+    lines.append("fully_protected_collections:")
+    collections = protected_collections_payload.get("collections")
+    if not isinstance(collections, Sequence) or not collections:
+        lines.append("- none")
+    else:
+        for collection in collections:
+            if not isinstance(collection, Mapping):
+                continue
+            lines.append(
+                f"- {collection.get('id', 'unknown')} "
+                f"protected_bytes={collection.get('protected_bytes', 0)}/"
+                f"{collection.get('bytes', 0)}"
+            )
+    return "\n".join(lines)
+
+
+def format_collection_summary(
+    payload: Mapping[str, Any],
+    glacier_payload: Mapping[str, Any],
+) -> str:
+    collection_id = str(payload.get("id", "unknown"))
+    lines = [
+        f"collection: {collection_id}",
+        "protection: "
+        f"{payload.get('protection_state', 'unknown')} "
+        f"protected_bytes={payload.get('protected_bytes', 0)}/{payload.get('bytes', 0)}",
+        "storage: "
+        f"files={payload.get('files', 0)} "
+        f"hot_bytes={payload.get('hot_bytes', 0)} "
+        f"archived_bytes={payload.get('archived_bytes', 0)} "
+        f"pending_bytes={payload.get('pending_bytes', 0)}",
+    ]
+
+    collection_glacier = _find_collection_glacier_entry(collection_id, glacier_payload)
+    if isinstance(collection_glacier, Mapping):
+        estimated_cost = collection_glacier.get("estimated_monthly_cost_usd", 0.0)
+        lines.append(
+            "glacier_footprint: "
+            f"represented_bytes={collection_glacier.get('represented_bytes', 0)} "
+            f"derived_stored_bytes={collection_glacier.get('derived_stored_bytes', 0)} "
+            f"estimated_monthly_cost_usd={estimated_cost}"
+        )
+
+    lines.append("coverage:")
+    images = payload.get("image_coverage")
+    if not isinstance(images, Sequence) or not images:
+        lines.append("- none")
+        return "\n".join(lines)
+
+    image_costs: dict[str, Mapping[str, Any]] = {}
+    if isinstance(collection_glacier, Mapping):
+        contributions = collection_glacier.get("images")
+        if isinstance(contributions, Sequence):
+            image_costs = {
+                str(item.get("image_id")): item
+                for item in contributions
+                if isinstance(item, Mapping)
+            }
+
+    for image in images:
+        if not isinstance(image, Mapping):
+            continue
+        image_id = str(image.get("id", "unknown"))
+        glacier = image.get("glacier")
+        glacier_state = (
+            glacier.get("state", "unknown") if isinstance(glacier, Mapping) else "unknown"
+        )
+        covered_paths = ", ".join(str(path) for path in image.get("covered_paths", [])) or "none"
+        lines.extend(
+            [
+                f"- {image_id} ({image.get('filename', 'unknown')})",
+                "  protection: "
+                f"{image.get('protection_state', 'unknown')} "
+                    f"registered={image.get('physical_copies_registered', 0)}/"
+                    f"{image.get('physical_copies_required', 0)} "
+                    f"verified={image.get('physical_copies_verified', 0)}/"
+                    f"{image.get('physical_copies_required', 0)} "
+                    f"glacier={glacier_state}",
+                f"  paths: {covered_paths}",
+            ]
+        )
+        contribution = image_costs.get(image_id)
+        if isinstance(contribution, Mapping):
+            lines.append(
+                "  glacier_coverage: "
+                f"derived_stored_bytes={contribution.get('derived_stored_bytes', 0)} "
+                f"represented_bytes={contribution.get('represented_bytes', 0)} "
+                f"estimated_monthly_cost_usd={contribution.get('estimated_monthly_cost_usd', 0.0)}"
+            )
+        if isinstance(glacier, Mapping) and glacier.get("object_path"):
+            lines.append(f"  glacier_path: {glacier.get('object_path')}")
+        copies = image.get("copies")
+        lines.append("  copies:")
+        if not isinstance(copies, Sequence) or not copies:
+            lines.append("  - none")
+        else:
+            for copy in copies:
+                if not isinstance(copy, Mapping):
+                    continue
+                lines.append(
+                    "  - "
+                    f"{copy.get('id', 'unknown')} "
+                    f"label={copy.get('label_text', 'unknown')} "
+                    f"location={copy.get('location') or 'unassigned'} "
+                    f"state={copy.get('state', 'unknown')} "
+                    f"verification={copy.get('verification_state', 'unknown')}"
+                )
     return "\n".join(lines)
 
 

@@ -45,6 +45,12 @@ def copy_counts_toward_protection(state: str | None) -> bool:
     return normalized in {CopyState.VERIFIED, CopyState.REGISTERED}
 
 
+def copy_counts_as_verified(*, state: str | None, verification_state: str | None) -> bool:
+    return copy_counts_toward_protection(state) and (
+        normalize_verification_state(verification_state) == VerificationState.VERIFIED
+    )
+
+
 def registered_copy_shortfall(*, required_copy_count: int, registered_copy_count: int) -> int:
     return max(required_copy_count - registered_copy_count, 0)
 

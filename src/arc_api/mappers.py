@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from arc_core.domain.models import (
     CollectionCoverageImage,
+    CollectionListPage,
     CollectionSummary,
     CopyHistoryEntry,
     CopySummary,
@@ -292,6 +293,16 @@ def map_collection(summary: CollectionSummary) -> dict[str, object]:
     }
 
 
+def map_collection_list_page(summary: CollectionListPage) -> dict[str, object]:
+    return {
+        "page": summary.page,
+        "per_page": summary.per_page,
+        "total": summary.total,
+        "pages": summary.pages,
+        "collections": [map_collection(collection) for collection in summary.collections],
+    }
+
+
 def map_recovery_cost_estimate(summary: RecoveryCostEstimate) -> dict[str, object]:
     return {
         "currency_code": summary.currency_code,
@@ -379,7 +390,9 @@ def map_collection_coverage_image(summary: CollectionCoverageImage) -> dict[str,
         "protection_state": summary.protection_state.value,
         "physical_copies_required": summary.physical_copies_required,
         "physical_copies_registered": summary.physical_copies_registered,
+        "physical_copies_verified": summary.physical_copies_verified,
         "physical_copies_missing": summary.physical_copies_missing,
+        "covered_paths": list(summary.covered_paths),
         "copies": [map_copy(copy) for copy in summary.copies],
         "glacier": map_glacier(summary.glacier),
     }

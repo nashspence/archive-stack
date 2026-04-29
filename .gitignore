@@ -18,3 +18,7 @@ __pycache__/
 build/
 dist/
 /.tmp
+
+.env
+.env.*
+.devcontainer/.env

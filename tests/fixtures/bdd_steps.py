@@ -549,6 +549,15 @@ def _prepare_arc_expectation(
         ).json()
         return
 
+    if argv[1] == "show":
+        collection_id = argv[2]
+        context.expected_api_endpoint = ("GET", f"/v1/collections/{collection_id}")
+        context.expected_api_payload = acceptance_system.request(
+            "GET",
+            f"/v1/collections/{quote(collection_id, safe='/')}",
+        ).json()
+        return
+
     if argv[1] == "status":
         target = argv[2]
         context.expected_api_endpoint = ("GET", "/v1/files")
@@ -1819,6 +1828,17 @@ def then_collection_image_coverage_for_image_includes_copy(
     assert copy_id in [copy["id"] for copy in image["copies"]]
 
 
+@then(parsers.parse('collection image coverage for image "{image_id}" includes path "{path}"'))
+def then_collection_image_coverage_for_image_includes_path(
+    acceptance_context: AcceptanceScenarioContext,
+    image_id: str,
+    path: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    image = next(image for image in payload["image_coverage"] if image["id"] == image_id)
+    assert path in image["covered_paths"]
+
+
 @then(parsers.parse('collection image coverage for image "{image_id}" glacier state is "{state}"'))
 def then_collection_image_coverage_for_image_glacier_state_is(
     acceptance_context: AcceptanceScenarioContext,
@@ -2449,6 +2469,24 @@ def then_response_contains_plan_candidate_count(
     assert len(payload["candidates"]) == count
 
 
+@then(parsers.parse("the response contains {count:d} collection summaries"))
+def then_response_contains_collection_summaries_count(
+    acceptance_context: AcceptanceScenarioContext,
+    count: int,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert len(payload["collections"]) == count
+
+
+@then(parsers.parse('the response collection summaries contain only "{collection_id}"'))
+def then_response_collection_summaries_contain_only(
+    acceptance_context: AcceptanceScenarioContext,
+    collection_id: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert [item["id"] for item in payload["collections"]] == [collection_id]
+
+
 @then(parsers.re(r'the response plan candidates include "(?P<first>[^"]+)"(?P<rest>.*)'))
 def then_response_plan_candidates_include(
     acceptance_context: AcceptanceScenarioContext,
@@ -2475,6 +2513,7 @@ def then_response_plan_candidates_contain_only(
     '"fill", "files", "collections", '
     '"collection_ids", "iso_ready", "protection_state", '
     '"physical_copies_required", "physical_copies_registered", '
+    '"physical_copies_verified", '
     '"physical_copies_missing", and "glacier"'
 )
 def then_each_finalized_image_contains_expected_fields(
@@ -2494,6 +2533,7 @@ def then_each_finalized_image_contains_expected_fields(
         "protection_state",
         "physical_copies_required",
         "physical_copies_registered",
+        "physical_copies_verified",
         "physical_copies_missing",
         "glacier",
     }

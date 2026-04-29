@@ -70,6 +70,37 @@ def test_get_collection_quotes_reserved_characters_but_preserves_slashes(monkeyp
     assert captured == ["https://api.test/v1/collections/tax/2022%20reports"]
 
 
+def test_list_collections_uses_collection_listing_endpoint(monkeypatch) -> None:
+    captured: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(str(request.url))
+        return httpx.Response(
+            200,
+            json={
+                "page": 1,
+                "per_page": 10,
+                "total": 1,
+                "pages": 1,
+                "collections": [],
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_client(self: ApiClient) -> httpx.Client:
+        return httpx.Client(base_url=self.base_url, transport=transport)
+
+    monkeypatch.setattr(ApiClient, "_client", fake_client)
+
+    client = ApiClient(base_url="https://api.test")
+    client.list_collections(page=1, per_page=10, q="docs", protection_state="protected")
+
+    assert captured == [
+        "https://api.test/v1/collections?page=1&per_page=10&q=docs&protection_state=protected"
+    ]
+
+
 def test_create_or_resume_collection_file_upload_quotes_collection_and_path(monkeypatch) -> None:
     captured: list[tuple[str, str]] = []
 

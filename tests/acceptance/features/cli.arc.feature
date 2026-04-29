@@ -127,16 +127,34 @@ Feature: arc CLI
       And stdout mentions "iso_ready: True"
       And stdout mentions "collections: 1 [docs]"
 
-    Scenario: arc images prints finalized ids and protection progress
+    Scenario: arc images prints archive work status
       Given an archive with planner fixtures
+      And an archive with split planner fixtures
       And candidate "img_2026-04-20_01" is finalized
       And copy "20260420T040001Z-1" already exists
       When the operator runs 'arc images --has-copies'
       Then the command exits with code 0
+      And stdout mentions "waiting_finalization:"
+      And stdout mentions "img_2026-04-20_03"
       And stdout mentions "20260420T040001Z"
-      And stdout mentions "20260420T040001Z.iso"
-      And stdout mentions "protection: partially_protected copies=1/2 glacier="
-      And stdout mentions "collections: 1 [docs]"
+      And stdout mentions "next: burn, verify"
+      And stdout mentions "glacier="
+      And stdout mentions "verified=0/2"
+      And stdout mentions "fully_protected_collections:"
+
+    Scenario: arc show prints collection coverage and Glacier recovery hints
+      Given an archive with planner fixtures
+      And candidate "img_2026-04-20_01" is finalized
+      And copy "20260420T040001Z-1" already exists
+      When the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-1" with location "Shelf B1", state "verified", and verification_state "verified"
+      When the client waits for image "20260420T040001Z" glacier state "uploaded"
+      And the operator runs 'arc show docs'
+      Then the command exits with code 0
+      And stdout mentions "coverage:"
+      And stdout mentions "paths: tax/2022/invoice-123.pdf"
+      And stdout mentions "label=20260420T040001Z-1"
+      And stdout mentions "glacier_path: glacier/finalized-images/20260420T040001Z/20260420T040001Z.iso"
+      And stdout mentions "derived_stored_bytes="
 
     Scenario: arc glacier prints pricing basis and derived collection attribution
       Given an archive with split planner fixtures

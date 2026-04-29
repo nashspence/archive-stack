@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from arc_core.archive_compliance import (
     collection_protection_state,
+    copy_counts_as_verified,
     copy_counts_toward_protection,
     image_protection_state,
     normalize_copy_state,
@@ -28,6 +29,7 @@ from arc_core.catalog_models import (
 from arc_core.domain.errors import BadRequest, Conflict, HashMismatch, NotFound
 from arc_core.domain.models import (
     CollectionCoverageImage,
+    CollectionListPage,
     CollectionSummary,
     CopySummary,
     GlacierArchiveStatus,
@@ -92,6 +94,16 @@ class StubCollectionService:
         raise NotImplementedError("StubCollectionService is not implemented yet")
 
     def get(self, collection_id: str) -> CollectionSummary:
+        raise NotImplementedError("StubCollectionService is not implemented yet")
+
+    def list(
+        self,
+        *,
+        page: int,
+        per_page: int,
+        q: str | None,
+        protection_state: str | None,
+    ) -> CollectionListPage:
         raise NotImplementedError("StubCollectionService is not implemented yet")
 
 
@@ -392,6 +404,63 @@ class SqlAlchemyCollectionService:
                 collection.files,
                 image_coverage=image_coverage,
                 covered_paths=covered_paths,
+            )
+
+    def list(
+        self,
+        *,
+        page: int,
+        per_page: int,
+        q: str | None,
+        protection_state: str | None,
+    ) -> CollectionListPage:
+        if page < 1:
+            raise BadRequest("page must be at least 1")
+        if per_page < 1:
+            raise BadRequest("per_page must be at least 1")
+        if protection_state is not None and protection_state not in {
+            "unprotected",
+            "partially_protected",
+            "protected",
+        }:
+            raise BadRequest(f"unsupported protection_state filter: {protection_state}")
+
+        needle = q.casefold() if q else None
+        with session_scope(self._session_factory) as session:
+            collections = session.scalars(
+                select(CollectionRecord)
+                .options(selectinload(CollectionRecord.files))
+                .order_by(CollectionRecord.id.asc())
+            ).all()
+
+            summaries: list[CollectionSummary] = []
+            for collection in collections:
+                image_coverage, covered_paths = _collection_image_coverage(session, collection.id)
+                summary = _summary_from_records(
+                    collection.id,
+                    collection.files,
+                    image_coverage=image_coverage,
+                    covered_paths=covered_paths,
+                )
+                if needle is not None and needle not in str(summary.id).casefold():
+                    continue
+                if (
+                    protection_state is not None
+                    and summary.protection_state.value != protection_state
+                ):
+                    continue
+                summaries.append(summary)
+
+            total = len(summaries)
+            pages = (total + per_page - 1) // per_page if total else 0
+            start = (page - 1) * per_page
+            stop = start + per_page
+            return CollectionListPage(
+                page=page,
+                per_page=per_page,
+                total=total,
+                pages=pages,
+                collections=summaries[start:stop],
             )
 
 
@@ -704,14 +773,28 @@ def _collection_summary_payload(summary: CollectionSummary) -> dict[str, object]
                 "protection_state": image.protection_state.value,
                 "physical_copies_required": image.physical_copies_required,
                 "physical_copies_registered": image.physical_copies_registered,
+                "physical_copies_verified": image.physical_copies_verified,
                 "physical_copies_missing": image.physical_copies_missing,
+                "covered_paths": list(image.covered_paths),
                 "copies": [
                     {
                         "id": str(copy.id),
                         "volume_id": copy.volume_id,
+                        "label_text": copy.label_text,
                         "location": copy.location,
                         "created_at": copy.created_at,
                         "state": copy.state.value,
+                        "verification_state": copy.verification_state.value,
+                        "history": [
+                            {
+                                "at": entry.at,
+                                "event": entry.event,
+                                "state": entry.state.value,
+                                "verification_state": entry.verification_state.value,
+                                "location": entry.location,
+                            }
+                            for entry in copy.history
+                        ],
                     }
                     for copy in image.copies
                 ],
@@ -787,10 +870,12 @@ def _collection_image_coverage(
     covered_paths: dict[str, set[str]] = {}
     image_coverage: list[CollectionCoverageImage] = []
     for image in sorted(images, key=lambda current: current.image_id):
+        image_paths: set[str] = set()
         for covered_path in image.covered_paths:
             if covered_path.collection_id != collection_id:
                 continue
             covered_paths.setdefault(covered_path.path, set()).add(image.image_id)
+            image_paths.add(covered_path.path)
 
         copies = [
             CopySummary(
@@ -807,6 +892,14 @@ def _collection_image_coverage(
         required_copy_count = normalize_required_copy_count(image.required_copy_count)
         registered_copy_count = sum(
             1 for copy in image.copies if copy_counts_toward_protection(copy.state)
+        )
+        verified_copy_count = sum(
+            1
+            for copy in image.copies
+            if copy_counts_as_verified(
+                state=copy.state,
+                verification_state=copy.verification_state,
+            )
         )
         glacier = GlacierArchiveStatus(
             state=normalize_glacier_state(image.glacier_state),
@@ -829,10 +922,12 @@ def _collection_image_coverage(
                 ),
                 physical_copies_required=required_copy_count,
                 physical_copies_registered=registered_copy_count,
+                physical_copies_verified=verified_copy_count,
                 physical_copies_missing=registered_copy_shortfall(
                     required_copy_count=required_copy_count,
                     registered_copy_count=registered_copy_count,
                 ),
+                covered_paths=sorted(image_paths),
                 copies=copies,
                 glacier=glacier,
             )

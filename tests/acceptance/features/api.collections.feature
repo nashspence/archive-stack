@@ -109,6 +109,13 @@ Feature: Collections API
     Background:
       Given an archive containing collection "photos-2024"
 
+    Scenario: List collection summaries with pagination
+      Given an archive containing collection "docs"
+      When the client gets "/v1/collections?page=1&per_page=2"
+      Then the response status is 200
+      And the response contains "page", "per_page", "total", "pages", and "collections"
+      And the response contains 2 collection summaries
+
     Scenario: Read a collection summary
       When the client gets "/v1/collections/photos-2024"
       Then the response status is 200
@@ -122,9 +129,17 @@ Feature: Collections API
     Scenario: Collection summaries explain image, disc, and Glacier coverage
       Given an archive with planner fixtures
       And copy "20260420T040001Z-1" already exists
-      When the client gets "/v1/collections/docs"
-    Then the response status is 200
-    And collection protection_state is "partially_protected"
-    And protected_bytes is 0
-    And collection image coverage includes image "20260420T040001Z"
-    And collection image coverage for image "20260420T040001Z" includes copy "20260420T040001Z-1"
+      When the client waits for image "20260420T040001Z" glacier state "uploaded"
+      And the client gets "/v1/collections/docs"
+      Then the response status is 200
+      And collection protection_state is "partially_protected"
+      And protected_bytes is 0
+      And collection image coverage includes image "20260420T040001Z"
+      And collection image coverage for image "20260420T040001Z" includes path "tax/2022/invoice-123.pdf"
+      And collection image coverage for image "20260420T040001Z" includes copy "20260420T040001Z-1"
+      And collection image coverage for image "20260420T040001Z" glacier state is "uploaded"
+
+    Scenario: Collection listing can filter by protection_state
+      When the client gets "/v1/collections?protection_state=unprotected"
+      Then the response status is 200
+      And the response collection summaries contain only "photos-2024"

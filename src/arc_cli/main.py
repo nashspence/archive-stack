@@ -9,14 +9,15 @@ import typer
 from arc_cli.client import ApiClient
 from arc_cli.output import (
     emit,
+    format_archive_status,
     format_collection_files,
+    format_collection_summary,
     format_collection_upload,
     format_copies,
     format_copy,
     format_fetch,
     format_files,
     format_glacier_report,
-    format_images,
     format_pin,
     format_plan,
 )
@@ -164,7 +165,13 @@ def show_cmd(
         payload = client().list_collection_files(collection, page=page, per_page=per_page)
         emit(payload if json_mode else format_collection_files(payload), json_mode=json_mode)
     else:
-        emit(client().get_collection(collection), json_mode=json_mode)
+        api = client()
+        payload = api.get_collection(collection)
+        if json_mode:
+            emit(payload, json_mode=True)
+            return
+        glacier_payload = api.get_glacier_report(collection=collection)
+        emit(format_collection_summary(payload, glacier_payload), json_mode=False)
 
 
 @app.command("status")
@@ -249,7 +256,8 @@ def images_cmd(
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    payload = client().list_images(
+    api = client()
+    payload = api.list_images(
         page=page,
         per_page=per_page,
         sort=sort,
@@ -258,7 +266,30 @@ def images_cmd(
         collection=collection,
         has_copies=has_copies,
     )
-    emit(payload if json_mode else format_images(payload), json_mode=json_mode)
+    if json_mode:
+        emit(payload, json_mode=True)
+        return
+
+    plan_payload = api.get_plan(
+        page=page,
+        per_page=per_page,
+        sort="fill",
+        order="desc",
+        query=query,
+        collection=collection,
+        iso_ready=True,
+    )
+    collections_query = collection or query
+    protected_collections = api.list_collections(
+        page=page,
+        per_page=per_page,
+        q=collections_query,
+        protection_state="protected",
+    )
+    emit(
+        format_archive_status(plan_payload, payload, protected_collections),
+        json_mode=False,
+    )
 
 
 @app.command("glacier")

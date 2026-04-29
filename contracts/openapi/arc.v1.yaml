@@ -330,6 +330,41 @@ paths:
                 format: binary
         default:
           $ref: "#/components/responses/Error"
+  /collections:
+    get:
+      summary: List collection summaries
+      description: Returns one page of collection summaries with optional substring and protection-state filtering.
+      operationId: listCollections
+      parameters:
+        - in: query
+          name: page
+          required: false
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: per_page
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+        - in: query
+          name: q
+          required: false
+          description: Case-insensitive substring filter over canonical collection ids.
+          schema: { type: string }
+        - in: query
+          name: protection_state
+          required: false
+          description: Exact archive-protection filter.
+          schema:
+            type: string
+            enum: [unprotected, partially_protected, protected]
+      responses:
+        "200":
+          description: Collection summary listing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionListResponse"
+        default:
+          $ref: "#/components/responses/Error"
   /collections/{collection_id}:
     get:
       summary: Get one collection summary
@@ -1627,6 +1662,26 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/CollectionCoverageImage"
+    CollectionListResponse:
+      type: object
+      required: [page, per_page, total, pages, collections]
+      properties:
+        page:
+          type: integer
+          minimum: 1
+        per_page:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+        pages:
+          type: integer
+          minimum: 0
+        collections:
+          type: array
+          items:
+            $ref: "#/components/schemas/CollectionSummary"
     CollectionUploadFile:
       type: object
       required: [path, bytes, sha256]
@@ -1762,6 +1817,7 @@ components:
           protection_state,
           physical_copies_required,
           physical_copies_registered,
+          physical_copies_verified,
           physical_copies_missing,
           glacier,
         ]
@@ -1797,6 +1853,9 @@ components:
           type: integer
           minimum: 1
         physical_copies_registered:
+          type: integer
+          minimum: 0
+        physical_copies_verified:
           type: integer
           minimum: 0
         physical_copies_missing:
@@ -1839,7 +1898,9 @@ components:
           protection_state,
           physical_copies_required,
           physical_copies_registered,
+          physical_copies_verified,
           physical_copies_missing,
+          covered_paths,
           copies,
           glacier,
         ]
@@ -1857,9 +1918,17 @@ components:
         physical_copies_registered:
           type: integer
           minimum: 0
+        physical_copies_verified:
+          type: integer
+          minimum: 0
         physical_copies_missing:
           type: integer
           minimum: 0
+        covered_paths:
+          type: array
+          items:
+            type: string
+          description: Relative collection paths within this collection that the finalized image represents.
         copies:
           type: array
           items:

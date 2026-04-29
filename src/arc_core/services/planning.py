@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from arc_core.archive_compliance import (
+    copy_counts_as_verified,
     copy_counts_toward_protection,
     image_protection_state,
     normalize_glacier_state,
@@ -270,6 +271,7 @@ class FinalizedImageView(TypedDict):
     protection_state: str
     physical_copies_required: int
     physical_copies_registered: int
+    physical_copies_verified: int
     physical_copies_missing: int
     glacier: dict[str, object]
     _bytes: int
@@ -301,6 +303,14 @@ def _finalized_image_view(image: FinalizedImageRecord, session: Session) -> Fina
     registered_copy_count = sum(
         1 for copy in copy_rows if copy_counts_toward_protection(copy.state)
     )
+    verified_copy_count = sum(
+        1
+        for copy in copy_rows
+        if copy_counts_as_verified(
+            state=copy.state,
+            verification_state=copy.verification_state,
+        )
+    )
     required_copy_count = normalize_required_copy_count(image.required_copy_count)
     glacier = _glacier_archive_status(image)
     protection_state = image_protection_state(
@@ -325,6 +335,7 @@ def _finalized_image_view(image: FinalizedImageRecord, session: Session) -> Fina
         "protection_state": protection_state.value,
         "physical_copies_required": required_copy_count,
         "physical_copies_registered": registered_copy_count,
+        "physical_copies_verified": verified_copy_count,
         "physical_copies_missing": registered_copy_shortfall(
             required_copy_count=required_copy_count,
             registered_copy_count=registered_copy_count,

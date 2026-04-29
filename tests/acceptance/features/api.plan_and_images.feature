@@ -85,7 +85,7 @@ Feature: Plan and images API
     When the client gets "/v1/images"
     Then the response status is 200
     And the response contains "page", "per_page", "total", "pages", "sort", "order", and "images"
-    And each finalized image contains "id", "filename", "finalized_at", "bytes", "fill", "files", "collections", "collection_ids", "iso_ready", "protection_state", "physical_copies_required", "physical_copies_registered", "physical_copies_missing", and "glacier"
+    And each finalized image contains "id", "filename", "finalized_at", "bytes", "fill", "files", "collections", "collection_ids", "iso_ready", "protection_state", "physical_copies_required", "physical_copies_registered", "physical_copies_verified", "physical_copies_missing", and "glacier"
     And finalized images are returned newest-first
     And each finalized image is iso-ready
 

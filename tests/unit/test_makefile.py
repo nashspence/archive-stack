@@ -165,7 +165,7 @@ def test_bootstrap_garage_is_available_as_a_standalone_target(tmp_path: Path) ->
     assert "tests/harness/configure_garage.py" in docker_log
 
 
-def test_prod_reuses_existing_images_and_uses_isolated_compose_project_name(
+def test_prod_builds_images_and_uses_isolated_compose_project_name(
     tmp_path: Path,
 ) -> None:
     completed, docker_log_path, uv_log_path = _run_make(
@@ -185,15 +185,15 @@ def test_prod_reuses_existing_images_and_uses_isolated_compose_project_name(
     assert re.fullmatch(r"archive-stack-test-[a-z0-9]+(?:-[a-z0-9]+)*-\d+", project_name)
 
     docker_log = "\n".join(log_lines)
-    assert " build app" not in docker_log
-    assert " build test" not in docker_log
+    assert " build app" in docker_log
+    assert " build test" in docker_log
     assert " up --detach garage" in docker_log
     assert " up --detach --wait app" in docker_log
     assert "tests/harness/test_prod_harness.py -k glacier" in docker_log
     assert " down --volumes --remove-orphans" in docker_log
 
 
-def test_prod_profile_enables_profile_output_without_rebuilding_images(tmp_path: Path) -> None:
+def test_prod_profile_enables_profile_output_and_builds_images(tmp_path: Path) -> None:
     completed, docker_log_path, uv_log_path = _run_make(
         tmp_path,
         "prod-profile",
@@ -204,8 +204,8 @@ def test_prod_profile_enables_profile_output_without_rebuilding_images(tmp_path:
     assert completed.returncode == 0, completed.stderr
     assert _read_log_lines(uv_log_path) == []
     docker_log = "\n".join(_read_log_lines(docker_log_path))
-    assert " build app" not in docker_log
-    assert " build test" not in docker_log
+    assert " build app" in docker_log
+    assert " build test" in docker_log
     assert " -e ARC_TEST_PROFILE=1 " in docker_log
     assert " --durations=0 --durations-min=0.5 " in docker_log
 
@@ -225,8 +225,8 @@ def test_test_aggregate_runs_lint_unit_spec_then_prod(tmp_path: Path) -> None:
     assert "python -m pytest -q tests/harness/test_spec_harness.py" in uv_log_lines[3]
 
     docker_log = "\n".join(_read_log_lines(docker_log_path))
-    assert " build app" not in docker_log
-    assert " build test" not in docker_log
+    assert " build app" in docker_log
+    assert " build test" in docker_log
     assert "tests/harness/test_prod_harness.py" in docker_log
 
 
