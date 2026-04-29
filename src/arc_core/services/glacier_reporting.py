@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 import yaml
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import Session, selectinload
 
 from arc_core.archive_compliance import normalize_glacier_state
 from arc_core.catalog_models import (
@@ -26,6 +27,7 @@ from arc_core.domain.models import (
     GlacierUsageSnapshot,
     GlacierUsageTotals,
 )
+from arc_core.domain.types import CollectionId, ImageId
 from arc_core.planner.manifest import MANIFEST_FILENAME
 from arc_core.recovery_payloads import decrypt_recovery_payload
 from arc_core.runtime_config import RuntimeConfig
@@ -81,7 +83,7 @@ class SqlAlchemyGlacierReportingService:
             file_bytes = {
                 (record.collection_id, record.path): record.bytes for record in collection_files
             }
-            collection_total_bytes = defaultdict(int)
+            collection_total_bytes: defaultdict[str, int] = defaultdict(int)
             for record in collection_files:
                 collection_total_bytes[record.collection_id] += record.bytes
 
@@ -150,7 +152,7 @@ class SqlAlchemyGlacierReportingService:
         )
 
 
-def record_glacier_usage_snapshot(session, *, config: RuntimeConfig) -> None:
+def record_glacier_usage_snapshot(session: Session, *, config: RuntimeConfig) -> None:
     pricing_basis = _pricing_basis(config)
     image_records = session.scalars(select(FinalizedImageRecord)).all()
     totals = _totals_from_images(
@@ -208,7 +210,7 @@ def _image_usage_report(
     )
     collection_ids = sorted({covered_path.collection_id for covered_path in record.covered_paths})
     return GlacierUsageImage(
-        id=record.image_id,
+        id=ImageId(record.image_id),
         filename=record.filename,
         collection_ids=collection_ids,
         glacier=glacier,
@@ -297,7 +299,7 @@ def _collection_usage_reports(
         contributions = collections[collection_id]
         result.append(
             GlacierUsageCollection(
-                id=collection_id,
+                id=CollectionId(collection_id),
                 bytes=contributions[0].total_collection_bytes,
                 represented_bytes=sum(item.represented_bytes for item in contributions),
                 attribution_state=(
@@ -314,7 +316,7 @@ def _collection_usage_reports(
                 ),
                 images=tuple(
                     GlacierCollectionContribution(
-                        image_id=item.image_id,
+                        image_id=ImageId(item.image_id),
                         filename=item.filename,
                         glacier=item.glacier,
                         represented_bytes=item.represented_bytes,
@@ -468,7 +470,7 @@ def _estimate_monthly_cost_usd(
 
 
 def _ensure_usage_snapshot(
-    session,
+    session: Session,
     *,
     totals: GlacierUsageTotals,
     pricing_basis: GlacierPricingBasis,
@@ -527,5 +529,5 @@ def _round_int(value: float) -> int:
     return int(Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
-def _isoformat_z(value) -> str:
+def _isoformat_z(value: datetime) -> str:
     return value.strftime("%Y-%m-%dT%H:%M:%SZ")

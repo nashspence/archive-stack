@@ -628,15 +628,22 @@ def _load_cost_forecast(
 
 
 def _resolve_billing_exports(config: RuntimeConfig) -> GlacierBillingExportView:
-    if not config.glacier_billing_export_bucket or not config.glacier_billing_export_prefix:
+    export_location = _billing_export_location(config)
+    if export_location is None:
         return _unavailable_exports_view(
             "Set ARC_GLACIER_BILLING_EXPORT_BUCKET and ARC_GLACIER_BILLING_EXPORT_PREFIX "
             "to inspect CUR or Data Exports billing detail."
         )
+    export_bucket, export_prefix = export_location
 
     try:
         s3_client = _create_billing_s3_client(config)
-        manifest = _resolve_export_manifest(s3_client, config=config)
+        manifest = _resolve_export_manifest(
+            s3_client,
+            config=config,
+            export_bucket=export_bucket,
+            export_prefix=export_prefix,
+        )
         if manifest is None:
             return _unavailable_exports_view(
                 "No CUR or Data Exports manifest was found under the configured billing "
@@ -716,18 +723,32 @@ def _resolve_export_manifest(
     s3_client: Any,
     *,
     config: RuntimeConfig,
+    export_bucket: str,
+    export_prefix: str,
 ) -> _ManifestSelection | None:
     if config.glacier_billing_export_arn:
-        manifest = _resolve_data_exports_manifest(s3_client, config=config)
+        manifest = _resolve_data_exports_manifest(
+            s3_client,
+            config=config,
+            export_bucket=export_bucket,
+            export_prefix=export_prefix,
+        )
         if manifest is not None:
             return manifest
-    return _resolve_manifest_from_prefix(s3_client, config=config)
+    return _resolve_manifest_from_prefix(
+        s3_client,
+        config=config,
+        export_bucket=export_bucket,
+        export_prefix=export_prefix,
+    )
 
 
 def _resolve_data_exports_manifest(
     s3_client: Any,
     *,
     config: RuntimeConfig,
+    export_bucket: str,
+    export_prefix: str,
 ) -> _ManifestSelection | None:
     client = _create_data_exports_client(config)
     response = client.list_executions(
@@ -746,10 +767,13 @@ def _resolve_data_exports_manifest(
     if not isinstance(export, dict):
         export = {}
     export_name = _extract_export_name(export, config=config)
-    metadata_prefix = _data_exports_metadata_prefix(config=config, export_name=export_name)
+    metadata_prefix = _data_exports_metadata_prefix(
+        export_prefix=export_prefix,
+        export_name=export_name,
+    )
     manifest_key = _select_manifest_key(
         s3_client,
-        bucket=config.glacier_billing_export_bucket,
+        bucket=export_bucket,
         prefix=metadata_prefix,
         prefer_execution_id=execution_id,
     )
@@ -757,14 +781,14 @@ def _resolve_data_exports_manifest(
         return None
     manifest = _load_manifest_json(
         s3_client,
-        bucket=config.glacier_billing_export_bucket,
+        bucket=export_bucket,
         key=manifest_key,
     )
     object_keys = _manifest_object_keys(manifest, manifest_key=manifest_key)
     return _ManifestSelection(
         source=_AWS_DATA_EXPORTS_SOURCE,
-        bucket=config.glacier_billing_export_bucket,
-        prefix=config.glacier_billing_export_prefix,
+        bucket=export_bucket,
+        prefix=export_prefix,
         export_arn=config.glacier_billing_export_arn,
         export_name=export_name,
         execution_id=execution_id,
@@ -782,31 +806,33 @@ def _resolve_manifest_from_prefix(
     s3_client: Any,
     *,
     config: RuntimeConfig,
+    export_bucket: str,
+    export_prefix: str,
 ) -> _ManifestSelection | None:
     manifest_key = _select_manifest_key(
         s3_client,
-        bucket=config.glacier_billing_export_bucket,
-        prefix=config.glacier_billing_export_prefix,
+        bucket=export_bucket,
+        prefix=export_prefix,
         prefer_execution_id=None,
     )
     if manifest_key is None:
         return None
     exported_at = _object_last_modified(
         s3_client,
-        bucket=config.glacier_billing_export_bucket,
-        prefix=config.glacier_billing_export_prefix,
+        bucket=export_bucket,
+        prefix=export_prefix,
         key=manifest_key,
     )
     manifest = _load_manifest_json(
         s3_client,
-        bucket=config.glacier_billing_export_bucket,
+        bucket=export_bucket,
         key=manifest_key,
     )
     return _ManifestSelection(
         source=_manifest_source_from_key(manifest_key),
-        bucket=config.glacier_billing_export_bucket,
-        prefix=config.glacier_billing_export_prefix,
-        export_name=_manifest_export_name(manifest_key, config=config),
+        bucket=export_bucket,
+        prefix=export_prefix,
+        export_name=_manifest_export_name(manifest_key, export_prefix=export_prefix),
         manifest_key=manifest_key,
         exported_at=exported_at,
         billing_period=_manifest_billing_period(manifest_key, manifest=manifest),
@@ -855,10 +881,10 @@ def _extract_export_name(export: dict[str, object], *, config: RuntimeConfig) ->
 
 def _data_exports_metadata_prefix(
     *,
-    config: RuntimeConfig,
+    export_prefix: str,
     export_name: str | None,
 ) -> str:
-    prefix = config.glacier_billing_export_prefix.strip("/")
+    prefix = export_prefix.strip("/")
     if export_name:
         return "/".join(part for part in (prefix, export_name, "metadata") if part)
     return "/".join(part for part in (prefix, "metadata") if part)
@@ -931,23 +957,29 @@ def _manifest_object_keys(
     manifest_key: str,
 ) -> tuple[str, ...]:
     raw_keys: list[str] = []
-    for item in manifest.get("reportKeys", []):
-        if isinstance(item, str):
-            raw_keys.append(item)
-    for item in manifest.get("reportFiles", []):
-        if isinstance(item, str):
-            raw_keys.append(item)
-            continue
-        if not isinstance(item, dict):
-            continue
-        for name in ("filePath", "key", "s3Key", "dataFileS3Key"):
-            value = item.get(name)
-            if isinstance(value, str):
-                raw_keys.append(value)
-                break
-    for item in manifest.get("filePaths", []):
-        if isinstance(item, str):
-            raw_keys.append(item)
+    report_keys = manifest.get("reportKeys")
+    if isinstance(report_keys, list):
+        for item in report_keys:
+            if isinstance(item, str):
+                raw_keys.append(item)
+    report_files = manifest.get("reportFiles")
+    if isinstance(report_files, list):
+        for item in report_files:
+            if isinstance(item, str):
+                raw_keys.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            for name in ("filePath", "key", "s3Key", "dataFileS3Key"):
+                value = item.get(name)
+                if isinstance(value, str):
+                    raw_keys.append(value)
+                    break
+    file_paths = manifest.get("filePaths")
+    if isinstance(file_paths, list):
+        for item in file_paths:
+            if isinstance(item, str):
+                raw_keys.append(item)
 
     manifest_dir = manifest_key.rsplit("/", 1)[0] if "/" in manifest_key else ""
     normalized: list[str] = []
@@ -976,9 +1008,9 @@ def _manifest_source_from_key(key: str) -> str:
     return _AWS_CUR_SOURCE
 
 
-def _manifest_export_name(key: str, *, config: RuntimeConfig) -> str | None:
+def _manifest_export_name(key: str, *, export_prefix: str) -> str | None:
     parts = [part for part in key.split("/") if part]
-    prefix_parts = [part for part in config.glacier_billing_export_prefix.split("/") if part]
+    prefix_parts = [part for part in export_prefix.split("/") if part]
     if len(parts) <= len(prefix_parts):
         return None
     return parts[len(prefix_parts)]
@@ -1150,9 +1182,17 @@ def _row_value(row: dict[str, str], candidates: tuple[str, ...]) -> str | None:
 
 def _row_decimal(row: dict[str, str], candidates: tuple[str, ...]) -> Decimal:
     value = _row_value(row, candidates)
-    if value in (None, ""):
+    if value is None or value == "":
         return Decimal("0")
     return Decimal(value)
+
+
+def _billing_export_location(config: RuntimeConfig) -> tuple[str, str] | None:
+    bucket = config.glacier_billing_export_bucket
+    prefix = config.glacier_billing_export_prefix
+    if not bucket or not prefix:
+        return None
+    return bucket, prefix
 
 
 def _resolve_invoices(config: RuntimeConfig) -> GlacierBillingInvoicesView:

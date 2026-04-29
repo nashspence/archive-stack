@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import or_, select
+from sqlalchemy.orm import Session
 
 from arc_core.catalog_models import FinalizedImageRecord, GlacierUploadJobRecord
 from arc_core.ports.archive_store import ArchiveStore
@@ -170,7 +172,7 @@ class SqlAlchemyGlacierUploadService:
 
 
 def enqueue_glacier_upload_job(
-    session,
+    session: Session,
     *,
     image_id: str,
     next_attempt_at: str,
@@ -196,5 +198,5 @@ def _error_text(exc: Exception) -> str:
     return detail or exc.__class__.__name__
 
 
-def _isoformat_z(value) -> str:
+def _isoformat_z(value: datetime) -> str:
     return value.strftime("%Y-%m-%dT%H:%M:%SZ")

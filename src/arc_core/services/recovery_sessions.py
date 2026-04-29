@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import asdict
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from typing import cast
 
 from sqlalchemy import or_, select
+from sqlalchemy.orm import Session
 
 from arc_core.archive_compliance import (
     copy_counts_toward_protection,
@@ -28,6 +30,7 @@ from arc_core.domain.models import (
     RecoverySessionImage,
     RecoverySessionSummary,
 )
+from arc_core.domain.types import ImageId
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.glacier_pricing import resolve_glacier_pricing
 from arc_core.sqlite_db import make_session_factory, session_scope
@@ -240,7 +243,7 @@ class SqlAlchemyRecoverySessionService:
 
 
 def ensure_glacier_recovery_session_for_image(
-    session,
+    session: Session,
     *,
     config: RuntimeConfig,
     image_id: str,
@@ -284,7 +287,7 @@ class StubRecoverySessionService:
 
 
 def _create_recovery_session(
-    session,
+    session: Session,
     *,
     config: RuntimeConfig,
     image: FinalizedImageRecord,
@@ -335,7 +338,7 @@ def _create_recovery_session(
 
 
 def _attach_image_to_session(
-    session,
+    session: Session,
     *,
     record: GlacierRecoverySessionRecord,
     image: FinalizedImageRecord,
@@ -364,8 +367,8 @@ def _attach_image_to_session(
     return record
 
 
-def _require_image(session, image_id: str) -> FinalizedImageRecord:
-    image = session.get(FinalizedImageRecord, image_id)
+def _require_image(session: Session, image_id: str) -> FinalizedImageRecord:
+    image = cast(FinalizedImageRecord | None, session.get(FinalizedImageRecord, image_id))
     if image is None:
         raise NotFound(f"image not found: {image_id}")
     return image
@@ -378,14 +381,14 @@ def _require_glacier_uploaded(image: FinalizedImageRecord) -> None:
         )
 
 
-def _protected_copy_count(session, image_id: str) -> int:
+def _protected_copy_count(session: Session, image_id: str) -> int:
     rows = session.scalars(
         select(ImageCopyRecord.state).where(ImageCopyRecord.image_id == image_id)
     ).all()
     return sum(1 for state in rows if copy_counts_toward_protection(state))
 
 
-def _has_recovery_triggering_copy_history(session, image_id: str) -> bool:
+def _has_recovery_triggering_copy_history(session: Session, image_id: str) -> bool:
     rows = session.scalars(
         select(ImageCopyRecord.state).where(ImageCopyRecord.image_id == image_id)
     ).all()
@@ -395,8 +398,13 @@ def _has_recovery_triggering_copy_history(session, image_id: str) -> bool:
     )
 
 
-def _active_session_for_image(session, image_id: str) -> GlacierRecoverySessionRecord | None:
-    return session.scalar(
+def _active_session_for_image(
+    session: Session,
+    image_id: str,
+) -> GlacierRecoverySessionRecord | None:
+    return cast(
+        GlacierRecoverySessionRecord | None,
+        session.scalar(
         select(GlacierRecoverySessionRecord)
         .join(
             GlacierRecoverySessionImageRecord,
@@ -407,10 +415,16 @@ def _active_session_for_image(session, image_id: str) -> GlacierRecoverySessionR
         .order_by(GlacierRecoverySessionRecord.created_at.desc())
         .limit(1)
     )
+    )
 
 
-def _latest_session_for_image(session, image_id: str) -> GlacierRecoverySessionRecord | None:
-    return session.scalar(
+def _latest_session_for_image(
+    session: Session,
+    image_id: str,
+) -> GlacierRecoverySessionRecord | None:
+    return cast(
+        GlacierRecoverySessionRecord | None,
+        session.scalar(
         select(GlacierRecoverySessionRecord)
         .join(
             GlacierRecoverySessionImageRecord,
@@ -420,19 +434,23 @@ def _latest_session_for_image(session, image_id: str) -> GlacierRecoverySessionR
         .order_by(GlacierRecoverySessionRecord.created_at.desc())
         .limit(1)
     )
+    )
 
 
-def _reusable_pending_approval_session(session) -> GlacierRecoverySessionRecord | None:
-    return session.scalar(
+def _reusable_pending_approval_session(session: Session) -> GlacierRecoverySessionRecord | None:
+    return cast(
+        GlacierRecoverySessionRecord | None,
+        session.scalar(
         select(GlacierRecoverySessionRecord)
         .where(GlacierRecoverySessionRecord.state == RecoverySessionState.PENDING_APPROVAL.value)
         .order_by(GlacierRecoverySessionRecord.created_at.desc())
         .limit(1)
     )
+    )
 
 
 def _session_images(
-    session,
+    session: Session,
     *,
     record: GlacierRecoverySessionRecord,
 ) -> list[FinalizedImageRecord]:
@@ -445,7 +463,7 @@ def _session_images(
 
 
 def _session_summary(
-    session,
+    session: Session,
     record: GlacierRecoverySessionRecord,
     *,
     config: RuntimeConfig,
@@ -454,7 +472,7 @@ def _session_summary(
     for image in _session_images(session, record=record):
         images.append(
             RecoverySessionImage(
-                id=image.image_id,
+                id=ImageId(image.image_id),
                 filename=image.filename,
                 glacier=GlacierArchiveStatus(
                     state=normalize_glacier_state(image.glacier_state),
@@ -495,7 +513,7 @@ def _session_summary(
 
 
 def _refresh_recovery_session_metadata(
-    session,
+    session: Session,
     *,
     record: GlacierRecoverySessionRecord,
     config: RuntimeConfig,
@@ -576,11 +594,11 @@ def _build_warnings(config: RuntimeConfig) -> tuple[str, ...]:
 
 
 def _notify_recovery_ready(
-    session,
+    session: Session,
     *,
     record: GlacierRecoverySessionRecord,
     config: RuntimeConfig,
-    current,
+    current: datetime,
     reminder: bool,
 ) -> None:
     if not config.glacier_recovery_webhook_url:
@@ -603,8 +621,8 @@ def _notify_recovery_ready(
                 ).all()
             ],
             delivered_at=current,
-                reminder_count=record.reminder_count,
-                reminder=reminder,
+            reminder_count=record.reminder_count,
+            reminder=reminder,
         )
         post_webhook(
             config=_webhook_config(config),
@@ -640,7 +658,7 @@ def _webhook_config(config: RuntimeConfig) -> WebhookConfig:
     )
 
 
-def _generated_recovery_session_id(image_id: str, *, existing_ids: list[str]) -> str:
+def _generated_recovery_session_id(image_id: str, *, existing_ids: Sequence[str]) -> str:
     existing = set(existing_ids)
     ordinal = 1
     while True:
@@ -676,7 +694,7 @@ def _format_timedelta(value: timedelta) -> str:
     return "".join(parts)
 
 
-def _isoformat_z(value) -> str:
+def _isoformat_z(value: datetime) -> str:
     return value.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 

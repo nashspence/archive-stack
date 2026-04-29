@@ -17,58 +17,11 @@ src/arc_core/services/copies.py	[no-untyped-def]	Function is missing a type anno
 src/arc_core/services/copies.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
 src/arc_core/services/copies.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
 src/arc_core/services/copies.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/glacier_billing.py	[arg-type]	Argument "bucket" to "_ManifestSelection" has incompatible type "str | None"; expected "str"
-src/arc_core/services/glacier_billing.py	[arg-type]	Argument "bucket" to "_ManifestSelection" has incompatible type "str | None"; expected "str"
-src/arc_core/services/glacier_billing.py	[arg-type]	Argument "bucket" to "_load_manifest_json" has incompatible type "str | None"; expected "str"
-src/arc_core/services/glacier_billing.py	[arg-type]	Argument "bucket" to "_load_manifest_json" has incompatible type "str | None"; expected "str"
-src/arc_core/services/glacier_billing.py	[arg-type]	Argument "bucket" to "_object_last_modified" has incompatible type "str | None"; expected "str"
-src/arc_core/services/glacier_billing.py	[arg-type]	Argument "bucket" to "_select_manifest_key" has incompatible type "str | None"; expected "str"
-src/arc_core/services/glacier_billing.py	[arg-type]	Argument "bucket" to "_select_manifest_key" has incompatible type "str | None"; expected "str"
-src/arc_core/services/glacier_billing.py	[arg-type]	Argument "prefix" to "_ManifestSelection" has incompatible type "str | None"; expected "str"
-src/arc_core/services/glacier_billing.py	[arg-type]	Argument "prefix" to "_ManifestSelection" has incompatible type "str | None"; expected "str"
-src/arc_core/services/glacier_billing.py	[arg-type]	Argument "prefix" to "_object_last_modified" has incompatible type "str | None"; expected "str"
-src/arc_core/services/glacier_billing.py	[arg-type]	Argument 1 to "Decimal" has incompatible type "str | None"; expected "Decimal | float | str | tuple[int, Sequence[int], int]"
-src/arc_core/services/glacier_billing.py	[attr-defined]	"object" has no attribute "__iter__"; maybe "__dir__" or "__str__"? (not iterable)
-src/arc_core/services/glacier_billing.py	[attr-defined]	"object" has no attribute "__iter__"; maybe "__dir__" or "__str__"? (not iterable)
-src/arc_core/services/glacier_billing.py	[attr-defined]	"object" has no attribute "__iter__"; maybe "__dir__" or "__str__"? (not iterable)
-src/arc_core/services/glacier_billing.py	[union-attr]	Item "None" of "str | None" has no attribute "split"
-src/arc_core/services/glacier_billing.py	[union-attr]	Item "None" of "str | None" has no attribute "strip"
 src/arc_core/services/glacier_pricing.py	[no-any-return]	Returning Any from function declared to return "dict[str, Any]"
 src/arc_core/services/glacier_pricing.py	[no-any-return]	Returning Any from function declared to return "dict[str, Any]"
-src/arc_core/services/glacier_reporting.py	[arg-type]	Argument "id" to "GlacierUsageCollection" has incompatible type "str"; expected "CollectionId"
-src/arc_core/services/glacier_reporting.py	[arg-type]	Argument "id" to "GlacierUsageImage" has incompatible type "str"; expected "ImageId"
-src/arc_core/services/glacier_reporting.py	[arg-type]	Argument "image_id" to "GlacierCollectionContribution" has incompatible type "str"; expected "ImageId"
-src/arc_core/services/glacier_reporting.py	[no-any-return]	Returning Any from function declared to return "str"
-src/arc_core/services/glacier_reporting.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/glacier_reporting.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/glacier_reporting.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/glacier_reporting.py	[var-annotated]	Need type annotation for "collection_total_bytes"
-src/arc_core/services/glacier_uploads.py	[no-any-return]	Returning Any from function declared to return "str"
-src/arc_core/services/glacier_uploads.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/glacier_uploads.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
 src/arc_core/services/pins.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
 src/arc_core/services/pins.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
 src/arc_core/services/pins.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/recovery_sessions.py	[arg-type]	Argument "id" to "RecoverySessionImage" has incompatible type "str"; expected "ImageId"
-src/arc_core/services/recovery_sessions.py	[no-any-return]	Returning Any from function declared to return "FinalizedImageRecord"
-src/arc_core/services/recovery_sessions.py	[no-any-return]	Returning Any from function declared to return "GlacierRecoverySessionRecord | None"
-src/arc_core/services/recovery_sessions.py	[no-any-return]	Returning Any from function declared to return "GlacierRecoverySessionRecord | None"
-src/arc_core/services/recovery_sessions.py	[no-any-return]	Returning Any from function declared to return "GlacierRecoverySessionRecord | None"
-src/arc_core/services/recovery_sessions.py	[no-any-return]	Returning Any from function declared to return "str"
-src/arc_core/services/recovery_sessions.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/recovery_sessions.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/recovery_sessions.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/recovery_sessions.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/recovery_sessions.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/recovery_sessions.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/recovery_sessions.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/recovery_sessions.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/recovery_sessions.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/recovery_sessions.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/recovery_sessions.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/recovery_sessions.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/recovery_sessions.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
-src/arc_core/services/recovery_sessions.py	[no-untyped-def]	Function is missing a type annotation for one or more parameters
 src/arc_core/services/search.py	[return-value]	Incompatible return value type (got "list[dict[str, object]]", expected "list[object]")
 src/arc_core/sqlite_db.py	[assignment]	Incompatible types in assignment (expression has type "None", variable has type "type[sessionmaker[_S]]")
 src/arc_core/sqlite_db.py	[assignment]	Incompatible types in assignment (expression has type "None", variable has type Module)
