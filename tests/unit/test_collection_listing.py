@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from arc_core.domain.types import CollectionId
 from tests.fixtures.acceptance import AcceptanceSystem
 
 
@@ -23,18 +22,15 @@ def test_collection_listing_can_include_protected_collections() -> None:
             )
             assert system.glacier_uploads.process_due_uploads(limit=10) == 1
 
-            records = system.state.files_by_collection[CollectionId("docs")]
-            covered_paths = {
-                "tax/2022/invoice-123.pdf",
-                "tax/2022/receipt-456.pdf",
-            }
-            for path in list(records):
-                if path not in covered_paths:
-                    del records[path]
-
-            for record in records.values():
-                record.hot = False
-                record.archived = True
+            system.constrain_collection_to_paths(
+                "docs",
+                [
+                    "tax/2022/invoice-123.pdf",
+                    "tax/2022/receipt-456.pdf",
+                ],
+                hot=False,
+                archived=True,
+            )
 
             listing = system.request(
                 "GET",
@@ -52,5 +48,59 @@ def test_collection_listing_can_include_protected_collections() -> None:
             assert payload["recovery"]["verified_physical"]["state"] == "full"
             assert payload["recovery"]["glacier"]["state"] == "full"
             assert payload["recovery"]["available"] == ["verified_physical", "glacier"]
+        finally:
+            system.close()
+
+
+def test_collection_recovery_summary_requires_all_split_parts() -> None:
+    with TemporaryDirectory() as tmp:
+        system = AcceptanceSystem.create(Path(tmp))
+        try:
+            system.seed_split_planner_fixtures()
+            system.planning.finalize_image("img_2026-04-20_03")
+            system.copies.register(
+                "20260420T040003Z",
+                "vault-a/shelf-03",
+                copy_id="20260420T040003Z-1",
+            )
+            system.copies.update(
+                "20260420T040003Z",
+                "20260420T040003Z-1",
+                state="verified",
+                verification_state="verified",
+            )
+            system.constrain_collection_to_paths(
+                "docs",
+                ["tax/2022/invoice-123.pdf"],
+                hot=False,
+                archived=True,
+            )
+            assert system.glacier_uploads.process_due_uploads(limit=10) == 1
+
+            summary = system.request("GET", "/v1/collections/docs")
+            assert summary.status_code == 200
+            payload = summary.json()
+            assert payload["recovery"]["verified_physical"]["state"] == "none"
+            assert payload["recovery"]["glacier"]["state"] == "none"
+
+            system.planning.finalize_image("img_2026-04-20_04")
+            system.copies.register(
+                "20260420T040004Z",
+                "vault-a/shelf-04",
+                copy_id="20260420T040004Z-1",
+            )
+            system.copies.update(
+                "20260420T040004Z",
+                "20260420T040004Z-1",
+                state="verified",
+                verification_state="verified",
+            )
+            assert system.glacier_uploads.process_due_uploads(limit=10) == 1
+
+            summary = system.request("GET", "/v1/collections/docs")
+            assert summary.status_code == 200
+            payload = summary.json()
+            assert payload["recovery"]["verified_physical"]["state"] == "full"
+            assert payload["recovery"]["glacier"]["state"] == "full"
         finally:
             system.close()

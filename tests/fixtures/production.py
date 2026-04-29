@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -37,7 +37,7 @@ from arc_core.domain.enums import CopyState, FetchState, ProtectionState, Verifi
 from arc_core.domain.models import CollectionSummary, CopySummary, FetchCopyHint, FetchSummary
 from arc_core.domain.selectors import parse_target
 from arc_core.domain.types import CollectionId, CopyId, FetchId, TargetStr
-from arc_core.fs_paths import normalize_collection_id
+from arc_core.fs_paths import normalize_collection_id, normalize_relpath
 from arc_core.runtime_config import load_runtime_config
 from arc_core.services.glacier_uploads import enqueue_glacier_upload_job
 from arc_core.sqlite_db import make_session_factory, session_scope
@@ -939,6 +939,70 @@ class ProductionSystem:
             if session.get(ImageCopyRecord, {"image_id": image_id, "copy_id": copy_id}) is not None:
                 return
         self.copies.register(image_id, location, copy_id=copy_id)
+
+    def constrain_collection_to_paths(
+        self,
+        collection_id: str,
+        paths: Sequence[str],
+        *,
+        hot: bool,
+        archived: bool,
+    ) -> None:
+        with time_block("fixture.constrain_collection_to_paths"):
+            normalized_collection_id = normalize_collection_id(collection_id)
+            kept_paths = {normalize_relpath(path) for path in paths}
+            client = self._s3_client()
+            with session_scope(make_session_factory(str(self.db_path))) as session:
+                records = session.scalars(
+                    select(CollectionFileRecord).where(
+                        CollectionFileRecord.collection_id == normalized_collection_id
+                    )
+                ).all()
+                assert records, f"collection not found: {normalized_collection_id}"
+                for record in records:
+                    if record.path not in kept_paths:
+                        if record.hot:
+                            client.delete_object(
+                                Bucket=load_runtime_config().s3_bucket,
+                                Key=self._collection_key(normalized_collection_id, record.path),
+                            )
+                        session.delete(record)
+                        continue
+                    if record.hot and not hot:
+                        client.delete_object(
+                            Bucket=load_runtime_config().s3_bucket,
+                            Key=self._collection_key(normalized_collection_id, record.path),
+                        )
+                    record.hot = hot
+                    record.archived = archived
+
+    def constrain_collection_to_finalized_image_coverage(
+        self,
+        collection_id: str,
+        image_id: str,
+        *,
+        hot: bool,
+        archived: bool,
+    ) -> None:
+        with time_block("fixture.constrain_collection_to_finalized_image_coverage"):
+            normalized_collection_id = normalize_collection_id(collection_id)
+            with session_scope(make_session_factory(str(self.db_path))) as session:
+                paths = session.scalars(
+                    select(FinalizedImageCoveredPathRecord.path).where(
+                        FinalizedImageCoveredPathRecord.image_id == image_id,
+                        FinalizedImageCoveredPathRecord.collection_id == normalized_collection_id,
+                    )
+                ).all()
+            assert paths, (
+                "finalized image coverage not found: "
+                f"{image_id}/{normalized_collection_id}"
+            )
+            self.constrain_collection_to_paths(
+                normalized_collection_id,
+                paths,
+                hot=hot,
+                archived=archived,
+            )
 
     def seed_photos_hot(self) -> None:
         with time_block("fixture.seed_photos_hot"):

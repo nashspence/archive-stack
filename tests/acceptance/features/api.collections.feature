@@ -141,6 +141,42 @@ Feature: Collections API
       And collection image coverage for image "20260420T040001Z" includes copy "20260420T040001Z-1"
       And collection image coverage for image "20260420T040001Z" glacier state is "uploaded"
 
+    Scenario: Collection recovery summaries require every split image part
+      Given an archive with split planner fixtures
+      And candidate "img_2026-04-20_03" is finalized
+      And the client posts to "/v1/images/20260420T040003Z/copies" with id "20260420T040003Z-1" and location "vault-a/shelf-03"
+      And the client patches "/v1/images/20260420T040003Z/copies/20260420T040003Z-1" with state "verified" and verification_state "verified"
+      And collection "docs" keeps only path "tax/2022/invoice-123.pdf" and is archived
+      When the client waits for image "20260420T040003Z" glacier state "uploaded"
+      And the client gets "/v1/collections/docs"
+      Then the response status is 200
+      And collection protection_state is "partially_protected"
+      And protected_bytes is 0
+      And collection verified_physical recovery state is "none"
+      And collection Glacier recovery state is "none"
+      When candidate "img_2026-04-20_04" is finalized
+      And the client posts to "/v1/images/20260420T040004Z/copies" with id "20260420T040004Z-1" and location "vault-a/shelf-04"
+      And the client patches "/v1/images/20260420T040004Z/copies/20260420T040004Z-1" with state "verified" and verification_state "verified"
+      And the client waits for image "20260420T040004Z" glacier state "uploaded"
+      And the client gets "/v1/collections/docs"
+      Then the response status is 200
+      And collection verified_physical recovery state is "full"
+      And collection Glacier recovery state is "full"
+
+    Scenario: Collection summaries can report fully protected collections
+      Given an archive with planner fixtures
+      And copy "20260420T040001Z-1" already exists
+      And copy "20260420T040001Z-2" already exists
+      And collection "docs" keeps only finalized image "20260420T040001Z" coverage and is archived
+      When the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-1" with state "verified" and verification_state "verified"
+      And the client waits for image "20260420T040001Z" glacier state "uploaded"
+      And the client gets "/v1/collections/docs"
+      Then the response status is 200
+      And collection protection_state is "protected"
+      And protected_bytes equals bytes
+      And collection verified_physical recovery state is "full"
+      And collection Glacier recovery state is "full"
+
     Scenario: Collection listing can filter by protection_state
       When the client gets "/v1/collections?protection_state=unprotected"
       Then the response status is 200

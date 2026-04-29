@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 from collections import defaultdict
-from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -327,6 +327,12 @@ class CandidateRecord:
                 "failure": glacier.failure,
             },
         }
+
+
+@dataclass(frozen=True, slots=True)
+class _RecoveryParts:
+    part_count: int
+    present_parts: frozenset[int]
 
 @dataclass(slots=True)
 class FetchEntryRecord:
@@ -721,7 +727,11 @@ class AcceptanceState:
 
     def collection_summary(self, collection_id: str | CollectionId) -> CollectionSummary:
         records = self.collection_files(collection_id)
-        image_coverage, covered_paths = self.collection_image_coverage(collection_id)
+        (
+            image_coverage,
+            covered_paths,
+            recovery_parts_by_image_path,
+        ) = self.collection_image_coverage(collection_id)
         protected_bytes = 0
         image_states = {str(image.id): image.protection_state for image in image_coverage}
         for record in records:
@@ -735,6 +745,7 @@ class AcceptanceState:
             records,
             image_coverage=image_coverage,
             covered_paths=covered_paths,
+            recovery_parts_by_image_path=recovery_parts_by_image_path,
         )
         return CollectionSummary(
             id=CollectionId(str(collection_id)),
@@ -755,9 +766,14 @@ class AcceptanceState:
 
     def collection_image_coverage(
         self, collection_id: str | CollectionId
-    ) -> tuple[list[CollectionCoverageImage], dict[str, set[str]]]:
+    ) -> tuple[
+        list[CollectionCoverageImage],
+        dict[str, set[str]],
+        dict[tuple[str, str], _RecoveryParts],
+    ]:
         normalized_collection_id = CollectionId(str(collection_id))
         covered_paths: dict[str, set[str]] = {}
+        recovery_parts_by_image_path: dict[tuple[str, str], _RecoveryParts] = {}
         image_coverage: list[CollectionCoverageImage] = []
         for image in sorted(
             self.finalized_images_by_id.values(),
@@ -767,10 +783,17 @@ class AcceptanceState:
                 collection_id for collection_id, _ in image.covered_paths
             }:
                 continue
+            manifest_entries = _acceptance_manifest_entries_for_collection(
+                image,
+                normalized_collection_id,
+            )
             for covered_collection_id, path in image.covered_paths:
                 if covered_collection_id != normalized_collection_id:
                     continue
                 covered_paths.setdefault(path, set()).add(image.finalized_id)
+                recovery_parts = manifest_entries.get(path)
+                if recovery_parts is not None:
+                    recovery_parts_by_image_path[(image.finalized_id, path)] = recovery_parts
             copies = [
                 summary
                 for (volume_id, _copy_id), summary in sorted(self.copy_summaries.items())
@@ -814,7 +837,7 @@ class AcceptanceState:
                     glacier=glacier,
                 )
             )
-        return image_coverage, covered_paths
+        return image_coverage, covered_paths, recovery_parts_by_image_path
 
     def collection_recovery_summary(
         self,
@@ -822,6 +845,7 @@ class AcceptanceState:
         *,
         image_coverage: Sequence[CollectionCoverageImage],
         covered_paths: dict[str, set[str]],
+        recovery_parts_by_image_path: dict[tuple[str, str], _RecoveryParts],
     ) -> CollectionRecoverySummary:
         total_bytes = sum(record.bytes for record in records)
         image_by_id = {str(image.id): image for image in image_coverage}
@@ -830,16 +854,20 @@ class AcceptanceState:
 
         for record in records:
             image_ids = covered_paths.get(record.path, set())
-            if any(
-                image_by_id.get(image_id) is not None
-                and image_by_id[image_id].physical_copies_verified > 0
-                for image_id in image_ids
+            if _path_is_recoverable(
+                record.path,
+                image_ids=image_ids,
+                recovery_parts_by_image_path=recovery_parts_by_image_path,
+                image_available=lambda image: image.physical_copies_verified > 0,
+                image_by_id=image_by_id,
             ):
                 verified_physical_bytes += record.bytes
-            if any(
-                image_by_id.get(image_id) is not None
-                and image_by_id[image_id].glacier.state == GlacierState.UPLOADED
-                for image_id in image_ids
+            if _path_is_recoverable(
+                record.path,
+                image_ids=image_ids,
+                recovery_parts_by_image_path=recovery_parts_by_image_path,
+                image_available=lambda image: image.glacier.state == GlacierState.UPLOADED,
+                image_by_id=image_by_id,
             ):
                 glacier_bytes += record.bytes
 
@@ -2417,6 +2445,62 @@ def _acceptance_represented_bytes_by_collection(
     return dict(represented_by_collection)
 
 
+def _acceptance_manifest_entries_for_collection(
+    image: CandidateRecord,
+    collection_id: CollectionId,
+) -> dict[str, _RecoveryParts]:
+    manifest_path = image.image_root / MANIFEST_FILENAME
+    disc_manifest = yaml.safe_load(fixture_decrypt_bytes(manifest_path.read_bytes()))
+    for collection in disc_manifest.get("collections", []):
+        if CollectionId(str(collection["id"])) != collection_id:
+            continue
+        entries: dict[str, _RecoveryParts] = {}
+        for file_entry in collection.get("files", []):
+            path = str(file_entry["path"]).lstrip("/")
+            parts_block = file_entry.get("parts")
+            if parts_block is None:
+                entries[path] = _RecoveryParts(part_count=1, present_parts=frozenset({0}))
+                continue
+            entries[path] = _RecoveryParts(
+                part_count=int(parts_block["count"]),
+                present_parts=frozenset(
+                    int(present["index"]) - 1 for present in parts_block.get("present", [])
+                ),
+            )
+        return entries
+    return {}
+
+
+def _path_is_recoverable(
+    path: str,
+    *,
+    image_ids: set[str],
+    recovery_parts_by_image_path: dict[tuple[str, str], _RecoveryParts],
+    image_available: Callable[[CollectionCoverageImage], bool],
+    image_by_id: dict[str, CollectionCoverageImage],
+) -> bool:
+    if not image_ids:
+        return False
+
+    expected_part_count: int | None = None
+    present_parts: set[int] = set()
+    for image_id in image_ids:
+        image = image_by_id.get(image_id)
+        if image is None or not image_available(image):
+            continue
+        recovery_parts = recovery_parts_by_image_path.get((image_id, path))
+        if recovery_parts is None:
+            continue
+        if recovery_parts.part_count == 1 and recovery_parts.present_parts == frozenset({0}):
+            return True
+        if expected_part_count is None:
+            expected_part_count = recovery_parts.part_count
+        elif expected_part_count != recovery_parts.part_count:
+            return False
+        present_parts.update(recovery_parts.present_parts)
+    return expected_part_count is not None and len(present_parts) == expected_part_count
+
+
 def _acceptance_glacier_snapshot(state: AcceptanceState) -> GlacierUsageSnapshot:
     pricing_basis = _acceptance_pricing_basis()
     image_reports = tuple(
@@ -3903,6 +3987,48 @@ class AcceptanceSystem:
     def seed_split_planner_fixtures(self) -> None:
         self.seed_docs_hot()
         self.seed_image_fixtures(SPLIT_IMAGE_FIXTURES)
+
+    def constrain_collection_to_paths(
+        self,
+        collection_id: str,
+        paths: Sequence[str],
+        *,
+        hot: bool,
+        archived: bool,
+    ) -> None:
+        collection_key = CollectionId(normalize_collection_id(collection_id))
+        records = self.state.files_by_collection.get(collection_key)
+        if records is None:
+            raise NotFound(f"collection not found: {collection_key}")
+        kept_paths = {normalize_relpath(path) for path in paths}
+        for path in list(records):
+            if path not in kept_paths:
+                del records[path]
+        for record in records.values():
+            record.hot = hot
+            record.archived = archived
+
+    def constrain_collection_to_finalized_image_coverage(
+        self,
+        collection_id: str,
+        image_id: str,
+        *,
+        hot: bool,
+        archived: bool,
+    ) -> None:
+        image = self.state.finalized_images_by_id[ImageId(image_id)]
+        paths = [
+            path
+            for covered_collection_id, path in image.covered_paths
+            if str(covered_collection_id) == collection_id
+        ]
+        assert paths
+        self.constrain_collection_to_paths(
+            collection_id,
+            paths,
+            hot=hot,
+            archived=archived,
+        )
 
     def seed_image_fixtures(self, fixtures: tuple[Any, ...]) -> None:
         images_root = self.workspace / "images"

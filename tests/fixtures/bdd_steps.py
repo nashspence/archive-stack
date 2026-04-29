@@ -1089,6 +1089,39 @@ def given_collection_contains_file(
     assert path.lstrip("/") in collection_files
 
 
+@given(parsers.parse('collection "{collection_id}" keeps only path "{path}" and is archived'))
+def given_collection_keeps_only_path_and_is_archived(
+    acceptance_system: AcceptanceSystem,
+    collection_id: str,
+    path: str,
+) -> None:
+    acceptance_system.constrain_collection_to_paths(
+        collection_id,
+        [path],
+        hot=False,
+        archived=True,
+    )
+
+
+@given(
+    parsers.parse(
+        'collection "{collection_id}" keeps only finalized image '
+        '"{image_id}" coverage and is archived'
+    )
+)
+def given_collection_keeps_only_finalized_image_coverage_and_is_archived(
+    acceptance_system: AcceptanceSystem,
+    collection_id: str,
+    image_id: str,
+) -> None:
+    acceptance_system.constrain_collection_to_finalized_image_coverage(
+        collection_id,
+        image_id,
+        hot=False,
+        archived=True,
+    )
+
+
 @given(parsers.parse('collection "{collection_id}" contains directory "{path}"'))
 def given_collection_contains_directory(
     acceptance_system: AcceptanceSystem,
@@ -1390,6 +1423,36 @@ def when_client_patches_copy_state_only(
     state: str,
 ) -> None:
     response = acceptance_system.request("PATCH", path, json_body={"state": state})
+    _set_response(acceptance_context, response)
+
+
+@given(
+    parsers.parse(
+        'the client patches "{path}" with state "{state}" '
+        'and verification_state "{verification_state}"'
+    )
+)
+@when(
+    parsers.parse(
+        'the client patches "{path}" with state "{state}" '
+        'and verification_state "{verification_state}"'
+    )
+)
+def when_client_patches_copy_state_and_verification(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+    path: str,
+    state: str,
+    verification_state: str,
+) -> None:
+    response = acceptance_system.request(
+        "PATCH",
+        path,
+        json_body={
+            "state": state,
+            "verification_state": verification_state,
+        },
+    )
     _set_response(acceptance_context, response)
 
 
@@ -1807,13 +1870,21 @@ def then_protected_bytes_is(
     assert payload["protected_bytes"] == count
 
 
+@then("protected_bytes equals bytes")
+def then_protected_bytes_equals_bytes(
+    acceptance_context: AcceptanceScenarioContext,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert payload["protected_bytes"] == payload["bytes"]
+
+
 @then(parsers.parse('collection verified_physical recovery state is "{state}"'))
 def then_collection_verified_physical_recovery_state_is(
     acceptance_context: AcceptanceScenarioContext,
     state: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert payload["recovery"]["verified_physical"]["state"] == state
+    assert payload["recovery"]["verified_physical"]["state"] == state, payload["recovery"]
 
 
 @then(parsers.parse('collection Glacier recovery state is "{state}"'))
@@ -1822,7 +1893,7 @@ def then_collection_glacier_recovery_state_is(
     state: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert payload["recovery"]["glacier"]["state"] == state
+    assert payload["recovery"]["glacier"]["state"] == state, payload["recovery"]
 
 
 @then(parsers.parse('collection image coverage includes image "{image_id}"'))

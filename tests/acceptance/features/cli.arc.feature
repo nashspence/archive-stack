@@ -163,6 +163,19 @@ Feature: arc CLI
       And stdout mentions "glacier_path: glacier/finalized-images/20260420T040001Z/20260420T040001Z.iso"
       And stdout mentions "derived_stored_bytes="
 
+    Scenario: arc show does not overstate split recovery from one image part
+      Given an archive with split planner fixtures
+      And candidate "img_2026-04-20_03" is finalized
+      And the client posts to "/v1/images/20260420T040003Z/copies" with id "20260420T040003Z-1" and location "vault-a/shelf-03"
+      And the client patches "/v1/images/20260420T040003Z/copies/20260420T040003Z-1" with state "verified" and verification_state "verified"
+      And collection "docs" keeps only path "tax/2022/invoice-123.pdf" and is archived
+      When the client waits for image "20260420T040003Z" glacier state "uploaded"
+      And the operator runs 'arc show docs'
+      Then the command exits with code 0
+      And stdout mentions "recovery:"
+      And stdout mentions "verified_physical=none"
+      And stdout mentions "glacier=none"
+
     Scenario: arc glacier prints pricing basis and derived collection attribution
       Given an archive with split planner fixtures
       And candidate "img_2026-04-20_03" is finalized

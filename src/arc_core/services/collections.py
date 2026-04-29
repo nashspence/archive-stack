@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
+from pathlib import Path
 
+import yaml
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -44,8 +47,10 @@ from arc_core.fs_paths import (
     normalize_collection_id,
     normalize_relpath,
 )
+from arc_core.planner.manifest import MANIFEST_FILENAME
 from arc_core.ports.hot_store import HotStore
 from arc_core.ports.upload_store import UploadStore
+from arc_core.recovery_payloads import decrypt_recovery_payload
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.resumable_uploads import (
     UploadLifecycleState,
@@ -58,6 +63,12 @@ from arc_core.services.resumable_uploads import (
 from arc_core.sqlite_db import make_session_factory, session_scope
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+@dataclass(frozen=True, slots=True)
+class _RecoveryParts:
+    part_count: int
+    present_parts: frozenset[int]
 
 
 class StubCollectionService:
@@ -399,14 +410,17 @@ class SqlAlchemyCollectionService:
             collection = session.get(CollectionRecord, normalized_collection_id)
             if collection is None:
                 raise NotFound(f"collection not found: {normalized_collection_id}")
-            image_coverage, covered_paths = _collection_image_coverage(
-                session, normalized_collection_id
-            )
+            (
+                image_coverage,
+                covered_paths,
+                recovery_parts_by_image_path,
+            ) = _collection_image_coverage(session, normalized_collection_id)
             return _summary_from_records(
                 normalized_collection_id,
                 collection.files,
                 image_coverage=image_coverage,
                 covered_paths=covered_paths,
+                recovery_parts_by_image_path=recovery_parts_by_image_path,
             )
 
     def list(
@@ -438,12 +452,17 @@ class SqlAlchemyCollectionService:
 
             summaries: list[CollectionSummary] = []
             for collection in collections:
-                image_coverage, covered_paths = _collection_image_coverage(session, collection.id)
+                (
+                    image_coverage,
+                    covered_paths,
+                    recovery_parts_by_image_path,
+                ) = _collection_image_coverage(session, collection.id)
                 summary = _summary_from_records(
                     collection.id,
                     collection.files,
                     image_coverage=image_coverage,
                     covered_paths=covered_paths,
+                    recovery_parts_by_image_path=recovery_parts_by_image_path,
                 )
                 if needle is not None and needle not in str(summary.id).casefold():
                     continue
@@ -827,6 +846,7 @@ def _summary_from_records(
     *,
     image_coverage: Sequence[CollectionCoverageImage] = (),
     covered_paths: dict[str, set[str]] | None = None,
+    recovery_parts_by_image_path: dict[tuple[str, str], _RecoveryParts] | None = None,
 ) -> CollectionSummary:
     bytes_total = sum(record.bytes for record in file_records)
     archived_bytes = sum(record.bytes for record in file_records if record.archived)
@@ -839,6 +859,7 @@ def _summary_from_records(
         file_records,
         image_coverage=image_coverage,
         covered_paths=covered_paths or {},
+        recovery_parts_by_image_path=recovery_parts_by_image_path or {},
     )
     return CollectionSummary(
         id=CollectionId(collection_id),
@@ -861,7 +882,11 @@ def _summary_from_records(
 def _collection_image_coverage(
     session: Session,
     collection_id: str,
-) -> tuple[list[CollectionCoverageImage], dict[str, set[str]]]:
+) -> tuple[
+    list[CollectionCoverageImage],
+    dict[str, set[str]],
+    dict[tuple[str, str], _RecoveryParts],
+]:
     images = (
         session.scalars(
             select(FinalizedImageRecord)
@@ -877,14 +902,22 @@ def _collection_image_coverage(
     )
 
     covered_paths: dict[str, set[str]] = {}
+    recovery_parts_by_image_path: dict[tuple[str, str], _RecoveryParts] = {}
     image_coverage: list[CollectionCoverageImage] = []
     for image in sorted(images, key=lambda current: current.image_id):
+        manifest_entries = _read_collection_manifest_entries(
+            image_root=image.image_root,
+            collection_id=collection_id,
+        )
         image_paths: set[str] = set()
         for covered_path in image.covered_paths:
             if covered_path.collection_id != collection_id:
                 continue
             covered_paths.setdefault(covered_path.path, set()).add(image.image_id)
             image_paths.add(covered_path.path)
+            recovery_parts = manifest_entries.get(covered_path.path)
+            if recovery_parts is not None:
+                recovery_parts_by_image_path[(image.image_id, covered_path.path)] = recovery_parts
 
         copies = [
             CopySummary(
@@ -942,7 +975,7 @@ def _collection_image_coverage(
             )
         )
 
-    return image_coverage, covered_paths
+    return image_coverage, covered_paths, recovery_parts_by_image_path
 
 
 def _protected_bytes(
@@ -968,6 +1001,7 @@ def _collection_recovery_summary(
     *,
     image_coverage: Sequence[CollectionCoverageImage],
     covered_paths: dict[str, set[str]],
+    recovery_parts_by_image_path: dict[tuple[str, str], _RecoveryParts],
 ) -> CollectionRecoverySummary:
     if not file_records:
         return CollectionRecoverySummary(
@@ -989,16 +1023,20 @@ def _collection_recovery_summary(
 
     for record in file_records:
         image_ids = covered_paths.get(record.path, set())
-        if any(
-            image_by_id.get(image_id) is not None
-            and image_by_id[image_id].physical_copies_verified > 0
-            for image_id in image_ids
+        if _path_is_recoverable(
+            record.path,
+            image_ids=image_ids,
+            recovery_parts_by_image_path=recovery_parts_by_image_path,
+            image_available=lambda image: image.physical_copies_verified > 0,
+            image_by_id=image_by_id,
         ):
             verified_physical_bytes += record.bytes
-        if any(
-            image_by_id.get(image_id) is not None
-            and image_by_id[image_id].glacier.state == GlacierState.UPLOADED
-            for image_id in image_ids
+        if _path_is_recoverable(
+            record.path,
+            image_ids=image_ids,
+            recovery_parts_by_image_path=recovery_parts_by_image_path,
+            image_available=lambda image: image.glacier.state == GlacierState.UPLOADED,
+            image_by_id=image_by_id,
         ):
             glacier_bytes += record.bytes
 
@@ -1026,6 +1064,67 @@ def _collection_recovery_summary(
         ),
         available=tuple(available),
     )
+
+
+def _path_is_recoverable(
+    path: str,
+    *,
+    image_ids: set[str],
+    recovery_parts_by_image_path: dict[tuple[str, str], _RecoveryParts],
+    image_available: Callable[[CollectionCoverageImage], bool],
+    image_by_id: dict[str, CollectionCoverageImage],
+) -> bool:
+    if not image_ids:
+        return False
+
+    expected_part_count: int | None = None
+    present_parts: set[int] = set()
+    for image_id in image_ids:
+        image = image_by_id.get(image_id)
+        if image is None or not image_available(image):
+            continue
+        recovery_parts = recovery_parts_by_image_path.get((image_id, path))
+        if recovery_parts is None:
+            continue
+        if recovery_parts.part_count == 1 and recovery_parts.present_parts == frozenset({0}):
+            return True
+        if expected_part_count is None:
+            expected_part_count = recovery_parts.part_count
+        elif expected_part_count != recovery_parts.part_count:
+            return False
+        present_parts.update(recovery_parts.present_parts)
+    return expected_part_count is not None and len(present_parts) == expected_part_count
+
+
+def _read_collection_manifest_entries(
+    *,
+    image_root: str,
+    collection_id: str,
+) -> dict[str, _RecoveryParts]:
+    manifest_path = Path(image_root) / MANIFEST_FILENAME
+    try:
+        manifest = yaml.safe_load(decrypt_recovery_payload(manifest_path.read_bytes()))
+    except Exception:
+        return {}
+
+    for collection in manifest.get("collections", []):
+        if str(collection.get("id")) != collection_id:
+            continue
+        entries: dict[str, _RecoveryParts] = {}
+        for file_entry in collection.get("files", []):
+            path = str(file_entry["path"]).lstrip("/")
+            parts_block = file_entry.get("parts")
+            if parts_block is None:
+                entries[path] = _RecoveryParts(part_count=1, present_parts=frozenset({0}))
+                continue
+            entries[path] = _RecoveryParts(
+                part_count=int(parts_block["count"]),
+                present_parts=frozenset(
+                    int(present["index"]) - 1 for present in parts_block.get("present", [])
+                ),
+            )
+        return entries
+    return {}
 
 
 def _recovery_coverage_state(
