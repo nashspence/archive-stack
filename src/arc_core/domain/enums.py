@@ -17,6 +17,12 @@ class ProtectionState(StrEnum):
     PROTECTED = "protected"
 
 
+class RecoveryCoverageState(StrEnum):
+    NONE = "none"
+    PARTIAL = "partial"
+    FULL = "full"
+
+
 class GlacierState(StrEnum):
     PENDING = "pending"
     UPLOADING = "uploading"

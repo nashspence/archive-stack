@@ -1807,6 +1807,24 @@ def then_protected_bytes_is(
     assert payload["protected_bytes"] == count
 
 
+@then(parsers.parse('collection verified_physical recovery state is "{state}"'))
+def then_collection_verified_physical_recovery_state_is(
+    acceptance_context: AcceptanceScenarioContext,
+    state: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert payload["recovery"]["verified_physical"]["state"] == state
+
+
+@then(parsers.parse('collection Glacier recovery state is "{state}"'))
+def then_collection_glacier_recovery_state_is(
+    acceptance_context: AcceptanceScenarioContext,
+    state: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert payload["recovery"]["glacier"]["state"] == state
+
+
 @then(parsers.parse('collection image coverage includes image "{image_id}"'))
 def then_collection_image_coverage_includes_image(
     acceptance_context: AcceptanceScenarioContext,

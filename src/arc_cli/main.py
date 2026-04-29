@@ -270,7 +270,7 @@ def images_cmd(
         emit(payload, json_mode=True)
         return
 
-    plan_payload = api.get_plan(
+    ready_plan_payload = api.get_plan(
         page=page,
         per_page=per_page,
         sort="fill",
@@ -279,7 +279,28 @@ def images_cmd(
         collection=collection,
         iso_ready=True,
     )
+    backlog_plan_payload = api.get_plan(
+        page=page,
+        per_page=per_page,
+        sort="fill",
+        order="desc",
+        query=query,
+        collection=collection,
+        iso_ready=False,
+    )
     collections_query = collection or query
+    unprotected_collections = api.list_collections(
+        page=page,
+        per_page=per_page,
+        q=collections_query,
+        protection_state="unprotected",
+    )
+    partially_protected_collections = api.list_collections(
+        page=page,
+        per_page=per_page,
+        q=collections_query,
+        protection_state="partially_protected",
+    )
     protected_collections = api.list_collections(
         page=page,
         per_page=per_page,
@@ -287,7 +308,14 @@ def images_cmd(
         protection_state="protected",
     )
     emit(
-        format_archive_status(plan_payload, payload, protected_collections),
+        format_archive_status(
+            ready_plan_payload,
+            backlog_plan_payload,
+            payload,
+            unprotected_collections,
+            partially_protected_collections,
+            protected_collections,
+        ),
         json_mode=False,
     )
 

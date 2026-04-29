@@ -63,6 +63,34 @@ def _find_collection_glacier_entry(
     return None
 
 
+def _recovery_text(recovery: object, *, total_bytes: int) -> str:
+    if not isinstance(recovery, Mapping):
+        return "available=unknown"
+
+    verified = recovery.get("verified_physical")
+    glacier = recovery.get("glacier")
+    available_items = recovery.get("available")
+    available = (
+        ",".join(str(item) for item in available_items)
+        if isinstance(available_items, Sequence) and available_items
+        else "none"
+    )
+
+    verified_state = (
+        str(verified.get("state", "unknown")) if isinstance(verified, Mapping) else "unknown"
+    )
+    verified_bytes = _int_value(verified.get("bytes", 0)) if isinstance(verified, Mapping) else 0
+    glacier_state = (
+        str(glacier.get("state", "unknown")) if isinstance(glacier, Mapping) else "unknown"
+    )
+    glacier_bytes = _int_value(glacier.get("bytes", 0)) if isinstance(glacier, Mapping) else 0
+    return (
+        f"available={available} "
+        f"verified_physical={verified_state} {verified_bytes}/{total_bytes} "
+        f"glacier={glacier_state} {glacier_bytes}/{total_bytes}"
+    )
+
+
 def format_copy(payload: Mapping[str, Any]) -> str:
     history = payload.get("history")
     lines = [
@@ -214,22 +242,43 @@ def format_images(payload: Mapping[str, Any]) -> str:
 
 
 def format_archive_status(
-    plan_payload: Mapping[str, Any],
+    ready_plan_payload: Mapping[str, Any],
+    backlog_plan_payload: Mapping[str, Any],
     images_payload: Mapping[str, Any],
+    unprotected_collections_payload: Mapping[str, Any],
+    partially_protected_collections_payload: Mapping[str, Any],
     protected_collections_payload: Mapping[str, Any],
 ) -> str:
     lines = [
         "archive: "
         f"page={images_payload.get('page', 1)} "
-        f"per_page={images_payload.get('per_page', 25)}",
-        "waiting_finalization:",
+        f"per_page={images_payload.get('per_page', 25)} "
+        f"ready_to_finalize={ready_plan_payload.get('total', 0)} "
+        f"waiting_for_future_iso={backlog_plan_payload.get('total', 0)} "
+        f"unplanned_bytes={ready_plan_payload.get('unplanned_bytes', 0)}",
+        "ready_to_finalize:",
     ]
 
-    candidates = plan_payload.get("candidates")
+    candidates = ready_plan_payload.get("candidates")
     if not isinstance(candidates, Sequence) or not candidates:
         lines.append("- none")
     else:
         for candidate in candidates:
+            if not isinstance(candidate, Mapping):
+                continue
+            lines.append(
+                f"- {candidate.get('candidate_id', 'unknown')} "
+                f"fill={candidate.get('fill', 0)} "
+                f"collections={candidate.get('collections', 0)} "
+                f"[{_collection_ids_text(candidate.get('collection_ids'))}]"
+            )
+
+    lines.append("waiting_for_future_iso:")
+    backlog_candidates = backlog_plan_payload.get("candidates")
+    if not isinstance(backlog_candidates, Sequence) or not backlog_candidates:
+        lines.append("- none")
+    else:
+        for candidate in backlog_candidates:
             if not isinstance(candidate, Mapping):
                 continue
             lines.append(
@@ -271,6 +320,30 @@ def format_archive_status(
             if isinstance(glacier, Mapping) and glacier.get("failure"):
                 lines.append(f"  glacier_failure: {glacier.get('failure')}")
 
+    lines.append("noncompliant_collections:")
+    noncompliant_collections: list[Mapping[str, Any]] = []
+    for payload in (
+        unprotected_collections_payload,
+        partially_protected_collections_payload,
+    ):
+        collections = payload.get("collections")
+        if not isinstance(collections, Sequence):
+            continue
+        noncompliant_collections.extend(
+            collection for collection in collections if isinstance(collection, Mapping)
+        )
+    if not noncompliant_collections:
+        lines.append("- none")
+    else:
+        for collection in noncompliant_collections:
+            total_bytes = _int_value(collection.get("bytes", 0))
+            lines.append(
+                f"- {collection.get('id', 'unknown')} "
+                f"state={collection.get('protection_state', 'unknown')} "
+                f"protected_bytes={collection.get('protected_bytes', 0)}/{total_bytes} "
+                f"recovery={_recovery_text(collection.get('recovery'), total_bytes=total_bytes)}"
+            )
+
     lines.append("fully_protected_collections:")
     collections = protected_collections_payload.get("collections")
     if not isinstance(collections, Sequence) or not collections:
@@ -303,6 +376,13 @@ def format_collection_summary(
         f"archived_bytes={payload.get('archived_bytes', 0)} "
         f"pending_bytes={payload.get('pending_bytes', 0)}",
     ]
+    lines.append(
+        "recovery: "
+        + _recovery_text(
+            payload.get("recovery"),
+            total_bytes=_int_value(payload.get("bytes", 0)),
+        )
+    )
 
     collection_glacier = _find_collection_glacier_entry(collection_id, glacier_payload)
     if isinstance(collection_glacier, Mapping):

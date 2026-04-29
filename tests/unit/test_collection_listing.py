@@ -15,6 +15,12 @@ def test_collection_listing_can_include_protected_collections() -> None:
             system.planning.finalize_image("img_2026-04-20_01")
             system.copies.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-1")
             system.copies.register("20260420T040001Z", "Shelf B2", copy_id="20260420T040001Z-2")
+            system.copies.update(
+                "20260420T040001Z",
+                "20260420T040001Z-1",
+                state="verified",
+                verification_state="verified",
+            )
             assert system.glacier_uploads.process_due_uploads(limit=10) == 1
 
             records = system.state.files_by_collection[CollectionId("docs")]
@@ -43,5 +49,8 @@ def test_collection_listing_can_include_protected_collections() -> None:
             payload = summary.json()
             assert payload["protection_state"] == "protected"
             assert payload["protected_bytes"] == payload["bytes"]
+            assert payload["recovery"]["verified_physical"]["state"] == "full"
+            assert payload["recovery"]["glacier"]["state"] == "full"
+            assert payload["recovery"]["available"] == ["verified_physical", "glacier"]
         finally:
             system.close()

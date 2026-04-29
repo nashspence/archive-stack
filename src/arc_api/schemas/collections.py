@@ -28,6 +28,7 @@ class CollectionSummaryOut(ArcModel):
     pending_bytes: int
     protection_state: Literal["unprotected", "partially_protected", "protected"]
     protected_bytes: int
+    recovery: CollectionRecoverySummaryOut
     image_coverage: list[CollectionCoverageImageOut]
 
 
@@ -42,6 +43,17 @@ class CollectionCoverageImageOut(ArcModel):
     covered_paths: list[str]
     copies: list[CopyOut]
     glacier: GlacierArchiveOut
+
+
+class CollectionRecoveryCoverageOut(ArcModel):
+    state: Literal["none", "partial", "full"]
+    bytes: int
+
+
+class CollectionRecoverySummaryOut(ArcModel):
+    verified_physical: CollectionRecoveryCoverageOut
+    glacier: CollectionRecoveryCoverageOut
+    available: list[Literal["verified_physical", "glacier"]]
 
 
 class ListCollectionsResponse(ArcModel):

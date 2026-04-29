@@ -42,9 +42,11 @@ def test_format_images_surfaces_glacier_failure_context() -> None:
     assert "glacier_failure: s3 timeout" in rendered
 
 
-def test_format_archive_status_surfaces_pending_finalization_and_protected_collections() -> None:
+def test_format_archive_status_surfaces_ready_backlog_and_noncompliant_collections() -> None:
     rendered = format_archive_status(
         {
+            "total": 1,
+            "unplanned_bytes": 6100,
             "candidates": [
                 {
                     "candidate_id": "img_2026-04-20_01",
@@ -53,6 +55,17 @@ def test_format_archive_status_surfaces_pending_finalization_and_protected_colle
                     "collection_ids": ["docs"],
                 }
             ]
+        },
+        {
+            "total": 1,
+            "candidates": [
+                {
+                    "candidate_id": "img_2026-04-20_02",
+                    "fill": 0.12,
+                    "collections": 1,
+                    "collection_ids": ["photos-2024"],
+                }
+            ],
         },
         {
             "page": 1,
@@ -74,6 +87,36 @@ def test_format_archive_status_surfaces_pending_finalization_and_protected_colle
         {
             "collections": [
                 {
+                    "id": "photos-2024",
+                    "bytes": 100,
+                    "protected_bytes": 0,
+                    "protection_state": "unprotected",
+                    "recovery": {
+                        "available": [],
+                        "verified_physical": {"state": "none", "bytes": 0},
+                        "glacier": {"state": "none", "bytes": 0},
+                    },
+                }
+            ]
+        },
+        {
+            "collections": [
+                {
+                    "id": "docs",
+                    "bytes": 55,
+                    "protected_bytes": 22,
+                    "protection_state": "partially_protected",
+                    "recovery": {
+                        "available": [],
+                        "verified_physical": {"state": "partial", "bytes": 22},
+                        "glacier": {"state": "partial", "bytes": 22},
+                    },
+                }
+            ]
+        },
+        {
+            "collections": [
+                {
                     "id": "receipts",
                     "bytes": 40,
                     "protected_bytes": 40,
@@ -81,14 +124,20 @@ def test_format_archive_status_surfaces_pending_finalization_and_protected_colle
             ]
         },
     )
-    assert "waiting_finalization:" in rendered
+    assert "ready_to_finalize:" in rendered
     assert "img_2026-04-20_01" in rendered
+    assert "waiting_for_future_iso:" in rendered
+    assert "img_2026-04-20_02" in rendered
     assert "next: burn, verify, glacier=pending" in rendered
+    assert "noncompliant_collections:" in rendered
+    assert "photos-2024 state=unprotected" in rendered
+    assert "docs state=partially_protected" in rendered
+    assert "verified_physical=partial 22/55" in rendered
     assert "fully_protected_collections:" in rendered
     assert "receipts protected_bytes=40/40" in rendered
 
 
-def test_format_collection_summary_surfaces_paths_labels_and_glacier_costs() -> None:
+def test_format_collection_summary_surfaces_recovery_paths_labels_and_glacier_costs() -> None:
     rendered = format_collection_summary(
         {
             "id": "docs",
@@ -99,6 +148,11 @@ def test_format_collection_summary_surfaces_paths_labels_and_glacier_costs() -> 
             "pending_bytes": 0,
             "protection_state": "partially_protected",
             "protected_bytes": 0,
+            "recovery": {
+                "available": ["glacier"],
+                "verified_physical": {"state": "partial", "bytes": 18},
+                "glacier": {"state": "full", "bytes": 33},
+            },
             "image_coverage": [
                 {
                     "id": "20260420T040001Z",
@@ -146,6 +200,9 @@ def test_format_collection_summary_surfaces_paths_labels_and_glacier_costs() -> 
             ]
         },
     )
+    assert "recovery: available=glacier" in rendered
+    assert "verified_physical=partial 18/33" in rendered
+    assert "glacier=full 33/33" in rendered
     assert "glacier_footprint: represented_bytes=33 derived_stored_bytes=8200" in rendered
     assert "paths: tax/2022/invoice-123.pdf" in rendered
     assert "label=20260420T040001Z-1" in rendered

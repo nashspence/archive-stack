@@ -134,12 +134,16 @@ Feature: arc CLI
       And copy "20260420T040001Z-1" already exists
       When the operator runs 'arc images --has-copies'
       Then the command exits with code 0
-      And stdout mentions "waiting_finalization:"
+      And stdout mentions "ready_to_finalize:"
       And stdout mentions "img_2026-04-20_03"
+      And stdout mentions "waiting_for_future_iso:"
+      And stdout mentions "img_2026-04-20_02"
       And stdout mentions "20260420T040001Z"
       And stdout mentions "next: burn, verify"
       And stdout mentions "glacier="
       And stdout mentions "verified=0/2"
+      And stdout mentions "noncompliant_collections:"
+      And stdout mentions "photos-2024 state=unprotected"
       And stdout mentions "fully_protected_collections:"
 
     Scenario: arc show prints collection coverage and Glacier recovery hints
@@ -150,6 +154,9 @@ Feature: arc CLI
       When the client waits for image "20260420T040001Z" glacier state "uploaded"
       And the operator runs 'arc show docs'
       Then the command exits with code 0
+      And stdout mentions "recovery:"
+      And stdout mentions "verified_physical=partial"
+      And stdout mentions "glacier=partial"
       And stdout mentions "coverage:"
       And stdout mentions "paths: tax/2022/invoice-123.pdf"
       And stdout mentions "label=20260420T040001Z-1"

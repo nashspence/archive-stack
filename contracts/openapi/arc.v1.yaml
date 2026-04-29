@@ -1644,7 +1644,7 @@ components:
     CollectionSummary:
       type: object
       required:
-        [id, files, bytes, hot_bytes, archived_bytes, pending_bytes, protection_state, protected_bytes, image_coverage]
+        [id, files, bytes, hot_bytes, archived_bytes, pending_bytes, protection_state, protected_bytes, recovery, image_coverage]
       properties:
         id:
           type: string
@@ -1658,10 +1658,35 @@ components:
           $ref: "#/components/schemas/ProtectionState"
         protected_bytes:
           type: integer
+        recovery:
+          $ref: "#/components/schemas/CollectionRecoverySummary"
         image_coverage:
           type: array
           items:
             $ref: "#/components/schemas/CollectionCoverageImage"
+    CollectionRecoveryCoverage:
+      type: object
+      required: [state, bytes]
+      properties:
+        state:
+          type: string
+          enum: [none, partial, full]
+        bytes:
+          type: integer
+          minimum: 0
+    CollectionRecoverySummary:
+      type: object
+      required: [verified_physical, glacier, available]
+      properties:
+        verified_physical:
+          $ref: "#/components/schemas/CollectionRecoveryCoverage"
+        glacier:
+          $ref: "#/components/schemas/CollectionRecoveryCoverage"
+        available:
+          type: array
+          items:
+            type: string
+            enum: [verified_physical, glacier]
     CollectionListResponse:
       type: object
       required: [page, per_page, total, pages, collections]

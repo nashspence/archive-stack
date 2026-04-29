@@ -8,6 +8,7 @@ from arc_core.domain.enums import (
     FetchState,
     GlacierState,
     ProtectionState,
+    RecoveryCoverageState,
     RecoverySessionState,
     VerificationState,
 )
@@ -305,6 +306,19 @@ class CollectionCoverageImage:
 
 
 @dataclass(frozen=True)
+class RecoveryCoverage:
+    state: RecoveryCoverageState
+    bytes: int
+
+
+@dataclass(frozen=True)
+class CollectionRecoverySummary:
+    verified_physical: RecoveryCoverage
+    glacier: RecoveryCoverage
+    available: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class CollectionSummary:
     id: CollectionId
     files: int
@@ -313,6 +327,19 @@ class CollectionSummary:
     archived_bytes: int
     protection_state: ProtectionState = ProtectionState.UNPROTECTED
     protected_bytes: int = 0
+    recovery: CollectionRecoverySummary = field(
+        default_factory=lambda: CollectionRecoverySummary(
+            verified_physical=RecoveryCoverage(
+                state=RecoveryCoverageState.NONE,
+                bytes=0,
+            ),
+            glacier=RecoveryCoverage(
+                state=RecoveryCoverageState.NONE,
+                bytes=0,
+            ),
+            available=(),
+        )
+    )
     image_coverage: list[CollectionCoverageImage] = field(default_factory=list)
 
     @property

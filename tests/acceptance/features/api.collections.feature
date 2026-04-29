@@ -119,7 +119,7 @@ Feature: Collections API
     Scenario: Read a collection summary
       When the client gets "/v1/collections/photos-2024"
       Then the response status is 200
-      And the response contains "id", "files", "bytes", "hot_bytes", "archived_bytes", "pending_bytes", "protection_state", "protected_bytes", and "image_coverage"
+      And the response contains "id", "files", "bytes", "hot_bytes", "archived_bytes", "pending_bytes", "protection_state", "protected_bytes", "recovery", and "image_coverage"
       And pending_bytes equals bytes minus archived_bytes
       And hot_bytes is between 0 and bytes
       And archived_bytes is between 0 and bytes
@@ -134,6 +134,8 @@ Feature: Collections API
       Then the response status is 200
       And collection protection_state is "partially_protected"
       And protected_bytes is 0
+      And collection verified_physical recovery state is "none"
+      And collection Glacier recovery state is "partial"
       And collection image coverage includes image "20260420T040001Z"
       And collection image coverage for image "20260420T040001Z" includes path "tax/2022/invoice-123.pdf"
       And collection image coverage for image "20260420T040001Z" includes copy "20260420T040001Z-1"

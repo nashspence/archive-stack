@@ -26,13 +26,16 @@ from arc_core.catalog_models import (
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
 )
+from arc_core.domain.enums import GlacierState, RecoveryCoverageState
 from arc_core.domain.errors import BadRequest, Conflict, HashMismatch, NotFound
 from arc_core.domain.models import (
     CollectionCoverageImage,
     CollectionListPage,
+    CollectionRecoverySummary,
     CollectionSummary,
     CopySummary,
     GlacierArchiveStatus,
+    RecoveryCoverage,
 )
 from arc_core.domain.types import CollectionId, CopyId, ImageId, Sha256Hex
 from arc_core.fs_paths import (
@@ -832,6 +835,11 @@ def _summary_from_records(
         image_coverage=image_coverage,
         covered_paths=covered_paths or {},
     )
+    recovery = _collection_recovery_summary(
+        file_records,
+        image_coverage=image_coverage,
+        covered_paths=covered_paths or {},
+    )
     return CollectionSummary(
         id=CollectionId(collection_id),
         files=len(file_records),
@@ -845,6 +853,7 @@ def _summary_from_records(
             image_states=(image.protection_state for image in image_coverage),
         ),
         protected_bytes=protected_bytes,
+        recovery=recovery,
         image_coverage=list(image_coverage),
     )
 
@@ -952,3 +961,80 @@ def _protected_bytes(
             if all(image_states[image_id].value == "protected" for image_id in image_ids):
                 protected += record.bytes
     return protected
+
+
+def _collection_recovery_summary(
+    file_records: Sequence[CollectionFileRecord],
+    *,
+    image_coverage: Sequence[CollectionCoverageImage],
+    covered_paths: dict[str, set[str]],
+) -> CollectionRecoverySummary:
+    if not file_records:
+        return CollectionRecoverySummary(
+            verified_physical=RecoveryCoverage(
+                state=RecoveryCoverageState.NONE,
+                bytes=0,
+            ),
+            glacier=RecoveryCoverage(
+                state=RecoveryCoverageState.NONE,
+                bytes=0,
+            ),
+            available=(),
+        )
+
+    image_by_id = {str(image.id): image for image in image_coverage}
+    verified_physical_bytes = 0
+    glacier_bytes = 0
+    total_bytes = sum(record.bytes for record in file_records)
+
+    for record in file_records:
+        image_ids = covered_paths.get(record.path, set())
+        if any(
+            image_by_id.get(image_id) is not None
+            and image_by_id[image_id].physical_copies_verified > 0
+            for image_id in image_ids
+        ):
+            verified_physical_bytes += record.bytes
+        if any(
+            image_by_id.get(image_id) is not None
+            and image_by_id[image_id].glacier.state == GlacierState.UPLOADED
+            for image_id in image_ids
+        ):
+            glacier_bytes += record.bytes
+
+    verified_physical_state = _recovery_coverage_state(
+        covered_bytes=verified_physical_bytes,
+        total_bytes=total_bytes,
+    )
+    glacier_state = _recovery_coverage_state(
+        covered_bytes=glacier_bytes,
+        total_bytes=total_bytes,
+    )
+    available: list[str] = []
+    if verified_physical_state is RecoveryCoverageState.FULL:
+        available.append("verified_physical")
+    if glacier_state is RecoveryCoverageState.FULL:
+        available.append("glacier")
+    return CollectionRecoverySummary(
+        verified_physical=RecoveryCoverage(
+            state=verified_physical_state,
+            bytes=verified_physical_bytes,
+        ),
+        glacier=RecoveryCoverage(
+            state=glacier_state,
+            bytes=glacier_bytes,
+        ),
+        available=tuple(available),
+    )
+
+
+def _recovery_coverage_state(
+    *,
+    covered_bytes: int,
+    total_bytes: int,
+) -> RecoveryCoverageState:
+    if total_bytes <= 0 or covered_bytes <= 0:
+        return RecoveryCoverageState.NONE
+    if covered_bytes >= total_bytes:
+        return RecoveryCoverageState.FULL
+    return RecoveryCoverageState.PARTIAL

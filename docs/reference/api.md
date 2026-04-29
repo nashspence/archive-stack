@@ -131,6 +131,8 @@ Required behavior:
 - the response includes pagination metadata and a `collections` array
 - returned collection summaries use the same shape as `GET /v1/collections/{collection_id}`
 - filtering by `protection_state=protected` can be used to answer which collections are already fully protected
+- collection summaries include a collection-level recovery summary covering verified physical-copy coverage and
+  Glacier-backed coverage
 
 #### `GET /v1/collections/{collection_id}`
 
@@ -140,11 +142,15 @@ Required behavior:
 
 - collection ids may span multiple path segments, for example `GET /v1/collections/photos/2024`
 - API and CLI collection lookup treat slash-bearing ids as first-class
-- collection summaries expose `protection_state`, `protected_bytes`, and per-image coverage details
+- collection summaries expose `protection_state`, `protected_bytes`, collection-level recovery summary, and per-image
+  coverage details
+- collection-level recovery summary exposes verified physical-copy coverage, Glacier-backed coverage, and which full
+  recovery paths are currently available for the whole collection
 - per-image coverage details expose `covered_paths`, `physical_copies_registered`,
   `physical_copies_verified`, copy labels and locations, and Glacier archive metadata
 - collection coverage explains which finalized images, paths, registered copies, and Glacier state currently cover
-  that collection
+  that collection, and whether the collection is currently recoverable from verified physical media, Glacier, both,
+  or neither
 
 ### File introspection
 
@@ -593,6 +599,8 @@ The `arc` CLI is a thin API client and should provide at least:
 
 `arc show COLLECTION` should provide a concise human-readable recovery and coverage view for one collection, including:
 
+- an explicit summary of whether the collection is currently recoverable from verified physical copies, Glacier, both,
+  or neither
 - finalized images currently covering the collection
 - projected paths carried by each image
 - generated disc ids, exact label text, locations, and verification state
@@ -618,8 +626,9 @@ For finalized-image commands:
 - non-JSON `arc plan` output stays concise and line-oriented while surfacing candidate id, fill, readiness, and
   contained collections
 - non-JSON `arc images` acts as the default archive-status view and stays concise while surfacing:
-  ready-to-finalize provisional images, finalized-image burn and verification backlog, Glacier upload state, and
-  which collections are already fully protected
+  ready-to-finalize provisional images, backlog still waiting for inclusion in a future ISO, finalized-image burn and
+  verification backlog, Glacier upload state, non-compliant collections, and which collections are already fully
+  protected
 - non-JSON `arc glacier` output stays line-oriented while surfacing measured usage totals, configured pricing basis,
   per-image Glacier state, and derived collection attribution
 

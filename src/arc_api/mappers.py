@@ -3,6 +3,7 @@ from __future__ import annotations
 from arc_core.domain.models import (
     CollectionCoverageImage,
     CollectionListPage,
+    CollectionRecoverySummary,
     CollectionSummary,
     CopyHistoryEntry,
     CopySummary,
@@ -26,6 +27,7 @@ from arc_core.domain.models import (
     GlacierUsageTotals,
     PinSummary,
     RecoveryCostEstimate,
+    RecoveryCoverage,
     RecoveryNotificationStatus,
     RecoverySessionImage,
     RecoverySessionSummary,
@@ -287,6 +289,7 @@ def map_collection(summary: CollectionSummary) -> dict[str, object]:
         "pending_bytes": summary.pending_bytes,
         "protection_state": summary.protection_state.value,
         "protected_bytes": summary.protected_bytes,
+        "recovery": map_collection_recovery(summary.recovery),
         "image_coverage": [
             map_collection_coverage_image(image) for image in summary.image_coverage
         ],
@@ -300,6 +303,21 @@ def map_collection_list_page(summary: CollectionListPage) -> dict[str, object]:
         "total": summary.total,
         "pages": summary.pages,
         "collections": [map_collection(collection) for collection in summary.collections],
+    }
+
+
+def map_recovery_coverage(summary: RecoveryCoverage) -> dict[str, object]:
+    return {
+        "state": summary.state.value,
+        "bytes": summary.bytes,
+    }
+
+
+def map_collection_recovery(summary: CollectionRecoverySummary) -> dict[str, object]:
+    return {
+        "verified_physical": map_recovery_coverage(summary.verified_physical),
+        "glacier": map_recovery_coverage(summary.glacier),
+        "available": list(summary.available),
     }
 
 

@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 from collections import defaultdict
-from collections.abc import AsyncIterator, Iterator, Mapping
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -41,6 +41,7 @@ from arc_core.domain.enums import (
     FetchState,
     GlacierState,
     ProtectionState,
+    RecoveryCoverageState,
     RecoverySessionState,
     VerificationState,
 )
@@ -48,6 +49,7 @@ from arc_core.domain.errors import Conflict, HashMismatch, InvalidState, NotFoun
 from arc_core.domain.models import (
     CollectionCoverageImage,
     CollectionListPage,
+    CollectionRecoverySummary,
     CollectionSummary,
     CopyHistoryEntry,
     CopySummary,
@@ -72,6 +74,7 @@ from arc_core.domain.models import (
     GlacierUsageTotals,
     PinSummary,
     RecoveryCostEstimate,
+    RecoveryCoverage,
     RecoveryNotificationStatus,
     RecoverySessionImage,
     RecoverySessionSummary,
@@ -146,6 +149,18 @@ def _copy_counts_toward_slot_pool(state: CopyState) -> bool:
     return state in {CopyState.NEEDED, CopyState.BURNING} or copy_counts_toward_protection(
         state.value
     )
+
+
+def _recovery_coverage_state(
+    *,
+    covered_bytes: int,
+    total_bytes: int,
+) -> RecoveryCoverageState:
+    if total_bytes <= 0 or covered_bytes <= 0:
+        return RecoveryCoverageState.NONE
+    if covered_bytes >= total_bytes:
+        return RecoveryCoverageState.FULL
+    return RecoveryCoverageState.PARTIAL
 
 
 def _history_event_name(
@@ -716,6 +731,11 @@ class AcceptanceState:
             ):
                 protected_bytes += record.bytes
         archived_bytes = sum(record.bytes for record in records if record.archived)
+        recovery = self.collection_recovery_summary(
+            records,
+            image_coverage=image_coverage,
+            covered_paths=covered_paths,
+        )
         return CollectionSummary(
             id=CollectionId(str(collection_id)),
             files=len(records),
@@ -729,6 +749,7 @@ class AcceptanceState:
                 image_states=(image.protection_state for image in image_coverage),
             ),
             protected_bytes=protected_bytes,
+            recovery=recovery,
             image_coverage=image_coverage,
         )
 
@@ -794,6 +815,58 @@ class AcceptanceState:
                 )
             )
         return image_coverage, covered_paths
+
+    def collection_recovery_summary(
+        self,
+        records: list[StoredFile],
+        *,
+        image_coverage: Sequence[CollectionCoverageImage],
+        covered_paths: dict[str, set[str]],
+    ) -> CollectionRecoverySummary:
+        total_bytes = sum(record.bytes for record in records)
+        image_by_id = {str(image.id): image for image in image_coverage}
+        verified_physical_bytes = 0
+        glacier_bytes = 0
+
+        for record in records:
+            image_ids = covered_paths.get(record.path, set())
+            if any(
+                image_by_id.get(image_id) is not None
+                and image_by_id[image_id].physical_copies_verified > 0
+                for image_id in image_ids
+            ):
+                verified_physical_bytes += record.bytes
+            if any(
+                image_by_id.get(image_id) is not None
+                and image_by_id[image_id].glacier.state == GlacierState.UPLOADED
+                for image_id in image_ids
+            ):
+                glacier_bytes += record.bytes
+
+        verified_physical_state = _recovery_coverage_state(
+            covered_bytes=verified_physical_bytes,
+            total_bytes=total_bytes,
+        )
+        glacier_state = _recovery_coverage_state(
+            covered_bytes=glacier_bytes,
+            total_bytes=total_bytes,
+        )
+        available: list[str] = []
+        if verified_physical_state is RecoveryCoverageState.FULL:
+            available.append("verified_physical")
+        if glacier_state is RecoveryCoverageState.FULL:
+            available.append("glacier")
+        return CollectionRecoverySummary(
+            verified_physical=RecoveryCoverage(
+                state=verified_physical_state,
+                bytes=verified_physical_bytes,
+            ),
+            glacier=RecoveryCoverage(
+                state=glacier_state,
+                bytes=glacier_bytes,
+            ),
+            available=tuple(available),
+        )
 
     def selected_files(self, raw_target: str, *, missing_ok: bool = False) -> list[StoredFile]:
         target = parse_target(raw_target)
