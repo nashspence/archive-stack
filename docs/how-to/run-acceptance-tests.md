@@ -8,10 +8,10 @@ The executable acceptance contract lives in the Gherkin feature files under
 Run the last full check in separate terminals:
 
 ```bash
-./test lint
-./test unit
-./test spec
-./test prod
+make lint
+make unit
+make spec
+make prod
 ```
 
 That keeps the local lanes and the prod-backed lane visible in parallel output
@@ -20,7 +20,7 @@ windows without changing the checked-in test surfaces.
 Run the same acceptance contract inside the deterministic test container:
 
 ```bash
-./test prod
+make prod
 ```
 
 That path keeps the prod-backed `pytest` run in the canonical test container
@@ -28,56 +28,68 @@ while `docker compose` manages the checked-in `app` service and its storage
 sidecars outside the container.
 
 Do not run the production-backed harness with direct `pytest`. The supported
-entrypoints are `./test prod`, `./test prod-profile`, or the serial `./test`
-wrapper, which prepare the compose-managed app and sidecars the harness expects.
+entrypoints are `make prod`, `make prod-profile`, or `make test`, which prepare
+the compose-managed app and sidecars the harness expects.
 
 Run the production-backed harness lane with built-in timing output for scenario and fixture hotspots:
 
 ```bash
-./test prod-profile
+make prod-profile
 ```
 
 Run the fixture-backed spec harness lane against the same contract from a local
 locked `uv` environment:
 
 ```bash
-./test spec
+make spec
 ```
 
 Run the unit lane by itself:
 
 ```bash
-./test unit
+make unit
 ```
 
-Run the non-production lanes together:
+Run the atomic image build targets when you need a fresh local app or test
+image before the prod-backed lane:
 
 ```bash
-./test fast
+make build-app
+make build-test
+```
+
+Run the Garage bootstrap on its own when you want the checked-in buckets and
+keys prepared without running the prod harness yet:
+
+```bash
+make bootstrap-garage
 ```
 
 The non-production lanes resolve against the checked-in `requirements-test.txt`
 set plus the editable project, so they do not require Docker or BuildKit.
 
-Run the serial aggregate wrapper with `./test` when you want one supported
+Run the serial aggregate target with `make test` when you want one supported
 command to run lint, then unit, spec, and prod in order.
 
 ## Compose-backed sidecars
 
-The serial `./test` wrapper reads `./.env.compose` when present, otherwise it falls
+The checked-in test scripts read `./.env.compose` when present, otherwise they fall
 back to `./.env.compose.example`.
 
-For prod-backed lanes, `./test` also loads the short recovery timing overrides
+For prod-backed lanes, `make prod`, `make prod-profile`, and `make test` also
+load the short recovery timing overrides
 from `tests/harness/prod-harness.env`. That keeps the checked-in compose env
 product-facing while still giving the acceptance harness the smaller timing
 window it needs.
 
-Each prod-backed `./test ...` invocation uses its own Compose project name by
+Each prod-backed `make ...` invocation uses its own Compose project name by
 default so independent prod-backed runs do not tear down each other's one-off
 containers, networks, or sidecars.
 
 If you need to reuse one Compose project explicitly, export
-`TEST_COMPOSE_PROJECT_NAME` before running `./test`.
+`TEST_COMPOSE_PROJECT_NAME` before running `make`.
+Do that before `make bootstrap-garage` or `make down` as well when you want
+those standalone targets to act on the same compose-managed stack.
 
 
 ## What lives where

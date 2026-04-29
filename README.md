@@ -2,25 +2,27 @@
 
 ## Linting
 
-Run the canonical lint flow with `./test lint`.
+Run the canonical lint flow with `make lint`.
 
 That lane runs `ruff check .` and then runs strict `mypy` in a local locked `uv`
 environment built from `requirements-test.txt` plus the editable project.
 
 ## Testing
 
-For the fastest full check, run `./test lint`, `./test unit`, `./test spec`,
-and `./test prod` in separate terminals. The lint, unit, and spec lanes run
+For the fastest full check, run `make lint`, `make unit`, `make spec`, and
+`make prod` in separate terminals. The lint, unit, and spec lanes run
 locally in the same locked `uv` environment, and the prod-backed lane stays on
 the checked-in Compose surface.
 
-Run the supported serial aggregate flow with `./test` when one command is more
-convenient. That wrapper runs lint first, then the unit, spec, and prod-backed
+Run the serial aggregate flow with `make test` when one command is more
+convenient. That target runs lint first, then the unit, spec, and prod-backed
 acceptance lanes.
 
-Run the production-backed harness against the executable acceptance contract with `./test prod`.
-Profile the production-backed harness with `./test prod-profile`.
-Run the fixture-backed spec harness lane with `./test spec`.
-Run the unit lane with `./test unit`.
-Run the non-production lanes together with `./test fast`.
+Run `make ruff` or `make mypy` to execute those atomic quality gates directly.
+Run `make build-app`, `make build-test`, or `make build` to refresh the local Docker images.
+Run `make bootstrap-garage` to apply the checked-in Garage bucket and key bootstrap.
+Run the production-backed harness against the executable acceptance contract with `make prod`.
+Profile the production-backed harness with `make prod-profile`.
+Run the fixture-backed spec harness lane with `make spec`.
+Run the unit lane with `make unit`.
 The `.feature` files under `tests/acceptance/features` are the source of truth for those scenarios.

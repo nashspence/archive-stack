@@ -100,8 +100,8 @@ def _require_canonical_test_entrypoint() -> None:
     if os.environ.get(_CANONICAL_TEST_ENTRYPOINT_ENV) == "1":
         return
     raise pytest.UsageError(
-        "Production acceptance runs must use `./test prod`, `./test prod-profile`, "
-        "or the canonical `./test` entrypoint; direct `pytest` is unsupported."
+        "Production acceptance runs must use `make prod`, `make prod-profile`, "
+        "or `make test`; direct `pytest` is unsupported."
     )
 
 

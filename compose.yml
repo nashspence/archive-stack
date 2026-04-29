@@ -49,6 +49,7 @@ services:
       - ./tests/harness/rclone.conf:/config/rclone.conf:ro
 
   app:
+    image: archive-stack-app:dev
     build:
       context: .
       dockerfile: Dockerfile.app
@@ -115,6 +116,7 @@ services:
       - .:/app
 
   test:
+    image: archive-stack-test:dev
     build:
       context: .
       dockerfile: Dockerfile.test
