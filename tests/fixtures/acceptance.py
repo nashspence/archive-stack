@@ -4229,6 +4229,19 @@ class AcceptanceSystem:
                         return True
             return False
 
+    def bucket_object_metadata(self, *, storage: str, key: str) -> dict[str, str]:
+        with self.state.lock:
+            if storage != "archive":
+                raise AssertionError(f"unsupported object metadata bucket kind: {storage}")
+            for status in self.state.glacier_status_by_image.values():
+                if status.object_path == key and status.state == GlacierState.UPLOADED:
+                    stored_bytes = status.stored_bytes or 0
+                    return {
+                        "arc-iso-bytes": str(stored_bytes),
+                        "arc-iso-sha256": hashlib.sha256(key.encode("utf-8")).hexdigest(),
+                    }
+            raise AssertionError(f"archive object not found: {key}")
+
     def bucket_contains_prefix(self, *, storage: str, prefix: str) -> bool:
         with self.state.lock:
             if storage == "archive":

@@ -90,6 +90,40 @@ def build_iso_print_size_cmd_from_root(*, image_root: Path, volume_id: str) -> l
     return [*cmd[:-1], "-print-size", "-end"]
 
 
+def build_iso_validation_cmd(iso_path: Path) -> list[str]:
+    return [
+        XORRISO,
+        "-abort_on",
+        "FAILURE",
+        "-for_backup",
+        "-md5",
+        "on",
+        "-indev",
+        str(iso_path),
+        "-check_md5",
+        "FAILURE",
+        "--",
+        "-check_md5_r",
+        "FAILURE",
+        "/",
+        "--",
+    ]
+
+
+def validate_iso_image(iso_path: Path) -> None:
+    proc = subprocess.run(
+        build_iso_validation_cmd(iso_path),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode == 0:
+        return
+    combined = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
+    detail = combined[-1500:] or f"xorriso exited {proc.returncode}"
+    raise RuntimeError(f"ISO validation failed for {iso_path}: {detail}")
+
+
 def _parse_print_size_blocks(output: str) -> int:
     for line in output.splitlines():
         stripped = line.strip()

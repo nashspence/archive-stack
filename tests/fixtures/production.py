@@ -1338,6 +1338,14 @@ class ProductionSystem:
                 return False
             raise
 
+    def bucket_object_metadata(self, *, storage: str, key: str) -> dict[str, str]:
+        bucket, client = self._bucket_and_client(storage)
+        payload = client.head_object(Bucket=bucket, Key=key)
+        metadata = payload.get("Metadata", {})
+        if not isinstance(metadata, Mapping):
+            return {}
+        return {str(name).lower(): str(value) for name, value in metadata.items()}
+
     def bucket_contains_prefix(self, *, storage: str, prefix: str) -> bool:
         bucket, client = self._bucket_and_client(storage)
         response = client.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)

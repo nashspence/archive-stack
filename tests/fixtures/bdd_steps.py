@@ -2383,6 +2383,19 @@ def then_bucket_contains_object(
     assert acceptance_system.bucket_contains_object(storage=storage, key=key)
 
 
+@then(parsers.parse('the {storage} bucket object "{key}" records validated ISO metadata'))
+def then_bucket_object_records_validated_iso_metadata(
+    acceptance_system: AcceptanceSystem,
+    storage: str,
+    key: str,
+) -> None:
+    metadata = acceptance_system.bucket_object_metadata(storage=storage, key=key)
+    iso_bytes = metadata.get("arc-iso-bytes")
+    iso_sha256 = metadata.get("arc-iso-sha256")
+    assert iso_bytes is not None and int(iso_bytes) > 0
+    assert iso_sha256 is not None and re.fullmatch(r"[0-9a-f]{64}", iso_sha256)
+
+
 @then(parsers.parse('the {storage} bucket does not contain object "{key}"'))
 def then_bucket_does_not_contain_object(
     acceptance_system: AcceptanceSystem,

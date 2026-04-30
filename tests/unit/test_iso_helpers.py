@@ -11,7 +11,9 @@ from arc_core.iso.streaming import (
     build_iso_cmd,
     build_iso_cmd_from_root,
     build_iso_print_size_cmd_from_root,
+    build_iso_validation_cmd,
     estimate_iso_size_from_root,
+    validate_iso_image,
 )
 
 
@@ -52,6 +54,34 @@ def test_build_print_size_cmd_from_root_reuses_streaming_flags(tmp_path: Path) -
 
     assert size_cmd[:-2] == stream_cmd[:-1]
     assert size_cmd[-2:] == ["-print-size", "-end"]
+
+
+def test_build_iso_validation_cmd_checks_embedded_md5s(tmp_path: Path) -> None:
+    iso_path = tmp_path / "image.iso"
+    cmd = build_iso_validation_cmd(iso_path)
+
+    assert "-check_md5" in cmd
+    assert "-check_md5_r" in cmd
+    assert str(iso_path) in cmd
+
+
+def test_validate_iso_image_raises_with_xorriso_detail(monkeypatch, tmp_path: Path) -> None:
+    iso_path = tmp_path / "image.iso"
+
+    def fake_run(
+        cmd: list[str], *, capture_output: bool, text: bool, check: bool
+    ) -> subprocess.CompletedProcess[str]:
+        assert str(iso_path) in cmd
+        return subprocess.CompletedProcess(cmd, 32, stdout="", stderr="bad iso")
+
+    monkeypatch.setattr("arc_core.iso.streaming.subprocess.run", fake_run)
+
+    try:
+        validate_iso_image(iso_path)
+    except RuntimeError as exc:
+        assert "bad iso" in str(exc)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("expected ISO validation failure")
 
 
 def test_parse_print_size_accepts_size_prefix() -> None:

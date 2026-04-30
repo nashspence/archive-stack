@@ -34,6 +34,7 @@ Feature: Read-only hot storage browsing
       And the hot bucket contains prefix ".arc/uploads/"
       And the archive bucket does not contain prefix ".arc/uploads/"
       And the archive bucket contains object "glacier/finalized-images/20260420T040001Z/20260420T040001Z.iso"
+      And the archive bucket object "glacier/finalized-images/20260420T040001Z/20260420T040001Z.iso" records validated ISO metadata
       And the hot bucket does not contain object "glacier/finalized-images/20260420T040001Z/20260420T040001Z.iso"
 
     Scenario: The canonical harness enforces least-privilege bucket credentials
