@@ -26,3 +26,10 @@ Guidelines:
 - If release reconciliation is asynchronous internally, acceptance helpers should provide an eventual assertion such as
   wait_until_hot_matches_pins().
 - CLI acceptance tests should use the same fixture families as the API acceptance tests instead of inventing parallel state.
+
+Spec harness synchronization:
+
+- `tests/fixtures/acceptance.py` runs one live FastAPI server, background reapers, and subprocess-driven CLI commands against shared in-memory `AcceptanceState`.
+- Public fixture service methods exposed through `ServiceContainer` must use `_with_state_lock`; `tests/unit/test_acceptance_fixture_sync.py` enforces this for the protocol-backed service surface.
+- Direct `AcceptanceSystem` helper access to `AcceptanceState` should hold `state.lock` only around the in-memory read or write. Do not hold it across HTTP requests or CLI subprocess calls.
+- Private helper methods may assume their public caller already holds the lock, but reaper-facing entry points such as upload expiry, Glacier upload processing, and recovery-session processing must be explicitly locked.

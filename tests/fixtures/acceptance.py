@@ -974,6 +974,7 @@ def _with_state_lock(method: Callable[..., Any]) -> Callable[..., Any]:
             with self.state.lock:
                 return await method(self, *args, **kwargs)
 
+        async_wrapper.__acceptance_state_locked__ = True
         return async_wrapper
 
     @wraps(method)
@@ -981,6 +982,7 @@ def _with_state_lock(method: Callable[..., Any]) -> Callable[..., Any]:
         with self.state.lock:
             return method(self, *args, **kwargs)
 
+    wrapper.__acceptance_state_locked__ = True
     return wrapper
 
 
@@ -1785,6 +1787,7 @@ class AcceptanceRecoverySessionService:
     def __init__(self, state: AcceptanceState) -> None:
         self.state = state
 
+    @_with_state_lock
     def get(self, session_id: str) -> RecoverySessionSummary:
         with self.state.lock:
             record = self.state.recovery_sessions_by_id.get(session_id)
@@ -1792,6 +1795,7 @@ class AcceptanceRecoverySessionService:
                 raise NotFound(f"recovery session not found: {session_id}")
             return self._summary(record)
 
+    @_with_state_lock
     def get_for_image(self, image_id: str) -> RecoverySessionSummary:
         with self.state.lock:
             record = self.state.latest_recovery_session(image_id)
@@ -1799,6 +1803,7 @@ class AcceptanceRecoverySessionService:
                 raise NotFound(f"recovery session not found for image: {image_id}")
             return self._summary(record)
 
+    @_with_state_lock
     def create_or_resume_for_image(self, image_id: str) -> RecoverySessionSummary:
         with self.state.lock:
             image = self.state.finalized_images_by_id.get(ImageId(image_id))
@@ -1821,6 +1826,7 @@ class AcceptanceRecoverySessionService:
             assert record is not None
             return self._summary(record)
 
+    @_with_state_lock
     def approve(self, session_id: str) -> RecoverySessionSummary:
         with self.state.lock:
             record = self.state.recovery_sessions_by_id.get(session_id)
@@ -1846,6 +1852,7 @@ class AcceptanceRecoverySessionService:
             )
             return self._summary(record)
 
+    @_with_state_lock
     def complete(self, session_id: str) -> RecoverySessionSummary:
         with self.state.lock:
             record = self.state.recovery_sessions_by_id.get(session_id)
@@ -1866,6 +1873,7 @@ class AcceptanceRecoverySessionService:
             )
             return self._summary(record)
 
+    @_with_state_lock
     def process_due_sessions(self, *, limit: int = 100) -> int:
         with self.state.lock:
             if limit < 1:
