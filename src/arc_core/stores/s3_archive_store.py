@@ -65,6 +65,12 @@ class S3ArchiveStore:
             expected_bytes=expected_bytes,
             expected_sha256=expected_sha256,
         )
+        if self._is_aws_restore_backend():
+            _validate_aws_storage_class(
+                object_key=object_key,
+                head=head,
+                expected_storage_class=self._config.glacier_storage_class,
+            )
         verified_at = _utc_now()
         return ArchiveUploadReceipt(
             object_path=object_key,
@@ -354,8 +360,37 @@ def _parse_restore_header(value: object) -> _RestoreHeader | None:
 
 
 def _is_immediately_readable_storage_class(head: dict[str, Any]) -> bool:
-    storage_class = str(head.get("StorageClass", "")).upper()
+    storage_class = _normalized_s3_storage_class(head)
     return storage_class in {"", "STANDARD", "REDUCED_REDUNDANCY", "INTELLIGENT_TIERING"}
+
+
+def _normalized_s3_storage_class(head: dict[str, Any]) -> str:
+    return str(head.get("StorageClass", "")).strip().upper()
+
+
+def _configured_s3_storage_class(value: str) -> str:
+    normalized = value.strip().upper()
+    if normalized in {"", "STANDARD"}:
+        return "STANDARD"
+    return normalized
+
+
+def _validate_aws_storage_class(
+    *,
+    object_key: str,
+    head: dict[str, Any],
+    expected_storage_class: str,
+) -> None:
+    expected = _configured_s3_storage_class(expected_storage_class)
+    actual = _normalized_s3_storage_class(head) or "STANDARD"
+    if actual == expected:
+        return
+    raise RuntimeError(
+        "existing AWS Glacier object storage class does not match configured "
+        f"ARC_GLACIER_STORAGE_CLASS for {object_key}: expected {expected}, got {actual}. "
+        "Delete the stale object or choose a fresh ARC_GLACIER_PREFIX before rerunning "
+        "make gated-glacier-restore."
+    )
 
 
 def _aws_restore_tier(value: str) -> str:

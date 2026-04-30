@@ -96,6 +96,81 @@ def test_upload_finalized_image_reuses_existing_object_without_reupload(
     assert client.uploaded == []
 
 
+def test_upload_finalized_image_reuses_existing_aws_object_with_matching_storage_class(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client(
+        existing_head={
+            "ContentLength": 456,
+            "LastModified": datetime(2026, 4, 20, 4, 1, 0, tzinfo=UTC),
+            "StorageClass": "DEEP_ARCHIVE",
+            "Metadata": {
+                ISO_BYTES_METADATA: "456",
+                ISO_SHA256_METADATA: "a" * 64,
+            },
+        }
+    )
+    monkeypatch.setattr(
+        "arc_core.stores.s3_archive_store.create_glacier_s3_client",
+        lambda config: client,
+    )
+    store = S3ArchiveStore(
+        _config(
+            tmp_path,
+            glacier_backend="aws",
+            glacier_endpoint_url="https://s3.us-west-2.amazonaws.com",
+            glacier_storage_class="DEEP_ARCHIVE",
+        )
+    )
+
+    receipt = store.upload_finalized_image(
+        image_id="20260420T040001Z",
+        filename="20260420T040001Z.iso",
+        image_root=tmp_path,
+    )
+
+    assert receipt.object_path == "glacier/finalized-images/20260420T040001Z/20260420T040001Z.iso"
+    assert receipt.stored_bytes == 456
+    assert client.uploaded == []
+
+
+def test_upload_finalized_image_rejects_existing_aws_object_with_wrong_storage_class(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client(
+        existing_head={
+            "ContentLength": 456,
+            "LastModified": datetime(2026, 4, 20, 4, 1, 0, tzinfo=UTC),
+            "Metadata": {
+                ISO_BYTES_METADATA: "456",
+                ISO_SHA256_METADATA: "a" * 64,
+            },
+        }
+    )
+    monkeypatch.setattr(
+        "arc_core.stores.s3_archive_store.create_glacier_s3_client",
+        lambda config: client,
+    )
+    store = S3ArchiveStore(
+        _config(
+            tmp_path,
+            glacier_backend="aws",
+            glacier_endpoint_url="https://s3.us-west-2.amazonaws.com",
+            glacier_storage_class="DEEP_ARCHIVE",
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="storage class does not match"):
+        store.upload_finalized_image(
+            image_id="20260420T040001Z",
+            filename="20260420T040001Z.iso",
+            image_root=tmp_path,
+        )
+    assert client.uploaded == []
+
+
 def test_upload_finalized_image_rejects_existing_object_without_validation_metadata(
     monkeypatch,
     tmp_path: Path,

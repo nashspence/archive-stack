@@ -172,6 +172,13 @@ still pass and the download/completion checks skip with a rerun message. Rerun
 the same command after AWS completes the restore; no object path or SHA override
 is required.
 
+The lane uses a stable gated object key under the configured archive prefix so a
+rerun can observe the same AWS restore request after it becomes readable. If an
+older object at that key has the wrong real S3 storage class, the lane fails with
+a remediation message instead of treating an immediately readable object as a
+valid Glacier restore. Delete the stale object or run with a fresh
+`ARC_GLACIER_PREFIX`, then rerun the same command.
+
 ## Compose-backed sidecars
 
 The checked-in test scripts read `./.env.compose` when present, otherwise they fall
