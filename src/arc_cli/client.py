@@ -218,6 +218,23 @@ class ApiClient:
             output.write_bytes(content)
         return content
 
+    def download_recovered_iso(
+        self,
+        session_id: str,
+        image_id: str,
+        output: Path | None = None,
+    ) -> bytes:
+        with self._client() as client:
+            response = client.get(
+                "/v1/recovery-sessions/"
+                f"{quote(session_id, safe='/')}/images/{quote(image_id, safe='/')}/iso"
+            )
+        self._raise_for_error(response)
+        content = response.content
+        if output is not None:
+            output.write_bytes(content)
+        return content
+
     def register_copy(
         self,
         image_id: str,

@@ -311,6 +311,8 @@ Required behavior:
 
 - approval is required before Riverhog requests restore work
 - approval transitions the session from `pending_approval` to `restore_requested`
+- readiness is based on archive-store restore status or direct archive-object readability, not only on the configured
+  latency estimate
 - approving an expired session is rejected with `invalid_state` and explains that recovery must be re-initiated
 
 #### `POST /v1/recovery-sessions/{session_id}/complete`
@@ -321,7 +323,19 @@ Required behavior:
 
 - completion is only valid from `ready`
 - completion transitions the session to `completed`
-- completion cleans up the restored Standard-storage window immediately instead of waiting for expiry
+- completion records cleanup or lifecycle handoff for restored Standard-storage data instead of waiting for Riverhog's
+  session expiry
+
+#### `GET /v1/recovery-sessions/{session_id}/images/{image_id}/iso`
+
+Downloads one restored ISO from a ready recovery session.
+
+Required behavior:
+
+- succeeds only when the recovery session is `ready`
+- the image must belong to that recovery session
+- the response streams bytes from the restored archive object
+- `arc-disc recover` uses this endpoint for replacement burns instead of `GET /v1/images/{image_id}/iso`
 
 #### `GET /v1/glacier`
 
@@ -395,6 +409,7 @@ Required behavior:
 - ISO download does not finalize the image
 - ISO download requires the finalized image to already exist
 - subsequent downloads for the same finalized `image.id` reuse the same represented bytes
+- this endpoint is not used for recovery-session burns
 
 #### `POST /v1/images/{image_id}/copies`
 

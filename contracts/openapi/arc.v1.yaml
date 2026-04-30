@@ -577,7 +577,7 @@ paths:
   /recovery-sessions/{session_id}/complete:
     post:
       summary: Complete one ready recovery session
-      description: Marks one ready recovery session complete and cleans up the restored Standard-storage window immediately.
+      description: Marks one ready recovery session complete and records cleanup or lifecycle handoff for restored Standard-storage data.
       operationId: completeRecoverySession
       parameters:
         - in: path
@@ -591,6 +591,30 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RecoverySession"
+        default:
+          $ref: "#/components/responses/Error"
+  /recovery-sessions/{session_id}/images/{image_id}/iso:
+    get:
+      summary: Download one restored recovery-session ISO
+      description: Streams ISO bytes from the restored archive object for one image in a ready recovery session.
+      operationId: getRecoveredIso
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema: { type: string }
+        - in: path
+          name: image_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Restored ISO bytes
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
         default:
           $ref: "#/components/responses/Error"
   /glacier:

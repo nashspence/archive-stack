@@ -24,6 +24,7 @@ Feature: Recovery sessions API
     And the response recovery session id is "rs-20260420T040001Z-1"
     And the response recovery session state is "pending_approval"
 
+  @spec_harness_only
   Scenario: Approving a recovery session progresses to ready and can be completed
     Given the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-1" with state "lost"
     And the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-2" with state "damaged"
@@ -37,8 +38,9 @@ Feature: Recovery sessions API
     When the client posts to "/v1/recovery-sessions/rs-20260420T040001Z-1/complete"
     Then the response status is 200
     And the response recovery session state is "completed"
-    And the response recovery session latest_message contains "cleaned up immediately"
+    And the response recovery session latest_message contains "cleanup was recorded"
 
+  @spec_harness_only
   Scenario: An expired recovery session requires re-initiation
     Given the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-1" with state "lost"
     And the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-2" with state "damaged"

@@ -181,8 +181,10 @@ restore-ready and expiry cleanup.
 - type: duration
 - default: `48h`
 
-Operator-facing restore-latency estimate that Riverhog uses when one approved
-recovery session waits for Glacier restore completion.
+Operator-facing restore-latency estimate shown while one approved recovery
+session waits for archive restore completion. Real readiness is driven by the
+archive object's restore/readability status when a production archive store is
+configured.
 
 ## `ARC_GLACIER_RECOVERY_READY_TTL`
 
@@ -235,6 +237,20 @@ Allowed values:
 
 - `bulk`
 - `standard`
+
+## `ARC_GLACIER_RECOVERY_RESTORE_MODE`
+
+- type: enum
+- default: `auto`
+
+Controls how archive restore requests are executed.
+
+Allowed values:
+
+- `auto` — use real archive-object availability; immediately readable S3 objects
+  become ready without a fake timer, while AWS archive storage classes use S3
+  restore APIs.
+- `aws` — always use AWS S3 restore semantics for archived objects.
 
 ## `ARC_GLACIER_BULK_RETRIEVAL_RATE_USD_PER_GIB`
 

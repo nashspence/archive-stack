@@ -4,18 +4,25 @@ import hashlib
 import re
 import subprocess
 import tempfile
+from collections.abc import Iterator
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 from arc_core.iso.streaming import build_iso_cmd_from_root, validate_iso_image
-from arc_core.ports.archive_store import ArchiveUploadReceipt
+from arc_core.ports.archive_store import ArchiveRestoreStatus, ArchiveUploadReceipt
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.stores.s3_support import create_glacier_s3_client
 
 ISO_BYTES_METADATA = "arc-iso-bytes"
 ISO_SHA256_METADATA = "arc-iso-sha256"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
+
+class _RestoreHeader(TypedDict):
+    ongoing: bool
+    expires_at: str | None
 
 
 def _utc_now() -> str:
@@ -131,6 +138,147 @@ class S3ArchiveStore:
             expected_sha256=iso_sha256,
         )
 
+    def request_finalized_image_restore(
+        self,
+        *,
+        image_id: str,
+        object_path: str,
+        retrieval_tier: str,
+        hold_days: int,
+        requested_at: str,
+        estimated_ready_at: str,
+    ) -> ArchiveRestoreStatus:
+        head = self._head_object(object_key=object_path)
+        if head is None:
+            raise RuntimeError(f"Glacier object is missing: {object_path}")
+        _validate_uploaded_iso_metadata(object_key=object_path, head=head)
+        if _is_immediately_readable_storage_class(head):
+            return ArchiveRestoreStatus(
+                state="ready",
+                ready_at=requested_at,
+                message="Archive object is immediately readable.",
+            )
+        if self._restore_mode() == "auto" and not self._is_aws_restore_backend():
+            raise RuntimeError(
+                "real Glacier restore requires an AWS S3 archive backend or "
+                "ARC_GLACIER_RECOVERY_RESTORE_MODE=aws"
+            )
+        try:
+            self._client.restore_object(
+                Bucket=self._bucket,
+                Key=object_path,
+                RestoreRequest={
+                    "Days": hold_days,
+                    "GlacierJobParameters": {"Tier": _aws_restore_tier(retrieval_tier)},
+                },
+            )
+        except Exception as exc:
+            restore_error = _restore_request_error_code(exc)
+            if restore_error == "ObjectAlreadyInActiveTierError":
+                return ArchiveRestoreStatus(
+                    state="ready",
+                    ready_at=requested_at,
+                    message="Archive object is already readable.",
+                )
+            if restore_error != "RestoreAlreadyInProgress":
+                raise
+        return self.get_finalized_image_restore_status(
+            image_id=image_id,
+            object_path=object_path,
+            requested_at=requested_at,
+            estimated_ready_at=estimated_ready_at,
+            estimated_expires_at=None,
+        )
+
+    def get_finalized_image_restore_status(
+        self,
+        *,
+        image_id: str,
+        object_path: str,
+        requested_at: str,
+        estimated_ready_at: str | None,
+        estimated_expires_at: str | None,
+    ) -> ArchiveRestoreStatus:
+        head = self._head_object(object_key=object_path)
+        if head is None:
+            raise RuntimeError(f"Glacier object is missing: {object_path}")
+        _validate_uploaded_iso_metadata(object_key=object_path, head=head)
+        restore = _parse_restore_header(head.get("Restore"))
+        if restore is None:
+            if _is_immediately_readable_storage_class(head):
+                return ArchiveRestoreStatus(
+                    state="ready",
+                    ready_at=requested_at,
+                    message="Archive object is immediately readable.",
+                )
+            return ArchiveRestoreStatus(
+                state="requested",
+                ready_at=estimated_ready_at,
+                message="Archive restore is still in progress.",
+            )
+        if restore["ongoing"]:
+            return ArchiveRestoreStatus(
+                state="requested",
+                ready_at=estimated_ready_at,
+                expires_at=restore["expires_at"],
+                message="Archive restore is still in progress.",
+            )
+        return ArchiveRestoreStatus(
+            state="ready",
+            ready_at=_utc_now(),
+            expires_at=restore["expires_at"],
+            message="Archive object is restored and readable.",
+        )
+
+    def iter_restored_finalized_image(
+        self,
+        *,
+        image_id: str,
+        object_path: str,
+    ) -> Iterator[bytes]:
+        head = self._head_object(object_key=object_path)
+        if head is None:
+            raise RuntimeError(f"Glacier object is missing: {object_path}")
+        _validate_uploaded_iso_metadata(object_key=object_path, head=head)
+        status = self.get_finalized_image_restore_status(
+            image_id=image_id,
+            object_path=object_path,
+            requested_at=_utc_now(),
+            estimated_ready_at=None,
+            estimated_expires_at=None,
+        )
+        if status.state != "ready":
+            raise RuntimeError(f"Glacier object is not restored yet: {object_path}")
+        response = self._client.get_object(Bucket=self._bucket, Key=object_path)
+        body = response["Body"]
+        try:
+            yield from body.iter_chunks(chunk_size=1024 * 1024)
+        finally:
+            close = getattr(body, "close", None)
+            if callable(close):
+                close()
+
+    def cleanup_finalized_image_restore(
+        self,
+        *,
+        image_id: str,
+        object_path: str,
+    ) -> None:
+        # AWS S3 does not expose deletion of only the temporary restored copy without
+        # deleting the archived object. Completion records Riverhog cleanup and lets
+        # the restore Days window/lifecycle expire the temporary Standard data.
+        return
+
+    def _restore_mode(self) -> str:
+        mode = self._config.glacier_recovery_restore_mode
+        if mode != "auto":
+            return mode
+        return "auto"
+
+    def _is_aws_restore_backend(self) -> bool:
+        endpoint = self._config.glacier_endpoint_url.casefold()
+        return self._config.glacier_backend.casefold() == "aws" or "amazonaws.com" in endpoint
+
 
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -182,6 +330,37 @@ def _format_s3_timestamp(value: object, *, fallback: str) -> str:
     return fallback
 
 
+def _parse_restore_header(value: object) -> _RestoreHeader | None:
+    if value is None:
+        return None
+    text = str(value)
+    ongoing_match = re.search(r'ongoing-request="(true|false)"', text)
+    if ongoing_match is None:
+        return None
+    expires_at: str | None = None
+    expiry_match = re.search(r'expiry-date="([^"]+)"', text)
+    if expiry_match is not None:
+        expires_at = _format_s3_timestamp(
+            parsedate_to_datetime(expiry_match.group(1)),
+            fallback=expiry_match.group(1),
+        )
+    return {
+        "ongoing": ongoing_match.group(1) == "true",
+        "expires_at": expires_at,
+    }
+
+
+def _is_immediately_readable_storage_class(head: dict[str, Any]) -> bool:
+    storage_class = str(head.get("StorageClass", "")).upper()
+    return storage_class in {"", "STANDARD", "REDUCED_REDUNDANCY", "INTELLIGENT_TIERING"}
+
+
+def _aws_restore_tier(value: str) -> str:
+    if value == "standard":
+        return "Standard"
+    return "Bulk"
+
+
 def _is_missing_object_error(exc: Exception) -> bool:
     response = getattr(exc, "response", None)
     if not isinstance(response, dict):
@@ -191,3 +370,14 @@ def _is_missing_object_error(exc: Exception) -> bool:
         return False
     code = str(error.get("Code", "")).strip()
     return code in {"NoSuchKey", "404", "NotFound"}
+
+
+def _restore_request_error_code(exc: Exception) -> str | None:
+    response = getattr(exc, "response", None)
+    if not isinstance(response, dict):
+        return None
+    error = response.get("Error", {})
+    if not isinstance(error, dict):
+        return None
+    code = str(error.get("Code", "")).strip()
+    return code or None

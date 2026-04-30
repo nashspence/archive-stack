@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import asdict
 from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -31,6 +31,7 @@ from arc_core.domain.models import (
     RecoverySessionSummary,
 )
 from arc_core.domain.types import ImageId
+from arc_core.ports.archive_store import ArchiveRestoreStatus, ArchiveStore
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.glacier_pricing import resolve_glacier_pricing
 from arc_core.sqlite_db import make_session_factory, session_scope
@@ -49,8 +50,9 @@ _ACTIVE_RECOVERY_STATES = {
 
 
 class SqlAlchemyRecoverySessionService:
-    def __init__(self, config: RuntimeConfig) -> None:
+    def __init__(self, config: RuntimeConfig, archive_store: ArchiveStore) -> None:
         self._config = config
+        self._archive_store = archive_store
         self._session_factory = make_session_factory(str(config.sqlite_path))
 
     def get(self, session_id: str) -> RecoverySessionSummary:
@@ -92,7 +94,9 @@ class SqlAlchemyRecoverySessionService:
             return _session_summary(session, created, config=self._config)
 
     def approve(self, session_id: str) -> RecoverySessionSummary:
-        now = _isoformat_z(utcnow())
+        current = utcnow()
+        now = _isoformat_z(current)
+        estimated_ready_at = _isoformat_z(current + self._config.glacier_recovery_restore_latency)
         with session_scope(self._session_factory) as session:
             record = session.get(GlacierRecoverySessionRecord, session_id)
             if record is None:
@@ -103,11 +107,28 @@ class SqlAlchemyRecoverySessionService:
                 )
             if record.state != RecoverySessionState.PENDING_APPROVAL.value:
                 raise InvalidState("recovery session is not waiting for approval")
+            statuses = [
+                self._archive_store.request_finalized_image_restore(
+                    image_id=image.image_id,
+                    object_path=_require_archive_object_path(image),
+                    retrieval_tier=record.retrieval_tier,
+                    hold_days=record.hold_days,
+                    requested_at=now,
+                    estimated_ready_at=estimated_ready_at,
+                )
+                for image in _session_images(session, record=record)
+            ]
             record.state = RecoverySessionState.RESTORE_REQUESTED.value
             record.approved_at = now
             record.restore_requested_at = now
-            record.restore_ready_at = _isoformat_z(
-                utcnow() + self._config.glacier_recovery_restore_latency
+            record.restore_ready_at = _max_timestamp(
+                status.ready_at for status in statuses if status.ready_at is not None
+            ) or estimated_ready_at
+            record.restore_expires_at = _min_timestamp(
+                status.expires_at for status in statuses if status.expires_at is not None
+            )
+            record.restore_next_poll_at = _isoformat_z(
+                current + self._config.glacier_recovery_sweep_interval
             )
             record.latest_message = (
                 "Archive restore requested; wait for the ready notification before downloading or "
@@ -126,14 +147,39 @@ class SqlAlchemyRecoverySessionService:
                 RecoverySessionState.EXPIRED.value,
             }:
                 raise InvalidState("recovery session is not ready to complete")
+            for image in _session_images(session, record=record):
+                self._archive_store.cleanup_finalized_image_restore(
+                    image_id=image.image_id,
+                    object_path=_require_archive_object_path(image),
+                )
             record.state = RecoverySessionState.COMPLETED.value
             record.completed_at = now
             record.next_reminder_at = None
             record.restore_expires_at = now
             record.latest_message = (
-                "Recovery session completed and restored ISO data was cleaned up immediately."
+                "Recovery session completed and restored ISO cleanup was recorded."
             )
             return _session_summary(session, record, config=self._config)
+
+    def iter_restored_iso(self, session_id: str, image_id: str) -> Iterator[bytes]:
+        with session_scope(self._session_factory) as session:
+            record = session.get(GlacierRecoverySessionRecord, session_id)
+            if record is None:
+                raise NotFound(f"recovery session not found: {session_id}")
+            if record.state != RecoverySessionState.READY.value:
+                raise InvalidState("recovery session is not ready for ISO download")
+            images = {
+                image.image_id: image
+                for image in _session_images(session, record=record)
+            }
+            image = images.get(image_id)
+            if image is None:
+                raise NotFound(f"image not found in recovery session: {image_id}")
+            object_path = _require_archive_object_path(image)
+        yield from self._archive_store.iter_restored_finalized_image(
+            image_id=image_id,
+            object_path=object_path,
+        )
 
     def process_due_sessions(self, *, limit: int = 100) -> int:
         if limit < 1:
@@ -150,7 +196,18 @@ class SqlAlchemyRecoverySessionService:
                         (
                             (GlacierRecoverySessionRecord.state
                              == RecoverySessionState.RESTORE_REQUESTED.value)
-                            & (GlacierRecoverySessionRecord.restore_ready_at <= current_text)
+                            & (
+                                (
+                                    GlacierRecoverySessionRecord.restore_next_poll_at.is_(None)
+                                )
+                                | (
+                                    GlacierRecoverySessionRecord.restore_next_poll_at
+                                    <= current_text
+                                )
+                                | (
+                                    GlacierRecoverySessionRecord.restore_ready_at <= current_text
+                                )
+                            )
                         ),
                         (
                             (GlacierRecoverySessionRecord.state == RecoverySessionState.READY.value)
@@ -194,23 +251,42 @@ class SqlAlchemyRecoverySessionService:
 
             if (
                 record.state == RecoverySessionState.RESTORE_REQUESTED.value
-                and record.restore_ready_at is not None
-                and record.restore_ready_at <= current_text
             ):
-                record.state = RecoverySessionState.READY.value
-                record.restore_expires_at = _isoformat_z(
-                    current + self._config.glacier_recovery_ready_ttl
+                status = self._session_restore_status(session, record=record, current=current)
+                if status.state == "ready":
+                    record.state = RecoverySessionState.READY.value
+                    record.restore_ready_at = status.ready_at or current_text
+                    record.restore_expires_at = status.expires_at or _isoformat_z(
+                        current + self._config.glacier_recovery_ready_ttl
+                    )
+                    record.restore_next_poll_at = None
+                    record.latest_message = (
+                        "Restored ISO data is ready; reopen the session to complete download, "
+                        "verify the ISO, and burn replacement media before cleanup."
+                    )
+                    _notify_recovery_ready(
+                        session,
+                        record=record,
+                        config=self._config,
+                        current=current,
+                        reminder=False,
+                    )
+                    return
+                if status.state == "expired":
+                    record.state = RecoverySessionState.EXPIRED.value
+                    record.next_reminder_at = None
+                    record.restore_next_poll_at = None
+                    record.latest_message = (
+                        "Restored ISO data expired and cleanup was recorded; re-initiate "
+                        "recovery to request a new restore."
+                    )
+                    return
+                record.restore_next_poll_at = _isoformat_z(
+                    current + self._config.glacier_recovery_sweep_interval
                 )
                 record.latest_message = (
-                    "Restored ISO data is ready; reopen the session to complete download, verify "
-                    "the ISO, and burn replacement media before cleanup."
-                )
-                _notify_recovery_ready(
-                    session,
-                    record=record,
-                    config=self._config,
-                    current=current,
-                    reminder=False,
+                    status.message
+                    or "Archive restore is still in progress; Riverhog will poll again."
                 )
                 return
 
@@ -234,12 +310,52 @@ class SqlAlchemyRecoverySessionService:
                 and record.restore_expires_at is not None
                 and record.restore_expires_at <= current_text
             ):
+                for image in _session_images(session, record=record):
+                    self._archive_store.cleanup_finalized_image_restore(
+                        image_id=image.image_id,
+                        object_path=_require_archive_object_path(image),
+                    )
                 record.state = RecoverySessionState.EXPIRED.value
                 record.next_reminder_at = None
+                record.restore_next_poll_at = None
                 record.latest_message = (
-                    "Restored ISO data expired and was cleaned up; re-initiate recovery to "
+                    "Restored ISO data expired and cleanup was recorded; re-initiate recovery to "
                     "request a new restore."
                 )
+
+    def _session_restore_status(
+        self,
+        session: Session,
+        *,
+        record: GlacierRecoverySessionRecord,
+        current: datetime,
+    ) -> ArchiveRestoreStatus:
+        statuses = [
+            self._archive_store.get_finalized_image_restore_status(
+                image_id=image.image_id,
+                object_path=_require_archive_object_path(image),
+                requested_at=record.restore_requested_at or _isoformat_z(current),
+                estimated_ready_at=record.restore_ready_at,
+                estimated_expires_at=record.restore_expires_at,
+            )
+            for image in _session_images(session, record=record)
+        ]
+        if any(status.state == "expired" for status in statuses):
+            return ArchiveRestoreStatus(state="expired")
+        if statuses and all(status.state == "ready" for status in statuses):
+            return ArchiveRestoreStatus(
+                state="ready",
+                ready_at=_max_timestamp(
+                    status.ready_at for status in statuses if status.ready_at is not None
+                ),
+                expires_at=_min_timestamp(
+                    status.expires_at for status in statuses if status.expires_at is not None
+                ),
+            )
+        return ArchiveRestoreStatus(
+            state="requested",
+            message="Archive restore is still in progress; Riverhog will poll again.",
+        )
 
 
 def ensure_glacier_recovery_session_for_image(
@@ -282,6 +398,9 @@ class StubRecoverySessionService:
     def complete(self, session_id: str) -> RecoverySessionSummary:
         raise NotImplementedError("StubRecoverySessionService is not implemented yet")
 
+    def iter_restored_iso(self, session_id: str, image_id: str) -> Iterator[bytes]:
+        raise NotImplementedError("StubRecoverySessionService is not implemented yet")
+
     def process_due_sessions(self, *, limit: int = 100) -> int:
         raise NotImplementedError("StubRecoverySessionService is not implemented yet")
 
@@ -311,6 +430,7 @@ def _create_recovery_session(
         approved_at=None,
         restore_requested_at=None,
         restore_ready_at=None,
+        restore_next_poll_at=None,
         restore_expires_at=None,
         completed_at=None,
         latest_message=(
@@ -379,6 +499,14 @@ def _require_glacier_uploaded(image: FinalizedImageRecord) -> None:
         raise InvalidState(
             f"image archive is not uploaded and cannot be restored yet: {image.image_id}"
         )
+
+
+def _require_archive_object_path(image: FinalizedImageRecord) -> str:
+    if not image.glacier_object_path:
+        raise InvalidState(
+            f"image archive object path is missing and cannot be restored: {image.image_id}"
+        )
+    return image.glacier_object_path
 
 
 def _protected_copy_count(session: Session, image_id: str) -> int:
@@ -700,3 +828,13 @@ def _isoformat_z(value: datetime) -> str:
 
 def _usd(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+
+
+def _max_timestamp(values: Iterable[str]) -> str | None:
+    value_list = list(values)
+    return max(value_list) if value_list else None
+
+
+def _min_timestamp(values: Iterable[str]) -> str | None:
+    value_list = list(values)
+    return min(value_list) if value_list else None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 
 from arc_api.deps import ContainerDep
 from arc_api.mappers import map_recovery_session
@@ -52,3 +53,13 @@ def complete_recovery_session(
 ) -> RecoverySessionOut:
     summary = container.recovery_sessions.complete(session_id)
     return RecoverySessionOut.model_validate(map_recovery_session(summary))
+
+
+@router.get("/recovery-sessions/{session_id}/images/{image_id}/iso")
+def get_recovered_iso(
+    session_id: str,
+    image_id: str,
+    container: ContainerDep,
+) -> StreamingResponse:
+    body = container.recovery_sessions.iter_restored_iso(session_id, image_id)
+    return StreamingResponse(body, media_type="application/octet-stream")

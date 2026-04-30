@@ -807,6 +807,7 @@ def _recover_session_image(
     media_verifier: Any,
     prompts: Any,
     device: str,
+    recovery_session_id: str,
 ) -> list[str]:
     typer.echo(f"recovering image {image.image_id}", err=True)
     completed: list[str] = []
@@ -833,6 +834,7 @@ def _recover_session_image(
                 media_verifier=media_verifier,
                 prompts=prompts,
                 device=device,
+                recovery_session_id=recovery_session_id,
             )
         )
 
@@ -855,6 +857,7 @@ def _stage_recovery_session_images(
             staging_dir=staging_dir,
             verifier=iso_verifier,
             session_state=session_state,
+            recovery_session_id=recovery_session.session_id,
         )
 
 
@@ -925,6 +928,7 @@ def _process_recovery_session(
                 media_verifier=media_verifier,
                 prompts=prompts,
                 device=device,
+                recovery_session_id=recovery_session.session_id,
             )
         )
     client.complete_recovery_session(session_id)
@@ -938,8 +942,7 @@ def _process_recovery_session(
             session_id=recovery_session.session_id,
             state="completed",
             latest_message=(
-                "Recovery session completed and restored ISO data was cleaned up "
-                "immediately."
+                "Recovery session completed and restored ISO cleanup was recorded."
             ),
             images=recovery_session.images,
         ),
@@ -955,6 +958,7 @@ def _ensure_staged_iso(
     staging_dir: Path,
     verifier: Any,
     session_state: BurnSessionState,
+    recovery_session_id: str | None = None,
 ) -> Path:
     image_progress = session_state.image_progress(image_id)
     iso_path = _staged_iso_path(staging_dir, image_id=image_id, filename=filename)
@@ -974,8 +978,12 @@ def _ensure_staged_iso(
     else:
         typer.echo(f"staged ISO is missing at {iso_path}; re-downloading", err=True)
 
-    typer.echo(f"downloading ISO {image_id} to {iso_path}", err=True)
-    client.download_iso(image_id, iso_path)
+    if recovery_session_id is None:
+        typer.echo(f"downloading ISO {image_id} to {iso_path}", err=True)
+        client.download_iso(image_id, iso_path)
+    else:
+        typer.echo(f"downloading restored ISO {image_id} to {iso_path}", err=True)
+        client.download_recovered_iso(recovery_session_id, image_id, iso_path)
     typer.echo(f"verifying staged ISO {iso_path}", err=True)
     verifier.verify(iso_path)
     image_progress.verified_sha256 = _sha256_file(iso_path)
@@ -1013,6 +1021,7 @@ def _burn_pending_copy(
     media_verifier: Any,
     prompts: Any,
     device: str,
+    recovery_session_id: str | None = None,
 ) -> str:
     copy_id = str(copy_payload["id"])
     progress = session_state.copy_progress(image_id, copy_id)
@@ -1038,6 +1047,7 @@ def _burn_pending_copy(
         staging_dir=staging_dir,
         verifier=iso_verifier,
         session_state=session_state,
+        recovery_session_id=recovery_session_id,
     )
 
     if not progress.burned:

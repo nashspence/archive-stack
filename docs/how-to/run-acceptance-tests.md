@@ -125,6 +125,33 @@ missing env var or device requirement. Once a capability is explicitly
 configured, command failures are treated as validation failures so drive,
 permission, media, and product regressions stay visible.
 
+## Gated Glacier-restore validation
+
+`make gated-glacier-restore` is an opt-in lane for live AWS S3 Glacier restore
+behavior. It is not part of `make test`, `make spec`, or `make prod`, because it
+can issue real restore requests, depends on account permissions and object
+storage class, and may take hours before a restored object is readable.
+
+Restore-request validation requires the normal `ARC_GLACIER_*` archive backend
+configuration plus an existing finalized-image archive object with Riverhog ISO
+metadata:
+
+```bash
+export ARC_GLACIER_BACKEND=aws
+export ARC_GLACIER_GATED_RESTORE_CONFIRM=request-glacier-restore
+export ARC_GLACIER_GATED_OBJECT_PATH=glacier/finalized-images/IMAGE/IMAGE.iso
+make gated-glacier-restore
+```
+
+Restored-object download validation runs only when a restored object and expected
+digest are configured:
+
+```bash
+export ARC_GLACIER_GATED_RESTORED_OBJECT_PATH=glacier/finalized-images/IMAGE/IMAGE.iso
+export ARC_GLACIER_GATED_RESTORED_SHA256=<sha256>
+make gated-glacier-restore
+```
+
 ## Compose-backed sidecars
 
 The checked-in test scripts read `./.env.compose` when present, otherwise they fall

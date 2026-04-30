@@ -249,6 +249,7 @@ class GlacierRecoverySessionRecord(Base):
     approved_at: Mapped[str | None] = mapped_column(String, nullable=True)
     restore_requested_at: Mapped[str | None] = mapped_column(String, nullable=True)
     restore_ready_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    restore_next_poll_at: Mapped[str | None] = mapped_column(String, nullable=True)
     restore_expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
     completed_at: Mapped[str | None] = mapped_column(String, nullable=True)
     latest_message: Mapped[str | None] = mapped_column(String, nullable=True)

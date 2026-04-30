@@ -3,6 +3,7 @@ Feature: Outbound operator webhooks
   Test harnesses capture outbound operator notifications so acceptance scenarios can
   assert emitted events and payload fields without adding product API surface.
 
+  @spec_harness_only
   Scenario: Recovery ready and reminder webhook deliveries are captured
     Given an archive with planner fixtures
     And candidate "img_2026-04-20_01" is finalized
@@ -22,6 +23,7 @@ Feature: Outbound operator webhooks
     And the captured webhook payload images contain only "20260420T040001Z"
     And the captured webhook payload integer field "reminder_count" equals 1
 
+  @spec_harness_only
   Scenario: Recovery ready webhook retries after a transient sink failure
     Given an archive with planner fixtures
     And candidate "img_2026-04-20_01" is finalized
@@ -43,6 +45,7 @@ Feature: Outbound operator webhooks
     And captured webhook event "images.recovery_ready.reminder" has 0 successful deliveries
     And captured webhook attempt "images.recovery_ready" result "delivered" attempt 1 happened at least 1 seconds after result "failed" attempt 1
 
+  @spec_harness_only
   Scenario: Recovery ready webhook retries after a transient sink timeout
     Given an archive with planner fixtures
     And candidate "img_2026-04-20_01" is finalized

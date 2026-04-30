@@ -20,7 +20,7 @@ from arc_core.finalized_image_coverage import (
     read_finalized_image_collection_artifacts,
     read_finalized_image_coverage_parts,
 )
-from arc_core.ports.archive_store import ArchiveUploadReceipt
+from arc_core.ports.archive_store import ArchiveRestoreStatus, ArchiveUploadReceipt
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.copies import SqlAlchemyCopyService
 from arc_core.services.glacier_uploads import (
@@ -39,6 +39,13 @@ class _FakeHotStore:
 
 
 class _FakeArchiveStore:
+    def __init__(self) -> None:
+        self.restore_requests: list[str] = []
+        self.cleanup_requests: list[str] = []
+        self.iso_by_object_path = {
+            "glacier/finalized-images/20260420T040001Z/20260420T040001Z.iso": b"iso-one",
+        }
+
     def upload_finalized_image(
         self,
         *,
@@ -57,6 +64,36 @@ class _FakeArchiveStore:
             uploaded_at="2026-04-20T04:10:00Z",
             verified_at="2026-04-20T04:11:00Z",
         )
+
+    def request_finalized_image_restore(
+        self,
+        *,
+        image_id: str,
+        object_path: str,
+        retrieval_tier: str,
+        hold_days: int,
+        requested_at: str,
+        estimated_ready_at: str,
+    ) -> ArchiveRestoreStatus:
+        self.restore_requests.append(object_path)
+        return ArchiveRestoreStatus(state="requested", ready_at=estimated_ready_at)
+
+    def get_finalized_image_restore_status(
+        self,
+        *,
+        image_id: str,
+        object_path: str,
+        requested_at: str,
+        estimated_ready_at: str | None,
+        estimated_expires_at: str | None,
+    ) -> ArchiveRestoreStatus:
+        return ArchiveRestoreStatus(state="ready", ready_at=estimated_ready_at)
+
+    def iter_restored_finalized_image(self, *, image_id: str, object_path: str):
+        yield self.iso_by_object_path[object_path]
+
+    def cleanup_finalized_image_restore(self, *, image_id: str, object_path: str) -> None:
+        self.cleanup_requests.append(object_path)
 
 
 def _config(sqlite_path: Path, **overrides: object) -> RuntimeConfig:
@@ -117,6 +154,16 @@ def _seed_finalized_image(
                 target_bytes=10_000,
                 required_copy_count=2,
                 glacier_state=glacier_state,
+                glacier_object_path=(
+                    f"glacier/finalized-images/{image_id}/{image_id}.iso"
+                    if glacier_state == "uploaded"
+                    else None
+                ),
+                glacier_stored_bytes=sum(len(content) for content in DOCS_FILES.values())
+                if glacier_state == "uploaded"
+                else None,
+                glacier_backend="s3" if glacier_state == "uploaded" else None,
+                glacier_storage_class="DEEP_ARCHIVE" if glacier_state == "uploaded" else None,
             )
         )
         for relative_path in (
@@ -162,7 +209,7 @@ def test_double_copy_loss_creates_pending_recovery_session(tmp_path: Path) -> No
 
     config = _config(sqlite_path)
     copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
-    recovery_service = SqlAlchemyRecoverySessionService(config)
+    recovery_service = SqlAlchemyRecoverySessionService(config, _FakeArchiveStore())
 
     copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
     copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
@@ -194,7 +241,7 @@ def test_recovery_session_processes_ready_and_expired_states(
         glacier_recovery_ready_ttl=timedelta(seconds=5),
     )
     copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
-    recovery_service = SqlAlchemyRecoverySessionService(config)
+    recovery_service = SqlAlchemyRecoverySessionService(config, _FakeArchiveStore())
 
     copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
     copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
@@ -246,7 +293,7 @@ def test_recovery_session_retries_initial_ready_notification_before_reminders(
         glacier_recovery_webhook_reminder_interval=timedelta(seconds=5),
     )
     copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
-    recovery_service = SqlAlchemyRecoverySessionService(config)
+    recovery_service = SqlAlchemyRecoverySessionService(config, _FakeArchiveStore())
 
     copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
     copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
@@ -308,7 +355,7 @@ def test_recovery_session_retries_initial_ready_notification_before_expiring(
         glacier_recovery_webhook_reminder_interval=timedelta(seconds=5),
     )
     copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
-    recovery_service = SqlAlchemyRecoverySessionService(config)
+    recovery_service = SqlAlchemyRecoverySessionService(config, _FakeArchiveStore())
 
     copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
     copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
@@ -365,7 +412,7 @@ def test_glacier_upload_completion_backfills_recovery_session_for_unprotected_im
     config = _config(sqlite_path)
     copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
     upload_service = SqlAlchemyGlacierUploadService(config, _FakeArchiveStore())
-    recovery_service = SqlAlchemyRecoverySessionService(config)
+    recovery_service = SqlAlchemyRecoverySessionService(config, _FakeArchiveStore())
 
     copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
     copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
@@ -402,7 +449,7 @@ def test_glacier_upload_completion_does_not_create_recovery_session_for_ordinary
 
     config = _config(sqlite_path)
     upload_service = SqlAlchemyGlacierUploadService(config, _FakeArchiveStore())
-    recovery_service = SqlAlchemyRecoverySessionService(config)
+    recovery_service = SqlAlchemyRecoverySessionService(config, _FakeArchiveStore())
 
     session_factory = make_session_factory(str(sqlite_path))
     with session_scope(session_factory) as session:
@@ -443,7 +490,7 @@ def test_pending_recovery_session_can_group_multiple_images_before_approval(
 
     config = _config(sqlite_path)
     copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
-    recovery_service = SqlAlchemyRecoverySessionService(config)
+    recovery_service = SqlAlchemyRecoverySessionService(config, _FakeArchiveStore())
 
     copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
     copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")

@@ -102,6 +102,7 @@ class RuntimeConfig:
         default_factory=lambda: timedelta(hours=1)
     )
     glacier_recovery_retrieval_tier: str = "bulk"
+    glacier_recovery_restore_mode: str = "auto"
     glacier_bulk_retrieval_rate_usd_per_gib: float = 0.0025
     glacier_bulk_request_rate_usd_per_1000: float = 0.025
     glacier_standard_retrieval_rate_usd_per_gib: float = 0.02
@@ -200,6 +201,11 @@ def load_runtime_config() -> RuntimeConfig:
         os.getenv("ARC_GLACIER_RECOVERY_RETRIEVAL_TIER", "bulk"),
         name="ARC_GLACIER_RECOVERY_RETRIEVAL_TIER",
         allowed={"bulk", "standard"},
+    )
+    glacier_recovery_restore_mode = _parse_choice(
+        os.getenv("ARC_GLACIER_RECOVERY_RESTORE_MODE", "auto"),
+        name="ARC_GLACIER_RECOVERY_RESTORE_MODE",
+        allowed={"auto", "aws"},
     )
     glacier_bulk_retrieval_rate_usd_per_gib = _parse_float(
         os.getenv("ARC_GLACIER_BULK_RETRIEVAL_RATE_USD_PER_GIB", "0.0025"),
@@ -355,6 +361,7 @@ def load_runtime_config() -> RuntimeConfig:
         glacier_recovery_webhook_retry_delay=glacier_recovery_webhook_retry_delay,
         glacier_recovery_webhook_reminder_interval=glacier_recovery_webhook_reminder_interval,
         glacier_recovery_retrieval_tier=glacier_recovery_retrieval_tier,
+        glacier_recovery_restore_mode=glacier_recovery_restore_mode,
         glacier_bulk_retrieval_rate_usd_per_gib=glacier_bulk_retrieval_rate_usd_per_gib,
         glacier_bulk_request_rate_usd_per_1000=glacier_bulk_request_rate_usd_per_1000,
         glacier_standard_retrieval_rate_usd_per_gib=glacier_standard_retrieval_rate_usd_per_gib,

@@ -217,14 +217,17 @@ all protected copies.
 - without a session id, `arc-disc recover` lists active recovery sessions and the finalized images attached to each one
 - with a session id in `pending_approval`, `arc-disc recover` approves the estimated restore cost and exits after the
   restore request is submitted
+- recovery-session readiness is driven by archive-store restore status, not only by the operator-facing latency
+  estimate
 - with a session id in `ready`, `arc-disc recover` stages every still-needed image ISO in that session before burn work
   starts so a later retry can resume from local artifacts
+- ready sessions stage ISO bytes from the restored archive object, not from the normal finalized-image ISO source
 - if the restore window expires after local staging succeeded, `arc-disc recover` can still resume from the staged ISO
   artifacts already on disk
 - recovery burns reuse the same local checkpoint behavior as `arc-disc burn`, including resume from unfinished
   burned-media verification or label confirmation
-- when the recovery session finishes, Riverhog marks the session completed and deletes the staged ISO artifacts for the
-  recovered images immediately
+- when the recovery session finishes, Riverhog marks the session completed, records archive restore cleanup or lifecycle
+  handoff, and deletes the staged ISO artifacts for the recovered images immediately
 
 ## Manual Recovery
 

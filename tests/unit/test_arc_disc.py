@@ -845,7 +845,13 @@ def test_arc_disc_recover_ready_session_burns_replacements_and_cleans_staging(
             self._ensure_followup_copy()
             return {"copies": list(self.copy_states.values())}
 
-        def download_iso(self, image_id_arg: str, output: Path) -> bytes:
+        def download_recovered_iso(
+            self,
+            session_id: str,
+            image_id_arg: str,
+            output: Path,
+        ) -> bytes:
+            assert session_id == "rs-20260420T040001Z-1"
             assert image_id_arg == image_id
             output.write_bytes(self.iso_bytes)
             return self.iso_bytes
@@ -995,7 +1001,12 @@ def test_arc_disc_recover_can_finish_expired_session_from_local_staging(
             assert image_id_arg == image_id
             return {"copies": list(self.copy_states.values())}
 
-        def download_iso(self, image_id_arg: str, output: Path) -> bytes:
+        def download_recovered_iso(
+            self,
+            session_id: str,
+            image_id_arg: str,
+            output: Path,
+        ) -> bytes:
             raise AssertionError("expired-session resume should not re-download ISO data")
 
         def register_copy(self, image_id_arg: str, location: str, *, copy_id: str | None = None):
@@ -1137,7 +1148,8 @@ def test_arc_disc_recover_stages_all_pending_session_images_before_first_burn(
         def list_copies(self, image_id: str) -> dict[str, object]:
             return {"copies": list(self.copy_states[image_id].values())}
 
-        def download_iso(self, image_id: str, output: Path) -> bytes:
+        def download_recovered_iso(self, session_id: str, image_id: str, output: Path) -> bytes:
+            assert session_id == "rs-20260420T040001Z-1"
             self.iso_downloads.append(image_id)
             output.write_bytes(f"{image_id}\n".encode())
             return output.read_bytes()

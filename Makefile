@@ -4,7 +4,7 @@ SHELL := bash
 UV_RUN = uv run --python 3.11 --isolated --with-requirements "$(CURDIR)/requirements-test.txt" --with-editable '.[db]'
 args ?=
 
-.PHONY: help ruff mypy lint unit spec gated-arc-disc build build-app build-test bootstrap-garage down prod prod-profile test
+.PHONY: help ruff mypy lint unit spec gated-arc-disc gated-glacier-restore build build-app build-test bootstrap-garage down prod prod-profile test
 
 help:
 	@printf '%s\n' \
@@ -15,6 +15,7 @@ help:
 		'  make unit              Run the unit test lane locally.' \
 		'  make spec              Run the fixture-backed spec harness locally.' \
 		'  make gated-arc-disc    Run opt-in real-device arc-disc optical validation.' \
+		'  make gated-glacier-restore Run opt-in live AWS Glacier restore validation.' \
 		'  make build-app         Build the app image.' \
 		'  make build-test        Build the test image.' \
 		'  make build             Build both app and test images.' \
@@ -45,6 +46,9 @@ spec:
 
 gated-arc-disc:
 	@$(UV_RUN) python -m pytest -q tests/gated/test_arc_disc_real_device.py $(args)
+
+gated-glacier-restore:
+	@$(UV_RUN) python -m pytest -q tests/gated/test_glacier_restore.py $(args)
 
 build-app:
 	@./scripts/build_app.sh

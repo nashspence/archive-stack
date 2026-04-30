@@ -10,7 +10,8 @@ Runtime container dependencies are locked separately in `requirements-runtime.tx
 
 ## Testing
 
-For the fastest full check, run `make lint`, `make unit`, `make spec`, and
+For the fastest full check, first run `make lint` and `make unit` in separate terminals.
+Once you've cleared those shorter lanes, only then run `make spec`, and
 `make prod` in separate terminals. The lint, unit, and spec lanes run
 locally in the same locked `uv` environment, and the prod-backed lane stays on
 the checked-in Compose surface with per-run project names and ephemeral host

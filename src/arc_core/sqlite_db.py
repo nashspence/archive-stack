@@ -56,6 +56,10 @@ _COLUMN_MIGRATIONS: list[list[tuple[str, str, str]]] = [
         ("finalized_image_coverage_parts", "object_path", "TEXT"),
         ("finalized_image_coverage_parts", "sidecar_path", "TEXT"),
     ],
+    # version 7
+    [
+        ("glacier_recovery_sessions", "restore_next_poll_at", "TEXT"),
+    ],
 ]
 
 

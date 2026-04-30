@@ -1869,9 +1869,32 @@ class AcceptanceRecoverySessionService:
             record.restore_expires_at = current_text
             record.next_reminder_at = None
             record.latest_message = (
-                "Recovery session completed and restored ISO data was cleaned up immediately."
+                "Recovery session completed and restored ISO cleanup was recorded."
             )
             return self._summary(record)
+
+    @_with_state_lock
+    def iter_restored_iso(self, session_id: str, image_id: str) -> Iterator[bytes]:
+        with self.state.lock:
+            record = self.state.recovery_sessions_by_id.get(session_id)
+            if record is None:
+                raise NotFound(f"recovery session not found: {session_id}")
+            if record.state != RecoverySessionState.READY:
+                raise InvalidState("recovery session is not ready for ISO download")
+            if str(record.image_id) != image_id:
+                raise NotFound(f"image not found in recovery session: {image_id}")
+            image = self.state.finalized_images_by_id[record.image_id]
+            payload = {
+                "fixture": "spec-restored-iso",
+                "image_id": image.finalized_id,
+                "filename": image.filename,
+                "files": sorted(
+                    path.relative_to(image.image_root).as_posix()
+                    for path in image.image_root.rglob("*")
+                    if path.is_file()
+                ),
+            }
+            yield json.dumps(payload, sort_keys=True).encode("utf-8")
 
     @_with_state_lock
     def process_due_sessions(self, *, limit: int = 100) -> int:
@@ -1992,8 +2015,8 @@ class AcceptanceRecoverySessionService:
                     record.state = RecoverySessionState.EXPIRED
                     record.next_reminder_at = None
                     record.latest_message = (
-                        "Restored ISO data expired and was cleaned up; re-initiate recovery to "
-                        "request a new restore."
+                        "Restored ISO data expired and cleanup was recorded; "
+                        "re-initiate recovery to request a new restore."
                     )
                     processed += 1
             return processed
