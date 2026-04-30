@@ -90,6 +90,23 @@ _DEFAULT_EXTERNAL_WEBDAV_BASE_URL = "http://webdav:8080"
 _DEFAULT_EXTERNAL_APP_RESTART_PATH = "/_test/restart"
 _DEFAULT_EXTERNAL_APP_RESET_PATH = "/_test/reset"
 _DEFAULT_ACCEPTANCE_ROOT = ".tmp/acceptance"
+_FORBIDDEN_PROD_ARC_DISC_FACTORY_ENV_VARS = (
+    "ARC_DISC_READER_FACTORY",
+    "ARC_DISC_ISO_VERIFIER_FACTORY",
+    "ARC_DISC_BURNER_FACTORY",
+    "ARC_DISC_BURNED_MEDIA_VERIFIER_FACTORY",
+    "ARC_DISC_BURN_PROMPTS_FACTORY",
+)
+
+
+def _reject_prod_arc_disc_factory_env(env: Mapping[str, str]) -> None:
+    configured = [name for name in _FORBIDDEN_PROD_ARC_DISC_FACTORY_ENV_VARS if env.get(name)]
+    if configured:
+        names = ", ".join(configured)
+        raise RuntimeError(
+            "prod acceptance subprocesses must not use arc-disc factory overrides: "
+            f"{names}"
+        )
 
 
 def _copy_summary_from_payload(copy: Mapping[str, object]) -> CopySummary:
@@ -1671,6 +1688,7 @@ class ProductionSystem:
         env["ARC_DB_PATH"] = str(self.db_path)
         if extra:
             env.update(extra)
+        _reject_prod_arc_disc_factory_env(env)
         return env
 
     def _selected_file_bytes(self, collection_id: str, path: str) -> int:
