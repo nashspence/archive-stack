@@ -41,6 +41,9 @@ class _FakeS3Client:
             "LastModified": datetime(2026, 4, 20, 4, 1, 0, tzinfo=UTC),
             "Metadata": metadata,
         }
+        storage_class = ExtraArgs.get("StorageClass")
+        if storage_class is not None:
+            self._existing_head["StorageClass"] = storage_class
 
 
 def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
@@ -166,6 +169,54 @@ def test_upload_finalized_image_uploads_when_object_is_missing(monkeypatch, tmp_
     assert metadata[ISO_SHA256_METADATA] == (
         "4bc485f29c8bda3640b8d904070e38e722d7acd9cba16f7a0ea8bedce2528178"
     )
+    assert "StorageClass" not in client.uploaded[0][3]
+
+
+def test_upload_finalized_image_sets_aws_storage_class_when_backend_is_aws(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client(existing_head=None)
+    monkeypatch.setattr(
+        "arc_core.stores.s3_archive_store.create_glacier_s3_client",
+        lambda config: client,
+    )
+
+    def _fake_subprocess_run(*args, stdout, stderr, check):  # type: ignore[no-untyped-def]
+        stdout.write(b"iso-bytes")
+
+        class _Result:
+            returncode = 0
+            stderr = b""
+
+        return _Result()
+
+    monkeypatch.setattr("arc_core.stores.s3_archive_store.subprocess.run", _fake_subprocess_run)
+    monkeypatch.setattr(
+        "arc_core.stores.s3_archive_store.validate_iso_image",
+        lambda iso_path: None,
+    )
+    monkeypatch.setattr(
+        "arc_core.stores.s3_archive_store.build_iso_cmd_from_root",
+        lambda *, image_root, volume_id: ["xorriso", str(image_root), volume_id],
+    )
+
+    store = S3ArchiveStore(
+        _config(
+            tmp_path,
+            glacier_backend="aws",
+            glacier_endpoint_url="https://s3.us-west-2.amazonaws.com",
+            glacier_storage_class="DEEP_ARCHIVE",
+        )
+    )
+
+    store.upload_finalized_image(
+        image_id="20260420T040001Z",
+        filename="20260420T040001Z.iso",
+        image_root=tmp_path,
+    )
+
+    assert client.uploaded[0][3]["StorageClass"] == "DEEP_ARCHIVE"
 
 
 def test_upload_finalized_image_fails_before_upload_when_iso_validation_fails(

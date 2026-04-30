@@ -8,11 +8,9 @@ import subprocess
 import sys
 from collections.abc import Iterator, Mapping
 from pathlib import Path
-from types import MethodType
 
 import pytest
 
-from arc_core.domain.errors import InvalidState, NotFound
 from arc_core.iso.streaming import build_iso_cmd_from_root
 from arc_disc import main as arc_disc_main
 from tests.fixtures.acceptance import AcceptanceSystem
@@ -142,13 +140,6 @@ def _iso_bytes_from_root(*, image_root: Path, volume_id: str) -> bytes:
     raise RuntimeError(f"gated fake API could not build a real ISO: {detail}")
 
 
-def _real_iso_bytes(image: object) -> bytes:
-    return _iso_bytes_from_root(
-        image_root=image.image_root,  # type: ignore[attr-defined]
-        volume_id=str(image.finalized_id),  # type: ignore[attr-defined]
-    )
-
-
 def _write_disposable_validation_iso(tmp_path: Path) -> Path:
     image_root = tmp_path / "gated-backend-iso-root"
     image_root.mkdir()
@@ -167,36 +158,6 @@ def _write_disposable_validation_iso(tmp_path: Path) -> Path:
         )
     )
     return iso_path
-
-
-def _configure_fake_api_real_iso_streams(acceptance_system: AcceptanceSystem) -> None:
-    def _fixture_iso_bytes(_planning: object, image: object) -> bytes:
-        return _real_iso_bytes(image)
-
-    def _iter_restored_iso(
-        recovery_sessions: object,
-        session_id: str,
-        image_id: str,
-    ) -> Iterator[bytes]:
-        with acceptance_system.state.lock:
-            record = acceptance_system.state.recovery_sessions_by_id.get(session_id)
-            if record is None:
-                raise NotFound(f"recovery session not found: {session_id}")
-            if record.state.value != "ready":
-                raise InvalidState("recovery session is not ready for ISO download")
-            if str(record.image_id) != image_id:
-                raise NotFound(f"image not found in recovery session: {image_id}")
-            image = acceptance_system.state.finalized_images_by_id[record.image_id]
-        yield _real_iso_bytes(image)
-
-    acceptance_system.planning._fixture_iso_bytes = MethodType(  # type: ignore[method-assign]
-        _fixture_iso_bytes,
-        acceptance_system.planning,
-    )
-    acceptance_system.recovery_sessions.iter_restored_iso = MethodType(  # type: ignore[method-assign]
-        _iter_restored_iso,
-        acceptance_system.recovery_sessions,
-    )
 
 
 def _register_existing_copy(
@@ -453,7 +414,7 @@ def test_full_burn_then_fetch_cli_workflow_uses_fake_api_and_real_optical_device
     _require_xorriso(reason="full arc-disc burn/fetch CLI workflow validation")
     _require_destructive_opt_in(reason="full arc-disc burn/fetch CLI workflow validation")
     device = _required_burn_device(reason="full arc-disc burn/fetch CLI workflow validation")
-    _configure_fake_api_real_iso_streams(gated_acceptance_system)
+    gated_acceptance_system.enable_real_iso_streams()
     image_id = _seed_one_real_burn_needed(gated_acceptance_system)
     burned_copy_id = f"{image_id}-2"
     staging_dir = tmp_path / "arc-disc-burn-fetch-staging"
@@ -501,7 +462,7 @@ def test_full_recover_cli_workflow_uses_fake_api_restored_iso_and_real_optical_d
     _require_xorriso(reason="full arc-disc recover CLI workflow validation")
     _require_destructive_opt_in(reason="full arc-disc recover CLI workflow validation")
     device = _required_burn_device(reason="full arc-disc recover CLI workflow validation")
-    _configure_fake_api_real_iso_streams(gated_acceptance_system)
+    gated_acceptance_system.enable_real_iso_streams()
     _image_id, session_id, burned_copy_id = _prepare_recovery_session_with_one_real_burn_needed(
         gated_acceptance_system
     )

@@ -112,18 +112,21 @@ class S3ArchiveStore:
             # The canonical Garage harness does not emulate Glacier storage-class
             # semantics, so the runtime records the intended class in Riverhog's
             # catalog and object metadata instead of depending on backend support.
+            extra_args: dict[str, Any] = {
+                "Metadata": {
+                    "arc-backend": self._config.glacier_backend,
+                    "arc-storage-class": self._config.glacier_storage_class,
+                    ISO_BYTES_METADATA: str(iso_bytes),
+                    ISO_SHA256_METADATA: iso_sha256,
+                }
+            }
+            if self._is_aws_restore_backend():
+                extra_args["StorageClass"] = self._config.glacier_storage_class
             self._client.upload_file(
                 str(iso_path),
                 self._bucket,
                 object_key,
-                ExtraArgs={
-                    "Metadata": {
-                        "arc-backend": self._config.glacier_backend,
-                        "arc-storage-class": self._config.glacier_storage_class,
-                        ISO_BYTES_METADATA: str(iso_bytes),
-                        ISO_SHA256_METADATA: iso_sha256,
-                    }
-                },
+                ExtraArgs=extra_args,
             )
             head = cast(
                 dict[str, Any],

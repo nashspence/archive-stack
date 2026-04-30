@@ -96,8 +96,9 @@ from arc_core.fs_paths import (
     normalize_collection_id,
     normalize_relpath,
 )
-from arc_core.iso.streaming import IsoStream
+from arc_core.iso.streaming import IsoStream, build_iso_cmd_from_root
 from arc_core.planner.manifest import MANIFEST_FILENAME
+from arc_core.ports.archive_store import ArchiveRestoreStatus, ArchiveStore
 from arc_core.runtime_config import load_runtime_config
 from arc_core.webhooks import (
     WebhookConfig,
@@ -392,6 +393,7 @@ class AcceptanceRecoverySessionRecord:
     approved_at: str | None = None
     restore_requested_at: str | None = None
     restore_ready_at: str | None = None
+    restore_next_poll_at: str | None = None
     restore_expires_at: str | None = None
     completed_at: str | None = None
     latest_message: str | None = None
@@ -423,6 +425,11 @@ class AcceptanceState:
     lock: Any = field(default_factory=threading.RLock, repr=False)
     public_base_url: str = ""
     glacier_billing_metadata_available: bool = False
+    real_iso_streams_enabled: bool = False
+    live_recovery_archive_store: ArchiveStore | None = field(default=None, repr=False)
+    live_recovery_retrieval_tier: str = "bulk"
+    live_recovery_hold_days: int = 1
+    live_recovery_poll_interval_seconds: float = 30.0
     next_fetch_number: int = 0
 
     def clear_webhook_deliveries(self) -> None:
@@ -1697,6 +1704,11 @@ class AcceptancePlanningService:
         )
 
     def _fixture_iso_bytes(self, image: CandidateRecord) -> bytes:
+        if self.state.real_iso_streams_enabled:
+            return _fixture_real_iso_bytes(
+                image_root=image.image_root,
+                volume_id=str(image.finalized_id),
+            )
         payload = {
             "fixture": "spec-iso",
             "image_id": image.finalized_id,
@@ -1840,15 +1852,35 @@ class AcceptanceRecoverySessionService:
                 raise InvalidState("recovery session is not waiting for approval")
             current = datetime.now(UTC)
             current_text = _acceptance_isoformat(current)
+            estimated_ready_at = _acceptance_isoformat(
+                current + timedelta(seconds=_GLACIER_RECOVERY_RESTORE_LATENCY_SECONDS)
+            )
+            status = self._request_live_restore(record, current_text, estimated_ready_at)
             record.state = RecoverySessionState.RESTORE_REQUESTED
             record.approved_at = current_text
             record.restore_requested_at = current_text
-            record.restore_ready_at = _acceptance_isoformat(
-                current + timedelta(seconds=_GLACIER_RECOVERY_RESTORE_LATENCY_SECONDS)
+            record.restore_ready_at = (
+                status.ready_at
+                if status is not None and status.ready_at is not None
+                else estimated_ready_at
+            )
+            record.restore_expires_at = (
+                status.expires_at if status is not None and status.expires_at is not None else None
+            )
+            record.restore_next_poll_at = (
+                current_text
+                if status is not None and status.state == "ready"
+                else _acceptance_isoformat(
+                    current + timedelta(seconds=self.state.live_recovery_poll_interval_seconds)
+                )
             )
             record.latest_message = (
-                "Archive restore requested; wait for the ready notification before downloading or "
-                "burning replacement media."
+                status.message
+                if status is not None and status.message is not None
+                else (
+                    "Archive restore requested; wait for the ready notification before "
+                    "downloading or burning replacement media."
+                )
             )
             return self._summary(record)
 
@@ -1863,10 +1895,12 @@ class AcceptanceRecoverySessionService:
                 RecoverySessionState.EXPIRED,
             }:
                 raise InvalidState("recovery session is not ready to complete")
+            self._cleanup_live_restore(record)
             current_text = _acceptance_isoformat(datetime.now(UTC))
             record.state = RecoverySessionState.COMPLETED
             record.completed_at = current_text
             record.restore_expires_at = current_text
+            record.restore_next_poll_at = None
             record.next_reminder_at = None
             record.latest_message = (
                 "Recovery session completed and restored ISO cleanup was recorded."
@@ -1884,6 +1918,27 @@ class AcceptanceRecoverySessionService:
             if str(record.image_id) != image_id:
                 raise NotFound(f"image not found in recovery session: {image_id}")
             image = self.state.finalized_images_by_id[record.image_id]
+            live_archive_store = self.state.live_recovery_archive_store
+            if live_archive_store is not None:
+                object_path = self._live_archive_object_path(record)
+            else:
+                object_path = ""
+            if self.state.real_iso_streams_enabled:
+                image_root = image.image_root
+                volume_id = str(image.finalized_id)
+            else:
+                image_root = None
+                volume_id = ""
+        if live_archive_store is not None:
+            yield from live_archive_store.iter_restored_finalized_image(
+                image_id=image_id,
+                object_path=object_path,
+            )
+            return
+        if image_root is not None:
+            yield _fixture_real_iso_bytes(image_root=image_root, volume_id=volume_id)
+            return
+        with self.state.lock:
             payload = {
                 "fixture": "spec-restored-iso",
                 "image_id": image.finalized_id,
@@ -1912,53 +1967,43 @@ class AcceptanceRecoverySessionService:
                     break
                 if (
                     record.state == RecoverySessionState.RESTORE_REQUESTED
+                    and self.state.live_recovery_archive_store is not None
+                    and (
+                        record.restore_next_poll_at is None
+                        or record.restore_next_poll_at <= current_text
+                    )
+                ):
+                    status = self._live_restore_status(record, current_text)
+                    if status.state == "ready":
+                        self._mark_ready(record, current, status=status)
+                    elif status.state == "expired":
+                        record.state = RecoverySessionState.EXPIRED
+                        record.next_reminder_at = None
+                        record.restore_next_poll_at = None
+                        record.latest_message = (
+                            status.message
+                            or (
+                                "Restored ISO data expired and cleanup was recorded; "
+                                "re-initiate recovery to request a new restore."
+                            )
+                        )
+                    else:
+                        record.restore_next_poll_at = _acceptance_isoformat(
+                            current
+                            + timedelta(seconds=self.state.live_recovery_poll_interval_seconds)
+                        )
+                        record.latest_message = (
+                            status.message
+                            or "Archive restore is still in progress; Riverhog will poll again."
+                        )
+                    processed += 1
+                    continue
+                if (
+                    record.state == RecoverySessionState.RESTORE_REQUESTED
                     and record.restore_ready_at is not None
                     and record.restore_ready_at <= current_text
                 ):
-                    record.state = RecoverySessionState.READY
-                    record.restore_expires_at = _acceptance_isoformat(
-                        current + timedelta(seconds=_GLACIER_RECOVERY_READY_TTL_SECONDS)
-                    )
-                    record.latest_message = (
-                        "Restored ISO data is ready; reopen the session to complete download, "
-                        "verify the ISO, and burn replacement media before cleanup."
-                    )
-                    image = self.state.finalized_images_by_id[record.image_id]
-                    try:
-                        self.state.deliver_webhook_payload(
-                            build_recovery_ready_payload(
-                                config=self.state.webhook_config(),
-                                session_id=record.session_id,
-                                restore_expires_at=record.restore_expires_at,
-                                images=[
-                                    {
-                                        "image_id": str(record.image_id),
-                                        "filename": image.filename,
-                                    }
-                                ],
-                                delivered_at=current,
-                                reminder_count=record.reminder_count,
-                                reminder=False,
-                            ),
-                            delivered_at=current,
-                            timeout_seconds=self.state.webhook_config().timeout_seconds,
-                        )
-                    except Exception as exc:
-                        record.latest_message = (
-                            "Ready notification failed and will retry: "
-                            f"{str(exc).strip() or exc.__class__.__name__}"
-                        )
-                        record.next_reminder_at = _acceptance_isoformat(
-                            current
-                            + timedelta(seconds=_GLACIER_RECOVERY_WEBHOOK_RETRY_DELAY_SECONDS)
-                        )
-                        processed += 1
-                        continue
-                    record.last_notified_at = current_text
-                    record.next_reminder_at = _acceptance_isoformat(
-                        current
-                        + timedelta(seconds=_GLACIER_RECOVERY_WEBHOOK_REMINDER_INTERVAL_SECONDS)
-                    )
+                    self._mark_ready(record, current)
                     processed += 1
                     continue
                 if (
@@ -2012,14 +2057,129 @@ class AcceptanceRecoverySessionService:
                     and record.restore_expires_at is not None
                     and record.restore_expires_at <= current_text
                 ):
+                    self._cleanup_live_restore(record)
                     record.state = RecoverySessionState.EXPIRED
                     record.next_reminder_at = None
+                    record.restore_next_poll_at = None
                     record.latest_message = (
                         "Restored ISO data expired and cleanup was recorded; "
                         "re-initiate recovery to request a new restore."
                     )
                     processed += 1
             return processed
+
+    def _request_live_restore(
+        self,
+        record: AcceptanceRecoverySessionRecord,
+        requested_at: str,
+        estimated_ready_at: str,
+    ) -> ArchiveRestoreStatus | None:
+        archive_store = self.state.live_recovery_archive_store
+        if archive_store is None:
+            return None
+        return archive_store.request_finalized_image_restore(
+            image_id=str(record.image_id),
+            object_path=self._live_archive_object_path(record),
+            retrieval_tier=self.state.live_recovery_retrieval_tier,
+            hold_days=self.state.live_recovery_hold_days,
+            requested_at=requested_at,
+            estimated_ready_at=estimated_ready_at,
+        )
+
+    def _live_restore_status(
+        self,
+        record: AcceptanceRecoverySessionRecord,
+        current_text: str,
+    ) -> ArchiveRestoreStatus:
+        archive_store = self.state.live_recovery_archive_store
+        if archive_store is None:
+            return ArchiveRestoreStatus(state="requested")
+        return archive_store.get_finalized_image_restore_status(
+            image_id=str(record.image_id),
+            object_path=self._live_archive_object_path(record),
+            requested_at=record.restore_requested_at or current_text,
+            estimated_ready_at=record.restore_ready_at,
+            estimated_expires_at=record.restore_expires_at,
+        )
+
+    def _cleanup_live_restore(self, record: AcceptanceRecoverySessionRecord) -> None:
+        archive_store = self.state.live_recovery_archive_store
+        if archive_store is None:
+            return
+        archive_store.cleanup_finalized_image_restore(
+            image_id=str(record.image_id),
+            object_path=self._live_archive_object_path(record),
+        )
+
+    def _live_archive_object_path(self, record: AcceptanceRecoverySessionRecord) -> str:
+        object_path = self.state.glacier_status(str(record.image_id)).object_path
+        if object_path is None:
+            raise InvalidState(
+                f"image archive object path is missing and cannot be restored: {record.image_id}"
+            )
+        return object_path
+
+    def _mark_ready(
+        self,
+        record: AcceptanceRecoverySessionRecord,
+        current: datetime,
+        *,
+        status: ArchiveRestoreStatus | None = None,
+    ) -> None:
+        current_text = _acceptance_isoformat(current)
+        record.state = RecoverySessionState.READY
+        record.restore_ready_at = (
+            status.ready_at if status is not None and status.ready_at is not None else current_text
+        )
+        record.restore_expires_at = (
+            status.expires_at
+            if status is not None and status.expires_at is not None
+            else _acceptance_isoformat(
+                current + timedelta(seconds=_GLACIER_RECOVERY_READY_TTL_SECONDS)
+            )
+        )
+        record.restore_next_poll_at = None
+        record.latest_message = (
+            status.message
+            if status is not None and status.message is not None
+            else (
+                "Restored ISO data is ready; reopen the session to complete download, "
+                "verify the ISO, and burn replacement media before cleanup."
+            )
+        )
+        image = self.state.finalized_images_by_id[record.image_id]
+        try:
+            self.state.deliver_webhook_payload(
+                build_recovery_ready_payload(
+                    config=self.state.webhook_config(),
+                    session_id=record.session_id,
+                    restore_expires_at=record.restore_expires_at,
+                    images=[
+                        {
+                            "image_id": str(record.image_id),
+                            "filename": image.filename,
+                        }
+                    ],
+                    delivered_at=current,
+                    reminder_count=record.reminder_count,
+                    reminder=False,
+                ),
+                delivered_at=current,
+                timeout_seconds=self.state.webhook_config().timeout_seconds,
+            )
+        except Exception as exc:
+            record.latest_message = (
+                "Ready notification failed and will retry: "
+                f"{str(exc).strip() or exc.__class__.__name__}"
+            )
+            record.next_reminder_at = _acceptance_isoformat(
+                current + timedelta(seconds=_GLACIER_RECOVERY_WEBHOOK_RETRY_DELAY_SECONDS)
+            )
+            return
+        record.last_notified_at = current_text
+        record.next_reminder_at = _acceptance_isoformat(
+            current + timedelta(seconds=_GLACIER_RECOVERY_WEBHOOK_REMINDER_INTERVAL_SECONDS)
+        )
 
     def _summary(self, record: AcceptanceRecoverySessionRecord) -> RecoverySessionSummary:
         image = self.state.finalized_images_by_id[record.image_id]
@@ -3511,6 +3671,20 @@ class AcceptanceFileService:
         return self.state.file_content(record.collection_id, record.path)
 
 
+def _fixture_real_iso_bytes(*, image_root: Path, volume_id: str) -> bytes:
+    proc = subprocess.run(
+        build_iso_cmd_from_root(image_root=image_root, volume_id=volume_id),
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode == 0:
+        return proc.stdout
+    detail = proc.stderr.decode("utf-8", errors="replace")[-1500:] or (
+        f"xorriso exited {proc.returncode}"
+    )
+    raise RuntimeError(f"acceptance fixture could not build real ISO: {detail}")
+
+
 class _LiveServerHandle:
     def __init__(self, app: Any, *, host: str, port: int) -> None:
         self._config = uvicorn.Config(app, host=host, port=port, log_level="warning")
@@ -3843,6 +4017,24 @@ class AcceptanceSystem:
     def fail_glacier_upload(self, image_id: str, *, error: str) -> None:
         with self.state.lock:
             self.state.glacier_upload_failures_by_image[ImageId(image_id)] = error
+
+    def enable_real_iso_streams(self) -> None:
+        with self.state.lock:
+            self.state.real_iso_streams_enabled = True
+
+    def enable_live_recovery_archive_store(
+        self,
+        archive_store: ArchiveStore,
+        *,
+        retrieval_tier: str = "bulk",
+        hold_days: int = 1,
+        poll_interval_seconds: float = 30.0,
+    ) -> None:
+        with self.state.lock:
+            self.state.live_recovery_archive_store = archive_store
+            self.state.live_recovery_retrieval_tier = retrieval_tier
+            self.state.live_recovery_hold_days = hold_days
+            self.state.live_recovery_poll_interval_seconds = poll_interval_seconds
 
     def run_arc(self, *args: str) -> subprocess.CompletedProcess[str]:
         with time_block("subprocess arc"):

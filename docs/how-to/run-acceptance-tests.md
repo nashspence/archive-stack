@@ -149,29 +149,28 @@ permission, media, and product regressions stay visible.
 ## Gated Glacier-restore validation
 
 `make gated-glacier-restore` is an opt-in lane for live AWS S3 Glacier restore
-behavior. It is not part of `make test`, `make spec`, or `make prod`, because it
-can issue real restore requests, depends on account permissions and object
-storage class, and may take hours before a restored object is readable.
+behavior. The lane keeps Riverhog's API, catalog, recovery session, and fixture
+state fake-backed; AWS S3 Glacier restore is the only real service. It is not
+part of `make test`, `make spec`, or `make prod`, because it can issue real
+restore requests, depends on account permissions and object storage class, and
+may take hours before a restored object is readable.
 
-Restore-request validation requires the normal `ARC_GLACIER_*` archive backend
-configuration plus an existing finalized-image archive object with Riverhog ISO
-metadata:
+Restore validation requires the normal `ARC_GLACIER_*` archive backend
+configuration and explicit restore confirmation. The lane creates its own
+fixture-backed finalized image, uploads that ISO to the configured AWS archive
+bucket/storage class, records the uploaded object's checksum metadata, and uses
+that object for restore request, polling, download, and completion checks:
 
 ```bash
 export ARC_GLACIER_BACKEND=aws
 export ARC_GLACIER_GATED_RESTORE_CONFIRM=request-glacier-restore
-export ARC_GLACIER_GATED_OBJECT_PATH=glacier/finalized-images/IMAGE/IMAGE.iso
 make gated-glacier-restore
 ```
 
-Restored-object download validation runs only when a restored object and expected
-digest are configured:
-
-```bash
-export ARC_GLACIER_GATED_RESTORED_OBJECT_PATH=glacier/finalized-images/IMAGE/IMAGE.iso
-export ARC_GLACIER_GATED_RESTORED_SHA256=<sha256>
-make gated-glacier-restore
-```
+If AWS reports the uploaded object is not readable yet, the restore request tests
+still pass and the download/completion checks skip with a rerun message. Rerun
+the same command after AWS completes the restore; no object path or SHA override
+is required.
 
 ## Compose-backed sidecars
 
