@@ -86,6 +86,11 @@ not part of `make test`, `make spec`, or `make prod`, because it can require
 operator-provided media, device permissions, and destructive writes to optical
 media.
 
+This lane validates the optical service boundary. The full workflow checks stand
+up fixture-backed API, storage, session, and restore state inside the test
+process; the real ci-unsuitable service is the optical device. The lane fails if
+any `ARC_DISC_*_FACTORY` override is configured.
+
 Read-only mounted-media validation requires a mounted disc or mounted ISO
 filesystem containing one known recovery payload object:
 
@@ -118,6 +123,23 @@ export ARC_DISC_GATED_BURN_ISO_PATH=/operator/disposable-validation.iso
 export ARC_DISC_GATED_BURN_COPY_ID=gated-arc-disc-copy
 export ARC_DISC_GATED_BURN_CONFIRM=write-optical-media
 make gated-arc-disc
+```
+
+Full CLI/API workflow validation is also part of `make gated-arc-disc`. These
+tests create the API state themselves, generate real ISO bytes from fixture image
+roots, run `arc-disc` as a subprocess, burn one real disc, verify it by reading
+the device, and then read that disc back through `arc-disc fetch`. The recovery
+workflow similarly uses a fixture-backed restored ISO endpoint and burns one real
+replacement disc.
+
+The full workflows use `ARC_DISC_GATED_BURN_DEVICE` for both writing and reading
+and skip until the destructive confirmation is set. No `ARC_BASE_URL`, fetch id,
+session id, staging directory, prompt input, or factory override is needed.
+
+```bash
+export ARC_DISC_GATED_BURN_DEVICE=/dev/sr0
+export ARC_DISC_GATED_BURN_CONFIRM=write-optical-media
+make gated-arc-disc args='-k full'
 ```
 
 When a capability is not configured, the corresponding gated test skips with the
