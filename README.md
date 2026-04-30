@@ -30,4 +30,5 @@ Run the production-backed harness against the executable acceptance contract wit
 Profile the production-backed harness with `make prod-profile`.
 Run the fixture-backed spec harness lane with `make spec`.
 Run the unit lane with `make unit`.
+Pass mypy or pytest selectors with `args='...'`.
 The `.feature` files under `tests/acceptance/features` are the source of truth for those scenarios.

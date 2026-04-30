@@ -2,8 +2,7 @@ SHELL := bash
 .DEFAULT_GOAL := help
 
 UV_RUN = uv run --python 3.11 --isolated --with-requirements "$(CURDIR)/requirements-test.txt" --with-editable '.[db]'
-MYPY_ARGS ?=
-PYTEST_ARGS ?=
+args ?=
 
 .PHONY: help ruff mypy lint unit spec build build-app build-test bootstrap-garage down prod prod-profile test
 
@@ -25,8 +24,7 @@ help:
 		'  make test              Run lint, unit, spec, then prod.' \
 		'' \
 		'Variables:' \
-		"  MYPY_ARGS='...'" \
-		"  PYTEST_ARGS='...'" \
+		"  args='...'             Forward arguments to mypy or pytest lanes." \
 		'  COMPOSE_ENV_FILE=/abs/path/to/.env.compose' \
 		'  TEST_COMPOSE_PROJECT_NAME=archive-stack-shared'
 
@@ -34,15 +32,15 @@ ruff:
 	@$(UV_RUN) python -m ruff check .
 
 mypy:
-	@$(UV_RUN) python -m mypy src --show-error-codes --hide-error-context --no-error-summary --no-color-output $(MYPY_ARGS)
+	@$(UV_RUN) python -m mypy src --show-error-codes --hide-error-context --no-error-summary --no-color-output $(args)
 
 lint: ruff mypy
 
 unit:
-	@$(UV_RUN) python -m pytest -q tests/unit $(PYTEST_ARGS)
+	@$(UV_RUN) python -m pytest -q tests/unit $(args)
 
 spec:
-	@$(UV_RUN) python -m pytest -q tests/harness/test_spec_harness.py $(PYTEST_ARGS)
+	@$(UV_RUN) python -m pytest -q tests/harness/test_spec_harness.py $(args)
 
 build-app:
 	@./scripts/build_app.sh
@@ -59,9 +57,9 @@ down:
 	@./scripts/compose_down.sh
 
 prod:
-	@./scripts/prod.sh $(PYTEST_ARGS)
+	@./scripts/prod.sh $(args)
 
 prod-profile:
-	@./scripts/prod_profile.sh $(PYTEST_ARGS)
+	@./scripts/prod_profile.sh $(args)
 
 test: lint unit spec prod

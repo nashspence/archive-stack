@@ -50,6 +50,13 @@ Run the unit lane by itself:
 make unit
 ```
 
+Forward pytest selectors or other pytest arguments with `args`.
+
+```bash
+make prod args='-k server_rejects_incorrect_recovered_bytes'
+make spec args='-k server_rejects_incorrect_recovered_bytes'
+```
+
 Run the atomic image build targets when you need a fresh local app or test
 image before the prod-backed lane:
 

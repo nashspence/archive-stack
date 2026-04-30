@@ -102,6 +102,9 @@ def _run_make(
     uv_log_path = _install_fake_command(tmp_path, "uv", "uv.log")
     env = os.environ.copy()
     env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
+    env.pop("args", None)
+    env.pop("MAKEFLAGS", None)
+    env.pop("MFLAGS", None)
     if extra_env:
         env.update(extra_env)
 
@@ -155,14 +158,14 @@ def _assert_isolated_prod_runtime(line: str) -> str:
         ("ruff", (), "python -m ruff check ."),
         (
             "mypy",
-            (),
+            ("args=--strict",),
             "python -m mypy src --show-error-codes --hide-error-context "
-            "--no-error-summary --no-color-output",
+            "--no-error-summary --no-color-output --strict",
         ),
-        ("unit", ("PYTEST_ARGS=-k entrypoint",), "python -m pytest -q tests/unit -k entrypoint"),
+        ("unit", ("args=-k entrypoint",), "python -m pytest -q tests/unit -k entrypoint"),
         (
             "spec",
-            ("PYTEST_ARGS=-k glacier",),
+            ("args=-k glacier",),
             "python -m pytest -q tests/harness/test_spec_harness.py -k glacier",
         ),
     ],
@@ -226,7 +229,7 @@ def test_prod_builds_images_and_uses_isolated_compose_project_name(
     completed, docker_log_path, uv_log_path = _run_make(
         tmp_path,
         "prod",
-        "PYTEST_ARGS=-k glacier",
+        "args=-k glacier",
         extra_env={"FAKE_DOCKER_HAVE_IMAGES": "1"},
     )
 
@@ -254,7 +257,7 @@ def test_prod_removes_generated_bind_mount_state_on_success(tmp_path: Path) -> N
     completed, docker_log_path, uv_log_path = _run_make(
         tmp_path,
         "prod",
-        "PYTEST_ARGS=-k glacier",
+        "args=-k glacier",
         extra_env={
             "FAKE_DOCKER_HAVE_IMAGES": "1",
             "FAKE_CREATE_STATE_ROOT": "1",
@@ -273,7 +276,7 @@ def test_prod_preserves_explicit_shared_bind_mount_state(tmp_path: Path) -> None
     completed, docker_log_path, uv_log_path = _run_make(
         tmp_path,
         "prod",
-        "PYTEST_ARGS=-k glacier",
+        "args=-k glacier",
         extra_env={
             "FAKE_DOCKER_HAVE_IMAGES": "1",
             "FAKE_CREATE_STATE_ROOT": "1",
@@ -313,7 +316,7 @@ def test_prod_profile_enables_profile_output_and_builds_images(tmp_path: Path) -
     completed, docker_log_path, uv_log_path = _run_make(
         tmp_path,
         "prod-profile",
-        "PYTEST_ARGS=-k glacier",
+        "args=-k glacier",
         extra_env={"FAKE_DOCKER_HAVE_IMAGES": "1"},
     )
 
@@ -410,6 +413,7 @@ def test_help_describes_make_targets_and_omits_fast(tmp_path: Path) -> None:
     assert "make build-app" in completed.stdout
     assert "make build-test" in completed.stdout
     assert "make test" in completed.stdout
+    assert "args='...'" in completed.stdout
     assert "fast" not in completed.stdout
     assert _read_log_lines(docker_log_path) == []
     assert _read_log_lines(uv_log_path) == []
