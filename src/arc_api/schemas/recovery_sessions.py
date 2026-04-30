@@ -37,6 +37,12 @@ class RecoveryNotificationStatusOut(ArcModel):
     last_notified_at: str | None
 
 
+class RecoverySessionProgressOut(ArcModel):
+    archive_verification: Literal["pending", "in_progress", "completed", "failed"]
+    extraction: Literal["pending", "in_progress", "completed", "failed"]
+    materialization: Literal["pending", "in_progress", "completed", "failed"]
+
+
 class RecoverySessionImageOut(ArcModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -71,5 +77,10 @@ class RecoverySessionOut(ArcModel):
     warnings: list[str]
     cost_estimate: RecoveryCostEstimateOut
     notification: RecoveryNotificationStatusOut
+    progress: RecoverySessionProgressOut
     collections: list[RecoverySessionCollectionOut] = Field(default_factory=list)
     images: list[RecoverySessionImageOut]
+
+
+class CollectionRestoreMaterializeRequest(ArcModel):
+    paths: list[str]

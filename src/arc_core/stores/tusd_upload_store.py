@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import time
-from typing import cast
+from collections.abc import Iterator
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 import httpx
@@ -104,12 +104,22 @@ class TusdUploadStore:
             return int(response.headers["Upload-Offset"]), response.headers.get("Upload-Expires")
 
     def read_target(self, target_path: str) -> bytes:
+        return b"".join(self.iter_target(target_path))
+
+    def iter_target(self, target_path: str) -> Iterator[bytes]:
         key = self._object_key(target_path)
         deadline = time.monotonic() + _READ_TARGET_RETRY_SECONDS
         while True:
             try:
                 response = self._client.get_object(Bucket=self._bucket, Key=key)
-                return cast(bytes, response["Body"].read())
+                body = response["Body"]
+                try:
+                    yield from body.iter_chunks(chunk_size=1024 * 1024)
+                finally:
+                    close = getattr(body, "close", None)
+                    if callable(close):
+                        close()
+                return
             except self._client.exceptions.ClientError as exc:
                 if exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode") != 404:
                     raise

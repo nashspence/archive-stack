@@ -273,6 +273,21 @@ class GlacierRecoverySessionRecord(Base):
     reminder_count: Mapped[int] = mapped_column(Integer, default=0)
     next_reminder_at: Mapped[str | None] = mapped_column(String, nullable=True)
     last_notified_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    archive_verification_state: Mapped[str | None] = mapped_column(
+        String,
+        default="pending",
+        nullable=True,
+    )
+    extraction_state: Mapped[str | None] = mapped_column(
+        String,
+        default="pending",
+        nullable=True,
+    )
+    materialization_state: Mapped[str | None] = mapped_column(
+        String,
+        default="pending",
+        nullable=True,
+    )
 
     images: Mapped[list[GlacierRecoverySessionImageRecord]] = relationship(
         back_populates="session",

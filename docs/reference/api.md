@@ -349,6 +349,9 @@ Required behavior:
 - the response includes recovery `type`, cost estimate, operator warnings,
   notification state, covered collections, and any finalized images involved in
   an image rebuild
+- the response includes `progress.archive_verification`, `progress.extraction`,
+  and `progress.materialization`, each one of `pending`, `in_progress`,
+  `completed`, or `failed`
 
 #### `POST /v1/recovery-sessions/{session_id}/approve`
 
@@ -372,6 +375,25 @@ Required behavior:
 - completion transitions the session to `completed`
 - completion records cleanup or lifecycle handoff for restored Standard-storage data instead of waiting for Riverhog's
   session expiry
+
+#### `POST /v1/recovery-sessions/{session_id}/collections/{collection_id}/materialize`
+
+Materializes selected logical files from a ready `collection_restore` session
+into committed hot storage.
+
+Required request body:
+
+- `paths` — non-empty list of logical file paths within the collection archive
+
+Required behavior:
+
+- succeeds only when the recovery session is `ready`
+- the collection must belong to that recovery session
+- Riverhog verifies the restored manifest, proof, archive membership, selected
+  member byte counts, and selected member SHA-256 values before writing hot bytes
+- only requested paths are materialized to hot storage
+- the response reports completed archive verification, extraction, and
+  materialization progress
 
 #### `GET /v1/recovery-sessions/{session_id}/images/{image_id}/iso`
 

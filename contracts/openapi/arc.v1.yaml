@@ -632,6 +632,36 @@ paths:
                 $ref: "#/components/schemas/RecoverySession"
         default:
           $ref: "#/components/responses/Error"
+  /recovery-sessions/{session_id}/collections/{collection_id}/materialize:
+    post:
+      summary: Materialize restored collection files to hot storage
+      description: Verifies a ready collection restore archive package, extracts the selected logical file paths, and writes those files into committed hot storage.
+      operationId: materializeCollectionRestoreFiles
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema: { type: string }
+        - in: path
+          name: collection_id
+          required: true
+          description: Canonical collection id in the ready recovery session. Slash-bearing ids occupy multiple path segments.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CollectionRestoreMaterializeRequest"
+      responses:
+        "200":
+          description: Recovery session summary with completed materialization progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoverySession"
+        default:
+          $ref: "#/components/responses/Error"
   /recovery-sessions/{session_id}/images/{image_id}/iso:
     get:
       summary: Download one rebuilt recovery-session ISO
@@ -2074,7 +2104,7 @@ components:
     RecoverySession:
       type: object
       required:
-        [id, type, state, created_at, warnings, cost_estimate, notification, collections, images]
+        [id, type, state, created_at, warnings, cost_estimate, notification, progress, collections, images]
       properties:
         id:
           type: string
@@ -2124,6 +2154,8 @@ components:
           $ref: "#/components/schemas/RecoveryCostEstimate"
         notification:
           $ref: "#/components/schemas/RecoveryNotificationStatus"
+        progress:
+          $ref: "#/components/schemas/RecoverySessionProgress"
         collections:
           type: array
           items:
@@ -2186,6 +2218,27 @@ components:
             - type: string
               format: date-time
             - type: "null"
+    RecoverySessionProgress:
+      type: object
+      required: [archive_verification, extraction, materialization]
+      properties:
+        archive_verification:
+          type: string
+          enum: [pending, in_progress, completed, failed]
+        extraction:
+          type: string
+          enum: [pending, in_progress, completed, failed]
+        materialization:
+          type: string
+          enum: [pending, in_progress, completed, failed]
+    CollectionRestoreMaterializeRequest:
+      type: object
+      required: [paths]
+      properties:
+        paths:
+          type: array
+          items:
+            type: string
     RecoverySessionImage:
       type: object
       required: [id, filename, collection_ids, rebuild_state]

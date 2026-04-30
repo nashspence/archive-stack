@@ -81,6 +81,7 @@ from arc_core.domain.models import (
     RecoveryNotificationStatus,
     RecoverySessionCollection,
     RecoverySessionImage,
+    RecoverySessionProgress,
     RecoverySessionSummary,
 )
 from arc_core.domain.selectors import parse_target
@@ -385,6 +386,9 @@ class AcceptanceRecoverySessionRecord:
     reminder_count: int = 0
     next_reminder_at: str | None = None
     last_notified_at: str | None = None
+    archive_verification_state: str = "pending"
+    extraction_state: str = "pending"
+    materialization_state: str = "pending"
 
 
 @dataclass(slots=True)
@@ -1996,6 +2000,41 @@ class AcceptanceRecoverySessionService:
             return self._summary(record)
 
     @_with_state_lock
+    def materialize_collection_files(
+        self,
+        session_id: str,
+        collection_id: str,
+        *,
+        paths: Sequence[str],
+    ) -> RecoverySessionSummary:
+        with self.state.lock:
+            record = self.state.recovery_sessions_by_id.get(session_id)
+            if record is None:
+                raise NotFound(f"recovery session not found: {session_id}")
+            if record.state != RecoverySessionState.READY:
+                raise InvalidState("recovery session is not ready to materialize files")
+            normalized_collection_id = CollectionId(normalize_collection_id(collection_id))
+            if normalized_collection_id not in record.collection_ids:
+                raise NotFound(f"collection not found in recovery session: {collection_id}")
+            selected_paths = tuple(normalize_relpath(path) for path in paths)
+            if not selected_paths:
+                raise InvalidState("at least one collection file path is required")
+            collection_files = self.state.files_by_collection.get(normalized_collection_id)
+            if collection_files is None:
+                raise NotFound(f"collection not found: {collection_id}")
+            for path in selected_paths:
+                if path not in collection_files:
+                    raise NotFound(f"collection file not found: {path}")
+                collection_files[path].hot = True
+            record.archive_verification_state = "completed"
+            record.extraction_state = "completed"
+            record.materialization_state = "completed"
+            record.latest_message = (
+                "Selected collection files were verified and materialized to hot storage."
+            )
+            return self._summary(record)
+
+    @_with_state_lock
     def iter_restored_iso(self, session_id: str, image_id: str) -> Iterator[bytes]:
         with self.state.lock:
             record = self.state.recovery_sessions_by_id.get(session_id)
@@ -2255,6 +2294,11 @@ class AcceptanceRecoverySessionService:
                 reminder_count=record.reminder_count,
                 next_reminder_at=record.next_reminder_at,
                 last_notified_at=record.last_notified_at,
+            ),
+            progress=RecoverySessionProgress(
+                archive_verification=record.archive_verification_state,
+                extraction=record.extraction_state,
+                materialization=record.materialization_state,
             ),
             collections=tuple(
                 RecoverySessionCollection(

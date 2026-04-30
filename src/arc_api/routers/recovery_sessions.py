@@ -5,7 +5,10 @@ from fastapi.responses import StreamingResponse
 
 from arc_api.deps import ContainerDep
 from arc_api.mappers import map_recovery_session
-from arc_api.schemas.recovery_sessions import RecoverySessionOut
+from arc_api.schemas.recovery_sessions import (
+    CollectionRestoreMaterializeRequest,
+    RecoverySessionOut,
+)
 
 router = APIRouter(tags=["recovery"])
 
@@ -70,6 +73,24 @@ def complete_recovery_session(
     container: ContainerDep,
 ) -> RecoverySessionOut:
     summary = container.recovery_sessions.complete(session_id)
+    return RecoverySessionOut.model_validate(map_recovery_session(summary))
+
+
+@router.post(
+    "/recovery-sessions/{session_id}/collections/{collection_id:path}/materialize",
+    response_model=RecoverySessionOut,
+)
+def materialize_collection_restore_files(
+    session_id: str,
+    collection_id: str,
+    request: CollectionRestoreMaterializeRequest,
+    container: ContainerDep,
+) -> RecoverySessionOut:
+    summary = container.recovery_sessions.materialize_collection_files(
+        session_id,
+        collection_id,
+        paths=request.paths,
+    )
     return RecoverySessionOut.model_validate(map_recovery_session(summary))
 
 

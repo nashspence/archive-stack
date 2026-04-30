@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import tarfile
+from collections.abc import Iterator
 from io import BytesIO
 
 import pytest
@@ -12,6 +13,7 @@ from arc_core.collection_archives import (
     CollectionArchiveExpectedFile,
     CollectionArchiveFile,
     build_collection_archive_package,
+    build_collection_archive_package_from_chunk_reader,
     iter_collection_archive_files,
     verify_collection_archive_files,
     verify_collection_archive_manifest,
@@ -109,6 +111,37 @@ def test_collection_archive_reader_streams_chunk_iterables() -> None:
     assert list(iter_collection_archive_files(chunks)) == [
         ("a.txt", b"alpha"),
         ("b.txt", b"beta"),
+    ]
+
+
+def test_collection_archive_package_from_chunk_reader_does_not_require_whole_file_reads() -> None:
+    content = b"0123456789" * 200
+    digest = hashlib.sha256(content).hexdigest()
+    chunk_sizes: list[int] = []
+
+    def read_chunks(path: str) -> Iterator[bytes]:
+        assert path == "large.bin"
+        for offset in range(0, len(content), 13):
+            chunk = content[offset : offset + 13]
+            chunk_sizes.append(len(chunk))
+            yield chunk
+
+    package = build_collection_archive_package_from_chunk_reader(
+        collection_id="docs",
+        files=(
+            CollectionArchiveExpectedFile(
+                path="large.bin",
+                bytes=len(content),
+                sha256=digest,
+            ),
+        ),
+        read_file_chunks=read_chunks,
+    )
+
+    assert max(chunk_sizes) == 13
+    assert package.archive_size == len(package.archive_bytes)
+    assert list(iter_collection_archive_files(package.iter_archive())) == [
+        ("large.bin", content)
     ]
 
 

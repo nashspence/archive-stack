@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from arc_core.services.resumable_uploads import UploadLifecycleState, sync_upload_state
 
 
@@ -26,6 +28,9 @@ class _MissingUploadStore:
     def read_target(self, target_path: str) -> bytes:
         self.read_target_calls += 1
         raise FileNotFoundError(target_path)
+
+    def iter_target(self, target_path: str) -> Iterator[bytes]:
+        yield self.read_target(target_path)
 
     def delete_target(self, target_path: str) -> None:
         raise AssertionError("delete_target should not be called")

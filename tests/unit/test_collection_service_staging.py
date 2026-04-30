@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from collections.abc import Iterator
 from pathlib import Path
 
 from arc_core.catalog_models import (
@@ -81,6 +82,9 @@ class _FakeUploadStore:
 
     def read_target(self, target_path: str) -> bytes:
         return self._content_by_target[target_path]
+
+    def iter_target(self, target_path: str) -> Iterator[bytes]:
+        yield self.read_target(target_path)
 
     def delete_target(self, target_path: str) -> None:
         self.deleted_targets.append(target_path)

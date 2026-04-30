@@ -37,6 +37,12 @@ from tests.fixtures.data import DOCS_FILES, IMAGE_ONE_FILES, write_tree
 
 
 class _FakeHotStore:
+    def __init__(self) -> None:
+        self.puts: dict[tuple[str, str], bytes] = {}
+
+    def put_collection_file(self, collection_id: str, path: str, content: bytes) -> None:
+        self.puts[(collection_id, path)] = content
+
     def get_collection_file(self, collection_id: str, path: str) -> bytes:
         assert collection_id == "docs"
         return DOCS_FILES[path]
@@ -424,6 +430,55 @@ def test_collection_restore_requests_and_verifies_manifest_and_proof(
     ]
 
 
+def test_collection_restore_materializes_selected_files_to_hot_storage(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    image_root = tmp_path / "image-root"
+    initialize_db(str(sqlite_path))
+    write_tree(image_root, IMAGE_ONE_FILES)
+    _seed_finalized_image(sqlite_path, image_root)
+    package = _docs_collection_archive_package()
+    _seed_collection_archive(sqlite_path, package)
+    store = _FakeArchiveStore(collection_packages={"docs": package})
+    hot_store = _FakeHotStore()
+    config = _config(
+        sqlite_path,
+        glacier_recovery_restore_latency=timedelta(seconds=0),
+        glacier_recovery_sweep_interval=timedelta(seconds=0),
+    )
+    recovery_service = SqlAlchemyRecoverySessionService(config, store, hot_store)
+
+    session = recovery_service.create_or_resume_for_collection("docs")
+    monkeypatch.setattr(
+        "arc_core.services.recovery_sessions.utcnow",
+        lambda: datetime(2026, 4, 20, 4, 0, tzinfo=UTC),
+    )
+    recovery_service.approve(session.id)
+    assert recovery_service.process_due_sessions() == 1
+
+    materialized = recovery_service.materialize_collection_files(
+        session.id,
+        "docs",
+        paths=["tax/2022/invoice-123.pdf"],
+    )
+
+    assert materialized.progress.archive_verification == "completed"
+    assert materialized.progress.extraction == "completed"
+    assert materialized.progress.materialization == "completed"
+    assert hot_store.puts == {
+        ("docs", "tax/2022/invoice-123.pdf"): DOCS_FILES["tax/2022/invoice-123.pdf"]
+    }
+    with session_scope(make_session_factory(str(sqlite_path))) as db_session:
+        row = db_session.get(
+            CollectionFileRecord,
+            {"collection_id": "docs", "path": "tax/2022/invoice-123.pdf"},
+        )
+        assert row is not None
+        assert row.hot is True
+
+
 def test_collection_restore_rejects_mismatched_proof_before_completion(
     tmp_path: Path,
     monkeypatch,
@@ -483,8 +538,9 @@ def test_collection_restore_rejects_corrupt_archive_before_completion(
     )
     corrupt_package = replace(
         package,
-        archive_bytes=corrupt_archive_bytes,
+        archive_size=len(corrupt_archive_bytes),
         archive_sha256=hashlib.sha256(corrupt_archive_bytes).hexdigest(),
+        _archive_chunks=lambda: iter((corrupt_archive_bytes,)),
     )
     _seed_collection_archive(sqlite_path, corrupt_package)
     store = _FakeArchiveStore(collection_packages={"docs": corrupt_package})

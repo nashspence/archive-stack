@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import datetime
 
 from sqlalchemy import or_, select
@@ -14,7 +15,7 @@ from arc_core.catalog_models import (
 )
 from arc_core.collection_archives import (
     CollectionArchiveExpectedFile,
-    build_collection_archive_package_from_reader,
+    build_collection_archive_package_from_chunk_reader,
 )
 from arc_core.ports.archive_store import ArchiveStore
 from arc_core.ports.hot_store import HotStore
@@ -119,13 +120,13 @@ class SqlAlchemyGlacierUploadService:
                     CollectionArchiveExpectedFile(path=path, bytes=_bytes, sha256=sha256)
                 )
 
-            def _read_archive_file(path: str) -> bytes:
-                return upload_store.read_target(target_path_by_archive_path[path])
+            def _read_archive_file_chunks(path: str) -> Iterator[bytes]:
+                return upload_store.iter_target(target_path_by_archive_path[path])
 
-            package = build_collection_archive_package_from_reader(
+            package = build_collection_archive_package_from_chunk_reader(
                 collection_id=collection_id,
                 files=package_files,
-                read_file=_read_archive_file,
+                read_file_chunks=_read_archive_file_chunks,
             )
             receipt = self._archive_store.upload_collection_archive_package(
                 collection_id=collection_id,

@@ -269,6 +269,13 @@ class RecoveryNotificationStatus:
 
 
 @dataclass(frozen=True)
+class RecoverySessionProgress:
+    archive_verification: str = "pending"
+    extraction: str = "pending"
+    materialization: str = "pending"
+
+
+@dataclass(frozen=True)
 class RecoverySessionImage:
     id: ImageId
     filename: str
@@ -299,6 +306,7 @@ class RecoverySessionSummary:
     warnings: tuple[str, ...]
     cost_estimate: RecoveryCostEstimate
     notification: RecoveryNotificationStatus
+    progress: RecoverySessionProgress
     collections: tuple[RecoverySessionCollection, ...]
     images: tuple[RecoverySessionImage, ...]
 

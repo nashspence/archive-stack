@@ -33,6 +33,16 @@ Feature: Recovery sessions API
     When the client posts to "/v1/recovery-sessions/rs-docs-restore-1/complete"
     Then the response status is 200
     And the response recovery session state is "completed"
+  Scenario: A ready collection restore materializes selected files into hot storage
+    Given the client posts to "/v1/collections/docs/restore-session"
+    And the client posts to "/v1/recovery-sessions/rs-docs-restore-1/approve"
+    And the client waits for recovery session "rs-docs-restore-1" state "ready"
+    When the client posts to "/v1/recovery-sessions/rs-docs-restore-1/collections/docs/materialize" to materialize collection file "tax/2022/invoice-123.pdf"
+    Then the response status is 200
+    And the response recovery session archive_verification is "completed"
+    And the response recovery session extraction is "completed"
+    And the response recovery session materialization is "completed"
+    And target "docs/tax/2022/invoice-123.pdf" is hot
   Scenario: Losing the last protected copy creates an image rebuild session
     Given candidate "img_2026-04-20_01" is finalized
     And the client posts to "/v1/images/20260420T040001Z/copies" with id "20260420T040001Z-1" and location "Shelf A1"

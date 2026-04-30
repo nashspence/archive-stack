@@ -35,6 +35,7 @@ from arc_core.catalog_models import (
 from arc_core.collection_archives import (
     CollectionArchiveExpectedFile,
     iter_collection_archive_files,
+    iter_verified_collection_archive_files,
     verify_collection_archive_files,
     verify_collection_archive_manifest,
     verify_collection_archive_member,
@@ -49,6 +50,7 @@ from arc_core.domain.models import (
     RecoveryNotificationStatus,
     RecoverySessionCollection,
     RecoverySessionImage,
+    RecoverySessionProgress,
     RecoverySessionSummary,
 )
 from arc_core.domain.types import CollectionId, ImageId
@@ -63,6 +65,7 @@ from arc_core.planner.manifest import (
     sidecar_bytes,
 )
 from arc_core.ports.archive_store import ArchiveRestoreStatus, ArchiveStore
+from arc_core.ports.hot_store import HotStore
 from arc_core.recovery_payloads import encrypt_recovery_payload
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.glacier_pricing import resolve_glacier_pricing
@@ -92,9 +95,15 @@ class _CollectionArchiveObjects:
 
 
 class SqlAlchemyRecoverySessionService:
-    def __init__(self, config: RuntimeConfig, archive_store: ArchiveStore) -> None:
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        archive_store: ArchiveStore,
+        hot_store: HotStore | None = None,
+    ) -> None:
         self._config = config
         self._archive_store = archive_store
+        self._hot_store = hot_store
         self._session_factory = make_session_factory(str(config.sqlite_path))
 
     def get(self, session_id: str) -> RecoverySessionSummary:
@@ -225,11 +234,14 @@ class SqlAlchemyRecoverySessionService:
             if not collections:
                 raise InvalidState("recovery session has no collection archives to complete")
             if record.state == RecoverySessionState.READY.value:
+                record.archive_verification_state = "in_progress"
+                session.flush()
                 _verify_restored_collection_archives(
                     session,
                     archive_store=self._archive_store,
                     collections=collections,
                 )
+                record.archive_verification_state = "completed"
             for collection in collections:
                 archive = _require_collection_archive_objects(collection)
                 self._archive_store.cleanup_collection_archive_restore(
@@ -245,6 +257,90 @@ class SqlAlchemyRecoverySessionService:
             record.latest_message = (
                 "Recovery session completed and restored ISO cleanup was recorded."
             )
+            return _session_summary(session, record, config=self._config)
+
+    def materialize_collection_files(
+        self,
+        session_id: str,
+        collection_id: str,
+        *,
+        paths: Sequence[str],
+    ) -> RecoverySessionSummary:
+        if self._hot_store is None:
+            raise InvalidState("recovery session service has no hot store for materialization")
+        selected_paths = {normalize_relpath(path) for path in paths}
+        if not selected_paths:
+            raise InvalidState("at least one collection file path is required")
+        with session_scope(self._session_factory) as session:
+            record = session.get(GlacierRecoverySessionRecord, session_id)
+            if record is None:
+                raise NotFound(f"recovery session not found: {session_id}")
+            if record.state != RecoverySessionState.READY.value:
+                raise InvalidState("recovery session is not ready to materialize files")
+            collection = _require_collection(session, collection_id)
+            session_collection_ids = {
+                current.id for current in _session_collections(session, record=record)
+            }
+            if collection.id not in session_collection_ids:
+                raise NotFound(f"collection not found in recovery session: {collection_id}")
+            expected_files = _collection_archive_expected_files(
+                session,
+                collection_id=collection.id,
+            )
+            expected_paths = {file.path for file in expected_files}
+            missing_paths = sorted(selected_paths - expected_paths)
+            if missing_paths:
+                raise NotFound(f"collection file not found: {missing_paths[0]}")
+            archive = _require_collection_archive_objects(collection)
+            record.archive_verification_state = "in_progress"
+            record.extraction_state = "in_progress"
+            record.materialization_state = "in_progress"
+            session.flush()
+            manifest_bytes = self._archive_store.read_restored_collection_archive_manifest(
+                collection_id=archive.collection_id,
+                object_path=archive.manifest_object_path,
+            )
+            verify_collection_archive_manifest(
+                manifest_bytes=manifest_bytes,
+                expected_sha256=archive.manifest_sha256,
+                collection_id=archive.collection_id,
+                files=expected_files,
+            )
+            proof_bytes = self._archive_store.read_restored_collection_archive_proof(
+                collection_id=archive.collection_id,
+                object_path=archive.proof_object_path,
+            )
+            verify_collection_archive_proof(
+                proof_bytes=proof_bytes,
+                expected_sha256=archive.proof_sha256,
+                manifest_bytes=manifest_bytes,
+            )
+            record.archive_verification_state = "completed"
+            materialized: list[str] = []
+            for path, content in iter_verified_collection_archive_files(
+                self._archive_store.iter_restored_collection_archive(
+                    collection_id=archive.collection_id,
+                    object_path=archive.archive_object_path,
+                ),
+                files=expected_files,
+                selected_paths=selected_paths,
+            ):
+                self._hot_store.put_collection_file(collection.id, path, content)
+                row = session.get(
+                    CollectionFileRecord,
+                    {"collection_id": collection.id, "path": path},
+                )
+                if row is not None:
+                    row.hot = True
+                materialized.append(path)
+            record.extraction_state = "completed"
+            record.materialization_state = "completed"
+            record.latest_message = (
+                "Selected collection files were verified and materialized to hot storage."
+            )
+            if len(materialized) != len(selected_paths):
+                missing = sorted(selected_paths - set(materialized))
+                raise ValueError(f"collection archive missing selected member: {missing[0]}")
             return _session_summary(session, record, config=self._config)
 
     def iter_restored_iso(self, session_id: str, image_id: str) -> Iterator[bytes]:
@@ -538,6 +634,15 @@ class StubRecoverySessionService:
         raise NotImplementedError("StubRecoverySessionService is not implemented yet")
 
     def complete(self, session_id: str) -> RecoverySessionSummary:
+        raise NotImplementedError("StubRecoverySessionService is not implemented yet")
+
+    def materialize_collection_files(
+        self,
+        session_id: str,
+        collection_id: str,
+        *,
+        paths: Sequence[str],
+    ) -> RecoverySessionSummary:
         raise NotImplementedError("StubRecoverySessionService is not implemented yet")
 
     def iter_restored_iso(self, session_id: str, image_id: str) -> Iterator[bytes]:
@@ -1303,6 +1408,11 @@ def _session_summary(
         next_reminder_at=record.next_reminder_at,
         last_notified_at=record.last_notified_at,
     )
+    progress = RecoverySessionProgress(
+        archive_verification=record.archive_verification_state or "pending",
+        extraction=record.extraction_state or "pending",
+        materialization=record.materialization_state or "pending",
+    )
     warnings = tuple(str(item) for item in json.loads(record.warnings_json))
     return RecoverySessionSummary(
         id=record.session_id,
@@ -1318,6 +1428,7 @@ def _session_summary(
         warnings=warnings,
         cost_estimate=estimate,
         notification=notification,
+        progress=progress,
         collections=tuple(collections),
         images=tuple(images),
     )

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import tarfile
 import tempfile
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
@@ -40,7 +39,7 @@ class CollectionArchiveExpectedFile:
 @dataclass(frozen=True, slots=True)
 class CollectionArchivePackage:
     collection_id: str
-    archive_bytes: bytes
+    archive_size: int
     archive_sha256: str
     manifest_bytes: bytes
     manifest_sha256: str
@@ -48,6 +47,14 @@ class CollectionArchivePackage:
     proof_sha256: str
     archive_format: str
     compression: str
+    _archive_chunks: Callable[[], Iterator[bytes]] = field(repr=False)
+
+    def iter_archive(self) -> Iterator[bytes]:
+        yield from self._archive_chunks()
+
+    @property
+    def archive_bytes(self) -> bytes:
+        return b"".join(self.iter_archive())
 
 
 def build_collection_archive_package(
@@ -62,7 +69,10 @@ def build_collection_archive_package(
     return _build_collection_archive_package(
         collection_id=normalized_collection_id,
         files=expected_files,
-        archive_bytes=_archive_bytes(normalized_files),
+        archive_chunks=lambda: _archive_chunks_from_reader(
+            expected_files,
+            lambda path: (next(file.content for file in normalized_files if file.path == path),),
+        ),
         stamper=stamper,
     )
 
@@ -76,10 +86,30 @@ def build_collection_archive_package_from_reader(
 ) -> CollectionArchivePackage:
     normalized_collection_id = normalize_collection_id(collection_id)
     normalized_files = _normalized_expected_files(files)
+    return build_collection_archive_package_from_chunk_reader(
+        collection_id=normalized_collection_id,
+        files=normalized_files,
+        read_file_chunks=lambda path: (read_file(path),),
+        stamper=stamper,
+    )
+
+
+def build_collection_archive_package_from_chunk_reader(
+    *,
+    collection_id: str,
+    files: Sequence[CollectionArchiveExpectedFile],
+    read_file_chunks: Callable[[str], Iterable[bytes]],
+    stamper: ProofStamper | None = None,
+) -> CollectionArchivePackage:
+    normalized_collection_id = normalize_collection_id(collection_id)
+    normalized_files = _normalized_expected_files(files)
     return _build_collection_archive_package(
         collection_id=normalized_collection_id,
         files=normalized_files,
-        archive_bytes=_archive_bytes_from_reader(normalized_files, read_file),
+        archive_chunks=lambda: _archive_chunks_from_reader(
+            normalized_files,
+            read_file_chunks,
+        ),
         stamper=stamper,
     )
 
@@ -88,7 +118,7 @@ def _build_collection_archive_package(
     *,
     collection_id: str,
     files: Sequence[CollectionArchiveExpectedFile],
-    archive_bytes: bytes,
+    archive_chunks: Callable[[], Iterator[bytes]],
     stamper: ProofStamper | None,
 ) -> CollectionArchivePackage:
     manifest = _manifest_payload(
@@ -101,16 +131,18 @@ def _build_collection_archive_package(
         allow_unicode=True,
     ).encode("utf-8")
     proof_bytes = _stamp_manifest_bytes(manifest_bytes, stamper=stamper)
+    archive_size, archive_sha256 = _sized_sha256(archive_chunks())
     return CollectionArchivePackage(
         collection_id=collection_id,
-        archive_bytes=archive_bytes,
-        archive_sha256=_sha256(archive_bytes),
+        archive_size=archive_size,
+        archive_sha256=archive_sha256,
         manifest_bytes=manifest_bytes,
         manifest_sha256=_sha256(manifest_bytes),
         proof_bytes=proof_bytes,
         proof_sha256=_sha256(proof_bytes),
         archive_format=COLLECTION_ARCHIVE_FORMAT,
         compression=COLLECTION_ARCHIVE_COMPRESSION,
+        _archive_chunks=archive_chunks,
     )
 
 
@@ -208,23 +240,87 @@ def verify_collection_archive_files(
 ) -> None:
     expected = {file.path: file for file in _normalized_expected_files(files)}
     seen: set[str] = set()
-    for path, content in iter_collection_archive_files(chunks):
-        if path in seen:
-            raise ValueError(f"duplicate collection archive member: {path}")
-        seen.add(path)
-        expected_file = expected.get(path)
-        if expected_file is None:
-            raise ValueError(f"unexpected collection archive member: {path}")
-        if len(content) != expected_file.bytes:
-            raise ValueError(f"collection archive member byte count mismatch: {path}")
-        verify_collection_archive_member(
-            path=path,
-            content=content,
-            expected_sha256=expected_file.sha256,
-        )
+    stream = _ChunkIteratorReader(chunks)
+    with tarfile.open(fileobj=cast(Any, stream), mode="r|*") as archive:
+        for member in archive:
+            if not member.isfile():
+                continue
+            path = normalize_relpath(member.name)
+            if path in seen:
+                raise ValueError(f"duplicate collection archive member: {path}")
+            seen.add(path)
+            expected_file = expected.get(path)
+            if expected_file is None:
+                raise ValueError(f"unexpected collection archive member: {path}")
+            handle = archive.extractfile(member)
+            if handle is None:
+                raise ValueError(f"collection archive member cannot be read: {path}")
+            _verify_collection_archive_member_stream(
+                path=path,
+                chunks=_read_chunks(handle),
+                expected_bytes=expected_file.bytes,
+                expected_sha256=expected_file.sha256,
+            )
     missing = sorted(set(expected) - seen)
     if missing:
         raise ValueError(f"collection archive missing member: {missing[0]}")
+
+
+def iter_verified_collection_archive_files(
+    chunks: Iterable[bytes],
+    *,
+    files: Sequence[CollectionArchiveExpectedFile],
+    selected_paths: set[str] | None = None,
+) -> Iterator[tuple[str, bytes]]:
+    expected = {file.path: file for file in _normalized_expected_files(files)}
+    normalized_selected = (
+        {normalize_relpath(path) for path in selected_paths}
+        if selected_paths is not None
+        else None
+    )
+    seen: set[str] = set()
+    yielded: set[str] = set()
+    stream = _ChunkIteratorReader(chunks)
+    with tarfile.open(fileobj=cast(Any, stream), mode="r|*") as archive:
+        for member in archive:
+            if not member.isfile():
+                continue
+            path = normalize_relpath(member.name)
+            if path in seen:
+                raise ValueError(f"duplicate collection archive member: {path}")
+            seen.add(path)
+            expected_file = expected.get(path)
+            if expected_file is None:
+                raise ValueError(f"unexpected collection archive member: {path}")
+            handle = archive.extractfile(member)
+            if handle is None:
+                raise ValueError(f"collection archive member cannot be read: {path}")
+            selected = normalized_selected is None or path in normalized_selected
+            if selected:
+                content = handle.read()
+                verify_collection_archive_member(
+                    path=path,
+                    content=content,
+                    expected_sha256=expected_file.sha256,
+                )
+                if len(content) != expected_file.bytes:
+                    raise ValueError(f"collection archive member byte count mismatch: {path}")
+                yielded.add(path)
+                yield path, content
+            else:
+                _verify_collection_archive_member_stream(
+                    path=path,
+                    chunks=_read_chunks(handle),
+                    expected_bytes=expected_file.bytes,
+                    expected_sha256=expected_file.sha256,
+                )
+    missing = sorted(set(expected) - seen)
+    if missing:
+        raise ValueError(f"collection archive missing member: {missing[0]}")
+    if normalized_selected is not None:
+        missing_selected = sorted(normalized_selected - yielded)
+        if missing_selected:
+            raise ValueError(f"collection archive missing selected member: {missing_selected[0]}")
 
 
 def _normalized_files(
@@ -364,47 +460,99 @@ def _stamp_manifest_bytes(
         return proof_path.read_bytes()
 
 
-def _archive_bytes(files: Sequence[CollectionArchiveFile]) -> bytes:
-    buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w") as archive:
-        for file in files:
-            info = tarfile.TarInfo(file.path)
-            info.size = file.bytes
-            info.mode = 0o644
-            info.uid = 0
-            info.gid = 0
-            info.uname = ""
-            info.gname = ""
-            info.mtime = 0
-            archive.addfile(info, io.BytesIO(file.content))
-    return buffer.getvalue()
-
-
-def _archive_bytes_from_reader(
+def _archive_chunks_from_reader(
     files: Sequence[CollectionArchiveExpectedFile],
-    read_file: Callable[[str], bytes],
-) -> bytes:
-    buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w") as archive:
-        for file in files:
-            content = read_file(file.path)
-            if len(content) != file.bytes:
-                raise ValueError(f"collection archive file byte count mismatch: {file.path}")
-            verify_collection_archive_member(
-                path=file.path,
-                content=content,
-                expected_sha256=file.sha256,
-            )
-            info = tarfile.TarInfo(file.path)
-            info.size = file.bytes
-            info.mode = 0o644
-            info.uid = 0
-            info.gid = 0
-            info.uname = ""
-            info.gname = ""
-            info.mtime = 0
-            archive.addfile(info, io.BytesIO(content))
-    return buffer.getvalue()
+    read_file_chunks: Callable[[str], Iterable[bytes]],
+) -> Iterator[bytes]:
+    for file in files:
+        yield _tar_header(file.path, file.bytes)
+        digest = hashlib.sha256()
+        byte_count = 0
+        for chunk in read_file_chunks(file.path):
+            if not chunk:
+                continue
+            digest.update(chunk)
+            byte_count += len(chunk)
+            yield chunk
+        if byte_count != file.bytes:
+            raise ValueError(f"collection archive file byte count mismatch: {file.path}")
+        if digest.hexdigest() != file.sha256:
+            raise ValueError(f"collection archive member sha256 mismatch: {file.path}")
+        padding = (-file.bytes) % 512
+        if padding:
+            yield b"\0" * padding
+    yield b"\0" * 1024
+
+
+def _tar_header(path: str, size: int) -> bytes:
+    name, prefix = _ustar_name(path)
+    header = bytearray(512)
+    _write_tar_field(header, 0, 100, name)
+    _write_tar_octal(header, 100, 8, 0o644)
+    _write_tar_octal(header, 108, 8, 0)
+    _write_tar_octal(header, 116, 8, 0)
+    _write_tar_octal(header, 124, 12, size)
+    _write_tar_octal(header, 136, 12, 0)
+    header[148:156] = b"        "
+    header[156:157] = b"0"
+    _write_tar_field(header, 257, 6, b"ustar\0")
+    _write_tar_field(header, 263, 2, b"00")
+    _write_tar_field(header, 345, 155, prefix)
+    checksum = sum(header)
+    _write_tar_octal(header, 148, 8, checksum)
+    return bytes(header)
+
+
+def _ustar_name(path: str) -> tuple[bytes, bytes]:
+    encoded = path.encode("utf-8")
+    if len(encoded) <= 100:
+        return encoded, b""
+    parts = path.split("/")
+    for index in range(1, len(parts)):
+        prefix = "/".join(parts[:index]).encode("utf-8")
+        name = "/".join(parts[index:]).encode("utf-8")
+        if len(prefix) <= 155 and len(name) <= 100:
+            return name, prefix
+    raise ValueError(f"collection archive path is too long for ustar: {path}")
+
+
+def _write_tar_field(header: bytearray, offset: int, length: int, value: bytes) -> None:
+    if len(value) > length:
+        raise ValueError("tar header field is too long")
+    header[offset : offset + len(value)] = value
+
+
+def _write_tar_octal(header: bytearray, offset: int, length: int, value: int) -> None:
+    encoded = f"{value:0{length - 1}o}\0".encode("ascii")
+    if len(encoded) > length:
+        raise ValueError("tar header numeric field is too large")
+    header[offset : offset + length] = encoded.rjust(length, b"0")
+
+
+def _read_chunks(handle: Any, chunk_size: int = 1024 * 1024) -> Iterator[bytes]:
+    while True:
+        chunk = handle.read(chunk_size)
+        if not chunk:
+            return
+        yield chunk
+
+
+def _verify_collection_archive_member_stream(
+    *,
+    path: str,
+    chunks: Iterable[bytes],
+    expected_bytes: int,
+    expected_sha256: str,
+) -> None:
+    digest = hashlib.sha256()
+    byte_count = 0
+    for chunk in chunks:
+        digest.update(chunk)
+        byte_count += len(chunk)
+    if byte_count != expected_bytes:
+        raise ValueError(f"collection archive member byte count mismatch: {path}")
+    if digest.hexdigest() != expected_sha256:
+        raise ValueError(f"collection archive member sha256 mismatch: {path}")
 
 
 class _ChunkIteratorReader:
@@ -441,3 +589,12 @@ class _ChunkIteratorReader:
 
 def _sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def _sized_sha256(chunks: Iterable[bytes]) -> tuple[int, str]:
+    digest = hashlib.sha256()
+    size = 0
+    for chunk in chunks:
+        digest.update(chunk)
+        size += len(chunk)
+    return size, digest.hexdigest()

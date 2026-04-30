@@ -56,11 +56,16 @@ class _FakeS3Client:
         except KeyError as exc:
             raise _MissingObjectError() from exc
 
-    def put_object(self, *, Bucket: str, Key: str, Body: bytes, **kwargs: Any) -> None:
+    def put_object(self, *, Bucket: str, Key: str, Body: object, **kwargs: Any) -> None:
         _ = Bucket
+        if isinstance(Body, bytes):
+            body = Body
+        else:
+            read = Body.read
+            body = cast(bytes, read())
         self.objects[Key] = {
-            "Body": Body,
-            "ContentLength": len(Body),
+            "Body": body,
+            "ContentLength": len(body),
             "LastModified": datetime(2026, 4, 20, 4, 1, 0, tzinfo=UTC),
             **kwargs,
         }

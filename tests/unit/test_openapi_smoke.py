@@ -461,6 +461,16 @@ class _StubRecoverySessions:
         _ = session_id
         return {}
 
+    def materialize_collection_files(
+        self,
+        session_id: str,
+        collection_id: str,
+        *,
+        paths: list[str],
+    ) -> dict[str, object]:
+        _ = session_id, collection_id, paths
+        return {}
+
     def process_due_sessions(self, *, limit: int) -> None:
         assert limit >= 0
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import tempfile
 from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -99,16 +100,22 @@ class S3ArchiveStore:
         package: CollectionArchivePackage,
     ) -> CollectionArchiveUploadReceipt:
         keys = self._collection_object_keys(collection_id=collection_id)
-        archive = self._put_collection_package_object(
-            object_key=keys["archive"],
-            content=package.archive_bytes,
-            sha256=package.archive_sha256,
-            kind="archive",
-            package=package,
-        )
+        with tempfile.TemporaryFile() as archive_body:
+            for chunk in package.iter_archive():
+                archive_body.write(chunk)
+            archive_body.seek(0)
+            archive = self._put_collection_package_object(
+                object_key=keys["archive"],
+                content=archive_body,
+                content_length=package.archive_size,
+                sha256=package.archive_sha256,
+                kind="archive",
+                package=package,
+            )
         manifest = self._put_collection_package_object(
             object_key=keys["manifest"],
             content=package.manifest_bytes,
+            content_length=len(package.manifest_bytes),
             sha256=package.manifest_sha256,
             kind="manifest",
             package=package,
@@ -116,6 +123,7 @@ class S3ArchiveStore:
         proof = self._put_collection_package_object(
             object_key=keys["proof"],
             content=package.proof_bytes,
+            content_length=len(package.proof_bytes),
             sha256=package.proof_sha256,
             kind="ots-proof",
             package=package,
@@ -135,7 +143,8 @@ class S3ArchiveStore:
         self,
         *,
         object_key: str,
-        content: bytes,
+        content: Any,
+        content_length: int,
         sha256: str,
         kind: str,
         package: CollectionArchivePackage,
@@ -145,7 +154,7 @@ class S3ArchiveStore:
             return self._collection_receipt_from_head(
                 object_key=object_key,
                 head=existing,
-                expected_bytes=len(content),
+                expected_bytes=content_length,
                 expected_sha256=sha256,
             )
 
@@ -160,9 +169,9 @@ class S3ArchiveStore:
                 ).hexdigest(),
                 "arc-archive-format": package.archive_format,
                 "arc-compression": package.compression,
-                "arc-archive-bytes": str(len(content)),
+                "arc-archive-bytes": str(content_length),
                 "arc-archive-sha256": sha256,
-                COLLECTION_BYTES_METADATA: str(len(content)),
+                COLLECTION_BYTES_METADATA: str(content_length),
                 COLLECTION_SHA256_METADATA: sha256,
             }
         }
@@ -172,6 +181,7 @@ class S3ArchiveStore:
             Bucket=self._bucket,
             Key=object_key,
             Body=content,
+            ContentLength=content_length,
             **extra_args,
         )
         head = cast(
@@ -181,7 +191,7 @@ class S3ArchiveStore:
         return self._collection_receipt_from_head(
             object_key=object_key,
             head=head,
-            expected_bytes=len(content),
+            expected_bytes=content_length,
             expected_sha256=sha256,
             uploaded_at=uploaded_at,
         )

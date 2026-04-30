@@ -32,6 +32,7 @@ from arc_core.domain.models import (
     RecoveryNotificationStatus,
     RecoverySessionCollection,
     RecoverySessionImage,
+    RecoverySessionProgress,
     RecoverySessionSummary,
 )
 
@@ -380,6 +381,14 @@ def map_recovery_notification(summary: RecoveryNotificationStatus) -> dict[str, 
     }
 
 
+def map_recovery_session_progress(summary: RecoverySessionProgress) -> dict[str, object]:
+    return {
+        "archive_verification": summary.archive_verification,
+        "extraction": summary.extraction,
+        "materialization": summary.materialization,
+    }
+
+
 def map_recovery_session_image(summary: RecoverySessionImage) -> dict[str, object]:
     return {
         "id": str(summary.id),
@@ -413,6 +422,7 @@ def map_recovery_session(summary: RecoverySessionSummary) -> dict[str, object]:
         "warnings": list(summary.warnings),
         "cost_estimate": map_recovery_cost_estimate(summary.cost_estimate),
         "notification": map_recovery_notification(summary.notification),
+        "progress": map_recovery_session_progress(summary.progress),
         "collections": [
             map_recovery_session_collection(collection) for collection in summary.collections
         ],

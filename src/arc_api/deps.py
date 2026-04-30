@@ -67,7 +67,7 @@ def default_container() -> ServiceContainer:
             upload_store,
         ),
         glacier_reporting=SqlAlchemyGlacierReportingService(config),
-        recovery_sessions=SqlAlchemyRecoverySessionService(config, archive_store),
+        recovery_sessions=SqlAlchemyRecoverySessionService(config, archive_store, hot_store),
         copies=SqlAlchemyCopyService(config, hot_store),
         pins=SqlAlchemyPinService(config, hot_store, upload_store),
         fetches=SqlAlchemyFetchService(config, hot_store, upload_store),

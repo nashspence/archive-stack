@@ -60,6 +60,11 @@ The opinionated archival workflow depends on answering:
   `collection_restore` for restoring collection content from its collection
   archive, and `image_rebuild` for rebuilding lost physical media from restored
   collection archives plus persisted image coverage metadata
+- ready `collection_restore` sessions can materialize explicitly selected
+  logical file paths into hot storage after verifying the restored manifest,
+  proof, archive membership, byte counts, and file hashes
+- recovery session summaries expose archive verification, extraction, and
+  materialization progress states
 
 ## Consequences
 

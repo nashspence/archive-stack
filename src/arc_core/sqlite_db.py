@@ -61,6 +61,12 @@ _COLUMN_MIGRATIONS: list[list[tuple[str, str, str]]] = [
         ("collection_uploads", "archive_failure", "TEXT"),
         ("glacier_recovery_sessions", "type", "TEXT"),
     ],
+    # version 9
+    [
+        ("glacier_recovery_sessions", "archive_verification_state", "TEXT"),
+        ("glacier_recovery_sessions", "extraction_state", "TEXT"),
+        ("glacier_recovery_sessions", "materialization_state", "TEXT"),
+    ],
 ]
 
 

@@ -1258,6 +1258,25 @@ def when_client_posts(
     _set_response(acceptance_context, response)
 
 
+@when(
+    parsers.parse(
+        'the client posts to "{path}" to materialize collection file "{file_path}"'
+    )
+)
+def when_client_posts_to_materialize_collection_file(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+    path: str,
+    file_path: str,
+) -> None:
+    response = acceptance_system.request(
+        "POST",
+        path,
+        json_body={"paths": [file_path]},
+    )
+    _set_response(acceptance_context, response)
+
+
 @when(parsers.parse('the client posts to "{path}" again'))
 def when_client_posts_again(
     acceptance_system: AcceptanceSystem,
@@ -3143,6 +3162,33 @@ def then_response_recovery_session_latest_message_contains(
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     assert text in str(payload["latest_message"])
+
+
+@then(parsers.parse('the response recovery session archive_verification is "{state}"'))
+def then_response_recovery_session_archive_verification_is(
+    acceptance_context: AcceptanceScenarioContext,
+    state: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert payload["progress"]["archive_verification"] == state
+
+
+@then(parsers.parse('the response recovery session extraction is "{state}"'))
+def then_response_recovery_session_extraction_is(
+    acceptance_context: AcceptanceScenarioContext,
+    state: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert payload["progress"]["extraction"] == state
+
+
+@then(parsers.parse('the response recovery session materialization is "{state}"'))
+def then_response_recovery_session_materialization_is(
+    acceptance_context: AcceptanceScenarioContext,
+    state: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert payload["progress"]["materialization"] == state
 
 
 @then(parsers.parse('the captured webhook payload field "{field}" equals "{value}"'))

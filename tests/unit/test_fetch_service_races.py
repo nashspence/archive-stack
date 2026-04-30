@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterator
 from pathlib import Path
 
 from sqlalchemy import select
@@ -74,6 +75,9 @@ class _RaceyUploadStore:
         if target_path not in self._target_payloads:
             raise FileNotFoundError(target_path)
         return self._target_payloads[target_path]
+
+    def iter_target(self, target_path: str) -> Iterator[bytes]:
+        yield self.read_target(target_path)
 
     def delete_target(self, target_path: str) -> None:
         self.deleted_targets.append(target_path)
