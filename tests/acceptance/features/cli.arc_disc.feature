@@ -51,3 +51,16 @@ Feature: arc-disc CLI
     When the operator runs 'arc-disc fetch fx-1 --device /dev/fake-sr0'
     Then the command exits non-zero
     And fetch "fx-1" is not "done"
+    And stderr mentions "reset byte-complete upload"
+    And stderr mentions "try another registered copy or recovered media"
+    And stderr mentions "fetch remains active and incomplete"
+    When the client gets "/v1/fetches/fx-1/manifest"
+    Then the response status is 200
+    And fetch manifest entry "e1" upload state is "pending"
+    And fetch manifest entry "e1" uploaded bytes is 0
+    When a fake optical reader fixture can recover every required entry
+    And the operator runs 'arc-disc fetch fx-1 --device /dev/fake-sr0 --json'
+    Then the command exits with code 0
+    And stdout is valid JSON
+    And stdout reports fetch state "done"
+    And target for fetch "fx-1" is hot

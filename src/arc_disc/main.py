@@ -16,7 +16,7 @@ import typer
 
 from arc_cli.client import ApiClient
 from arc_cli.output import emit
-from arc_core.domain.errors import ArcError, NotFound
+from arc_core.domain.errors import ArcError, HashMismatch, NotFound
 
 app = typer.Typer(help="arc optical recovery CLI")
 
@@ -1133,6 +1133,36 @@ def _upload_entry_from_disc(
         )
 
 
+def _reset_byte_complete_uploads(
+    client: ApiClient,
+    fetch_id: str,
+    entries: tuple[RecoveryEntry, ...],
+    progress: ProgressReporter,
+) -> list[RecoveryEntry]:
+    reset_entries: list[RecoveryEntry] = []
+    for entry in entries:
+        if progress.uploaded_bytes_by_entry.get(entry.id, 0) < entry.recovery_bytes:
+            continue
+        client.cancel_fetch_entry_upload(fetch_id, entry.id)
+        reset_entries.append(entry)
+        typer.echo(
+            (
+                f"reset byte-complete upload for {entry.path}; "
+                "try another registered copy or recovered media"
+            ),
+            err=True,
+        )
+    if reset_entries:
+        typer.echo(
+            (
+                "fetch remains active and incomplete; if every registered copy fails, "
+                "report the damaged copies and use the Glacier recovery session before retrying"
+            ),
+            err=True,
+        )
+    return reset_entries
+
+
 @app.command("fetch")
 def fetch_cmd(
     fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
@@ -1165,7 +1195,11 @@ def fetch_cmd(
                 progress=progress,
             )
 
-        payload = client.complete_fetch(fetch_id)
+        try:
+            payload = client.complete_fetch(fetch_id)
+        except HashMismatch as exc:
+            _reset_byte_complete_uploads(client, fetch_id, entries, progress)
+            raise RuntimeError(f"final fetch verification failed: {exc}") from exc
     except (ArcError, RuntimeError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc

@@ -535,7 +535,7 @@ Required behavior:
 
 - returns `204`
 - cancels the current upload resource for that manifest entry
-- deletes any incomplete server-side bytes for that entry
+- deletes any incomplete or byte-complete server-side bytes for that entry
 - resets that entry back to `pending`
 
 #### `OPTIONS /v1/fetches/{fetch_id}/entries/{entry_id}/upload`
@@ -553,6 +553,9 @@ Required behavior:
 
 Marks the fetch manifest satisfied once all required entries have been uploaded, verified, and materialized. The
 manifest remains readable while the exact pin remains active.
+
+If verification fails, the fetch remains active and incomplete. Clients should delete the affected `byte_complete` entry
+upload resource before retrying from another registered copy or from recovered media.
 
 ## Error model
 

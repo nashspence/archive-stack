@@ -16,6 +16,11 @@ If recovery is interrupted after upload has started, the server-side manifest ke
 `INCOMPLETE_UPLOAD_TTL` after the last accepted chunk. The default is `24h`. After that boundary, incomplete upload
 data is discarded and the manifest returns to `waiting_media`.
 
+If final server verification rejects a `byte_complete` entry, `arc-disc fetch` cancels that entry upload resource before
+exiting. The manifest stays active and incomplete with the rejected entry back at offset `0`. Try another registered copy
+for that entry when one is available. If every registered copy fails, report the damaged copies and complete the
+Glacier-backed recovery session before running `arc-disc fetch` again from recovered media.
+
 During fulfillment, `arc-disc` should show:
 
 - current file progress

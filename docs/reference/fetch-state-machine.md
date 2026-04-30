@@ -42,6 +42,10 @@ released.
 
 The fetch cannot currently complete.
 
+Final verification failure for a `byte_complete` entry does not close the fetch. The recovery client deletes the affected
+entry upload resource, the entry returns to `pending`, and the fetch remains active so the operator can retry from another
+registered copy or from recovered media.
+
 ## Upload-state expiry
 
 - incomplete upload state expires after `INCOMPLETE_UPLOAD_TTL` since the last accepted chunk for that manifest

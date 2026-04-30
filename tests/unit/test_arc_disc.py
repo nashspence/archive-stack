@@ -6,6 +6,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 import arc_disc.main as arc_disc_main
+from arc_core.domain.errors import HashMismatch
 from tests.fixtures.data import fixture_encrypt_bytes
 
 runner = CliRunner()
@@ -112,6 +113,67 @@ def test_arc_disc_fetch_recovers_in_memory_and_reports_progress(monkeypatch) -> 
         ("https://uploads.test/fx-1/e1", 0, "sha256", recovered[:8]),
         ("https://uploads.test/fx-1/e1", 8, "sha256", recovered[8:]),
     ]
+
+
+def test_arc_disc_fetch_resets_byte_complete_upload_after_final_verification_failure(
+    monkeypatch,
+) -> None:
+    plaintext = b"invoice fixture bytes\n"
+    recovered = fixture_encrypt_bytes(plaintext)
+    cancelled: list[tuple[str, str]] = []
+
+    class FakeClient:
+        def get_fetch_manifest(self, fetch_id: str) -> dict[str, object]:
+            assert fetch_id == "fx-1"
+            return _manifest_for(plaintext)
+
+        def create_or_resume_fetch_entry_upload(
+            self, fetch_id: str, entry_id: str
+        ) -> dict[str, object]:
+            return {
+                "entry": entry_id,
+                "protocol": "tus",
+                "upload_url": "https://uploads.test/fx-1/e1",
+                "offset": 0,
+                "length": len(recovered),
+                "checksum_algorithm": "sha256",
+                "expires_at": "2026-04-23T00:00:00Z",
+            }
+
+        def append_upload_chunk(
+            self,
+            upload_url: str,
+            *,
+            offset: int,
+            checksum_algorithm: str,
+            content: bytes,
+        ) -> dict[str, object]:
+            return {"offset": offset + len(content), "expires_at": None}
+
+        def complete_fetch(self, fetch_id: str) -> dict[str, object]:
+            raise HashMismatch("sha256 did not match")
+
+        def cancel_fetch_entry_upload(self, fetch_id: str, entry_id: str) -> None:
+            cancelled.append((fetch_id, entry_id))
+
+    class FakeReader:
+        def read_iter(self, disc_path: str, *, device: str):
+            yield recovered
+
+    monkeypatch.setattr(arc_disc_main, "ApiClient", FakeClient)
+    monkeypatch.setattr(arc_disc_main, "build_optical_reader", lambda: FakeReader())
+
+    result = runner.invoke(
+        arc_disc_main.app,
+        ["fetch", "fx-1", "--device", "/dev/fake-sr0"],
+        input="\n",
+    )
+
+    assert result.exit_code == 1
+    assert cancelled == [("fx-1", "e1")]
+    assert "reset byte-complete upload for tax/2022/invoice-123.pdf" in result.stderr
+    assert "try another registered copy or recovered media" in result.stderr
+    assert "error: final fetch verification failed: sha256 did not match" in result.stderr
 
 
 def test_arc_disc_fetch_reports_clean_error_when_optical_read_fails(monkeypatch) -> None:

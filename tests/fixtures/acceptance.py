@@ -4365,7 +4365,7 @@ class AcceptanceSystem:
                     disc_path = str(copy_info["disc_path"])
                     payload = fixture_encrypt_bytes(part_plaintext)
                     if entry_path == corrupt_path or copy_id in corrupt_copy_ids:
-                        payload = payload + b"corrupted-by-fixture\n"
+                        payload = b"X" + payload[1:]
                     payload_by_disc_path[disc_path] = base64.b64encode(payload).decode("ascii")
                     if entry_path == fail_path or copy_id in fail_copy_ids:
                         fail_disc_paths.append(disc_path)

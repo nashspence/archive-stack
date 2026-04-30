@@ -247,25 +247,28 @@ class SqlAlchemyFetchService:
                 encrypted = self._upload_store.read_target(target_path)
 
                 copies = _entry_copies(entry)
-                if copies and any(copy.part_index is not None for copy in copies):
-                    part_count = max((copy.part_count or 1) for copy in copies)
-                    content = _read_collection_file_content(
-                        self._hot_store,
-                        entry.collection_id,
-                        entry.path,
-                    )
-                    parts = _split_plaintext(content, part_count)
-                    sizes = [len(encrypt_recovery_payload(part)) for part in parts]
-                    offset = 0
-                    plaintext_chunks: list[bytes] = []
-                    for size in sizes:
-                        plaintext_chunks.append(
-                            decrypt_recovery_payload(encrypted[offset : offset + size])
+                try:
+                    if copies and any(copy.part_index is not None for copy in copies):
+                        part_count = max((copy.part_count or 1) for copy in copies)
+                        content = _read_collection_file_content(
+                            self._hot_store,
+                            entry.collection_id,
+                            entry.path,
                         )
-                        offset += size
-                    plaintext = b"".join(plaintext_chunks)
-                else:
-                    plaintext = decrypt_recovery_payload(encrypted)
+                        parts = _split_plaintext(content, part_count)
+                        sizes = [len(encrypt_recovery_payload(part)) for part in parts]
+                        offset = 0
+                        plaintext_chunks: list[bytes] = []
+                        for size in sizes:
+                            plaintext_chunks.append(
+                                decrypt_recovery_payload(encrypted[offset : offset + size])
+                            )
+                            offset += size
+                        plaintext = b"".join(plaintext_chunks)
+                    else:
+                        plaintext = decrypt_recovery_payload(encrypted)
+                except ValueError as exc:
+                    raise HashMismatch("uploaded recovery bytes did not decrypt cleanly") from exc
 
                 if hashlib.sha256(plaintext).hexdigest() != entry.sha256:
                     raise HashMismatch("sha256 did not match")

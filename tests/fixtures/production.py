@@ -1483,7 +1483,7 @@ class ProductionSystem:
                         disc_path = str(copy["disc_path"])
                         encoded = recovery_payload
                         if entry_path == corrupt_path or copy_id in corrupt_copy_ids:
-                            encoded = recovery_payload + b"corrupted-by-fixture\n"
+                            encoded = b"X" + recovery_payload[1:]
                         payload_by_disc_path[disc_path] = base64.b64encode(encoded).decode("ascii")
                         if entry_path == fail_path or copy_id in fail_copy_ids:
                             fail_disc_paths.append(disc_path)

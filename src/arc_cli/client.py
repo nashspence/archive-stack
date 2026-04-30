@@ -269,6 +269,9 @@ class ApiClient:
     def create_or_resume_fetch_entry_upload(self, fetch_id: str, entry_id: str) -> dict[str, Any]:
         return self._json("POST", f"/v1/fetches/{fetch_id}/entries/{entry_id}/upload")
 
+    def cancel_fetch_entry_upload(self, fetch_id: str, entry_id: str) -> None:
+        self._request("DELETE", f"/v1/fetches/{fetch_id}/entries/{entry_id}/upload")
+
     def append_upload_chunk(
         self,
         upload_url: str,
