@@ -20,6 +20,7 @@ from arc_core.collection_archives import (
 from arc_core.ports.archive_store import ArchiveStore
 from arc_core.ports.hot_store import HotStore
 from arc_core.ports.upload_store import UploadStore
+from arc_core.proofs import CommandProofStamper, ProofStamper
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.collections import _collection_upload_target_path
 from arc_core.services.glacier_reporting import record_glacier_usage_snapshot
@@ -38,11 +39,14 @@ class SqlAlchemyGlacierUploadService:
         archive_store: ArchiveStore,
         hot_store: HotStore | None = None,
         upload_store: UploadStore | None = None,
+        *,
+        proof_stamper: ProofStamper | None = None,
     ) -> None:
         self._config = config
         self._archive_store = archive_store
         self._hot_store = hot_store
         self._upload_store = upload_store
+        self._proof_stamper = proof_stamper or CommandProofStamper(config.ots_stamp_command)
         self._session_factory = make_session_factory(str(config.sqlite_path))
 
     def process_due_uploads(self, *, limit: int = 1) -> int:
@@ -127,6 +131,7 @@ class SqlAlchemyGlacierUploadService:
                 collection_id=collection_id,
                 files=package_files,
                 read_file_chunks=_read_archive_file_chunks,
+                stamper=self._proof_stamper,
             )
             receipt = self._archive_store.upload_collection_archive_package(
                 collection_id=collection_id,

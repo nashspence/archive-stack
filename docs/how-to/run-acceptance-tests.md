@@ -193,6 +193,22 @@ of treating an immediately readable object as a valid Glacier restore. Delete
 the stale object or run with a fresh `ARC_GLACIER_PREFIX`, then rerun the same
 command.
 
+## CI opt-in OpenTimestamps validation
+
+`make ci-opt-in-opentimestamps` is an opt-in lane for live OpenTimestamps
+anchoring. It is selected with `ci_opt_in and requires_opentimestamps`. The lane
+checks that `ots stamp` creates a non-fixture `.ots` proof.
+
+```bash
+make ci-opt-in-opentimestamps
+```
+
+The OpenTimestamps command must be able to reach its configured calendar service.
+Missing commands skip the opt-in test; command failures after configuration are
+validation failures. Age batchpass recovery payload encryption is deterministic
+local command behavior and is covered by the normal prod-backed harness instead
+of this opt-in lane.
+
 ## Compose-backed sidecars
 
 The checked-in test scripts read `./.env.compose` when present, otherwise they fall

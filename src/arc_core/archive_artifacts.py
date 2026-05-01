@@ -8,7 +8,7 @@ import yaml
 
 from arc_core.fs_paths import normalize_collection_id, normalize_relpath
 from arc_core.hashing import canonical_tree_hash, file_sha256
-from arc_core.proofs import ProofStamper, StubProofStamper
+from arc_core.proofs import CommandProofStamper, ProofStamper
 
 COLLECTION_HASH_MANIFEST_NAME = "HASHES.yml"
 COLLECTION_HASH_PROOF_NAME = f"{COLLECTION_HASH_MANIFEST_NAME}.ots"
@@ -84,5 +84,5 @@ def generate_collection_hash_artifacts(
     manifest_path.write_text(
         yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True), encoding="utf-8"
     )
-    proof_path = (stamper or StubProofStamper()).stamp(manifest_path)
+    proof_path = (stamper or CommandProofStamper()).stamp(manifest_path)
     return CollectionArtifactPaths(manifest_path=manifest_path, proof_path=proof_path)

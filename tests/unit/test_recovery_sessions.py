@@ -33,7 +33,11 @@ from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.copies import SqlAlchemyCopyService
 from arc_core.services.recovery_sessions import SqlAlchemyRecoverySessionService
 from arc_core.sqlite_db import initialize_db, make_session_factory, session_scope
+from tests.fixtures.crypto import FixtureProofStamper, FixtureRecoveryPayloadCodec
 from tests.fixtures.data import DOCS_FILES, IMAGE_ONE_FILES, write_tree
+
+_PROOF_STAMPER = FixtureProofStamper()
+_RECOVERY_CODEC = FixtureRecoveryPayloadCodec()
 
 
 class _FakeHotStore:
@@ -210,7 +214,7 @@ def _seed_finalized_image(
                     path=relative_path,
                 )
             )
-        for artifact in read_finalized_image_collection_artifacts(image_root):
+        for artifact in read_finalized_image_collection_artifacts(image_root, _RECOVERY_CODEC):
             session.add(
                 FinalizedImageCollectionArtifactRecord(
                     image_id=image_id,
@@ -219,7 +223,7 @@ def _seed_finalized_image(
                     proof_path=artifact.proof_path,
                 )
             )
-        for part in read_finalized_image_coverage_parts(image_root):
+        for part in read_finalized_image_coverage_parts(image_root, _RECOVERY_CODEC):
             session.add(
                 FinalizedImageCoveragePartRecord(
                     image_id=image_id,
@@ -244,6 +248,7 @@ def _docs_collection_archive_package() -> CollectionArchivePackage:
             )
             for path, content in sorted(DOCS_FILES.items())
         ),
+        stamper=_PROOF_STAMPER,
     )
 
 
@@ -395,7 +400,12 @@ def test_collection_restore_requests_and_verifies_manifest_and_proof(
         glacier_recovery_restore_latency=timedelta(seconds=0),
         glacier_recovery_sweep_interval=timedelta(seconds=0),
     )
-    recovery_service = SqlAlchemyRecoverySessionService(config, store)
+    recovery_service = SqlAlchemyRecoverySessionService(
+        config,
+        store,
+        proof_stamper=_PROOF_STAMPER,
+        recovery_payload_codec=_RECOVERY_CODEC,
+    )
 
     session = recovery_service.create_or_resume_for_collection("docs")
     start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
@@ -479,7 +489,7 @@ def test_collection_restore_materializes_selected_files_to_hot_storage(
         assert row.hot is True
 
 
-def test_collection_restore_rejects_mismatched_proof_before_completion(
+def test_collection_restore_rejects_empty_proof_before_completion(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -489,11 +499,7 @@ def test_collection_restore_rejects_mismatched_proof_before_completion(
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
     package = _docs_collection_archive_package()
-    bad_proof = (
-        b"OpenTimestamps stub proof v1\n"
-        b"file: manifest.yml\n"
-        + f"sha256: {'0' * 64}\n".encode()
-    )
+    bad_proof = b""
     bad_package = replace(
         package,
         proof_bytes=bad_proof,
@@ -506,7 +512,12 @@ def test_collection_restore_rejects_mismatched_proof_before_completion(
         glacier_recovery_restore_latency=timedelta(seconds=0),
         glacier_recovery_sweep_interval=timedelta(seconds=0),
     )
-    recovery_service = SqlAlchemyRecoverySessionService(config, store)
+    recovery_service = SqlAlchemyRecoverySessionService(
+        config,
+        store,
+        proof_stamper=_PROOF_STAMPER,
+        recovery_payload_codec=_RECOVERY_CODEC,
+    )
 
     session = recovery_service.create_or_resume_for_collection("docs")
     monkeypatch.setattr(
@@ -516,7 +527,7 @@ def test_collection_restore_rejects_mismatched_proof_before_completion(
     recovery_service.approve(session.id)
     assert recovery_service.process_due_sessions() == 1
 
-    with pytest.raises(ValueError, match="proof does not match manifest"):
+    with pytest.raises(ValueError, match="proof is empty"):
         recovery_service.complete(session.id)
     assert store.cleanup_requests == []
 
@@ -584,7 +595,12 @@ def test_image_rebuild_verifies_manifest_and_proof_before_streaming_archive(
         glacier_recovery_sweep_interval=timedelta(seconds=0),
     )
     copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
-    recovery_service = SqlAlchemyRecoverySessionService(config, store)
+    recovery_service = SqlAlchemyRecoverySessionService(
+        config,
+        store,
+        proof_stamper=_PROOF_STAMPER,
+        recovery_payload_codec=_RECOVERY_CODEC,
+    )
 
     copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
     copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")

@@ -11,7 +11,7 @@ from typing import Any, cast
 import yaml
 
 from arc_core.fs_paths import normalize_collection_id, normalize_relpath
-from arc_core.proofs import ProofStamper, StubProofStamper
+from arc_core.proofs import CommandProofStamper, ProofStamper
 
 COLLECTION_ARCHIVE_MANIFEST_SCHEMA = "collection-archive-manifest/v1"
 COLLECTION_ARCHIVE_FORMAT = "tar"
@@ -208,15 +208,6 @@ def verify_collection_archive_proof(
         raise ValueError("collection archive proof sha256 mismatch")
     if not proof_bytes:
         raise ValueError("collection archive proof is empty")
-    manifest_digest = _sha256(manifest_bytes)
-    try:
-        proof_text = proof_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        return
-    if proof_text.startswith("OpenTimestamps stub proof v1\n") and (
-        f"sha256: {manifest_digest}\n" not in proof_text
-    ):
-        raise ValueError("collection archive proof does not match manifest")
 
 
 def iter_collection_archive_files(
@@ -456,7 +447,7 @@ def _stamp_manifest_bytes(
     with tempfile.TemporaryDirectory(prefix="arc-collection-archive-proof-") as tmpdir:
         manifest_path = Path(tmpdir) / "manifest.yml"
         manifest_path.write_bytes(manifest_bytes)
-        proof_path = (stamper or StubProofStamper()).stamp(manifest_path)
+        proof_path = (stamper or CommandProofStamper()).stamp(manifest_path)
         return proof_path.read_bytes()
 
 

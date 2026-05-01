@@ -22,7 +22,10 @@ from arc_core.finalized_image_coverage import (
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.copies import SqlAlchemyCopyService
 from arc_core.sqlite_db import initialize_db, make_session_factory, session_scope
+from tests.fixtures.crypto import FixtureRecoveryPayloadCodec
 from tests.fixtures.data import DOCS_FILES, IMAGE_ONE_FILES, write_tree
+
+_RECOVERY_CODEC = FixtureRecoveryPayloadCodec()
 
 
 class _FakeHotStore:
@@ -94,7 +97,7 @@ def _seed_finalized_image(sqlite_path: Path, image_root: Path) -> None:
                     path=relative_path,
                 )
             )
-        for artifact in read_finalized_image_collection_artifacts(image_root):
+        for artifact in read_finalized_image_collection_artifacts(image_root, _RECOVERY_CODEC):
             session.add(
                 FinalizedImageCollectionArtifactRecord(
                     image_id="20260420T040001Z",
@@ -103,7 +106,7 @@ def _seed_finalized_image(sqlite_path: Path, image_root: Path) -> None:
                     proof_path=artifact.proof_path,
                 )
             )
-        for part in read_finalized_image_coverage_parts(image_root):
+        for part in read_finalized_image_coverage_parts(image_root, _RECOVERY_CODEC):
             session.add(
                 FinalizedImageCoveragePartRecord(
                     image_id="20260420T040001Z",

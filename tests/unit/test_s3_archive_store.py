@@ -20,6 +20,7 @@ from arc_core.stores.s3_archive_store import (
     COLLECTION_SHA256_METADATA,
     S3ArchiveStore,
 )
+from tests.fixtures.crypto import FixtureProofStamper
 from tests.fixtures.data import DOCS_FILES
 
 
@@ -113,6 +114,7 @@ def _package() -> CollectionArchivePackage:
             )
             for path, content in sorted(DOCS_FILES.items())
         ),
+        stamper=FixtureProofStamper(),
     )
 
 

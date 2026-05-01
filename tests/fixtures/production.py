@@ -45,6 +45,7 @@ from arc_core.finalized_image_coverage import (
     read_finalized_image_coverage_parts,
 )
 from arc_core.fs_paths import normalize_collection_id, normalize_relpath
+from arc_core.recovery_payloads import CommandAgeBatchpassRecoveryPayloadCodec
 from arc_core.runtime_config import load_runtime_config
 from arc_core.sqlite_db import make_session_factory, session_scope
 from arc_core.stores.s3_support import (
@@ -53,6 +54,7 @@ from arc_core.stores.s3_support import (
     create_s3_client,
 )
 from tests.fixtures.acceptance import REPO_ROOT, SRC_ROOT
+from tests.fixtures.crypto import FixtureRecoveryPayloadCodec
 from tests.fixtures.data import (
     DOCS_COLLECTION_ID,
     DOCS_FILES,
@@ -67,7 +69,6 @@ from tests.fixtures.data import (
     SPLIT_IMAGE_FIXTURES,
     TARGET_BYTES,
     ImageFixture,
-    fixture_encrypt_bytes,
     split_fixture_plaintext,
     write_tree,
 )
@@ -75,6 +76,7 @@ from tests.fixtures.disc_contracts import InspectedIso, inspect_downloaded_iso
 from tests.timing_profile import time_block
 
 _APP_START_TIMEOUT = 15.0
+_FIXTURE_RECOVERY_CODEC = FixtureRecoveryPayloadCodec()
 _APP_REQUEST_TIMEOUT = 5.0
 _SIDECAR_START_TIMEOUT = 15.0
 _EXTERNAL_APP_BASE_URL_ENV = "ARC_TEST_EXTERNAL_APP_BASE_URL"
@@ -97,6 +99,32 @@ _FORBIDDEN_PROD_ARC_DISC_FACTORY_ENV_VARS = (
     "ARC_DISC_BURNED_MEDIA_VERIFIER_FACTORY",
     "ARC_DISC_BURN_PROMPTS_FACTORY",
 )
+
+
+def _command_recovery_payload(content: bytes) -> bytes:
+    return _command_recovery_codec().encrypt(content)
+
+
+def _command_recovery_codec() -> CommandAgeBatchpassRecoveryPayloadCodec:
+    config = load_runtime_config()
+    return CommandAgeBatchpassRecoveryPayloadCodec(
+        command=config.recovery_payload_command,
+        passphrase=config.recovery_payload_passphrase,
+        work_factor=config.recovery_payload_work_factor,
+        max_work_factor=config.recovery_payload_max_work_factor,
+    )
+
+
+def _command_image_files(files: Mapping[str, bytes]) -> dict[str, bytes]:
+    command_files: dict[str, bytes] = {}
+    for path, content in files.items():
+        try:
+            plaintext = _FIXTURE_RECOVERY_CODEC.decrypt(content)
+        except ValueError:
+            command_files[path] = content
+            continue
+        command_files[path] = _command_recovery_payload(plaintext)
+    return command_files
 
 
 def _reject_prod_arc_disc_factory_env(env: Mapping[str, str]) -> None:
@@ -1086,7 +1114,10 @@ class ProductionSystem:
             images_root = self.workspace / "images"
             with session_scope(make_session_factory(str(self.db_path))) as session:
                 for fixture in fixtures:
-                    image_root = write_tree(images_root / fixture.id, fixture.files)
+                    image_root = write_tree(
+                        images_root / fixture.id,
+                        _command_image_files(fixture.files),
+                    )
                     existing = session.get(PlannedCandidateRecord, fixture.id)
                     if existing is not None:
                         continue
@@ -1136,7 +1167,10 @@ class ProductionSystem:
                             path=cp.path,
                         )
                     )
-                for artifact in read_finalized_image_collection_artifacts(candidate.image_root):
+                for artifact in read_finalized_image_collection_artifacts(
+                    candidate.image_root,
+                    _command_recovery_codec(),
+                ):
                     session.add(
                         FinalizedImageCollectionArtifactRecord(
                             image_id=candidate.finalized_id,
@@ -1145,7 +1179,10 @@ class ProductionSystem:
                             proof_path=artifact.proof_path,
                         )
                     )
-                for part in read_finalized_image_coverage_parts(candidate.image_root):
+                for part in read_finalized_image_coverage_parts(
+                    candidate.image_root,
+                    _command_recovery_codec(),
+                ):
                     session.add(
                         FinalizedImageCoveragePartRecord(
                             image_id=candidate.finalized_id,
@@ -1593,7 +1630,7 @@ class ProductionSystem:
                 upload = self.fetches.create_or_resume_upload(fetch_id, entry["id"])
                 entry_collection_id = collection_id_by_path[str(entry["path"])]
                 for part in entry["parts"]:
-                    payload = fixture_encrypt_bytes(
+                    payload = _command_recovery_payload(
                         self._file_part_bytes(
                             entry_collection_id,
                             str(entry["path"]),
@@ -1610,7 +1647,7 @@ class ProductionSystem:
 
     def upload_partial_entry(self, fetch_id: str, entry_id: str) -> int:
         content = self._fetch_entry_file_bytes(fetch_id, entry_id)
-        full_payload = fixture_encrypt_bytes(content)
+        full_payload = _command_recovery_payload(content)
         partial_payload = full_payload[: max(1, len(full_payload) // 2)]
         session_info = self.fetches.create_or_resume_upload(fetch_id, entry_id)
         result = self.fetches.append_upload_chunk(
@@ -1664,7 +1701,7 @@ class ProductionSystem:
                 )
                 for part in parts:
                     part_index = int(part["index"])
-                    recovery_payload = fixture_encrypt_bytes(plaintext_parts[part_index])
+                    recovery_payload = _command_recovery_payload(plaintext_parts[part_index])
                     for copy in part["copies"]:
                         copy_id = str(copy["copy"])
                         disc_path = str(copy["disc_path"])

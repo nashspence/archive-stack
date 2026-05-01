@@ -13,6 +13,8 @@ import pytest
 import yaml
 
 from arc_core.planner.manifest import MANIFEST_FILENAME, README_FILENAME
+from arc_core.recovery_payloads import CommandAgeBatchpassRecoveryPayloadCodec
+from arc_core.runtime_config import load_runtime_config
 from tests.fixtures.data import fixture_decrypt_bytes
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -158,13 +160,26 @@ def assert_contract_schema(contract_filename: str, payload: object) -> None:
 
 
 def decrypt_yaml_file(path: Path) -> dict[str, Any]:
-    payload = yaml.safe_load(fixture_decrypt_bytes(path.read_bytes()).decode("utf-8"))
+    payload = yaml.safe_load(_decrypt_recovery_payload(path.read_bytes()).decode("utf-8"))
     assert isinstance(payload, dict)
     return cast(dict[str, Any], payload)
 
 
 def payload_bytes(path: Path) -> bytes:
-    return fixture_decrypt_bytes(path.read_bytes())
+    return _decrypt_recovery_payload(path.read_bytes())
+
+
+def _decrypt_recovery_payload(content: bytes) -> bytes:
+    try:
+        return fixture_decrypt_bytes(content)
+    except ValueError:
+        config = load_runtime_config()
+        return CommandAgeBatchpassRecoveryPayloadCodec(
+            command=config.recovery_payload_command,
+            passphrase=config.recovery_payload_passphrase,
+            work_factor=config.recovery_payload_work_factor,
+            max_work_factor=config.recovery_payload_max_work_factor,
+        ).decrypt(content)
 
 
 def manifest_entry_by_path(

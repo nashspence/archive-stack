@@ -24,6 +24,7 @@ CI_OPT_IN_REASON_MARKERS = {
     "requires_controlled_glacier_billing",
     "requires_controlled_glacier_failure",
     "requires_glacier_restore",
+    "requires_opentimestamps",
     "requires_webhook_capture",
 }
 TODO_REASON = "scenario is specified but not automated yet"

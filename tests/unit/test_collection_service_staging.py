@@ -17,6 +17,7 @@ from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.collections import SqlAlchemyCollectionService
 from arc_core.services.glacier_uploads import SqlAlchemyGlacierUploadService
 from arc_core.sqlite_db import initialize_db, make_session_factory, session_scope
+from tests.fixtures.crypto import FixtureProofStamper
 from tests.fixtures.data import DOCS_FILES
 
 
@@ -277,6 +278,7 @@ def test_completed_collection_upload_promotes_from_staging_and_cleans_up(tmp_pat
         _FakeArchiveStore(),
         hot_store,
         upload_store,
+        proof_stamper=FixtureProofStamper(),
     )
     assert upload_service.process_due_uploads() == 1
 

@@ -20,7 +20,13 @@ from arc_core.domain.selectors import parse_target
 from arc_core.domain.types import CopyId, FetchId, TargetStr
 from arc_core.ports.hot_store import HotStore
 from arc_core.ports.upload_store import UploadStore
-from arc_core.recovery_payloads import decrypt_recovery_payload, encrypt_recovery_payload
+from arc_core.recovery_payloads import (
+    CommandAgeBatchpassRecoveryPayloadCodec,
+    RecoveryPayloadCodec,
+    RecoveryPayloadError,
+    decrypt_recovery_payload,
+    encrypt_recovery_payload,
+)
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.resumable_uploads import (
     UploadLifecycleState,
@@ -62,18 +68,36 @@ class _ManifestCopy:
 
 class SqlAlchemyFetchService:
     def __init__(
-        self, config: RuntimeConfig, hot_store: HotStore, upload_store: UploadStore
+        self,
+        config: RuntimeConfig,
+        hot_store: HotStore,
+        upload_store: UploadStore,
+        recovery_payload_codec: RecoveryPayloadCodec | None = None,
     ) -> None:
         self._config = config
         self._hot_store = hot_store
         self._upload_store = upload_store
+        self._recovery_payload_codec = (
+            recovery_payload_codec
+            or CommandAgeBatchpassRecoveryPayloadCodec(
+                command=config.recovery_payload_command,
+                passphrase=config.recovery_payload_passphrase,
+                work_factor=config.recovery_payload_work_factor,
+                max_work_factor=config.recovery_payload_max_work_factor,
+            )
+        )
         self._upload_ttl = config.incomplete_upload_ttl
         self._session_factory = make_session_factory(str(config.sqlite_path))
 
     def get(self, fetch_id: str) -> FetchSummary:
         with session_scope(self._session_factory) as session:
             pin_record = _get_pin_record(session, fetch_id)
-            entries = _ensure_fetch_entries(session, pin_record, self._hot_store)
+            entries = _ensure_fetch_entries(
+                session,
+                pin_record,
+                self._hot_store,
+                self._recovery_payload_codec,
+            )
             _sync_upload_progress(pin_record, entries, self._upload_store)
             _expire_incomplete_uploads(pin_record, entries, self._upload_store)
             return _summary_from_records(pin_record, entries)
@@ -81,7 +105,12 @@ class SqlAlchemyFetchService:
     def manifest(self, fetch_id: str) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
             pin_record = _get_pin_record(session, fetch_id)
-            entries = _ensure_fetch_entries(session, pin_record, self._hot_store)
+            entries = _ensure_fetch_entries(
+                session,
+                pin_record,
+                self._hot_store,
+                self._recovery_payload_codec,
+            )
             _sync_upload_progress(pin_record, entries, self._upload_store)
             _expire_incomplete_uploads(pin_record, entries, self._upload_store)
             return {
@@ -92,6 +121,7 @@ class SqlAlchemyFetchService:
                         self._hot_store,
                         session,
                         entry,
+                        recovery_payload_codec=self._recovery_payload_codec,
                         fetch_state=FetchState(pin_record.fetch_state),
                     )
                     for entry in entries
@@ -103,7 +133,12 @@ class SqlAlchemyFetchService:
             pin_record = _get_pin_record(session, fetch_id)
             if pin_record.fetch_state == FetchState.DONE.value:
                 raise InvalidState("fetch is already complete")
-            entries = _ensure_fetch_entries(session, pin_record, self._hot_store)
+            entries = _ensure_fetch_entries(
+                session,
+                pin_record,
+                self._hot_store,
+                self._recovery_payload_codec,
+            )
             _sync_upload_progress(pin_record, entries, self._upload_store)
             _expire_incomplete_uploads(pin_record, entries, self._upload_store)
             entry = _get_entry(entries, entry_id)
@@ -137,7 +172,12 @@ class SqlAlchemyFetchService:
     ) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
             pin_record = _get_pin_record(session, fetch_id)
-            entries = _ensure_fetch_entries(session, pin_record, self._hot_store)
+            entries = _ensure_fetch_entries(
+                session,
+                pin_record,
+                self._hot_store,
+                self._recovery_payload_codec,
+            )
             _sync_upload_progress(pin_record, entries, self._upload_store)
             _expire_incomplete_uploads(pin_record, entries, self._upload_store)
             entry = _get_entry(entries, entry_id)
@@ -169,7 +209,12 @@ class SqlAlchemyFetchService:
     def get_entry_upload(self, fetch_id: str, entry_id: str) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
             pin_record = _get_pin_record(session, fetch_id)
-            entries = _ensure_fetch_entries(session, pin_record, self._hot_store)
+            entries = _ensure_fetch_entries(
+                session,
+                pin_record,
+                self._hot_store,
+                self._recovery_payload_codec,
+            )
             _sync_upload_progress(pin_record, entries, self._upload_store)
             _expire_incomplete_uploads(pin_record, entries, self._upload_store)
             entry = _get_entry(entries, entry_id)
@@ -181,7 +226,12 @@ class SqlAlchemyFetchService:
     def cancel_entry_upload(self, fetch_id: str, entry_id: str) -> None:
         with session_scope(self._session_factory) as session:
             pin_record = _get_pin_record(session, fetch_id)
-            entries = _ensure_fetch_entries(session, pin_record, self._hot_store)
+            entries = _ensure_fetch_entries(
+                session,
+                pin_record,
+                self._hot_store,
+                self._recovery_payload_codec,
+            )
             _sync_upload_progress(pin_record, entries, self._upload_store)
             _expire_incomplete_uploads(pin_record, entries, self._upload_store)
             entry = _get_entry(entries, entry_id)
@@ -223,7 +273,12 @@ class SqlAlchemyFetchService:
     def complete(self, fetch_id: str) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
             pin_record = _get_pin_record(session, fetch_id)
-            entries = _ensure_fetch_entries(session, pin_record, self._hot_store)
+            entries = _ensure_fetch_entries(
+                session,
+                pin_record,
+                self._hot_store,
+                self._recovery_payload_codec,
+            )
             _sync_upload_progress(pin_record, entries, self._upload_store)
             _expire_incomplete_uploads(pin_record, entries, self._upload_store)
 
@@ -256,18 +311,27 @@ class SqlAlchemyFetchService:
                             entry.path,
                         )
                         parts = _split_plaintext(content, part_count)
-                        sizes = [len(encrypt_recovery_payload(part)) for part in parts]
+                        sizes = [
+                            len(encrypt_recovery_payload(part, self._recovery_payload_codec))
+                            for part in parts
+                        ]
                         offset = 0
                         plaintext_chunks: list[bytes] = []
                         for size in sizes:
                             plaintext_chunks.append(
-                                decrypt_recovery_payload(encrypted[offset : offset + size])
+                                decrypt_recovery_payload(
+                                    encrypted[offset : offset + size],
+                                    self._recovery_payload_codec,
+                                )
                             )
                             offset += size
                         plaintext = b"".join(plaintext_chunks)
                     else:
-                        plaintext = decrypt_recovery_payload(encrypted)
-                except ValueError as exc:
+                        plaintext = decrypt_recovery_payload(
+                            encrypted,
+                            self._recovery_payload_codec,
+                        )
+                except RecoveryPayloadError as exc:
                     raise HashMismatch("uploaded recovery bytes did not decrypt cleanly") from exc
 
                 if hashlib.sha256(plaintext).hexdigest() != entry.sha256:
@@ -332,6 +396,7 @@ def _ensure_fetch_entries(
     session: Session,
     pin_record: ActivePinRecord,
     hot_store: HotStore,
+    recovery_payload_codec: RecoveryPayloadCodec,
 ) -> list[FetchEntryRecord]:
     existing = list(
         session.scalars(
@@ -360,11 +425,14 @@ def _ensure_fetch_entries(
             )
         ).all()
         if not copy_records or all(r.part_index is None for r in copy_records):
-            payloads: tuple[bytes, ...] = (encrypt_recovery_payload(content),)
+            payloads: tuple[bytes, ...] = (
+                encrypt_recovery_payload(content, recovery_payload_codec),
+            )
         else:
             part_count = max((r.part_count or 1) for r in copy_records)
             payloads = tuple(
-                encrypt_recovery_payload(part) for part in _split_plaintext(content, part_count)
+                encrypt_recovery_payload(part, recovery_payload_codec)
+                for part in _split_plaintext(content, part_count)
             )
         recovery_bytes = sum(len(p) for p in payloads)
 
@@ -447,6 +515,7 @@ def _manifest_entry_payload(
     session: Session,
     entry: FetchEntryRecord,
     *,
+    recovery_payload_codec: RecoveryPayloadCodec,
     fetch_state: FetchState,
 ) -> dict[str, object]:
     return {
@@ -459,14 +528,18 @@ def _manifest_entry_payload(
         "uploaded_bytes": entry.uploaded_bytes,
         "upload_state_expires_at": entry.upload_expires_at,
         "copies": [
-            _manifest_copy_payload(hot_store, session, entry, copy) for copy in _entry_copies(entry)
+            _manifest_copy_payload(hot_store, session, entry, copy, recovery_payload_codec)
+            for copy in _entry_copies(entry)
         ],
-        "parts": _manifest_parts_payload(hot_store, session, entry),
+        "parts": _manifest_parts_payload(hot_store, session, entry, recovery_payload_codec),
     }
 
 
 def _manifest_parts_payload(
-    hot_store: HotStore, session: Session, entry: FetchEntryRecord
+    hot_store: HotStore,
+    session: Session,
+    entry: FetchEntryRecord,
+    recovery_payload_codec: RecoveryPayloadCodec,
 ) -> list[dict[str, object]]:
     copies = _entry_copies(entry)
     if not copies:
@@ -480,7 +553,8 @@ def _manifest_parts_payload(
                 "sha256": entry.sha256,
                 "recovery_bytes": _entry_recovery_bytes(entry),
                 "copies": [
-                    _manifest_copy_payload(hot_store, session, entry, copy) for copy in copies
+                    _manifest_copy_payload(hot_store, session, entry, copy, recovery_payload_codec)
+                    for copy in copies
                 ],
             }
         ]
@@ -501,10 +575,23 @@ def _manifest_parts_payload(
                 "bytes": bytes_hint,
                 "sha256": sha256_hint,
                 "recovery_bytes": len(
-                    _copy_recovery_payload(hot_store, session, entry, part_copies[0])
+                    _copy_recovery_payload(
+                        hot_store,
+                        session,
+                        entry,
+                        part_copies[0],
+                        recovery_payload_codec,
+                    )
                 ),
                 "copies": [
-                    _manifest_copy_payload(hot_store, session, entry, copy) for copy in part_copies
+                    _manifest_copy_payload(
+                        hot_store,
+                        session,
+                        entry,
+                        copy,
+                        recovery_payload_codec,
+                    )
+                    for copy in part_copies
                 ],
             }
         )
@@ -512,9 +599,19 @@ def _manifest_parts_payload(
 
 
 def _manifest_copy_payload(
-    hot_store: HotStore, session: Session, entry: FetchEntryRecord, copy: _ManifestCopy
+    hot_store: HotStore,
+    session: Session,
+    entry: FetchEntryRecord,
+    copy: _ManifestCopy,
+    recovery_payload_codec: RecoveryPayloadCodec,
 ) -> dict[str, object]:
-    recovery_payload = _copy_recovery_payload(hot_store, session, entry, copy)
+    recovery_payload = _copy_recovery_payload(
+        hot_store,
+        session,
+        entry,
+        copy,
+        recovery_payload_codec,
+    )
     return {
         "copy": str(copy.id),
         "volume_id": copy.volume_id,
@@ -560,20 +657,30 @@ def _entry_copies(entry: FetchEntryRecord) -> list[_ManifestCopy]:
 
 
 def _entry_recovery_payloads(
-    hot_store: HotStore, session: Session, entry: FetchEntryRecord
+    hot_store: HotStore,
+    session: Session,
+    entry: FetchEntryRecord,
+    recovery_payload_codec: RecoveryPayloadCodec,
 ) -> tuple[bytes, ...]:
     content = _read_collection_file_content(hot_store, entry.collection_id, entry.path)
     copies = _entry_copies(entry)
     if not copies or all(copy.part_index is None for copy in copies):
-        return (encrypt_recovery_payload(content),)
+        return (encrypt_recovery_payload(content, recovery_payload_codec),)
     part_count = max((copy.part_count or 1) for copy in copies)
-    return tuple(encrypt_recovery_payload(part) for part in _split_plaintext(content, part_count))
+    return tuple(
+        encrypt_recovery_payload(part, recovery_payload_codec)
+        for part in _split_plaintext(content, part_count)
+    )
 
 
 def _copy_recovery_payload(
-    hot_store: HotStore, session: Session, entry: FetchEntryRecord, copy: _ManifestCopy
+    hot_store: HotStore,
+    session: Session,
+    entry: FetchEntryRecord,
+    copy: _ManifestCopy,
+    recovery_payload_codec: RecoveryPayloadCodec,
 ) -> bytes:
-    payloads = _entry_recovery_payloads(hot_store, session, entry)
+    payloads = _entry_recovery_payloads(hot_store, session, entry, recovery_payload_codec)
     if copy.part_index is None:
         return payloads[0]
     return payloads[copy.part_index]

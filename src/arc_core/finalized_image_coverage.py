@@ -9,7 +9,11 @@ from typing import Protocol, cast
 import yaml
 
 from arc_core.planner.manifest import MANIFEST_FILENAME, manifest_dump, manifest_file_entry
-from arc_core.recovery_payloads import decrypt_recovery_payload
+from arc_core.recovery_payloads import (
+    CommandAgeBatchpassRecoveryPayloadCodec,
+    RecoveryPayloadCodec,
+    decrypt_recovery_payload,
+)
 
 
 class CoveragePartRef(Protocol):
@@ -46,8 +50,9 @@ class FinalizedImageCollectionArtifact:
 
 def read_finalized_image_collection_artifacts(
     image_root: str | Path,
+    recovery_payload_codec: RecoveryPayloadCodec | None = None,
 ) -> list[FinalizedImageCollectionArtifact]:
-    manifest = _read_disc_manifest(image_root)
+    manifest = _read_disc_manifest(image_root, recovery_payload_codec)
     rows: list[FinalizedImageCollectionArtifact] = []
     collections = cast(list[dict[str, object]], manifest.get("collections", []))
     for collection in collections:
@@ -61,8 +66,11 @@ def read_finalized_image_collection_artifacts(
     return rows
 
 
-def read_finalized_image_coverage_parts(image_root: str | Path) -> list[FinalizedImageCoveragePart]:
-    manifest = _read_disc_manifest(image_root)
+def read_finalized_image_coverage_parts(
+    image_root: str | Path,
+    recovery_payload_codec: RecoveryPayloadCodec | None = None,
+) -> list[FinalizedImageCoveragePart]:
+    manifest = _read_disc_manifest(image_root, recovery_payload_codec)
     rows: list[FinalizedImageCoveragePart] = []
     collections = cast(list[dict[str, object]], manifest.get("collections", []))
     for collection in collections:
@@ -194,9 +202,29 @@ def group_disc_manifest_entries(
     return dict(grouped)
 
 
-def _read_disc_manifest(image_root: str | Path) -> dict[str, object]:
+def _read_disc_manifest(
+    image_root: str | Path,
+    recovery_payload_codec: RecoveryPayloadCodec | None,
+) -> dict[str, object]:
     manifest_path = Path(image_root) / MANIFEST_FILENAME
     return cast(
         dict[str, object],
-        yaml.safe_load(decrypt_recovery_payload(manifest_path.read_bytes())),
+        yaml.safe_load(
+            decrypt_recovery_payload(
+                manifest_path.read_bytes(),
+                recovery_payload_codec or _default_recovery_payload_codec(),
+            )
+        ),
+    )
+
+
+def _default_recovery_payload_codec() -> RecoveryPayloadCodec:
+    from arc_core.runtime_config import load_runtime_config  # noqa: PLC0415
+
+    config = load_runtime_config()
+    return CommandAgeBatchpassRecoveryPayloadCodec(
+        command=config.recovery_payload_command,
+        passphrase=config.recovery_payload_passphrase,
+        work_factor=config.recovery_payload_work_factor,
+        max_work_factor=config.recovery_payload_max_work_factor,
     )

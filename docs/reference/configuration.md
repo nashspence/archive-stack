@@ -134,6 +134,61 @@ Opaque backend label recorded on collection Glacier summaries.
 
 Intended Glacier storage class recorded on collection Glacier summaries.
 
+## `ARC_OTS_STAMP_COMMAND`
+
+- type: shell command
+- default: `ots`
+
+Command prefix used for production OpenTimestamps proof creation. Riverhog
+invokes this command as:
+
+```text
+{ARC_OTS_STAMP_COMMAND} stamp <manifest-path>
+```
+
+The command must create `<manifest-path>.ots`. Live external anchoring coverage is
+outside default deterministic CI and runs through `make ci-opt-in-opentimestamps`.
+
+## `ARC_RECOVERY_PAYLOAD_COMMAND`
+
+- type: shell command
+- default: `age`
+
+Command prefix used for production recovery payload encryption and decryption.
+Riverhog invokes the command with the age batchpass plugin:
+
+```text
+{ARC_RECOVERY_PAYLOAD_COMMAND} -e -j batchpass
+{ARC_RECOVERY_PAYLOAD_COMMAND} -d -j batchpass
+```
+
+The command must be age 1.3 or newer, or another compatible age command with
+`age-plugin-batchpass` available on `PATH`.
+
+## `ARC_RECOVERY_PAYLOAD_PASSPHRASE`
+
+- type: secret string
+- default: development-only passphrase
+
+Passphrase supplied to age batchpass through `AGE_PASSPHRASE`. Real deployments
+must override the development default.
+
+## `ARC_RECOVERY_PAYLOAD_WORK_FACTOR`
+
+- type: integer, `1..30`
+- default: `18`
+
+Scrypt work factor supplied during encryption through
+`AGE_PASSPHRASE_WORK_FACTOR`.
+
+## `ARC_RECOVERY_PAYLOAD_MAX_WORK_FACTOR`
+
+- type: integer, `1..30`
+- default: `30`
+
+Maximum accepted scrypt work factor during decryption through
+`AGE_PASSPHRASE_MAX_WORK_FACTOR`.
+
 ## `ARC_GLACIER_UPLOAD_RETRY_LIMIT`
 
 - type: integer

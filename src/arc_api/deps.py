@@ -5,6 +5,8 @@ from typing import Annotated
 
 from fastapi import Depends
 
+from arc_core.proofs import CommandProofStamper
+from arc_core.recovery_payloads import CommandAgeBatchpassRecoveryPayloadCodec
 from arc_core.runtime_config import load_runtime_config
 from arc_core.services.collections import SqlAlchemyCollectionService
 from arc_core.services.contracts import (
@@ -56,21 +58,35 @@ def default_container() -> ServiceContainer:
     hot_store = S3HotStore(config)
     archive_store = S3ArchiveStore(config)
     upload_store = TusdUploadStore(config)
+    proof_stamper = CommandProofStamper(config.ots_stamp_command)
+    recovery_payload_codec = CommandAgeBatchpassRecoveryPayloadCodec(
+        command=config.recovery_payload_command,
+        passphrase=config.recovery_payload_passphrase,
+        work_factor=config.recovery_payload_work_factor,
+        max_work_factor=config.recovery_payload_max_work_factor,
+    )
     return ServiceContainer(
         collections=SqlAlchemyCollectionService(config, hot_store, upload_store),
         search=SqlAlchemySearchService(config),
-        planning=SqlAlchemyPlanningService(config),
+        planning=SqlAlchemyPlanningService(config, recovery_payload_codec),
         glacier_uploads=SqlAlchemyGlacierUploadService(
             config,
             archive_store,
             hot_store,
             upload_store,
+            proof_stamper=proof_stamper,
         ),
         glacier_reporting=SqlAlchemyGlacierReportingService(config),
-        recovery_sessions=SqlAlchemyRecoverySessionService(config, archive_store, hot_store),
-        copies=SqlAlchemyCopyService(config, hot_store),
+        recovery_sessions=SqlAlchemyRecoverySessionService(
+            config,
+            archive_store,
+            hot_store,
+            proof_stamper=proof_stamper,
+            recovery_payload_codec=recovery_payload_codec,
+        ),
+        copies=SqlAlchemyCopyService(config, hot_store, recovery_payload_codec),
         pins=SqlAlchemyPinService(config, hot_store, upload_store),
-        fetches=SqlAlchemyFetchService(config, hot_store, upload_store),
+        fetches=SqlAlchemyFetchService(config, hot_store, upload_store, recovery_payload_codec),
         files=SqlAlchemyFileService(config, hot_store),
     )
 

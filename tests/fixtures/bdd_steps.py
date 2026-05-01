@@ -3844,6 +3844,13 @@ def then_fetch_manifest_part_hashes_match_fixture(
     assert [part["sha256"] for part in entry["parts"]] == [
         hashlib.sha256(part).hexdigest() for part in SPLIT_FILE_PARTS
     ]
+    if os.environ.get("ARC_TEST_CANONICAL_ENTRYPOINT") == "1":
+        assert all(part["recovery_bytes"] > part["bytes"] for part in entry["parts"])
+        assert all(
+            re.fullmatch(r"[0-9a-f]{64}", part["copies"][0]["recovery_sha256"])
+            for part in entry["parts"]
+        )
+        return
     assert [part["recovery_bytes"] for part in entry["parts"]] == [
         len(fixture_encrypt_bytes(part)) for part in SPLIT_FILE_PARTS
     ]

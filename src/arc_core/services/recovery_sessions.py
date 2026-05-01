@@ -66,7 +66,12 @@ from arc_core.planner.manifest import (
 )
 from arc_core.ports.archive_store import ArchiveRestoreStatus, ArchiveStore
 from arc_core.ports.hot_store import HotStore
-from arc_core.recovery_payloads import encrypt_recovery_payload
+from arc_core.proofs import CommandProofStamper, ProofStamper
+from arc_core.recovery_payloads import (
+    CommandAgeBatchpassRecoveryPayloadCodec,
+    RecoveryPayloadCodec,
+    encrypt_recovery_payload,
+)
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.glacier_pricing import resolve_glacier_pricing
 from arc_core.sqlite_db import make_session_factory, session_scope
@@ -100,10 +105,23 @@ class SqlAlchemyRecoverySessionService:
         config: RuntimeConfig,
         archive_store: ArchiveStore,
         hot_store: HotStore | None = None,
+        *,
+        proof_stamper: ProofStamper | None = None,
+        recovery_payload_codec: RecoveryPayloadCodec | None = None,
     ) -> None:
         self._config = config
         self._archive_store = archive_store
         self._hot_store = hot_store
+        self._proof_stamper = proof_stamper or CommandProofStamper(config.ots_stamp_command)
+        self._recovery_payload_codec = (
+            recovery_payload_codec
+            or CommandAgeBatchpassRecoveryPayloadCodec(
+                command=config.recovery_payload_command,
+                passphrase=config.recovery_payload_passphrase,
+                work_factor=config.recovery_payload_work_factor,
+                max_work_factor=config.recovery_payload_max_work_factor,
+            )
+        )
         self._session_factory = make_session_factory(str(config.sqlite_path))
 
     def get(self, session_id: str) -> RecoverySessionSummary:
@@ -389,6 +407,8 @@ class SqlAlchemyRecoverySessionService:
                     collection_artifacts=collection_artifacts,
                     coverage_parts=coverage_parts,
                     file_lookup=file_lookup,
+                    proof_stamper=self._proof_stamper,
+                    recovery_payload_codec=self._recovery_payload_codec,
                 )
             raise InvalidState("recovery session has no collection archives to rebuild image")
         raise InvalidState("collection restore sessions do not provide ISO downloads")
@@ -840,6 +860,8 @@ def _iter_rebuilt_iso_from_collection_archives(
     collection_artifacts: Sequence[FinalizedImageCollectionArtifactRecord],
     coverage_parts: Sequence[FinalizedImageCoveragePartRecord],
     file_lookup: dict[tuple[str, str], tuple[str, int]],
+    proof_stamper: ProofStamper,
+    recovery_payload_codec: RecoveryPayloadCodec,
 ) -> Iterator[bytes]:
     with tempfile.TemporaryDirectory(prefix="arc-rebuilt-iso-") as tmpdir:
         work_root = Path(tmpdir)
@@ -856,12 +878,15 @@ def _iter_rebuilt_iso_from_collection_archives(
             collection_artifacts=collection_artifacts,
             restored_files=restored_files,
             work_root=work_root,
+            proof_stamper=proof_stamper,
+            recovery_payload_codec=recovery_payload_codec,
         )
         _write_rebuilt_image_payloads(
             image_root=image_root,
             coverage_parts=coverage_parts,
             restored_files=restored_files,
             file_lookup=file_lookup,
+            recovery_payload_codec=recovery_payload_codec,
         )
         manifest = build_disc_manifest_from_catalog(
             image_id=image_id,
@@ -872,7 +897,7 @@ def _iter_rebuilt_iso_from_collection_archives(
         _write_image_root_file(
             image_root,
             MANIFEST_FILENAME,
-            encrypt_recovery_payload(manifest),
+            encrypt_recovery_payload(manifest, recovery_payload_codec),
         )
         _write_image_root_file(image_root, README_FILENAME, recovery_readme_bytes(image_id))
         yield from _run_iso_from_root(
@@ -1012,6 +1037,8 @@ def _write_rebuilt_collection_artifacts(
     collection_artifacts: Sequence[FinalizedImageCollectionArtifactRecord],
     restored_files: dict[tuple[str, str], bytes],
     work_root: Path,
+    proof_stamper: ProofStamper,
+    recovery_payload_codec: RecoveryPayloadCodec,
 ) -> None:
     collection_ids = sorted({collection_id for collection_id, _ in restored_files})
     for collection_id in collection_ids:
@@ -1021,6 +1048,7 @@ def _write_rebuilt_collection_artifacts(
             collection_id=collection_id,
             source_root=collection_root,
             artifact_root=artifact_root,
+            stamper=proof_stamper,
         )
         artifact = next(
             (
@@ -1035,12 +1063,18 @@ def _write_rebuilt_collection_artifacts(
         _write_image_root_file(
             image_root,
             artifact.manifest_path,
-            encrypt_recovery_payload(generated.manifest_path.read_bytes()),
+            encrypt_recovery_payload(
+                generated.manifest_path.read_bytes(),
+                recovery_payload_codec,
+            ),
         )
         _write_image_root_file(
             image_root,
             artifact.proof_path,
-            encrypt_recovery_payload(generated.proof_path.read_bytes()),
+            encrypt_recovery_payload(
+                generated.proof_path.read_bytes(),
+                recovery_payload_codec,
+            ),
         )
 
 
@@ -1050,6 +1084,7 @@ def _write_rebuilt_image_payloads(
     coverage_parts: Sequence[FinalizedImageCoveragePartRecord],
     restored_files: dict[tuple[str, str], bytes],
     file_lookup: dict[tuple[str, str], tuple[str, int]],
+    recovery_payload_codec: RecoveryPayloadCodec,
 ) -> None:
     for part in coverage_parts:
         if part.object_path is None or part.sidecar_path is None:
@@ -1079,7 +1114,8 @@ def _write_rebuilt_image_payloads(
             image_root,
             part.object_path,
             encrypt_recovery_payload(
-                _content_part(content, part_index=part.part_index, part_count=part.part_count)
+                _content_part(content, part_index=part.part_index, part_count=part.part_count),
+                recovery_payload_codec,
             ),
         )
         _write_image_root_file(
@@ -1091,7 +1127,8 @@ def _write_rebuilt_image_payloads(
                     collection_id=part.collection_id,
                     part_index=part.part_index,
                     part_count=part.part_count,
-                )
+                ),
+                recovery_payload_codec,
             ),
         )
 

@@ -19,6 +19,9 @@ from arc_core.collection_archives import (
     verify_collection_archive_manifest,
     verify_collection_archive_proof,
 )
+from tests.fixtures.crypto import FixtureProofStamper
+
+_PROOF_STAMPER = FixtureProofStamper()
 
 
 def test_collection_archive_package_uses_plain_tar_contract() -> None:
@@ -32,6 +35,7 @@ def test_collection_archive_package_uses_plain_tar_contract() -> None:
                 sha256=hashlib.sha256(content).hexdigest(),
             ),
         ),
+        stamper=_PROOF_STAMPER,
     )
 
     assert package.archive_format == COLLECTION_ARCHIVE_FORMAT == "tar"
@@ -55,6 +59,7 @@ def test_manifest_and_proof_verification_use_catalog_and_manifest_digest() -> No
                 sha256=digest,
             ),
         ),
+        stamper=_PROOF_STAMPER,
     )
     expected_files = (
         CollectionArchiveExpectedFile(
@@ -76,12 +81,8 @@ def test_manifest_and_proof_verification_use_catalog_and_manifest_digest() -> No
         manifest_bytes=package.manifest_bytes,
     )
 
-    bad_proof = (
-        b"OpenTimestamps stub proof v1\n"
-        b"file: manifest.yml\n"
-        + f"sha256: {'0' * 64}\n".encode()
-    )
-    with pytest.raises(ValueError, match="proof does not match manifest"):
+    bad_proof = b""
+    with pytest.raises(ValueError, match="proof is empty"):
         verify_collection_archive_proof(
             proof_bytes=bad_proof,
             expected_sha256=hashlib.sha256(bad_proof).hexdigest(),
@@ -102,7 +103,11 @@ def test_collection_archive_reader_streams_chunk_iterables() -> None:
             sha256=hashlib.sha256(b"beta").hexdigest(),
         ),
     )
-    package = build_collection_archive_package(collection_id="docs", files=files)
+    package = build_collection_archive_package(
+        collection_id="docs",
+        files=files,
+        stamper=_PROOF_STAMPER,
+    )
     chunks = (
         package.archive_bytes[offset : offset + 11]
         for offset in range(0, len(package.archive_bytes), 11)
@@ -136,6 +141,7 @@ def test_collection_archive_package_from_chunk_reader_does_not_require_whole_fil
             ),
         ),
         read_file_chunks=read_chunks,
+        stamper=_PROOF_STAMPER,
     )
 
     assert max(chunk_sizes) == 13
@@ -155,6 +161,7 @@ def test_collection_archive_file_verification_rejects_mismatched_members() -> No
                 sha256=hashlib.sha256(b"alpha").hexdigest(),
             ),
         ),
+        stamper=_PROOF_STAMPER,
     )
     corrupt_archive = package.archive_bytes.replace(b"alpha", b"omega", 1)
 

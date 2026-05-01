@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
@@ -55,6 +56,13 @@ def _normalize_prefix(value: str) -> str:
     if not parts:
         raise ValueError("ARC_GLACIER_PREFIX must not be empty")
     return "/".join(parts)
+
+
+def _parse_command(value: str, *, name: str) -> tuple[str, ...]:
+    command = tuple(shlex.split(value.strip()))
+    if not command:
+        raise ValueError(f"{name} must not be empty")
+    return command
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +141,11 @@ class RuntimeConfig:
     glacier_archived_metadata_bytes_per_object: int = 32 * 1024
     glacier_standard_metadata_bytes_per_object: int = 8 * 1024
     glacier_minimum_storage_duration_days: int = 180
+    ots_stamp_command: tuple[str, ...] = ("ots",)
+    recovery_payload_command: tuple[str, ...] = ("age",)
+    recovery_payload_passphrase: str = "archive-stack-dev-recovery-passphrase"
+    recovery_payload_work_factor: int = 18
+    recovery_payload_max_work_factor: int = 30
     public_base_url: str | None = None
 
     def __post_init__(self) -> None:
@@ -319,6 +332,35 @@ def load_runtime_config() -> RuntimeConfig:
         minimum=1,
     )
     public_base_url = os.getenv("ARC_PUBLIC_BASE_URL", "").strip() or None
+    ots_stamp_command = _parse_command(
+        os.getenv("ARC_OTS_STAMP_COMMAND", "ots"),
+        name="ARC_OTS_STAMP_COMMAND",
+    )
+    recovery_payload_command = _parse_command(
+        os.getenv("ARC_RECOVERY_PAYLOAD_COMMAND", "age"),
+        name="ARC_RECOVERY_PAYLOAD_COMMAND",
+    )
+    recovery_payload_passphrase = (
+        os.getenv(
+            "ARC_RECOVERY_PAYLOAD_PASSPHRASE",
+            "archive-stack-dev-recovery-passphrase",
+        ).strip()
+        or "archive-stack-dev-recovery-passphrase"
+    )
+    recovery_payload_work_factor = _parse_int(
+        os.getenv("ARC_RECOVERY_PAYLOAD_WORK_FACTOR", "18"),
+        name="ARC_RECOVERY_PAYLOAD_WORK_FACTOR",
+        minimum=1,
+    )
+    recovery_payload_max_work_factor = _parse_int(
+        os.getenv("ARC_RECOVERY_PAYLOAD_MAX_WORK_FACTOR", "30"),
+        name="ARC_RECOVERY_PAYLOAD_MAX_WORK_FACTOR",
+        minimum=1,
+    )
+    if recovery_payload_work_factor > 30:
+        raise ValueError("ARC_RECOVERY_PAYLOAD_WORK_FACTOR must be <= 30")
+    if recovery_payload_max_work_factor > 30:
+        raise ValueError("ARC_RECOVERY_PAYLOAD_MAX_WORK_FACTOR must be <= 30")
 
     return RuntimeConfig(
         object_store=object_store,
@@ -392,5 +434,10 @@ def load_runtime_config() -> RuntimeConfig:
         glacier_archived_metadata_bytes_per_object=glacier_archived_metadata_bytes_per_object,
         glacier_standard_metadata_bytes_per_object=glacier_standard_metadata_bytes_per_object,
         glacier_minimum_storage_duration_days=glacier_minimum_storage_duration_days,
+        ots_stamp_command=ots_stamp_command,
+        recovery_payload_command=recovery_payload_command,
+        recovery_payload_passphrase=recovery_payload_passphrase,
+        recovery_payload_work_factor=recovery_payload_work_factor,
+        recovery_payload_max_work_factor=recovery_payload_max_work_factor,
         public_base_url=public_base_url,
     )

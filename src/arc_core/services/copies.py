@@ -32,18 +32,35 @@ from arc_core.domain.models import CopyHistoryEntry, CopySummary
 from arc_core.domain.types import CopyId
 from arc_core.finalized_image_coverage import group_disc_manifest_entries
 from arc_core.ports.hot_store import HotStore
+from arc_core.recovery_payloads import (
+    CommandAgeBatchpassRecoveryPayloadCodec,
+    RecoveryPayloadCodec,
+)
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.recovery_sessions import ensure_glacier_recovery_session_for_image
 from arc_core.sqlite_db import make_session_factory, session_scope
 
-_ENC_JSON = json.dumps({"alg": "fixture-age-plugin-batchpass/v1"}, sort_keys=True)
 _REGISTERABLE_STATES = {CopyState.NEEDED, CopyState.BURNING}
 
 
 class SqlAlchemyCopyService:
-    def __init__(self, config: RuntimeConfig, hot_store: HotStore) -> None:
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        hot_store: HotStore,
+        recovery_payload_codec: RecoveryPayloadCodec | None = None,
+    ) -> None:
         self._config = config
         self._hot_store = hot_store
+        self._recovery_payload_codec = (
+            recovery_payload_codec
+            or CommandAgeBatchpassRecoveryPayloadCodec(
+                command=config.recovery_payload_command,
+                passphrase=config.recovery_payload_passphrase,
+                work_factor=config.recovery_payload_work_factor,
+                max_work_factor=config.recovery_payload_max_work_factor,
+            )
+        )
         self._session_factory = make_session_factory(str(config.sqlite_path))
 
     def register(
@@ -296,7 +313,10 @@ class SqlAlchemyCopyService:
                             volume_id=image.image_id,
                             location=copy.location,
                             disc_path=disc_path,
-                            enc_json=_ENC_JSON,
+                            enc_json=json.dumps(
+                                dict(self._recovery_payload_codec.metadata),
+                                sort_keys=True,
+                            ),
                             part_index=part_index,
                             part_count=part_count if part_count > 1 else None,
                             part_bytes=part_bytes_val,

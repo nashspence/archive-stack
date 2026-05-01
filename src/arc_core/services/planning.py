@@ -36,13 +36,30 @@ from arc_core.finalized_image_coverage import (
     read_finalized_image_coverage_parts,
 )
 from arc_core.iso.streaming import IsoStream, stream_iso_from_root
+from arc_core.recovery_payloads import (
+    CommandAgeBatchpassRecoveryPayloadCodec,
+    RecoveryPayloadCodec,
+)
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.sqlite_db import make_session_factory, session_scope
 
 
 class SqlAlchemyPlanningService:
-    def __init__(self, config: RuntimeConfig) -> None:
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        recovery_payload_codec: RecoveryPayloadCodec | None = None,
+    ) -> None:
         self._session_factory = make_session_factory(str(config.sqlite_path))
+        self._recovery_payload_codec = (
+            recovery_payload_codec
+            or CommandAgeBatchpassRecoveryPayloadCodec(
+                command=config.recovery_payload_command,
+                passphrase=config.recovery_payload_passphrase,
+                work_factor=config.recovery_payload_work_factor,
+                max_work_factor=config.recovery_payload_max_work_factor,
+            )
+        )
         self._iso_service = ImageRootPlanningService(
             image_lookup=self._image_root_record,
             list_lookup=self.list_images,
@@ -236,7 +253,10 @@ class SqlAlchemyPlanningService:
                             path=cp.path,
                         )
                     )
-                for artifact in read_finalized_image_collection_artifacts(candidate.image_root):
+                for artifact in read_finalized_image_collection_artifacts(
+                    candidate.image_root,
+                    self._recovery_payload_codec,
+                ):
                     session.add(
                         FinalizedImageCollectionArtifactRecord(
                             image_id=candidate.finalized_id,
@@ -245,7 +265,10 @@ class SqlAlchemyPlanningService:
                             proof_path=artifact.proof_path,
                         )
                     )
-                for part in read_finalized_image_coverage_parts(candidate.image_root):
+                for part in read_finalized_image_coverage_parts(
+                    candidate.image_root,
+                    self._recovery_payload_codec,
+                ):
                     session.add(
                         FinalizedImageCoveragePartRecord(
                             image_id=candidate.finalized_id,

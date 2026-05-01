@@ -18,6 +18,9 @@ from arc_core.recovery_payloads import encrypt_recovery_payload
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.fetches import SqlAlchemyFetchService, _sync_upload_progress
 from arc_core.sqlite_db import initialize_db, make_session_factory, session_scope
+from tests.fixtures.crypto import FixtureRecoveryPayloadCodec
+
+_RECOVERY_CODEC = FixtureRecoveryPayloadCodec()
 
 
 class _FakeHotStore:
@@ -96,7 +99,7 @@ def test_stale_sync_does_not_rollback_completed_fetch_state(tmp_path: Path) -> N
     target = f"{collection_id}/{path}"
     content = b"invoice payload\n"
     sha256 = hashlib.sha256(content).hexdigest()
-    encrypted = encrypt_recovery_payload(content)
+    encrypted = encrypt_recovery_payload(content, _RECOVERY_CODEC)
     target_path = "/.arc/uploads/recovery/fx-1/e1.enc"
     tus_url = "/uploads/fx-1/e1"
 
@@ -114,7 +117,7 @@ def test_stale_sync_does_not_rollback_completed_fetch_state(tmp_path: Path) -> N
         tusd_hook_secret="hook-secret",
         sqlite_path=sqlite_path,
     )
-    service = SqlAlchemyFetchService(config, hot_store, upload_store)
+    service = SqlAlchemyFetchService(config, hot_store, upload_store, _RECOVERY_CODEC)
     session_factory = make_session_factory(str(sqlite_path))
 
     with session_scope(session_factory) as session:

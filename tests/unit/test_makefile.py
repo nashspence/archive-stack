@@ -205,6 +205,12 @@ def _assert_isolated_prod_runtime(line: str) -> str:
             "and requires_human_operator "
             "tests/ci_opt_in/test_arc_disc_real_device.py -k mounted_media",
         ),
+        (
+            "ci-opt-in-opentimestamps",
+            ("args=-k proof",),
+            "python -m pytest -q -m ci_opt_in and requires_opentimestamps "
+            "tests/ci_opt_in/test_opentimestamps_command.py -k proof",
+        ),
     ],
 )
 def test_atomic_local_targets_run_in_locked_uv_environment(
@@ -473,6 +479,7 @@ def test_help_describes_make_targets_and_omits_fast(tmp_path: Path) -> None:
     assert "make build-app" in completed.stdout
     assert "make build-test" in completed.stdout
     assert "make stop-spec" in completed.stdout
+    assert "make ci-opt-in-opentimestamps" in completed.stdout
     assert "make stop-prod" in completed.stdout
     assert "make prune-prod-state" in completed.stdout
     assert "make test" in completed.stdout

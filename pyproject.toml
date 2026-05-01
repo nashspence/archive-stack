@@ -69,6 +69,7 @@ markers = [
   "requires_controlled_glacier_billing: requires fixture-controlled Glacier billing metadata",
   "requires_controlled_glacier_failure: requires fixture-controlled Glacier archive failure",
   "requires_glacier_restore: requires live S3 Glacier restore behavior",
+  "requires_opentimestamps: requires the OpenTimestamps CLI and external anchoring access",
   "requires_webhook_capture: requires harness-controlled webhook capture or failure behavior",
   "todo: scenario is specified but not automated yet",
   "contract_gap: scenario is automated, but prod is not implemented to the contract yet",

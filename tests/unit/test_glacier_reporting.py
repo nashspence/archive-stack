@@ -18,6 +18,7 @@ from arc_core.finalized_image_coverage import (
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.glacier_reporting import SqlAlchemyGlacierReportingService
 from arc_core.sqlite_db import initialize_db, make_session_factory, session_scope
+from tests.fixtures.crypto import FixtureRecoveryPayloadCodec
 from tests.fixtures.data import (
     DOCS_COLLECTION_ID,
     DOCS_FILES,
@@ -25,6 +26,8 @@ from tests.fixtures.data import (
     SPLIT_IMAGE_FIXTURES,
     write_tree,
 )
+
+_RECOVERY_CODEC = FixtureRecoveryPayloadCodec()
 
 
 def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
@@ -92,7 +95,7 @@ def _seed_uploaded_image(
                     path=path,
                 )
             )
-        for artifact in read_finalized_image_collection_artifacts(image_root):
+        for artifact in read_finalized_image_collection_artifacts(image_root, _RECOVERY_CODEC):
             session.add(
                 FinalizedImageCollectionArtifactRecord(
                     image_id=image_id,
@@ -101,7 +104,7 @@ def _seed_uploaded_image(
                     proof_path=artifact.proof_path,
                 )
             )
-        for part in read_finalized_image_coverage_parts(image_root):
+        for part in read_finalized_image_coverage_parts(image_root, _RECOVERY_CODEC):
             session.add(
                 FinalizedImageCoveragePartRecord(
                     image_id=image_id,

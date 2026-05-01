@@ -17,12 +17,15 @@ from arc_core.finalized_image_coverage import (
 )
 from arc_core.planner.manifest import MANIFEST_FILENAME
 from arc_core.sqlite_db import initialize_db, make_session_factory, session_scope
+from tests.fixtures.crypto import FixtureRecoveryPayloadCodec
 from tests.fixtures.data import (
     ALL_COLLECTION_FILES,
     SPLIT_IMAGE_FIXTURES,
     fixture_decrypt_bytes,
     write_tree,
 )
+
+_RECOVERY_CODEC = FixtureRecoveryPayloadCodec()
 
 
 def _seed_collection_state(sqlite_path: Path, *, image_root: Path) -> None:
@@ -62,7 +65,7 @@ def _seed_collection_state(sqlite_path: Path, *, image_root: Path) -> None:
                     path=path,
                 )
             )
-        for part in read_finalized_image_coverage_parts(image_root):
+        for part in read_finalized_image_coverage_parts(image_root, _RECOVERY_CODEC):
             session.add(
                 FinalizedImageCoveragePartRecord(
                     image_id=image.volume_id,
@@ -78,6 +81,7 @@ def _seed_collection_state(sqlite_path: Path, *, image_root: Path) -> None:
 
 def test_initialize_db_backfills_manifest_topology_and_rebuilds_manifest_bytes(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = write_tree(tmp_path / "image-root", SPLIT_IMAGE_FIXTURES[0].files)
@@ -86,6 +90,10 @@ def test_initialize_db_backfills_manifest_topology_and_rebuilds_manifest_bytes(
     initialize_db(str(sqlite_path))
     _seed_collection_state(sqlite_path, image_root=image_root)
 
+    monkeypatch.setattr(
+        "arc_core.finalized_image_coverage._default_recovery_payload_codec",
+        lambda: _RECOVERY_CODEC,
+    )
     initialize_db(str(sqlite_path))
     (image_root / MANIFEST_FILENAME).unlink()
 

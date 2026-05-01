@@ -10,6 +10,7 @@ from arc_core.archive_artifacts import (
     collection_artifact_relpaths,
     generate_collection_hash_artifacts,
 )
+from tests.fixtures.crypto import FixtureProofStamper
 
 
 def test_collection_artifact_relpaths() -> None:
@@ -36,6 +37,7 @@ def test_generate_collection_hash_artifacts_writes_manifest_and_proof(tmp_path: 
         collection_id="photos-2024",
         source_root=source,
         artifact_root=artifact_root,
+        stamper=FixtureProofStamper(),
     )
 
     assert paths.manifest_path.exists()
@@ -55,6 +57,7 @@ def test_generate_collection_hash_artifacts_allows_nested_collection_id(tmp_path
         collection_id="tax/2022",
         source_root=source,
         artifact_root=artifact_root,
+        stamper=FixtureProofStamper(),
     )
 
     data = yaml.safe_load(paths.manifest_path.read_text())
