@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://riverhog.local/contracts/operator/action-needed-notification.schema.json",
+  "title": "Riverhog Action-Needed Notification Payload",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["event", "title", "body", "actions"],
+  "properties": {
+    "event": {
+      "type": "string",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "body": {
+      "type": "string",
+      "minLength": 1
+    },
+    "actions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {
+        "$ref": "#/$defs/operatorAction"
+      }
+    },
+    "urgency": {
+      "enum": ["attention", "important", "time-sensitive", "approval"]
+    },
+    "reminder_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "delivered_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "$defs": {
+    "operatorAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "command", "argv"],
+      "properties": {
+        "label": {
+          "enum": ["Run arc", "Run arc-disc"]
+        },
+        "command": {
+          "enum": ["arc", "arc-disc"]
+        },
+        "argv": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "enum": ["arc", "arc-disc"]
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "arc"
+              }
+            },
+            "required": ["command"]
+          },
+          "then": {
+            "properties": {
+              "label": {
+                "const": "Run arc"
+              },
+              "argv": {
+                "prefixItems": [
+                  {
+                    "const": "arc"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "arc-disc"
+              }
+            },
+            "required": ["command"]
+          },
+          "then": {
+            "properties": {
+              "label": {
+                "const": "Run arc-disc"
+              },
+              "argv": {
+                "prefixItems": [
+                  {
+                    "const": "arc-disc"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

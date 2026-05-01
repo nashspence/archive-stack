@@ -77,6 +77,7 @@ markers = [
   "contract_gap: scenario is automated, but prod is not implemented to the contract yet",
   "issue_186: tracks issue #186 for opt-in prod testing conventions",
   "issue_187: tracks issue #187 for removing fake terminology from acceptance optical scenarios",
+  "issue_206: tracks issue #206 for backing accepted operator UX contracts in harnesses and scaffold",
 ]
 
 [tool.mypy]

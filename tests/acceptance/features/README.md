@@ -19,6 +19,8 @@ Conventions:
   - fetch lifecycle and hash verification
 - `arc` and `arc-disc` acceptance cases are contract tests for CLI behavior, not internal command structure.
 - disc-media scenarios should validate against the machine-readable contracts in `contracts/disc/`, not duplicate ad hoc path and schema rules in steps.
+- operator notification scenarios should validate action-needed payload shape against the machine-readable contracts in `contracts/operator/`.
+- normal human-copy scenarios should reference exact copy functions in `contracts/operator/copy.py`; formatting helpers live in `contracts/operator/format.py`.
 - use `@ci_opt_in` with the appropriate `@requires_<capability>` marker when a scenario is excluded from the default prod-backed harness
 - use capability markers for the real opt-in boundary, not for built-in fixture mechanics
 - add a matching `@issue_<number>` marker when an opt-in, todo, or contract-gap scenario implies remaining work
