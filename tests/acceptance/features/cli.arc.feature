@@ -110,7 +110,8 @@ Feature: arc CLI
   Rule: No-argument operator home
     @contract_gap @issue_209
     Scenario: arc opens the operator home when no attention is needed
-      Given the archive has no non-physical attention items
+      Given statechart "arc.home" state "no_attention" is the accepted operator contract
+      And the archive has no non-physical attention items
       When the operator runs 'arc'
       Then the command exits with code 0
       And stdout matches operator copy "arc_home_no_attention"
@@ -124,7 +125,8 @@ Feature: arc CLI
 
     @contract_gap @issue_209
     Scenario: arc prioritizes cloud backup failures before at-will workflows
-      Given collection "docs" has failed cloud backup after retries
+      Given statechart "arc.home" state "cloud_backup_failed" is the accepted operator contract
+      And collection "docs" has failed cloud backup after retries
       When the operator runs 'arc'
       Then the command exits with code 0
       And stdout includes operator copy "arc_item_cloud_backup_failed"
@@ -136,7 +138,9 @@ Feature: arc CLI
 
     @contract_gap @issue_209
     Scenario: arc prioritizes setup and notification health before ordinary at-will workflows
-      Given setup needs attention
+      Given statechart "arc.home" state "setup_needs_attention" is the accepted operator contract
+      And statechart "arc.home" state "notification_health_failed" is the accepted operator contract
+      And setup needs attention
       And notification delivery needs attention
       When the operator runs 'arc'
       Then the command exits with code 0
@@ -149,7 +153,8 @@ Feature: arc CLI
   Rule: Normal human copy uses operator terms
     @contract_gap @issue_211
     Scenario: arc upload ingests and archives a local collection source
-      Given a local collection source "photos-2024" with deterministic fixture contents
+      Given statechart "arc.upload" state "finalized" is the accepted operator contract
+      And a local collection source "photos-2024" with deterministic fixture contents
       When the operator uploads collection source "photos-2024" with arc
       Then the command exits with code 0
       And stdout includes operator copy "upload_finalized"
@@ -161,7 +166,8 @@ Feature: arc CLI
 
     @contract_gap @issue_211
     Scenario: arc plan describes disc work without candidate terminology
-      Given an archive with planned disc work
+      Given statechart "arc.collection_status" state "plan_disc_work_ready" is the accepted operator contract
+      And an archive with planned disc work
       When the operator runs 'arc plan --collection docs --iso-ready'
       Then the command exits with code 0
       And stdout includes operator copy "plan_disc_work_ready"
@@ -173,7 +179,8 @@ Feature: arc CLI
 
     @contract_gap @issue_211
     Scenario: arc images points physical media work to arc-disc
-      Given an archive with planned disc work
+      Given statechart "arc.collection_status" state "images_physical_work_summary" is the accepted operator contract
+      And an archive with planned disc work
       And a disc copy already exists for collection "docs"
       When the operator runs 'arc images --has-copies'
       Then the command exits with code 0
@@ -187,7 +194,8 @@ Feature: arc CLI
 
     @contract_gap @issue_211
     Scenario: arc show describes collection safety without storage internals
-      Given collection "docs" is safe in cloud backup
+      Given statechart "arc.collection_status" state "collection_summary" is the accepted operator contract
+      And collection "docs" is safe in cloud backup
       And collection "docs" has partial disc coverage
       When the operator runs 'arc show docs'
       Then the command exits with code 0
@@ -202,7 +210,8 @@ Feature: arc CLI
 
     @contract_gap @issue_211
     Scenario: arc show does not overstate split physical coverage from one disc
-      Given collection "docs" has one split file protected by one disc
+      Given statechart "arc.collection_status" state "collection_summary" is the accepted operator contract
+      And collection "docs" has one split file protected by one disc
       When the operator runs 'arc show docs'
       Then the command exits with code 0
       And stdout includes operator copy "collection_summary"
@@ -211,7 +220,8 @@ Feature: arc CLI
 
     @contract_gap @issue_211
     Scenario: arc glacier prints cloud backup cost and health
-      Given collection "docs" is safe in cloud backup
+      Given statechart "arc.collection_status" state "cloud_backup_report" is the accepted operator contract
+      And collection "docs" is safe in cloud backup
       When the operator runs 'arc glacier --collection docs'
       Then the command exits with code 0
       And stdout includes operator copy "cloud_backup_report"
@@ -232,7 +242,8 @@ Feature: arc CLI
 
     @contract_gap @issue_211
     Scenario: arc copy add prints the generated label text and state
-      Given candidate "img_2026-04-20_01" is finalized
+      Given statechart "arc.copy_management" state "copy_registered" is the accepted operator contract
+      And candidate "img_2026-04-20_01" is finalized
       When the operator runs 'arc copy add 20260420T040001Z --at "Shelf B1"'
       Then the command exits with code 0
       And stdout includes operator copy "copy_registered"
@@ -244,7 +255,8 @@ Feature: arc CLI
 
     @contract_gap @issue_211
     Scenario: arc pin prints fetch guidance when recovery is needed
-      Given pinning target "docs/tax/2022/invoice-123.pdf" requires fetch "fx-1"
+      Given statechart "arc.hot_storage" state "pin_waiting_for_disc" is the accepted operator contract
+      And pinning target "docs/tax/2022/invoice-123.pdf" requires fetch "fx-1"
       When the operator runs 'arc pin "docs/tax/2022/invoice-123.pdf"'
       Then the command exits with code 0
       And stdout includes operator copy "pin_waiting_for_disc"
@@ -256,7 +268,8 @@ Feature: arc CLI
 
     @contract_gap @issue_211
     Scenario: arc fetch lists pending and partial files for one pin manifest
-      Given fetch "fx-1" exists for target "docs/tax/2022/invoice-123.pdf"
+      Given statechart "arc.hot_storage" state "fetch_detail_pending" is the accepted operator contract
+      And fetch "fx-1" exists for target "docs/tax/2022/invoice-123.pdf"
       When the operator runs 'arc fetch "fx-1"'
       Then the command exits with code 0
       And stdout includes operator copy "fetch_detail_pending"

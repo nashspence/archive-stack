@@ -15,6 +15,7 @@ from urllib.parse import parse_qsl, quote, urlsplit
 import httpx
 import jsonschema
 import pytest
+import yaml
 from pytest_bdd import given, parsers, then, when
 
 from arc_core.domain.selectors import parse_target
@@ -55,6 +56,7 @@ _CAPTURED_WEBHOOK_TIMEOUT_DELAY_SECONDS = 15.0
 _DEFAULT_OPTICAL_ACCEPTANCE_DEVICE = "/dev/sr0"
 _ROOT = Path(__file__).resolve().parents[2]
 _OPERATOR_DISC_LABEL = "20260420T040001Z-1"
+_STATECHARTS_CONTRACT = _ROOT / "contracts" / "operator" / "statecharts.yaml"
 
 
 @dataclass(slots=True)
@@ -67,6 +69,7 @@ class AcceptanceScenarioContext:
     stdout_json: Any = None
     expected_api_endpoint: tuple[str, str] | None = None
     expected_api_payload: Any = None
+    accepted_operator_statechart_states: list[tuple[str, str]] = field(default_factory=list)
     before_collections: dict[str, dict[str, Any]] = field(default_factory=dict)
     after_collections: dict[str, dict[str, Any]] = field(default_factory=dict)
     tracked_collection_id: str | None = None
@@ -95,6 +98,75 @@ def _require_command(context: AcceptanceScenarioContext) -> Any:
     if context.command is None:  # pragma: no cover - defensive guard
         raise AssertionError("no command has been recorded for this scenario")
     return context.command
+
+
+def _operator_statecharts() -> dict[str, Any]:
+    contract = yaml.safe_load(_STATECHARTS_CONTRACT.read_text(encoding="utf-8"))
+    assert isinstance(contract, dict)
+    assert contract.get("version") == 1
+    statecharts = contract.get("statecharts")
+    assert isinstance(statecharts, dict)
+    return statecharts
+
+
+@given(
+    parsers.parse(
+        'statechart "{statechart_name}" state "{state_name}" is the accepted operator contract'
+    )
+)
+def given_statechart_state_is_accepted_operator_contract(
+    acceptance_context: AcceptanceScenarioContext,
+    statechart_name: str,
+    state_name: str,
+) -> None:
+    statecharts = _operator_statecharts()
+    assert statechart_name in statecharts
+    statechart = statecharts[statechart_name]
+    assert isinstance(statechart, dict)
+    states = statechart.get("states")
+    assert isinstance(states, dict)
+    assert state_name in states
+    acceptance_context.accepted_operator_statechart_states.append(
+        (statechart_name, state_name)
+    )
+
+
+def _accepted_operator_statechart_states(
+    context: AcceptanceScenarioContext,
+) -> list[dict[str, Any]]:
+    statecharts = _operator_statecharts()
+    accepted_states: list[dict[str, Any]] = []
+    for statechart_name, state_name in context.accepted_operator_statechart_states:
+        statechart = statecharts[statechart_name]
+        assert isinstance(statechart, dict)
+        states = statechart["states"]
+        assert isinstance(states, dict)
+        state = states[state_name]
+        assert isinstance(state, dict)
+        accepted_states.append(state)
+    return accepted_states
+
+
+def _accepted_operator_statechart_views(
+    context: AcceptanceScenarioContext,
+) -> set[str]:
+    return {
+        str(state["view"])
+        for state in _accepted_operator_statechart_states(context)
+        if state.get("view")
+    }
+
+
+def _assert_operator_copy_is_from_accepted_statechart(
+    context: AcceptanceScenarioContext,
+    name: str,
+) -> None:
+    accepted_views = _accepted_operator_statechart_views(context)
+    assert name in accepted_views, (
+        f'operator copy "{name}" is not covered by accepted statechart states '
+        f"{context.accepted_operator_statechart_states}; accepted views: "
+        f"{sorted(accepted_views)}"
+    )
 
 
 def _configured_optical_acceptance_device() -> str:
@@ -3675,6 +3747,7 @@ def then_captured_webhook_payload_matches_operator_notification_copy(
     acceptance_context: AcceptanceScenarioContext,
     name: str,
 ) -> None:
+    _assert_operator_copy_is_from_accepted_statechart(acceptance_context, name)
     payload = _require_captured_webhook_payload(acceptance_context)
     notification = _operator_notification(name, payload)
     reminder = str(payload.get("event")) == notification.reminder_event
@@ -4403,6 +4476,7 @@ def then_stdout_matches_operator_copy(
     acceptance_context: AcceptanceScenarioContext,
     name: str,
 ) -> None:
+    _assert_operator_copy_is_from_accepted_statechart(acceptance_context, name)
     assert _require_command(acceptance_context).stdout.strip() == _operator_copy_text(name)
 
 
@@ -4411,6 +4485,7 @@ def then_stdout_includes_operator_copy(
     acceptance_context: AcceptanceScenarioContext,
     name: str,
 ) -> None:
+    _assert_operator_copy_is_from_accepted_statechart(acceptance_context, name)
     expected = _operator_copy_text(name)
     assert expected in _require_command(acceptance_context).stdout
 
@@ -4420,6 +4495,7 @@ def then_stderr_includes_operator_copy(
     acceptance_context: AcceptanceScenarioContext,
     name: str,
 ) -> None:
+    _assert_operator_copy_is_from_accepted_statechart(acceptance_context, name)
     expected = _operator_copy_text(name)
     assert expected in _require_command(acceptance_context).stderr
 

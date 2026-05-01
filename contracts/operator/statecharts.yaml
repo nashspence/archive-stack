@@ -1,0 +1,830 @@
+version: 1
+
+statecharts:
+  arc.home:
+    command: arc
+    initial: scan_attention
+    states:
+      scan_attention:
+        transitions:
+          - guard: non_physical_attention_items
+            target: attention_summary
+          - target: no_attention
+      attention_summary:
+        view: arc_home_attention
+        transitions:
+          - guard: notification_delivery_needs_attention
+            target: notification_health_failed
+          - guard: setup_needs_attention
+            target: setup_needs_attention
+          - guard: billing_needs_attention
+            target: billing_needs_attention
+          - guard: cloud_backup_failed_after_retries
+            target: cloud_backup_failed
+          - guard: collection_upload_retry_available
+            target: upload_retry_available
+      notification_health_failed:
+        view: arc_item_notification_health_failed
+      setup_needs_attention:
+        view: arc_item_setup_needs_attention
+      billing_needs_attention:
+        view: arc_item_billing_needs_attention
+      cloud_backup_failed:
+        view: arc_item_cloud_backup_failed
+      upload_retry_available:
+        view: arc_item_upload_retry_available
+      no_attention:
+        view: arc_home_no_attention
+        transitions:
+          - event: operator_chooses_at_will_workflow
+            target: at_will_menu
+      at_will_menu:
+        view: arc_home_at_will_menu
+
+  arc.upload:
+    command: arc
+    initial: prompt_collection_id
+    states:
+      prompt_collection_id:
+        view: upload_prompt_collection_id
+        transitions:
+          - event: collection_id_entered
+            target: prompt_source_path
+      prompt_source_path:
+        view: upload_prompt_source_path
+        transitions:
+          - event: source_path_entered
+            target: started
+      started:
+        view: upload_started
+        transitions:
+          - event: upload_begins
+            target: progress
+      progress:
+        view: upload_progress
+        transitions:
+          - guard: upload_canceled
+            target: canceled
+          - guard: files_uploaded_and_verified
+            target: archiving
+      archiving:
+        view: upload_archiving
+        transitions:
+          - guard: cloud_backup_verified
+            target: finalized
+          - guard: cloud_backup_failed_after_retries
+            target: cloud_backup_failed
+      finalized:
+        view: upload_finalized
+      cloud_backup_failed:
+        view: upload_failed_cloud_backup
+      canceled:
+        view: upload_canceled
+
+  arc.hot_storage:
+    command: arc
+    initial: choose_operation
+    states:
+      choose_operation:
+        view: arc_home_at_will_menu
+        transitions:
+          - event: search_hot_storage
+            target: search_header
+          - event: get_hot_file
+            target: get_starting
+          - event: pin_files
+            target: pin_requested
+          - event: list_pins
+            target: pins_list
+          - event: inspect_fetch
+            target: fetch_detail_pending
+          - event: release_pin
+            target: release_done
+      search_header:
+        view: hot_search_header
+        transitions:
+          - guard: hot_file_available
+            target: hot_file_available
+          - guard: archived_only_match
+            target: hot_file_archived_only
+          - guard: no_results
+            target: hot_search_no_results
+      hot_file_available:
+        view: hot_file_available
+      hot_file_archived_only:
+        view: hot_file_archived_only
+      hot_search_no_results:
+        view: hot_search_no_results
+      get_starting:
+        view: get_starting
+        transitions:
+          - guard: file_is_hot
+            target: get_written
+          - guard: file_not_hot
+            target: get_not_hot
+      get_written:
+        view: get_written
+      get_not_hot:
+        view: get_not_hot
+      pin_requested:
+        transitions:
+          - guard: target_available_in_hot_storage
+            target: pin_ready
+          - guard: disc_recovery_needed
+            target: pin_waiting_for_disc
+      pin_ready:
+        view: pin_ready
+      pin_waiting_for_disc:
+        view: pin_waiting_for_disc
+      pins_list:
+        view: pins_list_header
+      fetch_detail_pending:
+        view: fetch_detail_pending
+      release_done:
+        view: release_done
+
+  arc.collection_status:
+    command: arc
+    initial: choose_detail
+    states:
+      choose_detail:
+        transitions:
+          - event: show_collection
+            target: collection_summary
+          - event: plan_disc_work
+            target: plan_disc_work
+          - event: list_images
+            target: images_physical_work_summary
+          - event: show_cloud_backup_cost
+            target: cloud_backup_report
+      collection_summary:
+        view: collection_summary
+        transitions:
+          - guard: collection_fully_protected
+            target: collection_fully_protected
+          - guard: collection_needs_attention
+            target: collection_needs_attention
+          - target: done
+      collection_fully_protected:
+        view: collection_fully_protected
+      collection_needs_attention:
+        view: collection_needs_attention
+      plan_disc_work:
+        transitions:
+          - guard: disc_work_ready
+            target: plan_disc_work_ready
+          - target: plan_no_disc_work
+      plan_disc_work_ready:
+        view: plan_disc_work_ready
+      plan_no_disc_work:
+        view: plan_no_disc_work
+      images_physical_work_summary:
+        view: images_physical_work_summary
+      cloud_backup_report:
+        view: cloud_backup_report
+        transitions:
+          - guard: billing_detail_unavailable
+            target: cloud_backup_billing_detail_unavailable
+          - target: done
+      cloud_backup_billing_detail_unavailable:
+        view: cloud_backup_billing_detail_unavailable
+      done: {}
+
+  arc.copy_management:
+    command: arc
+    initial: choose_copy_command
+    states:
+      choose_copy_command:
+        transitions:
+          - event: register_copy
+            target: copy_registered
+          - event: list_copies
+            target: copy_list_item
+          - event: move_copy
+            target: copy_moved
+          - event: mark_copy_verified
+            target: copy_marked_verified
+          - event: mark_copy_lost
+            target: copy_marked_lost
+          - event: mark_copy_damaged
+            target: copy_marked_damaged
+      copy_registered:
+        view: copy_registered
+      copy_list_item:
+        view: copy_list_item
+      copy_moved:
+        view: copy_moved
+      copy_marked_verified:
+        view: copy_marked_verified
+      copy_marked_lost:
+        view: copy_marked_lost
+      copy_marked_damaged:
+        view: copy_marked_damaged
+
+  arc.maintenance:
+    command: arc
+    initial: choose_check
+    states:
+      choose_check:
+        transitions:
+          - event: check_setup
+            target: doctor
+          - event: check_recovery_costs
+            target: billing_unavailable
+          - event: check_notifications
+            target: notification_health_failed
+      doctor:
+        transitions:
+          - guard: setup_is_healthy
+            target: doctor_ok
+          - guard: setup_needs_attention
+            target: doctor_needs_attention
+      doctor_ok:
+        view: doctor_ok
+      doctor_needs_attention:
+        view: doctor_needs_attention
+      billing_unavailable:
+        view: billing_unavailable
+      notification_health_failed:
+        view: notification_health_failed
+
+  arc_disc.guided:
+    command: arc-disc
+    initial: scan_backlog
+    states:
+      scan_backlog:
+        transitions:
+          - guard: physical_or_recovery_backlog
+            target: attention_summary
+          - target: no_attention
+      attention_summary:
+        view: arc_disc_attention
+        transitions:
+          - guard: unfinished_local_disc
+            target: unfinished_local_disc
+          - guard: recovery_ready
+            target: recovery_ready
+          - guard: recovery_approval_required
+            target: recovery_approval_required
+          - guard: hot_recovery_needs_media
+            target: hot_recovery_needs_media
+          - guard: replacement_disc_needed
+            target: replacement_disc_needed
+          - guard: ordinary_blank_disc_work
+            target: burn_work_ready
+          - guard: recovery_window_expired
+            target: recovery_expired
+      unfinished_local_disc:
+        view: disc_item_unfinished_local_copy
+      recovery_ready:
+        view: disc_item_recovery_ready
+      recovery_approval_required:
+        view: disc_item_recovery_approval_required
+      hot_recovery_needs_media:
+        view: disc_item_hot_recovery_needs_media
+      replacement_disc_needed:
+        view: disc_item_replacement_disc_needed
+      burn_work_ready:
+        view: disc_item_burn_work_ready
+      recovery_expired:
+        view: disc_item_recovery_expired
+      no_attention:
+        view: arc_disc_no_attention
+
+  arc_disc.burn:
+    command: arc-disc
+    initial: inspect_burn_work
+    states:
+      inspect_burn_work:
+        transitions:
+          - guard: no_disc_work
+            target: no_work
+          - guard: unlabeled_verified_disc_available
+            target: resume_unlabeled_copy
+          - guard: unlabeled_verified_disc_unavailable
+            target: unlabeled_copy_unavailable
+          - guard: blank_disc_work_ready
+            target: ready
+      no_work:
+        view: burn_no_work
+      ready:
+        view: burn_ready
+        transitions:
+          - event: operator_inserts_blank_disc
+            target: insert_blank_disc
+      insert_blank_disc:
+        view: burn_insert_blank_disc
+        transitions:
+          - event: operator_confirms_blank_disc
+            target: verifying_prepared_disc
+      verifying_prepared_disc:
+        view: burn_verifying_prepared_disc
+        transitions:
+          - guard: prepared_disc_valid
+            target: writing_disc
+      writing_disc:
+        view: burn_writing_disc
+        transitions:
+          - guard: write_complete
+            target: verifying_disc
+      verifying_disc:
+        view: burn_verifying_disc
+        transitions:
+          - guard: disc_verified
+            target: label_checkpoint
+      label_checkpoint:
+        view: burn_label_checkpoint
+        transitions:
+          - event: operator_confirms_label
+            target: location_prompt
+      location_prompt:
+        view: burn_location_prompt
+        transitions:
+          - event: operator_records_storage_location
+            target: registered
+      registered:
+        view: burn_registered
+        transitions:
+          - guard: backlog_empty
+            target: backlog_cleared
+          - guard: more_disc_work_waiting
+            target: ready
+      resume_unlabeled_copy:
+        view: burn_resume_unlabeled_copy
+        transitions:
+          - event: operator_confirms_disc_available
+            target: label_checkpoint
+      unlabeled_copy_unavailable:
+        view: burn_unlabeled_copy_unavailable
+        transitions:
+          - event: operator_continues
+            target: ready
+      backlog_cleared:
+        view: burn_backlog_cleared
+
+  arc_disc.recovery:
+    command: arc-disc
+    initial: inspect_recovery
+    states:
+      inspect_recovery:
+        transitions:
+          - guard: approval_required
+            target: approval_required
+          - guard: recovery_requested
+            target: requested
+          - guard: waiting_for_cloud_backup_files
+            target: waiting
+          - guard: recovered_data_ready
+            target: ready
+          - guard: ready_window_expired
+            target: expired
+          - guard: recovery_cleanup_handoff_ready
+            target: cleanup_handoff
+      approval_required:
+        view: recovery_approval_required
+        transitions:
+          - event: operator_approves_recovery
+            target: requested
+      requested:
+        view: recovery_requested
+        transitions:
+          - guard: request_accepted
+            target: waiting
+      waiting:
+        view: recovery_waiting
+        transitions:
+          - guard: recovered_data_ready
+            target: ready
+          - guard: ready_window_expired
+            target: expired
+      ready:
+        view: recovery_ready
+        transitions:
+          - event: operator_makes_replacement_disc
+            target: completed
+          - guard: ready_window_expired
+            target: expired
+      completed:
+        view: recovery_completed
+      expired:
+        view: recovery_expired
+      cleanup_handoff:
+        view: recovery_cleanup_handoff
+
+  arc_disc.hot_recovery:
+    command: arc-disc
+    initial: need_media
+    states:
+      need_media:
+        transitions:
+          - event: operator_inserts_disc
+            target: insert_disc
+      insert_disc:
+        view: hot_recovery_insert_disc
+        transitions:
+          - event: disc_accepted
+            target: progress
+      progress:
+        view: hot_recovery_progress
+        transitions:
+          - guard: restore_complete
+            target: done
+          - guard: disc_cannot_restore_requested_files
+            target: retry_other_disc
+      retry_other_disc:
+        view: hot_recovery_retry_other_disc
+        transitions:
+          - event: operator_inserts_another_disc
+            target: insert_disc
+      done:
+        view: hot_recovery_done
+
+  arc_disc.fetch:
+    command: arc-disc
+    initial: fetch_requested
+    states:
+      fetch_requested:
+        transitions:
+          - guard: media_needed
+            target: insert_disc
+          - guard: upload_already_complete
+            target: done
+      insert_disc:
+        view: hot_recovery_insert_disc
+        transitions:
+          - event: disc_accepted
+            target: progress
+      progress:
+        view: hot_recovery_progress
+        transitions:
+          - guard: server_accepts_recovered_bytes
+            target: done
+          - guard: server_rejects_recovered_bytes
+            target: retry_other_disc
+      retry_other_disc:
+        view: hot_recovery_retry_other_disc
+        transitions:
+          - event: operator_retries_with_other_media
+            target: insert_disc
+      done:
+        view: hot_recovery_done
+
+  operator.notifications:
+    initial: classify_event
+    states:
+      classify_event:
+        transitions:
+          - event: images.ready
+            target: ready_disc_work
+          - event: operator.disc_work_waiting_too_long
+            target: disc_work_waiting_too_long
+          - event: operator.replacement_disc_needed
+            target: replacement_disc_needed
+          - event: operator.recovery_approval_required
+            target: recovery_approval_required
+          - event: images.rebuild_ready
+            target: recovery_ready
+          - event: images.rebuild_ready.reminder
+            target: recovery_ready
+          - event: operator.hot_recovery_needs_media
+            target: hot_recovery_needs_media
+          - event: collections.glacier_upload.failed
+            target: cloud_backup_failed
+          - event: operator.notification_health_failed
+            target: notification_health_failed
+          - event: operator.billing_needs_attention
+            target: billing_needs_attention
+          - event: operator.setup_needs_attention
+            target: setup_needs_attention
+          - event: label_confirmation_waiting
+            target: no_labeling_notification
+          - event: routine_success
+            target: no_routine_success_notification
+      ready_disc_work:
+        event: images.ready
+        view: push_burn_work_ready
+      disc_work_waiting_too_long:
+        event: operator.disc_work_waiting_too_long
+        view: push_disc_work_waiting_too_long
+      replacement_disc_needed:
+        event: operator.replacement_disc_needed
+        view: push_replacement_disc_needed
+      recovery_approval_required:
+        event: operator.recovery_approval_required
+        view: push_recovery_approval_required
+      recovery_ready:
+        event: images.rebuild_ready
+        view: push_recovery_ready
+      hot_recovery_needs_media:
+        event: operator.hot_recovery_needs_media
+        view: push_hot_recovery_needs_media
+      cloud_backup_failed:
+        event: collections.glacier_upload.failed
+        view: push_cloud_backup_failed
+      notification_health_failed:
+        event: operator.notification_health_failed
+        view: push_notification_health_failed
+      billing_needs_attention:
+        event: operator.billing_needs_attention
+        view: push_billing_needs_attention
+      setup_needs_attention:
+        event: operator.setup_needs_attention
+        view: push_setup_needs_attention
+      no_labeling_notification: {}
+      no_routine_success_notification: {}
+
+links:
+  - from:
+      statechart: arc.home
+      state: at_will_menu
+    label: operator chooses upload
+    to:
+      statechart: arc.upload
+      state: prompt_collection_id
+  - from:
+      statechart: arc.home
+      state: at_will_menu
+    label: operator chooses hot storage
+    to:
+      statechart: arc.hot_storage
+      state: choose_operation
+  - from:
+      statechart: arc.home
+      state: at_will_menu
+    label: operator chooses collection status
+    to:
+      statechart: arc.collection_status
+      state: choose_detail
+  - from:
+      statechart: arc.home
+      state: at_will_menu
+    label: operator chooses copy management
+    to:
+      statechart: arc.copy_management
+      state: choose_copy_command
+  - from:
+      statechart: arc.home
+      state: at_will_menu
+    label: operator chooses maintenance
+    to:
+      statechart: arc.maintenance
+      state: choose_check
+  - from:
+      statechart: arc.home
+      state: notification_health_failed
+    label: operator reviews notification health
+    to:
+      statechart: arc.maintenance
+      state: choose_check
+  - from:
+      statechart: arc.home
+      state: setup_needs_attention
+    label: operator reviews setup health
+    to:
+      statechart: arc.maintenance
+      state: choose_check
+  - from:
+      statechart: arc.home
+      state: billing_needs_attention
+    label: operator reviews recovery costs
+    to:
+      statechart: arc.maintenance
+      state: choose_check
+  - from:
+      statechart: arc.home
+      state: upload_retry_available
+    label: operator retries upload
+    to:
+      statechart: arc.upload
+      state: prompt_collection_id
+  - from:
+      statechart: arc.upload
+      state: finalized
+    label: operator reviews collection status
+    to:
+      statechart: arc.collection_status
+      state: choose_detail
+  - from:
+      statechart: arc.upload
+      state: cloud_backup_failed
+    label: failure becomes home attention
+    to:
+      statechart: arc.home
+      state: scan_attention
+  - from:
+      statechart: arc.hot_storage
+      state: pin_waiting_for_disc
+    label: operator runs arc-disc
+    to:
+      statechart: arc_disc.guided
+      state: scan_backlog
+  - from:
+      statechart: arc.hot_storage
+      state: fetch_detail_pending
+    label: operator runs arc-disc
+    to:
+      statechart: arc_disc.guided
+      state: scan_backlog
+  - from:
+      statechart: arc.collection_status
+      state: plan_disc_work_ready
+    label: operator runs arc-disc
+    to:
+      statechart: arc_disc.guided
+      state: scan_backlog
+  - from:
+      statechart: arc.collection_status
+      state: images_physical_work_summary
+    label: operator runs arc-disc
+    to:
+      statechart: arc_disc.guided
+      state: scan_backlog
+  - from:
+      statechart: arc.copy_management
+      state: copy_registered
+    label: operator reviews collection status
+    to:
+      statechart: arc.collection_status
+      state: choose_detail
+  - from:
+      statechart: arc.copy_management
+      state: copy_marked_verified
+    label: operator reviews collection status
+    to:
+      statechart: arc.collection_status
+      state: choose_detail
+  - from:
+      statechart: arc.copy_management
+      state: copy_marked_lost
+    label: replacement may be needed
+    to:
+      statechart: arc_disc.guided
+      state: scan_backlog
+  - from:
+      statechart: arc.copy_management
+      state: copy_marked_damaged
+    label: replacement may be needed
+    to:
+      statechart: arc_disc.guided
+      state: scan_backlog
+  - from:
+      statechart: arc_disc.guided
+      state: unfinished_local_disc
+    label: operator resumes burn flow
+    to:
+      statechart: arc_disc.burn
+      state: inspect_burn_work
+  - from:
+      statechart: arc_disc.guided
+      state: burn_work_ready
+    label: operator starts burn flow
+    to:
+      statechart: arc_disc.burn
+      state: inspect_burn_work
+  - from:
+      statechart: arc_disc.guided
+      state: recovery_ready
+    label: operator reviews recovery flow
+    to:
+      statechart: arc_disc.recovery
+      state: inspect_recovery
+  - from:
+      statechart: arc_disc.guided
+      state: recovery_approval_required
+    label: operator reviews recovery flow
+    to:
+      statechart: arc_disc.recovery
+      state: inspect_recovery
+  - from:
+      statechart: arc_disc.guided
+      state: recovery_expired
+    label: operator reviews recovery flow
+    to:
+      statechart: arc_disc.recovery
+      state: inspect_recovery
+  - from:
+      statechart: arc_disc.guided
+      state: replacement_disc_needed
+    label: operator reviews recovery flow
+    to:
+      statechart: arc_disc.recovery
+      state: inspect_recovery
+  - from:
+      statechart: arc_disc.guided
+      state: hot_recovery_needs_media
+    label: operator restores hot storage
+    to:
+      statechart: arc_disc.hot_recovery
+      state: need_media
+  - from:
+      statechart: arc_disc.burn
+      state: backlog_cleared
+    label: operator checks remaining disc work
+    to:
+      statechart: arc_disc.guided
+      state: scan_backlog
+  - from:
+      statechart: arc_disc.recovery
+      state: completed
+    label: operator checks remaining recovery work
+    to:
+      statechart: arc_disc.guided
+      state: scan_backlog
+  - from:
+      statechart: arc_disc.recovery
+      state: expired
+    label: operator checks remaining recovery work
+    to:
+      statechart: arc_disc.guided
+      state: scan_backlog
+  - from:
+      statechart: arc_disc.recovery
+      state: cleanup_handoff
+    label: operator checks remaining recovery work
+    to:
+      statechart: arc_disc.guided
+      state: scan_backlog
+  - from:
+      statechart: arc_disc.hot_recovery
+      state: done
+    label: restored file returns to hot storage
+    to:
+      statechart: arc.hot_storage
+      state: choose_operation
+  - from:
+      statechart: arc_disc.fetch
+      state: done
+    label: restored fetch returns to hot storage
+    to:
+      statechart: arc.hot_storage
+      state: choose_operation
+  - from:
+      statechart: operator.notifications
+      state: ready_disc_work
+    label: operator runs arc-disc
+    to:
+      statechart: arc_disc.guided
+      state: scan_backlog
+  - from:
+      statechart: operator.notifications
+      state: disc_work_waiting_too_long
+    label: operator runs arc-disc
+    to:
+      statechart: arc_disc.guided
+      state: scan_backlog
+  - from:
+      statechart: operator.notifications
+      state: replacement_disc_needed
+    label: operator runs arc-disc
+    to:
+      statechart: arc_disc.guided
+      state: scan_backlog
+  - from:
+      statechart: operator.notifications
+      state: recovery_approval_required
+    label: operator runs arc-disc
+    to:
+      statechart: arc_disc.guided
+      state: scan_backlog
+  - from:
+      statechart: operator.notifications
+      state: recovery_ready
+    label: operator runs arc-disc
+    to:
+      statechart: arc_disc.guided
+      state: scan_backlog
+  - from:
+      statechart: operator.notifications
+      state: hot_recovery_needs_media
+    label: operator runs arc-disc
+    to:
+      statechart: arc_disc.guided
+      state: scan_backlog
+  - from:
+      statechart: operator.notifications
+      state: cloud_backup_failed
+    label: operator runs arc
+    to:
+      statechart: arc.home
+      state: scan_attention
+  - from:
+      statechart: operator.notifications
+      state: notification_health_failed
+    label: operator runs arc
+    to:
+      statechart: arc.home
+      state: scan_attention
+  - from:
+      statechart: operator.notifications
+      state: billing_needs_attention
+    label: operator runs arc
+    to:
+      statechart: arc.home
+      state: scan_attention
+  - from:
+      statechart: operator.notifications
+      state: setup_needs_attention
+    label: operator runs arc
+    to:
+      statechart: arc.home
+      state: scan_attention

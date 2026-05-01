@@ -5,7 +5,8 @@ Feature: Outbound operator webhooks
 
   @contract_gap @issue_210 @ci_opt_in @requires_webhook_capture @issue_186
   Scenario: Ready disc work webhook tells the operator to run arc-disc
-    Given ordinary blank-disc work is available
+    Given statechart "operator.notifications" state "ready_disc_work" is the accepted operator contract
+    And ordinary blank-disc work is available
     When Riverhog emits an action-needed notification for ready disc work
     Then the captured webhook payload matches "contracts/operator/action-needed-notification.schema.json"
     And the captured webhook payload matches operator notification copy "push_burn_work_ready"
@@ -18,7 +19,8 @@ Feature: Outbound operator webhooks
 
   @contract_gap @issue_210 @ci_opt_in @requires_webhook_capture @issue_186
   Scenario: Image rebuild ready and reminder webhook deliveries are captured
-    Given an archive with planner fixtures
+    Given statechart "operator.notifications" state "recovery_ready" is the accepted operator contract
+    And an archive with planner fixtures
     And collection "docs" has uploaded Glacier archive package
     And candidate "img_2026-04-20_01" is finalized
     And the client posts to "/v1/images/20260420T040001Z/copies" with id "20260420T040001Z-1" and location "Shelf A1"
@@ -50,7 +52,8 @@ Feature: Outbound operator webhooks
 
   @contract_gap @issue_210 @ci_opt_in @requires_webhook_capture @issue_186
   Scenario: Image rebuild ready webhook retries after a transient sink failure
-    Given an archive with planner fixtures
+    Given statechart "operator.notifications" state "recovery_ready" is the accepted operator contract
+    And an archive with planner fixtures
     And collection "docs" has uploaded Glacier archive package
     And candidate "img_2026-04-20_01" is finalized
     And the client posts to "/v1/images/20260420T040001Z/copies" with id "20260420T040001Z-1" and location "Shelf A1"
@@ -76,7 +79,8 @@ Feature: Outbound operator webhooks
 
   @contract_gap @issue_210 @ci_opt_in @requires_webhook_capture @issue_186
   Scenario: Image rebuild ready webhook retries after a transient sink timeout
-    Given an archive with planner fixtures
+    Given statechart "operator.notifications" state "recovery_ready" is the accepted operator contract
+    And an archive with planner fixtures
     And collection "docs" has uploaded Glacier archive package
     And candidate "img_2026-04-20_01" is finalized
     And the client posts to "/v1/images/20260420T040001Z/copies" with id "20260420T040001Z-1" and location "Shelf A1"
@@ -102,7 +106,8 @@ Feature: Outbound operator webhooks
 
   @contract_gap @issue_210 @ci_opt_in @requires_webhook_capture @issue_186
   Scenario: Persistent cloud backup failure webhook tells the operator to run arc
-    Given collection "docs" has failed cloud backup after retries with error "s3 timeout"
+    Given statechart "operator.notifications" state "cloud_backup_failed" is the accepted operator contract
+    And collection "docs" has failed cloud backup after retries with error "s3 timeout"
     When the client waits for captured webhook event "collections.glacier_upload.failed"
     Then the captured webhook payload matches "contracts/operator/action-needed-notification.schema.json"
     And the captured webhook payload matches operator notification copy "push_cloud_backup_failed"
@@ -117,7 +122,8 @@ Feature: Outbound operator webhooks
 
   @contract_gap @issue_210 @ci_opt_in @requires_webhook_capture @issue_186
   Scenario: Labeling does not create a standalone notification
-    Given an unlabeled verified disc is waiting for label confirmation
+    Given statechart "operator.notifications" state "no_labeling_notification" is the accepted operator contract
+    And an unlabeled verified disc is waiting for label confirmation
     When Riverhog delivers due action-needed notifications
     Then no captured webhook event asks only for labeling
     And contracts/operator/copy.py defines no labeling notification copy
@@ -125,7 +131,8 @@ Feature: Outbound operator webhooks
 
   @contract_gap @issue_210 @ci_opt_in @requires_webhook_capture @issue_186
   Scenario: Routine success does not create an action-needed notification
-    Given a collection upload finishes successfully
+    Given statechart "operator.notifications" state "no_routine_success_notification" is the accepted operator contract
+    And a collection upload finishes successfully
     And disc work finishes successfully
     And hot storage recovery finishes successfully
     When Riverhog delivers due action-needed notifications

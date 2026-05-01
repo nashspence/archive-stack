@@ -6,7 +6,8 @@ Feature: arc-disc CLI
   Rule: No-argument physical and recovery backlog
     @contract_gap @issue_208
     Scenario: arc-disc resumes unfinished local disc work before choosing new work
-      Given an unlabeled verified disc is waiting for label confirmation
+      Given statechart "arc_disc.guided" state "unfinished_local_disc" is the accepted operator contract
+      And an unlabeled verified disc is waiting for label confirmation
       And ordinary blank-disc work is available
       When the operator runs 'arc-disc'
       Then the command exits with code 0
@@ -18,7 +19,8 @@ Feature: arc-disc CLI
 
     @contract_gap @issue_208
     Scenario: arc-disc handles ready recovery before ordinary blank-disc work
-      Given recovery data is ready for collection "docs"
+      Given statechart "arc_disc.guided" state "recovery_ready" is the accepted operator contract
+      And recovery data is ready for collection "docs"
       And ordinary blank-disc work is available
       When the operator runs 'arc-disc'
       Then the command exits with code 0
@@ -30,7 +32,8 @@ Feature: arc-disc CLI
 
     @contract_gap @issue_208
     Scenario: arc-disc asks for recovery approval before ordinary blank-disc work
-      Given recovery for collection "docs" needs approval
+      Given statechart "arc_disc.guided" state "recovery_approval_required" is the accepted operator contract
+      And recovery for collection "docs" needs approval
       And ordinary blank-disc work is available
       When the operator runs 'arc-disc'
       Then the command exits with code 0
@@ -42,7 +45,8 @@ Feature: arc-disc CLI
 
     @contract_gap @issue_208
     Scenario: arc-disc guides hot storage recovery that needs media
-      Given pinned files need recovery from disc
+      Given statechart "arc_disc.guided" state "hot_recovery_needs_media" is the accepted operator contract
+      And pinned files need recovery from disc
       When the operator runs 'arc-disc'
       Then the command exits with code 0
       And stdout includes operator copy "disc_item_hot_recovery_needs_media"
@@ -53,7 +57,9 @@ Feature: arc-disc CLI
 
     @contract_gap @issue_208
     Scenario: arc-disc clears ordinary blank-disc work only after label confirmation
-      Given ordinary blank-disc work is available
+      Given statechart "arc_disc.guided" state "burn_work_ready" is the accepted operator contract
+      And statechart "arc_disc.burn" state "backlog_cleared" is the accepted operator contract
+      And ordinary blank-disc work is available
       And the operator confirms labeled disc at storage location "vault-a/shelf-01"
       When the operator runs 'arc-disc'
       Then the command exits with code 0
@@ -65,7 +71,8 @@ Feature: arc-disc CLI
 
     @contract_gap @issue_208
     Scenario: arc-disc does not count an unlabeled disc as protected
-      Given ordinary blank-disc work is available
+      Given statechart "arc_disc.burn" state "label_checkpoint" is the accepted operator contract
+      And ordinary blank-disc work is available
       When the operator runs 'arc-disc' without label confirmation
       Then the command exits non-zero
       And stderr includes operator copy "burn_label_checkpoint"

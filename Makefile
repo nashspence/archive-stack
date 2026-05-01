@@ -4,7 +4,7 @@ SHELL := bash
 UV_RUN = uv run --python 3.11 --isolated --with-requirements "$(CURDIR)/requirements-test.txt" --with-editable '.[db]'
 args ?=
 
-.PHONY: help ruff mypy lint unit spec stop-spec ci-opt-in-arc-disc ci-opt-in-glacier-restore ci-opt-in-glacier-billing ci-opt-in-opentimestamps build build-app build-test bootstrap-garage down prod stop-prod prune-prod-state prod-profile test
+.PHONY: help ruff mypy lint unit spec stop-spec operator-workflows ci-opt-in-arc-disc ci-opt-in-glacier-restore ci-opt-in-glacier-billing ci-opt-in-opentimestamps build build-app build-test bootstrap-garage down prod stop-prod prune-prod-state prod-profile test
 
 help:
 	@printf '%s\n' \
@@ -15,6 +15,7 @@ help:
 		'  make unit              Run the unit test lane locally.' \
 		'  make spec              Run the fixture-backed spec harness locally.' \
 		'  make stop-spec         Stop any in-flight local spec harness process.' \
+		'  make operator-workflows Generate ignored Mermaid operator workflow diagrams.' \
 		'  make ci-opt-in-arc-disc        Run opt-in real-device arc-disc optical validation.' \
 		'  make ci-opt-in-glacier-restore Run opt-in live AWS collection archive restore validation.' \
 		'  make ci-opt-in-glacier-billing Run opt-in live AWS Glacier billing validation.' \
@@ -51,6 +52,10 @@ spec:
 
 stop-spec:
 	@./scripts/stop_spec.sh
+
+operator-workflows:
+	@rm -rf contracts/operator/statecharts
+	@$(UV_RUN) python scripts/fsm_to_mermaid.py --out-dir contracts/operator/statecharts $(args)
 
 ci-opt-in-arc-disc:
 	@$(UV_RUN) python -m pytest -q -m "ci_opt_in and requires_optical_disc_drive and requires_human_operator" tests/ci_opt_in/test_arc_disc_real_device.py $(args)
