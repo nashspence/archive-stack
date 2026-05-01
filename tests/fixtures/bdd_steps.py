@@ -880,8 +880,8 @@ def given_fetch_has_partial_upload_in_progress(
     )
 
 
-@given("a fake optical reader fixture can recover every required entry")
-@when("a fake optical reader fixture can recover every required entry")
+@given("a configured optical reader can recover every required entry")
+@when("a configured optical reader can recover every required entry")
 def given_arc_disc_success_fixture(
     acceptance_system: AcceptanceSystem,
 ) -> None:

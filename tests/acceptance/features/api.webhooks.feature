@@ -2,7 +2,7 @@
 Feature: Outbound operator webhooks
   Test harnesses capture outbound operator notifications so acceptance scenarios can
   assert emitted events and payload fields without adding product API surface.
-  @spec_harness_only
+  @ci_opt_in @requires_webhook_capture @issue_186
   Scenario: Image rebuild ready and reminder webhook deliveries are captured
     Given an archive with planner fixtures
     And collection "docs" has uploaded Glacier archive package
@@ -22,7 +22,7 @@ Feature: Outbound operator webhooks
     Then the captured webhook payload field "session_id" equals "rs-20260420T040001Z-rebuild-1"
     And the captured webhook payload images contain only "20260420T040001Z"
     And the captured webhook payload integer field "reminder_count" equals 1
-  @spec_harness_only
+  @ci_opt_in @requires_webhook_capture @issue_186
   Scenario: Image rebuild ready webhook retries after a transient sink failure
     Given an archive with planner fixtures
     And collection "docs" has uploaded Glacier archive package
@@ -43,7 +43,7 @@ Feature: Outbound operator webhooks
     And captured webhook event "images.rebuild_ready" has 1 successful deliveries
     And captured webhook event "images.rebuild_ready.reminder" has 0 successful deliveries
     And captured webhook attempt "images.rebuild_ready" result "delivered" attempt 1 happened at least 1 seconds after result "failed" attempt 1
-  @spec_harness_only
+  @ci_opt_in @requires_webhook_capture @issue_186
   Scenario: Image rebuild ready webhook retries after a transient sink timeout
     Given an archive with planner fixtures
     And collection "docs" has uploaded Glacier archive package
@@ -64,7 +64,7 @@ Feature: Outbound operator webhooks
     And captured webhook event "images.rebuild_ready" has 1 successful deliveries
     And captured webhook event "images.rebuild_ready.reminder" has 0 successful deliveries
     And captured webhook attempt "images.rebuild_ready" result "delivered" attempt 1 happened at least 1 seconds after result "timeout" attempt 1
-  @spec_harness_only
+  @ci_opt_in @requires_webhook_capture @issue_186
   Scenario: Persistent collection Glacier upload failure webhook is captured
     Given an archive with planner fixtures
     And the glacier upload fixture fails for collection "docs" with error "s3 timeout"

@@ -73,7 +73,7 @@ Feature: Read-only hot storage browsing
       Then the response status is 200
       And the response Glacier collections contain only "docs"
       And the response Glacier collection "docs" glacier state is "uploaded"
-    @spec_harness_only
+    @ci_opt_in @requires_controlled_glacier_billing @issue_186
     Scenario: Glacier usage report exposes resource-level and manifest-aware billing metadata in the spec harness
       Given an archive with split planner fixtures
       And collection "docs" has uploaded Glacier archive package

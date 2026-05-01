@@ -22,7 +22,12 @@ from arc_core.stores.s3_archive_store import S3ArchiveStore
 from tests.fixtures.data import DOCS_FILES
 
 _RESTORE_CONFIRM = "request-glacier-restore"
-_LIVE_COLLECTION_ID = "gated-glacier-restore-collection-v1"
+_LIVE_COLLECTION_ID = "ci-opt-in-glacier-restore-collection-v1"
+pytestmark = [
+    pytest.mark.ci_opt_in,
+    pytest.mark.requires_aws_s3,
+    pytest.mark.requires_glacier_restore,
+]
 
 
 @dataclass(frozen=True)
@@ -33,10 +38,10 @@ class _LiveCollectionArchiveFixture:
 
 
 def _require_live_restore_confirmation() -> None:
-    if os.environ.get("ARC_GLACIER_GATED_RESTORE_CONFIRM") == _RESTORE_CONFIRM:
+    if os.environ.get("ARC_GLACIER_CI_OPT_IN_RESTORE_CONFIRM") == _RESTORE_CONFIRM:
         return
     pytest.skip(
-        "set ARC_GLACIER_GATED_RESTORE_CONFIRM=request-glacier-restore to run live "
+        "set ARC_GLACIER_CI_OPT_IN_RESTORE_CONFIRM=request-glacier-restore to run live "
         "Glacier restore validation"
     )
 
@@ -99,8 +104,8 @@ def _request_restore(
         object_path=fixture.receipt.archive.object_path,
         manifest_object_path=fixture.receipt.manifest.object_path,
         proof_object_path=fixture.receipt.proof.object_path,
-        retrieval_tier=os.environ.get("ARC_GLACIER_GATED_RETRIEVAL_TIER", "bulk"),
-        hold_days=int(os.environ.get("ARC_GLACIER_GATED_HOLD_DAYS", "1")),
+        retrieval_tier=os.environ.get("ARC_GLACIER_CI_OPT_IN_RETRIEVAL_TIER", "bulk"),
+        hold_days=int(os.environ.get("ARC_GLACIER_CI_OPT_IN_HOLD_DAYS", "1")),
         requested_at=requested_at,
         estimated_ready_at=estimated_ready_at,
     )
@@ -126,7 +131,7 @@ def test_live_aws_restored_collection_archive_package_verifies() -> None:
     if status != "ready":
         pytest.skip(
             "live AWS restore was requested, but the uploaded collection archive package "
-            "is not readable yet; rerun make gated-glacier-restore after AWS completes "
+            "is not readable yet; rerun make ci-opt-in-glacier-restore after AWS completes "
             "the restore"
         )
 

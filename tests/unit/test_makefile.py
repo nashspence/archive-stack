@@ -199,9 +199,11 @@ def _assert_isolated_prod_runtime(line: str) -> str:
             "python -m pytest -q tests/harness/test_spec_harness.py -k glacier",
         ),
         (
-            "gated-arc-disc",
+            "ci-opt-in-arc-disc",
             ("args=-k mounted_media",),
-            "python -m pytest -q tests/gated/test_arc_disc_real_device.py -k mounted_media",
+            "python -m pytest -q -m ci_opt_in and requires_optical_disc_drive "
+            "and requires_human_operator "
+            "tests/ci_opt_in/test_arc_disc_real_device.py -k mounted_media",
         ),
     ],
 )

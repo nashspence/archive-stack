@@ -26,13 +26,20 @@ _FAKE_FACTORY_ENV_VARS = (
     "ARC_DISC_BURN_PROMPTS_FACTORY",
 )
 _BURN_CONFIRMATION = "write-optical-media"
+pytestmark = [
+    pytest.mark.ci_opt_in,
+    pytest.mark.requires_optical_disc_drive,
+    pytest.mark.requires_human_operator,
+]
 
 
 def _reject_fake_factories() -> None:
     configured = [name for name in _FAKE_FACTORY_ENV_VARS if os.environ.get(name)]
     if configured:
         names = ", ".join(configured)
-        pytest.fail(f"gated arc-disc validation must not use fake factory env vars: {names}")
+        pytest.fail(
+            f"ci-opt-in arc-disc validation must not use fake factory env vars: {names}"
+        )
 
 
 def _required_env(name: str, *, reason: str) -> str:
@@ -62,18 +69,20 @@ def _require_xorriso(*, reason: str) -> None:
 
 
 def _require_destructive_opt_in(*, reason: str) -> None:
-    if os.environ.get("ARC_DISC_GATED_BURN_CONFIRM") == _BURN_CONFIRMATION:
+    if os.environ.get("ARC_DISC_CI_OPT_IN_BURN_CONFIRM") == _BURN_CONFIRMATION:
         return
     pytest.skip(
-        "set ARC_DISC_GATED_BURN_CONFIRM=write-optical-media to run destructive "
+        "set ARC_DISC_CI_OPT_IN_BURN_CONFIRM=write-optical-media to run destructive "
         f"{reason}"
     )
 
 
 def _required_burn_device(*, reason: str) -> Path:
-    device = _required_path("ARC_DISC_GATED_BURN_DEVICE", reason=reason)
+    device = _required_path("ARC_DISC_CI_OPT_IN_BURN_DEVICE", reason=reason)
     if not os.access(device, os.R_OK | os.W_OK):
-        pytest.skip(f"ARC_DISC_GATED_BURN_DEVICE must be readable and writable: {device}")
+        pytest.skip(
+            f"ARC_DISC_CI_OPT_IN_BURN_DEVICE must be readable and writable: {device}"
+        )
     return device
 
 
@@ -103,7 +112,7 @@ def _run_arc_disc(
 
 
 @pytest.fixture
-def gated_acceptance_system(tmp_path: Path) -> Iterator[AcceptanceSystem]:
+def ci_opt_in_acceptance_system(tmp_path: Path) -> Iterator[AcceptanceSystem]:
     system = AcceptanceSystem.create(tmp_path / "acceptance-system")
     try:
         yield system
@@ -137,24 +146,24 @@ def _iso_bytes_from_root(*, image_root: Path, volume_id: str) -> bytes:
     detail = proc.stderr.decode("utf-8", errors="replace")[-1500:] or (
         f"xorriso exited {proc.returncode}"
     )
-    raise RuntimeError(f"gated fake API could not build a real ISO: {detail}")
+    raise RuntimeError(f"ci-opt-in fake API could not build a real ISO: {detail}")
 
 
 def _write_disposable_validation_iso(tmp_path: Path) -> Path:
-    image_root = tmp_path / "gated-backend-iso-root"
+    image_root = tmp_path / "ci-opt-in-backend-iso-root"
     image_root.mkdir()
     (image_root / "README.txt").write_text(
-        "Disposable gated arc-disc optical backend validation ISO.\n",
+        "Disposable ci-opt-in arc-disc optical backend validation ISO.\n",
         encoding="utf-8",
     )
     (image_root / "payload.bin").write_bytes(
-        b"gated-arc-disc-backend-validation\n" * 128,
+        b"ci-opt-in-arc-disc-backend-validation\n" * 128,
     )
-    iso_path = tmp_path / "gated-backend-validation.iso"
+    iso_path = tmp_path / "ci-opt-in-backend-validation.iso"
     iso_path.write_bytes(
         _iso_bytes_from_root(
             image_root=image_root,
-            volume_id="GATED_ARC_DISC",
+            volume_id="CI_OPT_IN_ARC_DISC",
         )
     )
     return iso_path
@@ -307,8 +316,8 @@ def _read_recovery_copy_sha256(
     device: str,
 ) -> str:
     copy = arc_disc_main.RecoveryCopyHint(
-        copy_id="gated-arc-disc-copy",
-        location="gated validation media",
+        copy_id="ci-opt-in-arc-disc-copy",
+        location="ci-opt-in validation media",
         disc_path=disc_path,
         recovery_bytes=0,
         recovery_sha256="",
@@ -319,17 +328,19 @@ def _read_recovery_copy_sha256(
 def test_default_reader_recovers_configured_mounted_media_payload() -> None:
     _reject_fake_factories()
     mount_path = _required_path(
-        "ARC_DISC_GATED_MOUNT_PATH",
+        "ARC_DISC_CI_OPT_IN_MOUNT_PATH",
         reason="mounted optical-media recovery validation",
     )
     if not mount_path.is_dir():
-        pytest.skip(f"ARC_DISC_GATED_MOUNT_PATH must be a mounted directory: {mount_path}")
+        pytest.skip(
+            f"ARC_DISC_CI_OPT_IN_MOUNT_PATH must be a mounted directory: {mount_path}"
+        )
     disc_path = _required_env(
-        "ARC_DISC_GATED_PAYLOAD_PATH",
+        "ARC_DISC_CI_OPT_IN_PAYLOAD_PATH",
         reason="mounted optical-media recovery validation",
     )
     expected_sha256 = _required_env(
-        "ARC_DISC_GATED_EXPECTED_SHA256",
+        "ARC_DISC_CI_OPT_IN_EXPECTED_SHA256",
         reason="mounted optical-media recovery validation",
     )
 
@@ -350,19 +361,19 @@ def test_default_reader_recovers_configured_raw_device_payload() -> None:
     _reject_fake_factories()
     _require_xorriso(reason="raw optical-device recovery validation")
     device = _required_path(
-        "ARC_DISC_GATED_RAW_DEVICE",
+        "ARC_DISC_CI_OPT_IN_RAW_DEVICE",
         reason="raw optical-device recovery validation",
     )
     if not os.access(device, os.R_OK):
-        pytest.skip(f"ARC_DISC_GATED_RAW_DEVICE is not readable by this user: {device}")
+        pytest.skip(f"ARC_DISC_CI_OPT_IN_RAW_DEVICE is not readable by this user: {device}")
     disc_path = _optional_env(
-        "ARC_DISC_GATED_RAW_PAYLOAD_PATH",
-        "ARC_DISC_GATED_PAYLOAD_PATH",
+        "ARC_DISC_CI_OPT_IN_RAW_PAYLOAD_PATH",
+        "ARC_DISC_CI_OPT_IN_PAYLOAD_PATH",
         reason="raw optical-device recovery validation",
     )
     expected_sha256 = _optional_env(
-        "ARC_DISC_GATED_RAW_EXPECTED_SHA256",
-        "ARC_DISC_GATED_EXPECTED_SHA256",
+        "ARC_DISC_CI_OPT_IN_RAW_EXPECTED_SHA256",
+        "ARC_DISC_CI_OPT_IN_EXPECTED_SHA256",
         reason="raw optical-device recovery validation",
     )
 
@@ -385,7 +396,7 @@ def test_destructive_burn_backend_writes_and_verifies_configured_media(tmp_path:
     _require_destructive_opt_in(reason="optical burn validation")
     device = _required_burn_device(reason="destructive optical burn validation")
     iso_path = _write_disposable_validation_iso(tmp_path)
-    copy_id = os.environ.get("ARC_DISC_GATED_BURN_COPY_ID", "gated-arc-disc-copy")
+    copy_id = os.environ.get("ARC_DISC_CI_OPT_IN_BURN_COPY_ID", "ci-opt-in-arc-disc-copy")
 
     iso_verifier = arc_disc_main.build_iso_verifier()
     if not isinstance(iso_verifier, arc_disc_main.XorrisoIsoVerifier):
@@ -407,26 +418,26 @@ def test_destructive_burn_backend_writes_and_verifies_configured_media(tmp_path:
 
 
 def test_full_burn_then_fetch_cli_workflow_uses_fake_api_and_real_optical_device(
-    gated_acceptance_system: AcceptanceSystem,
+    ci_opt_in_acceptance_system: AcceptanceSystem,
     tmp_path: Path,
 ) -> None:
     _reject_fake_factories()
     _require_xorriso(reason="full arc-disc burn/fetch CLI workflow validation")
     _require_destructive_opt_in(reason="full arc-disc burn/fetch CLI workflow validation")
     device = _required_burn_device(reason="full arc-disc burn/fetch CLI workflow validation")
-    gated_acceptance_system.enable_real_iso_streams()
-    image_id = _seed_one_real_burn_needed(gated_acceptance_system)
+    ci_opt_in_acceptance_system.enable_real_iso_streams()
+    image_id = _seed_one_real_burn_needed(ci_opt_in_acceptance_system)
     burned_copy_id = f"{image_id}-2"
     staging_dir = tmp_path / "arc-disc-burn-fetch-staging"
 
     result = _run_arc_disc(
-        gated_acceptance_system,
+        ci_opt_in_acceptance_system,
         "burn",
         "--device",
         str(device),
         "--staging-dir",
         str(staging_dir),
-        input_text="\nlabeled\ngated real optical shelf\n",
+        input_text="\nlabeled\nci-opt-in real optical shelf\n",
         staging_dir=staging_dir,
     )
 
@@ -435,12 +446,12 @@ def test_full_burn_then_fetch_cli_workflow_uses_fake_api_and_real_optical_device
     assert burned_copy_id in result.stdout
 
     fetch_id = _make_finalized_target_fetchable_from_only_copy(
-        gated_acceptance_system,
+        ci_opt_in_acceptance_system,
         image_id=image_id,
         kept_copy_id=burned_copy_id,
     )
     result = _run_arc_disc(
-        gated_acceptance_system,
+        ci_opt_in_acceptance_system,
         "fetch",
         fetch_id,
         "--device",
@@ -455,28 +466,28 @@ def test_full_burn_then_fetch_cli_workflow_uses_fake_api_and_real_optical_device
 
 
 def test_full_recover_cli_workflow_uses_fake_api_restored_iso_and_real_optical_device(
-    gated_acceptance_system: AcceptanceSystem,
+    ci_opt_in_acceptance_system: AcceptanceSystem,
     tmp_path: Path,
 ) -> None:
     _reject_fake_factories()
     _require_xorriso(reason="full arc-disc recover CLI workflow validation")
     _require_destructive_opt_in(reason="full arc-disc recover CLI workflow validation")
     device = _required_burn_device(reason="full arc-disc recover CLI workflow validation")
-    gated_acceptance_system.enable_real_iso_streams()
+    ci_opt_in_acceptance_system.enable_real_iso_streams()
     _image_id, session_id, burned_copy_id = _prepare_recovery_session_with_one_real_burn_needed(
-        gated_acceptance_system
+        ci_opt_in_acceptance_system
     )
     staging_dir = tmp_path / "arc-disc-recover-staging"
 
     result = _run_arc_disc(
-        gated_acceptance_system,
+        ci_opt_in_acceptance_system,
         "recover",
         session_id,
         "--device",
         str(device),
         "--staging-dir",
         str(staging_dir),
-        input_text="\nlabeled\ngated recovered optical shelf\n",
+        input_text="\nlabeled\nci-opt-in recovered optical shelf\n",
         staging_dir=staging_dir,
     )
 

@@ -181,7 +181,7 @@ Feature: arc CLI
       And stdout mentions "glacier=uploaded"
       And stdout mentions "ots=uploaded"
       And stdout mentions "estimated_monthly_cost_usd="
-    @spec_harness_only
+    @ci_opt_in @requires_controlled_glacier_billing @issue_186
     Scenario: arc glacier prints resource-level and manifest-aware billing metadata in the spec harness
       Given an archive with split planner fixtures
       And collection "docs" has uploaded Glacier archive package

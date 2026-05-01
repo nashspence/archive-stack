@@ -94,26 +94,27 @@ lock includes the `db` extra used by the prod-backed harness.
 Run the serial aggregate target with `make test` when you want one supported
 command to run lint, then unit, spec, and prod in order.
 
-## Gated optical-device validation
+## CI opt-in optical-device validation
 
-`make gated-arc-disc` is an opt-in lane for real `arc-disc` optical I/O. It is
-not part of `make test`, `make spec`, or `make prod`, because it can require
+`make ci-opt-in-arc-disc` is an opt-in lane for real `arc-disc` optical I/O. It is
+selected with `ci_opt_in and requires_optical_disc_drive and requires_human_operator` and is not part of `make test`,
+`make spec`, or `make prod`, because it can require
 operator-provided media, device permissions, and destructive writes to optical
 media.
 
 This lane validates the optical service boundary. The full workflow checks stand
 up fixture-backed API, storage, session, and restore state inside the test
-process; the real ci-unsuitable service is the optical device. The lane fails if
+process; the real opt-in capability is the optical device. The lane fails if
 any `ARC_DISC_*_FACTORY` override is configured.
 
 Read-only mounted-media validation requires a mounted disc or mounted ISO
 filesystem containing one known recovery payload object:
 
 ```bash
-export ARC_DISC_GATED_MOUNT_PATH=/media/archive-disc
-export ARC_DISC_GATED_PAYLOAD_PATH=disc/000001.bin
-export ARC_DISC_GATED_EXPECTED_SHA256=<sha256-of-disc/000001.bin>
-make gated-arc-disc
+export ARC_DISC_CI_OPT_IN_MOUNT_PATH=/media/archive-disc
+export ARC_DISC_CI_OPT_IN_PAYLOAD_PATH=disc/000001.bin
+export ARC_DISC_CI_OPT_IN_EXPECTED_SHA256=<sha256-of-disc/000001.bin>
+make ci-opt-in-arc-disc
 ```
 
 Read-only raw-device validation uses `xorriso` to extract the same object from
@@ -121,10 +122,10 @@ an inserted optical disc. It can share the payload path and expected digest from
 the mounted-media variables, or use raw-device-specific overrides:
 
 ```bash
-export ARC_DISC_GATED_RAW_DEVICE=/dev/sr0
-export ARC_DISC_GATED_RAW_PAYLOAD_PATH=disc/000001.bin
-export ARC_DISC_GATED_RAW_EXPECTED_SHA256=<sha256-of-disc/000001.bin>
-make gated-arc-disc
+export ARC_DISC_CI_OPT_IN_RAW_DEVICE=/dev/sr0
+export ARC_DISC_CI_OPT_IN_RAW_PAYLOAD_PATH=disc/000001.bin
+export ARC_DISC_CI_OPT_IN_RAW_EXPECTED_SHA256=<sha256-of-disc/000001.bin>
+make ci-opt-in-arc-disc
 ```
 
 Destructive burn validation is skipped unless the confirmation variable is set
@@ -133,58 +134,60 @@ it, burns it, then reads the ISO-sized byte range back from the same device and
 compares it to the staged ISO.
 
 ```bash
-export ARC_DISC_GATED_BURN_DEVICE=/dev/sr0
-export ARC_DISC_GATED_BURN_COPY_ID=gated-arc-disc-copy
-export ARC_DISC_GATED_BURN_CONFIRM=write-optical-media
-make gated-arc-disc
+export ARC_DISC_CI_OPT_IN_BURN_DEVICE=/dev/sr0
+export ARC_DISC_CI_OPT_IN_BURN_COPY_ID=ci-opt-in-arc-disc-copy
+export ARC_DISC_CI_OPT_IN_BURN_CONFIRM=write-optical-media
+make ci-opt-in-arc-disc
 ```
 
-Full CLI/API workflow validation is also part of `make gated-arc-disc`. These
+Full CLI/API workflow validation is also part of `make ci-opt-in-arc-disc`. These
 tests create the API state themselves, generate real ISO bytes from fixture image
 roots, run `arc-disc` as a subprocess, burn one real disc, verify it by reading
 the device, and then read that disc back through `arc-disc fetch`. The recovery
 workflow similarly uses a fixture-backed rebuilt ISO endpoint and burns one real
 replacement disc.
 
-The full workflows use `ARC_DISC_GATED_BURN_DEVICE` for both writing and reading
-and skip until the destructive confirmation is set. No `ARC_BASE_URL`, fetch id,
-session id, staging directory, prompt input, or factory override is needed.
+The full workflows use `ARC_DISC_CI_OPT_IN_BURN_DEVICE` for both writing and
+reading and skip until the destructive confirmation is set. No `ARC_BASE_URL`,
+fetch id, session id, staging directory, prompt input, or factory override is
+needed.
 
 ```bash
-export ARC_DISC_GATED_BURN_DEVICE=/dev/sr0
-export ARC_DISC_GATED_BURN_CONFIRM=write-optical-media
-make gated-arc-disc args='-k full'
+export ARC_DISC_CI_OPT_IN_BURN_DEVICE=/dev/sr0
+export ARC_DISC_CI_OPT_IN_BURN_CONFIRM=write-optical-media
+make ci-opt-in-arc-disc args='-k full'
 ```
 
-When a capability is not configured, the corresponding gated test skips with the
-missing env var or device requirement. Once a capability is explicitly
+When a capability is not configured, the corresponding opt-in test skips with
+the missing env var or device requirement. Once a capability is explicitly
 configured, command failures are treated as validation failures so drive,
 permission, media, and product regressions stay visible.
 
-## Gated Glacier-restore validation
+## CI opt-in Glacier-restore validation
 
-`make gated-glacier-restore` is an opt-in lane for live AWS S3 Glacier restore
-behavior. The lane validates the collection archive package path: archive tar,
-manifest, and OTS proof upload to the configured AWS archive bucket/storage
-class, restore request, restored-object polling, and package verification when
-AWS reports the objects are readable. It is not part of `make test`,
-`make spec`, or `make prod`, because it can issue real restore requests,
-depends on account permissions and object storage class, and may take hours
-before restored objects are readable.
+`make ci-opt-in-glacier-restore` is an opt-in lane for live AWS S3 Glacier restore
+behavior. It is selected with
+`ci_opt_in and requires_aws_s3 and requires_glacier_restore`. The lane validates
+the collection archive package path: archive tar, manifest, and OTS proof upload
+to the configured AWS archive bucket/storage class, restore request,
+restored-object polling, and package verification when AWS reports the objects
+are readable. It is not part of `make test`, `make spec`, or `make prod`,
+because it can issue real restore requests, depends on account permissions and
+object storage class, and may take hours before restored objects are readable.
 
 Restore validation requires the normal `ARC_GLACIER_*` archive backend
 configuration and explicit restore confirmation:
 
 ```bash
 export ARC_GLACIER_BACKEND=aws
-export ARC_GLACIER_GATED_RESTORE_CONFIRM=request-glacier-restore
-make gated-glacier-restore
+export ARC_GLACIER_CI_OPT_IN_RESTORE_CONFIRM=request-glacier-restore
+make ci-opt-in-glacier-restore
 ```
 
 If AWS reports the uploaded archive package is not readable yet, the restore
 request test still passes and the package verification test skips with a rerun
 message. Rerun the same command after AWS completes the restore; no object path
-or SHA override is required. If an older object at the stable gated key has the
+or SHA override is required. If an older object at the stable opt-in key has the
 wrong real S3 storage class, the lane fails with a remediation message instead
 of treating an immediately readable object as a valid Glacier restore. Delete
 the stale object or run with a fresh `ARC_GLACIER_PREFIX`, then rerun the same
@@ -252,7 +255,12 @@ uv pip compile pyproject.toml --extra dev --extra planner --extra db --python-ve
 
 ## Readiness markers
 
-- `@xfail_contract` means the fixture-backed spec harness executes the scenario, but the prod harness is still behind the contract.
-- `@xfail_not_backed` means the Gherkin contract exists before the prod harness fully backs that scenario.
-- `@xfail_not_backed` XPASSes are strict and fail the run so incomplete-backing markers get cleaned up promptly when the harness catches up.
-- `@xfail_contract` is strict in the prod harness and ignored in the spec harness.
+- `@ci_opt_in` marks scenarios and tests that are excluded from the default
+  prod-backed harness. Pair it with the appropriate `@requires_<capability>`
+  marker for the real opt-in boundary and with a tracker marker such as
+  `@issue_186` when it implies remaining work.
+- `@todo` skips scenarios whose accepted contract exists before executable
+  backing exists.
+- `@contract_gap` means the fixture-backed spec harness executes the scenario,
+  but the prod harness is still behind the contract. It is strict in the prod
+  harness and ignored in the spec harness.

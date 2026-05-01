@@ -62,9 +62,18 @@ markers = [
   "cli: CLI-focused contract coverage",
   "integration: non-contract regression coverage",
   "mvp: MVP contract coverage",
-  "spec_harness_only: shared scenario inventory item that is intentionally executable only in the spec harness",
-  "xfail_contract: spec backing exists, but prod is not implemented to the contract yet",
-  "xfail_not_backed: Gherkin contract exists, but prod backing is not implemented yet",
+  "ci_opt_in: scenario or test is excluded from default CI and runs only when explicitly selected",
+  "requires_optical_disc_drive: requires access to an optical disc drive",
+  "requires_human_operator: requires an operator to provide or handle physical media",
+  "requires_aws_s3: requires live AWS S3 access",
+  "requires_controlled_glacier_billing: requires fixture-controlled Glacier billing metadata",
+  "requires_controlled_glacier_failure: requires fixture-controlled Glacier archive failure",
+  "requires_glacier_restore: requires live S3 Glacier restore behavior",
+  "requires_webhook_capture: requires harness-controlled webhook capture or failure behavior",
+  "todo: scenario is specified but not automated yet",
+  "contract_gap: scenario is automated, but prod is not implemented to the contract yet",
+  "issue_186: tracks issue #186 for opt-in prod testing conventions",
+  "issue_187: tracks issue #187 for removing fake terminology from acceptance optical scenarios",
 ]
 
 [tool.mypy]
