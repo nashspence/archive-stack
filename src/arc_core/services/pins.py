@@ -20,17 +20,6 @@ from arc_core.services.fetches import delete_fetch_entries
 from arc_core.sqlite_db import make_session_factory, session_scope
 
 
-class StubPinService:
-    def pin(self, raw_target: str) -> object:
-        raise NotImplementedError("StubPinService is not implemented yet")
-
-    def release(self, raw_target: str) -> object:
-        raise NotImplementedError("StubPinService is not implemented yet")
-
-    def list_pins(self) -> list[object]:
-        raise NotImplementedError("StubPinService is not implemented yet")
-
-
 class SqlAlchemyPinService:
     def __init__(
         self, config: RuntimeConfig, hot_store: HotStore, upload_store: UploadStore

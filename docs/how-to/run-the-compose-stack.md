@@ -94,6 +94,13 @@ Explicit shared project runs keep that directory because they are intended to be
 reused across commands. There is no supported override for this state root;
 choose the Compose project name to control isolation or reuse.
 
+Use `make prune-prod-state` to list stale generated prod-harness roots such as
+`.compose/archive-stack-test-codespace-167907`. The command is dry-run by
+default and preserves shared/manual directories. Run
+`make prune-prod-state args='--force'` to delete the listed generated roots with
+the same Docker-backed cleanup approach used by successful prod-harness runs, so
+root-owned bind-mount files are removable.
+
 The checked-in Dockerfiles install hashed dependencies from
 `requirements-runtime.txt` and `requirements-test.txt` before copying
 `pyproject.toml`, `src/`, `contracts/`, or `tests/`, and they do not copy README
@@ -101,6 +108,9 @@ content, docs, or prod-harness state into the dependency layers. This keeps
 targeted prod-backed checks from rebuilding dependency-install layers after
 README, source, documentation, or local harness-state changes while still
 building the app and test images before the prod lane runs.
+Regenerate `requirements-runtime.txt` and `requirements-test.txt` together when
+dependency constraints change; the unit suite checks that shared packages do not
+drift and that both lockfiles keep hash-pinned entries.
 
 If `ARC_GLACIER_BUCKET` differs from `ARC_S3_BUCKET`, that bootstrap applies and
 verifies the same lifecycle rule on both buckets.

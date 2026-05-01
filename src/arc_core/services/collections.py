@@ -69,56 +69,6 @@ class _RecoveryParts:
     present_parts: frozenset[int]
 
 
-class StubCollectionService:
-    def create_or_resume_upload(
-        self,
-        *,
-        collection_id: str,
-        files: Sequence[dict[str, object]],
-        ingest_source: str | None = None,
-    ) -> dict[str, object]:
-        raise NotImplementedError("StubCollectionService is not implemented yet")
-
-    def get_upload(self, collection_id: str) -> dict[str, object]:
-        raise NotImplementedError("StubCollectionService is not implemented yet")
-
-    def create_or_resume_file_upload(self, collection_id: str, path: str) -> dict[str, object]:
-        raise NotImplementedError("StubCollectionService is not implemented yet")
-
-    def append_upload_chunk(
-        self,
-        collection_id: str,
-        path: str,
-        *,
-        offset: int,
-        checksum: str,
-        content: bytes,
-    ) -> dict[str, object]:
-        raise NotImplementedError("StubCollectionService is not implemented yet")
-
-    def get_file_upload(self, collection_id: str, path: str) -> dict[str, object]:
-        raise NotImplementedError("StubCollectionService is not implemented yet")
-
-    def cancel_file_upload(self, collection_id: str, path: str) -> None:
-        raise NotImplementedError("StubCollectionService is not implemented yet")
-
-    def expire_stale_uploads(self) -> None:
-        raise NotImplementedError("StubCollectionService is not implemented yet")
-
-    def get(self, collection_id: str) -> CollectionSummary:
-        raise NotImplementedError("StubCollectionService is not implemented yet")
-
-    def list(
-        self,
-        *,
-        page: int,
-        per_page: int,
-        q: str | None,
-        protection_state: str | None,
-    ) -> CollectionListPage:
-        raise NotImplementedError("StubCollectionService is not implemented yet")
-
-
 class SqlAlchemyCollectionService:
     def __init__(
         self,

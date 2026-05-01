@@ -474,6 +474,7 @@ def test_help_describes_make_targets_and_omits_fast(tmp_path: Path) -> None:
     assert "make build-test" in completed.stdout
     assert "make stop-spec" in completed.stdout
     assert "make stop-prod" in completed.stdout
+    assert "make prune-prod-state" in completed.stdout
     assert "make test" in completed.stdout
     assert "args='...'" in completed.stdout
     assert "fast" not in completed.stdout

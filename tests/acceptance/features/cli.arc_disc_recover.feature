@@ -2,8 +2,8 @@
 Feature: arc-disc recover CLI
   The optical CLI discovers and resumes image rebuild sessions for finalized images that lost all protected copies.
   Scenario: arc-disc recover lists one multi-image pending rebuild session
-    Given an archive with planner fixtures
-    And an archive with split planner fixtures
+    Given an archive with planned images
+    And an archive with split planned images
     And collection "docs" has uploaded Glacier archive package
     And candidate "img_2026-04-20_01" is finalized
     And candidate "img_2026-04-20_03" is finalized
@@ -24,8 +24,8 @@ Feature: arc-disc recover CLI
     And stdout mentions "20260420T040003Z"
   @ci_opt_in @requires_optical_disc_drive @requires_human_operator @issue_186 @issue_187
   Scenario: arc-disc recover resumes one ready multi-image rebuild session and cleans up staged ISOs
-    Given an archive with planner fixtures
-    And an archive with split planner fixtures
+    Given an archive with planned images
+    And an archive with split planned images
     And collection "docs" has uploaded Glacier archive package
     And candidate "img_2026-04-20_01" is finalized
     And candidate "img_2026-04-20_03" is finalized
@@ -37,20 +37,20 @@ Feature: arc-disc recover CLI
     And the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-2" with state "damaged"
     And the client patches "/v1/images/20260420T040003Z/copies/20260420T040003Z-1" with state "lost"
     And the client patches "/v1/images/20260420T040003Z/copies/20260420T040003Z-2" with state "damaged"
-    When the operator runs 'arc-disc recover rs-20260420T040001Z-rebuild-1 --device /dev/arc-optical0'
+    When the operator runs arc-disc recover "rs-20260420T040001Z-rebuild-1"
     Then the command exits with code 0
     And stdout mentions "rebuild session rs-20260420T040001Z-rebuild-1 is restore_requested"
-    And the burn fixture fails while verifying burned media for copy id "20260420T040001Z-3"
-    And the burn fixture confirms labeled copy id "20260420T040001Z-4" at location "vault-b/shelf-02"
-    And the burn fixture confirms labeled copy id "20260420T040003Z-3" at location "vault-c/shelf-02"
-    And the burn fixture confirms labeled copy id "20260420T040003Z-4" at location "vault-d/shelf-02"
+    And burned-media verification fails for copy id "20260420T040001Z-3"
+    And the operator confirms labeled copy id "20260420T040001Z-4" at location "vault-b/shelf-02"
+    And the operator confirms labeled copy id "20260420T040003Z-3" at location "vault-c/shelf-02"
+    And the operator confirms labeled copy id "20260420T040003Z-4" at location "vault-d/shelf-02"
     When the client waits for recovery session "rs-20260420T040001Z-rebuild-1" state "ready"
-    And the operator runs 'arc-disc recover rs-20260420T040001Z-rebuild-1 --device /dev/arc-optical0'
+    And the operator runs arc-disc recover "rs-20260420T040001Z-rebuild-1"
     Then the command exits non-zero
-    When the burn fixture says unlabeled copy id "20260420T040001Z-3" is still available
-    And the burn fixture clears all burn failures
-    And the burn fixture confirms labeled copy id "20260420T040001Z-3" at location "vault-a/shelf-02"
-    And the operator runs 'arc-disc recover rs-20260420T040001Z-rebuild-1 --device /dev/arc-optical0'
+    When unlabeled copy id "20260420T040001Z-3" is still available
+    And the optical burn boundary is healthy again
+    And the operator confirms labeled copy id "20260420T040001Z-3" at location "vault-a/shelf-02"
+    And the operator runs arc-disc recover "rs-20260420T040001Z-rebuild-1"
     Then the command exits with code 0
     And stdout mentions "rebuild session rs-20260420T040001Z-rebuild-1 completed"
     And stderr mentions "verifying burned media for 20260420T040001Z-3"

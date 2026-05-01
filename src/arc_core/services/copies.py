@@ -27,7 +27,7 @@ from arc_core.catalog_models import (
     ImageCopyRecord,
 )
 from arc_core.domain.enums import CopyState, VerificationState
-from arc_core.domain.errors import BadRequest, Conflict, InvalidState, NotFound, NotYetImplemented
+from arc_core.domain.errors import BadRequest, Conflict, InvalidState, NotFound
 from arc_core.domain.models import CopyHistoryEntry, CopySummary
 from arc_core.domain.types import CopyId
 from arc_core.finalized_image_coverage import group_disc_manifest_entries
@@ -388,27 +388,6 @@ class SqlAlchemyCopyService:
                 for row in history_rows
             ),
         )
-
-
-class StubCopyService:
-    def register(
-        self, image_id: str, location: str, *, copy_id: str | None = None
-    ) -> CopySummary:
-        raise NotYetImplemented("StubCopyService is not implemented yet")
-
-    def list_for_image(self, image_id: str) -> list[CopySummary]:
-        raise NotYetImplemented("StubCopyService is not implemented yet")
-
-    def update(
-        self,
-        image_id: str,
-        copy_id: str,
-        *,
-        location: str | None = None,
-        state: str | None = None,
-        verification_state: str | None = None,
-    ) -> CopySummary:
-        raise NotYetImplemented("StubCopyService is not implemented yet")
 
 
 def _generated_copy_id(image_id: str, ordinal: int) -> str:

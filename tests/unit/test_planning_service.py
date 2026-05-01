@@ -9,43 +9,7 @@ from arc_core.domain.errors import NotYetImplemented
 from arc_core.services.planning import (
     ImageRootPlanningService,
     ImageRootRecord,
-    StubPlanningService,
 )
-
-
-def test_stub_planning_service_raises_not_yet_implemented_for_every_entrypoint() -> None:
-    service = StubPlanningService()
-
-    with pytest.raises(NotYetImplemented, match="StubPlanningService is not implemented yet"):
-        service.get_plan(
-            page=1,
-            per_page=25,
-            sort="fill",
-            order="desc",
-            q=None,
-            collection=None,
-            iso_ready=None,
-        )
-
-    with pytest.raises(NotYetImplemented, match="StubPlanningService is not implemented yet"):
-        service.list_images(
-            page=1,
-            per_page=25,
-            sort="finalized_at",
-            order="desc",
-            q=None,
-            collection=None,
-            has_copies=None,
-        )
-
-    with pytest.raises(NotYetImplemented, match="StubPlanningService is not implemented yet"):
-        service.get_image("img_001")
-
-    with pytest.raises(NotYetImplemented, match="StubPlanningService is not implemented yet"):
-        service.finalize_image("img_001")
-
-    with pytest.raises(NotYetImplemented, match="StubPlanningService is not implemented yet"):
-        service.get_iso_stream("img_001")
 
 
 def test_image_root_planning_service_delegates_lookups_and_stream_creation(

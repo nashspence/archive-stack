@@ -614,44 +614,6 @@ def ensure_glacier_recovery_session_for_image(
     _create_recovery_session(session, config=config, image=image)
 
 
-class StubRecoverySessionService:
-    def get(self, session_id: str) -> RecoverySessionSummary:
-        raise NotImplementedError("StubRecoverySessionService is not implemented yet")
-
-    def get_for_image(self, image_id: str) -> RecoverySessionSummary:
-        raise NotImplementedError("StubRecoverySessionService is not implemented yet")
-
-    def get_for_collection(self, collection_id: str) -> RecoverySessionSummary:
-        raise NotImplementedError("StubRecoverySessionService is not implemented yet")
-
-    def create_or_resume_for_collection(self, collection_id: str) -> RecoverySessionSummary:
-        raise NotImplementedError("StubRecoverySessionService is not implemented yet")
-
-    def create_or_resume_for_image(self, image_id: str) -> RecoverySessionSummary:
-        raise NotImplementedError("StubRecoverySessionService is not implemented yet")
-
-    def approve(self, session_id: str) -> RecoverySessionSummary:
-        raise NotImplementedError("StubRecoverySessionService is not implemented yet")
-
-    def complete(self, session_id: str) -> RecoverySessionSummary:
-        raise NotImplementedError("StubRecoverySessionService is not implemented yet")
-
-    def materialize_collection_files(
-        self,
-        session_id: str,
-        collection_id: str,
-        *,
-        paths: Sequence[str],
-    ) -> RecoverySessionSummary:
-        raise NotImplementedError("StubRecoverySessionService is not implemented yet")
-
-    def iter_restored_iso(self, session_id: str, image_id: str) -> Iterator[bytes]:
-        raise NotImplementedError("StubRecoverySessionService is not implemented yet")
-
-    def process_due_sessions(self, *, limit: int = 100) -> int:
-        raise NotImplementedError("StubRecoverySessionService is not implemented yet")
-
-
 def _create_recovery_session(
     session: Session,
     *,

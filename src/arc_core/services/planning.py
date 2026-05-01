@@ -37,7 +37,6 @@ from arc_core.finalized_image_coverage import (
 )
 from arc_core.iso.streaming import IsoStream, stream_iso_from_root
 from arc_core.runtime_config import RuntimeConfig
-from arc_core.services.contracts import PlanningIsoResult
 from arc_core.sqlite_db import make_session_factory, session_scope
 
 
@@ -433,43 +432,6 @@ def _image_id_to_finalized_at(image_id: str) -> str:
 
 def _strip_internal(view: Mapping[str, object]) -> dict[str, object]:
     return {k: v for k, v in view.items() if not k.startswith("_")}
-
-
-class StubPlanningService:
-    def get_plan(
-        self,
-        *,
-        page: int = 1,
-        per_page: int = 25,
-        sort: str = "fill",
-        order: str = "desc",
-        q: str | None = None,
-        collection: str | None = None,
-        iso_ready: bool | None = None,
-    ) -> dict[str, object]:
-        raise NotYetImplemented("StubPlanningService is not implemented yet")
-
-    def list_images(
-        self,
-        *,
-        page: int,
-        per_page: int,
-        sort: str,
-        order: str,
-        q: str | None,
-        collection: str | None,
-        has_copies: bool | None,
-    ) -> dict[str, object]:
-        raise NotYetImplemented("StubPlanningService is not implemented yet")
-
-    def get_image(self, image_id: str) -> dict[str, object]:
-        raise NotYetImplemented("StubPlanningService is not implemented yet")
-
-    def finalize_image(self, image_id: str) -> dict[str, object]:
-        raise NotYetImplemented("StubPlanningService is not implemented yet")
-
-    def get_iso_stream(self, image_id: str) -> PlanningIsoResult:
-        raise NotYetImplemented("StubPlanningService is not implemented yet")
 
 
 @dataclass(slots=True)

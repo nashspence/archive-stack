@@ -43,29 +43,6 @@ def _paginate_file_records(
     }
 
 
-class StubFileService:
-    def list_collection_files(
-        self,
-        collection_id: str,
-        *,
-        page: int,
-        per_page: int,
-    ) -> dict[str, object]:
-        raise NotImplementedError("StubFileService is not implemented yet")
-
-    def query_by_target(
-        self,
-        raw_target: str,
-        *,
-        page: int,
-        per_page: int,
-    ) -> dict[str, object]:
-        raise NotImplementedError("StubFileService is not implemented yet")
-
-    def get_content(self, raw_target: str) -> bytes:
-        raise NotImplementedError("StubFileService is not implemented yet")
-
-
 class SqlAlchemyFileService:
     def __init__(self, config: RuntimeConfig, hot_store: HotStore) -> None:
         self._config = config

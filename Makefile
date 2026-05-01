@@ -4,7 +4,7 @@ SHELL := bash
 UV_RUN = uv run --python 3.11 --isolated --with-requirements "$(CURDIR)/requirements-test.txt" --with-editable '.[db]'
 args ?=
 
-.PHONY: help ruff mypy lint unit spec stop-spec ci-opt-in-arc-disc ci-opt-in-glacier-restore build build-app build-test bootstrap-garage down prod stop-prod prod-profile test
+.PHONY: help ruff mypy lint unit spec stop-spec ci-opt-in-arc-disc ci-opt-in-glacier-restore build build-app build-test bootstrap-garage down prod stop-prod prune-prod-state prod-profile test
 
 help:
 	@printf '%s\n' \
@@ -24,6 +24,7 @@ help:
 		'  make down              Tear the compose-managed test stack down.' \
 		'  make prod              Run the prod-backed acceptance harness.' \
 		'  make stop-prod         Stop in-flight prod-backed harness Compose projects.' \
+		'  make prune-prod-state  List stale generated prod-harness .compose state; pass args=--force to delete.' \
 		'  make prod-profile      Run the prod-backed acceptance harness with pytest durations.' \
 		'  make test              Run lint, unit, spec, then prod.' \
 		'' \
@@ -74,6 +75,9 @@ prod:
 
 stop-prod:
 	@./scripts/stop_prod.sh
+
+prune-prod-state:
+	@python scripts/prune_compose_state.py $(args)
 
 prod-profile:
 	@./scripts/prod_profile.sh $(args)

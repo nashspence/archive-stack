@@ -11,7 +11,7 @@ Feature: arc-disc CLI
 
   @ci_opt_in @requires_optical_disc_drive @requires_human_operator @issue_186 @issue_187
   Scenario: arc-disc fetch completes a recoverable fetch
-    When the operator runs 'arc-disc fetch fx-1 --device /dev/arc-optical0 --json'
+    When the operator runs arc-disc fetch "fx-1" with JSON output
     Then the command exits with code 0
     And stdout is valid JSON
     And stdout reports fetch state "done"
@@ -21,7 +21,7 @@ Feature: arc-disc CLI
 
   @ci_opt_in @requires_optical_disc_drive @requires_human_operator @issue_186 @issue_187
   Scenario: arc-disc fetch reports precise progress while streaming uploads
-    When the operator runs 'arc-disc fetch fx-1 --device /dev/arc-optical0 --json'
+    When the operator runs arc-disc fetch "fx-1" with JSON output
     Then the command exits with code 0
     And stderr mentions "current file"
     And stderr mentions "manifest"
@@ -30,19 +30,19 @@ Feature: arc-disc CLI
 
   @ci_opt_in @requires_optical_disc_drive @requires_human_operator @issue_186 @issue_187
   Scenario: arc-disc fetch fails if optical recovery fails
-    Given the optical reader fixture fails for one required entry
-    When the operator runs 'arc-disc fetch fx-1 --device /dev/arc-optical0'
+    Given the configured optical reader cannot recover one required entry
+    When the operator runs arc-disc fetch "fx-1"
     Then the command exits non-zero
     And fetch "fx-1" is not "done"
 
   @ci_opt_in @requires_optical_disc_drive @requires_human_operator @issue_186 @issue_187
   Scenario: arc-disc fetch resumes split recovery across repeated runs via server-side upload state
-    Given the optical reader fixture fails for copy id "20260420T040004Z-1"
-    When the operator runs 'arc-disc fetch fx-1 --device /dev/arc-optical0'
+    Given the configured optical reader cannot recover copy id "20260420T040004Z-1"
+    When the operator runs arc-disc fetch "fx-1"
     Then the command exits non-zero
     And fetch "fx-1" is not "done"
-    When the optical reader fixture fails for copy id "20260420T040003Z-1"
-    And the operator runs 'arc-disc fetch fx-1 --device /dev/arc-optical0 --json'
+    When the configured optical reader cannot recover copy id "20260420T040003Z-1"
+    And the operator runs arc-disc fetch "fx-1" with JSON output
     Then the command exits with code 0
     And stdout is valid JSON
     And stdout reports fetch state "done"
@@ -52,8 +52,8 @@ Feature: arc-disc CLI
 
   @ci_opt_in @requires_optical_disc_drive @requires_human_operator @issue_186 @issue_187
   Scenario: arc-disc fetch fails if the server rejects incorrect recovered bytes
-    Given the optical reader fixture returns incorrect recovered bytes for one required entry
-    When the operator runs 'arc-disc fetch fx-1 --device /dev/arc-optical0'
+    Given the configured optical reader returns bytes the server rejects for one required entry
+    When the operator runs arc-disc fetch "fx-1"
     Then the command exits non-zero
     And fetch "fx-1" is not "done"
     And stderr mentions "reset byte-complete upload"
@@ -64,7 +64,7 @@ Feature: arc-disc CLI
     And fetch manifest entry "e1" upload state is "pending"
     And fetch manifest entry "e1" uploaded bytes is 0
     When a configured optical reader can recover every required entry
-    And the operator runs 'arc-disc fetch fx-1 --device /dev/arc-optical0 --json'
+    And the operator runs arc-disc fetch "fx-1" with JSON output
     Then the command exits with code 0
     And stdout is valid JSON
     And stdout reports fetch state "done"

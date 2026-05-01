@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import re
 import shlex
 from dataclasses import dataclass, field
@@ -48,6 +49,7 @@ from tests.fixtures.disc_contracts import (
 )
 
 _CAPTURED_WEBHOOK_TIMEOUT_DELAY_SECONDS = 15.0
+_DEFAULT_OPTICAL_ACCEPTANCE_DEVICE = "/dev/sr0"
 
 
 @dataclass(slots=True)
@@ -88,6 +90,24 @@ def _require_command(context: AcceptanceScenarioContext) -> Any:
     if context.command is None:  # pragma: no cover - defensive guard
         raise AssertionError("no command has been recorded for this scenario")
     return context.command
+
+
+def _configured_optical_acceptance_device() -> str:
+    return os.environ.get("ARC_DISC_ACCEPTANCE_DEVICE", _DEFAULT_OPTICAL_ACCEPTANCE_DEVICE)
+
+
+def _run_arc_disc_command(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+    *args: str,
+) -> None:
+    argv = ["arc-disc", *args]
+    acceptance_context.command_text = shlex.join(argv)
+    acceptance_context.command_argv = argv
+    acceptance_context.stdout_json = None
+    acceptance_context.expected_api_endpoint = None
+    acceptance_context.expected_api_payload = None
+    acceptance_context.command = acceptance_system.run_arc_disc(*args)
 
 
 def _require_inspected_iso(context: AcceptanceScenarioContext) -> InspectedIso:
@@ -674,11 +694,13 @@ def given_archive_with_search_fixtures(acceptance_system: AcceptanceSystem) -> N
 
 
 @given("an archive with planner fixtures")
+@given("an archive with planned images")
 def given_archive_with_planner_fixtures(acceptance_system: AcceptanceSystem) -> None:
     acceptance_system.seed_planner_fixtures()
 
 
 @given("an archive with split planner fixtures")
+@given("an archive with split planned images")
 def given_archive_with_split_planner_fixtures(acceptance_system: AcceptanceSystem) -> None:
     acceptance_system.seed_split_planner_fixtures()
 
@@ -889,6 +911,7 @@ def given_arc_disc_success_fixture(
 
 
 @given("the optical reader fixture fails for one required entry")
+@given("the configured optical reader cannot recover one required entry")
 def given_arc_disc_reader_failure_fixture(acceptance_system: AcceptanceSystem) -> None:
     acceptance_system.configure_arc_disc_fixture(
         fetch_id="fx-1",
@@ -897,6 +920,7 @@ def given_arc_disc_reader_failure_fixture(acceptance_system: AcceptanceSystem) -
 
 
 @given("the optical reader fixture returns incorrect recovered bytes for one required entry")
+@given("the configured optical reader returns bytes the server rejects for one required entry")
 def given_arc_disc_server_validation_failure_fixture(acceptance_system: AcceptanceSystem) -> None:
     acceptance_system.configure_arc_disc_fixture(
         fetch_id="fx-1",
@@ -906,6 +930,8 @@ def given_arc_disc_server_validation_failure_fixture(acceptance_system: Acceptan
 
 @given(parsers.parse('the optical reader fixture fails for copy id "{copy_id}"'))
 @when(parsers.parse('the optical reader fixture fails for copy id "{copy_id}"'))
+@given(parsers.parse('the configured optical reader cannot recover copy id "{copy_id}"'))
+@when(parsers.parse('the configured optical reader cannot recover copy id "{copy_id}"'))
 def given_arc_disc_reader_failure_for_copy(
     acceptance_system: AcceptanceSystem,
     copy_id: str,
@@ -922,6 +948,9 @@ def given_arc_disc_reader_failure_for_copy(
 @then(
     parsers.parse('the burn fixture confirms labeled copy id "{copy_id}" at location "{location}"')
 )
+@given(parsers.parse('the operator confirms labeled copy id "{copy_id}" at location "{location}"'))
+@when(parsers.parse('the operator confirms labeled copy id "{copy_id}" at location "{location}"'))
+@then(parsers.parse('the operator confirms labeled copy id "{copy_id}" at location "{location}"'))
 def given_burn_fixture_confirms_labeled_copy(
     acceptance_system: AcceptanceSystem,
     copy_id: str,
@@ -932,6 +961,8 @@ def given_burn_fixture_confirms_labeled_copy(
 
 @given(parsers.parse('the burn fixture says unlabeled copy id "{copy_id}" is still available'))
 @when(parsers.parse('the burn fixture says unlabeled copy id "{copy_id}" is still available'))
+@given(parsers.parse('unlabeled copy id "{copy_id}" is still available'))
+@when(parsers.parse('unlabeled copy id "{copy_id}" is still available'))
 def given_burn_fixture_says_unlabeled_copy_is_available(
     acceptance_system: AcceptanceSystem,
     copy_id: str,
@@ -941,6 +972,8 @@ def given_burn_fixture_says_unlabeled_copy_is_available(
 
 @given(parsers.parse('the burn fixture says unlabeled copy id "{copy_id}" is unavailable'))
 @when(parsers.parse('the burn fixture says unlabeled copy id "{copy_id}" is unavailable'))
+@given(parsers.parse('unlabeled copy id "{copy_id}" is unavailable'))
+@when(parsers.parse('unlabeled copy id "{copy_id}" is unavailable'))
 def given_burn_fixture_says_unlabeled_copy_is_unavailable(
     acceptance_system: AcceptanceSystem,
     copy_id: str,
@@ -951,6 +984,9 @@ def given_burn_fixture_says_unlabeled_copy_is_unavailable(
 @given(parsers.parse('the burn fixture fails while burning copy id "{copy_id}"'))
 @when(parsers.parse('the burn fixture fails while burning copy id "{copy_id}"'))
 @then(parsers.parse('the burn fixture fails while burning copy id "{copy_id}"'))
+@given(parsers.parse('burning copy id "{copy_id}" fails'))
+@when(parsers.parse('burning copy id "{copy_id}" fails'))
+@then(parsers.parse('burning copy id "{copy_id}" fails'))
 def given_burn_fixture_fails_while_burning_copy(
     acceptance_system: AcceptanceSystem,
     copy_id: str,
@@ -961,6 +997,9 @@ def given_burn_fixture_fails_while_burning_copy(
 @given(parsers.parse('the burn fixture fails while verifying burned media for copy id "{copy_id}"'))
 @when(parsers.parse('the burn fixture fails while verifying burned media for copy id "{copy_id}"'))
 @then(parsers.parse('the burn fixture fails while verifying burned media for copy id "{copy_id}"'))
+@given(parsers.parse('burned-media verification fails for copy id "{copy_id}"'))
+@when(parsers.parse('burned-media verification fails for copy id "{copy_id}"'))
+@then(parsers.parse('burned-media verification fails for copy id "{copy_id}"'))
 def given_burn_fixture_fails_while_verifying_burned_media(
     acceptance_system: AcceptanceSystem,
     copy_id: str,
@@ -969,6 +1008,7 @@ def given_burn_fixture_fails_while_verifying_burned_media(
 
 
 @when("the burn fixture clears all burn failures")
+@when("the optical burn boundary is healthy again")
 def when_burn_fixture_clears_failures(acceptance_system: AcceptanceSystem) -> None:
     acceptance_system.clear_arc_disc_burn_failures()
 
@@ -1743,6 +1783,69 @@ def when_operator_runs_command(
         return
 
     raise AssertionError(f"unsupported command: {command}")
+
+
+@when(parsers.parse('the operator runs arc-disc fetch "{fetch_id}"'))
+def when_operator_runs_arc_disc_fetch(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+    fetch_id: str,
+) -> None:
+    _run_arc_disc_command(
+        acceptance_system,
+        acceptance_context,
+        "fetch",
+        fetch_id,
+        "--device",
+        _configured_optical_acceptance_device(),
+    )
+
+
+@when(parsers.parse('the operator runs arc-disc fetch "{fetch_id}" with JSON output'))
+def when_operator_runs_arc_disc_fetch_json(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+    fetch_id: str,
+) -> None:
+    _run_arc_disc_command(
+        acceptance_system,
+        acceptance_context,
+        "fetch",
+        fetch_id,
+        "--device",
+        _configured_optical_acceptance_device(),
+        "--json",
+    )
+
+
+@when("the operator runs arc-disc burn")
+def when_operator_runs_arc_disc_burn(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+) -> None:
+    _run_arc_disc_command(
+        acceptance_system,
+        acceptance_context,
+        "burn",
+        "--device",
+        _configured_optical_acceptance_device(),
+    )
+
+
+@when(parsers.parse('the operator runs arc-disc recover "{session_id}"'))
+def when_operator_runs_arc_disc_recover(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+    session_id: str,
+) -> None:
+    _run_arc_disc_command(
+        acceptance_system,
+        acceptance_context,
+        "recover",
+        session_id,
+        "--device",
+        _configured_optical_acceptance_device(),
+    )
 
 
 @then(parsers.parse("the response status is {status:d}"))

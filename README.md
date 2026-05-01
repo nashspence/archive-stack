@@ -19,6 +19,9 @@ ports, plus project-scoped harness state and workspaces under `.compose/`.
 Successful isolated prod-backed runs remove their generated `.compose/` state;
 explicit shared project runs keep it. There is no supported override for this
 state root; use `TEST_COMPOSE_PROJECT_NAME` when you need deliberate reuse.
+Use `make prune-prod-state` to list older generated prod-harness state roots
+under `.compose/`, and `make prune-prod-state args='--force'` to delete only
+those generated roots with Docker-backed cleanup.
 
 If source, contract, or fixture edits are needed while a canonical spec or prod
 lane is still running, stop that lane first, make the edit, then restart the
@@ -38,6 +41,7 @@ Run `make bootstrap-garage` to apply the checked-in Garage bucket and key bootst
 Run the production-backed harness against the executable acceptance contract with `make prod`.
 Profile the production-backed harness with `make prod-profile`.
 Stop in-flight acceptance lanes with `make stop-spec` or `make stop-prod`.
+List or prune stale generated prod-harness state with `make prune-prod-state`.
 Run the fixture-backed spec harness lane with `make spec`.
 Run the unit lane with `make unit`.
 Pass mypy or pytest selectors with `args='...'`.

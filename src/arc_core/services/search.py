@@ -8,11 +8,6 @@ from arc_core.runtime_config import RuntimeConfig
 from arc_core.sqlite_db import make_session_factory, session_scope
 
 
-class StubSearchService:
-    def search(self, query: str, limit: int) -> list[dict[str, object]]:
-        raise NotImplementedError("StubSearchService is not implemented yet")
-
-
 class SqlAlchemySearchService:
     def __init__(self, config: RuntimeConfig) -> None:
         self._session_factory = make_session_factory(str(config.sqlite_path))

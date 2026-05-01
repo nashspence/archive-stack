@@ -220,6 +220,25 @@ preserve the directory because they are intentionally reusing one stack. There
 is no supported override for this state root; choose the Compose project name to
 control isolation or reuse.
 
+Older failed or pre-cleanup generated runs can leave stale
+`.compose/archive-stack-test-*` roots behind. List the generated roots that the
+maintenance command would delete with:
+
+```bash
+make prune-prod-state
+```
+
+Delete the listed generated roots with Docker-backed cleanup, which handles
+root-owned files created through the source bind mount:
+
+```bash
+make prune-prod-state args='--force'
+```
+
+The command only selects generated `archive-stack-test-...-<pid>` roots.
+Shared/manual state such as `.compose/acceptance` or explicit project names is
+preserved by default.
+
 If you need to reuse one Compose project explicitly, export
 `TEST_COMPOSE_PROJECT_NAME` before running `make`.
 Do that before `make bootstrap-garage` or `make down` as well when you want
@@ -243,6 +262,11 @@ Regenerate the test lock with:
 ```bash
 uv pip compile pyproject.toml --extra dev --extra planner --extra db --python-version 3.11 --generate-hashes -o requirements-test.txt
 ```
+
+When dependency constraints change, regenerate both lockfiles in the same
+change. Unit coverage verifies every locked package has `--hash=sha256:` entries
+and that runtime packages shared with the test lock remain pinned to identical
+versions.
 
 
 ## What lives where
