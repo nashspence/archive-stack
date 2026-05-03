@@ -18,6 +18,7 @@ import typer
 from arc_cli.client import ApiClient
 from arc_cli.output import emit
 from arc_core.domain.errors import ArcError, HashMismatch, NotFound
+from contracts.operator import copy as operator_copy
 
 app = typer.Typer(help="arc optical recovery CLI")
 
@@ -170,6 +171,8 @@ class RecoverySessionHint:
     state: str
     latest_message: str | None
     images: tuple[RecoverySessionImageHint, ...]
+    affected: tuple[str, ...] = ()
+    estimated_cost: object | None = None
 
 
 _PENDING_BURN_STATES = {"needed", "burning"}
@@ -717,7 +720,34 @@ def _recovery_session_hint_from_payload(payload: dict[str, Any]) -> RecoverySess
             str(payload["latest_message"]) if payload.get("latest_message") is not None else None
         ),
         images=images,
+        affected=_recovery_session_affected(payload),
+        estimated_cost=_recovery_session_estimated_cost(payload),
     )
+
+
+def _recovery_session_affected(payload: dict[str, Any]) -> tuple[str, ...]:
+    affected: set[str] = set()
+    collections = payload.get("collections", [])
+    if isinstance(collections, list):
+        for collection in collections:
+            if isinstance(collection, dict) and collection.get("id") is not None:
+                affected.add(str(collection["id"]))
+    images = payload.get("images", [])
+    if isinstance(images, list):
+        for image in images:
+            if not isinstance(image, dict):
+                continue
+            collection_ids = image.get("collection_ids", [])
+            if isinstance(collection_ids, list):
+                affected.update(str(collection_id) for collection_id in collection_ids)
+    return tuple(sorted(affected))
+
+
+def _recovery_session_estimated_cost(payload: dict[str, Any]) -> object | None:
+    cost_estimate = payload.get("cost_estimate")
+    if not isinstance(cost_estimate, dict):
+        return None
+    return cost_estimate.get("total_estimated_cost_usd")
 
 
 def _discover_active_recovery_sessions(client: ApiClient) -> list[RecoverySessionHint]:
@@ -886,10 +916,26 @@ def _process_recovery_session(
             client=client,
             staging_dir=staging_dir,
         ):
-            raise RuntimeError(
-                recovery_session.latest_message
-                or f"recovery session expired and must be re-initiated: {session_id}"
+            typer.echo(
+                operator_copy.recovery_expired_needs_reapproval(
+                    session_id=session_id,
+                    affected=recovery_session.affected or ("affected data",),
+                    estimated_cost=recovery_session.estimated_cost,
+                )
             )
+            return (
+                RecoverySessionHint(
+                    session_id=recovery_session.session_id,
+                    type=recovery_session.type,
+                    state="restore_requested",
+                    latest_message=None,
+                    images=recovery_session.images,
+                    affected=recovery_session.affected,
+                    estimated_cost=recovery_session.estimated_cost,
+                ),
+                [],
+            )
+        typer.echo(operator_copy.recovery_expired_local_resume(session_id=session_id))
         typer.echo(
             "restore window expired remotely; resuming from local staged ISO artifacts",
             err=True,
