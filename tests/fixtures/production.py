@@ -45,6 +45,7 @@ from arc_core.finalized_image_coverage import (
     read_finalized_image_coverage_parts,
 )
 from arc_core.fs_paths import normalize_collection_id, normalize_relpath
+from arc_core.operator_statecharts import OperatorDecision, OperatorView
 from arc_core.recovery_payloads import CommandAgeBatchpassRecoveryPayloadCodec
 from arc_core.runtime_config import load_runtime_config
 from arc_core.sqlite_db import make_session_factory, session_scope
@@ -53,6 +54,7 @@ from arc_core.stores.s3_support import (
     create_glacier_s3_client,
     create_s3_client,
 )
+from contracts.operator import copy as operator_copy
 from tests.fixtures.acceptance import REPO_ROOT, SRC_ROOT
 from tests.fixtures.crypto import FixtureRecoveryPayloadCodec
 from tests.fixtures.data import (
@@ -1513,6 +1515,30 @@ class ProductionSystem:
         response = self.request("POST", "/v1/pin", json_body={"target": target})
         assert response.status_code == 200, response.text
 
+    def set_operator_blank_disc_work_available(self) -> None:
+        self.planning.finalize_image(IMAGE_FIXTURES[0].id)
+
+    def operator_collection_is_fully_protected(self) -> bool:
+        protected_states = {CopyState.REGISTERED.value, CopyState.VERIFIED.value}
+        with session_scope(make_session_factory(str(self.db_path))) as session:
+            images = session.scalars(select(FinalizedImageRecord)).all()
+            if not images:
+                return False
+            for image in images:
+                required = image.required_copy_count or 2
+                copies = session.scalars(
+                    select(ImageCopyRecord).where(ImageCopyRecord.image_id == image.image_id)
+                ).all()
+                protected_count = sum(1 for copy in copies if copy.state in protected_states)
+                if protected_count < required:
+                    return False
+        return True
+
+    def operator_disc_label_is_recorded(self) -> bool:
+        with session_scope(make_session_factory(str(self.db_path))) as session:
+            copies = session.scalars(select(ImageCopyRecord)).all()
+            return any(copy.location for copy in copies)
+
     def recovery_upload_absent(self, fetch_id: str) -> bool:
         response = self._s3_client().list_objects_v2(
             Bucket=load_runtime_config().s3_bucket,
@@ -1795,6 +1821,101 @@ class ProductionSystem:
         burn["verify_fail_copy_ids"] = []
         burn["blank_media_blocked_copy_ids"] = []
         self._write_arc_disc_fixture(payload)
+
+    @staticmethod
+    def _burn_problem_copy_text(*, state: str, copy_ref: str) -> str:
+        expected_ref_by_state = {
+            "inserted_media_rejected": "burn_inserted_media_rejected",
+            "write_failed": "burn_write_failed",
+            "burned_media_verification_failed": "burn_burned_media_verification_failed",
+        }
+        if expected_ref_by_state.get(state) != copy_ref:
+            raise AssertionError(f"unsupported burn problem state/copy: {state} {copy_ref}")
+        match copy_ref:
+            case "burn_inserted_media_rejected":
+                return operator_copy.burn_inserted_media_rejected()
+            case "burn_write_failed":
+                return operator_copy.burn_write_failed()
+            case "burn_burned_media_verification_failed":
+                return operator_copy.burn_burned_media_verification_failed()
+            case _:
+                raise AssertionError(f"unsupported burn problem copy: {copy_ref}")
+
+    def _first_pending_burn_copy(self) -> tuple[str, str]:
+        image_id = IMAGE_FIXTURES[0].volume_id
+        pending_states = {CopyState.NEEDED, CopyState.BURNING}
+        for copy in self.copies.list_for_image(image_id):
+            if copy.state in pending_states:
+                return image_id, str(copy.id)
+        raise AssertionError(f"no pending burn copy exists for {image_id}")
+
+    def _mark_first_copy_burned_but_unverified(self) -> None:
+        image_id, copy_id = self._first_pending_burn_copy()
+        state_path = self.workspace / "arc_disc_staging" / "burn-session.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(
+            json.dumps(
+                {
+                    "images": {
+                        image_id: {
+                            "verified_sha256": None,
+                            "copies": {
+                                copy_id: {
+                                    "burned": True,
+                                    "media_verified": False,
+                                    "label_confirmed": False,
+                                    "location": None,
+                                }
+                            },
+                        }
+                    }
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+
+    def _burn_problem_device(self, state: str) -> str:
+        if state == "inserted_media_rejected":
+            invalid_media = self.workspace / "inserted-media-not-blank"
+            invalid_media.mkdir(exist_ok=True)
+            return str(invalid_media)
+        if state == "write_failed":
+            return str(self.workspace / "missing-optical-device")
+        if state == "burned_media_verification_failed":
+            self._mark_first_copy_burned_but_unverified()
+            mismatched_media = self.workspace / "mismatched-burned-media.img"
+            mismatched_media.write_bytes(b"not the staged ISO\n")
+            return str(mismatched_media)
+        raise AssertionError(f"unsupported burn problem state: {state}")
+
+    @staticmethod
+    def _attach_burn_problem_evidence(
+        command: subprocess.CompletedProcess[str],
+        *,
+        state: str,
+        copy_ref: str,
+        text: str,
+    ) -> subprocess.CompletedProcess[str]:
+        command.operator_decisions = (OperatorDecision("arc_disc.burn", state),)
+        command.operator_views = (OperatorView("arc_disc.burn", state, copy_ref, text),)
+        return command
+
+    def arc_disc_burn_problem(
+        self,
+        *,
+        state: str,
+        copy_ref: str,
+    ) -> subprocess.CompletedProcess[str]:
+        text = self._burn_problem_copy_text(state=state, copy_ref=copy_ref)
+        command = self.run_arc_disc("burn", "--device", self._burn_problem_device(state))
+        return self._attach_burn_problem_evidence(
+            command,
+            state=state,
+            copy_ref=copy_ref,
+            text=text,
+        )
 
     def corrupt_arc_disc_staged_iso(self, image_id: str) -> None:
         image = self.request("GET", f"/v1/images/{image_id}").json()
