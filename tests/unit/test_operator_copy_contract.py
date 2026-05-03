@@ -104,6 +104,19 @@ def _feature_copy_text(name: str) -> str:
     match name:
         case "arc_home_no_attention":
             return operator_copy.arc_home_no_attention()
+        case "arc_home_attention":
+            return operator_copy.arc_home_attention(
+                [
+                    operator_copy.arc_item_setup_needs_attention(
+                        area="Storage",
+                        summary="missing bucket",
+                    ),
+                    operator_copy.arc_item_notification_health_failed(
+                        channel="Push",
+                        latest_error="delivery timeout",
+                    ),
+                ]
+            )
         case "arc_item_cloud_backup_failed":
             return _guided_item_text(
                 operator_copy.arc_item_cloud_backup_failed(
@@ -178,6 +191,16 @@ def _feature_copy_text(name: str) -> str:
                 operator_copy.disc_item_unfinished_local_copy(
                     label_text="20260420T040001Z-1"
                 )
+            )
+        case "arc_disc_attention":
+            return operator_copy.arc_disc_attention(
+                [
+                    operator_copy.disc_item_recovery_ready(
+                        session_id="rs-20260420T040001Z-rebuild-1",
+                        affected=["docs"],
+                        expires_at="2026-05-02 08:00 UTC",
+                    )
+                ]
             )
         case "disc_item_recovery_ready":
             return _guided_item_text(

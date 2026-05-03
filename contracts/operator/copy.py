@@ -145,7 +145,12 @@ def arc_home_attention(items: Sequence[GuidedItem]) -> str:
     for index, item in enumerate(items, start=1):
         lines.extend(("", guided_item_header(index=index, total=len(items), item=item)))
         lines.append(guided_item_body(item=item))
-    lines.extend(("", f"Run {command(ARC)} to walk these in priority order."))
+    lines.extend(
+        (
+            "",
+            "Press Enter to start the next item. Riverhog will return here after each safe action.",
+        )
+    )
     return "\n".join(lines)
 
 
@@ -250,7 +255,13 @@ def arc_disc_attention(items: Sequence[GuidedItem]) -> str:
     for index, item in enumerate(items, start=1):
         lines.extend(("", guided_item_header(index=index, total=len(items), item=item)))
         lines.append(guided_item_body(item=item))
-    lines.extend(("", f"Run {command(ARC_DISC)} to clear this backlog in the safest order."))
+    lines.extend(
+        (
+            "",
+            "Press Enter to start the next disc or recovery item. "
+            "Riverhog will re-scan before choosing more work.",
+        )
+    )
     return "\n".join(lines)
 
 

@@ -4389,6 +4389,12 @@ class AcceptanceSystem:
                 )
             )
 
+    def clear_operator_recovery_ready(self) -> None:
+        with self.state.lock:
+            self.state.operator_disc_items = [
+                item for item in self.state.operator_disc_items if item.kind != "recovery_ready"
+            ]
+
     def set_operator_recovery_approval_required(self, collection_id: str) -> None:
         with self.state.lock:
             self.state.operator_disc_items.append(
@@ -4409,6 +4415,14 @@ class AcceptanceSystem:
         with self.state.lock:
             self.state.operator_blank_disc_work_available = True
             self.state.operator_collection_fully_protected = False
+
+    def operator_blank_disc_work_is_available(self) -> bool:
+        with self.state.lock:
+            return self.state.operator_blank_disc_work_available
+
+    def operator_recovery_ready_is_waiting(self) -> bool:
+        with self.state.lock:
+            return any(item.kind == "recovery_ready" for item in self.state.operator_disc_items)
 
     def confirm_operator_labeled_disc(self, *, location: str) -> None:
         with self.state.lock:
@@ -4474,8 +4488,12 @@ class AcceptanceSystem:
                     ],
                 )
             stdout = operator_copy.arc_home_attention(items)
-            decisions: list[OperatorDecision] = []
-            views: list[OperatorView] = []
+            decisions: list[OperatorDecision] = [
+                _operator_decision("arc.home", "attention_summary")
+            ]
+            views: list[OperatorView] = [
+                _operator_view("arc.home", "attention_summary", text=stdout)
+            ]
             for index, item in enumerate(items, start=1):
                 decision = _OPERATOR_WORKFLOWS.arc_home_attention_decision(item.kind)
                 decisions.append(decision)
@@ -4574,13 +4592,20 @@ class AcceptanceSystem:
 
     def _arc_disc_contract_output(self) -> subprocess.CompletedProcess[str]:
         with self.state.lock:
-            items = sorted(self.state.operator_disc_items, key=lambda item: item.priority)
+            items = [*self.state.operator_disc_items]
             blank_disc_work = self.state.operator_blank_disc_work_available
             label_location = self.state.operator_label_confirmation_location
+        if blank_disc_work and items:
+            items.append(operator_copy.disc_item_burn_work_ready(disc_count=1))
+        items = sorted(items, key=lambda item: item.priority)
         if items:
             stdout = operator_copy.arc_disc_attention(items)
-            decisions: list[OperatorDecision] = []
-            views: list[OperatorView] = []
+            decisions: list[OperatorDecision] = [
+                _operator_decision("arc_disc.guided", "attention_summary")
+            ]
+            views: list[OperatorView] = [
+                _operator_view("arc_disc.guided", "attention_summary", text=stdout)
+            ]
             for index, item in enumerate(items, start=1):
                 decision = _OPERATOR_WORKFLOWS.arc_disc_attention_decision(item.kind)
                 decisions.append(decision)

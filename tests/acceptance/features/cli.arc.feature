@@ -108,6 +108,17 @@ Feature: arc CLI
       And stdout mentions "verified"
 
   Rule: No-argument operator home
+    Scenario: arc no-arg attention summary continues inside the guided flow
+      Given statechart "arc.home" state "attention_summary" is the accepted operator contract
+      And setup needs attention
+      And notification delivery needs attention
+      When the operator runs 'arc'
+      Then stdout includes operator copy "arc_home_attention"
+      And stdout mentions "Press Enter"
+      And stdout does not mention "Run arc to walk these in priority order"
+      When the operator confirms the next guided action
+      Then statechart "arc.home" state "scan_attention" is the accepted operator contract
+
     @contract_gap @issue_209
     Scenario: arc opens the operator home when no attention is needed
       Given statechart "arc.home" state "no_attention" is the accepted operator contract

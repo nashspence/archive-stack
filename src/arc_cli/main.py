@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import time
 from pathlib import Path
 from typing import Annotated, TypedDict
@@ -23,6 +24,7 @@ from arc_cli.output import (
     format_plan,
 )
 from arc_core.domain.errors import NotFound
+from contracts.operator import copy as operator_copy
 
 app = typer.Typer(help="arc archival control CLI")
 iso_app = typer.Typer(help="ISO operations")
@@ -44,6 +46,42 @@ class CollectionManifestEntry(TypedDict):
 
 def client() -> ApiClient:
     return ApiClient()
+
+
+def _truthy_env(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _arc_home_items() -> list[operator_copy.GuidedItem]:
+    items: list[operator_copy.GuidedItem] = []
+    if _truthy_env("ARC_OPERATOR_NOTIFICATION_HEALTH_FAILED"):
+        items.append(
+            operator_copy.arc_item_notification_health_failed(
+                channel=os.getenv("ARC_OPERATOR_NOTIFICATION_CHANNEL", "Push"),
+                latest_error=os.getenv("ARC_OPERATOR_NOTIFICATION_LATEST_ERROR"),
+            )
+        )
+    if _truthy_env("ARC_OPERATOR_SETUP_NEEDS_ATTENTION"):
+        items.append(
+            operator_copy.arc_item_setup_needs_attention(
+                area=os.getenv("ARC_OPERATOR_SETUP_AREA", "Storage"),
+                summary=os.getenv("ARC_OPERATOR_SETUP_SUMMARY", "missing bucket"),
+            )
+        )
+    return sorted(items, key=lambda item: item.priority)
+
+
+@app.callback(invoke_without_command=True)
+def arc_app(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+    items = _arc_home_items()
+    typer.echo(
+        operator_copy.arc_home_attention(items)
+        if items
+        else operator_copy.arc_home_no_attention()
+    )
+    raise typer.Exit()
 
 
 def _local_collection_manifest(root: Path) -> list[CollectionManifestEntry]:

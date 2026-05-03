@@ -25,19 +25,29 @@ statecharts:
             target: upload_retry_available
       notification_health_failed:
         view: arc_item_notification_health_failed
-        final: true
+        transitions:
+          - event: guided_action_completed_or_blocked
+            target: scan_attention
       setup_needs_attention:
         view: arc_item_setup_needs_attention
-        final: true
+        transitions:
+          - event: guided_action_completed_or_blocked
+            target: scan_attention
       billing_needs_attention:
         view: arc_item_billing_needs_attention
-        final: true
+        transitions:
+          - event: guided_action_completed_or_blocked
+            target: scan_attention
       cloud_backup_failed:
         view: arc_item_cloud_backup_failed
-        final: true
+        transitions:
+          - event: guided_action_completed_or_blocked
+            target: scan_attention
       upload_retry_available:
         view: arc_item_upload_retry_available
-        final: true
+        transitions:
+          - event: guided_action_completed_or_blocked
+            target: scan_attention
       no_attention:
         view: arc_home_no_attention
         transitions:
@@ -314,25 +324,39 @@ statecharts:
             target: recovery_expired
       unfinished_local_disc:
         view: disc_item_unfinished_local_copy
-        final: true
+        transitions:
+          - event: guided_action_completed_or_blocked
+            target: scan_backlog
       recovery_ready:
         view: disc_item_recovery_ready
-        final: true
+        transitions:
+          - event: guided_action_completed_or_blocked
+            target: scan_backlog
       recovery_approval_required:
         view: disc_item_recovery_approval_required
-        final: true
+        transitions:
+          - event: guided_action_completed_or_blocked
+            target: scan_backlog
       hot_recovery_needs_media:
         view: disc_item_hot_recovery_needs_media
-        final: true
+        transitions:
+          - event: guided_action_completed_or_blocked
+            target: scan_backlog
       replacement_disc_needed:
         view: disc_item_replacement_disc_needed
-        final: true
+        transitions:
+          - event: guided_action_completed_or_blocked
+            target: scan_backlog
       burn_work_ready:
         view: disc_item_burn_work_ready
-        final: true
+        transitions:
+          - event: guided_action_completed_or_blocked
+            target: scan_backlog
       recovery_expired:
         view: disc_item_recovery_expired
-        final: true
+        transitions:
+          - event: guided_action_completed_or_blocked
+            target: scan_backlog
       no_attention:
         view: arc_disc_no_attention
         final: true
