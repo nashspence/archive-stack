@@ -51,6 +51,7 @@ MACHINE_ONLY_TERMS: tuple[str, ...] = (
     "pending_approval",
     "protection_state",
     "ready_to_finalize",
+    "recovery from disc",
     "recovery-byte stream",
     "waiting_for_future_iso",
 )
@@ -489,7 +490,7 @@ def pin_ready(*, target: str) -> str:
 
 def pin_waiting_for_disc(*, target: str, missing_bytes: int | None) -> str:
     return (
-        f"Files need recovery from disc. {truncate(target)} is pinned, "
+        f"Files need disc restore. {truncate(target)} is pinned, "
         "but Riverhog needs a disc to restore "
         f"{bytes_amount(missing_bytes)} to hot storage.\n"
         f"Run {command(ARC_DISC)} for the guided disc workflow."
@@ -502,7 +503,7 @@ def pins_list_header(*, pin_count: int) -> str:
 
 def fetch_detail_pending(*, target: str, pending_files: int, partial_files: int) -> str:
     return (
-        f"Files need recovery from disc for {truncate(target)}.\n"
+        f"Files need disc restore for {truncate(target)}.\n"
         f"Pending files: {pending_files}. Partly restored files: {partial_files}.\n"
         f"Run {command(ARC_DISC)} for the guided disc workflow."
     )

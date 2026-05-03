@@ -378,6 +378,8 @@ def test_feature_referenced_human_copy_avoids_machine_only_terms() -> None:
 
 def test_operator_guidance_lives_in_contract_copy() -> None:
     assert "replacement disc" in _feature_copy_text("disc_item_recovery_ready")
+    assert "disc restore" in _feature_copy_text("pin_waiting_for_disc")
+    assert "disc restore" in _feature_copy_text("fetch_detail_pending")
     assert "Run arc-disc" in _feature_copy_text("fetch_detail_pending")
 
 
