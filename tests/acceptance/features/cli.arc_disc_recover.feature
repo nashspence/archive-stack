@@ -1,7 +1,6 @@
 @acceptance @cli @mvp
 Feature: arc-disc recover CLI
   The optical CLI discovers and resumes image rebuild sessions for finalized images that lost all protected copies.
-  @contract_gap @issue_314
   Scenario: arc-disc recovery names remaining replacement-disc work instead of cleanup handoff
     Given statechart "arc_disc.recovery" state "rebuild_work_remaining" is the accepted operator contract
     And ordinary burn backlog is clear

@@ -18,6 +18,7 @@ import typer
 from arc_cli.client import ApiClient
 from arc_cli.output import emit
 from arc_core.domain.errors import ArcError, HashMismatch, NotFound
+from contracts.operator import copy as operator_copy
 
 app = typer.Typer(help="arc optical recovery CLI")
 
@@ -161,6 +162,7 @@ class RecoveryHandoff:
 class RecoverySessionImageHint:
     image_id: str
     filename: str
+    collection_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -705,6 +707,11 @@ def _recovery_session_hint_from_payload(payload: dict[str, Any]) -> RecoverySess
         RecoverySessionImageHint(
             image_id=str(image["id"]),
             filename=str(image["filename"]),
+            collection_ids=tuple(
+                str(collection_id)
+                for collection_id in image.get("collection_ids", [])
+                if collection_id is not None
+            ),
         )
         for image in images_payload
         if isinstance(image, dict)
@@ -746,6 +753,24 @@ def _report_recovery_sessions(sessions: list[RecoverySessionHint]) -> None:
         typer.echo(f"images: {image_ids}")
         if session.latest_message:
             typer.echo(session.latest_message)
+
+
+def _rebuild_work_remaining_collections(
+    sessions: list[RecoverySessionHint],
+) -> tuple[str, ...]:
+    if not sessions:
+        return ()
+
+    collection_ids: list[str] = []
+    for session in sessions:
+        if session.type != "image_rebuild" or len(session.images) != 1:
+            return ()
+        image = session.images[0]
+        if not image.collection_ids:
+            return ()
+        collection_ids.extend(image.collection_ids)
+
+    return tuple(dict.fromkeys(collection_ids))
 
 
 def _clear_recovery_artifacts(
@@ -1398,6 +1423,9 @@ def recover_cmd(
         client = ApiClient()
         sessions = _discover_active_recovery_sessions(client)
         if session_id is None:
+            if affected := _rebuild_work_remaining_collections(sessions):
+                typer.echo(operator_copy.recovery_rebuild_work_remaining(affected=affected))
+                return
             _report_recovery_sessions(sessions)
             return
 
