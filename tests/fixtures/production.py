@@ -33,10 +33,17 @@ from arc_core.catalog_models import (
     FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
+    GlacierRecoverySessionRecord,
     ImageCopyRecord,
     PlannedCandidateRecord,
 )
-from arc_core.domain.enums import CopyState, FetchState, ProtectionState, VerificationState
+from arc_core.domain.enums import (
+    CopyState,
+    FetchState,
+    ProtectionState,
+    RecoverySessionState,
+    VerificationState,
+)
 from arc_core.domain.models import CollectionSummary, CopySummary, FetchCopyHint, FetchSummary
 from arc_core.domain.selectors import parse_target
 from arc_core.domain.types import CollectionId, CopyId, FetchId, TargetStr
@@ -1807,6 +1814,57 @@ class ProductionSystem:
         image = self.request("GET", f"/v1/images/{image_id}").json()
         staging_path = self.workspace / "arc_disc_staging" / image_id / str(image["filename"])
         return staging_path.is_file()
+
+    def set_operator_expired_recovery_session(self, session_id: str) -> None:
+        image = IMAGE_FIXTURES[0]
+        assert session_id == f"rs-{image.volume_id}-rebuild-1"
+        self.seed_planner_fixtures()
+        self.mark_collection_archive_uploaded(DOCS_COLLECTION_ID)
+        self.seed_finalized_image(image.id)
+        self._seed_image_copy(image.volume_id, f"{image.volume_id}-1", "Shelf A1")
+        self._seed_image_copy(image.volume_id, f"{image.volume_id}-2", "Shelf B1")
+        for copy_id, state in (
+            (f"{image.volume_id}-1", "lost"),
+            (f"{image.volume_id}-2", "damaged"),
+        ):
+            response = self.request(
+                "PATCH",
+                f"/v1/images/{image.volume_id}/copies/{copy_id}",
+                json_body={"state": state},
+            )
+            assert response.status_code == 200, response.text
+        self.ensure_image_rebuild_session(
+            session_id=session_id,
+            image_id=image.volume_id,
+        )
+        with session_scope(make_session_factory(str(self.db_path))) as session:
+            record = session.get(GlacierRecoverySessionRecord, session_id)
+            assert record is not None, f"recovery session not found: {session_id}"
+            record.state = RecoverySessionState.EXPIRED.value
+            record.approved_at = "2026-04-20T05:00:00Z"
+            record.restore_requested_at = "2026-04-20T05:00:00Z"
+            record.restore_ready_at = "2026-04-20T06:00:00Z"
+            record.restore_next_poll_at = None
+            record.restore_expires_at = "2000-01-01T00:00:00Z"
+            record.latest_message = (
+                "Restored ISO data expired and cleanup was recorded; re-initiate "
+                "recovery to request a new restore."
+            )
+            estimate = json.loads(record.estimate_json)
+            estimate["total_estimated_cost_usd"] = 12.34
+            record.estimate_json = json.dumps(estimate)
+
+    def set_operator_expired_recovery_local_artifacts(self, *, available: bool) -> None:
+        image = IMAGE_FIXTURES[0]
+        staging_path = self.workspace / "arc_disc_staging" / image.volume_id / image.filename
+        if available:
+            staging_path.parent.mkdir(parents=True, exist_ok=True)
+            response = self.request("GET", f"/v1/images/{image.volume_id}/iso")
+            assert response.status_code == 200, response.text
+            staging_path.write_bytes(response.content)
+            return
+        if staging_path.parent.exists():
+            shutil.rmtree(staging_path.parent)
 
     def pins_list(self) -> list[str]:
         return [item["target"] for item in self.request("GET", "/v1/pins").json()["pins"]]

@@ -508,9 +508,15 @@ def render_operator_copy(reference: str) -> str:
             return operator_copy.recovery_completed(
                 session_id="rs-20260420T040001Z-rebuild-1"
             )
-        case "recovery_expired":
-            return operator_copy.recovery_expired(
+        case "recovery_expired_local_resume":
+            return operator_copy.recovery_expired_local_resume(
                 session_id="rs-20260420T040001Z-rebuild-1"
+            )
+        case "recovery_expired_needs_reapproval":
+            return operator_copy.recovery_expired_needs_reapproval(
+                session_id="rs-20260420T040001Z-rebuild-1",
+                affected=["docs"],
+                estimated_cost="12.34",
             )
         case "recovery_cleanup_handoff":
             return operator_copy.recovery_cleanup_handoff(affected=["docs"])

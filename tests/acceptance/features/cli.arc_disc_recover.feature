@@ -1,6 +1,25 @@
 @acceptance @cli @mvp
 Feature: arc-disc recover CLI
   The optical CLI discovers and resumes image rebuild sessions for finalized images that lost all protected copies.
+  Scenario: expired recovery with local artifacts resumes without another approval
+    Given statechart "arc_disc.recovery" state "expired_local_resume" is the accepted operator contract
+    And recovery session "rs-20260420T040001Z-rebuild-1" has expired
+    And local staged recovery artifacts are available
+    When the operator runs arc-disc recover "rs-20260420T040001Z-rebuild-1"
+    Then stdout includes operator copy "recovery_expired_local_resume"
+    And stdout mentions "local staged recovery files"
+    And stdout does not mention "Approve again"
+
+  Scenario: expired recovery without local artifacts returns to approval
+    Given statechart "arc_disc.recovery" state "expired_needs_reapproval" is the accepted operator contract
+    And recovery session "rs-20260420T040001Z-rebuild-1" has expired
+    And local staged recovery artifacts are absent
+    When the operator runs arc-disc recover "rs-20260420T040001Z-rebuild-1"
+    Then stdout includes operator copy "recovery_expired_needs_reapproval"
+    And stdout mentions "Approve again"
+    And stdout mentions "Estimated cost"
+    And stdout does not mention "Run arc-disc to review the next safe recovery step"
+
   Scenario: arc-disc recover lists one multi-image pending rebuild session
     Given an archive with planned images
     And an archive with split planned images

@@ -184,6 +184,30 @@ def _actual_operator_views(
     return (*_command_operator_views(context), *context.actual_operator_views)
 
 
+def _record_command_output_operator_view(
+    context: AcceptanceScenarioContext,
+    name: str,
+    *,
+    text: str,
+) -> None:
+    command = _require_command(context)
+    if text not in f"{command.stdout}\n{command.stderr}":
+        return
+    for statechart_name, state_name in context.accepted_operator_statechart_states:
+        if _OPERATOR_STATECHART_CATALOG.view_for(statechart_name, state_name) != name:
+            continue
+        context.actual_operator_decisions.append(
+            _OPERATOR_STATECHART_CATALOG.decision(statechart_name, state_name)
+        )
+        context.actual_operator_views.append(
+            _OPERATOR_STATECHART_CATALOG.operator_view(
+                statechart_name,
+                state_name,
+                text=text,
+            )
+        )
+
+
 def _assert_actual_operator_view_matches_copy_ref(
     context: AcceptanceScenarioContext,
     name: str,
@@ -357,6 +381,16 @@ def _operator_copy_text(name: str) -> str:
                 operator_copy.disc_item_hot_recovery_needs_media(
                     target="docs/tax/2022/invoice-123.pdf"
                 )
+            )
+        case "recovery_expired_local_resume":
+            return operator_copy.recovery_expired_local_resume(
+                session_id="rs-20260420T040001Z-rebuild-1"
+            )
+        case "recovery_expired_needs_reapproval":
+            return operator_copy.recovery_expired_needs_reapproval(
+                session_id="rs-20260420T040001Z-rebuild-1",
+                affected=["docs"],
+                estimated_cost="12.34",
             )
         case "burn_backlog_cleared":
             return operator_copy.burn_backlog_cleared()
@@ -1142,6 +1176,28 @@ def given_recovery_for_collection_needs_approval(
     collection_id: str,
 ) -> None:
     acceptance_system.set_operator_recovery_approval_required(collection_id)
+
+
+@given(parsers.parse('recovery session "{session_id}" has expired'))
+def given_recovery_session_has_expired(
+    acceptance_system: AcceptanceSystem,
+    session_id: str,
+) -> None:
+    acceptance_system.set_operator_expired_recovery_session(session_id)
+
+
+@given("local staged recovery artifacts are available")
+def given_local_staged_recovery_artifacts_are_available(
+    acceptance_system: AcceptanceSystem,
+) -> None:
+    acceptance_system.set_operator_expired_recovery_local_artifacts(available=True)
+
+
+@given("local staged recovery artifacts are absent")
+def given_local_staged_recovery_artifacts_are_absent(
+    acceptance_system: AcceptanceSystem,
+) -> None:
+    acceptance_system.set_operator_expired_recovery_local_artifacts(available=False)
 
 
 @given("pinned files need recovery from disc")
@@ -4497,6 +4553,7 @@ def then_stdout_matches_operator_copy(
 ) -> None:
     _assert_operator_copy_is_from_accepted_statechart(acceptance_context, name)
     expected = _operator_copy_text(name)
+    _record_command_output_operator_view(acceptance_context, name, text=expected)
     _assert_actual_operator_view_matches_copy_ref(acceptance_context, name, text=expected)
     assert _require_command(acceptance_context).stdout.strip() == expected
 
@@ -4508,6 +4565,7 @@ def then_stdout_includes_operator_copy(
 ) -> None:
     _assert_operator_copy_is_from_accepted_statechart(acceptance_context, name)
     expected = _operator_copy_text(name)
+    _record_command_output_operator_view(acceptance_context, name, text=expected)
     _assert_actual_operator_view_matches_copy_ref(acceptance_context, name, text=expected)
     assert expected in _require_command(acceptance_context).stdout
 
@@ -4519,6 +4577,7 @@ def then_stderr_includes_operator_copy(
 ) -> None:
     _assert_operator_copy_is_from_accepted_statechart(acceptance_context, name)
     expected = _operator_copy_text(name)
+    _record_command_output_operator_view(acceptance_context, name, text=expected)
     _assert_actual_operator_view_matches_copy_ref(acceptance_context, name, text=expected)
     assert expected in _require_command(acceptance_context).stderr
 

@@ -228,7 +228,9 @@ after one or more finalized images lose all protected copies.
 - ready sessions stage ISO bytes rebuilt from restored collection archives and
   persisted image coverage metadata
 - if the restore window expires after local staging succeeded, `arc-disc recover` can still resume from the staged ISO
-  artifacts already on disk
+  artifacts already on disk without another cloud request
+- if the restore window expires before local staging is available, Riverhog returns to recovery approval before
+  requesting cloud backup files again
 - recovery burns reuse the same local checkpoint behavior as `arc-disc burn`, including resume from unfinished
   burned-media verification or label confirmation
 - when the recovery session finishes, Riverhog marks the session completed,

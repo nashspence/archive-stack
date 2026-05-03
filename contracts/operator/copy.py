@@ -738,10 +738,25 @@ def recovery_completed(*, session_id: str) -> str:
     return f"Recovery {session_id} is complete."
 
 
-def recovery_expired(*, session_id: str) -> str:
+def recovery_expired_local_resume(*, session_id: str) -> str:
     return (
-        f"Recovery {session_id} is no longer ready. "
-        f"Run {command(ARC_DISC)} to review the next safe recovery step."
+        f"Recovery {session_id} is no longer ready in cloud backup, but local "
+        "staged recovery files are still available. Resume from local files; "
+        "Riverhog will not request cloud backup files again."
+    )
+
+
+def recovery_expired_needs_reapproval(
+    *,
+    session_id: str,
+    affected: Iterable[str],
+    estimated_cost: object | None,
+) -> str:
+    return (
+        f"Recovery {session_id} expired before replacement discs were finished for "
+        f"{list_sentence(affected)}.\n"
+        f"Estimated cost: {money_usd(estimated_cost)}. Approve again before "
+        "Riverhog requests cloud backup files."
     )
 
 
