@@ -877,6 +877,9 @@ class ProductionSystem:
                 check=False,
             )
 
+    def set_operator_api_unreachable(self) -> None:
+        self.base_url = "http://127.0.0.1:9"
+
     def delete_hot_backing_file(self, target: str) -> None:
         selected = self.state.selected_files(target)
         if len(selected) != 1:
