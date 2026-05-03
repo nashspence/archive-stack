@@ -7,6 +7,7 @@ from typing import Annotated, TypedDict
 
 import typer
 
+from arc_cli.api_preflight import ApiUnreachable, check_api_reachable
 from arc_cli.client import ApiClient
 from arc_cli.output import (
     emit,
@@ -24,7 +25,7 @@ from arc_cli.output import (
 )
 from arc_core.domain.errors import NotFound
 
-app = typer.Typer(help="arc archival control CLI")
+app = typer.Typer(help="arc archival control CLI", invoke_without_command=True)
 iso_app = typer.Typer(help="ISO operations")
 copy_app = typer.Typer(help="copy registration")
 app.add_typer(iso_app, name="iso")
@@ -44,6 +45,17 @@ class CollectionManifestEntry(TypedDict):
 
 def client() -> ApiClient:
     return ApiClient()
+
+
+@app.callback(invoke_without_command=True)
+def arc_app(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+    try:
+        check_api_reachable()
+    except ApiUnreachable as exc:
+        typer.echo(exc.copy_text)
+    raise typer.Exit(code=0)
 
 
 def _local_collection_manifest(root: Path) -> list[CollectionManifestEntry]:

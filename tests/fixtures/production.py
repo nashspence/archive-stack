@@ -772,6 +772,7 @@ class ProductionSystem:
         with time_block("fixture.acceptance_system.reset"):
             self._clear_fixture_path()
             self.server.reset()
+            self.base_url = self.server.base_url
 
     def request(
         self,
