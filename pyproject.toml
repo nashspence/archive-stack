@@ -83,6 +83,7 @@ markers = [
   "issue_210: tracks issue #210 for action-needed webhook payloads",
   "issue_211: tracks issue #211 for replacing remaining normal CLI copy",
   "issue_301: tracks issue #301 for backing next-disc-label-PM-scenarios",
+  "issue_317: tracks issue #317 for implementing next-disc label retry routing",
 ]
 
 [tool.mypy]

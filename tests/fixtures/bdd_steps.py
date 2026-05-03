@@ -358,6 +358,15 @@ def _operator_copy_text(name: str) -> str:
                     target="docs/tax/2022/invoice-123.pdf"
                 )
             )
+        case "hot_recovery_retry_other_disc":
+            return operator_copy.hot_recovery_retry_other_disc(
+                target="docs/tax/2022/invoice-123.pdf",
+                next_disc_label="20260420T040003Z-2",
+            )
+        case "hot_recovery_registered_copies_exhausted":
+            return operator_copy.hot_recovery_registered_copies_exhausted(
+                target="docs/tax/2022/invoice-123.pdf"
+            )
         case "burn_backlog_cleared":
             return operator_copy.burn_backlog_cleared()
         case "burn_label_checkpoint":
@@ -1154,6 +1163,68 @@ def given_pinned_files_need_recovery_from_disc(
         "fx-1",
     )
     acceptance_system.set_operator_hot_recovery_needs_media(INVOICE_TARGET)
+
+
+@given(parsers.parse('fetch "{fetch_id}" needs copy label "{copy_label}"'))
+def given_fetch_needs_copy_label(fetch_id: str, copy_label: str) -> None:
+    assert fetch_id == "fx-1"
+    assert copy_label == "20260420T040003Z-1"
+
+
+@given(parsers.parse('disc restore needs copy label "{copy_label}"'))
+def given_disc_restore_needs_copy_label(copy_label: str) -> None:
+    assert copy_label == "20260420T040003Z-1"
+
+
+@given(parsers.parse('same-image copy label "{copy_label}" remains untried'))
+def given_same_image_copy_label_remains_untried(copy_label: str) -> None:
+    assert copy_label == "20260420T040003Z-2"
+
+
+@given(parsers.parse('all registered same-image disc labels for fetch "{fetch_id}" have failed'))
+def given_all_same_image_disc_labels_have_failed(
+    acceptance_system: AcceptanceSystem,
+    fetch_id: str,
+) -> None:
+    acceptance_system.set_operator_fetch_same_image_copies_exhausted(fetch_id)
+
+
+@when(parsers.parse('the server rejects recovered bytes from copy label "{copy_label}"'))
+def when_server_rejects_recovered_bytes_from_copy_label(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+    copy_label: str,
+) -> None:
+    assert copy_label == "20260420T040003Z-1"
+    acceptance_context.command_text = "arc-disc fetch fx-1"
+    acceptance_context.command_argv = ["arc-disc", "fetch", "fx-1"]
+    acceptance_context.stdout_json = None
+    acceptance_context.expected_api_endpoint = None
+    acceptance_context.expected_api_payload = None
+    acceptance_context.command = acceptance_system.arc_disc_same_image_retry(
+        statechart="arc_disc.fetch",
+        target=INVOICE_TARGET,
+        next_disc_label="20260420T040003Z-2",
+    )
+
+
+@when(parsers.parse('copy label "{copy_label}" cannot restore the requested files'))
+def when_copy_label_cannot_restore_requested_files(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+    copy_label: str,
+) -> None:
+    assert copy_label == "20260420T040003Z-1"
+    acceptance_context.command_text = "arc-disc restore"
+    acceptance_context.command_argv = ["arc-disc", "restore"]
+    acceptance_context.stdout_json = None
+    acceptance_context.expected_api_endpoint = None
+    acceptance_context.expected_api_payload = None
+    acceptance_context.command = acceptance_system.arc_disc_same_image_retry(
+        statechart="arc_disc.hot_recovery",
+        target=INVOICE_TARGET,
+        next_disc_label="20260420T040003Z-2",
+    )
 
 
 @given(parsers.parse('the operator confirms labeled disc at storage location "{location}"'))

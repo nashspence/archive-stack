@@ -80,7 +80,7 @@ Feature: arc-disc CLI
       And the collection is not fully protected
 
   Rule: Targeted fetch detail remains available
-  @todo @issue_301
+  @contract_gap @issue_317
   Scenario: arc-disc fetch names the exact same-image disc after rejected bytes
     Given statechart "arc_disc.fetch" state "retry_other_disc" is the accepted operator contract
     And fetch "fx-1" needs copy label "20260420T040003Z-1"
@@ -91,7 +91,7 @@ Feature: arc-disc CLI
     And stderr does not mention "try another registered copy or recovered media"
     And stderr does not mention "20260420T040004Z-1"
 
-  @todo @issue_301
+  @contract_gap @issue_317
   Scenario: arc-disc disc restore names the exact same-image disc after failed media
     Given statechart "arc_disc.hot_recovery" state "retry_other_disc" is the accepted operator contract
     And disc restore needs copy label "20260420T040003Z-1"
@@ -102,7 +102,7 @@ Feature: arc-disc CLI
     And stderr does not mention "try another registered disc or recovered media"
     And stderr does not mention "20260420T040004Z-1"
 
-  @todo @issue_301
+  @contract_gap @issue_317
   Scenario: arc-disc failed media routes to recovery when same-image copies are exhausted
     Given statechart "arc_disc.fetch" state "recovery_workflow_needed" is the accepted operator contract
     And all registered same-image disc labels for fetch "fx-1" have failed
