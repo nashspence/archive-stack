@@ -541,6 +541,8 @@ class AcceptanceState:
     next_fetch_number: int = 0
     operator_arc_items: list[operator_copy.GuidedItem] = field(default_factory=list)
     operator_disc_items: list[operator_copy.GuidedItem] = field(default_factory=list)
+    operator_expired_recovery_session_id: str | None = None
+    operator_expired_recovery_local_artifacts_available: bool | None = None
     operator_blank_disc_work_available: bool = False
     operator_label_confirmation_location: str | None = None
     operator_collection_fully_protected: bool = False
@@ -4399,6 +4401,14 @@ class AcceptanceSystem:
                 )
             )
 
+    def set_operator_expired_recovery_session(self, session_id: str) -> None:
+        with self.state.lock:
+            self.state.operator_expired_recovery_session_id = session_id
+
+    def set_operator_expired_recovery_local_artifacts(self, *, available: bool) -> None:
+        with self.state.lock:
+            self.state.operator_expired_recovery_local_artifacts_available = available
+
     def set_operator_hot_recovery_needs_media(self, target: str) -> None:
         with self.state.lock:
             self.state.operator_disc_items.append(
@@ -4672,6 +4682,38 @@ class AcceptanceSystem:
     def run_arc_disc(
         self, *args: str, input_text: str = "\n" * 16
     ) -> subprocess.CompletedProcess[str]:
+        if len(args) >= 2 and args[0] == "recover":
+            session_id = args[1]
+            with self.state.lock:
+                expired_session_id = self.state.operator_expired_recovery_session_id
+                local_artifacts_available = (
+                    self.state.operator_expired_recovery_local_artifacts_available
+                )
+            if expired_session_id == session_id and local_artifacts_available is not None:
+                if local_artifacts_available:
+                    stdout = operator_copy.recovery_expired_local_resume(
+                        session_id=session_id
+                    )
+                    state = "expired_local_resume"
+                else:
+                    stdout = operator_copy.recovery_expired_needs_reapproval(
+                        session_id=session_id,
+                        affected=["docs"],
+                        estimated_cost="12.34",
+                    )
+                    state = "expired_needs_reapproval"
+                return _operator_completed_process(
+                    ["arc-disc", *args],
+                    stdout=stdout,
+                    decisions=[_operator_decision("arc_disc.recovery", state)],
+                    views=[
+                        _operator_view(
+                            "arc_disc.recovery",
+                            state,
+                            text=stdout,
+                        )
+                    ],
+                )
         if not args:
             return self._arc_disc_contract_output()
         if not self.fixture_path.exists():

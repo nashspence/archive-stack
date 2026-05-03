@@ -358,6 +358,16 @@ def _operator_copy_text(name: str) -> str:
                     target="docs/tax/2022/invoice-123.pdf"
                 )
             )
+        case "recovery_expired_local_resume":
+            return operator_copy.recovery_expired_local_resume(
+                session_id="rs-20260420T040001Z-rebuild-1"
+            )
+        case "recovery_expired_needs_reapproval":
+            return operator_copy.recovery_expired_needs_reapproval(
+                session_id="rs-20260420T040001Z-rebuild-1",
+                affected=["docs"],
+                estimated_cost="12.34",
+            )
         case "burn_backlog_cleared":
             return operator_copy.burn_backlog_cleared()
         case "burn_label_checkpoint":
@@ -1142,6 +1152,28 @@ def given_recovery_for_collection_needs_approval(
     collection_id: str,
 ) -> None:
     acceptance_system.set_operator_recovery_approval_required(collection_id)
+
+
+@given(parsers.parse('recovery session "{session_id}" has expired'))
+def given_recovery_session_has_expired(
+    acceptance_system: AcceptanceSystem,
+    session_id: str,
+) -> None:
+    acceptance_system.set_operator_expired_recovery_session(session_id)
+
+
+@given("local staged recovery artifacts are available")
+def given_local_staged_recovery_artifacts_are_available(
+    acceptance_system: AcceptanceSystem,
+) -> None:
+    acceptance_system.set_operator_expired_recovery_local_artifacts(available=True)
+
+
+@given("local staged recovery artifacts are absent")
+def given_local_staged_recovery_artifacts_are_absent(
+    acceptance_system: AcceptanceSystem,
+) -> None:
+    acceptance_system.set_operator_expired_recovery_local_artifacts(available=False)
 
 
 @given("pinned files need recovery from disc")
