@@ -209,6 +209,30 @@ def _assert_actual_operator_view_matches_copy_ref(
     )
 
 
+def _record_command_output_operator_view(
+    context: AcceptanceScenarioContext,
+    name: str,
+    *,
+    text: str,
+) -> None:
+    command = _require_command(context)
+    if text not in f"{command.stdout}\n{command.stderr}":
+        return
+    for statechart_name, state_name in context.accepted_operator_statechart_states:
+        if _OPERATOR_STATECHART_CATALOG.view_for(statechart_name, state_name) != name:
+            continue
+        context.actual_operator_decisions.append(
+            _OPERATOR_STATECHART_CATALOG.decision(statechart_name, state_name)
+        )
+        context.actual_operator_views.append(
+            _OPERATOR_STATECHART_CATALOG.operator_view(
+                statechart_name,
+                state_name,
+                text=text,
+            )
+        )
+
+
 def _configured_optical_acceptance_device() -> str:
     return os.environ.get("ARC_DISC_ACCEPTANCE_DEVICE", _DEFAULT_OPTICAL_ACCEPTANCE_DEVICE)
 
@@ -358,6 +382,8 @@ def _operator_copy_text(name: str) -> str:
                     target="docs/tax/2022/invoice-123.pdf"
                 )
             )
+        case "recovery_rebuild_work_remaining":
+            return operator_copy.recovery_rebuild_work_remaining(affected=["docs"])
         case "burn_backlog_cleared":
             return operator_copy.burn_backlog_cleared()
         case "burn_label_checkpoint":
@@ -1142,6 +1168,19 @@ def given_recovery_for_collection_needs_approval(
     collection_id: str,
 ) -> None:
     acceptance_system.set_operator_recovery_approval_required(collection_id)
+
+
+@given("ordinary burn backlog is clear")
+def given_ordinary_burn_backlog_is_clear() -> None:
+    return None
+
+
+@given(parsers.parse('replacement-disc recovery work remains for collection "{collection_id}"'))
+def given_replacement_disc_recovery_work_remains(
+    acceptance_system: AcceptanceSystem,
+    collection_id: str,
+) -> None:
+    acceptance_system.set_operator_rebuild_work_remaining(collection_id)
 
 
 @given("pinned files need recovery from disc")
@@ -4497,6 +4536,7 @@ def then_stdout_matches_operator_copy(
 ) -> None:
     _assert_operator_copy_is_from_accepted_statechart(acceptance_context, name)
     expected = _operator_copy_text(name)
+    _record_command_output_operator_view(acceptance_context, name, text=expected)
     _assert_actual_operator_view_matches_copy_ref(acceptance_context, name, text=expected)
     assert _require_command(acceptance_context).stdout.strip() == expected
 
@@ -4508,6 +4548,7 @@ def then_stdout_includes_operator_copy(
 ) -> None:
     _assert_operator_copy_is_from_accepted_statechart(acceptance_context, name)
     expected = _operator_copy_text(name)
+    _record_command_output_operator_view(acceptance_context, name, text=expected)
     _assert_actual_operator_view_matches_copy_ref(acceptance_context, name, text=expected)
     assert expected in _require_command(acceptance_context).stdout
 
@@ -4519,6 +4560,7 @@ def then_stderr_includes_operator_copy(
 ) -> None:
     _assert_operator_copy_is_from_accepted_statechart(acceptance_context, name)
     expected = _operator_copy_text(name)
+    _record_command_output_operator_view(acceptance_context, name, text=expected)
     _assert_actual_operator_view_matches_copy_ref(acceptance_context, name, text=expected)
     assert expected in _require_command(acceptance_context).stderr
 

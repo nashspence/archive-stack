@@ -512,8 +512,8 @@ def render_operator_copy(reference: str) -> str:
             return operator_copy.recovery_expired(
                 session_id="rs-20260420T040001Z-rebuild-1"
             )
-        case "recovery_cleanup_handoff":
-            return operator_copy.recovery_cleanup_handoff(affected=["docs"])
+        case "recovery_rebuild_work_remaining":
+            return operator_copy.recovery_rebuild_work_remaining(affected=["docs"])
         case "hot_recovery_insert_disc":
             return operator_copy.hot_recovery_insert_disc(
                 target="docs/tax/2022/invoice-123.pdf",
