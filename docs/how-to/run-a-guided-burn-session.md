@@ -36,8 +36,8 @@ If the staged ISO is missing or no longer matches the last verified staged copy,
 again before continuing.
 
 Expected failures include a missing `xorriso` executable, insufficient device permissions, non-blank or incompatible
-media, a drive that cannot burn the inserted media type, and a burned-media byte comparison that does not match the
-staged ISO.
+media, a drive that cannot burn the inserted media type, write failure, and a burned-media byte comparison that does not
+match the staged ISO. Failed or rejected media is never labeled, registered, or counted toward physical coverage.
 
 CLI example:
 

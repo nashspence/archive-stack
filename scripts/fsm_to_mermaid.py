@@ -457,13 +457,21 @@ def render_operator_copy(reference: str) -> str:
             return operator_copy.burn_verifying_prepared_disc(
                 label_text="20260420T040001Z-1"
             )
+        case "burn_inserted_media_rejected":
+            return operator_copy.burn_inserted_media_rejected()
+        case "burn_prepared_content_failed":
+            return operator_copy.burn_prepared_content_failed()
         case "burn_writing_disc":
             return operator_copy.burn_writing_disc(
                 label_text="20260420T040001Z-1",
                 device="/dev/sr0",
             )
+        case "burn_write_failed":
+            return operator_copy.burn_write_failed()
         case "burn_verifying_disc":
             return operator_copy.burn_verifying_disc(label_text="20260420T040001Z-1")
+        case "burn_burned_media_verification_failed":
+            return operator_copy.burn_burned_media_verification_failed()
         case "burn_label_checkpoint":
             return operator_copy.burn_label_checkpoint(label_text="20260420T040001Z-1")
         case "burn_location_prompt":

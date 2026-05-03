@@ -362,23 +362,51 @@ statecharts:
       insert_blank_disc:
         view: burn_insert_blank_disc
         transitions:
+          - guard: inserted_media_not_blank_writable_or_compatible
+            target: inserted_media_rejected
           - event: operator_confirms_blank_disc
             target: verifying_prepared_disc
+      inserted_media_rejected:
+        view: burn_inserted_media_rejected
+        transitions:
+          - event: operator_replaces_media
+            target: insert_blank_disc
       verifying_prepared_disc:
         view: burn_verifying_prepared_disc
         transitions:
           - guard: prepared_disc_valid
             target: writing_disc
+          - guard: prepared_disc_invalid
+            target: prepared_content_failed
+      prepared_content_failed:
+        view: burn_prepared_content_failed
+        transitions:
+          - event: operator_retries_after_restaging
+            target: verifying_prepared_disc
       writing_disc:
         view: burn_writing_disc
         transitions:
           - guard: write_complete
             target: verifying_disc
+          - guard: write_failed
+            target: write_failed
+      write_failed:
+        view: burn_write_failed
+        transitions:
+          - event: operator_replaces_media
+            target: insert_blank_disc
       verifying_disc:
         view: burn_verifying_disc
         transitions:
           - guard: disc_verified
             target: label_checkpoint
+          - guard: burned_media_mismatch
+            target: burned_media_verification_failed
+      burned_media_verification_failed:
+        view: burn_burned_media_verification_failed
+        transitions:
+          - event: operator_replaces_media
+            target: insert_blank_disc
       label_checkpoint:
         view: burn_label_checkpoint
         transitions:
