@@ -425,8 +425,8 @@ statecharts:
             target: ready
           - guard: ready_window_expired
             target: expired
-          - guard: recovery_cleanup_handoff_ready
-            target: cleanup_handoff
+          - guard: image_rebuild_work_remaining
+            target: rebuild_work_remaining
         type: choice
       approval_required:
         view: recovery_approval_required
@@ -458,8 +458,8 @@ statecharts:
       expired:
         view: recovery_expired
         final: true
-      cleanup_handoff:
-        view: recovery_cleanup_handoff
+      rebuild_work_remaining:
+        view: recovery_rebuild_work_remaining
         final: true
   arc_disc.hot_recovery:
     command: arc-disc
@@ -802,7 +802,7 @@ handoffs:
       state: scan_backlog
   - from:
       statechart: arc_disc.recovery
-      state: cleanup_handoff
+      state: rebuild_work_remaining
     label: operator checks remaining recovery work
     target:
       statechart: arc_disc.guided

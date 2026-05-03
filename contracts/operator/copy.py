@@ -745,10 +745,10 @@ def recovery_expired(*, session_id: str) -> str:
     )
 
 
-def recovery_cleanup_handoff(*, affected: Iterable[str]) -> str:
+def recovery_rebuild_work_remaining(*, affected: Iterable[str]) -> str:
     return (
-        f"Recovery cleanup is ready for {list_sentence(affected)}. "
-        "Riverhog will keep the safe recovery handoff."
+        f"Replacement-disc recovery work remains for {list_sentence(affected)}. "
+        f"Run {command(ARC_DISC)} to continue the guided recovery work."
     )
 
 

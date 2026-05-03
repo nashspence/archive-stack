@@ -1,6 +1,17 @@
 @acceptance @cli @mvp
 Feature: arc-disc recover CLI
   The optical CLI discovers and resumes image rebuild sessions for finalized images that lost all protected copies.
+  @todo @issue_230
+  Scenario: arc-disc recovery names remaining replacement-disc work instead of cleanup handoff
+    Given statechart "arc_disc.recovery" state "rebuild_work_remaining" is the accepted operator contract
+    And ordinary burn backlog is clear
+    And replacement-disc recovery work remains for collection "docs"
+    When the operator runs 'arc-disc recover'
+    Then stdout includes operator copy "recovery_rebuild_work_remaining"
+    And stdout mentions "Replacement-disc recovery work remains"
+    And stdout does not mention "Cleanup Handoff"
+    And stdout does not mention "safe recovery handoff"
+
   Scenario: arc-disc recover lists one multi-image pending rebuild session
     Given an archive with planned images
     And an archive with split planned images

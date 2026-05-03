@@ -2,8 +2,8 @@
 
 The `arc-disc burn` command walks the current burn backlog from the fullest ready image downward.
 If a finalized image has lost all protected copies, Riverhog tracks that image
-through an `image_rebuild` recovery session instead; `arc-disc burn` reports
-that handoff and does not treat it as ordinary replacement backlog.
+through recovery instead; `arc-disc burn` reports that replacement-disc recovery
+work remains and does not treat it as ordinary replacement backlog.
 
 ## Host requirements
 

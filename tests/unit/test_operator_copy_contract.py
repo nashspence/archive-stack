@@ -205,6 +205,8 @@ def _feature_copy_text(name: str) -> str:
             return operator_copy.burn_backlog_cleared()
         case "burn_label_checkpoint":
             return operator_copy.burn_label_checkpoint(label_text="20260420T040001Z-1")
+        case "recovery_rebuild_work_remaining":
+            return operator_copy.recovery_rebuild_work_remaining(affected=["docs"])
     raise AssertionError(f"unsupported operator copy reference: {name}")
 
 

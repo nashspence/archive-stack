@@ -231,10 +231,10 @@ after one or more finalized images lose all protected copies.
   artifacts already on disk
 - recovery burns reuse the same local checkpoint behavior as `arc-disc burn`, including resume from unfinished
   burned-media verification or label confirmation
-- when the recovery session finishes, Riverhog marks the session completed,
-  records archive restore cleanup or lifecycle handoff for the collection
-  archives, and deletes the staged ISO artifacts for the rebuilt images
-  immediately
+- when ordinary burn backlog is clear but replacement-disc recovery work remains, Riverhog reports the remaining
+  recovery work instead of exposing a cleanup handoff
+- when the recovery session finishes, Riverhog marks the session completed and deletes the staged ISO artifacts for the
+  rebuilt images immediately; archive restore cleanup remains an internal lifecycle detail
 
 ## Manual Recovery
 
