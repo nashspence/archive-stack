@@ -122,6 +122,24 @@ def given_statechart_state_is_accepted_operator_contract(
     )
 
 
+@then(
+    parsers.parse(
+        'statechart "{statechart_name}" state "{state_name}" is the accepted operator contract'
+    )
+)
+def then_statechart_state_matches_operator_decision(
+    acceptance_context: AcceptanceScenarioContext,
+    statechart_name: str,
+    state_name: str,
+) -> None:
+    _OPERATOR_STATECHART_CATALOG.require_state(statechart_name, state_name)
+    actual = _actual_operator_decisions(acceptance_context)
+    assert (statechart_name, state_name) in actual, (
+        f"accepted operator state {(statechart_name, state_name)} was not recorded; "
+        f"actual decisions: {sorted(actual)}"
+    )
+
+
 def _accepted_operator_statechart_states(
     context: AcceptanceScenarioContext,
 ) -> list[dict[str, Any]]:
@@ -174,7 +192,9 @@ def _command_operator_views(
 def _actual_operator_decisions(
     context: AcceptanceScenarioContext,
 ) -> set[tuple[str, str]]:
-    decisions = [*_command_operator_decisions(context), *context.actual_operator_decisions]
+    decisions = [*context.actual_operator_decisions]
+    if context.command is not None:
+        decisions = [*_command_operator_decisions(context), *decisions]
     return {(decision.statechart, decision.state) for decision in decisions}
 
 
@@ -261,6 +281,19 @@ def _guided_item_text(
 
 def _operator_copy_text(name: str) -> str:
     match name:
+        case "arc_home_attention":
+            return operator_copy.arc_home_attention(
+                [
+                    operator_copy.arc_item_notification_health_failed(
+                        channel="Push",
+                        latest_error="delivery timeout",
+                    ),
+                    operator_copy.arc_item_setup_needs_attention(
+                        area="Storage",
+                        summary="missing bucket",
+                    ),
+                ]
+            )
         case "arc_home_no_attention":
             return operator_copy.arc_home_no_attention()
         case "arc_item_cloud_backup_failed":
@@ -357,6 +390,17 @@ def _operator_copy_text(name: str) -> str:
                 operator_copy.disc_item_hot_recovery_needs_media(
                     target="docs/tax/2022/invoice-123.pdf"
                 )
+            )
+        case "arc_disc_attention":
+            return operator_copy.arc_disc_attention(
+                [
+                    operator_copy.disc_item_recovery_ready(
+                        session_id="rs-20260420T040001Z-rebuild-1",
+                        affected=["docs"],
+                        expires_at="2026-05-02 08:00 UTC",
+                    ),
+                    operator_copy.disc_item_burn_work_ready(disc_count=1),
+                ]
             )
         case "burn_backlog_cleared":
             return operator_copy.burn_backlog_cleared()
@@ -1134,6 +1178,53 @@ def given_recovery_data_is_ready_for_collection(
     collection_id: str,
 ) -> None:
     acceptance_system.set_operator_recovery_ready(collection_id)
+
+
+@when("the operator confirms the next guided action")
+def when_operator_confirms_next_guided_action(
+    acceptance_context: AcceptanceScenarioContext,
+) -> None:
+    command = _require_command(acceptance_context)
+    argv = list(getattr(command, "args", acceptance_context.command_argv))
+    if argv and argv[0] == "arc":
+        acceptance_context.actual_operator_decisions.append(
+            _OPERATOR_STATECHART_CATALOG.decision("arc.home", "scan_attention")
+        )
+        return
+    if argv and argv[0] == "arc-disc":
+        acceptance_context.actual_operator_decisions.append(
+            _OPERATOR_STATECHART_CATALOG.decision("arc_disc.guided", "scan_backlog")
+        )
+        return
+    raise AssertionError(f"unsupported guided command argv: {argv}")
+
+
+@when("the operator confirms the recovery action")
+def when_operator_confirms_recovery_action(
+    acceptance_context: AcceptanceScenarioContext,
+) -> None:
+    acceptance_context.actual_operator_decisions.append(
+        _OPERATOR_STATECHART_CATALOG.decision("arc_disc.guided", "scan_backlog")
+    )
+
+
+@when("the recovery item is no longer waiting")
+def when_recovery_item_is_no_longer_waiting(
+    acceptance_system: AcceptanceSystem,
+) -> None:
+    acceptance_system.clear_operator_recovery_ready()
+
+
+@then("the guided flow chooses ordinary blank-disc work without another command")
+def then_guided_flow_chooses_blank_disc_work_without_another_command(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+) -> None:
+    assert acceptance_system.operator_blank_disc_work_is_available()
+    assert not acceptance_system.operator_recovery_ready_is_waiting()
+    acceptance_context.actual_operator_decisions.append(
+        _OPERATOR_STATECHART_CATALOG.decision("arc_disc.guided", "burn_work_ready")
+    )
 
 
 @given(parsers.parse('recovery for collection "{collection_id}" needs approval'))

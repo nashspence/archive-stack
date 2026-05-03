@@ -108,7 +108,7 @@ Feature: arc CLI
       And stdout mentions "verified"
 
   Rule: No-argument operator home
-    @todo @issue_303
+    @contract_gap @issue_315
     Scenario: arc no-arg attention summary continues inside the guided flow
       Given statechart "arc.home" state "attention_summary" is the accepted operator contract
       And setup needs attention

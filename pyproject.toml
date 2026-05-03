@@ -83,6 +83,7 @@ markers = [
   "issue_210: tracks issue #210 for action-needed webhook payloads",
   "issue_211: tracks issue #211 for replacing remaining normal CLI copy",
   "issue_303: tracks issue #303 for backing guided-in-flow-PM-scenarios",
+  "issue_315: tracks issue #315 for implementing guided in-flow continuation",
 ]
 
 [tool.mypy]

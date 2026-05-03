@@ -4,7 +4,7 @@ Feature: arc-disc CLI
   Targeted fetch commands remain available for explicit recovery detail flows.
 
   Rule: No-argument physical and recovery backlog
-    @todo @issue_303
+    @contract_gap @issue_315
     Scenario: arc-disc no-arg attention summary continues inside the guided flow
       Given statechart "arc_disc.guided" state "attention_summary" is the accepted operator contract
       And recovery data is ready for collection "docs"
@@ -16,7 +16,7 @@ Feature: arc-disc CLI
       When the operator confirms the next guided action
       Then statechart "arc_disc.guided" state "scan_backlog" is the accepted operator contract
 
-    @todo @issue_303
+    @contract_gap @issue_315
     Scenario: arc-disc no-arg flow re-scans after distinct backlog work
       Given statechart "arc_disc.guided" state "recovery_ready" is the accepted operator contract
       And statechart "arc_disc.guided" state "burn_work_ready" is the accepted operator contract
