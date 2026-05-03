@@ -1808,6 +1808,29 @@ class ProductionSystem:
         staging_path = self.workspace / "arc_disc_staging" / image_id / str(image["filename"])
         return staging_path.is_file()
 
+    def set_operator_rebuild_work_remaining(self, collection_id: str) -> None:
+        assert collection_id == DOCS_COLLECTION_ID
+        image = IMAGE_FIXTURES[0]
+        self.seed_planner_fixtures()
+        self.mark_collection_archive_uploaded(collection_id)
+        self.seed_finalized_image(image.id)
+        self._seed_image_copy(image.volume_id, f"{image.volume_id}-1", "Shelf A1")
+        self._seed_image_copy(image.volume_id, f"{image.volume_id}-2", "Shelf B1")
+        for copy_id, state in (
+            (f"{image.volume_id}-1", "lost"),
+            (f"{image.volume_id}-2", "damaged"),
+        ):
+            response = self.request(
+                "PATCH",
+                f"/v1/images/{image.volume_id}/copies/{copy_id}",
+                json_body={"state": state},
+            )
+            assert response.status_code == 200, response.text
+        self.ensure_image_rebuild_session(
+            session_id=f"rs-{image.volume_id}-rebuild-1",
+            image_id=image.volume_id,
+        )
+
     def pins_list(self) -> list[str]:
         return [item["target"] for item in self.request("GET", "/v1/pins").json()["pins"]]
 
