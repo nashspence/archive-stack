@@ -4,7 +4,7 @@ Feature: arc-disc CLI
   Targeted fetch commands remain available for explicit recovery detail flows.
 
   Rule: No-argument physical and recovery backlog
-    @todo @issue_308
+    @contract_gap @issue_311
     Scenario: arc-disc reports storage-capacity blockage during disc preparation
       Given statechart "arc_disc.burn" state "storage_capacity_blocked" is the accepted operator contract
       And burn preparation needs more local storage than is available
@@ -13,7 +13,7 @@ Feature: arc-disc CLI
       And stderr mentions "Free local storage"
       And stderr does not mention "No space left on device"
 
-    @todo @issue_308
+    @contract_gap @issue_311
     Scenario: arc-disc reports storage-capacity blockage during recovery materialization
       Given statechart "arc_disc.recovery" state "storage_capacity_blocked" is the accepted operator contract
       And recovery materialization needs more local storage than is available

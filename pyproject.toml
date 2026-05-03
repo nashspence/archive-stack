@@ -83,6 +83,7 @@ markers = [
   "issue_210: tracks issue #210 for action-needed webhook payloads",
   "issue_211: tracks issue #211 for replacing remaining normal CLI copy",
   "issue_308: tracks issue #308 for backing storage-capacity-PM-scenarios",
+  "issue_311: tracks issue #311 for implementing local storage-capacity operator states",
 ]
 
 [tool.mypy]
