@@ -6,6 +6,8 @@ from typing import Any
 
 import typer
 
+from contracts.operator import copy as operator_copy
+
 
 def _copy_label(copy: Mapping[str, object]) -> str:
     copy_id = str(copy.get("id", "unknown"))
@@ -133,10 +135,20 @@ def format_pin(payload: Mapping[str, Any]) -> str:
 
     fetch = payload.get("fetch")
     if isinstance(fetch, Mapping):
+        lines.extend(
+            (
+                "",
+                operator_copy.pin_waiting_for_disc(
+                    target=str(payload["target"]),
+                    missing_bytes=None,
+                ),
+                "",
+            )
+        )
         lines.append(f"fetch: {fetch.get('id', 'unknown')} ({fetch.get('state', 'unknown')})")
         copies = fetch.get("copies")
         if isinstance(copies, Sequence):
-            lines.append("candidate copies:")
+            lines.append("available discs:")
             if copies:
                 lines.extend(
                     f"- {_copy_label(copy)}" for copy in copies if isinstance(copy, Mapping)
@@ -178,12 +190,21 @@ def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> str
             pending.append(f"- {path}")
 
     lines = [
+        operator_copy.fetch_detail_pending(
+            target=str(summary.get("target", "unknown")),
+            pending_files=_int_value(summary.get("entries_pending"), default=len(pending)),
+            partial_files=max(
+                _int_value(summary.get("entries_partial"), default=len(partial)),
+                1 if pending else 0,
+            ),
+        ),
+        "",
         f"fetch: {summary.get('id', 'unknown')} ({summary.get('state', 'unknown')})",
         f"target: {summary.get('target', 'unknown')}",
-        "pending:",
+        "Pending files:",
     ]
     lines.extend(pending or ["- none"])
-    lines.append("partial:")
+    lines.append("Partly restored files:")
     lines.extend(partial or ["- none", "expires: n/a"])
     lines.append("byte-complete:")
     lines.extend(byte_complete or ["- none"])

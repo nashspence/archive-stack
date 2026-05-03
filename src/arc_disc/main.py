@@ -18,13 +18,31 @@ import typer
 from arc_cli.client import ApiClient
 from arc_cli.output import emit
 from arc_core.domain.errors import ArcError, HashMismatch, NotFound
+from contracts.operator import copy as operator_copy
 
-app = typer.Typer(help="arc optical recovery CLI")
+app = typer.Typer(help="arc optical recovery CLI", invoke_without_command=True)
 
 
-@app.callback()
-def arc_disc_app() -> None:
+@app.callback(invoke_without_command=True)
+def arc_disc_app(ctx: typer.Context) -> None:
     """Keep the CLI in group mode so `arc-disc fetch ...` stays canonical."""
+    if ctx.invoked_subcommand is not None:
+        return
+    try:
+        pins = ApiClient().list_pins().get("pins", [])
+    except (ArcError, RuntimeError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    for pin in pins:
+        if not isinstance(pin, dict) or not isinstance(pin.get("fetch"), dict):
+            continue
+        item = operator_copy.disc_item_hot_recovery_needs_media(
+            target=str(pin.get("target", "unknown"))
+        )
+        typer.echo(operator_copy.arc_disc_attention([item]))
+        raise typer.Exit(code=0)
+    typer.echo(operator_copy.arc_disc_no_attention())
+    raise typer.Exit(code=0)
 
 
 _DISC_IO_CHUNK_BYTES = 1024 * 1024

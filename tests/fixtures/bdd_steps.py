@@ -1144,8 +1144,8 @@ def given_recovery_for_collection_needs_approval(
     acceptance_system.set_operator_recovery_approval_required(collection_id)
 
 
-@given("pinned files need recovery from disc")
-def given_pinned_files_need_recovery_from_disc(
+@given("pinned files need disc restore")
+def given_pinned_files_need_disc_restore(
     acceptance_system: AcceptanceSystem,
 ) -> None:
     given_pinning_target_requires_fetch(

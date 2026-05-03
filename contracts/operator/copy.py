@@ -33,6 +33,7 @@ OPERATOR_TERMS: tuple[str, ...] = (
     "storage location",
     "cloud backup",
     "recovery",
+    "disc restore",
     "safe",
     "needs attention",
     "fully protected",
@@ -45,10 +46,12 @@ MACHINE_ONLY_TERMS: tuple[str, ...] = (
     "finalized image",
     "Glacier",
     "glacier_path",
+    "hot recovery",
     "image_rebuild",
     "pending_approval",
     "protection_state",
     "ready_to_finalize",
+    "recovery from disc",
     "recovery-byte stream",
     "waiting_for_future_iso",
 )
@@ -313,9 +316,9 @@ def disc_item_hot_recovery_needs_media(*, target: str) -> GuidedItem:
         kind="hot_recovery_needs_media",
         priority=40,
         command=ARC_DISC,
-        title="A disc is needed for hot storage",
+        title="Disc restore needs a disc",
         body=(
-            f"Files need recovery from disc for {truncate(target)}. "
+            f"Files need disc restore for {truncate(target)}. "
             "Riverhog needs a disc to restore missing files to hot storage."
         ),
         next_step="Insert the requested disc and restore the files.",
@@ -487,7 +490,7 @@ def pin_ready(*, target: str) -> str:
 
 def pin_waiting_for_disc(*, target: str, missing_bytes: int | None) -> str:
     return (
-        f"Files need recovery from disc. {truncate(target)} is pinned, "
+        f"Files need disc restore. {truncate(target)} is pinned, "
         "but Riverhog needs a disc to restore "
         f"{bytes_amount(missing_bytes)} to hot storage.\n"
         f"Run {command(ARC_DISC)} for the guided disc workflow."
@@ -500,7 +503,7 @@ def pins_list_header(*, pin_count: int) -> str:
 
 def fetch_detail_pending(*, target: str, pending_files: int, partial_files: int) -> str:
     return (
-        f"Files need recovery from disc for {truncate(target)}.\n"
+        f"Files need disc restore for {truncate(target)}.\n"
         f"Pending files: {pending_files}. Partly restored files: {partial_files}.\n"
         f"Run {command(ARC_DISC)} for the guided disc workflow."
     )
@@ -752,7 +755,7 @@ def recovery_cleanup_handoff(*, affected: Iterable[str]) -> str:
     )
 
 
-# hot-storage recovery from disc
+# disc restore from optical media into hot storage
 
 
 def hot_recovery_insert_disc(*, target: str, disc_label: str | None) -> str:

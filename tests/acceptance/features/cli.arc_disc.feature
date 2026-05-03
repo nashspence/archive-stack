@@ -44,13 +44,13 @@ Feature: arc-disc CLI
       And stdout does not mention "pending_approval"
 
     @contract_gap @issue_208
-    Scenario: arc-disc guides hot storage recovery that needs media
+    Scenario: arc-disc guides disc restore that needs media
       Given statechart "arc_disc.guided" state "hot_recovery_needs_media" is the accepted operator contract
-      And pinned files need recovery from disc
+      And pinned files need disc restore
       When the operator runs 'arc-disc'
       Then the command exits with code 0
       And stdout includes operator copy "disc_item_hot_recovery_needs_media"
-      And stdout mentions "Files need recovery from disc"
+      And stdout mentions "Disc restore needs a disc"
       And stdout mentions "Insert the requested disc"
       And stdout mentions target "docs/tax/2022/invoice-123.pdf"
       And stdout does not mention "fetch manifest"
