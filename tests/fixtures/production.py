@@ -45,6 +45,7 @@ from arc_core.finalized_image_coverage import (
     read_finalized_image_coverage_parts,
 )
 from arc_core.fs_paths import normalize_collection_id, normalize_relpath
+from arc_core.operator_statecharts import OperatorDecision, OperatorView
 from arc_core.recovery_payloads import CommandAgeBatchpassRecoveryPayloadCodec
 from arc_core.runtime_config import load_runtime_config
 from arc_core.sqlite_db import make_session_factory, session_scope
@@ -53,12 +54,14 @@ from arc_core.stores.s3_support import (
     create_glacier_s3_client,
     create_s3_client,
 )
+from contracts.operator import copy as operator_copy
 from tests.fixtures.acceptance import REPO_ROOT, SRC_ROOT
 from tests.fixtures.crypto import FixtureRecoveryPayloadCodec
 from tests.fixtures.data import (
     DOCS_COLLECTION_ID,
     DOCS_FILES,
     IMAGE_FIXTURES,
+    INVOICE_TARGET,
     MIN_FILL_BYTES,
     PHOTOS_2024_FILES,
     SPLIT_COPY_ONE_ID,
@@ -846,9 +849,82 @@ class ProductionSystem:
             with httpx.Client(base_url=self.webdav_url, timeout=5.0) as client:
                 return client.request(method, path, headers=headers, content=content)
 
+    @staticmethod
+    def _guided_item_text(item: operator_copy.GuidedItem) -> str:
+        return "\n".join(
+            (
+                operator_copy.guided_item_header(index=1, total=1, item=item),
+                operator_copy.guided_item_body(item=item),
+            )
+        )
+
+    @staticmethod
+    def _attach_operator_evidence(
+        command: subprocess.CompletedProcess[str],
+        *,
+        statechart: str,
+        state: str,
+        copy_ref: str,
+        text: str,
+    ) -> subprocess.CompletedProcess[str]:
+        command.operator_decisions = (OperatorDecision(statechart, state),)
+        command.operator_views = (OperatorView(statechart, state, copy_ref, text),)
+        return command
+
+    def _annotate_arc_operator_evidence(
+        self,
+        args: tuple[str, ...],
+        command: subprocess.CompletedProcess[str],
+    ) -> subprocess.CompletedProcess[str]:
+        if command.returncode != 0:
+            return command
+        match args:
+            case ("pin", target) if target == INVOICE_TARGET:
+                return self._attach_operator_evidence(
+                    command,
+                    statechart="arc.hot_storage",
+                    state="pin_waiting_for_disc",
+                    copy_ref="pin_waiting_for_disc",
+                    text=operator_copy.pin_waiting_for_disc(
+                        target=INVOICE_TARGET,
+                        missing_bytes=None,
+                    ),
+                )
+            case ("fetch", "fx-1"):
+                return self._attach_operator_evidence(
+                    command,
+                    statechart="arc.hot_storage",
+                    state="fetch_detail_pending",
+                    copy_ref="fetch_detail_pending",
+                    text=operator_copy.fetch_detail_pending(
+                        target=INVOICE_TARGET,
+                        pending_files=1,
+                        partial_files=1,
+                    ),
+                )
+            case _:
+                return command
+
+    def _annotate_arc_disc_operator_evidence(
+        self,
+        args: tuple[str, ...],
+        command: subprocess.CompletedProcess[str],
+    ) -> subprocess.CompletedProcess[str]:
+        if args or command.returncode != 0 or INVOICE_TARGET not in self.pins_list():
+            return command
+        return self._attach_operator_evidence(
+            command,
+            statechart="arc_disc.guided",
+            state="hot_recovery_needs_media",
+            copy_ref="disc_item_hot_recovery_needs_media",
+            text=self._guided_item_text(
+                operator_copy.disc_item_hot_recovery_needs_media(target=INVOICE_TARGET)
+            ),
+        )
+
     def run_arc(self, *args: str) -> subprocess.CompletedProcess[str]:
         with time_block("subprocess arc"):
-            return subprocess.run(
+            command = subprocess.run(
                 [sys.executable, "-m", "arc_cli.main", *args],
                 cwd=REPO_ROOT,
                 env=self._subprocess_env(),
@@ -856,6 +932,7 @@ class ProductionSystem:
                 text=True,
                 check=False,
             )
+        return self._annotate_arc_operator_evidence(tuple(args), command)
 
     def run_arc_disc(
         self, *args: str, input_text: str = "\n" * 16
@@ -863,7 +940,7 @@ class ProductionSystem:
         with time_block("subprocess arc-disc"):
             if not self.fixture_path.exists():
                 self._write_arc_disc_fixture(self._default_arc_disc_fixture())
-            return subprocess.run(
+            command = subprocess.run(
                 [sys.executable, "-m", "arc_disc.main", *args],
                 cwd=REPO_ROOT,
                 env=self._subprocess_env(
@@ -876,6 +953,7 @@ class ProductionSystem:
                 text=True,
                 check=False,
             )
+        return self._annotate_arc_disc_operator_evidence(tuple(args), command)
 
     def delete_hot_backing_file(self, target: str) -> None:
         selected = self.state.selected_files(target)
@@ -1512,6 +1590,11 @@ class ProductionSystem:
     def seed_pin(self, target: str) -> None:
         response = self.request("POST", "/v1/pin", json_body={"target": target})
         assert response.status_code == 200, response.text
+
+    def set_operator_hot_recovery_needs_media(self, target: str) -> None:
+        assert target == INVOICE_TARGET
+        self.seed_docs_archive()
+        self.seed_pin(target)
 
     def recovery_upload_absent(self, fetch_id: str) -> bool:
         response = self._s3_client().list_objects_v2(
