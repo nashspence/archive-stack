@@ -629,27 +629,27 @@ def burn_ready(*, disc_count: int, estimated_bytes: int | None = None) -> str:
     return f"Riverhog has {count_noun(disc_count, 'disc')}{size} ready to write."
 
 
-def burn_insert_blank_disc(*, label_text: str, device: str | None = None) -> str:
+def burn_insert_blank_disc(*, device: str | None = None) -> str:
     location = f" into {device}" if device else ""
     return (
-        f"Insert a blank disc for label {label_text}{location}, then press Enter.\n"
+        f"Insert a blank writable disc{location}, then press Enter.\n"
         "Riverhog will write and verify it before asking you to label it."
     )
 
 
-def burn_verifying_prepared_disc(*, label_text: str) -> str:
-    return f"Checking prepared contents for disc label {label_text} before writing."
+def burn_verifying_prepared_disc() -> str:
+    return "Checking prepared contents before writing the inserted disc."
 
 
-def burn_writing_disc(*, label_text: str, device: str | None = None) -> str:
+def burn_writing_disc(*, device: str | None = None) -> str:
     location = f" to {device}" if device else ""
-    return f"Writing disc label {label_text}{location}. Keep the disc available."
+    return f"Writing the inserted disc{location}. Keep the disc available."
 
 
-def burn_verifying_disc(*, label_text: str) -> str:
+def burn_verifying_disc() -> str:
     return (
-        f"Verifying disc label {label_text}. "
-        "Riverhog will not count it until verification passes."
+        "Verifying the burned disc. Riverhog will not count it until verification "
+        "passes and you confirm the label."
     )
 
 

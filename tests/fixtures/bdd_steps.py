@@ -358,6 +358,14 @@ def _operator_copy_text(name: str) -> str:
                     target="docs/tax/2022/invoice-123.pdf"
                 )
             )
+        case "burn_insert_blank_disc":
+            return operator_copy.burn_insert_blank_disc()
+        case "burn_verifying_prepared_disc":
+            return operator_copy.burn_verifying_prepared_disc()
+        case "burn_writing_disc":
+            return operator_copy.burn_writing_disc()
+        case "burn_verifying_disc":
+            return operator_copy.burn_verifying_disc()
         case "burn_backlog_cleared":
             return operator_copy.burn_backlog_cleared()
         case "burn_label_checkpoint":
@@ -1405,6 +1413,32 @@ def given_burn_fixture_says_unlabeled_copy_is_unavailable(
     copy_id: str,
 ) -> None:
     acceptance_system.set_arc_disc_burn_copy_available(copy_id, available=False)
+
+
+@when("the operator inserts blank media but stops before Label Checkpoint")
+def when_operator_inserts_blank_media_before_label_checkpoint(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+) -> None:
+    acceptance_context.command_text = "arc-disc burn"
+    acceptance_context.command_argv = ["arc-disc", "burn"]
+    acceptance_context.stdout_json = None
+    acceptance_context.expected_api_endpoint = None
+    acceptance_context.expected_api_payload = None
+    acceptance_context.command = acceptance_system.arc_disc_burn_before_label_checkpoint()
+
+
+@when("the operator reaches Label Checkpoint")
+def when_operator_reaches_label_checkpoint(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+) -> None:
+    acceptance_context.command_text = "arc-disc burn"
+    acceptance_context.command_argv = ["arc-disc", "burn"]
+    acceptance_context.stdout_json = None
+    acceptance_context.expected_api_endpoint = None
+    acceptance_context.expected_api_payload = None
+    acceptance_context.command = acceptance_system.arc_disc_burn_label_checkpoint()
 
 
 @given(parsers.parse('the burn fixture fails while burning copy id "{copy_id}"'))
@@ -3969,6 +4003,13 @@ def then_the_collection_is_fully_protected(acceptance_system: AcceptanceSystem) 
 @then("the collection is not fully protected")
 def then_the_collection_is_not_fully_protected(acceptance_system: AcceptanceSystem) -> None:
     assert not acceptance_system.operator_collection_is_fully_protected()
+
+
+@then("no label is recorded for the inserted disc")
+def then_no_label_is_recorded_for_inserted_disc(
+    acceptance_system: AcceptanceSystem,
+) -> None:
+    assert not acceptance_system.operator_disc_label_is_recorded()
 
 
 @then("the response Glacier totals measured_storage_bytes is greater than 0")

@@ -59,6 +59,7 @@ from tests.fixtures.data import (
     DOCS_COLLECTION_ID,
     DOCS_FILES,
     IMAGE_FIXTURES,
+    IMAGE_ID,
     MIN_FILL_BYTES,
     PHOTOS_2024_FILES,
     SPLIT_COPY_ONE_ID,
@@ -1807,6 +1808,40 @@ class ProductionSystem:
         image = self.request("GET", f"/v1/images/{image_id}").json()
         staging_path = self.workspace / "arc_disc_staging" / image_id / str(image["filename"])
         return staging_path.is_file()
+
+    def set_operator_blank_disc_work_available(self) -> None:
+        self.seed_planner_fixtures()
+
+    def operator_disc_label_is_recorded(self) -> bool:
+        response = self.request("GET", f"/v1/images/{IMAGE_ID}/copies")
+        if response.status_code == 404:
+            return False
+        assert response.status_code == 200, response.text
+        return any(
+            copy.get("state") in {"registered", "verified"}
+            for copy in response.json().get("copies", [])
+        )
+
+    def operator_collection_is_fully_protected(self) -> bool:
+        response = self.request("GET", f"/v1/collections/{DOCS_COLLECTION_ID}")
+        if response.status_code == 404:
+            return False
+        assert response.status_code == 200, response.text
+        return response.json()["protection_state"] == "full"
+
+    def arc_disc_burn_before_label_checkpoint(self) -> subprocess.CompletedProcess[str]:
+        return self.run_arc_disc(
+            "burn",
+            "--device",
+            str(self.workspace / "missing-optical-device"),
+        )
+
+    def arc_disc_burn_label_checkpoint(self) -> subprocess.CompletedProcess[str]:
+        return self.run_arc_disc(
+            "burn",
+            "--device",
+            str(self.workspace / "missing-optical-device"),
+        )
 
     def pins_list(self) -> list[str]:
         return [item["target"] for item in self.request("GET", "/v1/pins").json()["pins"]]

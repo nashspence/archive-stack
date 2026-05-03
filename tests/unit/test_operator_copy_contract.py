@@ -201,6 +201,14 @@ def _feature_copy_text(name: str) -> str:
                     target="docs/tax/2022/invoice-123.pdf"
                 )
             )
+        case "burn_insert_blank_disc":
+            return operator_copy.burn_insert_blank_disc(device="/dev/sr0")
+        case "burn_verifying_prepared_disc":
+            return operator_copy.burn_verifying_prepared_disc()
+        case "burn_writing_disc":
+            return operator_copy.burn_writing_disc(device="/dev/sr0")
+        case "burn_verifying_disc":
+            return operator_copy.burn_verifying_disc()
         case "burn_backlog_cleared":
             return operator_copy.burn_backlog_cleared()
         case "burn_label_checkpoint":

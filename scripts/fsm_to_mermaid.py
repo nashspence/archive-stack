@@ -450,20 +450,16 @@ def render_operator_copy(reference: str) -> str:
             return operator_copy.burn_ready(disc_count=1, estimated_bytes=2048)
         case "burn_insert_blank_disc":
             return operator_copy.burn_insert_blank_disc(
-                label_text="20260420T040001Z-1",
                 device="/dev/sr0",
             )
         case "burn_verifying_prepared_disc":
-            return operator_copy.burn_verifying_prepared_disc(
-                label_text="20260420T040001Z-1"
-            )
+            return operator_copy.burn_verifying_prepared_disc()
         case "burn_writing_disc":
             return operator_copy.burn_writing_disc(
-                label_text="20260420T040001Z-1",
                 device="/dev/sr0",
             )
         case "burn_verifying_disc":
-            return operator_copy.burn_verifying_disc(label_text="20260420T040001Z-1")
+            return operator_copy.burn_verifying_disc()
         case "burn_label_checkpoint":
             return operator_copy.burn_label_checkpoint(label_text="20260420T040001Z-1")
         case "burn_location_prompt":

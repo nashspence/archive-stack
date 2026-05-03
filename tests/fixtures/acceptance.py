@@ -4418,6 +4418,50 @@ class AcceptanceSystem:
         with self.state.lock:
             return self.state.operator_collection_fully_protected
 
+    def operator_disc_label_is_recorded(self) -> bool:
+        with self.state.lock:
+            return bool(
+                self.state.operator_label_confirmation_location
+                or self.state.operator_collection_fully_protected
+            )
+
+    def arc_disc_burn_before_label_checkpoint(self) -> subprocess.CompletedProcess[str]:
+        states_and_text = [
+            ("insert_blank_disc", operator_copy.burn_insert_blank_disc()),
+            ("verifying_prepared_disc", operator_copy.burn_verifying_prepared_disc()),
+            ("writing_disc", operator_copy.burn_writing_disc()),
+            ("verifying_disc", operator_copy.burn_verifying_disc()),
+        ]
+        stderr = "\n".join(text for _state, text in states_and_text)
+        return _operator_completed_process(
+            ["arc-disc", "burn"],
+            returncode=1,
+            stderr=stderr,
+            decisions=[
+                _operator_decision("arc_disc.burn", state) for state, _text in states_and_text
+            ],
+            views=[
+                _operator_view("arc_disc.burn", state, text=text)
+                for state, text in states_and_text
+            ],
+        )
+
+    def arc_disc_burn_label_checkpoint(self) -> subprocess.CompletedProcess[str]:
+        stderr = operator_copy.burn_label_checkpoint(label_text=_OPERATOR_FIXTURE_DISC_LABEL)
+        return _operator_completed_process(
+            ["arc-disc", "burn"],
+            returncode=1,
+            stderr=stderr,
+            decisions=[_operator_decision("arc_disc.burn", "label_checkpoint")],
+            views=[
+                _operator_view(
+                    "arc_disc.burn",
+                    "label_checkpoint",
+                    text=stderr,
+                )
+            ],
+        )
+
     def emit_operator_ready_disc_notification(self) -> None:
         self.state.deliver_webhook_payload(
             {
