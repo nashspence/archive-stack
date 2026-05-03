@@ -365,7 +365,7 @@ def test_mermaid_generator_writes_clear_compatible_mmdc_validated_workflows(
         _mermaid_display_text(generator.render_operator_copy("burn_label_checkpoint")) in burn
     )
     assert (
-        'restore_complete_progress_done_1{"<b>Restore Complete</b>"}:::guardNode'
+        'restore_complete_progress_done_2{"<b>Restore Complete</b>"}:::guardNode'
         in hot_recovery
     )
     assert (

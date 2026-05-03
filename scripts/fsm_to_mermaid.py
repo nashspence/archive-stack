@@ -205,6 +205,17 @@ def render_operator_copy(reference: str) -> str:
     match reference:
         case "arc_home_no_attention":
             return operator_copy.arc_home_no_attention()
+        case "storage_capacity_summary":
+            return operator_copy.storage_capacity_summary(
+                available_bytes=10_737_418_240,
+                budget_bytes=21_474_836_480,
+            )
+        case "storage_capacity_blocked":
+            return operator_copy.storage_capacity_blocked(
+                workflow="Disc preparation",
+                required_bytes=8_589_934_592,
+                available_bytes=1_073_741_824,
+            )
         case "arc_home_attention":
             return operator_copy.arc_home_attention(
                 [

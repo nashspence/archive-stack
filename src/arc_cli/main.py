@@ -22,9 +22,16 @@ from arc_cli.output import (
     format_pin,
     format_plan,
 )
+from arc_cli.storage_capacity import (
+    LocalStorageCapacityBlocked,
+    check_local_storage_capacity,
+    local_storage_capacity,
+    storage_capacity_summary_copy,
+    storage_capacity_summary_requested,
+)
 from arc_core.domain.errors import NotFound
 
-app = typer.Typer(help="arc archival control CLI")
+app = typer.Typer(help="arc archival control CLI", invoke_without_command=True)
 iso_app = typer.Typer(help="ISO operations")
 copy_app = typer.Typer(help="copy registration")
 app.add_typer(iso_app, name="iso")
@@ -44,6 +51,15 @@ class CollectionManifestEntry(TypedDict):
 
 def client() -> ApiClient:
     return ApiClient()
+
+
+@app.callback(invoke_without_command=True)
+def arc_app(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+    if storage_capacity_summary_requested():
+        typer.echo(storage_capacity_summary_copy(local_storage_capacity()))
+    raise typer.Exit(code=0)
 
 
 def _local_collection_manifest(root: Path) -> list[CollectionManifestEntry]:
@@ -107,6 +123,11 @@ def upload_cmd(
     resolved_root = root.expanduser().resolve()
     if not resolved_root.is_dir():
         raise typer.BadParameter("collection source must be a directory")
+    try:
+        check_local_storage_capacity()
+    except LocalStorageCapacityBlocked as exc:
+        typer.echo(exc.copy_text, err=True)
+        raise typer.Exit(code=1) from exc
 
     api = client()
     manifest = _local_collection_manifest(resolved_root)

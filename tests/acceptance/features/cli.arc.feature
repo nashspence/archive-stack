@@ -108,6 +108,23 @@ Feature: arc CLI
       And stdout mentions "verified"
 
   Rule: No-argument operator home
+    Scenario: arc healthy home reports local storage capacity summary
+      Given statechart "arc.home" state "storage_capacity_summary" is the accepted operator contract
+      And the archive has no non-physical attention items
+      And local storage capacity can be measured
+      When the operator runs 'arc'
+      Then stdout includes operator copy "storage_capacity_summary"
+      And stdout mentions "Local storage available"
+      And stdout mentions "Riverhog local storage budget"
+
+    Scenario: arc upload reports storage-capacity blockage before low-level filesystem errors
+      Given statechart "arc.upload" state "storage_capacity_blocked" is the accepted operator contract
+      And collection upload staging needs more local storage than is available
+      When the operator uploads collection source "photos-2024" with arc
+      Then stderr includes operator copy "storage_capacity_blocked"
+      And stderr mentions "raise the configured budget"
+      And stderr does not mention "No space left on device"
+
     @contract_gap @issue_209
     Scenario: arc opens the operator home when no attention is needed
       Given statechart "arc.home" state "no_attention" is the accepted operator contract

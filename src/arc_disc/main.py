@@ -17,14 +17,23 @@ import typer
 
 from arc_cli.client import ApiClient
 from arc_cli.output import emit
+from arc_cli.storage_capacity import LocalStorageCapacityBlocked, check_local_storage_capacity
 from arc_core.domain.errors import ArcError, HashMismatch, NotFound
 
-app = typer.Typer(help="arc optical recovery CLI")
+app = typer.Typer(help="arc optical recovery CLI", invoke_without_command=True)
 
 
-@app.callback()
-def arc_disc_app() -> None:
-    """Keep the CLI in group mode so `arc-disc fetch ...` stays canonical."""
+@app.callback(invoke_without_command=True)
+def arc_disc_app(ctx: typer.Context) -> None:
+    """Keep subcommands canonical while allowing guided no-argument checks."""
+    if ctx.invoked_subcommand is not None:
+        return
+    try:
+        check_local_storage_capacity()
+    except LocalStorageCapacityBlocked as exc:
+        typer.echo(exc.copy_text, err=True)
+        raise typer.Exit(code=1) from exc
+    raise typer.Exit(code=0)
 
 
 _DISC_IO_CHUNK_BYTES = 1024 * 1024
