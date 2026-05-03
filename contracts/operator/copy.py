@@ -140,6 +140,33 @@ def arc_home_no_attention() -> str:
     )
 
 
+def storage_capacity_summary(
+    *,
+    available_bytes: int | None,
+    budget_bytes: int | None,
+) -> str:
+    return (
+        "No attention needed.\n"
+        f"Local storage available: {bytes_amount(available_bytes)}. "
+        f"Riverhog local storage budget: {bytes_amount(budget_bytes)}."
+    )
+
+
+def storage_capacity_blocked(
+    *,
+    workflow: str,
+    required_bytes: int | None,
+    available_bytes: int | None,
+) -> str:
+    return (
+        f"{workflow} needs more local storage before it can continue. "
+        f"Needed: {bytes_amount(required_bytes)}. "
+        f"Available: {bytes_amount(available_bytes)}. "
+        "Free local storage, raise the configured budget, or choose a different "
+        "staging location, then retry."
+    )
+
+
 def arc_home_attention(items: Sequence[GuidedItem]) -> str:
     lines = [guided_intro(cli_name=ARC, item_count=len(items))]
     for index, item in enumerate(items, start=1):
