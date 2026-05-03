@@ -2,7 +2,7 @@
 Feature: arc-disc burn CLI
   The optical CLI clears a burn backlog only after each generated copy id is explicitly confirmed as labeled.
 
-  @todo @issue_244
+  @todo @issue_306
   Scenario: arc-disc burn rejects invalid inserted media before writing
     Given statechart "arc_disc.burn" state "inserted_media_rejected" is the accepted operator contract
     And ordinary blank-disc work is available
@@ -12,7 +12,7 @@ Feature: arc-disc burn CLI
     And no label is recorded for the inserted disc
     And the collection is not fully protected
 
-  @todo @issue_244
+  @todo @issue_306
   Scenario: arc-disc burn handles write failure without counting media
     Given statechart "arc_disc.burn" state "write_failed" is the accepted operator contract
     And ordinary blank-disc work is available
@@ -22,7 +22,7 @@ Feature: arc-disc burn CLI
     And no label is recorded for the failed disc
     And the collection is not fully protected
 
-  @todo @issue_244
+  @todo @issue_306
   Scenario: arc-disc burn handles burned-media verification failure without counting media
     Given statechart "arc_disc.burn" state "burned_media_verification_failed" is the accepted operator contract
     And ordinary blank-disc work is available
