@@ -18,13 +18,48 @@ import typer
 from arc_cli.client import ApiClient
 from arc_cli.output import emit
 from arc_core.domain.errors import ArcError, HashMismatch, NotFound
+from contracts.operator import copy as operator_copy
 
-app = typer.Typer(help="arc optical recovery CLI")
+_DEFAULT_OPTICAL_DEVICE = os.getenv("ARC_DISC_ACCEPTANCE_DEVICE", "/dev/sr0")
+
+app = typer.Typer(help="arc optical recovery CLI", invoke_without_command=True)
 
 
-@app.callback()
-def arc_disc_app() -> None:
-    """Keep the CLI in group mode so `arc-disc fetch ...` stays canonical."""
+@app.callback(invoke_without_command=True)
+def arc_disc_app(
+    ctx: typer.Context,
+    device: Annotated[str, typer.Option("--device", help="Optical device path")] = (
+        _DEFAULT_OPTICAL_DEVICE
+    ),
+    staging_dir: Annotated[
+        Path | None,
+        typer.Option("--staging-dir", help="Local staging directory for ISO downloads"),
+    ] = None,
+) -> None:
+    """Run the guided physical-media backlog clearer when no subcommand is provided."""
+    if ctx.invoked_subcommand is not None:
+        return
+    try:
+        completed_copy_ids, recovery_handoffs = _run_burn_backlog(
+            device=device,
+            staging_dir=staging_dir,
+            preflight_statechart="arc_disc.guided",
+        )
+    except OpticalDeviceProblem as exc:
+        typer.echo(exc.copy_text, err=True)
+        raise typer.Exit(code=1) from exc
+    except (ArcError, RuntimeError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if completed_copy_ids:
+        typer.echo("burn backlog cleared")
+        for copy_id in completed_copy_ids:
+            typer.echo(copy_id)
+        _report_recovery_handoffs(recovery_handoffs)
+        return
+    typer.echo("burn backlog already clear")
+    _report_recovery_handoffs(recovery_handoffs)
 
 
 _DISC_IO_CHUNK_BYTES = 1024 * 1024
@@ -175,6 +210,46 @@ class RecoverySessionHint:
 _PENDING_BURN_STATES = {"needed", "burning"}
 _PROTECTED_COPY_STATES = {"registered", "verified"}
 _ACTIVE_RECOVERY_SESSION_STATES = {"pending_approval", "restore_requested", "ready"}
+
+
+class OpticalDeviceProblem(RuntimeError):
+    def __init__(self, *, statechart: str, state: str, copy_text: str) -> None:
+        super().__init__(copy_text)
+        self.statechart = statechart
+        self.state = state
+        self.copy_text = copy_text
+
+
+def _device_has_no_read_write_bits(path: Path) -> bool:
+    try:
+        mode = path.stat().st_mode
+    except PermissionError:
+        return True
+    return mode & 0o666 == 0
+
+
+def _check_optical_device_ready(device: str, *, statechart: str) -> None:
+    path = Path(device)
+    if not path.exists():
+        raise OpticalDeviceProblem(
+            statechart=statechart,
+            state="device_missing",
+            copy_text=operator_copy.device_missing(),
+        )
+    if _device_has_no_read_write_bits(path) or not os.access(path, os.R_OK | os.W_OK):
+        raise OpticalDeviceProblem(
+            statechart=statechart,
+            state="device_permission_denied",
+            copy_text=operator_copy.device_permission_denied(),
+        )
+
+
+def _device_lost_during_work() -> OpticalDeviceProblem:
+    return OpticalDeviceProblem(
+        statechart="arc_disc.burn",
+        state="device_lost_during_work",
+        copy_text=operator_copy.device_lost_during_work(),
+    )
 
 
 @dataclass(slots=True)
@@ -1057,13 +1132,19 @@ def _burn_pending_copy(
     if not progress.burned:
         prompts.wait_for_blank_disc(copy_id, device=device)
         typer.echo(f"burning copy {copy_id} from {iso_path}", err=True)
-        burner.burn(iso_path, device=device, copy_id=copy_id)
+        try:
+            burner.burn(iso_path, device=device, copy_id=copy_id)
+        except RuntimeError as exc:
+            raise _device_lost_during_work() from exc
         progress.burned = True
         session_state.save()
 
     if not progress.media_verified:
         typer.echo(f"verifying burned media for {copy_id}", err=True)
-        media_verifier.verify(iso_path, device=device, copy_id=copy_id)
+        try:
+            media_verifier.verify(iso_path, device=device, copy_id=copy_id)
+        except RuntimeError as exc:
+            raise _device_lost_during_work() from exc
         progress.media_verified = True
         session_state.save()
 
@@ -1136,6 +1217,43 @@ def _process_burn_backlog_item(
             )
         )
     return completed
+
+
+def _run_burn_backlog(
+    *,
+    device: str,
+    staging_dir: Path | None,
+    preflight_statechart: str,
+) -> tuple[list[str], list[RecoveryHandoff]]:
+    _check_optical_device_ready(device, statechart=preflight_statechart)
+    client = ApiClient()
+    iso_verifier = build_iso_verifier()
+    burner = build_disc_burner()
+    media_verifier = build_burned_media_verifier()
+    prompts = build_burn_prompts()
+    resolved_staging_dir = (staging_dir or _default_staging_dir()).expanduser()
+    session_state = BurnSessionState.load(_burn_state_path(resolved_staging_dir))
+    completed_copy_ids: list[str] = []
+
+    while True:
+        backlog = _discover_burn_backlog(client)
+        if not backlog:
+            break
+        completed_copy_ids.extend(
+            _process_burn_backlog_item(
+                backlog[0],
+                client=client,
+                staging_dir=resolved_staging_dir,
+                session_state=session_state,
+                iso_verifier=iso_verifier,
+                burner=burner,
+                media_verifier=media_verifier,
+                prompts=prompts,
+                device=device,
+            )
+        )
+
+    return completed_copy_ids, _discover_recovery_handoffs(client)
 
 
 @dataclass(slots=True)
@@ -1290,7 +1408,9 @@ def _reset_byte_complete_uploads(
 @app.command("fetch")
 def fetch_cmd(
     fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
-    device: Annotated[str, typer.Option("--device", help="Optical device path")] = "/dev/sr0",
+    device: Annotated[str, typer.Option("--device", help="Optical device path")] = (
+        _DEFAULT_OPTICAL_DEVICE
+    ),
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     try:
@@ -1333,45 +1453,27 @@ def fetch_cmd(
 
 @app.command("burn")
 def burn_cmd(
-    device: Annotated[str, typer.Option("--device", help="Optical device path")] = "/dev/sr0",
+    device: Annotated[str, typer.Option("--device", help="Optical device path")] = (
+        _DEFAULT_OPTICAL_DEVICE
+    ),
     staging_dir: Annotated[
         Path | None,
         typer.Option("--staging-dir", help="Local staging directory for ISO downloads"),
     ] = None,
 ) -> None:
     try:
-        client = ApiClient()
-        iso_verifier = build_iso_verifier()
-        burner = build_disc_burner()
-        media_verifier = build_burned_media_verifier()
-        prompts = build_burn_prompts()
-        resolved_staging_dir = (staging_dir or _default_staging_dir()).expanduser()
-        session_state = BurnSessionState.load(_burn_state_path(resolved_staging_dir))
-        completed_copy_ids: list[str] = []
-
-        while True:
-            backlog = _discover_burn_backlog(client)
-            if not backlog:
-                break
-            completed_copy_ids.extend(
-                _process_burn_backlog_item(
-                    backlog[0],
-                    client=client,
-                    staging_dir=resolved_staging_dir,
-                    session_state=session_state,
-                    iso_verifier=iso_verifier,
-                    burner=burner,
-                    media_verifier=media_verifier,
-                    prompts=prompts,
-                    device=device,
-                )
-            )
-
+        completed_copy_ids, recovery_handoffs = _run_burn_backlog(
+            device=device,
+            staging_dir=staging_dir,
+            preflight_statechart="arc_disc.burn",
+        )
+    except OpticalDeviceProblem as exc:
+        typer.echo(exc.copy_text, err=True)
+        raise typer.Exit(code=1) from exc
     except (ArcError, RuntimeError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
-    recovery_handoffs = _discover_recovery_handoffs(client)
     if completed_copy_ids:
         typer.echo("burn backlog cleared")
         for copy_id in completed_copy_ids:
@@ -1388,7 +1490,9 @@ def recover_cmd(
         str | None,
         typer.Argument(help="Recovery session id", show_default=False),
     ] = None,
-    device: Annotated[str, typer.Option("--device", help="Optical device path")] = "/dev/sr0",
+    device: Annotated[str, typer.Option("--device", help="Optical device path")] = (
+        _DEFAULT_OPTICAL_DEVICE
+    ),
     staging_dir: Annotated[
         Path | None,
         typer.Option("--staging-dir", help="Local staging directory for ISO downloads"),

@@ -201,6 +201,14 @@ def _feature_copy_text(name: str) -> str:
                     target="docs/tax/2022/invoice-123.pdf"
                 )
             )
+        case "device_missing":
+            return operator_copy.device_missing(device="/dev/sr0")
+        case "device_not_ready":
+            return operator_copy.device_not_ready(device="/dev/sr0")
+        case "device_permission_denied":
+            return operator_copy.device_permission_denied(device="/dev/sr0")
+        case "device_lost_during_work":
+            return operator_copy.device_lost_during_work(device="/dev/sr0")
         case "burn_backlog_cleared":
             return operator_copy.burn_backlog_cleared()
         case "burn_label_checkpoint":

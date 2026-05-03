@@ -82,6 +82,8 @@ markers = [
   "issue_209: tracks issue #209 for no-arg arc operator home and non-physical workflows",
   "issue_210: tracks issue #210 for action-needed webhook payloads",
   "issue_211: tracks issue #211 for replacing remaining normal CLI copy",
+  "issue_309: tracks issue #309 for backing device-availability-PM-scenarios",
+  "issue_310: tracks issue #310 for implementing arc-disc device availability states",
 ]
 
 [tool.mypy]

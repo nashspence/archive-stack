@@ -398,6 +398,14 @@ def render_operator_copy(reference: str) -> str:
             )
         case "arc_disc_no_attention":
             return operator_copy.arc_disc_no_attention()
+        case "device_missing":
+            return operator_copy.device_missing(device="/dev/sr0")
+        case "device_not_ready":
+            return operator_copy.device_not_ready(device="/dev/sr0")
+        case "device_permission_denied":
+            return operator_copy.device_permission_denied(device="/dev/sr0")
+        case "device_lost_during_work":
+            return operator_copy.device_lost_during_work(device="/dev/sr0")
         case "arc_disc_attention":
             return operator_copy.arc_disc_attention(
                 [operator_copy.disc_item_burn_work_ready(disc_count=1)]

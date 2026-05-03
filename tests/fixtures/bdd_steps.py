@@ -184,6 +184,30 @@ def _actual_operator_views(
     return (*_command_operator_views(context), *context.actual_operator_views)
 
 
+def _record_command_output_operator_view(
+    context: AcceptanceScenarioContext,
+    name: str,
+    *,
+    text: str,
+) -> None:
+    command = _require_command(context)
+    if text not in f"{command.stdout}\n{command.stderr}":
+        return
+    for statechart_name, state_name in context.accepted_operator_statechart_states:
+        if _OPERATOR_STATECHART_CATALOG.view_for(statechart_name, state_name) != name:
+            continue
+        context.actual_operator_decisions.append(
+            _OPERATOR_STATECHART_CATALOG.decision(statechart_name, state_name)
+        )
+        context.actual_operator_views.append(
+            _OPERATOR_STATECHART_CATALOG.operator_view(
+                statechart_name,
+                state_name,
+                text=text,
+            )
+        )
+
+
 def _assert_actual_operator_view_matches_copy_ref(
     context: AcceptanceScenarioContext,
     name: str,
@@ -358,6 +382,12 @@ def _operator_copy_text(name: str) -> str:
                     target="docs/tax/2022/invoice-123.pdf"
                 )
             )
+        case "device_missing":
+            return operator_copy.device_missing()
+        case "device_permission_denied":
+            return operator_copy.device_permission_denied()
+        case "device_lost_during_work":
+            return operator_copy.device_lost_during_work()
         case "burn_backlog_cleared":
             return operator_copy.burn_backlog_cleared()
         case "burn_label_checkpoint":
@@ -1154,6 +1184,39 @@ def given_pinned_files_need_recovery_from_disc(
         "fx-1",
     )
     acceptance_system.set_operator_hot_recovery_needs_media(INVOICE_TARGET)
+
+
+@given("the configured optical device path does not exist")
+def given_configured_optical_device_path_does_not_exist(
+    acceptance_system: AcceptanceSystem,
+) -> None:
+    acceptance_system.set_operator_arc_disc_device_problem(
+        statechart="arc_disc.guided",
+        state="device_missing",
+        copy_ref="device_missing",
+    )
+
+
+@given("the operator cannot read or write the configured optical device")
+def given_operator_cannot_read_or_write_configured_optical_device(
+    acceptance_system: AcceptanceSystem,
+) -> None:
+    acceptance_system.set_operator_arc_disc_device_problem(
+        statechart="arc_disc.guided",
+        state="device_permission_denied",
+        copy_ref="device_permission_denied",
+    )
+
+
+@given("the optical device becomes unavailable while writing media")
+def given_optical_device_becomes_unavailable_while_writing_media(
+    acceptance_system: AcceptanceSystem,
+) -> None:
+    acceptance_system.set_operator_arc_disc_device_problem(
+        statechart="arc_disc.burn",
+        state="device_lost_during_work",
+        copy_ref="device_lost_during_work",
+    )
 
 
 @given(parsers.parse('the operator confirms labeled disc at storage location "{location}"'))
@@ -4497,6 +4560,7 @@ def then_stdout_matches_operator_copy(
 ) -> None:
     _assert_operator_copy_is_from_accepted_statechart(acceptance_context, name)
     expected = _operator_copy_text(name)
+    _record_command_output_operator_view(acceptance_context, name, text=expected)
     _assert_actual_operator_view_matches_copy_ref(acceptance_context, name, text=expected)
     assert _require_command(acceptance_context).stdout.strip() == expected
 
@@ -4508,6 +4572,7 @@ def then_stdout_includes_operator_copy(
 ) -> None:
     _assert_operator_copy_is_from_accepted_statechart(acceptance_context, name)
     expected = _operator_copy_text(name)
+    _record_command_output_operator_view(acceptance_context, name, text=expected)
     _assert_actual_operator_view_matches_copy_ref(acceptance_context, name, text=expected)
     assert expected in _require_command(acceptance_context).stdout
 
@@ -4519,6 +4584,7 @@ def then_stderr_includes_operator_copy(
 ) -> None:
     _assert_operator_copy_is_from_accepted_statechart(acceptance_context, name)
     expected = _operator_copy_text(name)
+    _record_command_output_operator_view(acceptance_context, name, text=expected)
     _assert_actual_operator_view_matches_copy_ref(acceptance_context, name, text=expected)
     assert expected in _require_command(acceptance_context).stderr
 

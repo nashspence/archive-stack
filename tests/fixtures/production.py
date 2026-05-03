@@ -723,6 +723,7 @@ class ProductionSystem:
     state: ProductionStateClient
     planning: ProductionPlanningClient
     copies: ProductionCopiesClient
+    arc_disc_acceptance_device: Path | None = None
 
     @classmethod
     def create(cls, workspace: Path) -> ProductionSystem:
@@ -750,6 +751,7 @@ class ProductionSystem:
                 state=cast(ProductionStateClient, None),
                 planning=cast(ProductionPlanningClient, None),
                 copies=cast(ProductionCopiesClient, None),
+                arc_disc_acceptance_device=None,
             )
             system.collections = ProductionCollectionsClient(system)
             system.fetches = ProductionFetchesClient(system)
@@ -771,6 +773,7 @@ class ProductionSystem:
     def reset(self) -> None:
         with time_block("fixture.acceptance_system.reset"):
             self._clear_fixture_path()
+            self.arc_disc_acceptance_device = None
             self.server.reset()
 
     def request(
@@ -863,19 +866,57 @@ class ProductionSystem:
         with time_block("subprocess arc-disc"):
             if not self.fixture_path.exists():
                 self._write_arc_disc_fixture(self._default_arc_disc_fixture())
+            extra_env = {
+                "ARC_DISC_STAGING_DIR": str(self.workspace / "arc_disc_staging"),
+            }
+            if self.arc_disc_acceptance_device is not None:
+                extra_env["ARC_DISC_ACCEPTANCE_DEVICE"] = str(self.arc_disc_acceptance_device)
             return subprocess.run(
                 [sys.executable, "-m", "arc_disc.main", *args],
                 cwd=REPO_ROOT,
-                env=self._subprocess_env(
-                    {
-                        "ARC_DISC_STAGING_DIR": str(self.workspace / "arc_disc_staging"),
-                    }
-                ),
+                env=self._subprocess_env(extra_env),
                 input=input_text,
                 capture_output=True,
                 text=True,
                 check=False,
             )
+
+    def set_operator_arc_disc_device_problem(
+        self,
+        *,
+        statechart: str,
+        state: str,
+        copy_ref: str,
+    ) -> None:
+        assert statechart in {"arc_disc.guided", "arc_disc.burn"}
+        assert copy_ref == state
+        assert state in {
+            "device_missing",
+            "device_permission_denied",
+            "device_lost_during_work",
+        }
+        if state == "device_missing":
+            missing_device = self.workspace / "missing-optical-device"
+            if missing_device.exists():
+                missing_device.unlink()
+            self.arc_disc_acceptance_device = missing_device
+            return
+        if state == "device_permission_denied":
+            denied_device = self.workspace / "permission-denied-optical-device"
+            denied_device.write_bytes(b"fixture optical device\n")
+            denied_device.chmod(0)
+            self.arc_disc_acceptance_device = denied_device
+            return
+        lost_device = self.workspace / "lost-during-work-optical-device"
+        if lost_device.exists():
+            if lost_device.is_dir():
+                shutil.rmtree(lost_device)
+            else:
+                lost_device.unlink()
+        lost_device.mkdir()
+        lost_device.chmod(0o700)
+        self.arc_disc_acceptance_device = lost_device
+        self.seed_planner_fixtures()
 
     def delete_hot_backing_file(self, target: str) -> None:
         selected = self.state.selected_files(target)

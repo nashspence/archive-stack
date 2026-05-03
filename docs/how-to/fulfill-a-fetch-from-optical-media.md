@@ -54,3 +54,6 @@ The command should exit successfully only if the fetch reaches `done`.
 
 Expected failures include a missing `xorriso` executable, insufficient permission to read the device or mount, missing
 payload objects on the inserted disc, and final server-side verification rejecting the recovered bytes.
+
+Device-missing, not-ready, permission-denied, and unavailable-during-work outcomes are operator states rather than raw
+device-tool output.

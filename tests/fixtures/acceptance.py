@@ -544,6 +544,7 @@ class AcceptanceState:
     operator_blank_disc_work_available: bool = False
     operator_label_confirmation_location: str | None = None
     operator_collection_fully_protected: bool = False
+    operator_arc_disc_device_problem: tuple[str, str, str] | None = None
 
     def clear_webhook_deliveries(self) -> None:
         with self.lock:
@@ -4405,6 +4406,16 @@ class AcceptanceSystem:
                 operator_copy.disc_item_hot_recovery_needs_media(target=target)
             )
 
+    def set_operator_arc_disc_device_problem(
+        self,
+        *,
+        statechart: str,
+        state: str,
+        copy_ref: str,
+    ) -> None:
+        with self.state.lock:
+            self.state.operator_arc_disc_device_problem = (statechart, state, copy_ref)
+
     def set_operator_blank_disc_work_available(self) -> None:
         with self.state.lock:
             self.state.operator_blank_disc_work_available = True
@@ -4577,6 +4588,25 @@ class AcceptanceSystem:
             items = sorted(self.state.operator_disc_items, key=lambda item: item.priority)
             blank_disc_work = self.state.operator_blank_disc_work_available
             label_location = self.state.operator_label_confirmation_location
+            device_problem = self.state.operator_arc_disc_device_problem
+        if device_problem is not None:
+            statechart, state, copy_ref = device_problem
+            match copy_ref:
+                case "device_missing":
+                    text = operator_copy.device_missing()
+                case "device_permission_denied":
+                    text = operator_copy.device_permission_denied()
+                case "device_lost_during_work":
+                    text = operator_copy.device_lost_during_work()
+                case _:
+                    raise AssertionError(f"unsupported device problem copy: {copy_ref}")
+            return _operator_completed_process(
+                ["arc-disc"],
+                returncode=1,
+                stderr=text,
+                decisions=[_operator_decision(statechart, state)],
+                views=[_operator_view(statechart, state, text=text)],
+            )
         if items:
             stdout = operator_copy.arc_disc_attention(items)
             decisions: list[OperatorDecision] = []

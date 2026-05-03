@@ -39,6 +39,10 @@ Expected failures include a missing `xorriso` executable, insufficient device pe
 media, a drive that cannot burn the inserted media type, and a burned-media byte comparison that does not match the
 staged ISO.
 
+Device-missing, not-ready, permission-denied, and unavailable-during-work outcomes are operator states. They should tell
+the operator to check configuration, insert or wait for media, fix permissions, reconnect the drive, or retry from the
+last safe checkpoint.
+
 CLI example:
 
 ```bash
