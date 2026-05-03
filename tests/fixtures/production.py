@@ -59,6 +59,7 @@ from tests.fixtures.data import (
     DOCS_COLLECTION_ID,
     DOCS_FILES,
     IMAGE_FIXTURES,
+    INVOICE_TARGET,
     MIN_FILL_BYTES,
     PHOTOS_2024_FILES,
     SPLIT_COPY_ONE_ID,
@@ -1807,6 +1808,34 @@ class ProductionSystem:
         image = self.request("GET", f"/v1/images/{image_id}").json()
         staging_path = self.workspace / "arc_disc_staging" / image_id / str(image["filename"])
         return staging_path.is_file()
+
+    def _seed_same_image_recovery_fetch(self, fetch_id: str) -> None:
+        assert fetch_id == "fx-1"
+        self.seed_docs_archive_with_split_invoice()
+        response = self.request("POST", "/v1/pin", json_body={"target": INVOICE_TARGET})
+        assert response.status_code == 200, response.text
+        assert response.json()["fetch"]["id"] == fetch_id
+
+    def arc_disc_same_image_retry(
+        self,
+        *,
+        statechart: str,
+        target: str,
+        next_disc_label: str,
+    ) -> subprocess.CompletedProcess[str]:
+        assert statechart in {"arc_disc.fetch", "arc_disc.hot_recovery"}
+        assert target == INVOICE_TARGET
+        assert next_disc_label == "20260420T040003Z-2"
+        self._seed_same_image_recovery_fetch("fx-1")
+        return self.run_arc_disc(
+            "fetch",
+            "fx-1",
+            "--device",
+            str(self.workspace / "missing-optical-device"),
+        )
+
+    def set_operator_fetch_same_image_copies_exhausted(self, fetch_id: str) -> None:
+        self._seed_same_image_recovery_fetch(fetch_id)
 
     def pins_list(self) -> list[str]:
         return [item["target"] for item in self.request("GET", "/v1/pins").json()["pins"]]
