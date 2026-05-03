@@ -203,6 +203,11 @@ def _notification_text(notification: operator_copy.ActionNeededNotification) -> 
 
 def render_operator_copy(reference: str) -> str:
     match reference:
+        case "api_unreachable":
+            return operator_copy.api_unreachable(
+                api_url="http://127.0.0.1:8000",
+                latest_error="connection refused",
+            )
         case "arc_home_no_attention":
             return operator_copy.arc_home_no_attention()
         case "arc_home_attention":

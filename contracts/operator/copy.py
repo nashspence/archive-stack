@@ -101,6 +101,15 @@ def _error_detail(latest_error: str | None, *, prefix: str = "Last error") -> st
     return f" {prefix}: {truncate(latest_error, max_chars=120)}"
 
 
+def api_unreachable(*, api_url: str | None = None, latest_error: str | None = None) -> str:
+    target = f" at {api_url}" if api_url else ""
+    return (
+        f"Riverhog cannot reach the API{target}. "
+        "Check that the Riverhog service is running and that local configuration points to it."
+        f"{_error_detail(latest_error)}"
+    )
+
+
 # Shared guided flow copy
 
 

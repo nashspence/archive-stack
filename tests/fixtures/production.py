@@ -772,6 +772,7 @@ class ProductionSystem:
         with time_block("fixture.acceptance_system.reset"):
             self._clear_fixture_path()
             self.server.reset()
+            self.base_url = self.server.base_url
 
     def request(
         self,
@@ -876,6 +877,9 @@ class ProductionSystem:
                 text=True,
                 check=False,
             )
+
+    def set_operator_api_unreachable(self) -> None:
+        self.base_url = "http://127.0.0.1:9"
 
     def delete_hot_backing_file(self, target: str) -> None:
         selected = self.state.selected_files(target)

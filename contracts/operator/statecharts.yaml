@@ -6,10 +6,15 @@ statecharts:
     states:
       scan_attention:
         transitions:
+          - guard: api_unreachable
+            target: api_unreachable
           - guard: non_physical_attention_items
             target: attention_summary
           - target: no_attention
         type: choice
+      api_unreachable:
+        view: api_unreachable
+        final: true
       attention_summary:
         view: arc_home_attention
         transitions:
@@ -53,8 +58,13 @@ statecharts:
       prompt_collection_id:
         view: upload_prompt_collection_id
         transitions:
+          - guard: api_unreachable
+            target: api_unreachable
           - event: collection_id_entered
             target: prompt_source_path
+      api_unreachable:
+        view: api_unreachable
+        final: true
       prompt_source_path:
         view: upload_prompt_source_path
         transitions:
@@ -95,6 +105,8 @@ statecharts:
       choose_operation:
         view: arc_home_at_will_menu
         transitions:
+          - guard: api_unreachable
+            target: api_unreachable
           - event: search_hot_storage
             target: search_header
           - event: get_hot_file
@@ -108,6 +120,9 @@ statecharts:
           - event: release_pin
             target: release_done
         type: choice
+      api_unreachable:
+        view: api_unreachable
+        final: true
       search_header:
         view: hot_search_header
         transitions:
@@ -167,6 +182,8 @@ statecharts:
     states:
       choose_detail:
         transitions:
+          - guard: api_unreachable
+            target: api_unreachable
           - event: show_collection
             target: collection_summary
           - event: plan_disc_work
@@ -176,6 +193,9 @@ statecharts:
           - event: show_cloud_backup_cost
             target: cloud_backup_report
         type: choice
+      api_unreachable:
+        view: api_unreachable
+        final: true
       collection_summary:
         view: collection_summary
         transitions:
@@ -222,6 +242,8 @@ statecharts:
     states:
       choose_copy_command:
         transitions:
+          - guard: api_unreachable
+            target: api_unreachable
           - event: register_copy
             target: copy_registered
           - event: list_copies
@@ -235,6 +257,9 @@ statecharts:
           - event: mark_copy_damaged
             target: copy_marked_damaged
         type: choice
+      api_unreachable:
+        view: api_unreachable
+        final: true
       copy_registered:
         view: copy_registered
         final: true
@@ -259,6 +284,8 @@ statecharts:
     states:
       choose_check:
         transitions:
+          - guard: api_unreachable
+            target: api_unreachable
           - event: check_setup
             target: doctor
           - event: check_recovery_costs
@@ -266,6 +293,9 @@ statecharts:
           - event: check_notifications
             target: notification_health_failed
         type: choice
+      api_unreachable:
+        view: api_unreachable
+        final: true
       doctor:
         transitions:
           - guard: setup_is_healthy
@@ -291,10 +321,15 @@ statecharts:
     states:
       scan_backlog:
         transitions:
+          - guard: api_unreachable
+            target: api_unreachable
           - guard: physical_or_recovery_backlog
             target: attention_summary
           - target: no_attention
         type: choice
+      api_unreachable:
+        view: api_unreachable
+        final: true
       attention_summary:
         view: arc_disc_attention
         transitions:
@@ -342,6 +377,8 @@ statecharts:
     states:
       inspect_burn_work:
         transitions:
+          - guard: api_unreachable
+            target: api_unreachable
           - guard: no_disc_work
             target: no_work
           - guard: unlabeled_verified_disc_available
@@ -351,6 +388,9 @@ statecharts:
           - guard: blank_disc_work_ready
             target: ready
         type: choice
+      api_unreachable:
+        view: api_unreachable
+        final: true
       no_work:
         view: burn_no_work
         final: true
@@ -415,6 +455,8 @@ statecharts:
     states:
       inspect_recovery:
         transitions:
+          - guard: api_unreachable
+            target: api_unreachable
           - guard: approval_required
             target: approval_required
           - guard: recovery_requested
@@ -428,6 +470,9 @@ statecharts:
           - guard: recovery_cleanup_handoff_ready
             target: cleanup_handoff
         type: choice
+      api_unreachable:
+        view: api_unreachable
+        final: true
       approval_required:
         view: recovery_approval_required
         transitions:
@@ -467,8 +512,13 @@ statecharts:
     states:
       need_media:
         transitions:
+          - guard: api_unreachable
+            target: api_unreachable
           - event: operator_inserts_disc
             target: insert_disc
+      api_unreachable:
+        view: api_unreachable
+        final: true
       insert_disc:
         view: hot_recovery_insert_disc
         transitions:
@@ -495,11 +545,16 @@ statecharts:
     states:
       fetch_requested:
         transitions:
+          - guard: api_unreachable
+            target: api_unreachable
           - guard: media_needed
             target: insert_disc
           - guard: upload_already_complete
             target: done
         type: choice
+      api_unreachable:
+        view: api_unreachable
+        final: true
       insert_disc:
         view: hot_recovery_insert_disc
         transitions:

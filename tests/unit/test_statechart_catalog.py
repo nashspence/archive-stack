@@ -24,6 +24,7 @@ def test_statechart_catalog_resolves_states_views_transitions_and_handoffs() -> 
         "pin_waiting_for_disc"
     )
     assert catalog.transition_targets("arc.hot_storage", "choose_operation") == (
+        "api_unreachable",
         "search_header",
         "get_starting",
         "pin_requested",

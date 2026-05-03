@@ -4,6 +4,15 @@ Feature: arc-disc CLI
   Targeted fetch commands remain available for explicit recovery detail flows.
 
   Rule: No-argument physical and recovery backlog
+    Scenario: arc-disc reports API unreachability as accepted operator copy
+      Given statechart "arc_disc.guided" state "api_unreachable" is the accepted operator contract
+      And the Riverhog API is unreachable
+      When the operator runs 'arc-disc'
+      Then stdout includes operator copy "api_unreachable"
+      And stdout mentions "Riverhog cannot reach the API"
+      And stdout mentions "local configuration"
+      And stdout does not mention "httpx"
+
     @contract_gap @issue_208
     Scenario: arc-disc resumes unfinished local disc work before choosing new work
       Given statechart "arc_disc.guided" state "unfinished_local_disc" is the accepted operator contract

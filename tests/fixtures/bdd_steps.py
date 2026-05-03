@@ -184,6 +184,30 @@ def _actual_operator_views(
     return (*_command_operator_views(context), *context.actual_operator_views)
 
 
+def _record_command_output_operator_view(
+    context: AcceptanceScenarioContext,
+    name: str,
+    *,
+    text: str,
+) -> None:
+    command = _require_command(context)
+    if text not in f"{command.stdout}\n{command.stderr}":
+        return
+    for statechart_name, state_name in context.accepted_operator_statechart_states:
+        if _OPERATOR_STATECHART_CATALOG.view_for(statechart_name, state_name) != name:
+            continue
+        context.actual_operator_decisions.append(
+            _OPERATOR_STATECHART_CATALOG.decision(statechart_name, state_name)
+        )
+        context.actual_operator_views.append(
+            _OPERATOR_STATECHART_CATALOG.operator_view(
+                statechart_name,
+                state_name,
+                text=text,
+            )
+        )
+
+
 def _assert_actual_operator_view_matches_copy_ref(
     context: AcceptanceScenarioContext,
     name: str,
@@ -261,6 +285,8 @@ def _guided_item_text(
 
 def _operator_copy_text(name: str) -> str:
     match name:
+        case "api_unreachable":
+            return operator_copy.api_unreachable()
         case "arc_home_no_attention":
             return operator_copy.arc_home_no_attention()
         case "arc_item_cloud_backup_failed":
@@ -1025,6 +1051,13 @@ def given_archive_has_no_non_physical_attention_items(
     acceptance_system: AcceptanceSystem,
 ) -> None:
     acceptance_system.clear_operator_arc_attention()
+
+
+@given("the Riverhog API is unreachable")
+def given_riverhog_api_is_unreachable(
+    acceptance_system: AcceptanceSystem,
+) -> None:
+    acceptance_system.set_operator_api_unreachable()
 
 
 @given(parsers.parse('collection "{collection_id}" has failed cloud backup after retries'))
@@ -4497,6 +4530,7 @@ def then_stdout_matches_operator_copy(
 ) -> None:
     _assert_operator_copy_is_from_accepted_statechart(acceptance_context, name)
     expected = _operator_copy_text(name)
+    _record_command_output_operator_view(acceptance_context, name, text=expected)
     _assert_actual_operator_view_matches_copy_ref(acceptance_context, name, text=expected)
     assert _require_command(acceptance_context).stdout.strip() == expected
 
@@ -4508,6 +4542,7 @@ def then_stdout_includes_operator_copy(
 ) -> None:
     _assert_operator_copy_is_from_accepted_statechart(acceptance_context, name)
     expected = _operator_copy_text(name)
+    _record_command_output_operator_view(acceptance_context, name, text=expected)
     _assert_actual_operator_view_matches_copy_ref(acceptance_context, name, text=expected)
     assert expected in _require_command(acceptance_context).stdout
 
@@ -4519,6 +4554,7 @@ def then_stderr_includes_operator_copy(
 ) -> None:
     _assert_operator_copy_is_from_accepted_statechart(acceptance_context, name)
     expected = _operator_copy_text(name)
+    _record_command_output_operator_view(acceptance_context, name, text=expected)
     _assert_actual_operator_view_matches_copy_ref(acceptance_context, name, text=expected)
     assert expected in _require_command(acceptance_context).stderr
 

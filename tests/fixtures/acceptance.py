@@ -541,6 +541,7 @@ class AcceptanceState:
     next_fetch_number: int = 0
     operator_arc_items: list[operator_copy.GuidedItem] = field(default_factory=list)
     operator_disc_items: list[operator_copy.GuidedItem] = field(default_factory=list)
+    operator_api_unreachable: bool = False
     operator_blank_disc_work_available: bool = False
     operator_label_confirmation_location: str | None = None
     operator_collection_fully_protected: bool = False
@@ -4337,6 +4338,10 @@ class AcceptanceSystem:
         with self.state.lock:
             self.state.operator_arc_items.clear()
 
+    def set_operator_api_unreachable(self) -> None:
+        with self.state.lock:
+            self.state.operator_api_unreachable = True
+
     def add_operator_cloud_backup_failure(
         self,
         collection_id: str,
@@ -4459,6 +4464,22 @@ class AcceptanceSystem:
         if not args:
             with self.state.lock:
                 items = sorted(self.state.operator_arc_items, key=lambda item: item.priority)
+                api_unreachable = self.state.operator_api_unreachable
+            if api_unreachable:
+                stdout = operator_copy.api_unreachable()
+                return _operator_completed_process(
+                    ["arc"],
+                    returncode=1,
+                    stdout=stdout,
+                    decisions=[_operator_decision("arc.home", "api_unreachable")],
+                    views=[
+                        _operator_view(
+                            "arc.home",
+                            "api_unreachable",
+                            text=stdout,
+                        )
+                    ],
+                )
             if not items:
                 stdout = operator_copy.arc_home_no_attention()
                 return _operator_completed_process(
@@ -4577,6 +4598,22 @@ class AcceptanceSystem:
             items = sorted(self.state.operator_disc_items, key=lambda item: item.priority)
             blank_disc_work = self.state.operator_blank_disc_work_available
             label_location = self.state.operator_label_confirmation_location
+            api_unreachable = self.state.operator_api_unreachable
+        if api_unreachable:
+            stdout = operator_copy.api_unreachable()
+            return _operator_completed_process(
+                ["arc-disc"],
+                returncode=1,
+                stdout=stdout,
+                decisions=[_operator_decision("arc_disc.guided", "api_unreachable")],
+                views=[
+                    _operator_view(
+                        "arc_disc.guided",
+                        "api_unreachable",
+                        text=stdout,
+                    )
+                ],
+            )
         if items:
             stdout = operator_copy.arc_disc_attention(items)
             decisions: list[OperatorDecision] = []

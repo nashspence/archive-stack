@@ -108,6 +108,15 @@ Feature: arc CLI
       And stdout mentions "verified"
 
   Rule: No-argument operator home
+    Scenario: arc reports API unreachability as accepted operator copy
+      Given statechart "arc.home" state "api_unreachable" is the accepted operator contract
+      And the Riverhog API is unreachable
+      When the operator runs 'arc'
+      Then stdout includes operator copy "api_unreachable"
+      And stdout mentions "Riverhog cannot reach the API"
+      And stdout mentions "Riverhog service is running"
+      And stdout does not mention "httpx"
+
     @contract_gap @issue_209
     Scenario: arc opens the operator home when no attention is needed
       Given statechart "arc.home" state "no_attention" is the accepted operator contract
