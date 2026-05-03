@@ -772,10 +772,18 @@ def hot_recovery_progress(
     )
 
 
-def hot_recovery_retry_other_disc(*, target: str) -> str:
+def hot_recovery_retry_other_disc(*, target: str, next_disc_label: str) -> str:
     return (
         f"Riverhog could not restore {truncate(target)} from that disc. "
-        "Try another registered disc or recovered media."
+        f"Locate disc label {next_disc_label} for the same image and insert it next."
+    )
+
+
+def hot_recovery_registered_copies_exhausted(*, target: str) -> str:
+    return (
+        f"Riverhog tried every registered disc copy that can restore {truncate(target)}. "
+        "Mark the failed copies as damaged if needed, then use the recovery workflow "
+        "before retrying from recovered media."
     )
 
 

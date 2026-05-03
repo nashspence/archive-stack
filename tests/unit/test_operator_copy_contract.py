@@ -205,6 +205,15 @@ def _feature_copy_text(name: str) -> str:
             return operator_copy.burn_backlog_cleared()
         case "burn_label_checkpoint":
             return operator_copy.burn_label_checkpoint(label_text="20260420T040001Z-1")
+        case "hot_recovery_retry_other_disc":
+            return operator_copy.hot_recovery_retry_other_disc(
+                target="docs/tax/2022/invoice-123.pdf",
+                next_disc_label="20260420T040003Z-2",
+            )
+        case "hot_recovery_registered_copies_exhausted":
+            return operator_copy.hot_recovery_registered_copies_exhausted(
+                target="docs/tax/2022/invoice-123.pdf",
+            )
     raise AssertionError(f"unsupported operator copy reference: {name}")
 
 

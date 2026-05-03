@@ -544,6 +544,7 @@ class AcceptanceState:
     operator_blank_disc_work_available: bool = False
     operator_label_confirmation_location: str | None = None
     operator_collection_fully_protected: bool = False
+    operator_fetch_same_image_copies_exhausted: set[str] = field(default_factory=set)
 
     def clear_webhook_deliveries(self) -> None:
         with self.lock:
@@ -4405,6 +4406,56 @@ class AcceptanceSystem:
                 operator_copy.disc_item_hot_recovery_needs_media(target=target)
             )
 
+    def set_operator_fetch_same_image_copies_exhausted(self, fetch_id: str) -> None:
+        with self.state.lock:
+            self.state.operator_fetch_same_image_copies_exhausted.add(fetch_id)
+
+    def arc_disc_same_image_retry(
+        self,
+        *,
+        statechart: str,
+        target: str,
+        next_disc_label: str,
+    ) -> subprocess.CompletedProcess[str]:
+        stderr = operator_copy.hot_recovery_retry_other_disc(
+            target=target,
+            next_disc_label=next_disc_label,
+        )
+        return _operator_completed_process(
+            ["arc-disc"],
+            returncode=1,
+            stderr=stderr,
+            decisions=[_operator_decision(statechart, "retry_other_disc")],
+            views=[
+                _operator_view(
+                    statechart,
+                    "retry_other_disc",
+                    text=stderr,
+                )
+            ],
+        )
+
+    def arc_disc_registered_copies_exhausted(
+        self,
+        *,
+        fetch_id: str,
+        target: str,
+    ) -> subprocess.CompletedProcess[str]:
+        stderr = operator_copy.hot_recovery_registered_copies_exhausted(target=target)
+        return _operator_completed_process(
+            ["arc-disc", "fetch", fetch_id],
+            returncode=1,
+            stderr=stderr,
+            decisions=[_operator_decision("arc_disc.fetch", "recovery_workflow_needed")],
+            views=[
+                _operator_view(
+                    "arc_disc.fetch",
+                    "recovery_workflow_needed",
+                    text=stderr,
+                )
+            ],
+        )
+
     def set_operator_blank_disc_work_available(self) -> None:
         with self.state.lock:
             self.state.operator_blank_disc_work_available = True
@@ -4672,6 +4723,15 @@ class AcceptanceSystem:
     def run_arc_disc(
         self, *args: str, input_text: str = "\n" * 16
     ) -> subprocess.CompletedProcess[str]:
+        if len(args) >= 2 and args[0] == "fetch":
+            fetch_id = args[1]
+            with self.state.lock:
+                exhausted = fetch_id in self.state.operator_fetch_same_image_copies_exhausted
+            if exhausted:
+                return self.arc_disc_registered_copies_exhausted(
+                    fetch_id=fetch_id,
+                    target="docs/tax/2022/invoice-123.pdf",
+                )
         if not args:
             return self._arc_disc_contract_output()
         if not self.fixture_path.exists():

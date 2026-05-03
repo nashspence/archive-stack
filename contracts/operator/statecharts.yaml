@@ -479,13 +479,18 @@ statecharts:
         transitions:
           - guard: restore_complete
             target: done
-          - guard: disc_cannot_restore_requested_files
+          - guard: untried_same_image_copy_available
             target: retry_other_disc
+          - guard: same_image_registered_copies_exhausted
+            target: recovery_workflow_needed
       retry_other_disc:
         view: hot_recovery_retry_other_disc
         transitions:
-          - event: operator_inserts_another_disc
+          - event: operator_inserts_named_disc
             target: insert_disc
+      recovery_workflow_needed:
+        view: hot_recovery_registered_copies_exhausted
+        final: true
       done:
         view: hot_recovery_done
         final: true
@@ -510,13 +515,18 @@ statecharts:
         transitions:
           - guard: server_accepts_recovered_bytes
             target: done
-          - guard: server_rejects_recovered_bytes
+          - guard: rejected_bytes_untried_same_image_copy_available
             target: retry_other_disc
+          - guard: rejected_bytes_same_image_registered_copies_exhausted
+            target: recovery_workflow_needed
       retry_other_disc:
         view: hot_recovery_retry_other_disc
         transitions:
-          - event: operator_retries_with_other_media
+          - event: operator_inserts_named_disc
             target: insert_disc
+      recovery_workflow_needed:
+        view: hot_recovery_registered_copies_exhausted
+        final: true
       done:
         view: hot_recovery_done
         final: true

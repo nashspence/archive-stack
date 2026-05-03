@@ -527,7 +527,12 @@ def render_operator_copy(reference: str) -> str:
             )
         case "hot_recovery_retry_other_disc":
             return operator_copy.hot_recovery_retry_other_disc(
-                target="docs/tax/2022/invoice-123.pdf"
+                target="docs/tax/2022/invoice-123.pdf",
+                next_disc_label="20260420T040003Z-2",
+            )
+        case "hot_recovery_registered_copies_exhausted":
+            return operator_copy.hot_recovery_registered_copies_exhausted(
+                target="docs/tax/2022/invoice-123.pdf",
             )
         case "hot_recovery_done":
             return operator_copy.hot_recovery_done(

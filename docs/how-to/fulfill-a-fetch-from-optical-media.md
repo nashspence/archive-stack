@@ -26,10 +26,10 @@ If recovery is interrupted after upload has started, the server-side manifest ke
 data is discarded and the manifest returns to `waiting_media`.
 
 If final server verification rejects a `byte_complete` entry, `arc-disc fetch` cancels that entry upload resource before
-exiting. The manifest stays active and incomplete with the rejected entry back at offset `0`. Try another registered copy
-for that entry when one is available. If every registered copy fails, report the
-damaged copies and complete an image rebuild session before running
-`arc-disc fetch` again from recovered media.
+exiting. The manifest stays active and incomplete with the rejected entry back at offset `0`. If another registered copy
+of the same image remains untried, Riverhog names that exact disc label as the next disc to locate and insert. If every
+registered same-image copy fails, report the damaged copies and complete recovery before running `arc-disc fetch` again
+from recovered media.
 
 During fulfillment, `arc-disc` should show:
 

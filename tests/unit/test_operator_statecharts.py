@@ -369,11 +369,11 @@ def test_mermaid_generator_writes_clear_compatible_mmdc_validated_workflows(
         in hot_recovery
     )
     assert (
-        'operator_inserts_another_disc_retry_other_disc_insert_disc_1'
-        '(["<b>Operator Inserts Another Disc</b>"]):::eventNode'
+        'operator_inserts_named_disc_retry_other_disc_insert_disc_1'
+        '(["<b>Operator Inserts Named Disc</b>"]):::eventNode'
     ) in hot_recovery
     assert "guard_restore_complete" not in hot_recovery
-    assert "event_operator_inserts_another_disc" not in hot_recovery
+    assert "event_operator_inserts_named_disc" not in hot_recovery
     assert (
         'link_pin_waiting_for_disc_to_arc_disc_guided_scan_backlog'
         '[["<b>Operator Runs Arc Disc</b>"]]:::linkNode'
