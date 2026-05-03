@@ -83,6 +83,7 @@ markers = [
   "issue_210: tracks issue #210 for action-needed webhook payloads",
   "issue_211: tracks issue #211 for replacing remaining normal CLI copy",
   "issue_304: tracks issue #304 for backing recovery-rebuild-work-remaining-PM-scenario",
+  "issue_314: tracks issue #314 for implementing recovery rebuild-work-remaining copy",
 ]
 
 [tool.mypy]

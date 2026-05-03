@@ -541,6 +541,7 @@ class AcceptanceState:
     next_fetch_number: int = 0
     operator_arc_items: list[operator_copy.GuidedItem] = field(default_factory=list)
     operator_disc_items: list[operator_copy.GuidedItem] = field(default_factory=list)
+    operator_rebuild_work_remaining_collections: tuple[str, ...] = ()
     operator_blank_disc_work_available: bool = False
     operator_label_confirmation_location: str | None = None
     operator_collection_fully_protected: bool = False
@@ -4399,6 +4400,10 @@ class AcceptanceSystem:
                 )
             )
 
+    def set_operator_rebuild_work_remaining(self, collection_id: str) -> None:
+        with self.state.lock:
+            self.state.operator_rebuild_work_remaining_collections = (collection_id,)
+
     def set_operator_hot_recovery_needs_media(self, target: str) -> None:
         with self.state.lock:
             self.state.operator_disc_items.append(
@@ -4672,6 +4677,25 @@ class AcceptanceSystem:
     def run_arc_disc(
         self, *args: str, input_text: str = "\n" * 16
     ) -> subprocess.CompletedProcess[str]:
+        if args == ("recover",):
+            with self.state.lock:
+                affected = self.state.operator_rebuild_work_remaining_collections
+            if affected:
+                stdout = operator_copy.recovery_rebuild_work_remaining(affected=affected)
+                return _operator_completed_process(
+                    ["arc-disc", *args],
+                    stdout=stdout,
+                    decisions=[
+                        _operator_decision("arc_disc.recovery", "rebuild_work_remaining")
+                    ],
+                    views=[
+                        _operator_view(
+                            "arc_disc.recovery",
+                            "rebuild_work_remaining",
+                            text=stdout,
+                        )
+                    ],
+                )
         if not args:
             return self._arc_disc_contract_output()
         if not self.fixture_path.exists():
