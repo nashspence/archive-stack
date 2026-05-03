@@ -291,10 +291,25 @@ statecharts:
     states:
       scan_backlog:
         transitions:
+          - guard: device_missing
+            target: device_missing
+          - guard: device_not_ready
+            target: device_not_ready
+          - guard: device_permission_denied
+            target: device_permission_denied
           - guard: physical_or_recovery_backlog
             target: attention_summary
           - target: no_attention
         type: choice
+      device_missing:
+        view: device_missing
+        final: true
+      device_not_ready:
+        view: device_not_ready
+        final: true
+      device_permission_denied:
+        view: device_permission_denied
+        final: true
       attention_summary:
         view: arc_disc_attention
         transitions:
@@ -342,6 +357,12 @@ statecharts:
     states:
       inspect_burn_work:
         transitions:
+          - guard: device_missing
+            target: device_missing
+          - guard: device_not_ready
+            target: device_not_ready
+          - guard: device_permission_denied
+            target: device_permission_denied
           - guard: no_disc_work
             target: no_work
           - guard: unlabeled_verified_disc_available
@@ -351,6 +372,15 @@ statecharts:
           - guard: blank_disc_work_ready
             target: ready
         type: choice
+      device_missing:
+        view: device_missing
+        final: true
+      device_not_ready:
+        view: device_not_ready
+        final: true
+      device_permission_denied:
+        view: device_permission_denied
+        final: true
       no_work:
         view: burn_no_work
         final: true
@@ -374,6 +404,11 @@ statecharts:
         transitions:
           - guard: write_complete
             target: verifying_disc
+          - guard: device_lost_during_work
+            target: device_lost_during_work
+      device_lost_during_work:
+        view: device_lost_during_work
+        final: true
       verifying_disc:
         view: burn_verifying_disc
         transitions:
@@ -415,6 +450,12 @@ statecharts:
     states:
       inspect_recovery:
         transitions:
+          - guard: device_missing
+            target: device_missing
+          - guard: device_not_ready
+            target: device_not_ready
+          - guard: device_permission_denied
+            target: device_permission_denied
           - guard: approval_required
             target: approval_required
           - guard: recovery_requested
@@ -428,6 +469,15 @@ statecharts:
           - guard: recovery_cleanup_handoff_ready
             target: cleanup_handoff
         type: choice
+      device_missing:
+        view: device_missing
+        final: true
+      device_not_ready:
+        view: device_not_ready
+        final: true
+      device_permission_denied:
+        view: device_permission_denied
+        final: true
       approval_required:
         view: recovery_approval_required
         transitions:
@@ -467,8 +517,23 @@ statecharts:
     states:
       need_media:
         transitions:
+          - guard: device_missing
+            target: device_missing
+          - guard: device_not_ready
+            target: device_not_ready
+          - guard: device_permission_denied
+            target: device_permission_denied
           - event: operator_inserts_disc
             target: insert_disc
+      device_missing:
+        view: device_missing
+        final: true
+      device_not_ready:
+        view: device_not_ready
+        final: true
+      device_permission_denied:
+        view: device_permission_denied
+        final: true
       insert_disc:
         view: hot_recovery_insert_disc
         transitions:
@@ -479,8 +544,13 @@ statecharts:
         transitions:
           - guard: restore_complete
             target: done
+          - guard: device_lost_during_work
+            target: device_lost_during_work
           - guard: disc_cannot_restore_requested_files
             target: retry_other_disc
+      device_lost_during_work:
+        view: device_lost_during_work
+        final: true
       retry_other_disc:
         view: hot_recovery_retry_other_disc
         transitions:
@@ -495,11 +565,26 @@ statecharts:
     states:
       fetch_requested:
         transitions:
+          - guard: device_missing
+            target: device_missing
+          - guard: device_not_ready
+            target: device_not_ready
+          - guard: device_permission_denied
+            target: device_permission_denied
           - guard: media_needed
             target: insert_disc
           - guard: upload_already_complete
             target: done
         type: choice
+      device_missing:
+        view: device_missing
+        final: true
+      device_not_ready:
+        view: device_not_ready
+        final: true
+      device_permission_denied:
+        view: device_permission_denied
+        final: true
       insert_disc:
         view: hot_recovery_insert_disc
         transitions:
@@ -510,8 +595,13 @@ statecharts:
         transitions:
           - guard: server_accepts_recovered_bytes
             target: done
+          - guard: device_lost_during_work
+            target: device_lost_during_work
           - guard: server_rejects_recovered_bytes
             target: retry_other_disc
+      device_lost_during_work:
+        view: device_lost_during_work
+        final: true
       retry_other_disc:
         view: hot_recovery_retry_other_disc
         transitions:

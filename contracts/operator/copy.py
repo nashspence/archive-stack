@@ -245,6 +245,38 @@ def arc_disc_no_attention() -> str:
     )
 
 
+def device_missing(*, device: str | None = None) -> str:
+    subject = f" at {device}" if device else ""
+    return (
+        f"Riverhog cannot find the configured optical device{subject}. "
+        "Check the device path or connect the drive, then retry."
+    )
+
+
+def device_not_ready(*, device: str | None = None) -> str:
+    subject = f" {device}" if device else ""
+    return (
+        f"The optical device{subject} is not ready for this step. "
+        "Insert the requested media, wait for the drive to settle, then retry."
+    )
+
+
+def device_permission_denied(*, device: str | None = None) -> str:
+    subject = f" {device}" if device else ""
+    return (
+        f"Riverhog cannot read or write the optical device{subject}. "
+        "Fix device permissions for the operator user, then retry."
+    )
+
+
+def device_lost_during_work(*, device: str | None = None) -> str:
+    subject = f" {device}" if device else ""
+    return (
+        f"The optical device{subject} became unavailable during work. "
+        "Reconnect the drive, keep the media available, and retry from the last safe checkpoint."
+    )
+
+
 def arc_disc_attention(items: Sequence[GuidedItem]) -> str:
     lines = [guided_intro(cli_name=ARC_DISC, item_count=len(items))]
     for index, item in enumerate(items, start=1):
