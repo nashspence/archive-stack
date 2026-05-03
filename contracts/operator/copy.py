@@ -33,6 +33,7 @@ OPERATOR_TERMS: tuple[str, ...] = (
     "storage location",
     "cloud backup",
     "recovery",
+    "disc restore",
     "safe",
     "needs attention",
     "fully protected",
@@ -45,6 +46,7 @@ MACHINE_ONLY_TERMS: tuple[str, ...] = (
     "finalized image",
     "Glacier",
     "glacier_path",
+    "hot recovery",
     "image_rebuild",
     "pending_approval",
     "protection_state",
@@ -313,9 +315,9 @@ def disc_item_hot_recovery_needs_media(*, target: str) -> GuidedItem:
         kind="hot_recovery_needs_media",
         priority=40,
         command=ARC_DISC,
-        title="A disc is needed for hot storage",
+        title="Disc restore needs a disc",
         body=(
-            f"Files need recovery from disc for {truncate(target)}. "
+            f"Files need disc restore for {truncate(target)}. "
             "Riverhog needs a disc to restore missing files to hot storage."
         ),
         next_step="Insert the requested disc and restore the files.",
@@ -752,7 +754,7 @@ def recovery_cleanup_handoff(*, affected: Iterable[str]) -> str:
     )
 
 
-# hot-storage recovery from disc
+# disc restore from optical media into hot storage
 
 
 def hot_recovery_insert_disc(*, target: str, disc_label: str | None) -> str:
