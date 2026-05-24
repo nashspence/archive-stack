@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import cast
+from datetime import UTC, datetime, timedelta
+from typing import Protocol, TypedDict
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -48,6 +50,7 @@ from riverhog_core.fs_paths import (
     find_collection_id_conflict,
     normalize_collection_id,
     normalize_relpath,
+    normalize_upload_slug,
 )
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.ports.upload_store import UploadStore
@@ -70,6 +73,18 @@ class _RecoveryParts:
     present_parts: frozenset[int]
 
 
+class _UploadManifestEntry(TypedDict):
+    path: str
+    bytes: int
+    sha256: str
+
+
+class _StoredManifestEntry(Protocol):
+    path: str
+    bytes: int
+    sha256: str
+
+
 class SqlAlchemyCollectionService:
     def __init__(
         self,
@@ -86,30 +101,38 @@ class SqlAlchemyCollectionService:
     def create_or_resume_upload(
         self,
         *,
-        collection_id: str,
+        upload_slug: str,
         files: Sequence[dict[str, object]],
         ingest_source: str | None = None,
     ) -> dict[str, object]:
-        normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
+        normalized_slug = _normalize_upload_slug_or_raise(upload_slug)
         normalized_files = _normalize_upload_files(files)
+        manifest_fingerprint = _collection_upload_manifest_fingerprint(normalized_files)
 
         with session_scope(self._session_factory) as session:
-            if session.get(CollectionRecord, normalized_collection_id) is not None:
-                raise Conflict(f"collection already exists: {normalized_collection_id}")
+            collection = _find_matching_collection(
+                session,
+                upload_slug=normalized_slug,
+                manifest_fingerprint=manifest_fingerprint,
+            )
+            if collection is not None:
+                return _finalized_collection_upload_payload(session, collection)
 
-            upload = session.get(CollectionUploadRecord, normalized_collection_id)
+            upload = _find_matching_upload(
+                session,
+                upload_slug=normalized_slug,
+                manifest_fingerprint=manifest_fingerprint,
+                upload_store=self._upload_store,
+            )
             if upload is not None:
-                upload = _sync_and_expire_collection_upload(
-                    session,
-                    upload,
-                    upload_store=self._upload_store,
-                )
+                _validate_existing_upload_manifest(upload, normalized_files)
 
             if upload is None:
+                normalized_collection_id = _mint_collection_id(session, normalized_slug)
                 _ensure_collection_upload_conflict_free(session, normalized_collection_id)
                 _ensure_unburned_collection_limit_allows(
                     session,
-                    incoming_bytes=sum(cast(int, item["bytes"]) for item in normalized_files),
+                    incoming_bytes=sum(item["bytes"] for item in normalized_files),
                     limit_bytes=self._config.unburned_collection_bytes_limit,
                 )
                 upload = CollectionUploadRecord(
@@ -131,8 +154,8 @@ class SqlAlchemyCollectionService:
                         )
                     )
             else:
-                _validate_existing_upload_manifest(upload, normalized_files)
                 upload.ingest_source = ingest_source
+                normalized_collection_id = upload.collection_id
 
             if _collection_upload_is_complete(upload.files):
                 if upload.state == "failed":
@@ -438,6 +461,13 @@ def _normalize_collection_id_or_raise(raw: str) -> str:
         raise BadRequest(str(exc)) from exc
 
 
+def _normalize_upload_slug_or_raise(raw: str) -> str:
+    try:
+        return normalize_upload_slug(raw)
+    except PathNormalizationError as exc:
+        raise BadRequest(str(exc)) from exc
+
+
 def _normalize_relpath_or_raise(raw: str) -> str:
     try:
         return normalize_relpath(raw)
@@ -445,11 +475,11 @@ def _normalize_relpath_or_raise(raw: str) -> str:
         raise BadRequest(str(exc)) from exc
 
 
-def _normalize_upload_files(files: Sequence[dict[str, object]]) -> list[dict[str, object]]:
+def _normalize_upload_files(files: Sequence[dict[str, object]]) -> list[_UploadManifestEntry]:
     if not files:
         raise BadRequest("collection upload must include at least one file")
 
-    normalized: list[dict[str, object]] = []
+    normalized: list[_UploadManifestEntry] = []
     seen_paths: set[str] = set()
     for item in files:
         path = _normalize_relpath_or_raise(str(item.get("path", "")))
@@ -468,6 +498,102 @@ def _normalize_upload_files(files: Sequence[dict[str, object]]) -> list[dict[str
         normalized.append({"path": path, "bytes": bytes_value, "sha256": sha256})
 
     return sorted(normalized, key=lambda current: str(current["path"]))
+
+
+def _collection_upload_manifest_fingerprint(
+    files: Sequence[_UploadManifestEntry | _StoredManifestEntry],
+) -> str:
+    payload = [
+        _manifest_entry_payload(file_record)
+        for file_record in files
+    ]
+    content = json.dumps(
+        sorted(payload, key=lambda item: item["path"]),
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(content).hexdigest()
+
+
+def _manifest_entry_payload(
+    file_record: _UploadManifestEntry | _StoredManifestEntry,
+) -> _UploadManifestEntry:
+    if isinstance(file_record, Mapping):
+        return {
+            "path": file_record["path"],
+            "bytes": file_record["bytes"],
+            "sha256": file_record["sha256"],
+        }
+    return {
+        "path": file_record.path,
+        "bytes": file_record.bytes,
+        "sha256": file_record.sha256,
+    }
+
+
+def _collection_id_upload_slug(collection_id: str) -> str | None:
+    leaf = collection_id.rsplit("/", 1)[-1]
+    if "__" not in leaf:
+        return None
+    return leaf.split("__", 1)[1]
+
+
+def _find_matching_collection(
+    session: Session,
+    *,
+    upload_slug: str,
+    manifest_fingerprint: str,
+) -> CollectionRecord | None:
+    collections = session.scalars(
+        select(CollectionRecord)
+        .options(selectinload(CollectionRecord.files))
+        .options(selectinload(CollectionRecord.archive))
+        .order_by(CollectionRecord.id.asc())
+    ).all()
+    for collection in collections:
+        if _collection_id_upload_slug(collection.id) != upload_slug:
+            continue
+        if _collection_upload_manifest_fingerprint(collection.files) == manifest_fingerprint:
+            return collection
+    return None
+
+
+def _find_matching_upload(
+    session: Session,
+    *,
+    upload_slug: str,
+    manifest_fingerprint: str,
+    upload_store: UploadStore,
+) -> CollectionUploadRecord | None:
+    uploads = session.scalars(
+        select(CollectionUploadRecord)
+        .options(selectinload(CollectionUploadRecord.files))
+        .order_by(CollectionUploadRecord.collection_id.asc())
+    ).all()
+    for upload in uploads:
+        if _collection_id_upload_slug(upload.collection_id) != upload_slug:
+            continue
+        if _collection_upload_manifest_fingerprint(upload.files) != manifest_fingerprint:
+            continue
+        return _sync_and_expire_collection_upload(
+            session,
+            upload,
+            upload_store=upload_store,
+        )
+    return None
+
+
+def _mint_collection_id(session: Session, upload_slug: str) -> str:
+    current = _utc_now_dt().replace(microsecond=0)
+    while True:
+        stamp = current.strftime("%Y%m%dT%H%M%SZ")
+        collection_id = f"{current:%Y}/{stamp}__{upload_slug}"
+        if (
+            session.get(CollectionRecord, collection_id) is None
+            and session.get(CollectionUploadRecord, collection_id) is None
+        ):
+            return collection_id
+        current += timedelta(seconds=1)
 
 
 def _ensure_collection_upload_conflict_free(session: Session, collection_id: str) -> None:
@@ -543,7 +669,7 @@ def _unburned_collection_bytes(session: Session) -> int:
 
 
 def _validate_existing_upload_manifest(
-    upload: CollectionUploadRecord, expected_files: Sequence[dict[str, object]]
+    upload: CollectionUploadRecord, expected_files: Sequence[_UploadManifestEntry]
 ) -> None:
     current_files = [
         {
@@ -733,6 +859,53 @@ def _finalize_collection_upload(
     return summary
 
 
+def _finalized_collection_upload_payload(
+    session: Session,
+    collection: CollectionRecord,
+) -> dict[str, object]:
+    (
+        image_coverage,
+        covered_paths,
+        recovery_parts_by_image_path,
+    ) = _collection_image_coverage(session, collection.id)
+    summary = _summary_from_records(
+        collection.id,
+        collection.files,
+        archive=collection.archive,
+        image_coverage=image_coverage,
+        covered_paths=covered_paths,
+        recovery_parts_by_image_path=recovery_parts_by_image_path,
+    )
+    files = sorted(collection.files, key=lambda current: current.path)
+    bytes_total = sum(file_record.bytes for file_record in files)
+    return {
+        "collection_id": collection.id,
+        "ingest_source": collection.ingest_source,
+        "state": "finalized",
+        "files_total": len(files),
+        "files_pending": 0,
+        "files_partial": 0,
+        "files_uploaded": len(files),
+        "bytes_total": bytes_total,
+        "uploaded_bytes": bytes_total,
+        "missing_bytes": 0,
+        "upload_state_expires_at": None,
+        "latest_failure": None,
+        "files": [
+            {
+                "path": file_record.path,
+                "bytes": file_record.bytes,
+                "sha256": file_record.sha256,
+                "upload_state": "uploaded",
+                "uploaded_bytes": file_record.bytes,
+                "upload_state_expires_at": None,
+            }
+            for file_record in files
+        ],
+        "collection": _collection_summary_payload(summary),
+    }
+
+
 def _collection_upload_payload(
     *,
     collection_id: str,
@@ -879,6 +1052,10 @@ def _utc_now() -> str:
 
 def _sha256_hex(content: bytes) -> Sha256Hex:
     return Sha256Hex(hashlib.sha256(content).hexdigest())
+
+
+def _utc_now_dt() -> datetime:
+    return datetime.now(UTC)
 
 
 def _summary_from_records(

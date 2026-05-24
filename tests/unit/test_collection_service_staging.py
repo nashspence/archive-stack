@@ -260,14 +260,15 @@ def test_partial_collection_upload_does_not_publish_committed_hot_file(tmp_path:
 
     content = b"hello world\n"
     sha256 = hashlib.sha256(content).hexdigest()
-    collection_id = "photos-2024"
+    upload_slug = "Photos 2024"
     relpath = "albums/day-01.txt"
 
-    service.create_or_resume_upload(
-        collection_id=collection_id,
+    payload = service.create_or_resume_upload(
+        upload_slug=upload_slug,
         files=[{"path": relpath, "bytes": len(content), "sha256": sha256}],
         ingest_source="/tmp/source",
     )
+    collection_id = str(payload["collection_id"])
     session = service.create_or_resume_file_upload(collection_id, relpath)
     service.append_upload_chunk(
         collection_id,
@@ -290,15 +291,17 @@ def test_completed_collection_upload_promotes_from_staging_and_cleans_up(tmp_pat
 
     content = b"hello world\n"
     sha256 = hashlib.sha256(content).hexdigest()
-    collection_id = "photos-2024"
+    upload_slug = "photos 2024"
     relpath = "albums/day-01.txt"
-    staging_target = f"/.riverhog/uploads/collections/{collection_id}/{relpath}"
 
-    service.create_or_resume_upload(
-        collection_id=collection_id,
+    payload = service.create_or_resume_upload(
+        upload_slug=upload_slug,
         files=[{"path": relpath, "bytes": len(content), "sha256": sha256}],
         ingest_source="/tmp/source",
     )
+    collection_id = str(payload["collection_id"])
+    assert collection_id.endswith("__photos-2024")
+    staging_target = f"/.riverhog/uploads/collections/{collection_id}/{relpath}"
     session = service.create_or_resume_file_upload(collection_id, relpath)
     service.append_upload_chunk(
         collection_id,
@@ -321,6 +324,95 @@ def test_completed_collection_upload_promotes_from_staging_and_cleans_up(tmp_pat
     assert staging_target in upload_store.deleted_targets
 
 
+def test_finalized_collection_upload_is_idempotent_for_same_slug_and_manifest(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+
+    hot_store = _FakeHotStore()
+    upload_store = _FakeUploadStore()
+    config = _config(sqlite_path)
+    service = SqlAlchemyCollectionService(config, hot_store, upload_store)
+
+    content = b"hello world\n"
+    relpath = "albums/day-01.txt"
+    files = [
+        {
+            "path": relpath,
+            "bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+    ]
+    initial = service.create_or_resume_upload(upload_slug="Photos 2024", files=files)
+    collection_id = str(initial["collection_id"])
+    session = service.create_or_resume_file_upload(collection_id, relpath)
+    service.append_upload_chunk(
+        collection_id,
+        relpath,
+        offset=int(session["offset"]),
+        checksum="sha256 " + base64.b64encode(hashlib.sha256(content).digest()).decode("ascii"),
+        content=content,
+    )
+
+    upload_service = SqlAlchemyGlacierUploadService(
+        config,
+        _FakeArchiveStore(),
+        hot_store,
+        upload_store,
+        proof_stamper=FixtureProofStamper(),
+        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
+    )
+    assert upload_service.process_due_uploads() == 1
+
+    resumed = service.create_or_resume_upload(upload_slug="photos 2024", files=files)
+
+    assert resumed["collection_id"] == collection_id
+    assert resumed["state"] == "finalized"
+    assert resumed["files_uploaded"] == 1
+    assert isinstance(resumed["collection"], dict)
+
+
+def test_same_upload_slug_with_different_manifest_mints_distinct_collection_id(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+
+    service = SqlAlchemyCollectionService(
+        _config(sqlite_path),
+        _FakeHotStore(),
+        _FakeUploadStore(),
+    )
+
+    first = b"first\n"
+    second = b"second\n"
+    first_payload = service.create_or_resume_upload(
+        upload_slug="Mom iPhone Photos",
+        files=[
+            {
+                "path": "one.txt",
+                "bytes": len(first),
+                "sha256": hashlib.sha256(first).hexdigest(),
+            }
+        ],
+    )
+    second_payload = service.create_or_resume_upload(
+        upload_slug="mom iphone photos",
+        files=[
+            {
+                "path": "two.txt",
+                "bytes": len(second),
+                "sha256": hashlib.sha256(second).hexdigest(),
+            }
+        ],
+    )
+
+    assert first_payload["collection_id"] != second_payload["collection_id"]
+    assert str(first_payload["collection_id"]).endswith("__mom-iphone-photos")
+    assert str(second_payload["collection_id"]).endswith("__mom-iphone-photos")
+
+
 def test_completed_glacier_upload_refreshes_provisional_disc_plan(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     initialize_db(str(sqlite_path))
@@ -337,14 +429,15 @@ def test_completed_glacier_upload_refreshes_provisional_disc_plan(tmp_path: Path
 
     content = b"planner payload\n"
     sha256 = hashlib.sha256(content).hexdigest()
-    collection_id = "photos-2024"
+    upload_slug = "photos 2024"
     relpath = "albums/day-01.txt"
 
-    service.create_or_resume_upload(
-        collection_id=collection_id,
+    payload = service.create_or_resume_upload(
+        upload_slug=upload_slug,
         files=[{"path": relpath, "bytes": len(content), "sha256": sha256}],
         ingest_source="/tmp/source",
     )
+    collection_id = str(payload["collection_id"])
     upload_session = service.create_or_resume_file_upload(collection_id, relpath)
     service.append_upload_chunk(
         collection_id,
@@ -400,7 +493,7 @@ def test_new_collection_uploads_are_blocked_over_unburned_limit(tmp_path: Path) 
 
     first = b"12345678"
     service.create_or_resume_upload(
-        collection_id="first",
+        upload_slug="first",
         files=[
             {
                 "path": "a.txt",
@@ -413,7 +506,7 @@ def test_new_collection_uploads_are_blocked_over_unburned_limit(tmp_path: Path) 
     second = b"123"
     with pytest.raises(Conflict, match="unburned collection limit exceeded"):
         service.create_or_resume_upload(
-            collection_id="second",
+            upload_slug="second",
             files=[
                 {
                     "path": "b.txt",
@@ -444,7 +537,7 @@ def test_existing_collection_upload_can_resume_when_over_unburned_limit(tmp_path
             "sha256": hashlib.sha256(content).hexdigest(),
         }
     ]
-    initial.create_or_resume_upload(collection_id="first", files=files)
+    initial_payload = initial.create_or_resume_upload(upload_slug="first", files=files)
 
     stricter = SqlAlchemyCollectionService(
         _config(sqlite_path, unburned_collection_bytes_limit=7),
@@ -452,9 +545,9 @@ def test_existing_collection_upload_can_resume_when_over_unburned_limit(tmp_path
         upload_store,
     )
 
-    resumed = stricter.create_or_resume_upload(collection_id="first", files=files)
+    resumed = stricter.create_or_resume_upload(upload_slug="first", files=files)
 
-    assert resumed["collection_id"] == "first"
+    assert resumed["collection_id"] == initial_payload["collection_id"]
 
 
 def test_collection_summary_does_not_count_finalized_image_parts_as_glacier_recovery(

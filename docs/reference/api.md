@@ -16,13 +16,14 @@ unexpired upload progress.
 
 #### `POST /v1/collection-uploads`
 
-Creates or resumes one explicit collection upload session.
+Creates or resumes one collection upload session from a human-readable slug. Riverhog
+normalizes the slug and mints the canonical collection id.
 
 Request body:
 
 ```json
 {
-  "collection_id": "photos/2024",
+  "slug": "mom iphone photos",
   "ingest_source": "/operator/photos/2024",
   "files": [
     {
@@ -36,9 +37,12 @@ Request body:
 
 Required behavior:
 
-- the collection id is explicit rather than derived from any server-local path
-- collection ids may contain `/`, for example `photos/2024`
-- rejects a collection id if it would be an ancestor or descendant of an existing collection id
+- the client does not provide a collection id
+- the server normalizes the slug and creates collection ids like
+  `2026/20260524T190233Z__mom-iphone-photos`
+- the timestamp is minted in UTC by the server
+- retries with the same normalized slug and file manifest resume the existing
+  upload or return the already-finalized collection
 - persists enough upload-session state to survive service restart and repeated CLI runs
 - keeps the collection invisible until every required file has uploaded,
   verified successfully, archived to Glacier, and verified by object receipt
@@ -48,7 +52,7 @@ Required behavior:
 
 #### `GET /v1/collection-uploads/{collection_id}`
 
-Returns the current upload-session state for one explicit collection id.
+Returns the current upload-session state for one server-minted collection id.
 
 Required behavior:
 
@@ -660,7 +664,7 @@ Suggested error codes:
 
 The `riverhog` CLI is a thin API client and should provide at least:
 
-- `riverhog upload COLLECTION_ID ROOT`
+- `riverhog upload SLUG ROOT`
 - `riverhog find QUERY`
 - `riverhog show COLLECTION`
 - `riverhog show COLLECTION --files`
@@ -761,8 +765,9 @@ Required behavior:
 - a physical copy is identified by `(volume_id, copy_id)`, never by `location`
 - generated `copy_id` values are stable and never mutated by location or state updates
 - no collection id is an ancestor or descendant of another collection id
-- collection ingest uses explicit resumable upload sessions and finalizes only
-  after every required file verifies and the collection Glacier archive package
-  uploads and verifies
+- collection ingest starts from a slug-only upload creation request, then uses
+  the returned server-minted collection id for resumable file uploads
+- collection ingest finalizes only after every required file verifies and the
+  collection Glacier archive package uploads and verifies
 - the same canonical selector string means the same projected file set everywhere in API and CLI
 - file availability shown by search, file introspection, pins, and CLI status uses the same hot/archived meaning

@@ -16,7 +16,7 @@ class CollectionUploadFileIn(RiverhogModel):
 
 
 class CreateOrResumeCollectionUploadRequest(RiverhogModel):
-    collection_id: str
+    slug: str
     files: list[CollectionUploadFileIn]
     ingest_source: str | None = None
 

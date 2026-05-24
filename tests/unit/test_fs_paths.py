@@ -8,6 +8,7 @@ from riverhog_core.fs_paths import (
     normalize_collection_id,
     normalize_relpath,
     normalize_root_node_name,
+    normalize_upload_slug,
     path_parents,
 )
 
@@ -34,6 +35,24 @@ def test_normalize_collection_id_rejects_non_canonical_ids(raw: str) -> None:
 def test_normalize_root_node_name_rejects_nested() -> None:
     with pytest.raises(ValueError):
         normalize_root_node_name("a/b")
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("Mom iPhone Photos", "mom-iphone-photos"),
+        ("  Grandma: loose papers!!  ", "grandma-loose-papers"),
+        ("München 2026", "munchen-2026"),
+        ("unknown/photo\\envelope", "unknown-photo-envelope"),
+    ],
+)
+def test_normalize_upload_slug_fold_and_collapse(raw: str, expected: str) -> None:
+    assert normalize_upload_slug(raw) == expected
+
+
+def test_normalize_upload_slug_rejects_empty_slug() -> None:
+    with pytest.raises(ValueError):
+        normalize_upload_slug(" -- ")
 
 
 def test_collection_id_ancestors_list_parent_prefixes() -> None:

@@ -59,7 +59,7 @@ class CollectionService(Protocol):
     def create_or_resume_upload(
         self,
         *,
-        collection_id: str,
+        upload_slug: str,
         files: list[dict[str, object]],
         ingest_source: str | None = None,
     ) -> JsonObject: ...

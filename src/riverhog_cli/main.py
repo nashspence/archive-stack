@@ -100,7 +100,7 @@ def _finalized_collection_upload_payload(
 
 @app.command("upload")
 def upload_cmd(
-    collection_id: Annotated[str, typer.Argument(help="Canonical collection id")],
+    slug: Annotated[str, typer.Argument(help="Human-readable collection slug")],
     root: Annotated[Path, typer.Argument(help="Local collection root directory")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
@@ -111,10 +111,11 @@ def upload_cmd(
     api = client()
     manifest = _local_collection_manifest(resolved_root)
     payload = api.create_or_resume_collection_upload(
-        collection_id,
+        slug,
         manifest,
         ingest_source=str(resolved_root),
     )
+    collection_id = str(payload["collection_id"])
     files = {item["path"]: (resolved_root / str(item["path"])).read_bytes() for item in manifest}
 
     for file_payload in payload["files"]:

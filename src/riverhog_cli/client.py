@@ -70,13 +70,13 @@ class ApiClient:
 
     def create_or_resume_collection_upload(
         self,
-        collection_id: str,
+        slug: str,
         files: Sequence[Mapping[str, Any]],
         *,
         ingest_source: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "collection_id": collection_id,
+            "slug": slug,
             "files": [dict(file) for file in files],
         }
         if ingest_source is not None:

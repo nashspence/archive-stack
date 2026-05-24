@@ -16,16 +16,18 @@ Use these core nouns consistently:
 
 ### Collection
 
-A logical namespace uploaded through an explicit collection-upload session. A
-collection has a stable id and contains many files at stable relative paths.
+A logical namespace uploaded from a human-readable slug. A collection has a
+server-minted stable id and contains many files at stable relative paths.
 
 Riverhog accepts a collection only after every uploaded file verifies and the
 whole-collection Glacier archive package has uploaded and verified.
 
 Collection-id rules:
 
-- the id is explicit and canonical
-- the id may contain `/`, for example `photos/2024`
+- clients provide a slug, not a collection id
+- Riverhog normalizes the slug and mints ids like
+  `2026/20260524T190233Z__mom-iphone-photos`
+- the timestamp is UTC collection-upload creation time
 - no collection id may be an ancestor or descendant of another collection id
 - accepted collections are immediately Glacier-backed and eligible for hot
   visibility and disc planning

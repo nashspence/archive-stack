@@ -20,6 +20,29 @@ For collection ingest specifically:
   collection invisible until retry succeeds
 - once the last resumable collection-file state expires, Riverhog forgets the upload session instead of keeping an empty pending record
 
+## Collection Upload Creation
+
+`POST /v1/collection-uploads` creates or resumes a collection upload from a
+human-readable slug and a complete file manifest. Clients do not provide
+collection ids.
+
+Riverhog normalizes the slug, mints the canonical collection id with the server
+UTC upload timestamp, and returns that id for all later file-upload and status
+calls. Collection ids are shaped like:
+
+```text
+2026/20260524T190233Z__mom-iphone-photos
+```
+
+Retry behavior is manifest-aware:
+
+- the same normalized slug and same file manifest resumes the existing
+  non-finalized upload
+- the same normalized slug and same file manifest returns the finalized
+  collection payload after the collection has already completed
+- the same normalized slug with a different file manifest creates a separate
+  timestamped collection id
+
 ## Collection File Upload Session
 
 `POST /v1/collection-uploads/{collection_id}/files/{path}/upload` creates or resumes the upload resource for one logical

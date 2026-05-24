@@ -64,6 +64,7 @@ class AcceptanceScenarioContext:
     expected_api_payload: Any = None
     before_collections: dict[str, dict[str, Any]] = field(default_factory=dict)
     after_collections: dict[str, dict[str, Any]] = field(default_factory=dict)
+    collection_upload_ids_by_slug: dict[str, str] = field(default_factory=dict)
     tracked_collection_id: str | None = None
     inspected_isos: dict[str, InspectedIso] = field(default_factory=dict)
     current_iso: InspectedIso | None = None
@@ -181,7 +182,7 @@ def _start_collection_upload(
         "POST",
         "/v1/collection-uploads",
         json_body={
-            "collection_id": normalized_collection_id,
+            "slug": normalized_collection_id,
             "ingest_source": str(
                 acceptance_system.collection_source_root(normalized_collection_id)
             ),
@@ -190,11 +191,37 @@ def _start_collection_upload(
     )
 
 
+def _remember_collection_upload(
+    acceptance_context: AcceptanceScenarioContext,
+    collection_slug: str,
+    response: httpx.Response,
+) -> None:
+    if response.status_code != 200:
+        return
+    payload = response.json()
+    collection_id = payload.get("collection_id")
+    if isinstance(collection_id, str):
+        acceptance_context.collection_upload_ids_by_slug[
+            normalize_collection_id(collection_slug)
+        ] = collection_id
+
+
+def _collection_upload_id_for(
+    acceptance_context: AcceptanceScenarioContext,
+    collection_id: str,
+) -> str:
+    return acceptance_context.collection_upload_ids_by_slug.get(
+        normalize_collection_id(collection_id),
+        normalize_collection_id(collection_id),
+    )
+
+
 def _refresh_collection_upload(
     acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
 ) -> httpx.Response:
-    normalized_collection_id = normalize_collection_id(collection_id)
+    normalized_collection_id = _collection_upload_id_for(acceptance_context, collection_id)
     return acceptance_system.request("GET", f"/v1/collection-uploads/{normalized_collection_id}")
 
 
@@ -202,18 +229,20 @@ def _upload_collection_file(
     acceptance_system: AcceptanceSystem,
     *,
     collection_id: str,
+    source_collection_id: str | None = None,
     path: str,
     offset: int = 0,
     fraction: float = 1.0,
 ) -> int:
     normalized_collection_id = normalize_collection_id(collection_id)
+    source_collection_id = normalize_collection_id(source_collection_id or collection_id)
     session = acceptance_system.request(
         "POST",
         f"/v1/collection-uploads/{normalized_collection_id}/files/{path}/upload",
     )
     assert session.status_code == 200, session.text
     upload = session.json()
-    root = acceptance_system.collection_source_root(normalized_collection_id)
+    root = acceptance_system.collection_source_root(source_collection_id)
     content = (root / path).read_bytes()
     start = int(upload["offset"])
     end = len(content)
@@ -623,11 +652,13 @@ def given_collection_already_uploaded(
 )
 def given_collection_upload_exists(
     acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
 ) -> None:
     acceptance_system.seed_collection_source(collection_id)
     response = _start_collection_upload(acceptance_system, collection_id)
     assert response.status_code == 200, response.text
+    _remember_collection_upload(acceptance_context, collection_id, response)
 
 
 @given(parsers.parse('collection upload "{collection_id}" has a partial file upload in progress'))
@@ -639,10 +670,14 @@ def given_collection_upload_has_partial_file(
     acceptance_system.seed_collection_source(collection_id)
     response = _start_collection_upload(acceptance_system, collection_id)
     assert response.status_code == 200, response.text
-    first_path = str(response.json()["files"][0]["path"])
+    _remember_collection_upload(acceptance_context, collection_id, response)
+    payload = response.json()
+    upload_collection_id = str(payload["collection_id"])
+    first_path = str(payload["files"][0]["path"])
     acceptance_context.recorded_upload_offset = _upload_collection_file(
         acceptance_system,
-        collection_id=collection_id,
+        collection_id=upload_collection_id,
+        source_collection_id=collection_id,
         path=first_path,
         fraction=0.5,
     )
@@ -651,19 +686,24 @@ def given_collection_upload_has_partial_file(
 @given(parsers.parse('collection upload "{collection_id}" has expired partial upload state'))
 def given_collection_upload_has_expired_partial_state(
     acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
 ) -> None:
     acceptance_system.seed_collection_source(collection_id)
     response = _start_collection_upload(acceptance_system, collection_id)
     assert response.status_code == 200, response.text
-    first_path = str(response.json()["files"][0]["path"])
+    _remember_collection_upload(acceptance_context, collection_id, response)
+    payload = response.json()
+    upload_collection_id = str(payload["collection_id"])
+    first_path = str(payload["files"][0]["path"])
     _upload_collection_file(
         acceptance_system,
-        collection_id=collection_id,
+        collection_id=upload_collection_id,
+        source_collection_id=collection_id,
         path=first_path,
         fraction=0.5,
     )
-    acceptance_system.expire_collection_upload(collection_id)
+    acceptance_system.expire_collection_upload(upload_collection_id)
 
 
 @given(parsers.parse('fetch "{fetch_id}" has expired partial upload state for entry "{entry_id}"'))
@@ -768,9 +808,13 @@ def given_collection_upload_has_completed_verification_and_is_archiving(
     collection_id: str,
 ) -> None:
     payload = acceptance_system.stage_collection_upload_archiving(collection_id)
+    upload_collection_id = str(payload["collection_id"])
+    acceptance_context.collection_upload_ids_by_slug[
+        normalize_collection_id(collection_id)
+    ] = upload_collection_id
     _set_response(acceptance_context, httpx.Response(200, json=payload))
     assert payload["state"] == "archiving"
-    acceptance_system.seed_candidate_for_collection(collection_id)
+    acceptance_system.seed_candidate_for_collection(upload_collection_id)
 
 
 @given(parsers.parse('target "{target}" is already pinned'))
@@ -1357,15 +1401,19 @@ def when_client_creates_or_resumes_collection_upload(
     collection_id: str,
 ) -> None:
     response = _start_collection_upload(acceptance_system, collection_id)
+    _remember_collection_upload(acceptance_context, collection_id, response)
     _set_response(acceptance_context, response)
 
 
 @when(parsers.parse('background expiry cleanup removes collection upload "{collection_id}"'))
 def when_background_cleanup_removes_collection_upload(
     acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
 ) -> None:
-    acceptance_system.wait_for_collection_upload_cleanup(collection_id)
+    acceptance_system.wait_for_collection_upload_cleanup(
+        _collection_upload_id_for(acceptance_context, collection_id)
+    )
 
 
 @when(parsers.parse('background expiry cleanup resets fetch "{fetch_id}" entry "{entry_id}"'))
@@ -1384,6 +1432,7 @@ def when_client_creates_or_resumes_collection_upload_again(
     collection_id: str,
 ) -> None:
     response = _start_collection_upload(acceptance_system, collection_id)
+    _remember_collection_upload(acceptance_context, collection_id, response)
     _set_response(acceptance_context, response, append=True)
 
 
@@ -1395,10 +1444,14 @@ def when_client_uploads_every_required_collection_file(
 ) -> None:
     response = _start_collection_upload(acceptance_system, collection_id)
     assert response.status_code == 200, response.text
-    for file_payload in response.json()["files"]:
+    _remember_collection_upload(acceptance_context, collection_id, response)
+    payload = response.json()
+    upload_collection_id = str(payload["collection_id"])
+    for file_payload in payload["files"]:
         _upload_collection_file(
             acceptance_system,
-            collection_id=collection_id,
+            collection_id=upload_collection_id,
+            source_collection_id=collection_id,
             path=str(file_payload["path"]),
         )
     normalized_collection_id = normalize_collection_id(collection_id)
@@ -1406,15 +1459,17 @@ def when_client_uploads_every_required_collection_file(
         normalized_collection_id
     )
     if failure_configured:
-        payload = acceptance_system.wait_for_collection_upload_state(collection_id, "failed")
+        payload = acceptance_system.wait_for_collection_upload_state(upload_collection_id, "failed")
     elif "/" in normalized_collection_id:
-        payload = acceptance_system.wait_for_collection_upload_state(collection_id, "finalized")
+        payload = acceptance_system.wait_for_collection_upload_state(
+            upload_collection_id, "finalized"
+        )
     else:
-        refresh = _refresh_collection_upload(acceptance_system, collection_id)
+        refresh = _refresh_collection_upload(acceptance_system, acceptance_context, collection_id)
         assert refresh.status_code == 200, refresh.text
         payload = refresh.json()
     if payload.get("state") == "archiving":
-        acceptance_system.defer_collection_glacier_archiving(collection_id)
+        acceptance_system.defer_collection_glacier_archiving(upload_collection_id)
     _set_response(acceptance_context, httpx.Response(200, json=payload))
 
 
@@ -1426,7 +1481,10 @@ def when_client_waits_for_collection_upload_state(
     collection_id: str,
     state: str,
 ) -> None:
-    payload = acceptance_system.wait_for_collection_upload_state(collection_id, state)
+    payload = acceptance_system.wait_for_collection_upload_state(
+        _collection_upload_id_for(acceptance_context, collection_id),
+        state,
+    )
     _set_response(acceptance_context, httpx.Response(200, json=payload))
 
 
@@ -1439,7 +1497,11 @@ def when_client_retries_collection_glacier_archiving(
     acceptance_system.clear_collection_glacier_upload_failure(collection_id)
     response = _start_collection_upload(acceptance_system, collection_id)
     assert response.status_code == 200, response.text
-    payload = acceptance_system.wait_for_collection_upload_state(collection_id, "finalized")
+    _remember_collection_upload(acceptance_context, collection_id, response)
+    payload = acceptance_system.wait_for_collection_upload_state(
+        _collection_upload_id_for(acceptance_context, collection_id),
+        "finalized",
+    )
     _set_response(acceptance_context, httpx.Response(200, json=payload))
 
 
@@ -1460,7 +1522,7 @@ def when_client_refreshes_collection_upload(
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
 ) -> None:
-    response = _refresh_collection_upload(acceptance_system, collection_id)
+    response = _refresh_collection_upload(acceptance_system, acceptance_context, collection_id)
     _set_response(acceptance_context, response)
 
 

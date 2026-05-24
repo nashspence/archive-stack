@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import re
 import shutil
+import unicodedata
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 
 
 class PathNormalizationError(ValueError):
     pass
+
+
+_SLUG_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
+MAX_UPLOAD_SLUG_LENGTH = 80
 
 
 def normalize_relpath(raw: str) -> str:
@@ -42,6 +48,22 @@ def normalize_root_node_name(raw: str) -> str:
     normalized = normalize_collection_id(raw)
     if "/" in normalized:
         raise PathNormalizationError("root node name must be a single path segment")
+    return normalized
+
+
+def normalize_upload_slug(raw: str) -> str:
+    ascii_text = (
+        unicodedata.normalize("NFKD", raw.strip().casefold())
+        .encode("ascii", "ignore")
+        .decode("ascii")
+    )
+    normalized = _SLUG_SEPARATOR_RE.sub("-", ascii_text).strip("-")
+    normalized = re.sub(r"-{2,}", "-", normalized)
+    normalized = normalized[:MAX_UPLOAD_SLUG_LENGTH].strip("-")
+    if not normalized:
+        raise PathNormalizationError(
+            "collection upload slug must include at least one letter or digit"
+        )
     return normalized
 
 

@@ -67,7 +67,7 @@ def create_or_resume_collection_upload(
     container: ContainerDep,
 ) -> CollectionUploadSessionOut:
     payload = container.collections.create_or_resume_upload(
-        collection_id=request.collection_id,
+        upload_slug=request.slug,
         files=[item.model_dump() for item in request.files],
         ingest_source=request.ingest_source,
     )

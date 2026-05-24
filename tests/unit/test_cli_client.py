@@ -16,7 +16,7 @@ def test_create_or_resume_collection_upload_uses_collection_upload_endpoint(monk
         return httpx.Response(
             200,
             json={
-                "collection_id": "tax/2022",
+                "collection_id": "2026/20260524T190233Z__tax-2022",
                 "ingest_source": "/tmp/tax/2022",
                 "state": "uploading",
                 "files_total": 1,
@@ -41,13 +41,15 @@ def test_create_or_resume_collection_upload_uses_collection_upload_endpoint(monk
 
     client = ApiClient(base_url="https://api.test")
     client.create_or_resume_collection_upload(
-        "tax/2022",
+        "Tax 2022",
         [{"path": "invoice.pdf", "bytes": 12, "sha256": "a" * 64}],
         ingest_source="/tmp/tax/2022",
     )
 
     assert captured[0][0] == "POST"
     assert captured[0][1] == "https://api.test/v1/collection-uploads"
+    assert '"slug":"Tax 2022"' in str(captured[0][2])
+    assert "collection_id" not in str(captured[0][2])
 
 
 def test_get_collection_quotes_reserved_characters_but_preserves_slashes(monkeypatch) -> None:

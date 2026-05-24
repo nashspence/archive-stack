@@ -320,12 +320,12 @@ class ProductionCollectionsClient:
 
     def create_or_resume_upload(
         self,
-        collection_id: str,
+        slug: str,
         files: list[dict[str, object]],
         *,
         ingest_source: str | None = None,
     ) -> dict[str, object]:
-        body: dict[str, object] = {"collection_id": collection_id, "files": files}
+        body: dict[str, object] = {"slug": slug, "files": files}
         if ingest_source is not None:
             body["ingest_source"] = ingest_source
         return self._system.request("POST", "/v1/collection-uploads", json_body=body).json()
@@ -932,9 +932,10 @@ class ProductionSystem:
                 manifest,
                 ingest_source=str(root),
             )
+            minted_collection_id = str(payload["collection_id"])
             for file_payload in payload["files"]:
                 upload = self.collections.create_or_resume_file_upload(
-                    normalized_collection_id,
+                    minted_collection_id,
                     str(file_payload["path"]),
                 )
                 content = source_files[str(file_payload["path"])]
@@ -944,13 +945,13 @@ class ProductionSystem:
                     content=content,
                 )
             payload = self.wait_for_collection_upload_state(
-                normalized_collection_id,
+                minted_collection_id,
                 "finalized",
             )
             collection = payload.get("collection")
             if isinstance(collection, dict):
                 return collection
-            response = self.request("GET", f"/v1/collections/{normalized_collection_id}")
+            response = self.request("GET", f"/v1/collections/{minted_collection_id}")
             assert response.status_code == 200, response.text
             return cast(dict[str, object], response.json())
 
@@ -975,10 +976,11 @@ class ProductionSystem:
                 manifest,
                 ingest_source=str(root),
             )
-            self.defer_collection_glacier_archiving(normalized_collection_id)
+            minted_collection_id = str(payload["collection_id"])
+            self.defer_collection_glacier_archiving(minted_collection_id)
             for file_payload in payload["files"]:
                 upload = self.collections.create_or_resume_file_upload(
-                    normalized_collection_id,
+                    minted_collection_id,
                     str(file_payload["path"]),
                 )
                 content = source_files[str(file_payload["path"])]
@@ -988,7 +990,7 @@ class ProductionSystem:
                     content=content,
                 )
             return self.wait_for_collection_upload_state(
-                normalized_collection_id,
+                minted_collection_id,
                 "archiving",
             )
 

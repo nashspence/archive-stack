@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 from collections import defaultdict
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -98,6 +98,7 @@ from riverhog_core.fs_paths import (
     find_collection_id_conflict,
     normalize_collection_id,
     normalize_relpath,
+    normalize_upload_slug,
 )
 from riverhog_core.iso.streaming import IsoStream, build_iso_cmd_from_root
 from riverhog_core.planner.manifest import MANIFEST_FILENAME
@@ -1069,21 +1070,23 @@ class AcceptanceCollectionService:
     def create_or_resume_upload(
         self,
         *,
-        collection_id: str,
+        upload_slug: str,
         files: list[dict[str, object]],
         ingest_source: str | None = None,
     ) -> dict[str, object]:
-        normalized_collection_id = normalize_collection_id(collection_id)
-        collection_key = CollectionId(normalized_collection_id)
-        if collection_key in self.state.files_by_collection:
-            raise Conflict(f"collection already exists: {normalized_collection_id}")
-
+        normalized_slug = normalize_upload_slug(upload_slug)
         normalized_files = self._normalize_files(files)
-        upload = self.state.collection_uploads.get(collection_key)
+        collection = self._matching_collection(normalized_slug, normalized_files)
+        if collection is not None:
+            return self._finalized_upload_payload(collection)
+
+        upload = self._matching_upload(normalized_slug, normalized_files)
         if upload is not None:
             upload = self._expire_upload(upload)
 
         if upload is None:
+            normalized_collection_id = self._mint_collection_id(normalized_slug)
+            collection_key = CollectionId(normalized_collection_id)
             conflict = find_collection_id_conflict(
                 (
                     [
@@ -1109,18 +1112,6 @@ class AcceptanceCollectionService:
             )
             self.state.collection_uploads[collection_key] = upload
         else:
-            existing_manifest = [
-                {
-                    "path": file_record.path,
-                    "bytes": file_record.bytes,
-                    "sha256": str(file_record.sha256),
-                }
-                for file_record in upload.files.values()
-            ]
-            if existing_manifest != normalized_files:
-                raise Conflict(
-                    f"collection upload manifest does not match: {normalized_collection_id}"
-                )
             upload.ingest_source = ingest_source
             if upload.state == "failed":
                 upload.state = "archiving"
@@ -1131,6 +1122,100 @@ class AcceptanceCollectionService:
                 upload.state = "archiving"
             return self._upload_payload(upload, state=upload.state, collection=None)
         return self._upload_payload(upload, state="uploading", collection=None)
+
+    def _matching_collection(
+        self,
+        upload_slug: str,
+        files: list[dict[str, object]],
+    ) -> CollectionId | None:
+        for collection_id, records in sorted(self.state.files_by_collection.items()):
+            if self._collection_id_upload_slug(str(collection_id)) != upload_slug:
+                continue
+            if self._stored_collection_manifest(records.values()) == files:
+                return collection_id
+        return None
+
+    def _matching_upload(
+        self,
+        upload_slug: str,
+        files: list[dict[str, object]],
+    ) -> CollectionUploadRecord | None:
+        for upload in sorted(
+            self.state.collection_uploads.values(),
+            key=lambda current: str(current.collection_id),
+        ):
+            if self._collection_id_upload_slug(str(upload.collection_id)) != upload_slug:
+                continue
+            if self._upload_manifest(upload) == files:
+                return upload
+        return None
+
+    def _mint_collection_id(self, upload_slug: str) -> str:
+        current = datetime.now(UTC).replace(microsecond=0)
+        while True:
+            stamp = current.strftime("%Y%m%dT%H%M%SZ")
+            collection_id = f"{current:%Y}/{stamp}__{upload_slug}"
+            key = CollectionId(collection_id)
+            if (
+                key not in self.state.files_by_collection
+                and key not in self.state.collection_uploads
+            ):
+                return collection_id
+            current += timedelta(seconds=1)
+
+    @staticmethod
+    def _collection_id_upload_slug(collection_id: str) -> str | None:
+        leaf = collection_id.rsplit("/", 1)[-1]
+        if "__" not in leaf:
+            return None
+        return leaf.split("__", 1)[1]
+
+    @staticmethod
+    def _upload_manifest(upload: CollectionUploadRecord) -> list[dict[str, object]]:
+        return [
+            {
+                "path": file_record.path,
+                "bytes": file_record.bytes,
+                "sha256": str(file_record.sha256),
+            }
+            for file_record in sorted(upload.files.values(), key=lambda current: current.path)
+        ]
+
+    @staticmethod
+    def _stored_collection_manifest(
+        records: Iterable[StoredFile],
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "path": record.path,
+                "bytes": record.bytes,
+                "sha256": str(record.sha256),
+            }
+            for record in sorted(records, key=lambda current: current.path)
+        ]
+
+    def _finalized_upload_payload(self, collection_id: CollectionId) -> dict[str, object]:
+        files = {
+            record.path: CollectionUploadFileRecord(
+                path=record.path,
+                bytes=record.bytes,
+                sha256=record.sha256,
+                uploaded_bytes=record.bytes,
+                uploaded_content=record.content,
+            )
+            for record in self.state.files_by_collection[collection_id].values()
+        }
+        upload = CollectionUploadRecord(
+            collection_id=collection_id,
+            ingest_source=None,
+            files=files,
+            state="finalized",
+        )
+        return self._upload_payload(
+            upload,
+            state="finalized",
+            collection=self.state.collection_summary(str(collection_id)),
+        )
 
     @_with_state_lock
     def get_upload(self, collection_id: str) -> dict[str, object]:
@@ -4364,18 +4449,19 @@ class AcceptanceSystem:
                 "POST",
                 "/v1/collection-uploads",
                 json_body={
-                    "collection_id": normalized_collection_id,
+                    "slug": normalized_collection_id,
                     "ingest_source": str(root),
                     "files": manifest,
                 },
             )
             assert response.status_code == 200, response.text
             payload = response.json()
+            minted_collection_id = str(payload["collection_id"])
             for file_payload in payload["files"]:
                 upload = self.request(
                     "POST",
                     (
-                        f"/v1/collection-uploads/{normalized_collection_id}/files/"
+                        f"/v1/collection-uploads/{minted_collection_id}/files/"
                         f"{file_payload['path']}/upload"
                     ),
                 )
@@ -4395,7 +4481,7 @@ class AcceptanceSystem:
                     content=content,
                 )
                 assert response.status_code == 204, response.text
-            final = self.wait_for_collection_upload_state(normalized_collection_id, "finalized")
+            final = self.wait_for_collection_upload_state(minted_collection_id, "finalized")
             return cast(dict[str, object], final["collection"])
 
     def stage_collection_upload_archiving(
@@ -4419,18 +4505,19 @@ class AcceptanceSystem:
                 "POST",
                 "/v1/collection-uploads",
                 json_body={
-                    "collection_id": normalized_collection_id,
+                    "slug": normalized_collection_id,
                     "ingest_source": str(root),
                     "files": manifest,
                 },
             )
             assert response.status_code == 200, response.text
             payload = response.json()
+            minted_collection_id = str(payload["collection_id"])
             for file_payload in payload["files"]:
                 upload = self.request(
                     "POST",
                     (
-                        f"/v1/collection-uploads/{normalized_collection_id}/files/"
+                        f"/v1/collection-uploads/{minted_collection_id}/files/"
                         f"{file_payload['path']}/upload"
                     ),
                 )
@@ -4450,7 +4537,7 @@ class AcceptanceSystem:
                     content=content,
                 )
                 assert response.status_code == 204, response.text
-            return self.wait_for_collection_upload_state(normalized_collection_id, "archiving")
+            return self.wait_for_collection_upload_state(minted_collection_id, "archiving")
 
     def seed_photos_hot(self) -> None:
         normalized = normalize_collection_id(PHOTOS_COLLECTION_ID)

@@ -10,7 +10,7 @@ paths:
   /collection-uploads:
     post:
       summary: Create or resume one collection upload session
-      description: Creates or resumes the explicit resumable upload session for one collection id and expected logical file set.
+      description: Creates or resumes a collection upload session from a human-readable slug and expected logical file set. Riverhog normalizes the slug, mints the canonical collection id with the server UTC upload timestamp, and resumes an existing non-finalized session when the normalized slug and manifest match.
       operationId: createOrResumeCollectionUpload
       requestBody:
         required: true
@@ -30,13 +30,13 @@ paths:
   /collection-uploads/{collection_id}:
     get:
       summary: Get one collection upload session
-      description: Returns the current resumable upload state for one collection id while it remains in progress. The session remains visible through `uploading`, `archiving`, and `failed`; once the collection archive package has uploaded, verified, and promoted the collection, this upload session is deleted and later reads return `not_found`.
+      description: Returns the current resumable upload state for one server-minted collection id while it remains in progress. The session remains visible through `uploading`, `archiving`, and `failed`; once the collection archive package has uploaded, verified, and promoted the collection, this upload session is deleted and later reads return `not_found`.
       operationId: getCollectionUpload
       parameters:
         - in: path
           name: collection_id
           required: true
-          description: Explicit canonical collection id. Slash-bearing ids occupy multiple path segments.
+          description: Server-minted canonical collection id returned by collection upload creation. Slash-bearing ids occupy multiple path segments.
           schema: { type: string }
       responses:
         "200":
@@ -56,7 +56,7 @@ paths:
         - in: path
           name: collection_id
           required: true
-          description: Explicit canonical collection id. Slash-bearing ids occupy multiple path segments.
+          description: Server-minted canonical collection id returned by collection upload creation. Slash-bearing ids occupy multiple path segments.
           schema: { type: string }
         - in: path
           name: path
@@ -93,7 +93,7 @@ paths:
         - in: path
           name: collection_id
           required: true
-          description: Explicit canonical collection id. Slash-bearing ids occupy multiple path segments.
+          description: Server-minted canonical collection id returned by collection upload creation. Slash-bearing ids occupy multiple path segments.
           schema: { type: string }
         - in: path
           name: path
@@ -143,7 +143,7 @@ paths:
         - in: path
           name: collection_id
           required: true
-          description: Explicit canonical collection id. Slash-bearing ids occupy multiple path segments.
+          description: Server-minted canonical collection id returned by collection upload creation. Slash-bearing ids occupy multiple path segments.
           schema: { type: string }
         - in: path
           name: path
@@ -176,7 +176,7 @@ paths:
         - in: path
           name: collection_id
           required: true
-          description: Explicit canonical collection id. Slash-bearing ids occupy multiple path segments.
+          description: Server-minted canonical collection id returned by collection upload creation. Slash-bearing ids occupy multiple path segments.
           schema: { type: string }
         - in: path
           name: path
@@ -201,7 +201,7 @@ paths:
         - in: path
           name: collection_id
           required: true
-          description: Explicit canonical collection id. Slash-bearing ids occupy multiple path segments.
+          description: Server-minted canonical collection id returned by collection upload creation. Slash-bearing ids occupy multiple path segments.
           schema: { type: string }
         - in: path
           name: path
@@ -1803,11 +1803,11 @@ components:
           description: Logical-file SHA-256 digest for final verification.
     CollectionUploadRequest:
       type: object
-      required: [collection_id, files]
+      required: [slug, files]
       properties:
-        collection_id:
+        slug:
           type: string
-          description: Explicit canonical collection id for this upload session.
+          description: Human-readable collection slug. Riverhog normalizes this and mints the canonical collection id.
         ingest_source:
           oneOf:
             - type: string
@@ -1856,7 +1856,7 @@ components:
       properties:
         collection_id:
           type: string
-          description: Explicit canonical collection id for this upload session.
+          description: Server-minted canonical collection id for this upload session.
         ingest_source:
           oneOf:
             - type: string
