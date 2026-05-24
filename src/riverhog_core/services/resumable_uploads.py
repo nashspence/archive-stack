@@ -31,6 +31,8 @@ def sync_upload_state(
 ) -> UploadLifecycleState:
     if current.tus_url is None:
         return current
+    if upload_state_name(uploaded_bytes=current.uploaded_bytes, length=length) == "uploaded":
+        return current
     if not force and _upload_state_is_live(current=current, length=length):
         return current
 

@@ -41,7 +41,7 @@ class _MissingUploadStore:
         raise AssertionError("cancel_upload should not be called")
 
 
-def test_sync_upload_state_preserves_progress_when_upload_disappears_mid_sync() -> None:
+def test_sync_upload_state_skips_completed_uploads() -> None:
     store = _MissingUploadStore()
     current = UploadLifecycleState(
         tus_url="/uploads/fx-1/e1",
@@ -57,7 +57,8 @@ def test_sync_upload_state_preserves_progress_when_upload_disappears_mid_sync() 
     )
 
     assert updated == current
-    assert store.read_target_calls == 1
+    assert store.get_offset_calls == 0
+    assert store.read_target_calls == 0
 
 
 def test_sync_upload_state_preserves_partial_state_when_upload_disappears_mid_sync() -> None:
