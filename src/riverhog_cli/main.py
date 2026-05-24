@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -36,7 +37,7 @@ PLAN_QUERY_HELP = (
 )
 IMAGE_QUERY_HELP = "Substring match over id, filename, and collection ids"
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
-UPLOAD_CHUNK_BYTES = 16 * 1024 * 1024
+UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024
 
 
 class CollectionManifestEntry(TypedDict):
@@ -75,6 +76,19 @@ def _file_sha256(path: Path) -> str:
     for chunk in _iter_file_chunks(path, chunk_size=HASH_CHUNK_BYTES):
         digest.update(chunk)
     return digest.hexdigest()
+
+
+def _upload_chunk_bytes() -> int:
+    raw_value = os.getenv("RIVERHOG_UPLOAD_CHUNK_BYTES")
+    if raw_value is None or raw_value.strip() == "":
+        return UPLOAD_CHUNK_BYTES
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise typer.BadParameter("RIVERHOG_UPLOAD_CHUNK_BYTES must be a positive integer") from exc
+    if value <= 0:
+        raise typer.BadParameter("RIVERHOG_UPLOAD_CHUNK_BYTES must be a positive integer")
+    return value
 
 
 def _local_collection_manifest(root: Path) -> list[CollectionManifestEntry]:
@@ -118,7 +132,7 @@ def _upload_collection_file(
         source_path,
         offset=offset,
         limit=length - offset,
-        chunk_size=UPLOAD_CHUNK_BYTES,
+        chunk_size=_upload_chunk_bytes(),
     ):
         upload_result = api.append_upload_chunk(
             str(session["upload_url"]),
