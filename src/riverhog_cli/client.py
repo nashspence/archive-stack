@@ -6,7 +6,7 @@ import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
 
@@ -30,6 +30,7 @@ class ApiClient:
             "/"
         )
         self.token = token or os.getenv("RIVERHOG_TOKEN")
+        self.upload_base_url = (os.getenv("RIVERHOG_UPLOAD_BASE_URL", "").rstrip("/") or None)
 
     def _client(self) -> httpx.Client:
         headers = {"Accept": "application/json"}
@@ -63,6 +64,15 @@ class ApiClient:
             response = client.request(method, path, **kwargs)
         self._raise_for_error(response)
         return response
+
+    def _upload_url(self, upload_url: str) -> str:
+        if self.upload_base_url is None:
+            return upload_url
+        parsed = urlsplit(upload_url)
+        if not parsed.scheme or not parsed.netloc:
+            return upload_url
+        base = urlsplit(self.upload_base_url)
+        return urlunsplit((base.scheme, base.netloc, parsed.path, parsed.query, parsed.fragment))
 
     def _json(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         payload = self._request(method, path, **kwargs).json()
@@ -304,7 +314,7 @@ class ApiClient:
         )
         response = self._request(
             "PATCH",
-            upload_url,
+            self._upload_url(upload_url),
             headers={
                 "Content-Type": "application/offset+octet-stream",
                 "Tus-Resumable": "1.0.0",

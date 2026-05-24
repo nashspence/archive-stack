@@ -335,6 +335,37 @@ def test_append_upload_chunk_uses_tus_patch_headers(monkeypatch) -> None:
     assert request.read() == content
 
 
+def test_append_upload_chunk_can_override_absolute_upload_base_url(monkeypatch) -> None:
+    captured: list[httpx.Request] = []
+    content = b"invoice fixture bytes\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(204, headers={"Upload-Offset": str(len(content))})
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_client(self: ApiClient) -> httpx.Client:
+        return httpx.Client(base_url=self.base_url, transport=transport)
+
+    monkeypatch.setenv("RIVERHOG_UPLOAD_BASE_URL", "http://127.0.0.1:18080")
+    monkeypatch.setattr(ApiClient, "_client", fake_client)
+
+    client = ApiClient(base_url="http://127.0.0.1:18080")
+    client.append_upload_chunk(
+        "https://riverhog.0819870.xyz/v1/collection-uploads/docs/files/report.txt/upload",
+        offset=0,
+        checksum_algorithm="sha256",
+        content=content,
+    )
+
+    assert len(captured) == 1
+    assert (
+        str(captured[0].url)
+        == "http://127.0.0.1:18080/v1/collection-uploads/docs/files/report.txt/upload"
+    )
+
+
 def test_register_copy_uses_generated_copy_endpoint(monkeypatch) -> None:
     captured: list[tuple[str, str, str]] = []
 
