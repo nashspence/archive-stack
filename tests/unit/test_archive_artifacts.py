@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from arc_core.archive_artifacts import (
+from riverhog_core.archive_artifacts import (
     COLLECTION_HASH_MANIFEST_NAME,
     COLLECTION_HASH_PROOF_NAME,
     collection_artifact_relpaths,

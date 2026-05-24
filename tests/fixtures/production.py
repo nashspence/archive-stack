@@ -20,8 +20,8 @@ import httpx
 import pytest
 from sqlalchemy import select, update
 
-from arc_core.catalog_db import make_session_factory, session_scope
-from arc_core.catalog_models import (
+from riverhog_core.catalog_db import make_session_factory, session_scope
+from riverhog_core.catalog_models import (
     ActivePinRecord,
     CandidateCoveredPathRecord,
     CollectionFileRecord,
@@ -37,18 +37,18 @@ from arc_core.catalog_models import (
     ImageCopyRecord,
     PlannedCandidateRecord,
 )
-from arc_core.domain.enums import CopyState, FetchState, ProtectionState, VerificationState
-from arc_core.domain.models import CollectionSummary, CopySummary, FetchCopyHint, FetchSummary
-from arc_core.domain.selectors import parse_target
-from arc_core.domain.types import CollectionId, CopyId, FetchId, TargetStr
-from arc_core.finalized_image_coverage import (
+from riverhog_core.domain.enums import CopyState, FetchState, ProtectionState, VerificationState
+from riverhog_core.domain.models import CollectionSummary, CopySummary, FetchCopyHint, FetchSummary
+from riverhog_core.domain.selectors import parse_target
+from riverhog_core.domain.types import CollectionId, CopyId, FetchId, TargetStr
+from riverhog_core.finalized_image_coverage import (
     read_finalized_image_collection_artifacts,
     read_finalized_image_coverage_parts,
 )
-from arc_core.fs_paths import normalize_collection_id, normalize_relpath
-from arc_core.recovery_payloads import CommandAgeBatchpassRecoveryPayloadCodec
-from arc_core.runtime_config import load_runtime_config
-from arc_core.stores.s3_support import (
+from riverhog_core.fs_paths import normalize_collection_id, normalize_relpath
+from riverhog_core.recovery_payloads import CommandAgeBatchpassRecoveryPayloadCodec
+from riverhog_core.runtime_config import load_runtime_config
+from riverhog_core.stores.s3_support import (
     _create_s3_client,
     create_glacier_s3_client,
     create_s3_client,
@@ -79,25 +79,25 @@ _APP_START_TIMEOUT = 15.0
 _FIXTURE_RECOVERY_CODEC = FixtureRecoveryPayloadCodec()
 _APP_REQUEST_TIMEOUT = 5.0
 _SIDECAR_START_TIMEOUT = 15.0
-_EXTERNAL_APP_BASE_URL_ENV = "ARC_TEST_EXTERNAL_APP_BASE_URL"
-_EXTERNAL_APP_DATABASE_URL_ENV = "ARC_TEST_EXTERNAL_APP_DATABASE_URL"
-_EXTERNAL_WEBDAV_BASE_URL_ENV = "ARC_TEST_EXTERNAL_WEBDAV_BASE_URL"
-_EXTERNAL_APP_RESTART_PATH_ENV = "ARC_TEST_EXTERNAL_APP_RESTART_PATH"
-_EXTERNAL_APP_RESET_PATH_ENV = "ARC_TEST_EXTERNAL_APP_RESET_PATH"
-_ACCEPTANCE_ROOT_ENV = "ARC_TEST_ACCEPTANCE_ROOT"
-_CANONICAL_TEST_ENTRYPOINT_ENV = "ARC_TEST_CANONICAL_ENTRYPOINT"
+_EXTERNAL_APP_BASE_URL_ENV = "RIVERHOG_TEST_EXTERNAL_APP_BASE_URL"
+_EXTERNAL_APP_DATABASE_URL_ENV = "RIVERHOG_TEST_EXTERNAL_APP_DATABASE_URL"
+_EXTERNAL_WEBDAV_BASE_URL_ENV = "RIVERHOG_TEST_EXTERNAL_WEBDAV_BASE_URL"
+_EXTERNAL_APP_RESTART_PATH_ENV = "RIVERHOG_TEST_EXTERNAL_APP_RESTART_PATH"
+_EXTERNAL_APP_RESET_PATH_ENV = "RIVERHOG_TEST_EXTERNAL_APP_RESET_PATH"
+_ACCEPTANCE_ROOT_ENV = "RIVERHOG_TEST_ACCEPTANCE_ROOT"
+_CANONICAL_TEST_ENTRYPOINT_ENV = "RIVERHOG_TEST_CANONICAL_ENTRYPOINT"
 _DEFAULT_EXTERNAL_APP_BASE_URL = "http://app:8000"
 _DEFAULT_EXTERNAL_APP_DATABASE_URL = "postgresql+psycopg://riverhog:riverhog@postgres:5432/riverhog"
 _DEFAULT_EXTERNAL_WEBDAV_BASE_URL = "http://webdav:8080"
 _DEFAULT_EXTERNAL_APP_RESTART_PATH = "/_test/restart"
 _DEFAULT_EXTERNAL_APP_RESET_PATH = "/_test/reset"
 _DEFAULT_ACCEPTANCE_ROOT = ".tmp/acceptance"
-_FORBIDDEN_PROD_ARC_DISC_FACTORY_ENV_VARS = (
-    "ARC_DISC_READER_FACTORY",
-    "ARC_DISC_ISO_VERIFIER_FACTORY",
-    "ARC_DISC_BURNER_FACTORY",
-    "ARC_DISC_BURNED_MEDIA_VERIFIER_FACTORY",
-    "ARC_DISC_BURN_PROMPTS_FACTORY",
+_FORBIDDEN_PROD_DJDAN_FACTORY_ENV_VARS = (
+    "DJDAN_READER_FACTORY",
+    "DJDAN_ISO_VERIFIER_FACTORY",
+    "DJDAN_BURNER_FACTORY",
+    "DJDAN_BURNED_MEDIA_VERIFIER_FACTORY",
+    "DJDAN_BURN_PROMPTS_FACTORY",
 )
 
 
@@ -127,12 +127,12 @@ def _command_image_files(files: Mapping[str, bytes]) -> dict[str, bytes]:
     return command_files
 
 
-def _reject_prod_arc_disc_factory_env(env: Mapping[str, str]) -> None:
-    configured = [name for name in _FORBIDDEN_PROD_ARC_DISC_FACTORY_ENV_VARS if env.get(name)]
+def _reject_prod_djdan_factory_env(env: Mapping[str, str]) -> None:
+    configured = [name for name in _FORBIDDEN_PROD_DJDAN_FACTORY_ENV_VARS if env.get(name)]
     if configured:
         names = ", ".join(configured)
         raise RuntimeError(
-            "prod acceptance subprocesses must not use arc-disc factory overrides: "
+            "prod acceptance subprocesses must not use djdan factory overrides: "
             f"{names}"
         )
 
@@ -733,7 +733,7 @@ class ProductionSystem:
             ).strip()
             if not database_url:
                 raise RuntimeError(f"{_EXTERNAL_APP_DATABASE_URL_ENV} must not be empty")
-            fixture_path = workspace / "arc_disc_fixture.json"
+            fixture_path = workspace / "djdan_fixture.json"
             _wait_for_s3_bucket()
             _wait_for_tusd(load_runtime_config().tusd_base_url)
             server = _external_app_server()
@@ -847,10 +847,10 @@ class ProductionSystem:
             with httpx.Client(base_url=self.webdav_url, timeout=5.0) as client:
                 return client.request(method, path, headers=headers, content=content)
 
-    def run_arc(self, *args: str) -> subprocess.CompletedProcess[str]:
-        with time_block("subprocess arc"):
+    def run_riverhog(self, *args: str) -> subprocess.CompletedProcess[str]:
+        with time_block("subprocess riverhog"):
             return subprocess.run(
-                [sys.executable, "-m", "arc_cli.main", *args],
+                [sys.executable, "-m", "riverhog_cli.main", *args],
                 cwd=REPO_ROOT,
                 env=self._subprocess_env(),
                 capture_output=True,
@@ -858,18 +858,18 @@ class ProductionSystem:
                 check=False,
             )
 
-    def run_arc_disc(
+    def run_djdan(
         self, *args: str, input_text: str = "\n" * 16
     ) -> subprocess.CompletedProcess[str]:
-        with time_block("subprocess arc-disc"):
+        with time_block("subprocess djdan"):
             if not self.fixture_path.exists():
-                self._write_arc_disc_fixture(self._default_arc_disc_fixture())
+                self._write_djdan_fixture(self._default_djdan_fixture())
             return subprocess.run(
-                [sys.executable, "-m", "arc_disc.main", *args],
+                [sys.executable, "-m", "djdan.main", *args],
                 cwd=REPO_ROOT,
                 env=self._subprocess_env(
                     {
-                        "ARC_DISC_STAGING_DIR": str(self.workspace / "arc_disc_staging"),
+                        "DJDAN_STAGING_DIR": str(self.workspace / "djdan_staging"),
                     }
                 ),
                 input=input_text,
@@ -1517,7 +1517,7 @@ class ProductionSystem:
     def recovery_upload_absent(self, fetch_id: str) -> bool:
         response = self._s3_client().list_objects_v2(
             Bucket=load_runtime_config().s3_bucket,
-            Prefix=f".arc/uploads/recovery/{fetch_id}/",
+            Prefix=f".riverhog/uploads/recovery/{fetch_id}/",
         )
         return response.get("KeyCount", 0) == 0
 
@@ -1671,7 +1671,7 @@ class ProductionSystem:
             path = entry_records[0].path
         return self._file_bytes(collection_id, path)
 
-    def configure_arc_disc_fixture(
+    def configure_djdan_fixture(
         self,
         *,
         fetch_id: str = "fx-1",
@@ -1680,7 +1680,7 @@ class ProductionSystem:
         fail_copy_ids: set[str] | None = None,
         corrupt_copy_ids: set[str] | None = None,
     ) -> None:
-        payload = self._load_arc_disc_fixture()
+        payload = self._load_djdan_fixture()
         manifest = self.fetches.manifest(fetch_id)
         with session_scope(make_session_factory(str(self.db_path))) as session:
             entry_records = session.scalars(
@@ -1692,7 +1692,7 @@ class ProductionSystem:
         fail_copy_ids = fail_copy_ids or set()
         corrupt_copy_ids = corrupt_copy_ids or set()
 
-        with time_block("fixture.configure_arc_disc_fixture"):
+        with time_block("fixture.configure_djdan_fixture"):
             for entry in manifest["entries"]:
                 entry_path = str(entry["path"])
                 parts = entry["parts"]
@@ -1717,10 +1717,10 @@ class ProductionSystem:
                 "payload_by_disc_path": payload_by_disc_path,
                 "fail_disc_paths": fail_disc_paths,
             }
-            self._write_arc_disc_fixture(payload)
+            self._write_djdan_fixture(payload)
 
     @staticmethod
-    def _default_arc_disc_fixture() -> dict[str, object]:
+    def _default_djdan_fixture() -> dict[str, object]:
         return {
             "reader": {
                 "payload_by_disc_path": {},
@@ -1737,19 +1737,19 @@ class ProductionSystem:
             },
         }
 
-    def _load_arc_disc_fixture(self) -> dict[str, object]:
+    def _load_djdan_fixture(self) -> dict[str, object]:
         if not self.fixture_path.exists():
-            return self._default_arc_disc_fixture()
+            return self._default_djdan_fixture()
         return cast(dict[str, object], json.loads(self.fixture_path.read_text(encoding="utf-8")))
 
-    def _write_arc_disc_fixture(self, payload: dict[str, object]) -> None:
+    def _write_djdan_fixture(self, payload: dict[str, object]) -> None:
         self.fixture_path.write_text(
             json.dumps(payload, indent=2, sort_keys=True),
             encoding="utf-8",
         )
 
-    def confirm_arc_disc_burn_copy(self, copy_id: str, *, location: str) -> None:
-        payload = self._load_arc_disc_fixture()
+    def confirm_djdan_burn_copy(self, copy_id: str, *, location: str) -> None:
+        payload = self._load_djdan_fixture()
         burn = cast(dict[str, object], payload["burn"])
         confirmed = set(cast(list[str], burn.get("confirmed_copy_ids", [])))
         confirmed.add(copy_id)
@@ -1760,10 +1760,10 @@ class ProductionSystem:
         labels = dict(cast(dict[str, str], burn.get("label_text_by_copy_id", {})))
         labels[copy_id] = copy_id
         burn["label_text_by_copy_id"] = labels
-        self._write_arc_disc_fixture(payload)
+        self._write_djdan_fixture(payload)
 
-    def set_arc_disc_burn_copy_available(self, copy_id: str, *, available: bool) -> None:
-        payload = self._load_arc_disc_fixture()
+    def set_djdan_burn_copy_available(self, copy_id: str, *, available: bool) -> None:
+        payload = self._load_djdan_fixture()
         burn = cast(dict[str, object], payload["burn"])
         available_copy_ids = set(cast(list[str], burn.get("available_copy_ids", [])))
         if available:
@@ -1771,42 +1771,42 @@ class ProductionSystem:
         else:
             available_copy_ids.discard(copy_id)
         burn["available_copy_ids"] = sorted(available_copy_ids)
-        self._write_arc_disc_fixture(payload)
+        self._write_djdan_fixture(payload)
 
-    def fail_arc_disc_burn_copy(self, copy_id: str) -> None:
-        payload = self._load_arc_disc_fixture()
+    def fail_djdan_burn_copy(self, copy_id: str) -> None:
+        payload = self._load_djdan_fixture()
         burn = cast(dict[str, object], payload["burn"])
         failures = set(cast(list[str], burn.get("fail_copy_ids", [])))
         failures.add(copy_id)
         burn["fail_copy_ids"] = sorted(failures)
-        self._write_arc_disc_fixture(payload)
+        self._write_djdan_fixture(payload)
 
-    def fail_arc_disc_burn_copy_verification(self, copy_id: str) -> None:
-        payload = self._load_arc_disc_fixture()
+    def fail_djdan_burn_copy_verification(self, copy_id: str) -> None:
+        payload = self._load_djdan_fixture()
         burn = cast(dict[str, object], payload["burn"])
         failures = set(cast(list[str], burn.get("verify_fail_copy_ids", [])))
         failures.add(copy_id)
         burn["verify_fail_copy_ids"] = sorted(failures)
-        self._write_arc_disc_fixture(payload)
+        self._write_djdan_fixture(payload)
 
-    def clear_arc_disc_burn_failures(self) -> None:
-        payload = self._load_arc_disc_fixture()
+    def clear_djdan_burn_failures(self) -> None:
+        payload = self._load_djdan_fixture()
         burn = cast(dict[str, object], payload["burn"])
         burn["fail_copy_ids"] = []
         burn["verify_fail_copy_ids"] = []
         burn["blank_media_blocked_copy_ids"] = []
-        self._write_arc_disc_fixture(payload)
+        self._write_djdan_fixture(payload)
 
-    def corrupt_arc_disc_staged_iso(self, image_id: str) -> None:
+    def corrupt_djdan_staged_iso(self, image_id: str) -> None:
         image = self.request("GET", f"/v1/images/{image_id}").json()
-        staging_path = self.workspace / "arc_disc_staging" / image_id / str(image["filename"])
+        staging_path = self.workspace / "djdan_staging" / image_id / str(image["filename"])
         if not staging_path.is_file():
             raise AssertionError(f"staged ISO not found: {staging_path}")
         staging_path.write_bytes(staging_path.read_bytes() + b"corrupted-by-fixture\n")
 
-    def arc_disc_staged_iso_exists(self, image_id: str) -> bool:
+    def djdan_staged_iso_exists(self, image_id: str) -> bool:
         image = self.request("GET", f"/v1/images/{image_id}").json()
-        staging_path = self.workspace / "arc_disc_staging" / image_id / str(image["filename"])
+        staging_path = self.workspace / "djdan_staging" / image_id / str(image["filename"])
         return staging_path.is_file()
 
     def pins_list(self) -> list[str]:
@@ -1900,11 +1900,11 @@ class ProductionSystem:
         if existing:
             pythonpath_parts.append(existing)
         env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
-        env["ARC_BASE_URL"] = self.base_url
-        env["ARC_DATABASE_URL"] = self.db_path
+        env["RIVERHOG_BASE_URL"] = self.base_url
+        env["RIVERHOG_DATABASE_URL"] = self.db_path
         if extra:
             env.update(extra)
-        _reject_prod_arc_disc_factory_env(env)
+        _reject_prod_djdan_factory_env(env)
         return env
 
     def _selected_file_bytes(self, collection_id: str, path: str) -> int:

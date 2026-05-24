@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from arc_cli.output import (
+from riverhog_cli.output import (
     format_archive_status,
     format_collection_summary,
     format_glacier_report,

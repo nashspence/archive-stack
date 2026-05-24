@@ -7,7 +7,7 @@ from io import BytesIO
 
 import pytest
 
-from arc_core.collection_archives import (
+from riverhog_core.collection_archives import (
     COLLECTION_ARCHIVE_COMPRESSION,
     COLLECTION_ARCHIVE_FORMAT,
     CollectionArchiveExpectedFile,

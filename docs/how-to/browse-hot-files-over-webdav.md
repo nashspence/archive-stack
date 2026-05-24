@@ -18,7 +18,7 @@ Rules for the supported surface:
 
 - expose only the committed `collections/` namespace
 - do not expose the bucket root
-- do not expose `.arc/` staging paths
+- do not expose `.riverhog/` staging paths
 - use the surface only for browse and download of completed hot files
 - reject writes through WebDAV
 

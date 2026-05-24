@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from arc_core.runtime_config import (
+from riverhog_core.runtime_config import (
     DEFAULT_DATABASE_URL,
     DEV_RECOVERY_PAYLOAD_PASSPHRASE,
     RuntimeConfig,
@@ -34,7 +34,7 @@ def test_runtime_config_rejects_recovery_ready_ttl_shorter_than_retry_window(
 ) -> None:
     with pytest.raises(
         ValueError,
-        match="ARC_GLACIER_RECOVERY_READY_TTL must be at least",
+        match="RIVERHOG_GLACIER_RECOVERY_READY_TTL must be at least",
     ):
         _base_runtime_config(
             tmp_path,
@@ -73,9 +73,9 @@ def test_load_runtime_config_accepts_explicit_test_recovery_passphrase(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("ARC_DB_PATH", str(tmp_path / "state.sqlite3"))
-    monkeypatch.setenv("ARC_RECOVERY_PAYLOAD_REQUIRE_EXPLICIT_PASSPHRASE", "true")
-    monkeypatch.setenv("ARC_RECOVERY_PAYLOAD_PASSPHRASE", "unit-test-secret")
+    monkeypatch.setenv("RIVERHOG_DB_PATH", str(tmp_path / "state.sqlite3"))
+    monkeypatch.setenv("RIVERHOG_RECOVERY_PAYLOAD_REQUIRE_EXPLICIT_PASSPHRASE", "true")
+    monkeypatch.setenv("RIVERHOG_RECOVERY_PAYLOAD_PASSPHRASE", "unit-test-secret")
 
     config = load_runtime_config()
 
@@ -88,8 +88,8 @@ def test_load_runtime_config_prefers_database_url_over_legacy_db_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("ARC_DB_PATH", str(tmp_path / "state.sqlite3"))
-    monkeypatch.setenv("ARC_DATABASE_URL", "postgresql+psycopg://unit:unit@postgres/unit")
+    monkeypatch.setenv("RIVERHOG_DB_PATH", str(tmp_path / "state.sqlite3"))
+    monkeypatch.setenv("RIVERHOG_DATABASE_URL", "postgresql+psycopg://unit:unit@postgres/unit")
 
     config = load_runtime_config()
 
@@ -100,8 +100,8 @@ def test_load_runtime_config_prefers_database_url_over_legacy_db_path(
 def test_load_runtime_config_defaults_to_postgres_database_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("ARC_DB_PATH", raising=False)
-    monkeypatch.delenv("ARC_DATABASE_URL", raising=False)
+    monkeypatch.delenv("RIVERHOG_DB_PATH", raising=False)
+    monkeypatch.delenv("RIVERHOG_DATABASE_URL", raising=False)
 
     config = load_runtime_config()
 
@@ -113,9 +113,9 @@ def test_load_runtime_config_rejects_required_default_recovery_passphrase(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("ARC_DB_PATH", str(tmp_path / "state.sqlite3"))
-    monkeypatch.setenv("ARC_RECOVERY_PAYLOAD_REQUIRE_EXPLICIT_PASSPHRASE", "true")
-    monkeypatch.setenv("ARC_RECOVERY_PAYLOAD_PASSPHRASE", DEV_RECOVERY_PAYLOAD_PASSPHRASE)
+    monkeypatch.setenv("RIVERHOG_DB_PATH", str(tmp_path / "state.sqlite3"))
+    monkeypatch.setenv("RIVERHOG_RECOVERY_PAYLOAD_REQUIRE_EXPLICIT_PASSPHRASE", "true")
+    monkeypatch.setenv("RIVERHOG_RECOVERY_PAYLOAD_PASSPHRASE", DEV_RECOVERY_PAYLOAD_PASSPHRASE)
 
     with pytest.raises(ValueError, match="non-development secret"):
         load_runtime_config()
@@ -125,9 +125,9 @@ def test_load_runtime_config_rejects_required_missing_recovery_passphrase(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("ARC_DB_PATH", str(tmp_path / "state.sqlite3"))
-    monkeypatch.setenv("ARC_RECOVERY_PAYLOAD_REQUIRE_EXPLICIT_PASSPHRASE", "true")
-    monkeypatch.delenv("ARC_RECOVERY_PAYLOAD_PASSPHRASE", raising=False)
+    monkeypatch.setenv("RIVERHOG_DB_PATH", str(tmp_path / "state.sqlite3"))
+    monkeypatch.setenv("RIVERHOG_RECOVERY_PAYLOAD_REQUIRE_EXPLICIT_PASSPHRASE", "true")
+    monkeypatch.delenv("RIVERHOG_RECOVERY_PAYLOAD_PASSPHRASE", raising=False)
 
-    with pytest.raises(ValueError, match="ARC_RECOVERY_PAYLOAD_PASSPHRASE"):
+    with pytest.raises(ValueError, match="RIVERHOG_RECOVERY_PAYLOAD_PASSPHRASE"):
         load_runtime_config()

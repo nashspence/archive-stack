@@ -96,7 +96,7 @@ command to run lint, then unit, spec, and prod in order.
 
 ## CI opt-in optical-device validation
 
-`make ci-opt-in-arc-disc` is an opt-in lane for real `arc-disc` optical I/O. It is
+`make ci-opt-in-djdan` is an opt-in lane for real `djdan` optical I/O. It is
 selected with `ci_opt_in and requires_optical_disc_drive and requires_human_operator` and is not part of `make test`,
 `make spec`, or `make prod`, because it can require
 operator-provided media, device permissions, and destructive writes to optical
@@ -105,16 +105,16 @@ media.
 This lane validates the optical service boundary. The full workflow checks stand
 up fixture-backed API, storage, session, and restore state inside the test
 process; the real opt-in capability is the optical device. The lane fails if
-any `ARC_DISC_*_FACTORY` override is configured.
+any `DJDAN_*_FACTORY` override is configured.
 
 Read-only mounted-media validation requires a mounted disc or mounted ISO
 filesystem containing one known recovery payload object:
 
 ```bash
-export ARC_DISC_CI_OPT_IN_MOUNT_PATH=/media/archive-disc
-export ARC_DISC_CI_OPT_IN_PAYLOAD_PATH=disc/000001.bin
-export ARC_DISC_CI_OPT_IN_EXPECTED_SHA256=<sha256-of-disc/000001.bin>
-make ci-opt-in-arc-disc
+export DJDAN_CI_OPT_IN_MOUNT_PATH=/media/archive-disc
+export DJDAN_CI_OPT_IN_PAYLOAD_PATH=disc/000001.bin
+export DJDAN_CI_OPT_IN_EXPECTED_SHA256=<sha256-of-disc/000001.bin>
+make ci-opt-in-djdan
 ```
 
 Read-only raw-device validation uses `xorriso` to extract the same object from
@@ -122,10 +122,10 @@ an inserted optical disc. It can share the payload path and expected digest from
 the mounted-media variables, or use raw-device-specific overrides:
 
 ```bash
-export ARC_DISC_CI_OPT_IN_RAW_DEVICE=/dev/sr0
-export ARC_DISC_CI_OPT_IN_RAW_PAYLOAD_PATH=disc/000001.bin
-export ARC_DISC_CI_OPT_IN_RAW_EXPECTED_SHA256=<sha256-of-disc/000001.bin>
-make ci-opt-in-arc-disc
+export DJDAN_CI_OPT_IN_RAW_DEVICE=/dev/sr0
+export DJDAN_CI_OPT_IN_RAW_PAYLOAD_PATH=disc/000001.bin
+export DJDAN_CI_OPT_IN_RAW_EXPECTED_SHA256=<sha256-of-disc/000001.bin>
+make ci-opt-in-djdan
 ```
 
 Destructive burn validation is skipped unless the confirmation variable is set
@@ -134,28 +134,28 @@ it, burns it, then reads the ISO-sized byte range back from the same device and
 compares it to the staged ISO.
 
 ```bash
-export ARC_DISC_CI_OPT_IN_BURN_DEVICE=/dev/sr0
-export ARC_DISC_CI_OPT_IN_BURN_COPY_ID=ci-opt-in-arc-disc-copy
-export ARC_DISC_CI_OPT_IN_BURN_CONFIRM=write-optical-media
-make ci-opt-in-arc-disc
+export DJDAN_CI_OPT_IN_BURN_DEVICE=/dev/sr0
+export DJDAN_CI_OPT_IN_BURN_COPY_ID=ci-opt-in-djdan-copy
+export DJDAN_CI_OPT_IN_BURN_CONFIRM=write-optical-media
+make ci-opt-in-djdan
 ```
 
-Full CLI/API workflow validation is also part of `make ci-opt-in-arc-disc`. These
+Full CLI/API workflow validation is also part of `make ci-opt-in-djdan`. These
 tests create the API state themselves, generate real ISO bytes from fixture image
-roots, run `arc-disc` as a subprocess, burn one real disc, verify it by reading
-the device, and then read that disc back through `arc-disc fetch`. The recovery
+roots, run `djdan` as a subprocess, burn one real disc, verify it by reading
+the device, and then read that disc back through `djdan fetch`. The recovery
 workflow similarly uses a fixture-backed rebuilt ISO endpoint and burns one real
 replacement disc.
 
-The full workflows use `ARC_DISC_CI_OPT_IN_BURN_DEVICE` for both writing and
-reading and skip until the destructive confirmation is set. No `ARC_BASE_URL`,
+The full workflows use `DJDAN_CI_OPT_IN_BURN_DEVICE` for both writing and
+reading and skip until the destructive confirmation is set. No `RIVERHOG_BASE_URL`,
 fetch id, session id, staging directory, prompt input, or factory override is
 needed.
 
 ```bash
-export ARC_DISC_CI_OPT_IN_BURN_DEVICE=/dev/sr0
-export ARC_DISC_CI_OPT_IN_BURN_CONFIRM=write-optical-media
-make ci-opt-in-arc-disc args='-k full'
+export DJDAN_CI_OPT_IN_BURN_DEVICE=/dev/sr0
+export DJDAN_CI_OPT_IN_BURN_CONFIRM=write-optical-media
+make ci-opt-in-djdan args='-k full'
 ```
 
 When a capability is not configured, the corresponding opt-in test skips with
@@ -175,12 +175,12 @@ are readable. It is not part of `make test`, `make spec`, or `make prod`,
 because it can issue real restore requests, depends on account permissions and
 object storage class, and may take hours before restored objects are readable.
 
-Restore validation requires the normal `ARC_GLACIER_*` archive backend
+Restore validation requires the normal `RIVERHOG_GLACIER_*` archive backend
 configuration and explicit restore confirmation:
 
 ```bash
-export ARC_GLACIER_BACKEND=aws
-export ARC_GLACIER_CI_OPT_IN_RESTORE_CONFIRM=request-glacier-restore
+export RIVERHOG_GLACIER_BACKEND=aws
+export RIVERHOG_GLACIER_CI_OPT_IN_RESTORE_CONFIRM=request-glacier-restore
 make ci-opt-in-glacier-restore
 ```
 
@@ -190,7 +190,7 @@ message. Rerun the same command after AWS completes the restore; no object path
 or SHA override is required. If an older object at the stable opt-in key has the
 wrong real S3 storage class, the lane fails with a remediation message instead
 of treating an immediately readable object as a valid Glacier restore. Delete
-the stale object or run with a fresh `ARC_GLACIER_PREFIX`, then rerun the same
+the stale object or run with a fresh `RIVERHOG_GLACIER_PREFIX`, then rerun the same
 command.
 
 ## CI opt-in Glacier-billing validation
@@ -206,8 +206,8 @@ configured account. It skips with explicit reasons when credentials or billing
 capabilities are unavailable, and treats unexpected API errors as regressions.
 
 ```bash
-export ARC_GLACIER_BILLING_CI_OPT_IN_CONFIRM=live-aws-billing
-export ARC_GLACIER_BILLING_MODE=aws
+export RIVERHOG_GLACIER_BILLING_CI_OPT_IN_CONFIRM=live-aws-billing
+export RIVERHOG_GLACIER_BILLING_MODE=aws
 make ci-opt-in-glacier-billing
 ```
 
@@ -215,8 +215,8 @@ To validate live CUR or Data Exports discovery and aggregation, also configure
 the export location:
 
 ```bash
-export ARC_GLACIER_BILLING_EXPORT_BUCKET=<billing-export-bucket>
-export ARC_GLACIER_BILLING_EXPORT_PREFIX=<billing-export-prefix>
+export RIVERHOG_GLACIER_BILLING_EXPORT_BUCKET=<billing-export-bucket>
+export RIVERHOG_GLACIER_BILLING_EXPORT_PREFIX=<billing-export-prefix>
 make ci-opt-in-glacier-billing args='-k export'
 ```
 

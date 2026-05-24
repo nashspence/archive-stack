@@ -33,4 +33,4 @@ RUN pip install --no-cache-dir --require-hashes -r requirements-runtime.txt
 
 COPY src ./src
 
-ENTRYPOINT ["uvicorn", "arc_api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["uvicorn", "riverhog_api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]

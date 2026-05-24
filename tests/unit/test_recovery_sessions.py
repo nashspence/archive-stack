@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from arc_core.catalog_models import (
+from riverhog_core.catalog_models import (
     CollectionArchiveRecord,
     CollectionFileRecord,
     CollectionRecord,
@@ -18,22 +18,22 @@ from arc_core.catalog_models import (
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
 )
-from arc_core.collection_archives import (
+from riverhog_core.collection_archives import (
     CollectionArchiveFile,
     CollectionArchivePackage,
     build_collection_archive_package,
 )
-from arc_core.domain.enums import RecoverySessionState
-from arc_core.domain.errors import InvalidState
-from arc_core.finalized_image_coverage import (
+from riverhog_core.domain.enums import RecoverySessionState
+from riverhog_core.domain.errors import InvalidState
+from riverhog_core.finalized_image_coverage import (
     read_finalized_image_collection_artifacts,
     read_finalized_image_coverage_parts,
 )
-from arc_core.ports.archive_store import ArchiveRestoreStatus
-from arc_core.runtime_config import RuntimeConfig
-from arc_core.services.copies import SqlAlchemyCopyService
-from arc_core.services.recovery_sessions import SqlAlchemyRecoverySessionService
-from arc_core.sqlite_db import initialize_db, make_session_factory, session_scope
+from riverhog_core.ports.archive_store import ArchiveRestoreStatus
+from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.copies import SqlAlchemyCopyService
+from riverhog_core.services.recovery_sessions import SqlAlchemyRecoverySessionService
+from riverhog_core.sqlite_db import initialize_db, make_session_factory, session_scope
 from tests.fixtures.crypto import FixtureProofStamper, FixtureRecoveryPayloadCodec
 from tests.fixtures.data import DOCS_FILES, IMAGE_ONE_FILES, write_tree
 
@@ -402,13 +402,13 @@ def test_recovery_session_processes_ready_and_expired_states(
     copy_service.update("20260420T040001Z", "20260420T040001Z-2", state="lost")
 
     start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
-    monkeypatch.setattr("arc_core.services.recovery_sessions.utcnow", lambda: start)
+    monkeypatch.setattr("riverhog_core.services.recovery_sessions.utcnow", lambda: start)
     approved = recovery_service.approve("rs-20260420T040001Z-rebuild-1")
     assert approved.state == RecoverySessionState.RESTORE_REQUESTED
     assert approved.restore_ready_at == "2026-04-20T04:00:10Z"
 
     monkeypatch.setattr(
-        "arc_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.recovery_sessions.utcnow",
         lambda: start + timedelta(seconds=11),
     )
     assert recovery_service.process_due_sessions() == 1
@@ -417,7 +417,7 @@ def test_recovery_session_processes_ready_and_expired_states(
     assert ready.restore_expires_at == "2026-04-20T04:00:16Z"
 
     monkeypatch.setattr(
-        "arc_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.recovery_sessions.utcnow",
         lambda: start + timedelta(seconds=17),
     )
     assert recovery_service.process_due_sessions() == 1
@@ -454,7 +454,7 @@ def test_collection_restore_requests_and_verifies_manifest_and_proof(
 
     session = recovery_service.create_or_resume_for_collection("docs")
     start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
-    monkeypatch.setattr("arc_core.services.recovery_sessions.utcnow", lambda: start)
+    monkeypatch.setattr("riverhog_core.services.recovery_sessions.utcnow", lambda: start)
     approved = recovery_service.approve(session.id)
 
     assert approved.state == RecoverySessionState.RESTORE_REQUESTED
@@ -507,7 +507,7 @@ def test_collection_restore_materializes_selected_files_to_hot_storage(
 
     session = recovery_service.create_or_resume_for_collection("docs")
     monkeypatch.setattr(
-        "arc_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.recovery_sessions.utcnow",
         lambda: datetime(2026, 4, 20, 4, 0, tzinfo=UTC),
     )
     recovery_service.approve(session.id)
@@ -572,7 +572,7 @@ def test_collection_restore_streams_large_selected_file_to_hot_storage(
 
     session = recovery_service.create_or_resume_for_collection("docs")
     monkeypatch.setattr(
-        "arc_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.recovery_sessions.utcnow",
         lambda: datetime(2026, 4, 20, 4, 0, tzinfo=UTC),
     )
     recovery_service.approve(session.id)
@@ -624,7 +624,7 @@ def test_collection_restore_does_not_materialize_selected_file_with_bad_sha256(
 
     session = recovery_service.create_or_resume_for_collection("docs")
     monkeypatch.setattr(
-        "arc_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.recovery_sessions.utcnow",
         lambda: datetime(2026, 4, 20, 4, 0, tzinfo=UTC),
     )
     recovery_service.approve(session.id)
@@ -672,7 +672,7 @@ def test_collection_restore_rejects_empty_proof_before_completion(
 
     session = recovery_service.create_or_resume_for_collection("docs")
     monkeypatch.setattr(
-        "arc_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.recovery_sessions.utcnow",
         lambda: datetime(2026, 4, 20, 4, 0, tzinfo=UTC),
     )
     recovery_service.approve(session.id)
@@ -715,7 +715,7 @@ def test_collection_restore_rejects_corrupt_archive_before_completion(
 
     session = recovery_service.create_or_resume_for_collection("docs")
     monkeypatch.setattr(
-        "arc_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.recovery_sessions.utcnow",
         lambda: datetime(2026, 4, 20, 4, 0, tzinfo=UTC),
     )
     recovery_service.approve(session.id)
@@ -763,7 +763,7 @@ def test_image_rebuild_verifies_manifest_and_proof_before_streaming_archive(
     def _fake_iso(**kwargs: object):
         yield b"rebuilt-iso"
 
-    monkeypatch.setattr("arc_core.services.recovery_sessions._run_iso_from_root", _fake_iso)
+    monkeypatch.setattr("riverhog_core.services.recovery_sessions._run_iso_from_root", _fake_iso)
 
     chunks = list(
         recovery_service.iter_restored_iso(
@@ -814,12 +814,12 @@ def test_recovery_session_retries_initial_ready_notification_before_reminders(
             raise RuntimeError("HTTP 503")
 
     start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
-    monkeypatch.setattr("arc_core.services.recovery_sessions.utcnow", lambda: start)
-    monkeypatch.setattr("arc_core.services.recovery_sessions.post_webhook", _post_webhook)
+    monkeypatch.setattr("riverhog_core.services.recovery_sessions.utcnow", lambda: start)
+    monkeypatch.setattr("riverhog_core.services.recovery_sessions.post_webhook", _post_webhook)
     recovery_service.approve("rs-20260420T040001Z-rebuild-1")
 
     monkeypatch.setattr(
-        "arc_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.recovery_sessions.utcnow",
         lambda: start + timedelta(seconds=11),
     )
     assert recovery_service.process_due_sessions() == 1
@@ -831,7 +831,7 @@ def test_recovery_session_retries_initial_ready_notification_before_reminders(
     assert attempts == ["images.rebuild_ready"]
 
     monkeypatch.setattr(
-        "arc_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.recovery_sessions.utcnow",
         lambda: start + timedelta(seconds=12),
     )
     assert recovery_service.process_due_sessions() == 1
@@ -880,12 +880,12 @@ def test_recovery_session_retries_initial_ready_notification_before_expiring(
             raise RuntimeError("HTTP 503")
 
     start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
-    monkeypatch.setattr("arc_core.services.recovery_sessions.utcnow", lambda: start)
-    monkeypatch.setattr("arc_core.services.recovery_sessions.post_webhook", _post_webhook)
+    monkeypatch.setattr("riverhog_core.services.recovery_sessions.utcnow", lambda: start)
+    monkeypatch.setattr("riverhog_core.services.recovery_sessions.post_webhook", _post_webhook)
     recovery_service.approve("rs-20260420T040001Z-rebuild-1")
 
     monkeypatch.setattr(
-        "arc_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.recovery_sessions.utcnow",
         lambda: start + timedelta(seconds=11),
     )
     assert recovery_service.process_due_sessions() == 1
@@ -897,7 +897,7 @@ def test_recovery_session_retries_initial_ready_notification_before_expiring(
     assert failed_delivery.restore_expires_at == "2026-04-20T04:00:23Z"
 
     monkeypatch.setattr(
-        "arc_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.recovery_sessions.utcnow",
         lambda: start + timedelta(seconds=22),
     )
     assert recovery_service.process_due_sessions() == 1

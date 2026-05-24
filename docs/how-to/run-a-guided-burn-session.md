@@ -1,8 +1,8 @@
 # Run a guided burn session
 
-The `arc-disc burn` command walks the current burn backlog from the fullest ready image downward.
+The `djdan burn` command walks the current burn backlog from the fullest ready image downward.
 If a finalized image has lost all protected copies, Riverhog tracks that image
-through an `image_rebuild` recovery session instead; `arc-disc burn` reports
+through an `image_rebuild` recovery session instead; `djdan burn` reports
 that handoff and does not treat it as ordinary replacement backlog.
 
 ## Host requirements
@@ -10,7 +10,7 @@ that handoff and does not treat it as ordinary replacement backlog.
 - Install `xorriso` on the operator machine.
 - Run the command as a user that can write to and read from the optical device path, such as `/dev/sr0`.
 - Insert blank writable media when prompted. The default backend burns the staged ISO with `xorriso -as cdrecord`.
-- After burning, keep the same disc available in the drive. `arc-disc` verifies the burned media by reading the first
+- After burning, keep the same disc available in the drive. `djdan` verifies the burned media by reading the first
   ISO-sized byte range back from the device and comparing it to the staged ISO.
 
 ## Flow
@@ -26,13 +26,13 @@ that handoff and does not treat it as ordinary replacement backlog.
 9. Record the storage location and register the copy only after that confirmation.
 10. Repeat until every required copy is finished, then move to the next backlog item.
 
-If the session stops after a burn or burned-media verification but before label confirmation, a later `arc-disc burn`
+If the session stops after a burn or burned-media verification but before label confirmation, a later `djdan burn`
 run first asks whether that unlabeled disc is still available. If it is, the session resumes from the earliest
 unfinished checkpoint for that copy: burned-media verification if the burn was not verified yet, otherwise label
-confirmation. If it is not, `arc-disc burn` discards that local checkpoint and burns a replacement copy instead.
+confirmation. If it is not, `djdan burn` discards that local checkpoint and burns a replacement copy instead.
 Riverhog does not register or count the copy toward coverage until the operator confirms that the disc is labeled.
 
-If the staged ISO is missing or no longer matches the last verified staged copy, `arc-disc burn` downloads the ISO
+If the staged ISO is missing or no longer matches the last verified staged copy, `djdan burn` downloads the ISO
 again before continuing.
 
 Expected failures include a missing `xorriso` executable, insufficient device permissions, non-blank or incompatible
@@ -42,25 +42,25 @@ staged ISO.
 CLI example:
 
 ```bash
-arc-disc burn --device /dev/sr0
+djdan burn --device /dev/sr0
 ```
 
 Optional staging-root example:
 
 ```bash
-arc-disc burn --device /dev/sr0 --staging-dir /operator/arc-disc-staging
+djdan burn --device /dev/sr0 --staging-dir /operator/djdan-staging
 ```
 
 ## Recover an image rebuild session
 
-Use `arc-disc recover` when `arc-disc burn` reports that ordinary backlog is
+Use `djdan recover` when `djdan burn` reports that ordinary backlog is
 clear but image rebuild work remains.
 
-1. Run `arc-disc recover` with no session id to list the active recovery sessions.
-2. Run `arc-disc recover <session-id>` once to approve the restore request if the session is still
+1. Run `djdan recover` with no session id to list the active recovery sessions.
+2. Run `djdan recover <session-id>` once to approve the restore request if the session is still
    `pending_approval`.
 3. Wait until the session reports `ready`.
-4. Run `arc-disc recover <session-id> --device /dev/sr0` to rebuild and stage the
+4. Run `djdan recover <session-id> --device /dev/sr0` to rebuild and stage the
    ISO data from restored collection archives, then burn the needed replacement
    copies.
 5. If that run is interrupted after staging or after partial burn work, run the same command again to resume from the
@@ -69,6 +69,6 @@ clear but image rebuild work remains.
 Examples:
 
 ```bash
-arc-disc recover
-arc-disc recover rs-20260420T040001Z-rebuild-1 --device /dev/sr0
+djdan recover
+djdan recover rs-20260420T040001Z-rebuild-1 --device /dev/sr0
 ```

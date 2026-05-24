@@ -7,8 +7,8 @@ from typing import NoReturn
 import pytest
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
 
-from arc_core.runtime_config import RuntimeConfig, load_runtime_config
-from arc_core.services.glacier_billing import resolve_glacier_billing
+from riverhog_core.runtime_config import RuntimeConfig, load_runtime_config
+from riverhog_core.services.glacier_billing import resolve_glacier_billing
 
 _CONFIRM = "live-aws-billing"
 pytestmark = [
@@ -18,10 +18,10 @@ pytestmark = [
 
 
 def _require_live_billing_confirmation() -> None:
-    if os.environ.get("ARC_GLACIER_BILLING_CI_OPT_IN_CONFIRM") == _CONFIRM:
+    if os.environ.get("RIVERHOG_GLACIER_BILLING_CI_OPT_IN_CONFIRM") == _CONFIRM:
         return
     pytest.skip(
-        "set ARC_GLACIER_BILLING_CI_OPT_IN_CONFIRM=live-aws-billing to run live "
+        "set RIVERHOG_GLACIER_BILLING_CI_OPT_IN_CONFIRM=live-aws-billing to run live "
         "AWS Glacier billing validation"
     )
 
@@ -69,8 +69,8 @@ def test_live_aws_glacier_billing_resolves_configured_export_metadata() -> None:
     config = _config()
     if not config.glacier_billing_export_bucket or not config.glacier_billing_export_prefix:
         pytest.skip(
-            "set ARC_GLACIER_BILLING_EXPORT_BUCKET and "
-            "ARC_GLACIER_BILLING_EXPORT_PREFIX to validate live billing exports"
+            "set RIVERHOG_GLACIER_BILLING_EXPORT_BUCKET and "
+            "RIVERHOG_GLACIER_BILLING_EXPORT_PREFIX to validate live billing exports"
         )
 
     try:

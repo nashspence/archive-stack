@@ -5,8 +5,8 @@ from dataclasses import fields
 from pathlib import Path
 from typing import Protocol
 
-from arc_api.deps import ServiceContainer
-from arc_core.services.contracts import (
+from riverhog_api.deps import ServiceContainer
+from riverhog_core.services.contracts import (
     CollectionService,
     CopyService,
     FetchService,
@@ -84,7 +84,7 @@ LOCKED_HELPER_STATE_ACCESS = {
     "bucket_object_metadata": "reads fixture-backed bucket object metadata directly",
     "bucket_contains_prefix": "reads fixture-backed bucket prefix state directly",
     "uploaded_entry_content": "reads uploaded fetch entry content directly",
-    "configure_arc_disc_fixture": "reads fetch entry content directly before fixture file writes",
+    "configure_djdan_fixture": "reads fetch entry content directly before fixture file writes",
 }
 
 DELEGATED_HELPER_STATE_ACCESS = {
@@ -102,8 +102,8 @@ LIFECYCLE_HELPER_STATE_ACCESS = {
 
 EXTERNAL_CALLS_FORBIDDEN_UNDER_STATE_LOCK = {
     "request",
-    "run_arc",
-    "run_arc_disc",
+    "run_riverhog",
+    "run_djdan",
 }
 
 

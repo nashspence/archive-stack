@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from arc_core.planner.split import leaves, split_collection, tree_plan
+from riverhog_core.planner.split import leaves, split_collection, tree_plan
 
 
 def _piece(piece_index: int, piece_count: int, estimated_on_disc_bytes: int) -> dict[str, int]:
@@ -80,7 +80,7 @@ def test_split_collection_upgrades_a_directory_plan_to_split_when_a_split_node_i
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "arc_core.planner.split.tree_plan",
+        "riverhog_core.planner.split.tree_plan",
         lambda *_args, **_kwargs: [
             {
                 "pieces": [],

@@ -34,14 +34,14 @@ def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
                         "printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\\n' "
                         "\"${COMPOSE_PROJECT_NAME:-}\" "
                         "\"${TEST_COMPOSE_PROJECT_ISOLATED:-}\" "
-                        "\"${ARC_ENABLE_TEST_CONTROL:-}\" "
+                        "\"${RIVERHOG_ENABLE_TEST_CONTROL:-}\" "
                         "\"$*\" "
-                        "\"${ARC_API_PORT:-}\" "
-                        "\"${ARC_WEBDAV_PORT:-}\" "
-                        "\"${ARC_DATABASE_URL:-}\" "
-                        "\"${ARC_TEST_EXTERNAL_APP_DATABASE_URL:-}\" "
-                        "\"${ARC_TEST_WEBHOOK_CAPTURE_PATH:-}\" "
-                        "\"${ARC_TEST_ACCEPTANCE_ROOT:-}\" >> "
+                        "\"${RIVERHOG_API_PORT:-}\" "
+                        "\"${RIVERHOG_WEBDAV_PORT:-}\" "
+                        "\"${RIVERHOG_DATABASE_URL:-}\" "
+                        "\"${RIVERHOG_TEST_EXTERNAL_APP_DATABASE_URL:-}\" "
+                        "\"${RIVERHOG_TEST_WEBHOOK_CAPTURE_PATH:-}\" "
+                        "\"${RIVERHOG_TEST_ACCEPTANCE_ROOT:-}\" >> "
                         f"{log_path}"
                     ),
                     "if [[ \"$*\" == *\" --entrypoint rm \"* ]]; then",
@@ -77,14 +77,14 @@ def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
                         "printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\\n' "
                         "\"${COMPOSE_PROJECT_NAME:-}\" "
                         "\"${TEST_COMPOSE_PROJECT_ISOLATED:-}\" "
-                        "\"${ARC_ENABLE_TEST_CONTROL:-}\" "
+                        "\"${RIVERHOG_ENABLE_TEST_CONTROL:-}\" "
                         "\"$*\" "
-                        "\"${ARC_API_PORT:-}\" "
-                        "\"${ARC_WEBDAV_PORT:-}\" "
-                        "\"${ARC_DATABASE_URL:-}\" "
-                        "\"${ARC_TEST_EXTERNAL_APP_DATABASE_URL:-}\" "
-                        "\"${ARC_TEST_WEBHOOK_CAPTURE_PATH:-}\" "
-                        "\"${ARC_TEST_ACCEPTANCE_ROOT:-}\" >> "
+                        "\"${RIVERHOG_API_PORT:-}\" "
+                        "\"${RIVERHOG_WEBDAV_PORT:-}\" "
+                        "\"${RIVERHOG_DATABASE_URL:-}\" "
+                        "\"${RIVERHOG_TEST_EXTERNAL_APP_DATABASE_URL:-}\" "
+                        "\"${RIVERHOG_TEST_WEBHOOK_CAPTURE_PATH:-}\" "
+                        "\"${RIVERHOG_TEST_ACCEPTANCE_ROOT:-}\" >> "
                         f"{log_path}"
                     ),
                     "if [[ -n \"${FAKE_PGREP_OUTPUT:-}\" ]]; then",
@@ -106,14 +106,14 @@ def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
                         "printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\\n' "
                         "\"${COMPOSE_PROJECT_NAME:-}\" "
                         "\"${TEST_COMPOSE_PROJECT_ISOLATED:-}\" "
-                        "\"${ARC_ENABLE_TEST_CONTROL:-}\" "
+                        "\"${RIVERHOG_ENABLE_TEST_CONTROL:-}\" "
                         "\"$*\" "
-                        "\"${ARC_API_PORT:-}\" "
-                        "\"${ARC_WEBDAV_PORT:-}\" "
-                        "\"${ARC_DATABASE_URL:-}\" "
-                        "\"${ARC_TEST_EXTERNAL_APP_DATABASE_URL:-}\" "
-                        "\"${ARC_TEST_WEBHOOK_CAPTURE_PATH:-}\" "
-                        "\"${ARC_TEST_ACCEPTANCE_ROOT:-}\" >> "
+                        "\"${RIVERHOG_API_PORT:-}\" "
+                        "\"${RIVERHOG_WEBDAV_PORT:-}\" "
+                        "\"${RIVERHOG_DATABASE_URL:-}\" "
+                        "\"${RIVERHOG_TEST_EXTERNAL_APP_DATABASE_URL:-}\" "
+                        "\"${RIVERHOG_TEST_WEBHOOK_CAPTURE_PATH:-}\" "
+                        "\"${RIVERHOG_TEST_ACCEPTANCE_ROOT:-}\" >> "
                         f"{log_path}"
                     ),
                 ]
@@ -201,11 +201,11 @@ def _assert_isolated_prod_runtime(line: str) -> str:
             "python -m pytest -q tests/harness/test_spec_harness.py -k glacier",
         ),
         (
-            "ci-opt-in-arc-disc",
+            "ci-opt-in-djdan",
             ("args=-k mounted_media",),
             "python -m pytest -q -m ci_opt_in and requires_optical_disc_drive "
             "and requires_human_operator "
-            "tests/ci_opt_in/test_arc_disc_real_device.py -k mounted_media",
+            "tests/ci_opt_in/test_djdan_real_device.py -k mounted_media",
         ),
         (
             "ci-opt-in-opentimestamps",
@@ -356,7 +356,7 @@ def test_prod_state_root_is_fixed_to_project_scoped_compose_path() -> None:
         ]
     )
 
-    assert "ARC_TEST_HOST_STATE_ROOT" not in compose_env
+    assert "RIVERHOG_TEST_HOST_STATE_ROOT" not in compose_env
     assert "test_compose_container_state_root" in compose_env
     assert "test_compose_host_state_root" in compose_env
     assert "/app/.compose/%s" in compose_env
@@ -380,7 +380,7 @@ def test_prod_profile_enables_profile_output_and_builds_images(tmp_path: Path) -
     docker_log = "\n".join(log_lines)
     assert " build app" in docker_log
     assert " build test" in docker_log
-    assert " -e ARC_TEST_PROFILE=1 " in docker_log
+    assert " -e RIVERHOG_TEST_PROFILE=1 " in docker_log
     assert " --durations=0 --durations-min=0.5 " in docker_log
     for line in log_lines:
         _assert_isolated_prod_runtime(line)

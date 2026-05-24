@@ -15,8 +15,8 @@ import httpx
 import pytest
 from pytest_bdd import given, parsers, then, when
 
-from arc_core.domain.selectors import parse_target
-from arc_core.fs_paths import normalize_collection_id
+from riverhog_core.domain.selectors import parse_target
+from riverhog_core.fs_paths import normalize_collection_id
 from tests.fixtures.acceptance import AcceptanceSystem
 from tests.fixtures.data import (
     DOCS_COLLECTION_ID,
@@ -93,21 +93,21 @@ def _require_command(context: AcceptanceScenarioContext) -> Any:
 
 
 def _configured_optical_acceptance_device() -> str:
-    return os.environ.get("ARC_DISC_ACCEPTANCE_DEVICE", _DEFAULT_OPTICAL_ACCEPTANCE_DEVICE)
+    return os.environ.get("DJDAN_ACCEPTANCE_DEVICE", _DEFAULT_OPTICAL_ACCEPTANCE_DEVICE)
 
 
-def _run_arc_disc_command(
+def _run_djdan_command(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
     *args: str,
 ) -> None:
-    argv = ["arc-disc", *args]
+    argv = ["djdan", *args]
     acceptance_context.command_text = shlex.join(argv)
     acceptance_context.command_argv = argv
     acceptance_context.stdout_json = None
     acceptance_context.expected_api_endpoint = None
     acceptance_context.expected_api_payload = None
-    acceptance_context.command = acceptance_system.run_arc_disc(*args)
+    acceptance_context.command = acceptance_system.run_djdan(*args)
 
 
 def _require_inspected_iso(context: AcceptanceScenarioContext) -> InspectedIso:
@@ -279,7 +279,9 @@ def _query_params(url: str) -> dict[str, object]:
     }
 
 
-def _arc_option_value(argv: list[str], option: str, default: object | None = None) -> object | None:
+def _riverhog_option_value(
+    argv: list[str], option: str, default: object | None = None
+) -> object | None:
     if option not in argv:
         return default
     index = argv.index(option)
@@ -288,7 +290,7 @@ def _arc_option_value(argv: list[str], option: str, default: object | None = Non
     return _coerce_query_value(argv[index + 1])
 
 
-def _arc_bool_flag(argv: list[str], positive: str, negative: str) -> bool | None:
+def _riverhog_bool_flag(argv: list[str], positive: str, negative: str) -> bool | None:
     if positive in argv:
         return True
     if negative in argv:
@@ -389,12 +391,12 @@ def _ensure_candidate_fixture(
     raise AssertionError(f"unsupported candidate fixture: {candidate_id}")
 
 
-def _prepare_arc_expectation(
+def _prepare_riverhog_expectation(
     acceptance_system: AcceptanceSystem,
     context: AcceptanceScenarioContext,
 ) -> None:
     argv = context.command_argv
-    if not argv or argv[0] != "arc":
+    if not argv or argv[0] != "riverhog":
         return
 
     if argv[1] == "pin":
@@ -427,14 +429,14 @@ def _prepare_arc_expectation(
     if argv[1] == "plan":
         context.expected_api_endpoint = ("GET", "/v1/plan")
         params = {
-            "page": _arc_option_value(argv, "--page", 1),
-            "per_page": _arc_option_value(argv, "--per-page", 25),
-            "sort": _arc_option_value(argv, "--sort", "fill"),
-            "order": _arc_option_value(argv, "--order", "desc"),
+            "page": _riverhog_option_value(argv, "--page", 1),
+            "per_page": _riverhog_option_value(argv, "--per-page", 25),
+            "sort": _riverhog_option_value(argv, "--sort", "fill"),
+            "order": _riverhog_option_value(argv, "--order", "desc"),
         }
-        query = _arc_option_value(argv, "--query")
-        collection = _arc_option_value(argv, "--collection")
-        iso_ready = _arc_bool_flag(argv, "--iso-ready", "--not-ready")
+        query = _riverhog_option_value(argv, "--query")
+        collection = _riverhog_option_value(argv, "--collection")
+        iso_ready = _riverhog_bool_flag(argv, "--iso-ready", "--not-ready")
         if query is not None:
             params["q"] = query
         if collection is not None:
@@ -449,14 +451,14 @@ def _prepare_arc_expectation(
     if argv[1] == "images":
         context.expected_api_endpoint = ("GET", "/v1/images")
         params = {
-            "page": _arc_option_value(argv, "--page", 1),
-            "per_page": _arc_option_value(argv, "--per-page", 25),
-            "sort": _arc_option_value(argv, "--sort", "finalized_at"),
-            "order": _arc_option_value(argv, "--order", "desc"),
+            "page": _riverhog_option_value(argv, "--page", 1),
+            "per_page": _riverhog_option_value(argv, "--per-page", 25),
+            "sort": _riverhog_option_value(argv, "--sort", "finalized_at"),
+            "order": _riverhog_option_value(argv, "--order", "desc"),
         }
-        query = _arc_option_value(argv, "--query")
-        collection = _arc_option_value(argv, "--collection")
-        has_copies = _arc_bool_flag(argv, "--has-copies", "--no-copies")
+        query = _riverhog_option_value(argv, "--query")
+        collection = _riverhog_option_value(argv, "--collection")
+        has_copies = _riverhog_bool_flag(argv, "--has-copies", "--no-copies")
         if query is not None:
             params["q"] = query
         if collection is not None:
@@ -473,7 +475,7 @@ def _prepare_arc_expectation(
     if argv[1] == "glacier":
         context.expected_api_endpoint = ("GET", "/v1/glacier")
         params: dict[str, object] = {}
-        collection = _arc_option_value(argv, "--collection")
+        collection = _riverhog_option_value(argv, "--collection")
         if collection is not None:
             params["collection"] = collection
         context.expected_api_payload = acceptance_system.request(
@@ -486,8 +488,8 @@ def _prepare_arc_expectation(
     if argv[1] == "copy" and argv[2] == "add":
         image_id = argv[3]
         context.expected_api_endpoint = ("POST", f"/v1/images/{image_id}/copies")
-        body: dict[str, object] = {"location": _arc_option_value(argv, "--at")}
-        copy_id = _arc_option_value(argv, "--copy-id")
+        body: dict[str, object] = {"location": _riverhog_option_value(argv, "--at")}
+        copy_id = _riverhog_option_value(argv, "--copy-id")
         if copy_id is not None:
             body["copy_id"] = copy_id
         context.expected_api_payload = acceptance_system.request(
@@ -516,16 +518,16 @@ def _prepare_arc_expectation(
         context.expected_api_payload = acceptance_system.request(
             "PATCH",
             f"/v1/images/{image_id}/copies/{copy_id}",
-            json_body={"location": _arc_option_value(argv, "--to")},
+            json_body={"location": _riverhog_option_value(argv, "--to")},
         ).json()
         return
 
     if argv[1] == "copy" and argv[2] == "mark":
         image_id = argv[3]
         copy_id = argv[4]
-        body: dict[str, object] = {"state": _arc_option_value(argv, "--state")}
-        verification_state = _arc_option_value(argv, "--verification-state")
-        location = _arc_option_value(argv, "--at")
+        body: dict[str, object] = {"state": _riverhog_option_value(argv, "--state")}
+        verification_state = _riverhog_option_value(argv, "--verification-state")
+        location = _riverhog_option_value(argv, "--at")
         if verification_state is not None:
             body["verification_state"] = verification_state
         if location is not None:
@@ -556,8 +558,8 @@ def _prepare_arc_expectation(
         collection_id = argv[2]
         context.expected_api_endpoint = ("GET", f"/v1/collection-files/{collection_id}")
         params = {
-            "page": _arc_option_value(argv, "--page", 1),
-            "per_page": _arc_option_value(argv, "--per-page", 25),
+            "page": _riverhog_option_value(argv, "--page", 1),
+            "per_page": _riverhog_option_value(argv, "--per-page", 25),
         }
         context.expected_api_payload = acceptance_system.request(
             "GET",
@@ -580,15 +582,15 @@ def _prepare_arc_expectation(
         context.expected_api_endpoint = ("GET", "/v1/files")
         params = {
             "target": target,
-            "page": _arc_option_value(argv, "--page", 1),
-            "per_page": _arc_option_value(argv, "--per-page", 25),
+            "page": _riverhog_option_value(argv, "--page", 1),
+            "per_page": _riverhog_option_value(argv, "--per-page", 25),
         }
         context.expected_api_payload = acceptance_system.request(
             "GET", "/v1/files", params=params
         ).json()
         return
 
-    raise AssertionError(f"unsupported arc command: {argv}")
+    raise AssertionError(f"unsupported riverhog command: {argv}")
 
 
 @given("an empty archive")
@@ -904,16 +906,16 @@ def given_fetch_has_partial_upload_in_progress(
 
 @given("a configured optical reader can recover every required entry")
 @when("a configured optical reader can recover every required entry")
-def given_arc_disc_success_fixture(
+def given_djdan_success_fixture(
     acceptance_system: AcceptanceSystem,
 ) -> None:
-    acceptance_system.configure_arc_disc_fixture(fetch_id="fx-1")
+    acceptance_system.configure_djdan_fixture(fetch_id="fx-1")
 
 
 @given("the optical reader fixture fails for one required entry")
 @given("the configured optical reader cannot recover one required entry")
-def given_arc_disc_reader_failure_fixture(acceptance_system: AcceptanceSystem) -> None:
-    acceptance_system.configure_arc_disc_fixture(
+def given_djdan_reader_failure_fixture(acceptance_system: AcceptanceSystem) -> None:
+    acceptance_system.configure_djdan_fixture(
         fetch_id="fx-1",
         fail_path=SPLIT_FILE_RELPATH,
     )
@@ -921,8 +923,8 @@ def given_arc_disc_reader_failure_fixture(acceptance_system: AcceptanceSystem) -
 
 @given("the optical reader fixture returns incorrect recovered bytes for one required entry")
 @given("the configured optical reader returns bytes the server rejects for one required entry")
-def given_arc_disc_server_validation_failure_fixture(acceptance_system: AcceptanceSystem) -> None:
-    acceptance_system.configure_arc_disc_fixture(
+def given_djdan_server_validation_failure_fixture(acceptance_system: AcceptanceSystem) -> None:
+    acceptance_system.configure_djdan_fixture(
         fetch_id="fx-1",
         corrupt_path=SPLIT_FILE_RELPATH,
     )
@@ -932,11 +934,11 @@ def given_arc_disc_server_validation_failure_fixture(acceptance_system: Acceptan
 @when(parsers.parse('the optical reader fixture fails for copy id "{copy_id}"'))
 @given(parsers.parse('the configured optical reader cannot recover copy id "{copy_id}"'))
 @when(parsers.parse('the configured optical reader cannot recover copy id "{copy_id}"'))
-def given_arc_disc_reader_failure_for_copy(
+def given_djdan_reader_failure_for_copy(
     acceptance_system: AcceptanceSystem,
     copy_id: str,
 ) -> None:
-    acceptance_system.configure_arc_disc_fixture(fetch_id="fx-1", fail_copy_ids={copy_id})
+    acceptance_system.configure_djdan_fixture(fetch_id="fx-1", fail_copy_ids={copy_id})
 
 
 @given(
@@ -956,7 +958,7 @@ def given_burn_fixture_confirms_labeled_copy(
     copy_id: str,
     location: str,
 ) -> None:
-    acceptance_system.confirm_arc_disc_burn_copy(copy_id, location=location)
+    acceptance_system.confirm_djdan_burn_copy(copy_id, location=location)
 
 
 @given(parsers.parse('the burn fixture says unlabeled copy id "{copy_id}" is still available'))
@@ -967,7 +969,7 @@ def given_burn_fixture_says_unlabeled_copy_is_available(
     acceptance_system: AcceptanceSystem,
     copy_id: str,
 ) -> None:
-    acceptance_system.set_arc_disc_burn_copy_available(copy_id, available=True)
+    acceptance_system.set_djdan_burn_copy_available(copy_id, available=True)
 
 
 @given(parsers.parse('the burn fixture says unlabeled copy id "{copy_id}" is unavailable'))
@@ -978,7 +980,7 @@ def given_burn_fixture_says_unlabeled_copy_is_unavailable(
     acceptance_system: AcceptanceSystem,
     copy_id: str,
 ) -> None:
-    acceptance_system.set_arc_disc_burn_copy_available(copy_id, available=False)
+    acceptance_system.set_djdan_burn_copy_available(copy_id, available=False)
 
 
 @given(parsers.parse('the burn fixture fails while burning copy id "{copy_id}"'))
@@ -991,7 +993,7 @@ def given_burn_fixture_fails_while_burning_copy(
     acceptance_system: AcceptanceSystem,
     copy_id: str,
 ) -> None:
-    acceptance_system.fail_arc_disc_burn_copy(copy_id)
+    acceptance_system.fail_djdan_burn_copy(copy_id)
 
 
 @given(parsers.parse('the burn fixture fails while verifying burned media for copy id "{copy_id}"'))
@@ -1004,13 +1006,13 @@ def given_burn_fixture_fails_while_verifying_burned_media(
     acceptance_system: AcceptanceSystem,
     copy_id: str,
 ) -> None:
-    acceptance_system.fail_arc_disc_burn_copy_verification(copy_id)
+    acceptance_system.fail_djdan_burn_copy_verification(copy_id)
 
 
 @when("the burn fixture clears all burn failures")
 @when("the optical burn boundary is healthy again")
 def when_burn_fixture_clears_failures(acceptance_system: AcceptanceSystem) -> None:
-    acceptance_system.clear_arc_disc_burn_failures()
+    acceptance_system.clear_djdan_burn_failures()
 
 
 @when(parsers.parse('the staged ISO for image "{image_id}" is corrupted'))
@@ -1018,7 +1020,7 @@ def when_staged_iso_is_corrupted(
     acceptance_system: AcceptanceSystem,
     image_id: str,
 ) -> None:
-    acceptance_system.corrupt_arc_disc_staged_iso(image_id)
+    acceptance_system.corrupt_djdan_staged_iso(image_id)
 
 
 @then(parsers.parse('the staged ISO for image "{image_id}" is absent'))
@@ -1026,7 +1028,7 @@ def then_staged_iso_is_absent(
     acceptance_system: AcceptanceSystem,
     image_id: str,
 ) -> None:
-    assert not acceptance_system.arc_disc_staged_iso_exists(image_id)
+    assert not acceptance_system.djdan_staged_iso_exists(image_id)
 
 
 @given(parsers.parse('fetch "{fetch_id}" exists with entry "{entry_id}"'))
@@ -1736,16 +1738,16 @@ def when_the_client_waits_for_captured_webhook_attempt(
     )
 
 
-@when(parsers.parse('the operator uploads collection source "{collection_id}" with arc'))
+@when(parsers.parse('the operator uploads collection source "{collection_id}" with riverhog'))
 def when_operator_uploads_collection_source(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
 ) -> None:
     source_root = acceptance_system.collection_source_root(collection_id)
-    acceptance_context.command_text = f'arc upload {collection_id} "{source_root}"'
+    acceptance_context.command_text = f'riverhog upload {collection_id} "{source_root}"'
     acceptance_context.command_argv = [
-        "arc",
+        "riverhog",
         "upload",
         collection_id,
         str(source_root),
@@ -1753,7 +1755,7 @@ def when_operator_uploads_collection_source(
     acceptance_context.stdout_json = None
     acceptance_context.expected_api_endpoint = None
     acceptance_context.expected_api_payload = None
-    acceptance_context.command = acceptance_system.run_arc(
+    acceptance_context.command = acceptance_system.run_riverhog(
         "upload",
         collection_id,
         str(acceptance_system.collection_source_root(collection_id)),
@@ -1773,25 +1775,25 @@ def when_operator_runs_command(
     acceptance_context.expected_api_endpoint = None
     acceptance_context.expected_api_payload = None
 
-    if argv[0] == "arc":
-        acceptance_context.command = acceptance_system.run_arc(*argv[1:])
-        _prepare_arc_expectation(acceptance_system, acceptance_context)
+    if argv[0] == "riverhog":
+        acceptance_context.command = acceptance_system.run_riverhog(*argv[1:])
+        _prepare_riverhog_expectation(acceptance_system, acceptance_context)
         return
 
-    if argv[0] == "arc-disc":
-        acceptance_context.command = acceptance_system.run_arc_disc(*argv[1:])
+    if argv[0] == "djdan":
+        acceptance_context.command = acceptance_system.run_djdan(*argv[1:])
         return
 
     raise AssertionError(f"unsupported command: {command}")
 
 
-@when(parsers.parse('the operator runs arc-disc fetch "{fetch_id}"'))
-def when_operator_runs_arc_disc_fetch(
+@when(parsers.parse('the operator runs djdan fetch "{fetch_id}"'))
+def when_operator_runs_djdan_fetch(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
     fetch_id: str,
 ) -> None:
-    _run_arc_disc_command(
+    _run_djdan_command(
         acceptance_system,
         acceptance_context,
         "fetch",
@@ -1801,13 +1803,13 @@ def when_operator_runs_arc_disc_fetch(
     )
 
 
-@when(parsers.parse('the operator runs arc-disc fetch "{fetch_id}" with JSON output'))
-def when_operator_runs_arc_disc_fetch_json(
+@when(parsers.parse('the operator runs djdan fetch "{fetch_id}" with JSON output'))
+def when_operator_runs_djdan_fetch_json(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
     fetch_id: str,
 ) -> None:
-    _run_arc_disc_command(
+    _run_djdan_command(
         acceptance_system,
         acceptance_context,
         "fetch",
@@ -1818,12 +1820,12 @@ def when_operator_runs_arc_disc_fetch_json(
     )
 
 
-@when("the operator runs arc-disc burn")
-def when_operator_runs_arc_disc_burn(
+@when("the operator runs djdan burn")
+def when_operator_runs_djdan_burn(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
-    _run_arc_disc_command(
+    _run_djdan_command(
         acceptance_system,
         acceptance_context,
         "burn",
@@ -1832,13 +1834,13 @@ def when_operator_runs_arc_disc_burn(
     )
 
 
-@when(parsers.parse('the operator runs arc-disc recover "{session_id}"'))
-def when_operator_runs_arc_disc_recover(
+@when(parsers.parse('the operator runs djdan recover "{session_id}"'))
+def when_operator_runs_djdan_recover(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
     session_id: str,
 ) -> None:
-    _run_arc_disc_command(
+    _run_djdan_command(
         acceptance_system,
         acceptance_context,
         "recover",
@@ -2689,8 +2691,8 @@ def then_bucket_object_records_validated_iso_metadata(
     key: str,
 ) -> None:
     metadata = acceptance_system.bucket_object_metadata(storage=storage, key=key)
-    iso_bytes = metadata.get("arc-iso-bytes")
-    iso_sha256 = metadata.get("arc-iso-sha256")
+    iso_bytes = metadata.get("riverhog-iso-bytes")
+    iso_sha256 = metadata.get("riverhog-iso-sha256")
     assert iso_bytes is not None and int(iso_bytes) > 0
     assert iso_sha256 is not None and re.fullmatch(r"[0-9a-f]{64}", iso_sha256)
 
@@ -2756,8 +2758,8 @@ def then_bucket_object_for_collection_records_archive_metadata(
         storage=storage,
         key=_collection_archive_object_path(acceptance_system, collection_id),
     )
-    archive_bytes = metadata.get("arc-archive-bytes")
-    archive_sha256 = metadata.get("arc-archive-sha256")
+    archive_bytes = metadata.get("riverhog-archive-bytes")
+    archive_sha256 = metadata.get("riverhog-archive-sha256")
     assert archive_bytes is not None and int(archive_bytes) > 0
     assert archive_sha256 is not None and re.fullmatch(r"[0-9a-f]{64}", archive_sha256)
 
@@ -3537,7 +3539,7 @@ def then_stdout_exposes_glacier_billing_resource_level_and_manifest_metadata(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     params: dict[str, object] = {}
-    collection = _arc_option_value(acceptance_context.command_argv, "--collection")
+    collection = _riverhog_option_value(acceptance_context.command_argv, "--collection")
     if collection is not None:
         params["collection"] = collection
     payload = acceptance_system.request("GET", "/v1/glacier", params=params).json()
@@ -3844,7 +3846,7 @@ def then_fetch_manifest_part_hashes_match_fixture(
     assert [part["sha256"] for part in entry["parts"]] == [
         hashlib.sha256(part).hexdigest() for part in SPLIT_FILE_PARTS
     ]
-    if os.environ.get("ARC_TEST_CANONICAL_ENTRYPOINT") == "1":
+    if os.environ.get("RIVERHOG_TEST_CANONICAL_ENTRYPOINT") == "1":
         assert all(part["recovery_bytes"] > part["bytes"] for part in entry["parts"])
         assert all(
             re.fullmatch(r"[0-9a-f]{64}", part["copies"][0]["recovery_sha256"])
@@ -4112,7 +4114,7 @@ def then_current_iso_readme_documents_split_recovery(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     readme = _require_inspected_iso(acceptance_context).readme
-    assert "arc-disc" in readme
+    assert "djdan" in readme
     assert "DISC.yml.age" in readme
     assert "multiple discs" in readme
 

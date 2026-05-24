@@ -11,7 +11,7 @@ coverage, pins, fetches, upload state, and hot presence across service restarts.
 ## Upload staging
 
 Collection ingest and fetch recovery both stream bytes through Riverhog-managed
-tus-compatible upload resources. Incomplete bytes stage under `.arc/uploads/`
+tus-compatible upload resources. Incomplete bytes stage under `.riverhog/uploads/`
 inside the S3-compatible object store and remain outside the committed hot
 namespace until Riverhog verifies them.
 
@@ -28,7 +28,7 @@ Committed hot files live in one collection-shaped object namespace:
 collections/{collection_id}/{path}
 ```
 
-Only promoted, verified files count as hot. Staged upload keys and other `.arc/`
+Only promoted, verified files count as hot. Staged upload keys and other `.riverhog/`
 paths are not committed hot files.
 
 Promotion happens after collection Glacier archiving succeeds. A collection still
@@ -47,7 +47,7 @@ artifacts and do not define the cloud archive unit.
 ## Read-only browsing
 
 Read-only WebDAV exposes the committed `collections/` namespace for day-to-day
-browsing and download. It must not expose `.arc/`, and it is never an upload
+browsing and download. It must not expose `.riverhog/`, and it is never an upload
 surface.
 
 ## Why pins exist
@@ -69,7 +69,7 @@ from storage mutations.
 4. If some bytes are archived but not hot, Riverhog can either guide optical
    recovery from verified physical copies or start a Glacier collection-restore
    session for the selected collection content.
-5. The server stages the uploaded recovery bytes under `.arc/uploads/`, verifies
+5. The server stages the uploaded recovery bytes under `.riverhog/uploads/`, verifies
    and decrypts them, then promotes the recovered logical file into
    `collections/{collection_id}/{path}`.
 6. The explicit pin remains active after fetch completion, and the satisfied fetch manifest remains readable until

@@ -4,7 +4,7 @@ Riverhog uses the same resumable-upload lifecycle for collection ingest and fetc
 
 - the JSON API binds uploads to a server-owned domain resource
 - the returned upload resource uses tus-compatible resumable upload semantics within the contract published for that workflow
-- incomplete bytes stage under `.arc/uploads/` rather than appearing immediately as committed hot files
+- incomplete bytes stage under `.riverhog/uploads/` rather than appearing immediately as committed hot files
 - Riverhog promotes staged collection bytes to `collections/{collection_id}/{path}`
   only after file verification and collection Glacier archive verification
 - upload state survives service restart until `INCOMPLETE_UPLOAD_TTL` expires
@@ -84,10 +84,10 @@ Fetch uploads measure offsets against the ordered recovery-byte stream for that 
 expose Riverhog-managed tus-compatible `HEAD`/`PATCH`/`DELETE`/`OPTIONS` semantics on the published `upload_url`.
 Once the recovery-byte stream reaches full length, the manifest entry becomes `byte_complete`; it does not become
 `uploaded` until `POST /v1/fetches/{fetch_id}/complete` verifies and materializes the recovered logical file.
-Split files still use one upload resource per logical file; `arc-disc` streams parts into that one resource in
+Split files still use one upload resource per logical file; `djdan` streams parts into that one resource in
 ascending order.
 
 When `complete` rejects `byte_complete` recovery bytes, the canonical operator recovery path is an explicit
-`DELETE` of the affected fetch-entry upload resource before retry. `arc-disc fetch` performs that reset for entries it
+`DELETE` of the affected fetch-entry upload resource before retry. `djdan fetch` performs that reset for entries it
 has made byte-complete, reports that the fetch remains active and incomplete, and lets the next attempt start from offset
 `0` with another registered copy or with media restored through the Glacier recovery workflow.

@@ -1,6 +1,6 @@
 # Configuration Reference
 
-## `ARC_OBJECT_STORE`
+## `RIVERHOG_OBJECT_STORE`
 
 - type: enum
 - default: `s3`
@@ -9,19 +9,19 @@ Selects the committed hot-storage adapter. The active contract is one
 S3-compatible object store for committed hot files and incomplete upload
 staging.
 
-## `ARC_S3_ENDPOINT_URL`
+## `RIVERHOG_S3_ENDPOINT_URL`
 
 - type: URL
 
 Base URL for the S3-compatible object-store API.
 
-## `ARC_S3_REGION`
+## `RIVERHOG_S3_REGION`
 
 - type: string
 
 Region sent to the S3-compatible object-store client.
 
-## `ARC_S3_BUCKET`
+## `RIVERHOG_S3_BUCKET`
 
 - type: string
 
@@ -36,75 +36,75 @@ collections/{collection_id}/{path}
 Incomplete staged uploads live at:
 
 ```text
-.arc/uploads/{upload_id}
+.riverhog/uploads/{upload_id}
 ```
 
-## `ARC_S3_ACCESS_KEY_ID`
+## `RIVERHOG_S3_ACCESS_KEY_ID`
 
 - type: string
 
 Access key used for the S3-compatible object store.
 
-## `ARC_S3_SECRET_ACCESS_KEY`
+## `RIVERHOG_S3_SECRET_ACCESS_KEY`
 
 - type: secret string
 
 Secret key used for the S3-compatible object store.
 
-## `ARC_S3_FORCE_PATH_STYLE`
+## `RIVERHOG_S3_FORCE_PATH_STYLE`
 
 - type: boolean
 - default: implementation-defined; `true` for canonical Garage deployments
 
 Enables path-style S3 requests for backends that require them.
 
-## `ARC_GLACIER_ENDPOINT_URL`
+## `RIVERHOG_GLACIER_ENDPOINT_URL`
 
 - type: URL
-- default: `ARC_S3_ENDPOINT_URL`
+- default: `RIVERHOG_S3_ENDPOINT_URL`
 
 Base URL for the archive-upload object-store API.
 
-## `ARC_GLACIER_REGION`
+## `RIVERHOG_GLACIER_REGION`
 
 - type: string
-- default: `ARC_S3_REGION`
+- default: `RIVERHOG_S3_REGION`
 
 Region sent to the archive-upload object-store client.
 
-## `ARC_GLACIER_BUCKET`
+## `RIVERHOG_GLACIER_BUCKET`
 
 - type: string
-- default: `ARC_S3_BUCKET`
+- default: `RIVERHOG_S3_BUCKET`
 
 Bucket holding collection-native Glacier archive packages.
 
-When this differs from `ARC_S3_BUCKET`, that separate archive bucket must publish
+When this differs from `RIVERHOG_S3_BUCKET`, that separate archive bucket must publish
 the same abort-incomplete-multipart lifecycle rule as the committed hot-store
 bucket.
 
-## `ARC_GLACIER_ACCESS_KEY_ID`
+## `RIVERHOG_GLACIER_ACCESS_KEY_ID`
 
 - type: string
-- default: `ARC_S3_ACCESS_KEY_ID`
+- default: `RIVERHOG_S3_ACCESS_KEY_ID`
 
 Access key used for Glacier uploads.
 
-## `ARC_GLACIER_SECRET_ACCESS_KEY`
+## `RIVERHOG_GLACIER_SECRET_ACCESS_KEY`
 
 - type: secret string
-- default: `ARC_S3_SECRET_ACCESS_KEY`
+- default: `RIVERHOG_S3_SECRET_ACCESS_KEY`
 
 Secret key used for Glacier uploads.
 
-## `ARC_GLACIER_FORCE_PATH_STYLE`
+## `RIVERHOG_GLACIER_FORCE_PATH_STYLE`
 
 - type: boolean
-- default: `ARC_S3_FORCE_PATH_STYLE`
+- default: `RIVERHOG_S3_FORCE_PATH_STYLE`
 
 Enables path-style requests for Glacier-upload backends that require them.
 
-## `ARC_GLACIER_PREFIX`
+## `RIVERHOG_GLACIER_PREFIX`
 
 - type: normalized path prefix
 - default: `glacier`
@@ -120,21 +120,21 @@ glacier/collections/{collection_id_hash}/manifest.yml.ots
 The hash segment is derived from the canonical collection id. These keys must
 not embed raw collection ids or logical file paths.
 
-## `ARC_GLACIER_BACKEND`
+## `RIVERHOG_GLACIER_BACKEND`
 
 - type: string
 - default: `s3`
 
 Opaque backend label recorded on collection Glacier summaries.
 
-## `ARC_GLACIER_STORAGE_CLASS`
+## `RIVERHOG_GLACIER_STORAGE_CLASS`
 
 - type: string
 - default: `DEEP_ARCHIVE`
 
 Intended Glacier storage class recorded on collection Glacier summaries.
 
-## `ARC_OTS_STAMP_COMMAND`
+## `RIVERHOG_OTS_STAMP_COMMAND`
 
 - type: shell command
 - default: `ots`
@@ -143,13 +143,13 @@ Command prefix used for production OpenTimestamps proof creation. Riverhog
 invokes this command as:
 
 ```text
-{ARC_OTS_STAMP_COMMAND} stamp <manifest-path>
+{RIVERHOG_OTS_STAMP_COMMAND} stamp <manifest-path>
 ```
 
 The command must create `<manifest-path>.ots`. Live external anchoring coverage is
 outside default deterministic CI and runs through `make ci-opt-in-opentimestamps`.
 
-## `ARC_OTS_VERIFY_COMMAND`
+## `RIVERHOG_OTS_VERIFY_COMMAND`
 
 - type: shell command
 - default: `ots`
@@ -158,7 +158,7 @@ Command prefix used for production OpenTimestamps proof verification. Riverhog
 invokes this command as:
 
 ```text
-{ARC_OTS_VERIFY_COMMAND} verify <manifest-path>.ots -f <manifest-path>
+{RIVERHOG_OTS_VERIFY_COMMAND} verify <manifest-path>.ots -f <manifest-path>
 ```
 
 Collection archive restore and recovery verification first checks the stored
@@ -166,7 +166,7 @@ proof object's SHA-256, then runs OpenTimestamps verification against the
 expected manifest bytes. Live calendar access remains outside default
 deterministic CI and is covered by `make ci-opt-in-opentimestamps`.
 
-## `ARC_RECOVERY_PAYLOAD_COMMAND`
+## `RIVERHOG_RECOVERY_PAYLOAD_COMMAND`
 
 - type: shell command
 - default: `age`
@@ -175,14 +175,14 @@ Command prefix used for production recovery payload encryption and decryption.
 Riverhog invokes the command with the age batchpass plugin:
 
 ```text
-{ARC_RECOVERY_PAYLOAD_COMMAND} -e -j batchpass
-{ARC_RECOVERY_PAYLOAD_COMMAND} -d -j batchpass
+{RIVERHOG_RECOVERY_PAYLOAD_COMMAND} -e -j batchpass
+{RIVERHOG_RECOVERY_PAYLOAD_COMMAND} -d -j batchpass
 ```
 
 The command must be age 1.3 or newer, or another compatible age command with
 `age-plugin-batchpass` available on `PATH`.
 
-## `ARC_RECOVERY_PAYLOAD_PASSPHRASE`
+## `RIVERHOG_RECOVERY_PAYLOAD_PASSPHRASE`
 
 - type: secret string
 - default: development-only passphrase
@@ -195,19 +195,19 @@ The checked-in default value is only for local development and deterministic tes
 harnesses. Do not use `archive-stack-dev-recovery-passphrase` for deployed
 archives.
 
-## `ARC_RECOVERY_PAYLOAD_REQUIRE_EXPLICIT_PASSPHRASE`
+## `RIVERHOG_RECOVERY_PAYLOAD_REQUIRE_EXPLICIT_PASSPHRASE`
 
 - type: boolean
 - default: `false`
 
 When `true`, startup rejects configurations where
-`ARC_RECOVERY_PAYLOAD_PASSPHRASE` is missing or still set to the checked-in
+`RIVERHOG_RECOVERY_PAYLOAD_PASSPHRASE` is missing or still set to the checked-in
 development default. Production deployments should set this to `true` and supply
-`ARC_RECOVERY_PAYLOAD_PASSPHRASE` explicitly from secrets management. Local and
+`RIVERHOG_RECOVERY_PAYLOAD_PASSPHRASE` explicitly from secrets management. Local and
 deterministic harness runs can leave it `false` to keep the checked-in test
 passphrase usable.
 
-## `ARC_RECOVERY_PAYLOAD_WORK_FACTOR`
+## `RIVERHOG_RECOVERY_PAYLOAD_WORK_FACTOR`
 
 - type: integer, `1..30`
 - default: `18`
@@ -215,7 +215,7 @@ passphrase usable.
 Scrypt work factor supplied during encryption through
 `AGE_PASSPHRASE_WORK_FACTOR`.
 
-## `ARC_RECOVERY_PAYLOAD_MAX_WORK_FACTOR`
+## `RIVERHOG_RECOVERY_PAYLOAD_MAX_WORK_FACTOR`
 
 - type: integer, `1..30`
 - default: `30`
@@ -223,7 +223,7 @@ Scrypt work factor supplied during encryption through
 Maximum accepted scrypt work factor during decryption through
 `AGE_PASSPHRASE_MAX_WORK_FACTOR`.
 
-## `ARC_GLACIER_UPLOAD_RETRY_LIMIT`
+## `RIVERHOG_GLACIER_UPLOAD_RETRY_LIMIT`
 
 - type: integer
 - default: `3`
@@ -231,14 +231,14 @@ Maximum accepted scrypt work factor during decryption through
 Maximum number of automatic Glacier upload attempts per collection archive
 package before the upload becomes a persistent failure.
 
-## `ARC_GLACIER_UPLOAD_RETRY_DELAY`
+## `RIVERHOG_GLACIER_UPLOAD_RETRY_DELAY`
 
 - type: duration
 - default: `5m`
 
 Delay between automatic retry attempts for one failed Glacier upload.
 
-## `ARC_GLACIER_UPLOAD_SWEEP_INTERVAL`
+## `RIVERHOG_GLACIER_UPLOAD_SWEEP_INTERVAL`
 
 - type: duration
 - default: `30s`
@@ -249,7 +249,7 @@ uploads, retries, and restart-recovered work.
 Restart-recovered work resumes one durable job record. It does not resume one
 interrupted multipart byte stream inside the remote object store.
 
-## `ARC_GLACIER_FAILURE_WEBHOOK_URL`
+## `RIVERHOG_GLACIER_FAILURE_WEBHOOK_URL`
 
 - type: URL
 - default: unset
@@ -260,7 +260,7 @@ reaches persistent failure after automatic retries.
 The payload includes the `collection_id`, archive package object paths, failure
 timestamp, attempt count, and error context.
 
-## `ARC_GLACIER_RECOVERY_SWEEP_INTERVAL`
+## `RIVERHOG_GLACIER_RECOVERY_SWEEP_INTERVAL`
 
 - type: duration
 - default: `30s`
@@ -268,7 +268,7 @@ timestamp, attempt count, and error context.
 How often Riverhog scans for due Glacier recovery-session transitions such as
 restore-ready and expiry cleanup.
 
-## `ARC_GLACIER_RECOVERY_RESTORE_LATENCY`
+## `RIVERHOG_GLACIER_RECOVERY_RESTORE_LATENCY`
 
 - type: duration
 - default: `48h`
@@ -278,7 +278,7 @@ session waits for archive restore completion. Real readiness is driven by the
 archive object's restore/readability status when a production archive store is
 configured.
 
-## `ARC_GLACIER_RECOVERY_READY_TTL`
+## `RIVERHOG_GLACIER_RECOVERY_READY_TTL`
 
 - type: duration
 - default: `24h`
@@ -287,12 +287,12 @@ How long Riverhog keeps restored Standard-storage collection archive data or
 rebuilt ISO staging data available after the archive becomes ready before
 automatic cleanup expires that recovery session.
 
-When `ARC_GLACIER_RECOVERY_WEBHOOK_URL` is configured, this value must be at
+When `RIVERHOG_GLACIER_RECOVERY_WEBHOOK_URL` is configured, this value must be at
 least Riverhog's fixed 10-second outbound recovery-webhook timeout plus
-`ARC_GLACIER_RECOVERY_WEBHOOK_RETRY_DELAY` so one failed ready notification can
+`RIVERHOG_GLACIER_RECOVERY_WEBHOOK_RETRY_DELAY` so one failed ready notification can
 still be retried before cleanup.
 
-## `ARC_GLACIER_RECOVERY_WEBHOOK_URL`
+## `RIVERHOG_GLACIER_RECOVERY_WEBHOOK_URL`
 
 - type: URL
 - default: unset
@@ -301,18 +301,18 @@ Optional webhook endpoint notified when restored collection archive data or imag
 rebuild staging data becomes ready and when reminders are sent before cleanup
 expiry.
 
-## `ARC_GLACIER_RECOVERY_WEBHOOK_RETRY_DELAY`
+## `RIVERHOG_GLACIER_RECOVERY_WEBHOOK_RETRY_DELAY`
 
 - type: duration
 - default: `60s`
 
 Delay before Riverhog retries a failed recovery-ready webhook delivery.
 
-With `ARC_GLACIER_RECOVERY_WEBHOOK_URL` configured, Riverhog rejects startup if
-`ARC_GLACIER_RECOVERY_READY_TTL` is shorter than the fixed 10-second outbound
+With `RIVERHOG_GLACIER_RECOVERY_WEBHOOK_URL` configured, Riverhog rejects startup if
+`RIVERHOG_GLACIER_RECOVERY_READY_TTL` is shorter than the fixed 10-second outbound
 recovery-webhook timeout plus this retry delay.
 
-## `ARC_GLACIER_RECOVERY_WEBHOOK_REMINDER_INTERVAL`
+## `RIVERHOG_GLACIER_RECOVERY_WEBHOOK_REMINDER_INTERVAL`
 
 - type: duration
 - default: `1h`
@@ -321,7 +321,7 @@ Interval between repeated ready reminders while restored collection archive data
 or image rebuild staging data remains available and the recovery session is
 still incomplete.
 
-## `ARC_GLACIER_RECOVERY_RETRIEVAL_TIER`
+## `RIVERHOG_GLACIER_RECOVERY_RETRIEVAL_TIER`
 
 - type: enum
 - default: `bulk`
@@ -333,7 +333,7 @@ Allowed values:
 - `bulk`
 - `standard`
 
-## `ARC_GLACIER_RECOVERY_RESTORE_MODE`
+## `RIVERHOG_GLACIER_RECOVERY_RESTORE_MODE`
 
 - type: enum
 - default: `auto`
@@ -347,7 +347,7 @@ Allowed values:
   restore APIs.
 - `aws` — always use AWS S3 restore semantics for archived objects.
 
-## `ARC_GLACIER_BULK_RETRIEVAL_RATE_USD_PER_GIB`
+## `RIVERHOG_GLACIER_BULK_RETRIEVAL_RATE_USD_PER_GIB`
 
 - type: number
 - default: `0.0025`
@@ -355,7 +355,7 @@ Allowed values:
 Manual per-GiB rate used when Riverhog estimates bulk Glacier retrieval cost
 for one recovery session.
 
-## `ARC_GLACIER_BULK_REQUEST_RATE_USD_PER_1000`
+## `RIVERHOG_GLACIER_BULK_REQUEST_RATE_USD_PER_1000`
 
 - type: number
 - default: `0.025`
@@ -363,7 +363,7 @@ for one recovery session.
 Manual request-fee rate used when Riverhog estimates bulk Glacier restore
 request charges for one recovery session.
 
-## `ARC_GLACIER_STANDARD_RETRIEVAL_RATE_USD_PER_GIB`
+## `RIVERHOG_GLACIER_STANDARD_RETRIEVAL_RATE_USD_PER_GIB`
 
 - type: number
 - default: `0.02`
@@ -371,7 +371,7 @@ request charges for one recovery session.
 Manual per-GiB rate used when Riverhog estimates standard Glacier retrieval
 cost for one recovery session.
 
-## `ARC_GLACIER_STANDARD_REQUEST_RATE_USD_PER_1000`
+## `RIVERHOG_GLACIER_STANDARD_REQUEST_RATE_USD_PER_1000`
 
 - type: number
 - default: `0.10`
@@ -379,7 +379,7 @@ cost for one recovery session.
 Manual request-fee rate used when Riverhog estimates standard Glacier restore
 request charges for one recovery session.
 
-## `ARC_GLACIER_PRICING_LABEL`
+## `RIVERHOG_GLACIER_PRICING_LABEL`
 
 - type: string
 - default: `aws-s3-us-west-2-public`
@@ -387,7 +387,7 @@ request charges for one recovery session.
 Operator-facing label emitted when Glacier reporting stays on manual pricing or
 falls back from AWS lookup.
 
-## `ARC_GLACIER_PRICING_MODE`
+## `RIVERHOG_GLACIER_PRICING_MODE`
 
 - type: string
 - default: `auto`
@@ -400,7 +400,7 @@ Controls how Riverhog resolves the Glacier storage-rate fields:
   expected S3 pricing terms
 - `manual` skips AWS lookup and always uses the configured values below
 
-## `ARC_GLACIER_PRICING_API_REGION`
+## `RIVERHOG_GLACIER_PRICING_API_REGION`
 
 - type: string
 - default: `us-east-1`
@@ -408,29 +408,29 @@ Controls how Riverhog resolves the Glacier storage-rate fields:
 AWS Region for the Price List Bulk API endpoint. This is the pricing-API Region,
 not the S3 product Region being priced.
 
-## `ARC_GLACIER_PRICING_REGION_CODE`
+## `RIVERHOG_GLACIER_PRICING_REGION_CODE`
 
 - type: string
-- default: `ARC_GLACIER_REGION`
+- default: `RIVERHOG_GLACIER_REGION`
 
 AWS product RegionCode that Riverhog requests when it resolves S3 pricing from
 AWS.
 
-## `ARC_GLACIER_PRICING_CURRENCY_CODE`
+## `RIVERHOG_GLACIER_PRICING_CURRENCY_CODE`
 
 - type: string
 - default: `USD`
 
 CurrencyCode that Riverhog requests when it resolves S3 pricing from AWS.
 
-## `ARC_GLACIER_PRICING_CACHE_TTL`
+## `RIVERHOG_GLACIER_PRICING_CACHE_TTL`
 
 - type: duration
 - default: `24h`
 
 How long one process keeps resolved AWS Glacier pricing before refreshing it.
 
-## `ARC_GLACIER_BILLING_MODE`
+## `RIVERHOG_GLACIER_BILLING_MODE`
 
 - type: string
 - default: `auto`
@@ -443,21 +443,21 @@ forecast for Glacier reporting:
   resolved
 - `disabled` skips AWS billing queries and emits an unavailable billing summary
 
-## `ARC_GLACIER_BILLING_API_REGION`
+## `RIVERHOG_GLACIER_BILLING_API_REGION`
 
 - type: string
 - default: `us-east-1`
 
 AWS Region for Cost Explorer API calls.
 
-## `ARC_GLACIER_BILLING_CURRENCY_CODE`
+## `RIVERHOG_GLACIER_BILLING_CURRENCY_CODE`
 
 - type: string
 - default: `USD`
 
 Currency that Riverhog expects from AWS billing responses.
 
-## `ARC_GLACIER_BILLING_LOOKBACK_MONTHS`
+## `RIVERHOG_GLACIER_BILLING_LOOKBACK_MONTHS`
 
 - type: integer
 - default: `3`
@@ -465,14 +465,14 @@ Currency that Riverhog expects from AWS billing responses.
 How many monthly Cost Explorer actual periods Riverhog requests for Glacier
 reporting.
 
-## `ARC_GLACIER_BILLING_FORECAST_MONTHS`
+## `RIVERHOG_GLACIER_BILLING_FORECAST_MONTHS`
 
 - type: integer
 - default: `1`
 
 How many future monthly Cost Explorer forecast periods Riverhog requests.
 
-## `ARC_GLACIER_BILLING_VIEW_ARN`
+## `RIVERHOG_GLACIER_BILLING_VIEW_ARN`
 
 - type: string
 - default: unset
@@ -481,7 +481,7 @@ Optional AWS billing view ARN that Riverhog passes to
 `GetCostAndUsageWithResources` when resolving bucket-scoped Glacier actuals.
 When unset, Riverhog tries to discover the primary billing view automatically.
 
-## `ARC_GLACIER_BILLING_EXPORT_BUCKET`
+## `RIVERHOG_GLACIER_BILLING_EXPORT_BUCKET`
 
 - type: string
 - default: unset
@@ -489,7 +489,7 @@ When unset, Riverhog tries to discover the primary billing view automatically.
 Optional S3 bucket that stores CUR or Data Exports files for Glacier billing
 drill-down.
 
-## `ARC_GLACIER_BILLING_EXPORT_ARN`
+## `RIVERHOG_GLACIER_BILLING_EXPORT_ARN`
 
 - type: string
 - default: unset
@@ -498,23 +498,23 @@ Optional AWS Data Exports ARN. When set, Riverhog selects the latest
 successful export execution, resolves its manifest, and aggregates every file
 referenced by that manifest.
 
-## `ARC_GLACIER_BILLING_EXPORT_PREFIX`
+## `RIVERHOG_GLACIER_BILLING_EXPORT_PREFIX`
 
 - type: string
 - default: unset
 
-Optional S3 prefix inside `ARC_GLACIER_BILLING_EXPORT_BUCKET` that Riverhog
+Optional S3 prefix inside `RIVERHOG_GLACIER_BILLING_EXPORT_BUCKET` that Riverhog
 scans for the most recent CUR or Data Exports manifest when no explicit export
 ARN is configured.
 
-## `ARC_GLACIER_BILLING_EXPORT_REGION`
+## `RIVERHOG_GLACIER_BILLING_EXPORT_REGION`
 
 - type: string
 - default: `us-east-1`
 
 AWS Region for the S3 bucket that stores CUR or Data Exports billing detail.
 
-## `ARC_GLACIER_BILLING_EXPORT_MAX_ITEMS`
+## `RIVERHOG_GLACIER_BILLING_EXPORT_MAX_ITEMS`
 
 - type: integer
 - default: `10`
@@ -522,25 +522,25 @@ AWS Region for the S3 bucket that stores CUR or Data Exports billing detail.
 Maximum number of aggregated CUR or Data Exports breakdown rows Riverhog emits
 in Glacier billing output.
 
-## `ARC_GLACIER_BILLING_TAG_KEY`
+## `RIVERHOG_GLACIER_BILLING_TAG_KEY`
 
 - type: string
 - default: unset
 
 Optional cost-allocation tag key for Glacier billing scope. When paired with
-`ARC_GLACIER_BILLING_TAG_VALUE`, Riverhog uses tag-scoped Cost Explorer
+`RIVERHOG_GLACIER_BILLING_TAG_VALUE`, Riverhog uses tag-scoped Cost Explorer
 forecast and fallback actuals instead of the broader Amazon S3 service scope.
 The same tag filter is also used for CUR or Data Exports drill-down when
 configured.
 
-## `ARC_GLACIER_BILLING_TAG_VALUE`
+## `RIVERHOG_GLACIER_BILLING_TAG_VALUE`
 
 - type: string
 - default: unset
 
 Optional cost-allocation tag value for Glacier billing scope.
 
-## `ARC_GLACIER_BILLING_INVOICE_ACCOUNT_ID`
+## `RIVERHOG_GLACIER_BILLING_INVOICE_ACCOUNT_ID`
 
 - type: string
 - default: unset
@@ -548,7 +548,7 @@ Optional cost-allocation tag value for Glacier billing scope.
 Optional AWS account ID used for invoice-summary lookup. When unset, Riverhog
 tries to resolve the caller account through STS.
 
-## `ARC_GLACIER_BILLING_INVOICE_MAX_ITEMS`
+## `RIVERHOG_GLACIER_BILLING_INVOICE_MAX_ITEMS`
 
 - type: integer
 - default: `6`
@@ -556,7 +556,7 @@ tries to resolve the caller account through STS.
 Maximum number of AWS invoice summaries Riverhog requests for Glacier billing
 output.
 
-## `ARC_GLACIER_STORAGE_RATE_USD_PER_GIB_MONTH`
+## `RIVERHOG_GLACIER_STORAGE_RATE_USD_PER_GIB_MONTH`
 
 - type: number
 - default: `0.00099`
@@ -564,7 +564,7 @@ output.
 Manual override and fallback for the Glacier storage rate used when Riverhog
 estimates recurring monthly archive cost from measured uploaded bytes.
 
-## `ARC_GLACIER_STANDARD_RATE_USD_PER_GIB_MONTH`
+## `RIVERHOG_GLACIER_STANDARD_RATE_USD_PER_GIB_MONTH`
 
 - type: number
 - default: `0.023`
@@ -572,7 +572,7 @@ estimates recurring monthly archive cost from measured uploaded bytes.
 Manual override and fallback for the S3 Standard storage rate used for the
 8 KiB per-object metadata overhead component in Glacier usage estimates.
 
-## `ARC_GLACIER_ARCHIVED_METADATA_BYTES_PER_OBJECT`
+## `RIVERHOG_GLACIER_ARCHIVED_METADATA_BYTES_PER_OBJECT`
 
 - type: integer
 - default: `32768`
@@ -580,7 +580,7 @@ Manual override and fallback for the S3 Standard storage rate used for the
 Configured Glacier-billed metadata overhead bytes added per archived object when
 Riverhog estimates billable storage.
 
-## `ARC_GLACIER_STANDARD_METADATA_BYTES_PER_OBJECT`
+## `RIVERHOG_GLACIER_STANDARD_METADATA_BYTES_PER_OBJECT`
 
 - type: integer
 - default: `8192`
@@ -588,7 +588,7 @@ Riverhog estimates billable storage.
 Configured S3 Standard-billed metadata overhead bytes added per archived object
 when Riverhog estimates billable storage.
 
-## `ARC_GLACIER_MINIMUM_STORAGE_DURATION_DAYS`
+## `RIVERHOG_GLACIER_MINIMUM_STORAGE_DURATION_DAYS`
 
 - type: integer
 - default: `180`
@@ -598,7 +598,7 @@ reporting. Riverhog emits this as part of the pricing basis but does not fold
 it into recurring monthly storage totals. Riverhog keeps this constant explicit
 instead of resolving it from the price-list API.
 
-## `ARC_TUSD_BASE_URL`
+## `RIVERHOG_TUSD_BASE_URL`
 
 - type: URL
 
@@ -606,30 +606,30 @@ Base URL for the internal `tusd` service that owns resumable staging uploads.
 Riverhog remains the public upload contract and maps logical upload resources to
 internal `tusd` uploads.
 
-## `ARC_TUSD_HOOK_SECRET`
+## `RIVERHOG_TUSD_HOOK_SECRET`
 
 - type: secret string
 
 Shared secret used to authenticate `tusd` hook callbacks. Hooks are
 notifications only; Riverhog's catalog state remains authoritative.
 
-## `ARC_WEBDAV_ENABLED`
+## `RIVERHOG_WEBDAV_ENABLED`
 
 - type: boolean
 - default: `false`
 
 Enables the supported read-only WebDAV browsing surface for committed hot files.
 
-## `ARC_WEBDAV_ADDR`
+## `RIVERHOG_WEBDAV_ADDR`
 
 - type: address
 - default: `127.0.0.1:8080`
 
 Bind address for the read-only WebDAV sidecar when that surface is enabled.
 WebDAV must expose only the committed `collections/` namespace and must not
-expose `.arc/` staging paths.
+expose `.riverhog/` staging paths.
 
-## `ARC_DATABASE_URL`
+## `RIVERHOG_DATABASE_URL`
 
 - type: SQLAlchemy database URL
 - default: `postgresql+psycopg://riverhog:riverhog@127.0.0.1:5432/riverhog`
@@ -637,7 +637,7 @@ expose `.arc/` staging paths.
 This is the catalog database URL used for durable authoritative API state. The
 checked-in Compose stack sets this to the Postgres sidecar at `postgres:5432`.
 
-## `ARC_PUBLIC_BASE_URL`
+## `RIVERHOG_PUBLIC_BASE_URL`
 
 - type: URL
 - default: unset

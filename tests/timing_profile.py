@@ -24,7 +24,7 @@ class _EventStats:
 class _TimingProfile:
     def __init__(self) -> None:
         self._lock = Lock()
-        self.enabled = os.getenv("ARC_TEST_PROFILE") == "1"
+        self.enabled = os.getenv("RIVERHOG_TEST_PROFILE") == "1"
         self._events: dict[str, _EventStats] = defaultdict(_EventStats)
         self._scenario_phases: dict[str, dict[str, float]] = defaultdict(
             lambda: {"setup": 0.0, "call": 0.0, "teardown": 0.0}

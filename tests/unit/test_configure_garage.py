@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from arc_core.runtime_config import RuntimeConfig
+from riverhog_core.runtime_config import RuntimeConfig
 from tests.harness import configure_garage
 
 

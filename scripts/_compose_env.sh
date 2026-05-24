@@ -114,16 +114,16 @@ isolate_test_compose_runtime() {
   local state_root
   state_root="$(test_compose_container_state_root)"
 
-  export ARC_API_PORT=0
-  export ARC_WEBDAV_PORT=0
-  export ARC_DATABASE_URL="$(
+  export RIVERHOG_API_PORT=0
+  export RIVERHOG_WEBDAV_PORT=0
+  export RIVERHOG_DATABASE_URL="$(
     compose_env_value \
-      ARC_DATABASE_URL \
+      RIVERHOG_DATABASE_URL \
       "postgresql+psycopg://riverhog:riverhog@postgres:5432/riverhog"
   )"
-  export ARC_TEST_EXTERNAL_APP_DATABASE_URL="${ARC_DATABASE_URL}"
-  export ARC_TEST_WEBHOOK_CAPTURE_PATH="${state_root}/webhook-captures.jsonl"
-  export ARC_TEST_ACCEPTANCE_ROOT="${state_root}/acceptance"
+  export RIVERHOG_TEST_EXTERNAL_APP_DATABASE_URL="${RIVERHOG_DATABASE_URL}"
+  export RIVERHOG_TEST_WEBHOOK_CAPTURE_PATH="${state_root}/webhook-captures.jsonl"
+  export RIVERHOG_TEST_ACCEPTANCE_ROOT="${state_root}/acceptance"
 }
 
 cleanup_test_compose_runtime() {

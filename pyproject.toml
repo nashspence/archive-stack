@@ -3,9 +3,9 @@ requires = ["hatchling>=1.25.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "arc-mvp-skeleton"
+name = "riverhog-mvp-skeleton"
 version = "0.1.0"
-description = "MVP skeleton for the arc archival API and CLIs"
+description = "MVP skeleton for the riverhog archival API and CLIs"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Proprietary" }
@@ -40,12 +40,12 @@ planner = ["numpy>=2.0,<3.0", "scipy>=1.13,<2.0"]
 db = ["psycopg[binary]>=3.2,<4.0", "sqlalchemy>=2.0,<3.0"]
 
 [project.scripts]
-arc-api = "arc_api.app:main"
-arc = "arc_cli.main:main"
-arc-disc = "arc_disc.main:main"
+riverhog-api = "riverhog_api.app:main"
+riverhog = "riverhog_cli.main:main"
+djdan = "djdan.main:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/arc_api", "src/arc_cli", "src/arc_core", "src/arc_disc"]
+packages = ["src/riverhog_api", "src/riverhog_cli", "src/riverhog_core", "src/djdan"]
 
 [tool.ruff]
 line-length = 100
@@ -82,4 +82,4 @@ markers = [
 [tool.mypy]
 python_version = "3.11"
 strict = true
-packages = ["arc_api", "arc_cli", "arc_core", "arc_disc"]
+packages = ["riverhog_api", "riverhog_cli", "riverhog_core", "djdan"]

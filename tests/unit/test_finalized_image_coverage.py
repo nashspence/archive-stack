@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from arc_core.catalog_models import (
+from riverhog_core.catalog_models import (
     CollectionFileRecord,
     CollectionRecord,
     FinalizedImageCollectionArtifactRecord,
@@ -11,12 +11,12 @@ from arc_core.catalog_models import (
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
 )
-from arc_core.finalized_image_coverage import (
+from riverhog_core.finalized_image_coverage import (
     build_disc_manifest_from_catalog,
     read_finalized_image_coverage_parts,
 )
-from arc_core.planner.manifest import MANIFEST_FILENAME
-from arc_core.sqlite_db import initialize_db, make_session_factory, session_scope
+from riverhog_core.planner.manifest import MANIFEST_FILENAME
+from riverhog_core.sqlite_db import initialize_db, make_session_factory, session_scope
 from tests.fixtures.crypto import FixtureRecoveryPayloadCodec
 from tests.fixtures.data import (
     ALL_COLLECTION_FILES,
@@ -91,7 +91,7 @@ def test_initialize_db_backfills_manifest_topology_and_rebuilds_manifest_bytes(
     _seed_collection_state(sqlite_path, image_root=image_root)
 
     monkeypatch.setattr(
-        "arc_core.finalized_image_coverage._default_recovery_payload_codec",
+        "riverhog_core.finalized_image_coverage._default_recovery_payload_codec",
         lambda: _RECOVERY_CODEC,
     )
     initialize_db(str(sqlite_path))

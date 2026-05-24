@@ -8,8 +8,8 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from arc_core.runtime_config import RuntimeConfig
-from arc_core.services.glacier_billing import resolve_glacier_billing
+from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.glacier_billing import resolve_glacier_billing
 
 
 def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
@@ -104,19 +104,19 @@ def test_resolve_glacier_billing_prefers_bucket_scoped_actuals(
             }
 
     monkeypatch.setattr(
-        "arc_core.services.glacier_billing._create_cost_explorer_client",
+        "riverhog_core.services.glacier_billing._create_cost_explorer_client",
         lambda config: _FakeCostExplorerClient(),
     )
     monkeypatch.setattr(
-        "arc_core.services.glacier_billing._create_billing_client",
+        "riverhog_core.services.glacier_billing._create_billing_client",
         lambda config: _FakeBillingClient(),
     )
     monkeypatch.setattr(
-        "arc_core.services.glacier_billing._resolve_billing_exports",
+        "riverhog_core.services.glacier_billing._resolve_billing_exports",
         lambda config: None,
     )
     monkeypatch.setattr(
-        "arc_core.services.glacier_billing._resolve_invoices",
+        "riverhog_core.services.glacier_billing._resolve_invoices",
         lambda config: None,
     )
 
@@ -194,15 +194,15 @@ def test_resolve_glacier_billing_falls_back_to_tag_scope_when_bucket_actuals_una
             return {"ForecastResultsByTime": []}
 
     monkeypatch.setattr(
-        "arc_core.services.glacier_billing._create_cost_explorer_client",
+        "riverhog_core.services.glacier_billing._create_cost_explorer_client",
         lambda config: _FakeCostExplorerClient(),
     )
     monkeypatch.setattr(
-        "arc_core.services.glacier_billing._resolve_billing_exports",
+        "riverhog_core.services.glacier_billing._resolve_billing_exports",
         lambda config: None,
     )
     monkeypatch.setattr(
-        "arc_core.services.glacier_billing._resolve_invoices",
+        "riverhog_core.services.glacier_billing._resolve_invoices",
         lambda config: None,
     )
 
@@ -276,7 +276,7 @@ def test_resolve_glacier_billing_reads_cur_or_data_exports_breakdowns(
             return {"Body": _Body(gzip.compress(export_csv.encode("utf-8")))}
 
     monkeypatch.setattr(
-        "arc_core.services.glacier_billing._create_billing_s3_client",
+        "riverhog_core.services.glacier_billing._create_billing_s3_client",
         lambda config: _FakeS3Client(),
     )
 
@@ -434,11 +434,11 @@ def test_resolve_glacier_billing_reads_data_exports_execution_manifests(
             return {"Export": {"Name": "glacier-export"}}
 
     monkeypatch.setattr(
-        "arc_core.services.glacier_billing._create_billing_s3_client",
+        "riverhog_core.services.glacier_billing._create_billing_s3_client",
         lambda config: _FakeS3Client(),
     )
     monkeypatch.setattr(
-        "arc_core.services.glacier_billing._create_data_exports_client",
+        "riverhog_core.services.glacier_billing._create_data_exports_client",
         lambda config: _FakeDataExportsClient(),
     )
 
@@ -536,7 +536,7 @@ def test_resolve_glacier_billing_aggregates_multi_entry_zip_objects(
             return {"Body": _Body(archive_buffer.getvalue())}
 
     monkeypatch.setattr(
-        "arc_core.services.glacier_billing._create_billing_s3_client",
+        "riverhog_core.services.glacier_billing._create_billing_s3_client",
         lambda config: _FakeS3Client(),
     )
 
@@ -598,19 +598,19 @@ def test_resolve_glacier_billing_reads_invoice_summaries(
             }
 
     monkeypatch.setattr(
-        "arc_core.services.glacier_billing._create_cost_explorer_client",
+        "riverhog_core.services.glacier_billing._create_cost_explorer_client",
         lambda config: (_ for _ in ()).throw(RuntimeError("ce unavailable")),
     )
     monkeypatch.setattr(
-        "arc_core.services.glacier_billing._create_sts_client",
+        "riverhog_core.services.glacier_billing._create_sts_client",
         lambda config: _FakeStsClient(),
     )
     monkeypatch.setattr(
-        "arc_core.services.glacier_billing._create_invoicing_client",
+        "riverhog_core.services.glacier_billing._create_invoicing_client",
         lambda config: _FakeInvoicingClient(),
     )
     monkeypatch.setattr(
-        "arc_core.services.glacier_billing._resolve_billing_exports",
+        "riverhog_core.services.glacier_billing._resolve_billing_exports",
         lambda config: None,
     )
 

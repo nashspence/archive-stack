@@ -9,13 +9,13 @@ from typing import Any, cast
 
 import pytest
 
-from arc_core.collection_archives import (
+from riverhog_core.collection_archives import (
     CollectionArchiveFile,
     CollectionArchivePackage,
     build_collection_archive_package,
 )
-from arc_core.runtime_config import RuntimeConfig
-from arc_core.stores.s3_archive_store import (
+from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.stores.s3_archive_store import (
     COLLECTION_BYTES_METADATA,
     COLLECTION_SHA256_METADATA,
     S3ArchiveStore,
@@ -125,7 +125,7 @@ def _store_with_client(
     **config_overrides: object,
 ) -> S3ArchiveStore:
     monkeypatch.setattr(
-        "arc_core.stores.s3_archive_store.create_glacier_s3_client",
+        "riverhog_core.stores.s3_archive_store.create_glacier_s3_client",
         lambda config: client,
     )
     return S3ArchiveStore(_config(tmp_path, **config_overrides))
@@ -150,8 +150,8 @@ def test_upload_collection_archive_package_uploads_archive_manifest_and_proof(
     archive_metadata = archive_head["Metadata"]
     assert archive_metadata[COLLECTION_BYTES_METADATA] == str(len(package.archive_bytes))
     assert archive_metadata[COLLECTION_SHA256_METADATA] == package.archive_sha256
-    assert archive_metadata["arc-archive-format"] == "tar"
-    assert archive_metadata["arc-compression"] == "none"
+    assert archive_metadata["riverhog-archive-format"] == "tar"
+    assert archive_metadata["riverhog-compression"] == "none"
 
 
 def test_request_collection_archive_restore_requests_all_package_objects(

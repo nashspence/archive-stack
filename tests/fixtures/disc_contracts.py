@@ -12,9 +12,9 @@ import jsonschema
 import pytest
 import yaml
 
-from arc_core.planner.manifest import MANIFEST_FILENAME, README_FILENAME
-from arc_core.recovery_payloads import CommandAgeBatchpassRecoveryPayloadCodec
-from arc_core.runtime_config import load_runtime_config
+from riverhog_core.planner.manifest import MANIFEST_FILENAME, README_FILENAME
+from riverhog_core.recovery_payloads import CommandAgeBatchpassRecoveryPayloadCodec
+from riverhog_core.runtime_config import load_runtime_config
 from tests.fixtures.data import fixture_decrypt_bytes
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from arc_core.planner.models import PlannerCollection, PlannerFile, PlannerPiece
+from riverhog_core.planner.models import PlannerCollection, PlannerFile, PlannerPiece
 
 
 def test_planner_file_piece_count_reflects_the_number_of_pieces() -> None:

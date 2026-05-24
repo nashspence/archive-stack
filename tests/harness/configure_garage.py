@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 
-from arc_core.runtime_config import load_runtime_config
-from arc_core.stores.s3_support import create_glacier_s3_client, create_s3_client
+from riverhog_core.runtime_config import load_runtime_config
+from riverhog_core.stores.s3_support import create_glacier_s3_client, create_s3_client
 
 EXPECTED_LIFECYCLE_CONFIGURATION = {
     "Rules": [

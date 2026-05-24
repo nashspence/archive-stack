@@ -29,11 +29,11 @@ attrs==26.1.0 \
 boto3==1.42.97 \
     --hash=sha256:2833dbeda3670ea610ad48dff7d27cdc829dbbfcdfbc6b750b673948e949b6f0 \
     --hash=sha256:966e49f0510af9a64057a902b7df53d4348c447de0d3df4cc855dfd85e058fcd
-    # via arc-mvp-skeleton (pyproject.toml)
+    # via riverhog-mvp-skeleton (pyproject.toml)
 boto3-stubs==1.42.97 \
     --hash=sha256:47539eaab612d63b5b828657ee0977237725f7608f19563a2ae7f784042411bc \
     --hash=sha256:f7f4775b0851ff6db0e3fb097064af6437e4de31b797d874a737104998e028c6
-    # via arc-mvp-skeleton (pyproject.toml)
+    # via riverhog-mvp-skeleton (pyproject.toml)
 botocore==1.42.97 \
     --hash=sha256:5c0bb00e32d16ff6d278cc8c9e10dc3672d9c1d569031635ac3c908a60de8310 \
     --hash=sha256:77d2c8ce1bc592d3fbd7c01c35836f4a5b0cac2ca03ccdf6ffc60faa16b5fadc
@@ -167,7 +167,7 @@ coverage==7.13.5 \
 fastapi==0.136.0 \
     --hash=sha256:8793d44ec7378e2be07f8a013cf7f7aa47d6327d0dfe9804862688ec4541a6b4 \
     --hash=sha256:cf08e067cc66e106e102d9ba659463abfac245200752f8a5b7b1e813de4ff73e
-    # via arc-mvp-skeleton (pyproject.toml)
+    # via riverhog-mvp-skeleton (pyproject.toml)
 gherkin-official==29.0.0 \
     --hash=sha256:26967b0d537a302119066742669e0e8b663e632769330be675457ae993e1d1bc \
     --hash=sha256:dbea32561158f02280d7579d179b019160d072ce083197625e2f80a6776bb9eb
@@ -254,7 +254,7 @@ httpcore==1.0.9 \
 httpx==0.28.1 \
     --hash=sha256:75e98c5f16b0f35b567856f597f06ff2270a374470a5c2392242528e3e3e42fc \
     --hash=sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad
-    # via arc-mvp-skeleton (pyproject.toml)
+    # via riverhog-mvp-skeleton (pyproject.toml)
 idna==3.11 \
     --hash=sha256:771a87f49d9defaf64091e6e6fe9c18d4833f140bd19464795bc32d966ca37ea \
     --hash=sha256:795dafcc9c04ed0c1fb032c2aa73654d8e8c5023a7df64a53f39190ada629902
@@ -274,7 +274,7 @@ jmespath==1.1.0 \
 jsonschema==4.26.0 \
     --hash=sha256:0c26707e2efad8aa1bfc5b7ce170f3fccc2e4918ff85989ba9ffa9facb2be326 \
     --hash=sha256:d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce
-    # via arc-mvp-skeleton (pyproject.toml)
+    # via riverhog-mvp-skeleton (pyproject.toml)
 jsonschema-specifications==2025.9.1 \
     --hash=sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe \
     --hash=sha256:b540987f239e745613c7a9176f3edb72b832a4ac465cf02712288397832b5e8d
@@ -519,7 +519,7 @@ mypy==1.20.1 \
     --hash=sha256:f5b84a79070586e0d353ee07b719d9d0a4aa7c8ee90c0ea97747e98cbe193019 \
     --hash=sha256:f8e945b872a05f4fbefabe2249c0b07b6b194e5e11a86ebee9edf855de09806c \
     --hash=sha256:fba3fb0968a7b48806b0c90f38d39296f10766885a94c83bd21399de1e14eb28
-    # via arc-mvp-skeleton (pyproject.toml)
+    # via riverhog-mvp-skeleton (pyproject.toml)
 mypy-boto3-pricing==1.42.82 \
     --hash=sha256:a28d8ae44fb6fa66c981cabc16304975bbae585df1f0844fac211953e325d211 \
     --hash=sha256:cd9994fc44fc9dcfe82f79693a0a0472d8eed421fd1df4bfd75673abe94eb29e
@@ -606,7 +606,7 @@ numpy==2.4.4 \
     --hash=sha256:fbc356aae7adf9e6336d336b9c8111d390a05df88f1805573ebb0807bd06fd1d \
     --hash=sha256:fcfe2045fd2e8f3cb0ce9d4ba6dba6333b8fa05bb8a4939c908cd43322d14c7e
     # via
-    #   arc-mvp-skeleton (pyproject.toml)
+    #   riverhog-mvp-skeleton (pyproject.toml)
     #   numpy-typing-compat
     #   optype
     #   scipy
@@ -621,7 +621,7 @@ opentimestamps==0.4.5 \
 opentimestamps-client==0.7.2 \
     --hash=sha256:083a08f59c3123682d6742cc57d3e229ed7b3397807638836efe3a949517accb \
     --hash=sha256:84e604d7f76534da4bab61ab62b211a6559aa988da51438408ae7947b0e8b7ba
-    # via arc-mvp-skeleton (pyproject.toml)
+    # via riverhog-mvp-skeleton (pyproject.toml)
 optype==0.17.0 \
     --hash=sha256:31351a1e64d9eba7bf67e14deefb286e85c66458db63c67dd5e26dd72e4664e5 \
     --hash=sha256:8c2d88ff13149454bcf6eb47502f80d288bc542e7238fcc412ac4d222c439397
@@ -653,7 +653,7 @@ pluggy==1.6.0 \
 psycopg==3.3.4 \
     --hash=sha256:b6bbc25ccf05c8fad3b061d9db2ef0909a555171b84b07f29458a447253d679a \
     --hash=sha256:e21207764952cff81b6b8bdacad9a3939f2793367fdac2987b3aac36a651b5bc
-    # via arc-mvp-skeleton (pyproject.toml)
+    # via riverhog-mvp-skeleton (pyproject.toml)
 psycopg-binary==3.3.4 \
     --hash=sha256:018fbed325936da502feb546642c982dcc4b9ffdea32dfef78dbf3b7f7ad4070 \
     --hash=sha256:0579252a1202cd73e4da137a1426e2dae993ae44e757605344282af3a082848c \
@@ -758,7 +758,7 @@ pydantic==2.13.3 \
     --hash=sha256:6db14ac8dfc9a1e57f87ea2c0de670c251240f43cb0c30a5130e9720dc612927 \
     --hash=sha256:af09e9d1d09f4e7fe37145c1f577e1d61ceb9a41924bf0094a36506285d0a84d
     # via
-    #   arc-mvp-skeleton (pyproject.toml)
+    #   riverhog-mvp-skeleton (pyproject.toml)
     #   fastapi
 pydantic-core==2.46.3 \
     --hash=sha256:0087084960f209a9a4af50ecd1fb063d9ad3658c07bb81a7a53f452dacbfb2ba \
@@ -897,17 +897,17 @@ pytest==8.4.2 \
     --hash=sha256:86c0d0b93306b961d58d62a4db4879f27fe25513d4b969df351abdddb3c30e01 \
     --hash=sha256:872f880de3fc3a5bdc88a11b39c9710c3497a547cfa9320bc3c5e62fbf272e79
     # via
-    #   arc-mvp-skeleton (pyproject.toml)
+    #   riverhog-mvp-skeleton (pyproject.toml)
     #   pytest-bdd
     #   pytest-cov
 pytest-bdd==8.1.0 \
     --hash=sha256:2124051e71a05ad7db15296e39013593f72ebf96796e1b023a40e5453c47e5fb \
     --hash=sha256:ef0896c5cd58816dc49810e8ff1d632f4a12019fb3e49959b2d349ffc1c9bfb5
-    # via arc-mvp-skeleton (pyproject.toml)
+    # via riverhog-mvp-skeleton (pyproject.toml)
 pytest-cov==5.0.0 \
     --hash=sha256:4f0764a1219df53214206bf1feea4633c3b558a2925c8b59f144f682861ce652 \
     --hash=sha256:5837b58e9f6ebd335b0f8060eecce69b662415b16dc503883a02f45dfeb14857
-    # via arc-mvp-skeleton (pyproject.toml)
+    # via riverhog-mvp-skeleton (pyproject.toml)
 python-bitcoinlib==0.12.2 \
     --hash=sha256:2f29a9f475f21c12169b3a6cc8820f34f11362d7ff1200a5703dce3e4e903a44 \
     --hash=sha256:c65ab61427c77c38d397bfc431f71d86fd355b453a536496ec3fcb41bd10087d
@@ -990,7 +990,7 @@ pyyaml==6.0.3 \
     --hash=sha256:f7057c9a337546edc7973c0d3ba84ddcdf0daa14533c2065749c9075001090e6 \
     --hash=sha256:fa160448684b4e94d80416c0fa4aac48967a969efe22931448d853ada8baf926 \
     --hash=sha256:fc09d0aa354569bc501d4e787133afc08552722d3ab34836a80547331bb5d4a0
-    # via arc-mvp-skeleton (pyproject.toml)
+    # via riverhog-mvp-skeleton (pyproject.toml)
 referencing==0.37.0 \
     --hash=sha256:381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231 \
     --hash=sha256:44aefc3142c5b842538163acb373e24cce6632bd54bdb01b21ad5863489f50d8
@@ -1139,7 +1139,7 @@ ruff==0.15.11 \
     --hash=sha256:e927cfff503135c558eb581a0c9792264aae9507904eb27809cdcff2f2c847b7 \
     --hash=sha256:f092b21708bf0e7437ce9ada249dfe688ff9a0954fc94abab05dcea7dcd29c33 \
     --hash=sha256:f2ab8427e74a00d93b8bda1307b1e60970d40f304af38bccb218e056c220120d
-    # via arc-mvp-skeleton (pyproject.toml)
+    # via riverhog-mvp-skeleton (pyproject.toml)
 s3transfer==0.16.1 \
     --hash=sha256:61bcd00ccb83b21a0fe7e91a553fff9729d46c83b4e0106e7c314a733891f7c2 \
     --hash=sha256:8e424355754b9ccb32467bdc568edf55be82692ef2002d934b1311dbb3b9e524
@@ -1206,11 +1206,11 @@ scipy==1.17.1 \
     --hash=sha256:f590cd684941912d10becc07325a3eeb77886fe981415660d9265c4c418d0bea \
     --hash=sha256:f8885db0bc2bffa59d5c1b72fad7a6a92d3e80e7257f967dd81abb553a90d293 \
     --hash=sha256:fcb310ddb270a06114bb64bbe53c94926b943f5b7f0842194d585c65eb4edd76
-    # via arc-mvp-skeleton (pyproject.toml)
+    # via riverhog-mvp-skeleton (pyproject.toml)
 scipy-stubs==1.17.1.4 \
     --hash=sha256:cae00c5207aa62ceb4bcadea202d9fbbf002e958f9e4de981720436b8d5c1802 \
     --hash=sha256:e6e5c390fb864745bc3d5f591de81f5cb4f84403857d4f660acb5b6339956f5b
-    # via arc-mvp-skeleton (pyproject.toml)
+    # via riverhog-mvp-skeleton (pyproject.toml)
 shellingham==1.5.4 \
     --hash=sha256:7ecfff8f2fd72616f7481040475a65b2bf8af90a56c89140852d1120324e8686 \
     --hash=sha256:8dbca0739d487e5bd35ab3ca4b36e11c4078f3a234bfce294b0a0291363404de
@@ -1289,7 +1289,7 @@ sqlalchemy==2.0.49 \
     --hash=sha256:e06e617e3d4fd9e51d385dfe45b077a41e9d1b033a7702551e3278ac597dc750 \
     --hash=sha256:ec44cfa7ef1a728e88ad41674de50f6db8cfdb3e2af84af86e0041aaf02d43d0 \
     --hash=sha256:fb37f15714ec2652d574f021d479e78cd4eb9d04396dca36568fdfffb3487982
-    # via arc-mvp-skeleton (pyproject.toml)
+    # via riverhog-mvp-skeleton (pyproject.toml)
 starlette==1.0.0 \
     --hash=sha256:6a4beaf1f81bb472fd19ea9b918b50dc3a77a6f2e190a12954b25e6ed5eea149 \
     --hash=sha256:d3ec55e0bb321692d275455ddfd3df75fff145d009685eb40dc91fc66b03d38b
@@ -1346,7 +1346,7 @@ tomli==2.4.1 \
 typer==0.24.1 \
     --hash=sha256:112c1f0ce578bfb4cab9ffdabc68f031416ebcc216536611ba21f04e9aa84c9e \
     --hash=sha256:e39b4732d65fbdcde189ae76cf7cd48aeae72919dea1fdfc16593be016256b45
-    # via arc-mvp-skeleton (pyproject.toml)
+    # via riverhog-mvp-skeleton (pyproject.toml)
 types-awscrt==0.31.3 \
     --hash=sha256:09d3eaf00231e0f47e101bd9867e430873bc57040050e2a3bd8305cb4fc30865 \
     --hash=sha256:e5ce65a00a2ab4f35eacc1e3d700d792338d56e4823ee7b4dbe017f94cfc4458
@@ -1354,7 +1354,7 @@ types-awscrt==0.31.3 \
 types-pyyaml==6.0.12.20260408 \
     --hash=sha256:92a73f2b8d7f39ef392a38131f76b970f8c66e4c42b3125ae872b7c93b556307 \
     --hash=sha256:fbc42037d12159d9c801ebfcc79ebd28335a7c13b08a4cfbc6916df78fee9384
-    # via arc-mvp-skeleton (pyproject.toml)
+    # via riverhog-mvp-skeleton (pyproject.toml)
 types-s3transfer==0.16.0 \
     --hash=sha256:1c0cd111ecf6e21437cb410f5cddb631bfb2263b77ad973e79b9c6d0cb24e0ef \
     --hash=sha256:b4636472024c5e2b62278c5b759661efeb52a81851cde5f092f24100b1ecb443
@@ -1391,4 +1391,4 @@ urllib3==2.6.3 \
 uvicorn==0.44.0 \
     --hash=sha256:6c942071b68f07e178264b9152f1f16dfac5da85880c4ce06366a96d70d4f31e \
     --hash=sha256:ce937c99a2cc70279556967274414c087888e8cec9f9c94644dfca11bd3ced89
-    # via arc-mvp-skeleton (pyproject.toml)
+    # via riverhog-mvp-skeleton (pyproject.toml)

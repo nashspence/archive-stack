@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from arc_core.planner.manifest import MANIFEST_FILENAME, README_FILENAME
+from riverhog_core.planner.manifest import MANIFEST_FILENAME, README_FILENAME
 from tests.fixtures.data import IMAGE_FIXTURES, write_tree
 from tests.fixtures.disc_contracts import inspect_fixture_image_root
 

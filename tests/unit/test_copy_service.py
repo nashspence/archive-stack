@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 
-from arc_core.catalog_models import (
+from riverhog_core.catalog_models import (
     CollectionArchiveRecord,
     CollectionFileRecord,
     CollectionRecord,
@@ -15,14 +15,14 @@ from arc_core.catalog_models import (
     GlacierRecoverySessionImageRecord,
     GlacierRecoverySessionRecord,
 )
-from arc_core.domain.enums import CopyState
-from arc_core.finalized_image_coverage import (
+from riverhog_core.domain.enums import CopyState
+from riverhog_core.finalized_image_coverage import (
     read_finalized_image_collection_artifacts,
     read_finalized_image_coverage_parts,
 )
-from arc_core.runtime_config import RuntimeConfig
-from arc_core.services.copies import SqlAlchemyCopyService
-from arc_core.sqlite_db import initialize_db, make_session_factory, session_scope
+from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.copies import SqlAlchemyCopyService
+from riverhog_core.sqlite_db import initialize_db, make_session_factory, session_scope
 from tests.fixtures.crypto import FixtureRecoveryPayloadCodec
 from tests.fixtures.data import DOCS_FILES, IMAGE_ONE_FILES, write_tree
 

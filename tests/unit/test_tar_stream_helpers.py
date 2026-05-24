@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from arc_core.imports.tar_stream import QueueReader, extract_tar_stream, safe_target
+from riverhog_core.imports.tar_stream import QueueReader, extract_tar_stream, safe_target
 
 
 def _tar_bytes() -> bytes:

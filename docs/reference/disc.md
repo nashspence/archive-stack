@@ -143,7 +143,7 @@ For every represented collection:
 
 This lets a person or tool verify reconstructed files against the collection-level manifest after recovery.
 
-## `arc-disc` Expectations
+## `djdan` Expectations
 
 Automated multipart recovery uses the fetch manifest as its recovery contract.
 
@@ -156,13 +156,13 @@ Automated multipart recovery uses the fetch manifest as its recovery contract.
 - resumable recovery state for partially uploaded logical files is managed by the server-side fetch manifest
 - fetch copy hints name the exact payload object to read plus the raw encrypted recovery-byte digest and length expected
   from that object
-- `arc-disc` does not own decryption or final logical-file hash validation; the server does that behind the upload
+- `djdan` does not own decryption or final logical-file hash validation; the server does that behind the upload
   resource as needed
 - any temporary buffering used during recovery is an internal implementation detail
 - the default recovery reader supports mounted optical filesystems directly and raw optical devices through `xorriso`
 - incomplete upload state expires after `INCOMPLETE_UPLOAD_TTL` since the last accepted chunk and the manifest returns to
   `waiting_media`
-- `arc-disc` reports precise progress for the current file and the whole manifest throughout recovery and upload
+- `djdan` reports precise progress for the current file and the whole manifest throughout recovery and upload
 
 Expected multipart flow:
 
@@ -178,7 +178,7 @@ Expected multipart flow:
 
 ## Guided Burn Sessions
 
-`arc-disc burn` is the guided workflow for clearing the current finalized-image burn backlog.
+`djdan burn` is the guided workflow for clearing the current finalized-image burn backlog.
 
 - the burn backlog includes ready provisional candidates plus finalized images whose required copy backlog is not yet
   complete while at least one protected copy still exists or every generated copy is still pending local burn work
@@ -188,15 +188,15 @@ Expected multipart flow:
 - historical `lost` or `damaged` copy records are not burned again in place; replacement work uses fresh generated
   `copy_id` values in state `needed` or `burning`
 - the session selects the fullest ready backlog item first
-- if that item is still provisional, `arc-disc burn` finalizes it before continuing
+- if that item is still provisional, `djdan burn` finalizes it before continuing
 - the session downloads and stages the image ISO locally before burn work
 - the staged ISO is verified before burn work continues
 - the default burn backend uses `xorriso -as cdrecord` against the configured optical device
 - burned-media verification reads back the staged ISO's byte length from the optical device and compares its SHA-256 to
   the staged ISO
-- if the staged ISO is missing or no longer matches the last verified staged copy, `arc-disc burn` downloads it again
+- if the staged ISO is missing or no longer matches the last verified staged copy, `djdan burn` downloads it again
 - one physical copy is burned and burned-media-verified at a time
-- `arc-disc burn` prints the exact label text plus storage guidance before copy registration
+- `djdan burn` prints the exact label text plus storage guidance before copy registration
 - Riverhog does not register the copy, associate that generated `copy_id` with that physical disc, or count the copy
   toward coverage until the operator explicitly confirms that the disc is labeled
 - if the session stops after burning or burned-media verification but before label confirmation, a later run first asks
@@ -205,31 +205,31 @@ Expected multipart flow:
   copy, including burned-media verification when needed
 - if that unlabeled disc is no longer available, the local checkpoint is discarded and the copy is burned again as a
   replacement
-- after label confirmation, `arc-disc burn` records the storage location, registers the generated copy id, and marks the
+- after label confirmation, `djdan burn` records the storage location, registers the generated copy id, and marks the
   copy verified before moving on
 - if no ordinary burn backlog remains but one or more images are waiting on
-  `image_rebuild` work, `arc-disc burn` reports those recovery sessions instead
+  `image_rebuild` work, `djdan burn` reports those recovery sessions instead
   of treating them as ordinary replacement burns
 
 ## Recovery Sessions
 
-`arc-disc recover` is the guided workflow for `image_rebuild` recovery sessions
+`djdan recover` is the guided workflow for `image_rebuild` recovery sessions
 after one or more finalized images lose all protected copies.
 
-- without a session id, `arc-disc recover` lists active image-rebuild recovery
+- without a session id, `djdan recover` lists active image-rebuild recovery
   sessions and the finalized images attached to each one
-- with a session id in `pending_approval`, `arc-disc recover` approves the estimated restore cost and exits after the
+- with a session id in `pending_approval`, `djdan recover` approves the estimated restore cost and exits after the
   restore request is submitted
 - recovery-session readiness is driven by archive-store restore status, not only by the operator-facing latency
   estimate
-- with a session id in `ready`, `arc-disc recover` stages every still-needed
+- with a session id in `ready`, `djdan recover` stages every still-needed
   rebuilt image ISO in that session before burn work starts so a later retry can
   resume from local artifacts
 - ready sessions stage ISO bytes rebuilt from restored collection archives and
   persisted image coverage metadata
-- if the restore window expires after local staging succeeded, `arc-disc recover` can still resume from the staged ISO
+- if the restore window expires after local staging succeeded, `djdan recover` can still resume from the staged ISO
   artifacts already on disk
-- recovery burns reuse the same local checkpoint behavior as `arc-disc burn`, including resume from unfinished
+- recovery burns reuse the same local checkpoint behavior as `djdan burn`, including resume from unfinished
   burned-media verification or label confirmation
 - when the recovery session finishes, Riverhog marks the session completed,
   records archive restore cleanup or lifecycle handoff for the collection
@@ -238,7 +238,7 @@ after one or more finalized images lose all protected copies.
 
 ## Manual Recovery
 
-Without `arc-disc`, the intended recovery path is:
+Without `djdan`, the intended recovery path is:
 
 1. read `README.md`
 2. decrypt `DISC.yml.age`

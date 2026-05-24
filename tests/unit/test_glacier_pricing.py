@@ -4,8 +4,8 @@ from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
-from arc_core.runtime_config import RuntimeConfig
-from arc_core.services.glacier_pricing import resolve_glacier_pricing
+from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.glacier_pricing import resolve_glacier_pricing
 
 
 def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
@@ -128,11 +128,11 @@ def test_resolve_glacier_pricing_uses_bulk_api_rates_when_available(
             return {"Url": "https://pricing.example.invalid/AmazonS3/us-west-2/index.json"}
 
     monkeypatch.setattr(
-        "arc_core.services.glacier_pricing._create_pricing_client",
+        "riverhog_core.services.glacier_pricing._create_pricing_client",
         lambda current: _FakePricingClient(),
     )
     monkeypatch.setattr(
-        "arc_core.services.glacier_pricing._download_price_list_json",
+        "riverhog_core.services.glacier_pricing._download_price_list_json",
         lambda url: price_list_document,
     )
 
@@ -160,7 +160,7 @@ def test_resolve_glacier_pricing_falls_back_when_auto_lookup_fails(
         glacier_pricing_cache_ttl=timedelta(seconds=0),
     )
     monkeypatch.setattr(
-        "arc_core.services.glacier_pricing._create_pricing_client",
+        "riverhog_core.services.glacier_pricing._create_pricing_client",
         lambda current: (_ for _ in ()).throw(RuntimeError("pricing unavailable")),
     )
 

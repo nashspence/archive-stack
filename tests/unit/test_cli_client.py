@@ -5,7 +5,7 @@ import hashlib
 
 import httpx
 
-from arc_cli.client import ApiClient
+from riverhog_cli.client import ApiClient
 
 
 def test_create_or_resume_collection_upload_uses_collection_upload_endpoint(monkeypatch) -> None:

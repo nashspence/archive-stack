@@ -9,13 +9,13 @@ from typing import cast
 
 import yaml
 
-from arc_core.archive_artifacts import (
+from riverhog_core.archive_artifacts import (
     COLLECTION_HASH_MANIFEST_NAME,
     COLLECTION_HASH_MANIFEST_SCHEMA,
 )
-from arc_core.fs_paths import path_parents
-from arc_core.planner.layout import assign_paths, manifest_bytes
-from arc_core.planner.manifest import (
+from riverhog_core.fs_paths import path_parents
+from riverhog_core.planner.layout import assign_paths, manifest_bytes
+from riverhog_core.planner.manifest import (
     MANIFEST_FILENAME,
     README_FILENAME,
     assign_collection_artifact_paths,

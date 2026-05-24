@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from arc_core.iso.streaming import (
+from riverhog_core.iso.streaming import (
     ISO_BLOCK_BYTES,
     IsoEntry,
     IsoVolume,
@@ -74,7 +74,7 @@ def test_validate_iso_image_raises_with_xorriso_detail(monkeypatch, tmp_path: Pa
         assert str(iso_path) in cmd
         return subprocess.CompletedProcess(cmd, 32, stdout="", stderr="bad iso")
 
-    monkeypatch.setattr("arc_core.iso.streaming.subprocess.run", fake_run)
+    monkeypatch.setattr("riverhog_core.iso.streaming.subprocess.run", fake_run)
 
     try:
         validate_iso_image(iso_path)
@@ -99,7 +99,7 @@ def test_estimate_iso_size_from_root_converts_blocks_to_bytes(monkeypatch, tmp_p
         assert cmd[-2:] == ["-print-size", "-end"]
         return subprocess.CompletedProcess(cmd, 0, stdout="size=4321\n", stderr="")
 
-    monkeypatch.setattr("arc_core.iso.streaming.subprocess.run", fake_run)
+    monkeypatch.setattr("riverhog_core.iso.streaming.subprocess.run", fake_run)
     used = estimate_iso_size_from_root(image_root=root, volume_id="VOL_ROOT", fallback_bytes=77)
     assert used == 4321 * ISO_BLOCK_BYTES
 
@@ -115,6 +115,6 @@ def test_estimate_iso_size_from_root_falls_back_if_xorriso_missing(
     ) -> subprocess.CompletedProcess[str]:
         raise FileNotFoundError
 
-    monkeypatch.setattr("arc_core.iso.streaming.subprocess.run", fake_run)
+    monkeypatch.setattr("riverhog_core.iso.streaming.subprocess.run", fake_run)
     used = estimate_iso_size_from_root(image_root=root, volume_id="VOL_ROOT", fallback_bytes=77)
     assert used == 77

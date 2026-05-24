@@ -27,9 +27,9 @@ import pytest
 import uvicorn
 import yaml
 
-from arc_api.app import create_app
-from arc_api.deps import ServiceContainer
-from arc_core.archive_compliance import (
+from riverhog_api.app import create_app
+from riverhog_api.deps import ServiceContainer
+from riverhog_core.archive_compliance import (
     collection_protection_state,
     copy_counts_as_verified,
     copy_counts_toward_protection,
@@ -38,7 +38,7 @@ from arc_core.archive_compliance import (
     normalize_required_copy_count,
     registered_copy_shortfall,
 )
-from arc_core.domain.enums import (
+from riverhog_core.domain.enums import (
     CopyState,
     FetchState,
     GlacierState,
@@ -47,8 +47,8 @@ from arc_core.domain.enums import (
     RecoverySessionState,
     VerificationState,
 )
-from arc_core.domain.errors import Conflict, HashMismatch, InvalidState, NotFound
-from arc_core.domain.models import (
+from riverhog_core.domain.errors import Conflict, HashMismatch, InvalidState, NotFound
+from riverhog_core.domain.models import (
     CollectionArchiveManifestStatus,
     CollectionCoverageImage,
     CollectionListPage,
@@ -84,8 +84,8 @@ from arc_core.domain.models import (
     RecoverySessionProgress,
     RecoverySessionSummary,
 )
-from arc_core.domain.selectors import parse_target
-from arc_core.domain.types import (
+from riverhog_core.domain.selectors import parse_target
+from riverhog_core.domain.types import (
     CollectionId,
     CopyId,
     EntryId,
@@ -94,15 +94,15 @@ from arc_core.domain.types import (
     Sha256Hex,
     TargetStr,
 )
-from arc_core.fs_paths import (
+from riverhog_core.fs_paths import (
     find_collection_id_conflict,
     normalize_collection_id,
     normalize_relpath,
 )
-from arc_core.iso.streaming import IsoStream, build_iso_cmd_from_root
-from arc_core.planner.manifest import MANIFEST_FILENAME
-from arc_core.runtime_config import load_runtime_config
-from arc_core.webhooks import (
+from riverhog_core.iso.streaming import IsoStream, build_iso_cmd_from_root
+from riverhog_core.planner.manifest import MANIFEST_FILENAME
+from riverhog_core.runtime_config import load_runtime_config
+from riverhog_core.webhooks import (
     WebhookConfig,
     build_recovery_ready_payload,
 )
@@ -3682,7 +3682,7 @@ class AcceptanceFileService:
         page: int,
         per_page: int,
     ) -> dict[str, object]:
-        from arc_core.domain.selectors import parse_target
+        from riverhog_core.domain.selectors import parse_target
 
         target = parse_target(raw_target)
         selected = self.state.selected_files(raw_target, missing_ok=True)
@@ -3715,8 +3715,8 @@ class AcceptanceFileService:
 
     @_with_state_lock
     def get_content(self, raw_target: str) -> bytes:
-        from arc_core.domain.errors import InvalidTarget, NotFound
-        from arc_core.domain.selectors import parse_target
+        from riverhog_core.domain.errors import InvalidTarget, NotFound
+        from riverhog_core.domain.selectors import parse_target
 
         target = parse_target(raw_target)
         if target.is_dir:
@@ -3765,14 +3765,14 @@ class _LiveServerHandle:
                 last_error = exc
             time.sleep(0.05)
         raise RuntimeError(
-            f"Timed out waiting for live arc test server at {self.base_url}"
+            f"Timed out waiting for live riverhog test server at {self.base_url}"
         ) from last_error
 
     def close(self) -> None:
         self._server.should_exit = True
         self._thread.join(timeout=5.0)
         if self._thread.is_alive():  # pragma: no cover
-            raise RuntimeError("Timed out stopping live arc test server")
+            raise RuntimeError("Timed out stopping live riverhog test server")
 
 
 @dataclass(slots=True)
@@ -3860,7 +3860,7 @@ class AcceptanceSystem:
             glacier_upload_reaper_interval=_GLACIER_UPLOAD_SWEEP_INTERVAL_SECONDS,
             glacier_recovery_reaper_interval=_GLACIER_RECOVERY_SWEEP_INTERVAL_SECONDS,
         )
-        fixture_path = workspace / "arc_disc_fixture.json"
+        fixture_path = workspace / "djdan_fixture.json"
         with _reserve_local_port() as reserved:
             server = _LiveServerHandle(app, host="127.0.0.1", port=reserved.port)
         return cls(
@@ -4205,10 +4205,10 @@ class AcceptanceSystem:
         with self.state.lock:
             self.state.real_iso_streams_enabled = True
 
-    def run_arc(self, *args: str) -> subprocess.CompletedProcess[str]:
-        with time_block("subprocess arc"):
+    def run_riverhog(self, *args: str) -> subprocess.CompletedProcess[str]:
+        with time_block("subprocess riverhog"):
             return subprocess.run(
-                [sys.executable, "-m", "arc_cli.main", *args],
+                [sys.executable, "-m", "riverhog_cli.main", *args],
                 cwd=REPO_ROOT,
                 env=self._subprocess_env(),
                 capture_output=True,
@@ -4216,27 +4216,27 @@ class AcceptanceSystem:
                 check=False,
             )
 
-    def run_arc_disc(
+    def run_djdan(
         self, *args: str, input_text: str = "\n" * 16
     ) -> subprocess.CompletedProcess[str]:
         if not self.fixture_path.exists():
-            self._write_arc_disc_fixture(self._default_arc_disc_fixture())
+            self._write_djdan_fixture(self._default_djdan_fixture())
         env = self._subprocess_env(
             {
-                "ARC_DISC_FIXTURE_PATH": str(self.fixture_path),
-                "ARC_DISC_READER_FACTORY": "tests.fixtures.arc_disc_fakes:FixtureOpticalReader",
-                "ARC_DISC_ISO_VERIFIER_FACTORY": "tests.fixtures.arc_disc_fakes:FixtureIsoVerifier",
-                "ARC_DISC_BURNER_FACTORY": "tests.fixtures.arc_disc_fakes:FixtureDiscBurner",
-                "ARC_DISC_BURNED_MEDIA_VERIFIER_FACTORY": (
-                    "tests.fixtures.arc_disc_fakes:FixtureBurnedMediaVerifier"
+                "DJDAN_FIXTURE_PATH": str(self.fixture_path),
+                "DJDAN_READER_FACTORY": "tests.fixtures.djdan_fakes:FixtureOpticalReader",
+                "DJDAN_ISO_VERIFIER_FACTORY": "tests.fixtures.djdan_fakes:FixtureIsoVerifier",
+                "DJDAN_BURNER_FACTORY": "tests.fixtures.djdan_fakes:FixtureDiscBurner",
+                "DJDAN_BURNED_MEDIA_VERIFIER_FACTORY": (
+                    "tests.fixtures.djdan_fakes:FixtureBurnedMediaVerifier"
                 ),
-                "ARC_DISC_BURN_PROMPTS_FACTORY": "tests.fixtures.arc_disc_fakes:FixtureBurnPrompts",
-                "ARC_DISC_STAGING_DIR": str(self.workspace / "arc_disc_staging"),
+                "DJDAN_BURN_PROMPTS_FACTORY": "tests.fixtures.djdan_fakes:FixtureBurnPrompts",
+                "DJDAN_STAGING_DIR": str(self.workspace / "djdan_staging"),
             }
         )
-        with time_block("subprocess arc-disc"):
+        with time_block("subprocess djdan"):
             return subprocess.run(
-                [sys.executable, "-m", "arc_disc.main", *args],
+                [sys.executable, "-m", "djdan.main", *args],
                 cwd=REPO_ROOT,
                 env=env,
                 input=input_text,
@@ -4710,10 +4710,10 @@ class AcceptanceSystem:
                 if status.object_path == key and status.state == GlacierState.UPLOADED:
                     stored_bytes = status.stored_bytes or 0
                     return {
-                        "arc-archive-bytes": str(stored_bytes),
-                        "arc-archive-sha256": hashlib.sha256(key.encode("utf-8")).hexdigest(),
-                        "arc-archive-format": "tar",
-                        "arc-compression": "none",
+                        "riverhog-archive-bytes": str(stored_bytes),
+                        "riverhog-archive-sha256": hashlib.sha256(key.encode("utf-8")).hexdigest(),
+                        "riverhog-archive-format": "tar",
+                        "riverhog-compression": "none",
                     }
             raise AssertionError(f"archive object not found: {key}")
 
@@ -4727,7 +4727,7 @@ class AcceptanceSystem:
                 )
             if storage != "hot":
                 raise AssertionError(f"unsupported storage bucket kind: {storage}")
-            if prefix == ".arc/uploads/":
+            if prefix == ".riverhog/uploads/":
                 for upload in self.state.collection_uploads.values():
                     for file_record in upload.files.values():
                         if file_record.uploaded_bytes > 0:
@@ -4793,7 +4793,7 @@ class AcceptanceSystem:
         raise NotFound(f"entry not found for {fetch_id}: {entry_path}")
 
     @staticmethod
-    def _default_arc_disc_fixture() -> dict[str, Any]:
+    def _default_djdan_fixture() -> dict[str, Any]:
         return {
             "reader": {
                 "payload_by_disc_path": {},
@@ -4810,18 +4810,18 @@ class AcceptanceSystem:
             },
         }
 
-    def _load_arc_disc_fixture(self) -> dict[str, Any]:
+    def _load_djdan_fixture(self) -> dict[str, Any]:
         if not self.fixture_path.exists():
-            return self._default_arc_disc_fixture()
+            return self._default_djdan_fixture()
         return cast(dict[str, Any], json.loads(self.fixture_path.read_text(encoding="utf-8")))
 
-    def _write_arc_disc_fixture(self, payload: dict[str, Any]) -> None:
+    def _write_djdan_fixture(self, payload: dict[str, Any]) -> None:
         self.fixture_path.write_text(
             json.dumps(payload, indent=2, sort_keys=True),
             encoding="utf-8",
         )
 
-    def configure_arc_disc_fixture(
+    def configure_djdan_fixture(
         self,
         *,
         fetch_id: str = "fx-1",
@@ -4858,15 +4858,15 @@ class AcceptanceSystem:
                     if entry_path == fail_path or copy_id in fail_copy_ids:
                         fail_disc_paths.append(disc_path)
 
-        payload = self._load_arc_disc_fixture()
+        payload = self._load_djdan_fixture()
         payload["reader"] = {
             "payload_by_disc_path": payload_by_disc_path,
             "fail_disc_paths": fail_disc_paths,
         }
-        self._write_arc_disc_fixture(payload)
+        self._write_djdan_fixture(payload)
 
-    def confirm_arc_disc_burn_copy(self, copy_id: str, *, location: str) -> None:
-        payload = self._load_arc_disc_fixture()
+    def confirm_djdan_burn_copy(self, copy_id: str, *, location: str) -> None:
+        payload = self._load_djdan_fixture()
         burn = cast(dict[str, Any], payload["burn"])
         confirmed = set(cast(list[str], burn.get("confirmed_copy_ids", [])))
         confirmed.add(copy_id)
@@ -4877,10 +4877,10 @@ class AcceptanceSystem:
         label_text_by_copy_id = dict(cast(dict[str, str], burn.get("label_text_by_copy_id", {})))
         label_text_by_copy_id[copy_id] = copy_id
         burn["label_text_by_copy_id"] = label_text_by_copy_id
-        self._write_arc_disc_fixture(payload)
+        self._write_djdan_fixture(payload)
 
-    def set_arc_disc_burn_copy_available(self, copy_id: str, *, available: bool) -> None:
-        payload = self._load_arc_disc_fixture()
+    def set_djdan_burn_copy_available(self, copy_id: str, *, available: bool) -> None:
+        payload = self._load_djdan_fixture()
         burn = cast(dict[str, Any], payload["burn"])
         available_copy_ids = set(cast(list[str], burn.get("available_copy_ids", [])))
         if available:
@@ -4888,42 +4888,42 @@ class AcceptanceSystem:
         else:
             available_copy_ids.discard(copy_id)
         burn["available_copy_ids"] = sorted(available_copy_ids)
-        self._write_arc_disc_fixture(payload)
+        self._write_djdan_fixture(payload)
 
-    def fail_arc_disc_burn_copy(self, copy_id: str) -> None:
-        payload = self._load_arc_disc_fixture()
+    def fail_djdan_burn_copy(self, copy_id: str) -> None:
+        payload = self._load_djdan_fixture()
         burn = cast(dict[str, Any], payload["burn"])
         failures = set(cast(list[str], burn.get("fail_copy_ids", [])))
         failures.add(copy_id)
         burn["fail_copy_ids"] = sorted(failures)
-        self._write_arc_disc_fixture(payload)
+        self._write_djdan_fixture(payload)
 
-    def fail_arc_disc_burn_copy_verification(self, copy_id: str) -> None:
-        payload = self._load_arc_disc_fixture()
+    def fail_djdan_burn_copy_verification(self, copy_id: str) -> None:
+        payload = self._load_djdan_fixture()
         burn = cast(dict[str, Any], payload["burn"])
         failures = set(cast(list[str], burn.get("verify_fail_copy_ids", [])))
         failures.add(copy_id)
         burn["verify_fail_copy_ids"] = sorted(failures)
-        self._write_arc_disc_fixture(payload)
+        self._write_djdan_fixture(payload)
 
-    def clear_arc_disc_burn_failures(self) -> None:
-        payload = self._load_arc_disc_fixture()
+    def clear_djdan_burn_failures(self) -> None:
+        payload = self._load_djdan_fixture()
         burn = cast(dict[str, Any], payload["burn"])
         burn["fail_copy_ids"] = []
         burn["verify_fail_copy_ids"] = []
         burn["blank_media_blocked_copy_ids"] = []
-        self._write_arc_disc_fixture(payload)
+        self._write_djdan_fixture(payload)
 
-    def corrupt_arc_disc_staged_iso(self, image_id: str) -> None:
+    def corrupt_djdan_staged_iso(self, image_id: str) -> None:
         image = self.planning.get_image(image_id)
-        staging_path = self.workspace / "arc_disc_staging" / image_id / str(image["filename"])
+        staging_path = self.workspace / "djdan_staging" / image_id / str(image["filename"])
         if not staging_path.is_file():
             raise AssertionError(f"staged ISO not found: {staging_path}")
         staging_path.write_bytes(staging_path.read_bytes() + b"corrupted-by-fixture\n")
 
-    def arc_disc_staged_iso_exists(self, image_id: str) -> bool:
+    def djdan_staged_iso_exists(self, image_id: str) -> bool:
         image = self.planning.get_image(image_id)
-        staging_path = self.workspace / "arc_disc_staging" / image_id / str(image["filename"])
+        staging_path = self.workspace / "djdan_staging" / image_id / str(image["filename"])
         return staging_path.is_file()
 
     def _subprocess_env(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -4933,7 +4933,7 @@ class AcceptanceSystem:
         if existing:
             pythonpath_parts.append(existing)
         env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
-        env["ARC_BASE_URL"] = self.base_url
+        env["RIVERHOG_BASE_URL"] = self.base_url
         if extra:
             env.update(extra)
         return env

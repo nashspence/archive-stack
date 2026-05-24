@@ -37,11 +37,11 @@ def test_spec_harness_loads_every_feature_file() -> None:
 
 def test_optical_acceptance_features_do_not_expose_fixture_or_device_internals() -> None:
     optical_features = [
-        FEATURES_DIR / "cli.arc_disc.feature",
-        FEATURES_DIR / "cli.arc_disc_burn.feature",
-        FEATURES_DIR / "cli.arc_disc_recover.feature",
+        FEATURES_DIR / "cli.djdan.feature",
+        FEATURES_DIR / "cli.djdan_burn.feature",
+        FEATURES_DIR / "cli.djdan_recover.feature",
     ]
-    forbidden_terms = ("fake", "fixture", "/dev/arc-optical0", "--device")
+    forbidden_terms = ("fake", "fixture", "/dev/riverhog-optical0", "--device")
     violations: list[str] = []
     for path in optical_features:
         for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):

@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from arc_core.domain.errors import NotYetImplemented
-from arc_core.services.planning import (
+from riverhog_core.domain.errors import NotYetImplemented
+from riverhog_core.services.planning import (
     ImageRootPlanningService,
     ImageRootRecord,
 )
@@ -29,7 +29,7 @@ def test_image_root_planning_service_delegates_lookups_and_stream_creation(
 
     record = ImageRootRecord(
         image_id="img_001",
-        volume_id="ARC-IMG-001",
+        volume_id="RIVERHOG-IMG-001",
         filename="img_001.iso",
         image_root=tmp_path / "image-root",
     )
@@ -41,7 +41,7 @@ def test_image_root_planning_service_delegates_lookups_and_stream_creation(
     )
 
     monkeypatch.setattr(
-        "arc_core.services.planning.stream_iso_from_root",
+        "riverhog_core.services.planning.stream_iso_from_root",
         fake_stream_iso_from_root,
     )
 

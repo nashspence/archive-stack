@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from arc_core.collection_archives import (
+from riverhog_core.collection_archives import (
     CollectionArchiveExpectedFile,
     CollectionArchiveFile,
     CollectionArchivePackage,
@@ -16,9 +16,9 @@ from arc_core.collection_archives import (
     verify_collection_archive_manifest,
     verify_collection_archive_proof,
 )
-from arc_core.ports.archive_store import CollectionArchiveUploadReceipt
-from arc_core.runtime_config import RuntimeConfig, load_runtime_config
-from arc_core.stores.s3_archive_store import S3ArchiveStore
+from riverhog_core.ports.archive_store import CollectionArchiveUploadReceipt
+from riverhog_core.runtime_config import RuntimeConfig, load_runtime_config
+from riverhog_core.stores.s3_archive_store import S3ArchiveStore
 from tests.fixtures.data import DOCS_FILES
 
 _RESTORE_CONFIRM = "request-glacier-restore"
@@ -38,10 +38,10 @@ class _LiveCollectionArchiveFixture:
 
 
 def _require_live_restore_confirmation() -> None:
-    if os.environ.get("ARC_GLACIER_CI_OPT_IN_RESTORE_CONFIRM") == _RESTORE_CONFIRM:
+    if os.environ.get("RIVERHOG_GLACIER_CI_OPT_IN_RESTORE_CONFIRM") == _RESTORE_CONFIRM:
         return
     pytest.skip(
-        "set ARC_GLACIER_CI_OPT_IN_RESTORE_CONFIRM=request-glacier-restore to run live "
+        "set RIVERHOG_GLACIER_CI_OPT_IN_RESTORE_CONFIRM=request-glacier-restore to run live "
         "Glacier restore validation"
     )
 
@@ -104,8 +104,8 @@ def _request_restore(
         object_path=fixture.receipt.archive.object_path,
         manifest_object_path=fixture.receipt.manifest.object_path,
         proof_object_path=fixture.receipt.proof.object_path,
-        retrieval_tier=os.environ.get("ARC_GLACIER_CI_OPT_IN_RETRIEVAL_TIER", "bulk"),
-        hold_days=int(os.environ.get("ARC_GLACIER_CI_OPT_IN_HOLD_DAYS", "1")),
+        retrieval_tier=os.environ.get("RIVERHOG_GLACIER_CI_OPT_IN_RETRIEVAL_TIER", "bulk"),
+        hold_days=int(os.environ.get("RIVERHOG_GLACIER_CI_OPT_IN_HOLD_DAYS", "1")),
         requested_at=requested_at,
         estimated_ready_at=estimated_ready_at,
     )

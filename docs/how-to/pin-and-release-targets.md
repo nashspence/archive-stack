@@ -11,7 +11,7 @@ photos-2024/
 CLI example:
 
 ```bash
-arc pin 'photos-2024/'
+riverhog pin 'photos-2024/'
 ```
 
 ## Pin a directory subtree
@@ -23,7 +23,7 @@ photos-2024/albums/japan/
 CLI example:
 
 ```bash
-arc pin 'photos-2024/albums/japan/'
+riverhog pin 'photos-2024/albums/japan/'
 ```
 
 ## Pin a single file
@@ -35,7 +35,7 @@ docs/tax/2022/invoice-123.pdf
 CLI example:
 
 ```bash
-arc pin 'docs/tax/2022/invoice-123.pdf'
+riverhog pin 'docs/tax/2022/invoice-123.pdf'
 ```
 
 ## Pin a projected parent directory
@@ -50,7 +50,7 @@ collections.
 ## Release a previously pinned target
 
 ```bash
-arc release 'docs/tax/2022/'
+riverhog release 'docs/tax/2022/'
 ```
 
 ## Notes

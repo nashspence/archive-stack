@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from arc_core.proofs import CommandProofStamper, CommandProofVerifier
+from riverhog_core.proofs import CommandProofStamper, CommandProofVerifier
 
 pytestmark = [
     pytest.mark.ci_opt_in,
@@ -16,7 +16,7 @@ pytestmark = [
 
 
 def test_live_opentimestamps_command_creates_binary_proof(tmp_path: Path) -> None:
-    command = tuple(shlex.split(os.environ.get("ARC_OTS_STAMP_COMMAND", "ots")))
+    command = tuple(shlex.split(os.environ.get("RIVERHOG_OTS_STAMP_COMMAND", "ots")))
     if shutil.which(command[0]) is None:
         pytest.skip("ots command is not available")
     manifest_path = tmp_path / "manifest.yml"
@@ -32,8 +32,8 @@ def test_live_opentimestamps_command_creates_binary_proof(tmp_path: Path) -> Non
 
 
 def test_live_opentimestamps_command_verifies_binary_proof(tmp_path: Path) -> None:
-    stamp_command = tuple(shlex.split(os.environ.get("ARC_OTS_STAMP_COMMAND", "ots")))
-    verify_command = tuple(shlex.split(os.environ.get("ARC_OTS_VERIFY_COMMAND", "ots")))
+    stamp_command = tuple(shlex.split(os.environ.get("RIVERHOG_OTS_STAMP_COMMAND", "ots")))
+    verify_command = tuple(shlex.split(os.environ.get("RIVERHOG_OTS_VERIFY_COMMAND", "ots")))
     if shutil.which(stamp_command[0]) is None:
         pytest.skip("ots stamp command is not available")
     if shutil.which(verify_command[0]) is None:

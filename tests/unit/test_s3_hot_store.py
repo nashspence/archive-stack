@@ -7,8 +7,8 @@ from typing import Any, cast
 
 import pytest
 
-from arc_core.runtime_config import RuntimeConfig
-from arc_core.stores.s3_hot_store import S3HotStore, _multipart_part_size
+from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.stores.s3_hot_store import S3HotStore, _multipart_part_size
 
 
 class _FakeBody:
@@ -123,7 +123,7 @@ def _store_with_client(
     client: _FakeS3Client,
 ) -> S3HotStore:
     monkeypatch.setattr(
-        "arc_core.stores.s3_hot_store.create_s3_client",
+        "riverhog_core.stores.s3_hot_store.create_s3_client",
         lambda config: client,
     )
     return S3HotStore(_config(tmp_path))
@@ -135,7 +135,7 @@ def test_put_collection_file_stream_completes_multipart_upload(
 ) -> None:
     client = _FakeS3Client()
     store = _store_with_client(monkeypatch, tmp_path, client)
-    monkeypatch.setattr("arc_core.stores.s3_hot_store._MIN_MULTIPART_PART_SIZE", 4)
+    monkeypatch.setattr("riverhog_core.stores.s3_hot_store._MIN_MULTIPART_PART_SIZE", 4)
 
     store.put_collection_file_stream(
         "docs",
@@ -157,7 +157,7 @@ def test_put_collection_file_stream_aborts_multipart_upload_after_failed_stream(
 ) -> None:
     client = _FakeS3Client()
     store = _store_with_client(monkeypatch, tmp_path, client)
-    monkeypatch.setattr("arc_core.stores.s3_hot_store._MIN_MULTIPART_PART_SIZE", 3)
+    monkeypatch.setattr("riverhog_core.stores.s3_hot_store._MIN_MULTIPART_PART_SIZE", 3)
 
     def chunks() -> Iterable[bytes]:
         yield b"abc"
@@ -181,7 +181,7 @@ def test_put_collection_file_stream_aborts_multipart_upload_after_failed_stream(
 def test_multipart_part_size_scales_to_s3_part_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("arc_core.stores.s3_hot_store._MIN_MULTIPART_PART_SIZE", 4)
-    monkeypatch.setattr("arc_core.stores.s3_hot_store._MAX_MULTIPART_PARTS", 3)
+    monkeypatch.setattr("riverhog_core.stores.s3_hot_store._MIN_MULTIPART_PART_SIZE", 4)
+    monkeypatch.setattr("riverhog_core.stores.s3_hot_store._MAX_MULTIPART_PARTS", 3)
 
     assert _multipart_part_size(13) == 5

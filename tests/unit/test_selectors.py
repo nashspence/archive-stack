@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from arc_core.domain.errors import InvalidTarget
-from arc_core.domain.selectors import parse_target
+from riverhog_core.domain.errors import InvalidTarget
+from riverhog_core.domain.selectors import parse_target
 
 
 @pytest.mark.parametrize(

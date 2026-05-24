@@ -2,19 +2,19 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from arc_cli.main import app as arc_app
-from arc_disc.main import app as disc_app
+from djdan.main import app as disc_app
+from riverhog_cli.main import app as riverhog_app
 
 runner = CliRunner()
 
 
-def test_arc_help() -> None:
-    result = runner.invoke(arc_app, ["--help"])
+def test_riverhog_help() -> None:
+    result = runner.invoke(riverhog_app, ["--help"])
     assert result.exit_code == 0
-    assert "arc archival control CLI" in result.stdout
+    assert "riverhog archival control CLI" in result.stdout
 
 
-def test_arc_disc_help() -> None:
+def test_djdan_help() -> None:
     result = runner.invoke(disc_app, ["--help"])
     assert result.exit_code == 0
     assert "fetch" in result.stdout

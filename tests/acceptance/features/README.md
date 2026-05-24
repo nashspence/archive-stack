@@ -17,7 +17,7 @@ Conventions:
   - pin/release exact-selector behavior
   - archived vs hot coverage
   - fetch lifecycle and hash verification
-- `arc` and `arc-disc` acceptance cases are contract tests for CLI behavior, not internal command structure.
+- `riverhog` and `djdan` acceptance cases are contract tests for CLI behavior, not internal command structure.
 - disc-media scenarios should validate against the machine-readable contracts in `contracts/disc/`, not duplicate ad hoc path and schema rules in steps.
 - use `@ci_opt_in` with the appropriate `@requires_<capability>` marker when a scenario is excluded from the default prod-backed harness
 - use capability markers for the real opt-in boundary, not for built-in fixture mechanics

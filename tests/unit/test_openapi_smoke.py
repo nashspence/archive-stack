@@ -9,13 +9,13 @@ from typing import Any
 import yaml
 from fastapi.testclient import TestClient
 
-import arc_api.app as arc_app
-from arc_api.app import create_app
-from arc_api.deps import ServiceContainer
-from arc_api.tus import TUS_CHUNK_CONTENT_TYPE, TUS_RESUMABLE
-from arc_core.iso.streaming import IsoStream
+import riverhog_api.app as riverhog_app
+from riverhog_api.app import create_app
+from riverhog_api.deps import ServiceContainer
+from riverhog_api.tus import TUS_CHUNK_CONTENT_TYPE, TUS_RESUMABLE
+from riverhog_core.iso.streaming import IsoStream
 
-CONTRACT_PATH = Path(__file__).resolve().parents[2] / "contracts" / "openapi" / "arc.v1.yaml"
+CONTRACT_PATH = Path(__file__).resolve().parents[2] / "contracts" / "openapi" / "riverhog.v1.yaml"
 
 
 def _load_contract_openapi() -> dict[str, Any]:
@@ -767,8 +767,8 @@ def test_restart_control_route_is_disabled_by_default() -> None:
 def test_restart_control_route_is_available_when_enabled(monkeypatch) -> None:
     called: list[str] = []
 
-    monkeypatch.setenv("ARC_ENABLE_TEST_CONTROL", "1")
-    monkeypatch.setattr(arc_app, "_terminate_for_restart", lambda: called.append("restart"))
+    monkeypatch.setenv("RIVERHOG_ENABLE_TEST_CONTROL", "1")
+    monkeypatch.setattr(riverhog_app, "_terminate_for_restart", lambda: called.append("restart"))
 
     app = create_app()
     client = TestClient(app)
@@ -782,8 +782,8 @@ def test_restart_control_route_is_available_when_enabled(monkeypatch) -> None:
 def test_reset_control_route_is_available_when_enabled(monkeypatch) -> None:
     called: list[str] = []
 
-    monkeypatch.setenv("ARC_ENABLE_TEST_CONTROL", "1")
-    monkeypatch.setattr(arc_app, "_reset_runtime_state", lambda: called.append("reset"))
+    monkeypatch.setenv("RIVERHOG_ENABLE_TEST_CONTROL", "1")
+    monkeypatch.setattr(riverhog_app, "_reset_runtime_state", lambda: called.append("reset"))
 
     app = create_app()
     client = TestClient(app)

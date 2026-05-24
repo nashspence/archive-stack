@@ -6,18 +6,18 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from arc_core.catalog_models import (
+from riverhog_core.catalog_models import (
     ActivePinRecord,
     CollectionFileRecord,
     CollectionRecord,
     FetchEntryRecord,
     FileCopyRecord,
 )
-from arc_core.domain.enums import FetchState
-from arc_core.recovery_payloads import encrypt_recovery_payload
-from arc_core.runtime_config import RuntimeConfig
-from arc_core.services.fetches import SqlAlchemyFetchService, _sync_upload_progress
-from arc_core.sqlite_db import initialize_db, make_session_factory, session_scope
+from riverhog_core.domain.enums import FetchState
+from riverhog_core.recovery_payloads import encrypt_recovery_payload
+from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.fetches import SqlAlchemyFetchService, _sync_upload_progress
+from riverhog_core.sqlite_db import initialize_db, make_session_factory, session_scope
 from tests.fixtures.crypto import FixtureRecoveryPayloadCodec
 
 _RECOVERY_CODEC = FixtureRecoveryPayloadCodec()
@@ -112,7 +112,7 @@ def test_stale_sync_does_not_rollback_completed_fetch_state(tmp_path: Path) -> N
     content = b"invoice payload\n"
     sha256 = hashlib.sha256(content).hexdigest()
     encrypted = encrypt_recovery_payload(content, _RECOVERY_CODEC)
-    target_path = "/.arc/uploads/recovery/fx-1/e1.enc"
+    target_path = "/.riverhog/uploads/recovery/fx-1/e1.enc"
     tus_url = "/uploads/fx-1/e1"
 
     hot_store = _FakeHotStore({(collection_id, path): content})

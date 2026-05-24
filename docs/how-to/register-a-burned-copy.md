@@ -6,7 +6,7 @@ physical copy so physical-copy coverage can be counted.
 CLI example:
 
 ```bash
-arc copy add 20260420T040001Z --at 'Shelf B1'
+riverhog copy add 20260420T040001Z --at 'Shelf B1'
 ```
 
 The first positional argument is the finalized `image_id`.

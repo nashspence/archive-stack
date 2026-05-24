@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from arc_core.services.resumable_uploads import UploadLifecycleState, sync_upload_state
+from riverhog_core.services.resumable_uploads import UploadLifecycleState, sync_upload_state
 
 
 class _MissingUploadStore:
@@ -49,7 +49,7 @@ def test_sync_upload_state_preserves_progress_when_upload_disappears_mid_sync() 
 
     updated = sync_upload_state(
         current=current,
-        target_path="/.arc/recovery/fx-1/e1.enc",
+        target_path="/.riverhog/recovery/fx-1/e1.enc",
         length=61,
         upload_store=store,
     )
@@ -68,7 +68,7 @@ def test_sync_upload_state_preserves_partial_state_when_upload_disappears_mid_sy
 
     updated = sync_upload_state(
         current=current,
-        target_path="/.arc/recovery/fx-1/e1.enc",
+        target_path="/.riverhog/recovery/fx-1/e1.enc",
         length=61,
         upload_store=store,
     )

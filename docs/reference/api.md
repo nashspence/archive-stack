@@ -1,7 +1,7 @@
 # API reference
 
 This document summarizes the MVP HTTP and CLI contract. The canonical machine-readable shape is
-`contracts/openapi/arc.v1.yaml`.
+`contracts/openapi/riverhog.v1.yaml`.
 
 ## HTTP API
 
@@ -405,7 +405,7 @@ Required behavior:
 - the image must belong to that recovery session
 - the response streams bytes from the rebuilt image artifact produced from
   restored collection archives and persisted coverage metadata
-- `arc-disc recover` uses this endpoint for replacement burns instead of
+- `djdan recover` uses this endpoint for replacement burns instead of
   `GET /v1/images/{image_id}/iso`
 
 #### `GET /v1/glacier`
@@ -572,12 +572,12 @@ Returns a stable manifest for the exact pin lifetime.
 - every part hint includes logical plaintext `bytes`, logical plaintext `sha256`, `recovery_bytes`, and at least one
   candidate recovery copy
 - every candidate recovery copy includes `disc_path`, `recovery_bytes`, and `recovery_sha256`
-- `arc-disc` uploads the raw encrypted bytes stored at `disc_path`, not reconstructed logical plaintext
+- `djdan` uploads the raw encrypted bytes stored at `disc_path`, not reconstructed logical plaintext
 - logical plaintext hash and size fields remain server-side verification anchors after decryption and reconstruction
 - each manifest entry exposes current upload state, uploaded bytes, and upload expiry if partial state exists
 - fetch entry upload states distinguish `pending`, `partial`, `byte_complete`, and `uploaded`
 - `byte_complete` means the full ordered recovery-byte stream has been accepted but `POST /complete` has not yet finished server-side verification and materialization
-- those hints drive disc sequencing and resumable recovery in `arc-disc`
+- those hints drive disc sequencing and resumable recovery in `djdan`
 - incomplete upload state expires after `INCOMPLETE_UPLOAD_TTL` since the last accepted chunk and the manifest returns to
   `waiting_media`
 - fetch summaries expose an audit field such as `upload_state_expires_at`
@@ -656,32 +656,32 @@ Suggested error codes:
 
 ## CLI parity
 
-### `arc`
+### `riverhog`
 
-The `arc` CLI is a thin API client and should provide at least:
+The `riverhog` CLI is a thin API client and should provide at least:
 
-- `arc upload COLLECTION_ID ROOT`
-- `arc find QUERY`
-- `arc show COLLECTION`
-- `arc show COLLECTION --files`
-- `arc status [TARGET]`
-- `arc get TARGET [-o FILE]`
-- `arc plan [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--iso-ready|--not-ready]`
-- `arc images [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--has-copies|--no-copies]`
-- `arc glacier [--collection ID]`
-- `arc iso get IMAGE_ID [-o FILE]`
-- `arc copy add IMAGE_ID --at LOCATION [--copy-id GENERATED_ID]`
-- `arc copy list IMAGE_ID`
-- `arc copy move IMAGE_ID GENERATED_ID --to LOCATION`
-- `arc copy mark IMAGE_ID GENERATED_ID --state STATE [--verification-state STATE]`
-- `arc pin TARGET`
-- `arc release TARGET`
-- `arc pins`
-- `arc fetch FETCH_ID`
+- `riverhog upload COLLECTION_ID ROOT`
+- `riverhog find QUERY`
+- `riverhog show COLLECTION`
+- `riverhog show COLLECTION --files`
+- `riverhog status [TARGET]`
+- `riverhog get TARGET [-o FILE]`
+- `riverhog plan [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--iso-ready|--not-ready]`
+- `riverhog images [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--has-copies|--no-copies]`
+- `riverhog glacier [--collection ID]`
+- `riverhog iso get IMAGE_ID [-o FILE]`
+- `riverhog copy add IMAGE_ID --at LOCATION [--copy-id GENERATED_ID]`
+- `riverhog copy list IMAGE_ID`
+- `riverhog copy move IMAGE_ID GENERATED_ID --to LOCATION`
+- `riverhog copy mark IMAGE_ID GENERATED_ID --state STATE [--verification-state STATE]`
+- `riverhog pin TARGET`
+- `riverhog release TARGET`
+- `riverhog pins`
+- `riverhog fetch FETCH_ID`
 
-`arc show COLLECTION --files` should provide a concise human-readable listing of the collection's logical files, including current hot or archived state and available copies when applicable.
+`riverhog show COLLECTION --files` should provide a concise human-readable listing of the collection's logical files, including current hot or archived state and available copies when applicable.
 
-`arc show COLLECTION` should provide a concise human-readable recovery and coverage view for one collection, including:
+`riverhog show COLLECTION` should provide a concise human-readable recovery and coverage view for one collection, including:
 
 - an explicit summary of whether the collection is currently recoverable from verified physical copies, Glacier, both,
   or neither
@@ -691,11 +691,11 @@ The `arc` CLI is a thin API client and should provide at least:
 - direct collection Glacier object paths, manifest/OTS proof state, measured
   storage footprint, and monthly cost estimate
 
-`arc status [TARGET]` should show file availability for either the whole projected namespace or one target selector.
+`riverhog status [TARGET]` should show file availability for either the whole projected namespace or one target selector.
 
-`arc get TARGET [-o FILE]` should download one hot file target and fail clearly when the target is archived-only or does not select exactly one file.
+`riverhog get TARGET [-o FILE]` should download one hot file target and fail clearly when the target is archived-only or does not select exactly one file.
 
-`arc fetch FETCH_ID` should provide a concise human-readable listing of:
+`riverhog fetch FETCH_ID` should provide a concise human-readable listing of:
 
 - files still pending upload
 - files currently partial and still resumable
@@ -705,24 +705,24 @@ For finalized-image commands:
 
 - `IMAGE_ID` means the finalized image id
 - finalized image ids use compact UTC basic form `YYYYMMDDTHHMMSSZ`
-- `arc images --json` mirrors the `GET /v1/images` response payload
-- `arc glacier --json` mirrors the `GET /v1/glacier` response payload
-- `arc plan --json` mirrors the `GET /v1/plan` response payload
-- non-JSON `arc plan` output stays concise and line-oriented while surfacing candidate id, fill, readiness, and
+- `riverhog images --json` mirrors the `GET /v1/images` response payload
+- `riverhog glacier --json` mirrors the `GET /v1/glacier` response payload
+- `riverhog plan --json` mirrors the `GET /v1/plan` response payload
+- non-JSON `riverhog plan` output stays concise and line-oriented while surfacing candidate id, fill, readiness, and
   contained collections
-- non-JSON `arc images` acts as the default physical-media status view and stays concise while surfacing:
+- non-JSON `riverhog images` acts as the default physical-media status view and stays concise while surfacing:
   ready-to-finalize provisional images, backlog still waiting for inclusion in a future ISO, finalized-image burn and
   verification backlog, non-compliant collections, and which collections are
   already fully protected
-- non-JSON `arc glacier` output stays line-oriented while surfacing measured usage totals, configured pricing basis,
+- non-JSON `riverhog glacier` output stays line-oriented while surfacing measured usage totals, configured pricing basis,
   direct collection archive state, manifest/OTS proof state, and collection
   cost estimates
 
-### `arc-disc`
+### `djdan`
 
-The `arc-disc` CLI is a fetch-fulfillment client for a machine with an optical drive and should provide:
+The `djdan` CLI is a fetch-fulfillment client for a machine with an optical drive and should provide:
 
-- `arc-disc fetch FETCH_ID [--device DEVICE]`
+- `djdan fetch FETCH_ID [--device DEVICE]`
 
 For multipart recovery, one invocation should continue across successive discs until every required
 part has been recovered, streamed, and uploaded.
@@ -733,7 +733,7 @@ Required behavior:
   first
 - split files stream into the same logical-file upload resource in ascending part order
 - the upload resource receives raw encrypted recovery bytes exactly as stored in the hinted payload object(s)
-- `arc-disc` treats the upload resource as opaque and does not own decryption or final logical-file hash validation
+- `djdan` treats the upload resource as opaque and does not own decryption or final logical-file hash validation
 - resumable offsets remain valid only for the exact recovery-byte stream accepted so far for the current span
 - any temporary buffering used during recovery is an internal implementation detail
 - progress output is precise and continuous, including current transfer rate, percent complete for the current file, and

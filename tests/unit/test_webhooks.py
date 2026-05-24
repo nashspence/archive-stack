@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from arc_core.webhooks import (
+from riverhog_core.webhooks import (
     ImagesReadyBatch,
     ReadyImage,
     WebhookConfig,

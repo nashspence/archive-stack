@@ -3,10 +3,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 
-from arc_core.catalog_models import CollectionFileRecord, CollectionRecord
-from arc_core.runtime_config import RuntimeConfig
-from arc_core.services.files import SqlAlchemyFileService
-from arc_core.sqlite_db import initialize_db, make_session_factory, session_scope
+from riverhog_core.catalog_models import CollectionFileRecord, CollectionRecord
+from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.files import SqlAlchemyFileService
+from riverhog_core.sqlite_db import initialize_db, make_session_factory, session_scope
 
 
 class _FakeHotStore:

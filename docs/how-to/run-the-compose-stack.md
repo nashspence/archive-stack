@@ -21,8 +21,8 @@ defaults. The short recovery timing values that keep the prod-backed acceptance
 lane fast live only in `tests/harness/prod-harness.env`.
 
 The checked-in recovery payload passphrase is development/test only. Production
-Compose deployments should set `ARC_RECOVERY_PAYLOAD_REQUIRE_EXPLICIT_PASSPHRASE=true`
-and provide `ARC_RECOVERY_PAYLOAD_PASSPHRASE` from deployment secrets.
+Compose deployments should set `RIVERHOG_RECOVERY_PAYLOAD_REQUIRE_EXPLICIT_PASSPHRASE=true`
+and provide `RIVERHOG_RECOVERY_PAYLOAD_PASSPHRASE` from deployment secrets.
 
 Each prod-backed `make ...` invocation also chooses an isolated Compose
 project name by default. Export `TEST_COMPOSE_PROJECT_NAME` first if you
@@ -116,7 +116,7 @@ Regenerate `requirements-runtime.txt` and `requirements-test.txt` together when
 dependency constraints change; the unit suite checks that shared packages do not
 drift and that both lockfiles keep hash-pinned entries.
 
-If `ARC_GLACIER_BUCKET` differs from `ARC_S3_BUCKET`, that bootstrap applies and
+If `RIVERHOG_GLACIER_BUCKET` differs from `RIVERHOG_S3_BUCKET`, that bootstrap applies and
 verifies the same lifecycle rule on both buckets.
 
 ## Tear the stack down

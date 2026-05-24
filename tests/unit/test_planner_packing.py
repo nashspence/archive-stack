@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from arc_core.planner import packing
+from riverhog_core.planner import packing
 
 
 def _item(

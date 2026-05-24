@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from arc_core.fs_paths import (
+from riverhog_core.fs_paths import (
     collection_id_ancestors,
     find_collection_id_conflict,
     normalize_collection_id,

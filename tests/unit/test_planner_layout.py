@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import yaml
 
-from arc_core.planner.layout import (
+from riverhog_core.planner.layout import (
     PreviewEntry,
     assign_paths,
     manifest_bytes,
@@ -23,7 +23,7 @@ def test_preview_image_uses_default_root_estimator(monkeypatch) -> None:
         )
         return fallback_bytes + 123
 
-    monkeypatch.setattr("arc_core.planner.layout.estimate_iso_size_from_root", fake_estimator)
+    monkeypatch.setattr("riverhog_core.planner.layout.estimate_iso_size_from_root", fake_estimator)
 
     preview = preview_image(
         image_id="img_001",
@@ -158,7 +158,7 @@ def test_assign_paths_and_manifest_bytes_support_multipart_files_and_collection_
                 ]
             },
             path_map,
-            volume_id="ARC-IMG-003",
+            volume_id="RIVERHOG-IMG-003",
             collection_artifact_paths={
                 "docs": ("collections/000001.yml.age", "collections/000001.ots.age")
             },

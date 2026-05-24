@@ -5,18 +5,18 @@ import hashlib
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
-from arc_core.catalog_models import (
+from riverhog_core.catalog_models import (
     CollectionFileRecord,
     CollectionRecord,
     FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
 )
-from arc_core.ports.archive_store import ArchiveUploadReceipt, CollectionArchiveUploadReceipt
-from arc_core.runtime_config import RuntimeConfig
-from arc_core.services.collections import SqlAlchemyCollectionService
-from arc_core.services.glacier_uploads import SqlAlchemyGlacierUploadService
-from arc_core.sqlite_db import initialize_db, make_session_factory, session_scope
+from riverhog_core.ports.archive_store import ArchiveUploadReceipt, CollectionArchiveUploadReceipt
+from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.collections import SqlAlchemyCollectionService
+from riverhog_core.services.glacier_uploads import SqlAlchemyGlacierUploadService
+from riverhog_core.sqlite_db import initialize_db, make_session_factory, session_scope
 from tests.fixtures.crypto import FixtureProofStamper
 from tests.fixtures.data import DOCS_FILES
 
@@ -270,7 +270,7 @@ def test_completed_collection_upload_promotes_from_staging_and_cleans_up(tmp_pat
     sha256 = hashlib.sha256(content).hexdigest()
     collection_id = "photos-2024"
     relpath = "albums/day-01.txt"
-    staging_target = f"/.arc/uploads/collections/{collection_id}/{relpath}"
+    staging_target = f"/.riverhog/uploads/collections/{collection_id}/{relpath}"
 
     service.create_or_resume_upload(
         collection_id=collection_id,

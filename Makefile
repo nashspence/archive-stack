@@ -4,7 +4,7 @@ SHELL := bash
 UV_RUN = uv run --python 3.11 --isolated --with-requirements "$(CURDIR)/requirements-test.txt" --with-editable '.[db]'
 args ?=
 
-.PHONY: help ruff mypy lint unit spec stop-spec ci-opt-in-arc-disc ci-opt-in-glacier-restore ci-opt-in-glacier-billing ci-opt-in-opentimestamps build build-app build-test bootstrap-garage down prod stop-prod prune-prod-state prod-profile test
+.PHONY: help ruff mypy lint unit spec stop-spec ci-opt-in-djdan ci-opt-in-glacier-restore ci-opt-in-glacier-billing ci-opt-in-opentimestamps build build-app build-test bootstrap-garage down prod stop-prod prune-prod-state prod-profile test
 
 help:
 	@printf '%s\n' \
@@ -15,7 +15,7 @@ help:
 		'  make unit              Run the unit test lane locally.' \
 		'  make spec              Run the fixture-backed spec harness locally.' \
 		'  make stop-spec         Stop any in-flight local spec harness process.' \
-		'  make ci-opt-in-arc-disc        Run opt-in real-device arc-disc optical validation.' \
+		'  make ci-opt-in-djdan        Run opt-in real-device djdan optical validation.' \
 		'  make ci-opt-in-glacier-restore Run opt-in live AWS collection archive restore validation.' \
 		'  make ci-opt-in-glacier-billing Run opt-in live AWS Glacier billing validation.' \
 		'  make ci-opt-in-opentimestamps Run opt-in real OpenTimestamps command validation.' \
@@ -52,8 +52,8 @@ spec:
 stop-spec:
 	@./scripts/stop_spec.sh
 
-ci-opt-in-arc-disc:
-	@$(UV_RUN) python -m pytest -q -m "ci_opt_in and requires_optical_disc_drive and requires_human_operator" tests/ci_opt_in/test_arc_disc_real_device.py $(args)
+ci-opt-in-djdan:
+	@$(UV_RUN) python -m pytest -q -m "ci_opt_in and requires_optical_disc_drive and requires_human_operator" tests/ci_opt_in/test_djdan_real_device.py $(args)
 
 ci-opt-in-glacier-restore:
 	@$(UV_RUN) python -m pytest -q -m "ci_opt_in and requires_aws_s3 and requires_glacier_restore" tests/ci_opt_in/test_glacier_restore.py $(args)

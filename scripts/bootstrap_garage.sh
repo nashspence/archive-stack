@@ -7,14 +7,14 @@ setup_test_compose_project
 configure_compose_tty
 ensure_compose_image test
 
-access_key_id="$(compose_env_value ARC_S3_ACCESS_KEY_ID GK000000000000000000000001)"
-secret_access_key="$(compose_env_value ARC_S3_SECRET_ACCESS_KEY 1111111111111111111111111111111111111111111111111111111111111111)"
-bucket="$(compose_env_value ARC_S3_BUCKET riverhog)"
-glacier_access_key_id="$(compose_env_value ARC_GLACIER_ACCESS_KEY_ID "${access_key_id}")"
+access_key_id="$(compose_env_value RIVERHOG_S3_ACCESS_KEY_ID GK000000000000000000000001)"
+secret_access_key="$(compose_env_value RIVERHOG_S3_SECRET_ACCESS_KEY 1111111111111111111111111111111111111111111111111111111111111111)"
+bucket="$(compose_env_value RIVERHOG_S3_BUCKET riverhog)"
+glacier_access_key_id="$(compose_env_value RIVERHOG_GLACIER_ACCESS_KEY_ID "${access_key_id}")"
 glacier_secret_access_key="$(
-  compose_env_value ARC_GLACIER_SECRET_ACCESS_KEY "${secret_access_key}"
+  compose_env_value RIVERHOG_GLACIER_SECRET_ACCESS_KEY "${secret_access_key}"
 )"
-glacier_bucket="$(compose_env_value ARC_GLACIER_BUCKET "${bucket}")"
+glacier_bucket="$(compose_env_value RIVERHOG_GLACIER_BUCKET "${bucket}")"
 
 compose up --detach garage
 

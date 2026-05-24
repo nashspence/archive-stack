@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import yaml
 
-from arc_core.planner.manifest import (
+from riverhog_core.planner.manifest import (
     assign_collection_artifact_paths,
     manifest_collection_budget,
     manifest_file_entry,

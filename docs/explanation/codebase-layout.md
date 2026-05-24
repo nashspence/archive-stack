@@ -6,7 +6,7 @@ The implementation should keep business rules in a shared core library and keep 
 
 ```text
 src/
-  arc_core/
+  riverhog_core/
     domain/
       enums.py
       types.py
@@ -49,7 +49,7 @@ src/
     proofs.py
     catalog_db.py
     webhooks.py
-  arc_api/
+  riverhog_api/
     app.py
     auth.py
     deps.py
@@ -69,11 +69,11 @@ src/
       plan.py
       images.py
       pins.py
-  arc_cli/
+  riverhog_cli/
     main.py
     client.py
     output.py
-  arc_disc/
+  djdan/
     main.py
 tests/
   acceptance/
@@ -84,7 +84,7 @@ tests/
 
 ## Guidance
 
-- Keep all business rules in `arc_core`.
+- Keep all business rules in `riverhog_core`.
 - Treat FastAPI and both CLIs as adapters over the same service layer.
 - Keep selector parsing and normalization in one shared place.
 - Keep planner helpers and donor code adaptations behind ports and services rather than wiring them directly into routers.

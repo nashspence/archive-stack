@@ -2,7 +2,7 @@
 
 ## Decision
 
-Riverhog validates recovered optical bytes on the server side after `arc-disc` streams the expected recovery byte stream.
+Riverhog validates recovered optical bytes on the server side after `djdan` streams the expected recovery byte stream.
 
 ## Reason
 
