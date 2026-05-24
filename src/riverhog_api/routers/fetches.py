@@ -16,6 +16,7 @@ from riverhog_api.tus import (
     tus_upload_headers,
     validate_tus_chunk_request,
 )
+from riverhog_api.urls import public_request_url
 
 router = APIRouter(tags=["fetches"])
 
@@ -43,7 +44,7 @@ def create_or_resume_fetch_entry_upload(
     container: ContainerDep,
 ) -> FetchUploadSessionResponse:
     payload = container.fetches.create_or_resume_upload(fetch_id=fetch_id, entry_id=entry_id)
-    payload["upload_url"] = str(request.url)
+    payload["upload_url"] = public_request_url(request)
     response.headers.update(tus_upload_headers(payload, request=request))
     return FetchUploadSessionResponse.model_validate(payload)
 

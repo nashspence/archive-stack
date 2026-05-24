@@ -592,13 +592,15 @@ def _assert_contract_patch_request_requirements(
     _assert_bad_request(missing_content_type)
 
 
-def test_collection_upload_runtime_matches_contract_headers() -> None:
+def test_collection_upload_runtime_matches_contract_headers(monkeypatch) -> None:
+    monkeypatch.setenv("RIVERHOG_PUBLIC_BASE_URL", "https://riverhog.test")
     with _contract_runtime_client() as client:
         runtime_path = "/v1/collection-uploads/docs/files/report.txt/upload"
         contract_path = "/v1/collection-uploads/{collection_id}/files/{path}/upload"
 
         post = client.post(runtime_path)
         assert post.status_code == 200
+        assert post.json()["upload_url"] == f"https://riverhog.test{runtime_path}"
         _assert_contract_success_headers(
             post,
             contract_path=contract_path,
@@ -647,13 +649,15 @@ def test_collection_upload_runtime_matches_contract_headers() -> None:
         )
 
 
-def test_fetch_upload_runtime_matches_contract_headers() -> None:
+def test_fetch_upload_runtime_matches_contract_headers(monkeypatch) -> None:
+    monkeypatch.setenv("RIVERHOG_PUBLIC_BASE_URL", "https://riverhog.test")
     with _contract_runtime_client() as client:
         runtime_path = "/v1/fetches/fx-1/entries/e1/upload"
         contract_path = "/v1/fetches/{fetch_id}/entries/{entry_id}/upload"
 
         post = client.post(runtime_path)
         assert post.status_code == 200
+        assert post.json()["upload_url"] == f"https://riverhog.test{runtime_path}"
         _assert_contract_success_headers(
             post,
             contract_path=contract_path,

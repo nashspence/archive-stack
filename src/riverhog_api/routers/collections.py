@@ -20,6 +20,7 @@ from riverhog_api.tus import (
     tus_upload_headers,
     validate_tus_chunk_request,
 )
+from riverhog_api.urls import public_request_url
 
 router = APIRouter(tags=["collections"])
 
@@ -96,7 +97,7 @@ def create_or_resume_collection_file_upload(
     container: ContainerDep,
 ) -> CollectionFileUploadSessionOut:
     payload = container.collections.create_or_resume_file_upload(collection_id, path)
-    payload["upload_url"] = str(request.url)
+    payload["upload_url"] = public_request_url(request)
     response.headers.update(tus_upload_headers(payload, request=request))
     return CollectionFileUploadSessionOut.model_validate(payload)
 
