@@ -660,6 +660,16 @@ internal `tusd` uploads.
 Shared secret used to authenticate `tusd` hook callbacks. Hooks are
 notifications only; Riverhog's catalog state remains authoritative.
 
+## `RIVERHOG_TUSD_APPEND_TIMEOUT_SECONDS`
+
+- type: positive number of seconds
+- default: `60`
+
+Maximum time Riverhog will wait while forwarding one chunk to the internal
+`tusd` service. If the backend stalls longer than this, Riverhog returns a
+transient 503 so upload clients can re-check the resumable offset and retry
+instead of leaving a long-running server-side PATCH behind.
+
 ## `RIVERHOG_WEBDAV_ENABLED`
 
 - type: boolean

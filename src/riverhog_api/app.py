@@ -428,6 +428,7 @@ def create_app(
             "invalid_state": 409,
             "hash_mismatch": 409,
             "not_implemented": 501,
+            "service_unavailable": 503,
         }
         payload = ErrorResponse(error=ErrorBody(code=exc.code, message=exc.message))
         return JSONResponse(status_code=status_map.get(exc.code, 400), content=payload.model_dump())

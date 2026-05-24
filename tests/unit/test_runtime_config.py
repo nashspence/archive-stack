@@ -118,6 +118,7 @@ def test_load_runtime_config_parses_planner_runtime_settings(
     monkeypatch.setenv("RIVERHOG_PLANNER_MIN_FILL_RATIO", "96%")
     monkeypatch.setenv("RIVERHOG_PLANNER_IMAGE_ROOT", str(tmp_path / "planner"))
     monkeypatch.setenv("RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT", "500GB")
+    monkeypatch.setenv("RIVERHOG_TUSD_APPEND_TIMEOUT_SECONDS", "45.5")
 
     config = load_runtime_config()
 
@@ -126,6 +127,7 @@ def test_load_runtime_config_parses_planner_runtime_settings(
     assert config.planner_min_fill_bytes == 48_000_000_000
     assert config.planner_image_root == tmp_path / "planner"
     assert config.unburned_collection_bytes_limit == 500_000_000_000
+    assert config.tusd_append_timeout_seconds == 45.5
 
 
 def test_load_runtime_config_accepts_explicit_planner_min_fill_bytes(

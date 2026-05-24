@@ -19,6 +19,7 @@ from riverhog_core.domain.errors import (
     NotFound,
     NotYetImplemented,
     RiverhogError,
+    ServiceUnavailable,
 )
 
 _HTTP_TIMEOUT_SECONDS = 300.0
@@ -82,6 +83,7 @@ class ApiClient:
             "invalid_state": InvalidState,
             "hash_mismatch": HashMismatch,
             "not_implemented": NotYetImplemented,
+            "service_unavailable": ServiceUnavailable,
         }
         raise exc_map.get(code, RiverhogError)(str(message))
 

@@ -700,6 +700,10 @@ timeout, defaulting to 60 seconds. If a chunk response is lost after the server
 accepted the data, the CLI re-queries the resumable file offset and continues
 from the server-confirmed position. A single CLI invocation reuses one HTTP
 connection pool for API and upload requests, avoiding per-chunk TCP/TLS setup.
+`RIVERHOG_TUSD_APPEND_TIMEOUT_SECONDS` bounds how long the API will wait on the
+internal tusd forward for one chunk before returning a transient 503; the CLI
+treats that response the same way as a dropped connection and resumes from the
+authoritative offset.
 Server-side upload expiry sweeps do not poll tusd offsets for live,
 non-expired uploads because tusd interrupts an active PATCH when another
 request, including HEAD, targets the same upload resource.

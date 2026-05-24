@@ -136,6 +136,7 @@ class RuntimeConfig:
     s3_force_path_style: bool
     tusd_base_url: str
     tusd_hook_secret: str
+    tusd_append_timeout_seconds: float = 60.0
     sqlite_path: Path | None = None
     database_url: str = ""
     incomplete_upload_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
@@ -232,6 +233,8 @@ class RuntimeConfig:
                 "sqlite_path",
                 _sqlite_path_from_database_url(self.database_url),
             )
+        if self.tusd_append_timeout_seconds <= 0.0:
+            raise ValueError("RIVERHOG_TUSD_APPEND_TIMEOUT_SECONDS must be > 0")
         if self.glacier_recovery_webhook_url:
             minimum_ready_ttl = (
                 self.glacier_recovery_webhook_timeout + self.glacier_recovery_webhook_retry_delay
@@ -528,6 +531,11 @@ def load_runtime_config() -> RuntimeConfig:
         s3_force_path_style=s3_force_path_style,
         tusd_base_url=os.getenv("RIVERHOG_TUSD_BASE_URL", "http://127.0.0.1:1080/files").rstrip("/"),
         tusd_hook_secret=os.getenv("RIVERHOG_TUSD_HOOK_SECRET", "dev-tusd-hook-secret"),
+        tusd_append_timeout_seconds=_parse_float(
+            os.getenv("RIVERHOG_TUSD_APPEND_TIMEOUT_SECONDS", "60"),
+            name="RIVERHOG_TUSD_APPEND_TIMEOUT_SECONDS",
+            minimum=0.0,
+        ),
         sqlite_path=sqlite_path,
         database_url=database_url,
         incomplete_upload_ttl=incomplete_upload_ttl,

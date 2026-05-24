@@ -25,7 +25,7 @@ from riverhog_cli.output import (
     format_pin,
     format_plan,
 )
-from riverhog_core.domain.errors import NotFound
+from riverhog_core.domain.errors import NotFound, ServiceUnavailable
 
 app = typer.Typer(help="riverhog archival control CLI")
 iso_app = typer.Typer(help="ISO operations")
@@ -118,12 +118,16 @@ def _is_transient_upload_error(exc: BaseException) -> bool:
         return True
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code in TRANSIENT_UPLOAD_STATUS_CODES
+    if isinstance(exc, ServiceUnavailable):
+        return True
     return False
 
 
 def _upload_error_description(exc: BaseException) -> str:
     if isinstance(exc, httpx.HTTPStatusError):
         return f"HTTP {exc.response.status_code}"
+    if isinstance(exc, ServiceUnavailable):
+        return exc.message
     return f"{type(exc).__name__}: {exc}"
 
 
@@ -136,7 +140,7 @@ def _create_or_resume_collection_file_upload(
     for attempt in range(UPLOAD_RESUME_RETRY_ATTEMPTS):
         try:
             return api.create_or_resume_collection_file_upload(collection_id, path_value)
-        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+        except (httpx.TransportError, httpx.HTTPStatusError, ServiceUnavailable) as exc:
             if not _is_transient_upload_error(exc) or attempt == UPLOAD_RESUME_RETRY_ATTEMPTS - 1:
                 raise
             _log_upload(
@@ -210,7 +214,7 @@ def _upload_collection_file(
                     checksum_algorithm=str(session["checksum_algorithm"]),
                     content=chunk,
                 )
-            except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            except (httpx.TransportError, httpx.HTTPStatusError, ServiceUnavailable) as exc:
                 if not _is_transient_upload_error(exc):
                     raise
                 _log_upload(

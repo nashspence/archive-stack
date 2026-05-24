@@ -35,3 +35,7 @@ class HashMismatch(RiverhogError):
 
 class NotYetImplemented(RiverhogError):
     code = "not_implemented"
+
+
+class ServiceUnavailable(RiverhogError):
+    code = "service_unavailable"

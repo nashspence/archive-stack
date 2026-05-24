@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from riverhog_cli import main as riverhog_main
+from riverhog_core.domain.errors import ServiceUnavailable
 
 
 def test_local_collection_manifest_streams_file_hashes(
@@ -277,6 +278,55 @@ def test_upload_collection_file_retries_after_transient_http_status(
                     request=request,
                     response=response,
                 )
+            return {"offset": offset + len(content), "expires_at": None}
+
+    monkeypatch.setattr(riverhog_main, "UPLOAD_CHUNK_BYTES", 20)
+
+    riverhog_main._upload_collection_file(
+        FakeApi(),  # type: ignore[arg-type]
+        "2025/collection",
+        source,
+        {"path": "clip.bin", "bytes": len(content)},
+    )
+
+    assert uploaded == [(0, content), (0, content)]
+
+
+def test_upload_collection_file_retries_after_service_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "clip.bin"
+    content = b"abcdefghij"
+    source.write_bytes(content)
+    uploaded: list[tuple[int, bytes]] = []
+
+    class FakeApi:
+        append_calls = 0
+
+        def create_or_resume_collection_file_upload(
+            self,
+            collection_id: str,
+            path: str,
+        ) -> dict[str, object]:
+            return {
+                "upload_url": "https://uploads.test/clip.bin",
+                "offset": 0,
+                "checksum_algorithm": "sha256",
+            }
+
+        def append_upload_chunk(
+            self,
+            upload_url: str,
+            *,
+            offset: int,
+            checksum_algorithm: str,
+            content: bytes,
+        ) -> dict[str, object]:
+            self.append_calls += 1
+            uploaded.append((offset, content))
+            if self.append_calls == 1:
+                raise ServiceUnavailable("temporary upload backend stall")
             return {"offset": offset + len(content), "expires_at": None}
 
     monkeypatch.setattr(riverhog_main, "UPLOAD_CHUNK_BYTES", 20)

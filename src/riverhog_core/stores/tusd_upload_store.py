@@ -7,7 +7,7 @@ from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 import httpx
 
-from riverhog_core.domain.errors import Conflict, NotFound
+from riverhog_core.domain.errors import Conflict, NotFound, ServiceUnavailable
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.stores.s3_support import create_s3_client
 from riverhog_core.tusd_ids import tusd_upload_id_for_target_path
@@ -29,6 +29,7 @@ class TusdUploadStore:
         self._client = create_s3_client(config)
         self._tusd_base_url = config.tusd_base_url.rstrip("/")
         self._hook_secret = config.tusd_hook_secret
+        self._append_timeout_seconds = config.tusd_append_timeout_seconds
 
     @staticmethod
     def _object_key(target_path: str) -> str:
@@ -93,23 +94,29 @@ class TusdUploadStore:
         checksum: str,
         content: bytes,
     ) -> tuple[int, str | None]:
-        with httpx.Client(timeout=_TIMEOUT) as client:
-            response = client.patch(
-                tus_url,
-                headers=self._tus_headers(
-                    **{
-                        "Content-Type": "application/offset+octet-stream",
-                        "Upload-Offset": str(offset),
-                        "Upload-Checksum": checksum,
-                    }
-                ),
-                content=content,
-            )
-            if response.status_code in {400, 409}:
-                message = response.text.strip() or "upload chunk was rejected by tusd"
-                raise Conflict(message)
-            response.raise_for_status()
-            return int(response.headers["Upload-Offset"]), response.headers.get("Upload-Expires")
+        try:
+            with httpx.Client(timeout=self._append_timeout_seconds) as client:
+                response = client.patch(
+                    tus_url,
+                    headers=self._tus_headers(
+                        **{
+                            "Content-Type": "application/offset+octet-stream",
+                            "Upload-Offset": str(offset),
+                            "Upload-Checksum": checksum,
+                        }
+                    ),
+                    content=content,
+                )
+        except httpx.TransportError as exc:
+            raise ServiceUnavailable(
+                "upload backend did not accept the chunk before the server-side timeout; "
+                "retry the chunk after resyncing the offset"
+            ) from exc
+        if response.status_code in {400, 409}:
+            message = response.text.strip() or "upload chunk was rejected by tusd"
+            raise Conflict(message)
+        response.raise_for_status()
+        return int(response.headers["Upload-Offset"]), response.headers.get("Upload-Expires")
 
     def read_target(self, target_path: str) -> bytes:
         return b"".join(self.iter_target(target_path))
