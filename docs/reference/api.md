@@ -695,7 +695,10 @@ absolute upload URLs while preserving the API-provided path, which is useful
 when bulk upload traffic is sent through a local tunnel. During uploads the CLI
 prints manifest, resume, per-file, and throttled total progress messages to
 stderr; `--json` output remains reserved for the final machine-readable payload
-on stdout.
+on stdout. `RIVERHOG_UPLOAD_TIMEOUT_SECONDS` controls the per-chunk PATCH
+timeout, defaulting to 60 seconds. If a chunk response is lost after the server
+accepted the data, the CLI re-queries the resumable file offset and continues
+from the server-confirmed position.
 
 `riverhog show COLLECTION --files` should provide a concise human-readable listing of the collection's logical files, including current hot or archived state and available copies when applicable.
 

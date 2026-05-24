@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Annotated, TypedDict
 
+import httpx
 import typer
 
 from riverhog_cli.client import ApiClient
@@ -159,24 +160,61 @@ def _upload_collection_file(
     else:
         _log_upload(f"Uploading {path_value} ({_format_bytes(length)})")
 
-    for chunk in _iter_file_chunks(
-        source_path,
-        offset=offset,
-        limit=length - offset,
-        chunk_size=_upload_chunk_bytes(),
-    ):
-        upload_result = api.append_upload_chunk(
-            str(session["upload_url"]),
-            offset=offset,
-            checksum_algorithm=str(session["checksum_algorithm"]),
-            content=chunk,
-        )
-        next_offset = int(upload_result["offset"])
-        if next_offset != offset + len(chunk):
-            raise RuntimeError(f"upload offset advanced unexpectedly for {path_value}")
-        if progress is not None:
-            progress(len(chunk))
-        offset = next_offset
+    chunk_size = _upload_chunk_bytes()
+    with source_path.open("rb") as handle:
+        while offset < length:
+            handle.seek(offset)
+            chunk = handle.read(min(chunk_size, length - offset))
+            if not chunk:
+                break
+            try:
+                upload_result = api.append_upload_chunk(
+                    str(session["upload_url"]),
+                    offset=offset,
+                    checksum_algorithm=str(session["checksum_algorithm"]),
+                    content=chunk,
+                )
+            except httpx.TransportError as exc:
+                _log_upload(
+                    f"Upload interrupted for {path_value} at {_format_bytes(offset)}; "
+                    "checking server offset"
+                )
+                session = api.create_or_resume_collection_file_upload(collection_id, path_value)
+                recovered_offset = int(session["offset"])
+                if recovered_offset == offset:
+                    _log_upload(f"Server offset unchanged for {path_value}; retrying chunk")
+                    continue
+                if recovered_offset < offset:
+                    raise RuntimeError(
+                        f"server upload offset for {path_value} moved backward to "
+                        f"{recovered_offset}; expected at least {offset}"
+                    ) from exc
+                if recovered_offset > length:
+                    raise RuntimeError(
+                        f"server upload offset for {path_value} is {recovered_offset}, "
+                        f"past expected length {length}"
+                    ) from exc
+                if recovered_offset != offset + len(chunk):
+                    raise RuntimeError(
+                        f"server accepted a partial upload chunk for {path_value}: "
+                        f"{recovered_offset} bytes, expected {offset} or "
+                        f"{offset + len(chunk)}"
+                    ) from exc
+                _log_upload(
+                    f"Server accepted chunk for {path_value} before the response was lost; "
+                    f"continuing at {_format_bytes(recovered_offset)}"
+                )
+                if progress is not None:
+                    progress(recovered_offset - offset)
+                offset = recovered_offset
+                continue
+
+            next_offset = int(upload_result["offset"])
+            if next_offset != offset + len(chunk):
+                raise RuntimeError(f"upload offset advanced unexpectedly for {path_value}")
+            if progress is not None:
+                progress(len(chunk))
+            offset = next_offset
     if offset != length:
         raise RuntimeError(
             f"upload for {path_value} stopped at {offset} of {length} bytes"

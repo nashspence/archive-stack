@@ -22,6 +22,20 @@ from riverhog_core.domain.errors import (
 )
 
 _HTTP_TIMEOUT_SECONDS = 300.0
+_UPLOAD_TIMEOUT_SECONDS = 60.0
+
+
+def _timeout_seconds(env_name: str, default: float) -> float:
+    raw_value = os.getenv(env_name)
+    if raw_value is None or raw_value.strip() == "":
+        return default
+    try:
+        value = float(raw_value)
+    except ValueError as exc:
+        raise BadRequest(f"{env_name} must be a positive number of seconds") from exc
+    if value <= 0:
+        raise BadRequest(f"{env_name} must be a positive number of seconds")
+    return value
 
 
 class ApiClient:
@@ -322,6 +336,7 @@ class ApiClient:
                 "Upload-Checksum": f"{checksum_algorithm} {checksum}",
             },
             content=content,
+            timeout=_timeout_seconds("RIVERHOG_UPLOAD_TIMEOUT_SECONDS", _UPLOAD_TIMEOUT_SECONDS),
         )
         next_offset = int(response.headers.get("Upload-Offset", offset + len(content)))
         return {
