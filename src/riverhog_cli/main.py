@@ -5,7 +5,7 @@ import os
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Annotated, TypedDict
+from typing import Annotated, Any, TypedDict
 
 import httpx
 import typer
@@ -40,6 +40,10 @@ IMAGE_QUERY_HELP = "Substring match over id, filename, and collection ids"
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024
 UPLOAD_PROGRESS_INTERVAL_SECONDS = 5.0
+TRANSIENT_UPLOAD_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+UPLOAD_RESUME_RETRY_ATTEMPTS = 5
+UPLOAD_RESUME_RETRY_INITIAL_DELAY_SECONDS = 1.0
+UPLOAD_RESUME_RETRY_MAX_DELAY_SECONDS = 10.0
 
 
 class CollectionManifestEntry(TypedDict):
@@ -109,6 +113,41 @@ def _log_upload(message: str) -> None:
     typer.echo(message, err=True)
 
 
+def _is_transient_upload_error(exc: BaseException) -> bool:
+    if isinstance(exc, httpx.TransportError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in TRANSIENT_UPLOAD_STATUS_CODES
+    return False
+
+
+def _upload_error_description(exc: BaseException) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}"
+    return f"{type(exc).__name__}: {exc}"
+
+
+def _create_or_resume_collection_file_upload(
+    api: ApiClient,
+    collection_id: str,
+    path_value: str,
+) -> dict[str, Any]:
+    delay = UPLOAD_RESUME_RETRY_INITIAL_DELAY_SECONDS
+    for attempt in range(UPLOAD_RESUME_RETRY_ATTEMPTS):
+        try:
+            return api.create_or_resume_collection_file_upload(collection_id, path_value)
+        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            if not _is_transient_upload_error(exc) or attempt == UPLOAD_RESUME_RETRY_ATTEMPTS - 1:
+                raise
+            _log_upload(
+                f"Upload resume check for {path_value} failed "
+                f"({_upload_error_description(exc)}); retrying"
+            )
+            time.sleep(delay)
+            delay = min(delay * 2, UPLOAD_RESUME_RETRY_MAX_DELAY_SECONDS)
+    raise AssertionError("unreachable")
+
+
 def _local_collection_manifest(root: Path) -> list[CollectionManifestEntry]:
     files: list[CollectionManifestEntry] = []
     for path in sorted(root.rglob("*")):
@@ -140,10 +179,7 @@ def _upload_collection_file(
     if not isinstance(length_value, int):
         raise RuntimeError(f"upload length for {path_value} is not an integer")
     length = length_value
-    session = api.create_or_resume_collection_file_upload(
-        collection_id,
-        path_value,
-    )
+    session = _create_or_resume_collection_file_upload(api, collection_id, path_value)
     offset = int(session["offset"])
     if offset > length:
         raise RuntimeError(
@@ -174,12 +210,18 @@ def _upload_collection_file(
                     checksum_algorithm=str(session["checksum_algorithm"]),
                     content=chunk,
                 )
-            except httpx.TransportError as exc:
+            except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                if not _is_transient_upload_error(exc):
+                    raise
                 _log_upload(
                     f"Upload interrupted for {path_value} at {_format_bytes(offset)}; "
-                    f"{type(exc).__name__}: {exc}; checking server offset"
+                    f"{_upload_error_description(exc)}; checking server offset"
                 )
-                session = api.create_or_resume_collection_file_upload(collection_id, path_value)
+                session = _create_or_resume_collection_file_upload(
+                    api,
+                    collection_id,
+                    path_value,
+                )
                 recovered_offset = int(session["offset"])
                 if recovered_offset == offset:
                     _log_upload(f"Server offset unchanged for {path_value}; retrying chunk")
