@@ -692,7 +692,10 @@ chunk size is 4 MiB; operators may set `RIVERHOG_UPLOAD_CHUNK_BYTES` to a
 positive byte count when a specific deployment path needs smaller or larger
 request bodies. `RIVERHOG_UPLOAD_BASE_URL` may override the scheme and host of
 absolute upload URLs while preserving the API-provided path, which is useful
-when bulk upload traffic is sent through a local tunnel. During uploads the CLI
+when bulk upload traffic is sent through a local tunnel. `RIVERHOG_HOST_HEADER`
+and `RIVERHOG_TLS_VERIFY=false` let operators pin the connect address to a LAN
+IP while still routing through a name-based reverse proxy during DNS outages or
+hairpin edge cases. During uploads the CLI
 prints manifest, resume, per-file, and throttled total progress messages to
 stderr; `--json` output remains reserved for the final machine-readable payload
 on stdout. `RIVERHOG_UPLOAD_TIMEOUT_SECONDS` controls the per-chunk PATCH

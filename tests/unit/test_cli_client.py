@@ -74,6 +74,38 @@ def test_get_collection_quotes_reserved_characters_but_preserves_slashes(monkeyp
     assert captured == ["https://api.test/v1/collections/tax/2022%20reports"]
 
 
+def test_client_can_override_host_header_for_pinned_lan_routes(monkeypatch) -> None:
+    captured: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request.headers.get("host"))
+        return httpx.Response(200, json={"id": "docs"})
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_client(self: ApiClient) -> httpx.Client:
+        headers = {"Accept": "application/json"}
+        if self.host_header:
+            headers["Host"] = self.host_header
+        return httpx.Client(
+            base_url=self.base_url,
+            headers=headers,
+            transport=transport,
+            verify=self.verify_tls,
+        )
+
+    monkeypatch.setenv("RIVERHOG_HOST_HEADER", "riverhog.0819870.xyz")
+    monkeypatch.setenv("RIVERHOG_TLS_VERIFY", "false")
+    monkeypatch.setattr(ApiClient, "_client", fake_client)
+
+    client = ApiClient(base_url="https://192.168.152.1")
+    assert client.verify_tls is False
+
+    client.get_collection("docs")
+
+    assert captured == ["riverhog.0819870.xyz"]
+
+
 def test_list_collections_uses_collection_listing_endpoint(monkeypatch) -> None:
     captured: list[str] = []
 

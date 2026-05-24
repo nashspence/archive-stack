@@ -26,6 +26,18 @@ _HTTP_TIMEOUT_SECONDS = 300.0
 _UPLOAD_TIMEOUT_SECONDS = 60.0
 
 
+def _bool_env(env_name: str, default: bool) -> bool:
+    raw_value = os.getenv(env_name)
+    if raw_value is None or raw_value.strip() == "":
+        return default
+    normalized = raw_value.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise BadRequest(f"{env_name} must be true or false")
+
+
 def _timeout_seconds(env_name: str, default: float) -> float:
     raw_value = os.getenv(env_name)
     if raw_value is None or raw_value.strip() == "":
@@ -46,13 +58,22 @@ class ApiClient:
         )
         self.token = token or os.getenv("RIVERHOG_TOKEN")
         self.upload_base_url = (os.getenv("RIVERHOG_UPLOAD_BASE_URL", "").rstrip("/") or None)
+        self.host_header = os.getenv("RIVERHOG_HOST_HEADER", "").strip() or None
+        self.verify_tls = _bool_env("RIVERHOG_TLS_VERIFY", True)
         self._request_client: httpx.Client | None = None
 
     def _client(self) -> httpx.Client:
         headers = {"Accept": "application/json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        return httpx.Client(base_url=self.base_url, headers=headers, timeout=_HTTP_TIMEOUT_SECONDS)
+        if self.host_header:
+            headers["Host"] = self.host_header
+        return httpx.Client(
+            base_url=self.base_url,
+            headers=headers,
+            timeout=_HTTP_TIMEOUT_SECONDS,
+            verify=self.verify_tls,
+        )
 
     def _persistent_client(self) -> httpx.Client:
         if self._request_client is None:
