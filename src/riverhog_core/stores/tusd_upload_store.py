@@ -10,6 +10,7 @@ import httpx
 from riverhog_core.domain.errors import NotFound
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.stores.s3_support import create_s3_client
+from riverhog_core.tusd_ids import tusd_upload_id_for_target_path
 
 _TIMEOUT = 30.0
 _READ_TARGET_RETRY_SECONDS = 1.0
@@ -31,6 +32,10 @@ class TusdUploadStore:
 
     @staticmethod
     def _object_key(target_path: str) -> str:
+        return tusd_upload_id_for_target_path(target_path)
+
+    @staticmethod
+    def _legacy_object_key(target_path: str) -> str:
         return target_path.lstrip("/")
 
     def _metadata_header(self, target_path: str) -> str:
@@ -107,36 +112,48 @@ class TusdUploadStore:
         return b"".join(self.iter_target(target_path))
 
     def iter_target(self, target_path: str) -> Iterator[bytes]:
-        key = self._object_key(target_path)
+        keys = [self._object_key(target_path), self._legacy_object_key(target_path)]
         deadline = time.monotonic() + _READ_TARGET_RETRY_SECONDS
         while True:
+            missing_error: Exception | None = None
             try:
-                response = self._client.get_object(Bucket=self._bucket, Key=key)
-                body = response["Body"]
-                try:
-                    yield from body.iter_chunks(chunk_size=1024 * 1024)
-                finally:
-                    close = getattr(body, "close", None)
-                    if callable(close):
-                        close()
-                return
+                for key in keys:
+                    try:
+                        response = self._client.get_object(Bucket=self._bucket, Key=key)
+                    except self._client.exceptions.ClientError as exc:
+                        if exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode") != 404:
+                            raise
+                        missing_error = exc
+                        continue
+                    body = response["Body"]
+                    try:
+                        yield from body.iter_chunks(chunk_size=1024 * 1024)
+                    finally:
+                        close = getattr(body, "close", None)
+                        if callable(close):
+                            close()
+                    return
             except self._client.exceptions.ClientError as exc:
-                if exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode") != 404:
-                    raise
+                missing_error = exc
+            if missing_error is not None:
                 if time.monotonic() >= deadline:
-                    raise NotFound(f"upload target not found: {target_path}") from exc
+                    raise NotFound(f"upload target not found: {target_path}") from missing_error
                 time.sleep(_READ_TARGET_RETRY_INTERVAL_SECONDS)
 
     def delete_target(self, target_path: str) -> None:
-        key = self._object_key(target_path)
+        keys = [self._object_key(target_path), self._legacy_object_key(target_path)]
         self._client.delete_objects(
             Bucket=self._bucket,
             Delete={
                 "Objects": [
-                    {"Key": key},
-                    {"Key": f"{key}.info"},
-                    {"Key": f"{key}.part"},
-                ]
+                    item
+                    for key in keys
+                    for item in (
+                        {"Key": key},
+                        {"Key": f"{key}.info"},
+                        {"Key": f"{key}.part"},
+                    )
+                ],
             },
         )
 

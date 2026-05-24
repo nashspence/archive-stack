@@ -4,6 +4,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from riverhog_core.runtime_config import load_runtime_config
+from riverhog_core.tusd_ids import tusd_upload_id_for_target_path
 
 router = APIRouter(tags=["internal"], include_in_schema=False)
 _HOOK_SECRET_HEADER = "x-riverhog-tusd-hook-secret"
@@ -52,4 +53,6 @@ async def handle_tusd_hook(request: Request) -> JSONResponse:
     if any(part in {"", ".", ".."} for part in raw_target_path.split("/")):
         return _hook_error("target_path must be normalized")
 
-    return _json_response({"ChangeFileInfo": {"ID": raw_target_path}})
+    return _json_response(
+        {"ChangeFileInfo": {"ID": tusd_upload_id_for_target_path(raw_target_path)}}
+    )
