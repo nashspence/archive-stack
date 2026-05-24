@@ -28,7 +28,9 @@ collection ids.
 
 Riverhog normalizes the slug, mints the canonical collection id with the server
 UTC upload timestamp, and returns that id for all later file-upload and status
-calls. Collection ids are shaped like:
+calls. Migration uploads may provide `upload_timestamp` in UTC basic form
+`YYYYMMDDTHHMMSSZ` to preserve the original archival timestamp; the slug is
+still required. Collection ids are shaped like:
 
 ```text
 2026/20260524T190233Z__mom-iphone-photos

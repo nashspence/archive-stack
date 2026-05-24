@@ -44,11 +44,13 @@ def test_create_or_resume_collection_upload_uses_collection_upload_endpoint(monk
         "Tax 2022",
         [{"path": "invoice.pdf", "bytes": 12, "sha256": "a" * 64}],
         ingest_source="/tmp/tax/2022",
+        upload_timestamp="20250712T213200Z",
     )
 
     assert captured[0][0] == "POST"
     assert captured[0][1] == "https://api.test/v1/collection-uploads"
     assert '"slug":"Tax 2022"' in str(captured[0][2])
+    assert '"upload_timestamp":"20250712T213200Z"' in str(captured[0][2])
     assert "collection_id" not in str(captured[0][2])
 
 

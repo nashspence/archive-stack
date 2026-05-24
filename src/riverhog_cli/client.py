@@ -74,6 +74,7 @@ class ApiClient:
         files: Sequence[Mapping[str, Any]],
         *,
         ingest_source: str | None = None,
+        upload_timestamp: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "slug": slug,
@@ -81,6 +82,8 @@ class ApiClient:
         }
         if ingest_source is not None:
             payload["ingest_source"] = ingest_source
+        if upload_timestamp is not None:
+            payload["upload_timestamp"] = upload_timestamp
         return self._json("POST", "/v1/collection-uploads", json=payload)
 
     def get_collection_upload(self, collection_id: str) -> dict[str, Any]:

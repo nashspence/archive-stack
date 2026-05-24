@@ -19,6 +19,7 @@ class CreateOrResumeCollectionUploadRequest(RiverhogModel):
     slug: str
     files: list[CollectionUploadFileIn]
     ingest_source: str | None = None
+    upload_timestamp: str | None = None
 
 
 class CollectionSummaryOut(RiverhogModel):

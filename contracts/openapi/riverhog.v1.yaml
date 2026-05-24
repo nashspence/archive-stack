@@ -10,7 +10,7 @@ paths:
   /collection-uploads:
     post:
       summary: Create or resume one collection upload session
-      description: Creates or resumes a collection upload session from a human-readable slug and expected logical file set. Riverhog normalizes the slug, mints the canonical collection id with the server UTC upload timestamp, and resumes an existing non-finalized session when the normalized slug and manifest match.
+      description: Creates or resumes a collection upload session from a human-readable slug and expected logical file set. Riverhog normalizes the slug, mints the canonical collection id with either the server UTC upload timestamp or an optional caller-provided UTC timestamp, and resumes an existing non-finalized session when the normalized slug and manifest match.
       operationId: createOrResumeCollectionUpload
       requestBody:
         required: true
@@ -1808,6 +1808,11 @@ components:
         slug:
           type: string
           description: Human-readable collection slug. Riverhog normalizes this and mints the canonical collection id.
+        upload_timestamp:
+          oneOf:
+            - type: string
+            - type: "null"
+          description: Optional UTC basic timestamp in `YYYYMMDDTHHMMSSZ` form to use in the canonical collection id for migration of older archival sets. Slug remains required.
         ingest_source:
           oneOf:
             - type: string

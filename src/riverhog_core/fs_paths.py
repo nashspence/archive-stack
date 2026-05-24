@@ -4,6 +4,7 @@ import re
 import shutil
 import unicodedata
 from collections.abc import Iterable
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 
@@ -12,6 +13,7 @@ class PathNormalizationError(ValueError):
 
 
 _SLUG_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
+_UPLOAD_TIMESTAMP_RE = re.compile(r"^\d{8}T\d{6}Z$")
 MAX_UPLOAD_SLUG_LENGTH = 80
 
 
@@ -65,6 +67,21 @@ def normalize_upload_slug(raw: str) -> str:
             "collection upload slug must include at least one letter or digit"
         )
     return normalized
+
+
+def normalize_upload_timestamp(raw: str) -> str:
+    candidate = raw.strip()
+    if not _UPLOAD_TIMESTAMP_RE.fullmatch(candidate):
+        raise PathNormalizationError(
+            "collection upload timestamp must use UTC basic form YYYYMMDDTHHMMSSZ"
+        )
+    try:
+        datetime.strptime(candidate, "%Y%m%dT%H%M%SZ")
+    except ValueError as exc:
+        raise PathNormalizationError(
+            "collection upload timestamp must be a valid UTC timestamp"
+        ) from exc
+    return candidate
 
 
 def collection_id_ancestors(collection_id: str) -> list[str]:

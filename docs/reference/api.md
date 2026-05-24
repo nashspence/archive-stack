@@ -16,14 +16,15 @@ unexpired upload progress.
 
 #### `POST /v1/collection-uploads`
 
-Creates or resumes one collection upload session from a human-readable slug. Riverhog
-normalizes the slug and mints the canonical collection id.
+Creates or resumes one collection upload session from a human-readable slug.
+Riverhog normalizes the slug and mints the canonical collection id.
 
 Request body:
 
 ```json
 {
   "slug": "mom iphone photos",
+  "upload_timestamp": "20250712T213200Z",
   "ingest_source": "/operator/photos/2024",
   "files": [
     {
@@ -40,7 +41,10 @@ Required behavior:
 - the client does not provide a collection id
 - the server normalizes the slug and creates collection ids like
   `2026/20260524T190233Z__mom-iphone-photos`
-- the timestamp is minted in UTC by the server
+- the timestamp is minted in UTC by the server unless the request provides
+  `upload_timestamp` in UTC basic form `YYYYMMDDTHHMMSSZ`
+- `upload_timestamp` is optional and exists for migration of archival sets whose
+  original timestamp should be preserved; `slug` remains required
 - retries with the same normalized slug and file manifest resume the existing
   upload or return the already-finalized collection
 - persists enough upload-session state to survive service restart and repeated CLI runs
@@ -664,7 +668,7 @@ Suggested error codes:
 
 The `riverhog` CLI is a thin API client and should provide at least:
 
-- `riverhog upload SLUG ROOT`
+- `riverhog upload SLUG ROOT [--timestamp YYYYMMDDTHHMMSSZ]`
 - `riverhog find QUERY`
 - `riverhog show COLLECTION`
 - `riverhog show COLLECTION --files`

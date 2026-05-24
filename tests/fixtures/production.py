@@ -324,10 +324,13 @@ class ProductionCollectionsClient:
         files: list[dict[str, object]],
         *,
         ingest_source: str | None = None,
+        upload_timestamp: str | None = None,
     ) -> dict[str, object]:
         body: dict[str, object] = {"slug": slug, "files": files}
         if ingest_source is not None:
             body["ingest_source"] = ingest_source
+        if upload_timestamp is not None:
+            body["upload_timestamp"] = upload_timestamp
         return self._system.request("POST", "/v1/collection-uploads", json_body=body).json()
 
     def get_upload(self, collection_id: str) -> dict[str, object]:

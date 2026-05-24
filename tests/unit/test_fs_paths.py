@@ -9,6 +9,7 @@ from riverhog_core.fs_paths import (
     normalize_relpath,
     normalize_root_node_name,
     normalize_upload_slug,
+    normalize_upload_timestamp,
     path_parents,
 )
 
@@ -53,6 +54,26 @@ def test_normalize_upload_slug_fold_and_collapse(raw: str, expected: str) -> Non
 def test_normalize_upload_slug_rejects_empty_slug() -> None:
     with pytest.raises(ValueError):
         normalize_upload_slug(" -- ")
+
+
+def test_normalize_upload_timestamp_accepts_utc_basic_form() -> None:
+    assert normalize_upload_timestamp(" 20250712T213200Z ") == "20250712T213200Z"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "2025-07-12T21:32:00Z",
+        "20250712T213200",
+        "20250712T213200+0000",
+        "20250230T213200Z",
+    ],
+)
+def test_normalize_upload_timestamp_rejects_non_canonical_or_invalid_values(
+    raw: str,
+) -> None:
+    with pytest.raises(ValueError):
+        normalize_upload_timestamp(raw)
 
 
 def test_collection_id_ancestors_list_parent_prefixes() -> None:

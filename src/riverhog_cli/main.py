@@ -102,6 +102,13 @@ def _finalized_collection_upload_payload(
 def upload_cmd(
     slug: Annotated[str, typer.Argument(help="Human-readable collection slug")],
     root: Annotated[Path, typer.Argument(help="Local collection root directory")],
+    upload_timestamp: Annotated[
+        str | None,
+        typer.Option(
+            "--timestamp",
+            help="Use UTC upload timestamp YYYYMMDDTHHMMSSZ in the collection id",
+        ),
+    ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     resolved_root = root.expanduser().resolve()
@@ -114,6 +121,7 @@ def upload_cmd(
         slug,
         manifest,
         ingest_source=str(resolved_root),
+        upload_timestamp=upload_timestamp,
     )
     collection_id = str(payload["collection_id"])
     files = {item["path"]: (resolved_root / str(item["path"])).read_bytes() for item in manifest}

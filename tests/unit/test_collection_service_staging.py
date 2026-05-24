@@ -413,6 +413,64 @@ def test_same_upload_slug_with_different_manifest_mints_distinct_collection_id(
     assert str(second_payload["collection_id"]).endswith("__mom-iphone-photos")
 
 
+def test_collection_upload_can_use_explicit_migration_timestamp(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+
+    service = SqlAlchemyCollectionService(
+        _config(sqlite_path),
+        _FakeHotStore(),
+        _FakeUploadStore(),
+    )
+
+    content = b"migrated payload\n"
+    payload = service.create_or_resume_upload(
+        upload_slug="Mom iPhone Photos",
+        upload_timestamp="20250712T213200Z",
+        files=[
+            {
+                "path": "one.txt",
+                "bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        ],
+    )
+
+    assert payload["collection_id"] == "2025/20250712T213200Z__mom-iphone-photos"
+
+
+def test_matching_upload_with_different_explicit_timestamp_is_rejected(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+
+    service = SqlAlchemyCollectionService(
+        _config(sqlite_path),
+        _FakeHotStore(),
+        _FakeUploadStore(),
+    )
+
+    content = b"migrated payload\n"
+    files = [
+        {
+            "path": "one.txt",
+            "bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+    ]
+    service.create_or_resume_upload(
+        upload_slug="Mom iPhone Photos",
+        upload_timestamp="20250712T213200Z",
+        files=files,
+    )
+
+    with pytest.raises(Conflict, match="different timestamp"):
+        service.create_or_resume_upload(
+            upload_slug="mom iphone photos",
+            upload_timestamp="20250713T213200Z",
+            files=files,
+        )
+
+
 def test_completed_glacier_upload_refreshes_provisional_disc_plan(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     initialize_db(str(sqlite_path))

@@ -51,6 +51,7 @@ from riverhog_core.fs_paths import (
     normalize_collection_id,
     normalize_relpath,
     normalize_upload_slug,
+    normalize_upload_timestamp,
 )
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.ports.upload_store import UploadStore
@@ -104,8 +105,19 @@ class SqlAlchemyCollectionService:
         upload_slug: str,
         files: Sequence[dict[str, object]],
         ingest_source: str | None = None,
+        upload_timestamp: str | None = None,
     ) -> dict[str, object]:
         normalized_slug = _normalize_upload_slug_or_raise(upload_slug)
+        normalized_upload_timestamp = (
+            _normalize_upload_timestamp_or_raise(upload_timestamp)
+            if upload_timestamp is not None
+            else None
+        )
+        requested_collection_id = (
+            _collection_id_for_upload_timestamp(normalized_slug, normalized_upload_timestamp)
+            if normalized_upload_timestamp is not None
+            else None
+        )
         normalized_files = _normalize_upload_files(files)
         manifest_fingerprint = _collection_upload_manifest_fingerprint(normalized_files)
 
@@ -116,6 +128,10 @@ class SqlAlchemyCollectionService:
                 manifest_fingerprint=manifest_fingerprint,
             )
             if collection is not None:
+                _ensure_requested_collection_id_matches(
+                    collection.id,
+                    requested_collection_id,
+                )
                 return _finalized_collection_upload_payload(session, collection)
 
             upload = _find_matching_upload(
@@ -125,10 +141,18 @@ class SqlAlchemyCollectionService:
                 upload_store=self._upload_store,
             )
             if upload is not None:
+                _ensure_requested_collection_id_matches(
+                    upload.collection_id,
+                    requested_collection_id,
+                )
                 _validate_existing_upload_manifest(upload, normalized_files)
 
             if upload is None:
-                normalized_collection_id = _mint_collection_id(session, normalized_slug)
+                normalized_collection_id = requested_collection_id or _mint_collection_id(
+                    session,
+                    normalized_slug,
+                )
+                _ensure_collection_id_unused(session, normalized_collection_id)
                 _ensure_collection_upload_conflict_free(session, normalized_collection_id)
                 _ensure_unburned_collection_limit_allows(
                     session,
@@ -468,6 +492,13 @@ def _normalize_upload_slug_or_raise(raw: str) -> str:
         raise BadRequest(str(exc)) from exc
 
 
+def _normalize_upload_timestamp_or_raise(raw: str) -> str:
+    try:
+        return normalize_upload_timestamp(raw)
+    except PathNormalizationError as exc:
+        raise BadRequest(str(exc)) from exc
+
+
 def _normalize_relpath_or_raise(raw: str) -> str:
     try:
         return normalize_relpath(raw)
@@ -538,6 +569,22 @@ def _collection_id_upload_slug(collection_id: str) -> str | None:
     return leaf.split("__", 1)[1]
 
 
+def _collection_id_for_upload_timestamp(upload_slug: str, upload_timestamp: str) -> str:
+    return f"{upload_timestamp[:4]}/{upload_timestamp}__{upload_slug}"
+
+
+def _ensure_requested_collection_id_matches(
+    existing_collection_id: str,
+    requested_collection_id: str | None,
+) -> None:
+    if requested_collection_id is None or existing_collection_id == requested_collection_id:
+        return
+    raise Conflict(
+        "collection upload already exists for this slug and manifest with a different "
+        f"timestamp: {existing_collection_id}"
+    )
+
+
 def _find_matching_collection(
     session: Session,
     *,
@@ -594,6 +641,13 @@ def _mint_collection_id(session: Session, upload_slug: str) -> str:
         ):
             return collection_id
         current += timedelta(seconds=1)
+
+
+def _ensure_collection_id_unused(session: Session, collection_id: str) -> None:
+    if session.get(CollectionRecord, collection_id) is not None:
+        raise Conflict(f"collection already exists: {collection_id}")
+    if session.get(CollectionUploadRecord, collection_id) is not None:
+        raise Conflict(f"collection upload already exists with different manifest: {collection_id}")
 
 
 def _ensure_collection_upload_conflict_free(session: Session, collection_id: str) -> None:

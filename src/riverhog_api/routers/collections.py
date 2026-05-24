@@ -70,6 +70,7 @@ def create_or_resume_collection_upload(
         upload_slug=request.slug,
         files=[item.model_dump() for item in request.files],
         ingest_source=request.ingest_source,
+        upload_timestamp=request.upload_timestamp,
     )
     return CollectionUploadSessionOut.model_validate(payload)
 

@@ -17,9 +17,10 @@ namespace until Riverhog verifies them.
 
 Collection ingest begins with a human-readable slug and a complete file
 manifest. Riverhog normalizes the slug, mints a timestamped canonical collection
-id, and returns that id for subsequent file-upload and status calls. Retrying the
-same normalized slug with the same manifest resumes the same unfinished upload
-or returns the already-finalized collection.
+id, and returns that id for subsequent file-upload and status calls. Migration
+uploads may provide the timestamp explicitly in UTC basic form while still
+providing the slug. Retrying the same normalized slug with the same manifest
+resumes the same unfinished upload or returns the already-finalized collection.
 
 Collection ingest has two gates. The upload gate verifies every declared file.
 The archive gate builds the whole-collection Glacier archive package, uploads

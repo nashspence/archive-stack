@@ -99,6 +99,7 @@ from riverhog_core.fs_paths import (
     normalize_collection_id,
     normalize_relpath,
     normalize_upload_slug,
+    normalize_upload_timestamp,
 )
 from riverhog_core.iso.streaming import IsoStream, build_iso_cmd_from_root
 from riverhog_core.planner.manifest import MANIFEST_FILENAME
@@ -1073,11 +1074,26 @@ class AcceptanceCollectionService:
         upload_slug: str,
         files: list[dict[str, object]],
         ingest_source: str | None = None,
+        upload_timestamp: str | None = None,
     ) -> dict[str, object]:
         normalized_slug = normalize_upload_slug(upload_slug)
+        normalized_upload_timestamp = (
+            normalize_upload_timestamp(upload_timestamp)
+            if upload_timestamp is not None
+            else None
+        )
+        requested_collection_id = (
+            self._collection_id_for_upload_timestamp(
+                normalized_slug,
+                normalized_upload_timestamp,
+            )
+            if normalized_upload_timestamp is not None
+            else None
+        )
         normalized_files = self._normalize_files(files)
         collection = self._matching_collection(normalized_slug, normalized_files)
         if collection is not None:
+            self._ensure_requested_collection_id_matches(collection, requested_collection_id)
             return self._finalized_upload_payload(collection)
 
         upload = self._matching_upload(normalized_slug, normalized_files)
@@ -1085,8 +1101,17 @@ class AcceptanceCollectionService:
             upload = self._expire_upload(upload)
 
         if upload is None:
-            normalized_collection_id = self._mint_collection_id(normalized_slug)
+            normalized_collection_id = requested_collection_id or self._mint_collection_id(
+                normalized_slug
+            )
             collection_key = CollectionId(normalized_collection_id)
+            if collection_key in self.state.files_by_collection:
+                raise Conflict(f"collection already exists: {normalized_collection_id}")
+            if collection_key in self.state.collection_uploads:
+                raise Conflict(
+                    "collection upload already exists with different manifest: "
+                    f"{normalized_collection_id}"
+                )
             conflict = find_collection_id_conflict(
                 (
                     [
@@ -1112,6 +1137,10 @@ class AcceptanceCollectionService:
             )
             self.state.collection_uploads[collection_key] = upload
         else:
+            self._ensure_requested_collection_id_matches(
+                upload.collection_id,
+                requested_collection_id,
+            )
             upload.ingest_source = ingest_source
             if upload.state == "failed":
                 upload.state = "archiving"
@@ -1149,6 +1178,25 @@ class AcceptanceCollectionService:
             if self._upload_manifest(upload) == files:
                 return upload
         return None
+
+    @staticmethod
+    def _collection_id_for_upload_timestamp(upload_slug: str, upload_timestamp: str) -> str:
+        return f"{upload_timestamp[:4]}/{upload_timestamp}__{upload_slug}"
+
+    @staticmethod
+    def _ensure_requested_collection_id_matches(
+        existing_collection_id: CollectionId,
+        requested_collection_id: str | None,
+    ) -> None:
+        if (
+            requested_collection_id is None
+            or str(existing_collection_id) == requested_collection_id
+        ):
+            return
+        raise Conflict(
+            "collection upload already exists for this slug and manifest with a different "
+            f"timestamp: {existing_collection_id}"
+        )
 
     def _mint_collection_id(self, upload_slug: str) -> str:
         current = datetime.now(UTC).replace(microsecond=0)

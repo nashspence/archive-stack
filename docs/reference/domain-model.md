@@ -27,7 +27,9 @@ Collection-id rules:
 - clients provide a slug, not a collection id
 - Riverhog normalizes the slug and mints ids like
   `2026/20260524T190233Z__mom-iphone-photos`
-- the timestamp is UTC collection-upload creation time
+- the timestamp defaults to UTC collection-upload creation time
+- migration uploads may provide an explicit UTC basic timestamp like
+  `20250712T213200Z`; the slug is still required
 - no collection id may be an ancestor or descendant of another collection id
 - accepted collections are immediately Glacier-backed and eligible for hot
   visibility and disc planning
