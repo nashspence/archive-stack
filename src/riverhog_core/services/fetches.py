@@ -178,12 +178,17 @@ class SqlAlchemyFetchService:
                 self._hot_store,
                 self._recovery_payload_codec,
             )
-            _sync_upload_progress(pin_record, entries, self._upload_store)
-            _expire_incomplete_uploads(pin_record, entries, self._upload_store)
             entry = _get_entry(entries, entry_id)
+            _sync_upload_progress_for_entry(pin_record, entry, self._upload_store)
+            _expire_incomplete_upload_for_entry(pin_record, entry, self._upload_store)
 
             if entry.tus_url is None:
                 raise Conflict(f"fetch entry upload is not resumable: {entry_id}")
+            if offset != entry.uploaded_bytes:
+                raise Conflict(
+                    f"fetch entry upload offset for {entry_id} is "
+                    f"{offset}, expected {entry.uploaded_bytes}"
+                )
 
             next_offset, _ = self._upload_store.append_upload_chunk(
                 entry.tus_url,
@@ -737,6 +742,22 @@ def _expire_incomplete_uploads(
         pin_record.fetch_state = FetchState.WAITING_MEDIA.value
 
 
+def _expire_incomplete_upload_for_entry(
+    pin_record: ActivePinRecord,
+    entry: FetchEntryRecord,
+    upload_store: UploadStore,
+) -> None:
+    target_path = _entry_upload_target_path(entry)
+    updated, did_expire = expire_upload_state(
+        current=_entry_upload_lifecycle_state(entry),
+        target_path=target_path,
+        upload_store=upload_store,
+    )
+    _apply_entry_upload_lifecycle_state(entry, updated)
+    if did_expire and pin_record.fetch_state == FetchState.UPLOADING.value:
+        pin_record.fetch_state = FetchState.WAITING_MEDIA.value
+
+
 def _sync_upload_progress(
     pin_record: ActivePinRecord,
     entries: list[FetchEntryRecord],
@@ -755,6 +776,23 @@ def _sync_upload_progress(
         if entry.uploaded_bytes > 0:
             any_uploaded = True
     if any_uploaded and pin_record.fetch_state == FetchState.WAITING_MEDIA.value:
+        pin_record.fetch_state = FetchState.UPLOADING.value
+
+
+def _sync_upload_progress_for_entry(
+    pin_record: ActivePinRecord,
+    entry: FetchEntryRecord,
+    upload_store: UploadStore,
+) -> None:
+    target_path = _entry_upload_target_path(entry)
+    updated = sync_upload_state(
+        current=_entry_upload_lifecycle_state(entry),
+        target_path=target_path,
+        length=entry.recovery_bytes,
+        upload_store=upload_store,
+    )
+    _apply_entry_upload_lifecycle_state(entry, updated)
+    if entry.uploaded_bytes > 0 and pin_record.fetch_state == FetchState.WAITING_MEDIA.value:
         pin_record.fetch_state = FetchState.UPLOADING.value
 
 
