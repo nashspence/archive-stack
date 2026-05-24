@@ -15,7 +15,7 @@ class Base(DeclarativeBase):
 
 
 # Each entry is a list of (table, column, sql_type) tuples for columns to add if missing.
-# New tables are handled by create_all; only column additions need explicit migration.
+# New tables are handled by create_all; additive changes need explicit migration.
 _COLUMN_MIGRATIONS: list[list[tuple[str, str, str]]] = [
     # version 1
     [
@@ -70,6 +70,30 @@ _COLUMN_MIGRATIONS: list[list[tuple[str, str, str]]] = [
         ("glacier_recovery_sessions", "materialization_state", "TEXT"),
     ],
 ]
+_TYPE_MIGRATIONS: dict[int, list[tuple[str, str, str]]] = {
+    # version 10
+    10: [
+        ("collection_files", "bytes", "BIGINT"),
+        ("file_copies", "part_bytes", "BIGINT"),
+        ("collection_archives", "stored_bytes", "BIGINT"),
+        ("collection_archives", "manifest_stored_bytes", "BIGINT"),
+        ("collection_archives", "ots_stored_bytes", "BIGINT"),
+        ("planned_candidates", "bytes", "BIGINT"),
+        ("planned_candidates", "target_bytes", "BIGINT"),
+        ("planned_candidates", "min_fill_bytes", "BIGINT"),
+        ("finalized_images", "bytes", "BIGINT"),
+        ("finalized_images", "target_bytes", "BIGINT"),
+        ("glacier_usage_snapshots", "measured_storage_bytes", "BIGINT"),
+        ("glacier_usage_snapshots", "estimated_billable_bytes", "BIGINT"),
+        ("glacier_usage_snapshots", "archived_metadata_bytes_per_object", "BIGINT"),
+        ("glacier_usage_snapshots", "standard_metadata_bytes_per_object", "BIGINT"),
+        ("fetch_entries", "bytes", "BIGINT"),
+        ("fetch_entries", "recovery_bytes", "BIGINT"),
+        ("fetch_entries", "uploaded_bytes", "BIGINT"),
+        ("collection_upload_files", "bytes", "BIGINT"),
+        ("collection_upload_files", "uploaded_bytes", "BIGINT"),
+    ],
+}
 
 
 def database_url_from_sqlite_path(sqlite_path: str | Path) -> str:
@@ -133,6 +157,13 @@ def _column_exists(conn: Connection, table: str, column: str) -> bool:
     return any(item["name"] == column for item in inspect(conn).get_columns(table))
 
 
+def _alter_column_type(conn: Connection, table: str, column: str, col_type: str) -> None:
+    backend = conn.dialect.name
+    if backend == "sqlite":
+        return
+    conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN {column} TYPE {col_type}"))
+
+
 def migrate_schema(engine: Engine) -> None:
     """Apply any pending column migrations to the catalog database.
 
@@ -145,15 +176,23 @@ def migrate_schema(engine: Engine) -> None:
         applied = {
             row[0] for row in conn.execute(text("SELECT version FROM schema_migrations")).fetchall()
         }
-        for version, columns in enumerate(_COLUMN_MIGRATIONS, start=1):
+        max_version = max(len(_COLUMN_MIGRATIONS), max(_TYPE_MIGRATIONS, default=0))
+        for version in range(1, max_version + 1):
             if version in applied:
                 continue
+            columns = _COLUMN_MIGRATIONS[version - 1] if version <= len(_COLUMN_MIGRATIONS) else []
             for table, column, col_type in columns:
                 if not _table_exists(conn, table):
                     continue
                 if _column_exists(conn, table, column):
                     continue
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
+            for table, column, col_type in _TYPE_MIGRATIONS.get(version, []):
+                if not _table_exists(conn, table):
+                    continue
+                if not _column_exists(conn, table, column):
+                    continue
+                _alter_column_type(conn, table, column, col_type)
             conn.execute(
                 text("INSERT INTO schema_migrations (version) VALUES (:v)"), {"v": version}
             )

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import Boolean, ForeignKeyConstraint, Integer, String
+from sqlalchemy import BigInteger, Boolean, ForeignKeyConstraint, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from riverhog_core.catalog_db import Base
@@ -30,7 +30,7 @@ class CollectionFileRecord(Base):
         primary_key=True,
     )
     path: Mapped[str] = mapped_column(String, primary_key=True)
-    bytes: Mapped[int] = mapped_column(Integer)
+    bytes: Mapped[int] = mapped_column(BigInteger)
     sha256: Mapped[str] = mapped_column(String(64))
     hot: Mapped[bool] = mapped_column(Boolean, default=True)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -63,7 +63,7 @@ class FileCopyRecord(Base):
     enc_json: Mapped[str] = mapped_column(String)
     part_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     part_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    part_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    part_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     part_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     __table_args__ = (
@@ -83,7 +83,7 @@ class CollectionArchiveRecord(Base):
     collection_id: Mapped[str] = mapped_column(String, primary_key=True)
     state: Mapped[str] = mapped_column(String, default="pending")
     object_path: Mapped[str | None] = mapped_column(String, nullable=True)
-    stored_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stored_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     backend: Mapped[str | None] = mapped_column(String, nullable=True)
     storage_class: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -94,11 +94,11 @@ class CollectionArchiveRecord(Base):
     compression: Mapped[str | None] = mapped_column(String, nullable=True)
     manifest_object_path: Mapped[str | None] = mapped_column(String, nullable=True)
     manifest_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    manifest_stored_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    manifest_stored_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     manifest_uploaded_at: Mapped[str | None] = mapped_column(String, nullable=True)
     ots_object_path: Mapped[str | None] = mapped_column(String, nullable=True)
     ots_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    ots_stored_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ots_stored_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     ots_uploaded_at: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
@@ -118,11 +118,11 @@ class PlannedCandidateRecord(Base):
     candidate_id: Mapped[str] = mapped_column(String, primary_key=True)
     finalized_id: Mapped[str] = mapped_column(String, unique=True)
     filename: Mapped[str] = mapped_column(String)
-    bytes: Mapped[int] = mapped_column(Integer)
+    bytes: Mapped[int] = mapped_column(BigInteger)
     iso_ready: Mapped[bool] = mapped_column(Boolean, default=False)
     image_root: Mapped[str] = mapped_column(String)
-    target_bytes: Mapped[int] = mapped_column(Integer)
-    min_fill_bytes: Mapped[int] = mapped_column(Integer)
+    target_bytes: Mapped[int] = mapped_column(BigInteger)
+    min_fill_bytes: Mapped[int] = mapped_column(BigInteger)
 
     covered_paths: Mapped[list[CandidateCoveredPathRecord]] = relationship(
         back_populates="candidate",
@@ -154,9 +154,9 @@ class FinalizedImageRecord(Base):
     image_id: Mapped[str] = mapped_column(String, primary_key=True)
     candidate_id: Mapped[str] = mapped_column(String)
     filename: Mapped[str] = mapped_column(String)
-    bytes: Mapped[int] = mapped_column(Integer)
+    bytes: Mapped[int] = mapped_column(BigInteger)
     image_root: Mapped[str] = mapped_column(String)
-    target_bytes: Mapped[int] = mapped_column(Integer)
+    target_bytes: Mapped[int] = mapped_column(BigInteger)
     required_copy_count: Mapped[int | None] = mapped_column(Integer, default=2, nullable=True)
 
     covered_paths: Mapped[list[FinalizedImageCoveredPathRecord]] = relationship(
@@ -241,14 +241,14 @@ class GlacierUsageSnapshotRecord(Base):
 
     captured_at: Mapped[str] = mapped_column(String, primary_key=True)
     uploaded_images: Mapped[int] = mapped_column(Integer)
-    measured_storage_bytes: Mapped[int] = mapped_column(Integer)
-    estimated_billable_bytes: Mapped[int] = mapped_column(Integer)
+    measured_storage_bytes: Mapped[int] = mapped_column(BigInteger)
+    estimated_billable_bytes: Mapped[int] = mapped_column(BigInteger)
     estimated_monthly_cost_usd: Mapped[float] = mapped_column()
     pricing_label: Mapped[str] = mapped_column(String)
     glacier_storage_rate_usd_per_gib_month: Mapped[float] = mapped_column()
     standard_storage_rate_usd_per_gib_month: Mapped[float] = mapped_column()
-    archived_metadata_bytes_per_object: Mapped[int] = mapped_column(Integer)
-    standard_metadata_bytes_per_object: Mapped[int] = mapped_column(Integer)
+    archived_metadata_bytes_per_object: Mapped[int] = mapped_column(BigInteger)
+    standard_metadata_bytes_per_object: Mapped[int] = mapped_column(BigInteger)
     minimum_storage_duration_days: Mapped[int] = mapped_column(Integer)
 
 
@@ -405,10 +405,10 @@ class FetchEntryRecord(Base):
     entry_order: Mapped[int] = mapped_column(Integer)
     collection_id: Mapped[str] = mapped_column(String)
     path: Mapped[str] = mapped_column(String)
-    bytes: Mapped[int] = mapped_column(Integer)
+    bytes: Mapped[int] = mapped_column(BigInteger)
     sha256: Mapped[str] = mapped_column(String(64))
-    recovery_bytes: Mapped[int] = mapped_column(Integer, default=0)
-    uploaded_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    recovery_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    uploaded_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     upload_expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
     tus_url: Mapped[str | None] = mapped_column(String, nullable=True)
 
@@ -444,9 +444,9 @@ class CollectionUploadFileRecord(Base):
     collection_id: Mapped[str] = mapped_column(String, primary_key=True)
     path: Mapped[str] = mapped_column(String, primary_key=True)
     file_order: Mapped[int] = mapped_column(Integer)
-    bytes: Mapped[int] = mapped_column(Integer)
+    bytes: Mapped[int] = mapped_column(BigInteger)
     sha256: Mapped[str] = mapped_column(String(64))
-    uploaded_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    uploaded_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     upload_expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
     tus_url: Mapped[str | None] = mapped_column(String, nullable=True)
 
