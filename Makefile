@@ -33,7 +33,7 @@ help:
 		'Variables:' \
 		"  args='...'             Forward arguments to mypy or pytest lanes." \
 		'  COMPOSE_ENV_FILE=/abs/path/to/.env.compose' \
-		'  TEST_COMPOSE_PROJECT_NAME=archive-stack-shared'
+		'  TEST_COMPOSE_PROJECT_NAME=riverhog-shared'
 
 ruff:
 	@$(UV_RUN) python -m ruff check .

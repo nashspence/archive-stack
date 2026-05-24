@@ -4,6 +4,8 @@ from typing import Any
 
 from riverhog_core.runtime_config import RuntimeConfig
 
+_MISSING_BUCKET_CODES = {"404", "NoSuchBucket", "NotFound"}
+
 
 def _require_boto3() -> tuple[Any, Any]:
     try:
@@ -55,10 +57,25 @@ def create_glacier_s3_client(config: RuntimeConfig) -> Any:
     )
 
 
+def _bucket_missing(exc: Exception) -> bool:
+    response = getattr(exc, "response", {})
+    if not isinstance(response, dict):
+        return False
+    error = response.get("Error", {})
+    if isinstance(error, dict) and str(error.get("Code", "")) in _MISSING_BUCKET_CODES:
+        return True
+    metadata = response.get("ResponseMetadata", {})
+    return isinstance(metadata, dict) and metadata.get("HTTPStatusCode") == 404
+
+
 def _ensure_bucket_exists(client: Any, *, bucket: str, region: str) -> None:
-    existing = client.list_buckets().get("Buckets", [])
-    if any(current.get("Name") == bucket for current in existing):
+    try:
+        client.head_bucket(Bucket=bucket)
         return
+    except Exception as exc:
+        if not _bucket_missing(exc):
+            raise
+
     create_kwargs: dict[str, object] = {"Bucket": bucket}
     if region and region != "us-east-1":
         create_kwargs["CreateBucketConfiguration"] = {"LocationConstraint": region}

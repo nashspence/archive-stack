@@ -266,7 +266,7 @@ is no supported override for this state root; choose the Compose project name to
 control isolation or reuse.
 
 Older failed or pre-cleanup generated runs can leave stale
-`.compose/archive-stack-test-*` roots behind. List the generated roots that the
+`.compose/riverhog-test-*` roots behind. List the generated roots that the
 maintenance command would delete with:
 
 ```bash
@@ -280,7 +280,7 @@ root-owned files created through the source bind mount:
 make prune-prod-state args='--force'
 ```
 
-The command only selects generated `archive-stack-test-...-<pid>` roots.
+The command only selects generated `riverhog-test-...-<pid>` roots.
 Shared/manual state such as `.compose/acceptance` or explicit project names is
 preserved by default.
 

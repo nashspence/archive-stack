@@ -5,8 +5,8 @@ COMPOSE_FILE="${ROOT_DIR}/compose.yml"
 DEFAULT_ENV_FILE="${ROOT_DIR}/.env.compose.example"
 LOCAL_ENV_FILE="${ROOT_DIR}/.env.compose"
 PROD_HARNESS_ENV_FILE="${ROOT_DIR}/tests/harness/prod-harness.env"
-APP_IMAGE_NAME="archive-stack-app:dev"
-TEST_IMAGE_NAME="archive-stack-test:dev"
+APP_IMAGE_NAME="riverhog-app:dev"
+TEST_IMAGE_NAME="riverhog-test:dev"
 
 if [[ -f "${LOCAL_ENV_FILE}" ]]; then
   COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE:-${LOCAL_ENV_FILE}}"
@@ -91,7 +91,7 @@ setup_test_compose_project() {
     export TEST_COMPOSE_PROJECT_ISOLATED=0
     return
   fi
-  export COMPOSE_PROJECT_NAME="archive-stack-test-$(sanitize_compose_project_component "${USER:-}")-$$"
+  export COMPOSE_PROJECT_NAME="riverhog-test-$(sanitize_compose_project_component "${USER:-}")-$$"
   export TEST_COMPOSE_PROJECT_ISOLATED=1
 }
 

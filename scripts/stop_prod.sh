@@ -32,7 +32,7 @@ mapfile -t projects < <(
     --filter label=com.docker.compose.project \
     --format '{{.Label "com.docker.compose.project"}}' \
     | sort -u \
-    | grep -E '^archive-stack-test-[[:alnum:]-]+-[0-9]+$' \
+    | grep -E '^riverhog-test-[[:alnum:]-]+-[0-9]+$' \
     || true
 )
 

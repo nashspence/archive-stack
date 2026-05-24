@@ -192,7 +192,7 @@ must override the development default and source this value from the deployment'
 secret manager.
 
 The checked-in default value is only for local development and deterministic test
-harnesses. Do not use `archive-stack-dev-recovery-passphrase` for deployed
+harnesses. Do not use `riverhog-dev-recovery-passphrase` for deployed
 archives.
 
 ## `RIVERHOG_RECOVERY_PAYLOAD_REQUIRE_EXPLICIT_PASSPHRASE`

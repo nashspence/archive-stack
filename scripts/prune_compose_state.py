@@ -8,9 +8,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_STATE_ROOT = REPO_ROOT / ".compose"
-DEFAULT_IMAGE = "archive-stack-test:dev"
+DEFAULT_IMAGE = "riverhog-test:dev"
 GENERATED_PROD_HARNESS_STATE_RE = re.compile(
-    r"^archive-stack-test-[a-z0-9]+(?:-[a-z0-9]+)*-\d+$"
+    r"^riverhog-test-[a-z0-9]+(?:-[a-z0-9]+)*-\d+$"
 )
 
 

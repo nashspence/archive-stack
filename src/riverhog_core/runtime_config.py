@@ -8,7 +8,7 @@ from datetime import timedelta
 from pathlib import Path
 
 _DURATION_RE = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
-DEV_RECOVERY_PAYLOAD_PASSPHRASE = "archive-stack-dev-recovery-passphrase"
+DEV_RECOVERY_PAYLOAD_PASSPHRASE = "riverhog-dev-recovery-passphrase"
 DEFAULT_DATABASE_URL = "postgresql+psycopg://riverhog:riverhog@127.0.0.1:5432/riverhog"
 
 

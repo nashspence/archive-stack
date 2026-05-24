@@ -291,7 +291,7 @@ def test_prod_builds_images_and_uses_isolated_compose_project_name(
     project_names = {line.split("|", 1)[0] for line in log_lines}
     assert len(project_names) == 1
     project_name = next(iter(project_names))
-    assert re.fullmatch(r"archive-stack-test-[a-z0-9]+(?:-[a-z0-9]+)*-\d+", project_name)
+    assert re.fullmatch(r"riverhog-test-[a-z0-9]+(?:-[a-z0-9]+)*-\d+", project_name)
 
     docker_log = "\n".join(log_lines)
     assert " build app" in docker_log
@@ -323,7 +323,7 @@ def test_prod_removes_generated_bind_mount_state_on_success(tmp_path: Path) -> N
 
 
 def test_prod_preserves_explicit_shared_bind_mount_state(tmp_path: Path) -> None:
-    shared_project = "archive-stack-shared-unit"
+    shared_project = "riverhog-shared-unit"
     completed, docker_log_path, uv_log_path = _run_make(
         tmp_path,
         "prod",
@@ -463,13 +463,13 @@ def test_stop_prod_targets_explicit_shared_compose_project(tmp_path: Path) -> No
     completed, docker_log_path, uv_log_path = _run_make(
         tmp_path,
         "stop-prod",
-        extra_env={"TEST_COMPOSE_PROJECT_NAME": "archive-stack-shared-unit"},
+        extra_env={"TEST_COMPOSE_PROJECT_NAME": "riverhog-shared-unit"},
     )
 
     assert completed.returncode == 0, completed.stderr
     assert _read_log_lines(uv_log_path) == []
     docker_log = "\n".join(_read_log_lines(docker_log_path))
-    assert "archive-stack-shared-unit|0||" in docker_log
+    assert "riverhog-shared-unit|0||" in docker_log
     assert " down --volumes --remove-orphans" in docker_log
 
 

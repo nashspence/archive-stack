@@ -99,7 +99,7 @@ reused across commands. There is no supported override for this state root;
 choose the Compose project name to control isolation or reuse.
 
 Use `make prune-prod-state` to list stale generated prod-harness roots such as
-`.compose/archive-stack-test-codespace-167907`. The command is dry-run by
+`.compose/riverhog-test-codespace-167907`. The command is dry-run by
 default and preserves shared/manual directories. Run
 `make prune-prod-state args='--force'` to delete the listed generated roots with
 the same Docker-backed cleanup approach used by successful prod-harness runs, so
