@@ -177,7 +177,7 @@ def _upload_collection_file(
             except httpx.TransportError as exc:
                 _log_upload(
                     f"Upload interrupted for {path_value} at {_format_bytes(offset)}; "
-                    "checking server offset"
+                    f"{type(exc).__name__}: {exc}; checking server offset"
                 )
                 session = api.create_or_resume_collection_file_upload(collection_id, path_value)
                 recovered_offset = int(session["offset"])

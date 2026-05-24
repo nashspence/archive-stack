@@ -366,6 +366,46 @@ def test_append_upload_chunk_can_override_absolute_upload_base_url(monkeypatch) 
     )
 
 
+def test_api_client_reuses_http_client_for_requests(monkeypatch) -> None:
+    created = 0
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(
+            200,
+            json={
+                "page": 1,
+                "per_page": 25,
+                "total": 0,
+                "pages": 0,
+                "collections": [],
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_client(self: ApiClient) -> httpx.Client:
+        nonlocal created
+        created += 1
+        return httpx.Client(base_url=self.base_url, transport=transport)
+
+    monkeypatch.setattr(ApiClient, "_client", fake_client)
+
+    client = ApiClient(base_url="https://api.test")
+    try:
+        client.list_collections()
+        client.list_collections()
+    finally:
+        client.close()
+
+    assert created == 1
+    assert seen == [
+        "https://api.test/v1/collections?page=1&per_page=25",
+        "https://api.test/v1/collections?page=1&per_page=25",
+    ]
+
+
 def test_register_copy_uses_generated_copy_endpoint(monkeypatch) -> None:
     captured: list[tuple[str, str, str]] = []
 

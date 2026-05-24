@@ -45,12 +45,24 @@ class ApiClient:
         )
         self.token = token or os.getenv("RIVERHOG_TOKEN")
         self.upload_base_url = (os.getenv("RIVERHOG_UPLOAD_BASE_URL", "").rstrip("/") or None)
+        self._request_client: httpx.Client | None = None
 
     def _client(self) -> httpx.Client:
         headers = {"Accept": "application/json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         return httpx.Client(base_url=self.base_url, headers=headers, timeout=_HTTP_TIMEOUT_SECONDS)
+
+    def _persistent_client(self) -> httpx.Client:
+        if self._request_client is None:
+            self._request_client = self._client()
+        return self._request_client
+
+    def close(self) -> None:
+        if self._request_client is None:
+            return
+        self._request_client.close()
+        self._request_client = None
 
     def _raise_for_error(self, response: httpx.Response) -> None:
         if response.is_success:
@@ -74,8 +86,7 @@ class ApiClient:
         raise exc_map.get(code, RiverhogError)(str(message))
 
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        with self._client() as client:
-            response = client.request(method, path, **kwargs)
+        response = self._persistent_client().request(method, path, **kwargs)
         self._raise_for_error(response)
         return response
 

@@ -698,7 +698,8 @@ stderr; `--json` output remains reserved for the final machine-readable payload
 on stdout. `RIVERHOG_UPLOAD_TIMEOUT_SECONDS` controls the per-chunk PATCH
 timeout, defaulting to 60 seconds. If a chunk response is lost after the server
 accepted the data, the CLI re-queries the resumable file offset and continues
-from the server-confirmed position.
+from the server-confirmed position. A single CLI invocation reuses one HTTP
+connection pool for API and upload requests, avoiding per-chunk TCP/TLS setup.
 
 `riverhog show COLLECTION --files` should provide a concise human-readable listing of the collection's logical files, including current hot or archived state and available copies when applicable.
 
