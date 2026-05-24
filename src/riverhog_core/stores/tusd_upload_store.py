@@ -12,7 +12,7 @@ from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.stores.s3_support import create_s3_client
 from riverhog_core.tusd_ids import tusd_upload_id_for_target_path
 
-_TIMEOUT = 30.0
+_TIMEOUT = 300.0
 _READ_TARGET_RETRY_SECONDS = 1.0
 _READ_TARGET_RETRY_INTERVAL_SECONDS = 0.05
 _HOOK_SECRET_HEADER = "X-Riverhog-Tusd-Hook-Secret"

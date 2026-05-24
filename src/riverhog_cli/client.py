@@ -21,6 +21,8 @@ from riverhog_core.domain.errors import (
     RiverhogError,
 )
 
+_HTTP_TIMEOUT_SECONDS = 300.0
+
 
 class ApiClient:
     def __init__(self, base_url: str | None = None, token: str | None = None) -> None:
@@ -33,7 +35,7 @@ class ApiClient:
         headers = {"Accept": "application/json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        return httpx.Client(base_url=self.base_url, headers=headers, timeout=60.0)
+        return httpx.Client(base_url=self.base_url, headers=headers, timeout=_HTTP_TIMEOUT_SECONDS)
 
     def _raise_for_error(self, response: httpx.Response) -> None:
         if response.is_success:

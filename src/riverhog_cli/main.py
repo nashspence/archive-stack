@@ -36,7 +36,7 @@ PLAN_QUERY_HELP = (
 )
 IMAGE_QUERY_HELP = "Substring match over id, filename, and collection ids"
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
-UPLOAD_CHUNK_BYTES = 64 * 1024 * 1024
+UPLOAD_CHUNK_BYTES = 16 * 1024 * 1024
 
 
 class CollectionManifestEntry(TypedDict):
