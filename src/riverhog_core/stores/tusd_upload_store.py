@@ -7,7 +7,7 @@ from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 import httpx
 
-from riverhog_core.domain.errors import NotFound
+from riverhog_core.domain.errors import Conflict, NotFound
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.stores.s3_support import create_s3_client
 from riverhog_core.tusd_ids import tusd_upload_id_for_target_path
@@ -105,6 +105,9 @@ class TusdUploadStore:
                 ),
                 content=content,
             )
+            if response.status_code in {400, 409}:
+                message = response.text.strip() or "upload chunk was rejected by tusd"
+                raise Conflict(message)
             response.raise_for_status()
             return int(response.headers["Upload-Offset"]), response.headers.get("Upload-Expires")
 

@@ -27,8 +27,11 @@ def sync_upload_state(
     target_path: str,
     length: int,
     upload_store: UploadStore,
+    force: bool = False,
 ) -> UploadLifecycleState:
     if current.tus_url is None:
+        return current
+    if not force and _upload_state_is_live(current=current, length=length):
         return current
 
     offset = upload_store.get_offset(current.tus_url)
@@ -65,6 +68,7 @@ def create_or_resume_upload_state(
         target_path=target_path,
         length=length,
         upload_store=upload_store,
+        force=True,
     )
     tus_url = synced.tus_url
     uploaded_bytes = synced.uploaded_bytes
@@ -135,6 +139,21 @@ def _upload_target_exists(upload_store: UploadStore, target_path: str) -> bool:
     except Exception:
         return False
     return True
+
+
+def _upload_state_is_live(
+    *,
+    current: UploadLifecycleState,
+    length: int,
+    now: datetime | None = None,
+) -> bool:
+    if current.upload_expires_at is None:
+        return False
+    if upload_state_name(uploaded_bytes=current.uploaded_bytes, length=length) == "uploaded":
+        return False
+    effective_now = now or utc_now()
+    expires_at = datetime.fromisoformat(current.upload_expires_at.replace("Z", "+00:00"))
+    return expires_at > effective_now
 
 
 def upload_expiry_timestamp(ttl: timedelta) -> str:

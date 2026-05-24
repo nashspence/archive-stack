@@ -7,12 +7,14 @@ from riverhog_core.services.resumable_uploads import UploadLifecycleState, sync_
 
 class _MissingUploadStore:
     def __init__(self) -> None:
+        self.get_offset_calls = 0
         self.read_target_calls = 0
 
     def create_upload(self, target_path: str, length: int) -> str:
         raise AssertionError("create_upload should not be called")
 
     def get_offset(self, tus_url: str) -> int:
+        self.get_offset_calls += 1
         return -1
 
     def append_upload_chunk(
@@ -74,4 +76,46 @@ def test_sync_upload_state_preserves_partial_state_when_upload_disappears_mid_sy
     )
 
     assert updated == current
+    assert store.get_offset_calls == 1
+    assert store.read_target_calls == 1
+
+
+def test_sync_upload_state_skips_live_unexpired_uploads() -> None:
+    store = _MissingUploadStore()
+    current = UploadLifecycleState(
+        tus_url="/uploads/fx-1/e1",
+        uploaded_bytes=21,
+        upload_expires_at="2999-04-26T00:00:00Z",
+    )
+
+    updated = sync_upload_state(
+        current=current,
+        target_path="/.riverhog/recovery/fx-1/e1.enc",
+        length=61,
+        upload_store=store,
+    )
+
+    assert updated == current
+    assert store.get_offset_calls == 0
+    assert store.read_target_calls == 0
+
+
+def test_sync_upload_state_force_checks_live_uploads() -> None:
+    store = _MissingUploadStore()
+    current = UploadLifecycleState(
+        tus_url="/uploads/fx-1/e1",
+        uploaded_bytes=21,
+        upload_expires_at="2999-04-26T00:00:00Z",
+    )
+
+    updated = sync_upload_state(
+        current=current,
+        target_path="/.riverhog/recovery/fx-1/e1.enc",
+        length=61,
+        upload_store=store,
+        force=True,
+    )
+
+    assert updated == current
+    assert store.get_offset_calls == 1
     assert store.read_target_calls == 1

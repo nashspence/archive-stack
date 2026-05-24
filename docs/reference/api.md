@@ -700,6 +700,9 @@ timeout, defaulting to 60 seconds. If a chunk response is lost after the server
 accepted the data, the CLI re-queries the resumable file offset and continues
 from the server-confirmed position. A single CLI invocation reuses one HTTP
 connection pool for API and upload requests, avoiding per-chunk TCP/TLS setup.
+Server-side upload expiry sweeps do not poll tusd offsets for live,
+non-expired uploads because tusd interrupts an active PATCH when another
+request, including HEAD, targets the same upload resource.
 
 `riverhog show COLLECTION --files` should provide a concise human-readable listing of the collection's logical files, including current hot or archived state and available copies when applicable.
 

@@ -284,7 +284,7 @@ class SqlAlchemyCollectionService:
                 raise NotFound(f"collection upload not found: {normalized_collection_id}")
 
             file_record = _get_upload_file(upload.files, normalized_path)
-            _sync_and_expire_collection_upload_file(file_record, self._upload_store)
+            _expire_collection_upload_file(file_record, self._upload_store)
             if file_record.tus_url is None:
                 raise Conflict(f"collection upload file is not resumable: {normalized_path}")
             if offset != file_record.uploaded_bytes:
@@ -810,18 +810,11 @@ def _expire_collection_upload_files(
     return expired_any
 
 
-def _sync_and_expire_collection_upload_file(
+def _expire_collection_upload_file(
     file_record: CollectionUploadFileRecord,
     upload_store: UploadStore,
 ) -> None:
     target_path = _collection_upload_target_path(file_record.collection_id, file_record.path)
-    updated = sync_upload_state(
-        current=_upload_lifecycle_state(file_record),
-        target_path=target_path,
-        length=file_record.bytes,
-        upload_store=upload_store,
-    )
-    _apply_upload_lifecycle_state(file_record, updated)
     updated, _ = expire_upload_state(
         current=_upload_lifecycle_state(file_record),
         target_path=target_path,
