@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Annotated, TypedDict
 
@@ -34,6 +35,8 @@ PLAN_QUERY_HELP = (
     "Substring match over candidate id, collection ids, and represented projected file paths"
 )
 IMAGE_QUERY_HELP = "Substring match over id, filename, and collection ids"
+HASH_CHUNK_BYTES = 8 * 1024 * 1024
+UPLOAD_CHUNK_BYTES = 64 * 1024 * 1024
 
 
 class CollectionManifestEntry(TypedDict):
@@ -46,22 +49,91 @@ def client() -> ApiClient:
     return ApiClient()
 
 
+def _iter_file_chunks(
+    path: Path,
+    *,
+    offset: int = 0,
+    limit: int | None = None,
+    chunk_size: int = UPLOAD_CHUNK_BYTES,
+) -> Iterator[bytes]:
+    remaining = limit
+    with path.open("rb") as handle:
+        if offset:
+            handle.seek(offset)
+        while remaining is None or remaining > 0:
+            read_size = chunk_size if remaining is None else min(chunk_size, remaining)
+            chunk = handle.read(read_size)
+            if not chunk:
+                return
+            yield chunk
+            if remaining is not None:
+                remaining -= len(chunk)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    for chunk in _iter_file_chunks(path, chunk_size=HASH_CHUNK_BYTES):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _local_collection_manifest(root: Path) -> list[CollectionManifestEntry]:
     files: list[CollectionManifestEntry] = []
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
-        content = path.read_bytes()
+        stat = path.stat()
         files.append(
             {
                 "path": path.relative_to(root).as_posix(),
-                "bytes": len(content),
-                "sha256": hashlib.sha256(content).hexdigest(),
+                "bytes": stat.st_size,
+                "sha256": _file_sha256(path),
             }
         )
     if not files:
         raise typer.BadParameter("collection source must contain at least one file")
     return files
+
+
+def _upload_collection_file(
+    api: ApiClient,
+    collection_id: str,
+    source_path: Path,
+    file_payload: dict[str, object],
+) -> None:
+    length_value = file_payload["bytes"]
+    if not isinstance(length_value, int):
+        raise RuntimeError(f"upload length for {file_payload['path']} is not an integer")
+    length = length_value
+    session = api.create_or_resume_collection_file_upload(
+        collection_id,
+        str(file_payload["path"]),
+    )
+    offset = int(session["offset"])
+    if offset > length:
+        raise RuntimeError(
+            f"upload offset for {file_payload['path']} is {offset}, past expected length {length}"
+        )
+    for chunk in _iter_file_chunks(
+        source_path,
+        offset=offset,
+        limit=length - offset,
+        chunk_size=UPLOAD_CHUNK_BYTES,
+    ):
+        upload_result = api.append_upload_chunk(
+            str(session["upload_url"]),
+            offset=offset,
+            checksum_algorithm=str(session["checksum_algorithm"]),
+            content=chunk,
+        )
+        next_offset = int(upload_result["offset"])
+        if next_offset != offset + len(chunk):
+            raise RuntimeError(f"upload offset advanced unexpectedly for {file_payload['path']}")
+        offset = next_offset
+    if offset != length:
+        raise RuntimeError(
+            f"upload for {file_payload['path']} stopped at {offset} of {length} bytes"
+        )
 
 
 def _finalized_collection_upload_payload(
@@ -124,24 +196,16 @@ def upload_cmd(
         upload_timestamp=upload_timestamp,
     )
     collection_id = str(payload["collection_id"])
-    files = {item["path"]: (resolved_root / str(item["path"])).read_bytes() for item in manifest}
 
     for file_payload in payload["files"]:
         if file_payload["upload_state"] == "uploaded":
             continue
-        session = api.create_or_resume_collection_file_upload(
+        _upload_collection_file(
+            api,
             collection_id,
-            str(file_payload["path"]),
+            resolved_root / str(file_payload["path"]),
+            file_payload,
         )
-        content = files[str(file_payload["path"])]
-        offset = int(session["offset"])
-        if offset < len(content):
-            api.append_upload_chunk(
-                str(session["upload_url"]),
-                offset=offset,
-                checksum_algorithm=str(session["checksum_algorithm"]),
-                content=content[offset:],
-            )
 
     final_payload: dict[str, object] | None = None
     deadline = time.monotonic() + 30.0
