@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Annotated, TypedDict
 
@@ -38,6 +38,7 @@ PLAN_QUERY_HELP = (
 IMAGE_QUERY_HELP = "Substring match over id, filename, and collection ids"
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024
+UPLOAD_PROGRESS_INTERVAL_SECONDS = 5.0
 
 
 class CollectionManifestEntry(TypedDict):
@@ -91,6 +92,22 @@ def _upload_chunk_bytes() -> int:
     return value
 
 
+def _format_bytes(value: int) -> str:
+    if value < 1000:
+        return f"{value} B"
+
+    scaled = float(value)
+    for unit in ("KB", "MB", "GB", "TB", "PB"):
+        scaled /= 1000.0
+        if scaled < 1000.0 or unit == "PB":
+            return f"{scaled:.1f} {unit}"
+    raise AssertionError("unreachable")
+
+
+def _log_upload(message: str) -> None:
+    typer.echo(message, err=True)
+
+
 def _local_collection_manifest(root: Path) -> list[CollectionManifestEntry]:
     files: list[CollectionManifestEntry] = []
     for path in sorted(root.rglob("*")):
@@ -114,20 +131,34 @@ def _upload_collection_file(
     collection_id: str,
     source_path: Path,
     file_payload: dict[str, object],
+    *,
+    progress: Callable[[int], None] | None = None,
 ) -> None:
+    path_value = str(file_payload["path"])
     length_value = file_payload["bytes"]
     if not isinstance(length_value, int):
-        raise RuntimeError(f"upload length for {file_payload['path']} is not an integer")
+        raise RuntimeError(f"upload length for {path_value} is not an integer")
     length = length_value
     session = api.create_or_resume_collection_file_upload(
         collection_id,
-        str(file_payload["path"]),
+        path_value,
     )
     offset = int(session["offset"])
     if offset > length:
         raise RuntimeError(
-            f"upload offset for {file_payload['path']} is {offset}, past expected length {length}"
+            f"upload offset for {path_value} is {offset}, past expected length {length}"
         )
+    if offset >= length:
+        _log_upload(f"Already uploaded {path_value} ({_format_bytes(length)})")
+        return
+
+    if offset:
+        _log_upload(
+            f"Resuming {path_value} at {_format_bytes(offset)} of {_format_bytes(length)}"
+        )
+    else:
+        _log_upload(f"Uploading {path_value} ({_format_bytes(length)})")
+
     for chunk in _iter_file_chunks(
         source_path,
         offset=offset,
@@ -142,12 +173,15 @@ def _upload_collection_file(
         )
         next_offset = int(upload_result["offset"])
         if next_offset != offset + len(chunk):
-            raise RuntimeError(f"upload offset advanced unexpectedly for {file_payload['path']}")
+            raise RuntimeError(f"upload offset advanced unexpectedly for {path_value}")
+        if progress is not None:
+            progress(len(chunk))
         offset = next_offset
     if offset != length:
         raise RuntimeError(
-            f"upload for {file_payload['path']} stopped at {offset} of {length} bytes"
+            f"upload for {path_value} stopped at {offset} of {length} bytes"
         )
+    _log_upload(f"Uploaded {path_value} ({_format_bytes(length)})")
 
 
 def _finalized_collection_upload_payload(
@@ -202,7 +236,15 @@ def upload_cmd(
         raise typer.BadParameter("collection source must be a directory")
 
     api = client()
+    _log_upload(f"Hashing collection manifest from {resolved_root}")
+    manifest_started_at = time.monotonic()
     manifest = _local_collection_manifest(resolved_root)
+    manifest_bytes = sum(item["bytes"] for item in manifest)
+    _log_upload(
+        "Manifest hashed: "
+        f"{len(manifest)} files, {_format_bytes(manifest_bytes)} "
+        f"in {time.monotonic() - manifest_started_at:.1f}s"
+    )
     payload = api.create_or_resume_collection_upload(
         slug,
         manifest,
@@ -210,8 +252,36 @@ def upload_cmd(
         upload_timestamp=upload_timestamp,
     )
     collection_id = str(payload["collection_id"])
+    upload_files = payload["files"]
+    uploaded_bytes = sum(
+        min(int(file_payload.get("uploaded_bytes", 0)), int(file_payload["bytes"]))
+        for file_payload in upload_files
+    )
+    uploaded_files = sum(
+        1 for file_payload in upload_files if file_payload["upload_state"] == "uploaded"
+    )
+    _log_upload(
+        f"Upload session {collection_id}: "
+        f"{uploaded_files}/{len(upload_files)} files already uploaded, "
+        f"{_format_bytes(uploaded_bytes)} / {_format_bytes(manifest_bytes)}"
+    )
+    last_progress_log_at = time.monotonic()
 
-    for file_payload in payload["files"]:
+    def note_uploaded(delta: int) -> None:
+        nonlocal uploaded_bytes, last_progress_log_at
+        uploaded_bytes += delta
+        now = time.monotonic()
+        if now - last_progress_log_at < UPLOAD_PROGRESS_INTERVAL_SECONDS:
+            return
+        percent = (uploaded_bytes / manifest_bytes * 100.0) if manifest_bytes else 100.0
+        _log_upload(
+            "Upload progress: "
+            f"{_format_bytes(uploaded_bytes)} / {_format_bytes(manifest_bytes)} "
+            f"({percent:.1f}%)"
+        )
+        last_progress_log_at = now
+
+    for file_payload in upload_files:
         if file_payload["upload_state"] == "uploaded":
             continue
         _upload_collection_file(
@@ -219,6 +289,7 @@ def upload_cmd(
             collection_id,
             resolved_root / str(file_payload["path"]),
             file_payload,
+            progress=note_uploaded,
         )
 
     final_payload: dict[str, object] | None = None
