@@ -52,7 +52,12 @@ def test_build_print_size_cmd_from_root_reuses_streaming_flags(tmp_path: Path) -
     stream_cmd = build_iso_cmd_from_root(image_root=root, volume_id="VOL_ROOT")
     size_cmd = build_iso_print_size_cmd_from_root(image_root=root, volume_id="VOL_ROOT")
 
-    assert size_cmd[:-2] == stream_cmd[:-1]
+    stream_outdev = stream_cmd.index("-outdev") + 1
+    size_outdev = size_cmd.index("-outdev") + 1
+    comparable_size_cmd = [*size_cmd]
+    comparable_size_cmd[size_outdev] = stream_cmd[stream_outdev]
+    assert size_cmd[size_outdev].startswith("stdio:")
+    assert comparable_size_cmd[:-2] == stream_cmd[:-1]
     assert size_cmd[-2:] == ["-print-size", "-end"]
 
 
@@ -86,6 +91,10 @@ def test_validate_iso_image_raises_with_xorriso_detail(monkeypatch, tmp_path: Pa
 
 def test_parse_print_size_accepts_size_prefix() -> None:
     assert _parse_print_size_blocks("xorriso : NOTE : foo\nsize=1234\n") == 1234
+
+
+def test_parse_print_size_accepts_xorriso_image_size_line() -> None:
+    assert _parse_print_size_blocks("Image size   : 186s\n") == 186
 
 
 def test_estimate_iso_size_from_root_converts_blocks_to_bytes(monkeypatch, tmp_path: Path) -> None:

@@ -88,6 +88,8 @@ def build_iso_cmd_from_root(*, image_root: Path, volume_id: str) -> list[str]:
 
 def build_iso_print_size_cmd_from_root(*, image_root: Path, volume_id: str) -> list[str]:
     cmd = build_iso_cmd_from_root(image_root=image_root, volume_id=volume_id)
+    outdev_index = cmd.index("-outdev") + 1
+    cmd[outdev_index] = f"stdio:{os.devnull}"
     return [*cmd[:-1], "-print-size", "-end"]
 
 
