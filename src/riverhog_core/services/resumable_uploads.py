@@ -33,9 +33,7 @@ def sync_upload_state(
 
     offset = upload_store.get_offset(current.tus_url)
     if offset == -1:
-        try:
-            upload_store.read_target(target_path)
-        except Exception:
+        if not _upload_target_exists(upload_store, target_path):
             # Another worker may have consumed and deleted the backing upload between
             # loading the row and syncing the current offset. Preserve the current
             # lifecycle state here so a stale sync cannot roll committed progress back
@@ -104,9 +102,7 @@ def expire_upload_state(
     if current.tus_url is not None:
         offset = upload_store.get_offset(current.tus_url)
         if offset == -1:
-            try:
-                upload_store.read_target(target_path)
-            except Exception:
+            if not _upload_target_exists(upload_store, target_path):
                 return (
                     UploadLifecycleState(
                         tus_url=None,
@@ -130,6 +126,15 @@ def expire_upload_state(
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _upload_target_exists(upload_store: UploadStore, target_path: str) -> bool:
+    try:
+        for _ in upload_store.iter_target(target_path):
+            break
+    except Exception:
+        return False
+    return True
 
 
 def upload_expiry_timestamp(ttl: timedelta) -> str:

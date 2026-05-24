@@ -128,6 +128,17 @@ class _FakeUploadStore:
         self._target_by_url.pop(tus_url, None)
 
 
+class _StreamingOnlyUploadStore(_FakeUploadStore):
+    def read_target(self, target_path: str) -> bytes:
+        raise AssertionError(f"read_target should not be used for upload promotion: {target_path}")
+
+    def iter_target(self, target_path: str) -> Iterator[bytes]:
+        content = self._content_by_target[target_path]
+        midpoint = len(content) // 2
+        yield content[:midpoint]
+        yield content[midpoint:]
+
+
 class _FakeArchiveStore:
     def upload_collection_archive_package(self, *, collection_id, package):
         return CollectionArchiveUploadReceipt(
@@ -255,7 +266,7 @@ def test_partial_collection_upload_does_not_publish_committed_hot_file(tmp_path:
     initialize_db(str(sqlite_path))
 
     hot_store = _FakeHotStore()
-    upload_store = _FakeUploadStore()
+    upload_store = _StreamingOnlyUploadStore()
     service = SqlAlchemyCollectionService(_config(sqlite_path), hot_store, upload_store)
 
     content = b"hello world\n"
@@ -286,7 +297,7 @@ def test_completed_collection_upload_promotes_from_staging_and_cleans_up(tmp_pat
     initialize_db(str(sqlite_path))
 
     hot_store = _FakeHotStore()
-    upload_store = _FakeUploadStore()
+    upload_store = _StreamingOnlyUploadStore()
     service = SqlAlchemyCollectionService(_config(sqlite_path), hot_store, upload_store)
 
     content = b"hello world\n"

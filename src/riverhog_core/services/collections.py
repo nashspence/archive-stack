@@ -309,7 +309,7 @@ class SqlAlchemyCollectionService:
                     normalized_collection_id,
                     normalized_path,
                 )
-                content_digest = _sha256_hex(self._upload_store.read_target(target_path))
+                content_digest = _sha256_hex_chunks(self._upload_store.iter_target(target_path))
                 if content_digest != file_record.sha256:
                     raise HashMismatch("sha256 did not match expected file hash")
             else:
@@ -886,21 +886,27 @@ def _finalize_collection_upload(
 
     for file_record in sorted(upload.files, key=lambda current: current.file_order):
         target_path = _collection_upload_target_path(upload.collection_id, file_record.path)
-        content = upload_store.read_target(target_path)
-        digest = _sha256_hex(content)
-        if digest != file_record.sha256:
+        content_digest = _promote_upload_target_to_hot_store(
+            hot_store,
+            upload_store,
+            collection_id=upload.collection_id,
+            path=file_record.path,
+            target_path=target_path,
+            content_length=file_record.bytes,
+        )
+        if content_digest != file_record.sha256:
+            hot_store.delete_collection_file(upload.collection_id, file_record.path)
             raise Conflict(
                 "uploaded collection file sha256 did not match "
                 f"expected digest for {upload.collection_id}/{file_record.path}"
             )
-        hot_store.put_collection_file(upload.collection_id, file_record.path, content)
         upload_store.delete_target(target_path)
         collection.files.append(
             CollectionFileRecord(
                 collection_id=upload.collection_id,
                 path=file_record.path,
                 bytes=file_record.bytes,
-                sha256=digest,
+                sha256=content_digest,
                 hot=True,
                 archived=False,
             )
@@ -1106,6 +1112,38 @@ def _utc_now() -> str:
 
 def _sha256_hex(content: bytes) -> Sha256Hex:
     return Sha256Hex(hashlib.sha256(content).hexdigest())
+
+
+def _sha256_hex_chunks(chunks: Iterable[bytes]) -> Sha256Hex:
+    digest = hashlib.sha256()
+    for chunk in chunks:
+        digest.update(chunk)
+    return Sha256Hex(digest.hexdigest())
+
+
+def _promote_upload_target_to_hot_store(
+    hot_store: HotStore,
+    upload_store: UploadStore,
+    *,
+    collection_id: str,
+    path: str,
+    target_path: str,
+    content_length: int,
+) -> Sha256Hex:
+    digest = hashlib.sha256()
+
+    def digesting_chunks() -> Iterable[bytes]:
+        for chunk in upload_store.iter_target(target_path):
+            digest.update(chunk)
+            yield chunk
+
+    hot_store.put_collection_file_stream(
+        collection_id,
+        path,
+        digesting_chunks(),
+        content_length=content_length,
+    )
+    return Sha256Hex(digest.hexdigest())
 
 
 def _utc_now_dt() -> datetime:

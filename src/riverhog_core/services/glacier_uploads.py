@@ -179,8 +179,12 @@ class SqlAlchemyGlacierUploadService:
                 key=lambda current_file: current_file.file_order,
             ):
                 target_path = _collection_upload_target_path(collection_id, file_record.path)
-                content = upload_store.read_target(target_path)
-                hot_store.put_collection_file(collection_id, file_record.path, content)
+                hot_store.put_collection_file_stream(
+                    collection_id,
+                    file_record.path,
+                    upload_store.iter_target(target_path),
+                    content_length=file_record.bytes,
+                )
                 upload_store.delete_target(target_path)
                 collection.files.append(
                     CollectionFileRecord(
