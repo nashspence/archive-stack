@@ -9,6 +9,7 @@ from pathlib import Path
 
 _DURATION_RE = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
 DEV_RECOVERY_PAYLOAD_PASSPHRASE = "archive-stack-dev-recovery-passphrase"
+DEFAULT_DATABASE_URL = "postgresql+psycopg://riverhog:riverhog@127.0.0.1:5432/riverhog"
 
 
 def _parse_duration(value: str) -> timedelta:
@@ -66,6 +67,21 @@ def _parse_command(value: str, *, name: str) -> tuple[str, ...]:
     return command
 
 
+def _database_url_from_sqlite_path(sqlite_path: Path) -> str:
+    sqlite_path = sqlite_path.expanduser().resolve()
+    sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+    return f"sqlite:///{sqlite_path}"
+
+
+def _sqlite_path_from_database_url(database_url: str) -> Path | None:
+    if not database_url.startswith("sqlite:///"):
+        return None
+    raw_path = database_url.removeprefix("sqlite:///")
+    if raw_path in {"", ":memory:"}:
+        return None
+    return Path(raw_path).expanduser().resolve()
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     object_store: str
@@ -77,7 +93,8 @@ class RuntimeConfig:
     s3_force_path_style: bool
     tusd_base_url: str
     tusd_hook_secret: str
-    sqlite_path: Path
+    sqlite_path: Path | None = None
+    database_url: str = ""
     incomplete_upload_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
     upload_expiry_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
     glacier_endpoint_url: str = "http://127.0.0.1:9000"
@@ -152,6 +169,19 @@ class RuntimeConfig:
     public_base_url: str | None = None
 
     def __post_init__(self) -> None:
+        if not self.database_url:
+            database_url = (
+                _database_url_from_sqlite_path(self.sqlite_path)
+                if self.sqlite_path is not None
+                else DEFAULT_DATABASE_URL
+            )
+            object.__setattr__(self, "database_url", database_url)
+        elif self.sqlite_path is None:
+            object.__setattr__(
+                self,
+                "sqlite_path",
+                _sqlite_path_from_database_url(self.database_url),
+            )
         if self.glacier_recovery_webhook_url:
             minimum_ready_ttl = (
                 self.glacier_recovery_webhook_timeout + self.glacier_recovery_webhook_retry_delay
@@ -170,12 +200,18 @@ def load_runtime_config() -> RuntimeConfig:
     if object_store != "s3":
         raise ValueError(f"unsupported ARC_OBJECT_STORE {object_store!r}: expected 's3'")
 
-    sqlite_path_raw = os.getenv("ARC_DB_PATH", ".arc/state.sqlite3")
+    database_url_raw = os.getenv("ARC_DATABASE_URL", "").strip()
+    sqlite_path_raw = os.getenv("ARC_DB_PATH", "").strip()
     ttl_raw = os.getenv("INCOMPLETE_UPLOAD_TTL", "24h")
     sweep_raw = os.getenv("UPLOAD_EXPIRY_SWEEP_INTERVAL", "30s")
 
-    sqlite_path = Path(sqlite_path_raw).expanduser().resolve()
-    sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+    sqlite_path = Path(sqlite_path_raw).expanduser().resolve() if sqlite_path_raw else None
+    if database_url_raw:
+        database_url = database_url_raw
+    elif sqlite_path is not None:
+        database_url = _database_url_from_sqlite_path(sqlite_path)
+    else:
+        database_url = DEFAULT_DATABASE_URL
     incomplete_upload_ttl = _parse_duration(ttl_raw)
     upload_expiry_sweep_interval = _parse_duration(sweep_raw)
     s3_endpoint_url = os.getenv("ARC_S3_ENDPOINT_URL", "http://127.0.0.1:9000").rstrip("/")
@@ -392,6 +428,7 @@ def load_runtime_config() -> RuntimeConfig:
         tusd_base_url=os.getenv("ARC_TUSD_BASE_URL", "http://127.0.0.1:1080/files").rstrip("/"),
         tusd_hook_secret=os.getenv("ARC_TUSD_HOOK_SECRET", "dev-tusd-hook-secret"),
         sqlite_path=sqlite_path,
+        database_url=database_url,
         incomplete_upload_ttl=incomplete_upload_ttl,
         upload_expiry_sweep_interval=upload_expiry_sweep_interval,
         glacier_endpoint_url=os.getenv("ARC_GLACIER_ENDPOINT_URL", s3_endpoint_url).rstrip("/"),

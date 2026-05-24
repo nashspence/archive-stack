@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from arc_core.archive_compliance import normalize_glacier_state
+from arc_core.catalog_db import make_session_factory, session_scope
 from arc_core.catalog_models import (
     CollectionArchiveRecord,
     CollectionFileRecord,
@@ -33,7 +34,6 @@ from arc_core.domain.types import CollectionId, ImageId
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.glacier_billing import resolve_glacier_billing
 from arc_core.services.glacier_pricing import resolve_glacier_pricing
-from arc_core.sqlite_db import make_session_factory, session_scope
 from arc_core.webhooks import utcnow
 
 _BYTES_PER_GIB = Decimal(1024**3)
@@ -43,7 +43,7 @@ _USD_QUANTUM = Decimal("0.000000000001")
 class SqlAlchemyGlacierReportingService:
     def __init__(self, config: RuntimeConfig) -> None:
         self._config = config
-        self._session_factory = make_session_factory(str(config.sqlite_path))
+        self._session_factory = make_session_factory(config.database_url)
 
     def get_report(
         self,

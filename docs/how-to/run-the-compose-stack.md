@@ -29,9 +29,9 @@ project name by default. Export `TEST_COMPOSE_PROJECT_NAME` first if you
 intentionally want prod-backed runs to reuse one Compose project. Those
 prod-backed entrypoints use Docker-assigned ephemeral host ports for API and
 WebDAV publication; the harness reaches those services over the Compose network
-instead of through host ports. They also keep SQLite state and webhook captures
-plus acceptance workspaces under `/app/.compose/<compose-project>/` inside the
-shared source bind mount.
+instead of through host ports. They keep the catalog in the Compose-managed
+Postgres sidecar and keep webhook captures plus acceptance workspaces under
+`/app/.compose/<compose-project>/` inside the shared source bind mount.
 
 ## Start the stack
 
@@ -46,9 +46,9 @@ The default example env exposes:
 - the API at `http://127.0.0.1:8000`
 - the read-only WebDAV surface at `http://127.0.0.1:8080`
 
-The checked-in harness uses Garage for S3-compatible committed storage, `tusd`
-for resumable staging uploads, and `rclone serve webdav --read-only` for
-day-to-day browsing.
+The checked-in harness uses Garage for S3-compatible committed storage,
+Postgres for authoritative catalog state, `tusd` for resumable staging uploads,
+and `rclone serve webdav --read-only` for day-to-day browsing.
 
 ## Run the checked-in tests
 
@@ -91,8 +91,8 @@ lane, it layers the short recovery timing values from
 runs stay aligned with product-facing defaults. It also overrides the host API
 and WebDAV ports with ephemeral bindings so concurrent prod-backed runs do not
 compete for `8000` or `8080`, and it scopes harness state paths to the active
-Compose project so overlapping runs do not share SQLite files, webhook files,
-or fixture workspaces. Successful isolated prod-backed runs remove their
+Compose project so overlapping runs do not share Postgres volumes, webhook
+files, or fixture workspaces. Successful isolated prod-backed runs remove their
 generated `.compose/<compose-project>/` directory after Compose teardown.
 Explicit shared project runs keep that directory because they are intended to be
 reused across commands. There is no supported override for this state root;

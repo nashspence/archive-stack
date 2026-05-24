@@ -17,6 +17,7 @@ from arc_core.archive_compliance import (
     normalize_required_copy_count,
     registered_copy_shortfall,
 )
+from arc_core.catalog_db import make_session_factory, session_scope
 from arc_core.catalog_models import (
     CollectionFileRecord,
     CollectionRecord,
@@ -41,7 +42,6 @@ from arc_core.recovery_payloads import (
     RecoveryPayloadCodec,
 )
 from arc_core.runtime_config import RuntimeConfig
-from arc_core.sqlite_db import make_session_factory, session_scope
 
 
 class SqlAlchemyPlanningService:
@@ -50,7 +50,7 @@ class SqlAlchemyPlanningService:
         config: RuntimeConfig,
         recovery_payload_codec: RecoveryPayloadCodec | None = None,
     ) -> None:
-        self._session_factory = make_session_factory(str(config.sqlite_path))
+        self._session_factory = make_session_factory(config.database_url)
         self._recovery_payload_codec = (
             recovery_payload_codec
             or CommandAgeBatchpassRecoveryPayloadCodec(

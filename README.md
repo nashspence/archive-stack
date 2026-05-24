@@ -15,7 +15,7 @@ Once you've cleared those shorter lanes, only then run `make spec` (5m) and
 `make prod` (7m) in separate terminals. The lint, unit, and spec lanes run
 locally in the same locked `uv` environment, and the prod-backed lane stays on
 the checked-in Compose surface with per-run project names and ephemeral host
-ports, plus project-scoped harness state and workspaces under `.compose/`.
+ports, plus a project-scoped Postgres sidecar, harness state, and workspaces.
 Successful isolated prod-backed runs remove their generated `.compose/` state;
 explicit shared project runs keep it. There is no supported override for this
 state root; use `TEST_COMPOSE_PROJECT_NAME` when you need deliberate reuse.

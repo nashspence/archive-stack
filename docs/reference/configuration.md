@@ -629,12 +629,13 @@ Bind address for the read-only WebDAV sidecar when that surface is enabled.
 WebDAV must expose only the committed `collections/` namespace and must not
 expose `.arc/` staging paths.
 
-## `ARC_DB_PATH`
+## `ARC_DATABASE_URL`
 
-- type: absolute or relative path
-- default: `.arc/state.sqlite3`
+- type: SQLAlchemy database URL
+- default: `postgresql+psycopg://riverhog:riverhog@127.0.0.1:5432/riverhog`
 
-This is the SQLite catalog path used for durable authoritative API state.
+This is the catalog database URL used for durable authoritative API state. The
+checked-in Compose stack sets this to the Postgres sidecar at `postgres:5432`.
 
 ## `ARC_PUBLIC_BASE_URL`
 

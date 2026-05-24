@@ -48,6 +48,25 @@ services:
     volumes:
       - ./tests/harness/rclone.conf:/config/rclone.conf:ro
 
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-riverhog}
+      POSTGRES_USER: ${POSTGRES_USER:-riverhog}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-riverhog}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U \"${POSTGRES_USER:-riverhog}\" -d \"${POSTGRES_DB:-riverhog}\"",
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
   app:
     image: archive-stack-app:dev
     build:
@@ -55,8 +74,12 @@ services:
       dockerfile: Dockerfile.app
     restart: unless-stopped
     depends_on:
-      - garage
-      - tusd
+      garage:
+        condition: service_started
+      tusd:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     environment:
       ARC_OBJECT_STORE: ${ARC_OBJECT_STORE}
       ARC_S3_ENDPOINT_URL: ${ARC_S3_ENDPOINT_URL}
@@ -101,7 +124,7 @@ services:
       ARC_TUSD_HOOK_SECRET: ${ARC_TUSD_HOOK_SECRET}
       ARC_WEBDAV_ENABLED: ${ARC_WEBDAV_ENABLED}
       ARC_WEBDAV_ADDR: ${ARC_WEBDAV_ADDR}
-      ARC_DB_PATH: ${ARC_DB_PATH}
+      ARC_DATABASE_URL: ${ARC_DATABASE_URL:-postgresql+psycopg://riverhog:riverhog@postgres:5432/riverhog}
       ARC_PUBLIC_BASE_URL: ${ARC_PUBLIC_BASE_URL:-http://app:8000}
       INCOMPLETE_UPLOAD_TTL: ${INCOMPLETE_UPLOAD_TTL:-24h}
       UPLOAD_EXPIRY_SWEEP_INTERVAL: ${UPLOAD_EXPIRY_SWEEP_INTERVAL:-30s}
@@ -173,12 +196,14 @@ services:
       ARC_TUSD_HOOK_SECRET: ${ARC_TUSD_HOOK_SECRET}
       ARC_PUBLIC_BASE_URL: ${ARC_PUBLIC_BASE_URL:-http://app:8000}
       ARC_TEST_EXTERNAL_APP_BASE_URL: ${ARC_TEST_EXTERNAL_APP_BASE_URL:-http://app:8000}
-      ARC_TEST_EXTERNAL_APP_DB_PATH: ${ARC_TEST_EXTERNAL_APP_DB_PATH:-/app/.compose/state.sqlite3}
+      ARC_TEST_EXTERNAL_APP_DATABASE_URL: ${ARC_TEST_EXTERNAL_APP_DATABASE_URL:-postgresql+psycopg://riverhog:riverhog@postgres:5432/riverhog}
       ARC_TEST_EXTERNAL_WEBDAV_BASE_URL: ${ARC_TEST_EXTERNAL_WEBDAV_BASE_URL:-http://webdav:8080}
       ARC_TEST_ACCEPTANCE_ROOT: ${ARC_TEST_ACCEPTANCE_ROOT:-/app/.tmp/acceptance}
+      ARC_DATABASE_URL: ${ARC_DATABASE_URL:-postgresql+psycopg://riverhog:riverhog@postgres:5432/riverhog}
       PYTHONPATH: /app:/app/src
     volumes:
       - .:/app
 
 volumes:
   garage-data:
+  postgres-data:

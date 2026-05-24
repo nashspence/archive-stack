@@ -5,6 +5,7 @@ from typing import Annotated
 
 from fastapi import Depends
 
+from arc_core.catalog_db import initialize_db
 from arc_core.proofs import CommandProofStamper, CommandProofVerifier
 from arc_core.recovery_payloads import CommandAgeBatchpassRecoveryPayloadCodec
 from arc_core.runtime_config import load_runtime_config
@@ -30,7 +31,6 @@ from arc_core.services.pins import SqlAlchemyPinService
 from arc_core.services.planning import SqlAlchemyPlanningService
 from arc_core.services.recovery_sessions import SqlAlchemyRecoverySessionService
 from arc_core.services.search import SqlAlchemySearchService
-from arc_core.sqlite_db import initialize_db
 from arc_core.stores.s3_archive_store import S3ArchiveStore
 from arc_core.stores.s3_hot_store import S3HotStore
 from arc_core.stores.s3_support import ensure_bucket_exists
@@ -53,7 +53,7 @@ class ServiceContainer:
 
 def default_container() -> ServiceContainer:
     config = load_runtime_config()
-    initialize_db(str(config.sqlite_path))
+    initialize_db(config.database_url)
     ensure_bucket_exists(config)
     hot_store = S3HotStore(config)
     archive_store = S3ArchiveStore(config)

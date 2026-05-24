@@ -5,13 +5,13 @@ import math
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from arc_core.catalog_db import make_session_factory, session_scope
 from arc_core.catalog_models import CollectionFileRecord, CollectionRecord
 from arc_core.domain.errors import BadRequest, InvalidTarget, NotFound
 from arc_core.domain.selectors import parse_target
 from arc_core.fs_paths import PathNormalizationError, normalize_collection_id
 from arc_core.ports.hot_store import HotStore
 from arc_core.runtime_config import RuntimeConfig
-from arc_core.sqlite_db import make_session_factory, session_scope
 
 
 def _read_collection_file_content(
@@ -47,7 +47,7 @@ class SqlAlchemyFileService:
     def __init__(self, config: RuntimeConfig, hot_store: HotStore) -> None:
         self._config = config
         self._hot_store = hot_store
-        self._session_factory = make_session_factory(str(config.sqlite_path))
+        self._session_factory = make_session_factory(config.database_url)
 
     def list_collection_files(
         self,

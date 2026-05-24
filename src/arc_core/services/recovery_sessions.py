@@ -19,6 +19,7 @@ from arc_core.archive_compliance import (
     normalize_copy_state,
     normalize_glacier_state,
 )
+from arc_core.catalog_db import make_session_factory, session_scope
 from arc_core.catalog_models import (
     CollectionArchiveRecord,
     CollectionFileRecord,
@@ -79,7 +80,6 @@ from arc_core.recovery_payloads import (
 )
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.glacier_pricing import resolve_glacier_pricing
-from arc_core.sqlite_db import make_session_factory, session_scope
 from arc_core.webhooks import (
     WebhookConfig,
     build_recovery_ready_payload,
@@ -129,7 +129,7 @@ class SqlAlchemyRecoverySessionService:
                 max_work_factor=config.recovery_payload_max_work_factor,
             )
         )
-        self._session_factory = make_session_factory(str(config.sqlite_path))
+        self._session_factory = make_session_factory(config.database_url)
 
     def get(self, session_id: str) -> RecoverySessionSummary:
         with session_scope(self._session_factory) as session:

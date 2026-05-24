@@ -37,7 +37,7 @@ dev = [
 
 planner = ["numpy>=2.0,<3.0", "scipy>=1.13,<2.0"]
 
-db = ["sqlalchemy>=2.0,<3.0"]
+db = ["psycopg[binary]>=3.2,<4.0", "sqlalchemy>=2.0,<3.0"]
 
 [project.scripts]
 arc-api = "arc_api.app:main"

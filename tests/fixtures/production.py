@@ -20,6 +20,7 @@ import httpx
 import pytest
 from sqlalchemy import select, update
 
+from arc_core.catalog_db import make_session_factory, session_scope
 from arc_core.catalog_models import (
     ActivePinRecord,
     CandidateCoveredPathRecord,
@@ -47,7 +48,6 @@ from arc_core.finalized_image_coverage import (
 from arc_core.fs_paths import normalize_collection_id, normalize_relpath
 from arc_core.recovery_payloads import CommandAgeBatchpassRecoveryPayloadCodec
 from arc_core.runtime_config import load_runtime_config
-from arc_core.sqlite_db import make_session_factory, session_scope
 from arc_core.stores.s3_support import (
     _create_s3_client,
     create_glacier_s3_client,
@@ -80,14 +80,14 @@ _FIXTURE_RECOVERY_CODEC = FixtureRecoveryPayloadCodec()
 _APP_REQUEST_TIMEOUT = 5.0
 _SIDECAR_START_TIMEOUT = 15.0
 _EXTERNAL_APP_BASE_URL_ENV = "ARC_TEST_EXTERNAL_APP_BASE_URL"
-_EXTERNAL_APP_DB_PATH_ENV = "ARC_TEST_EXTERNAL_APP_DB_PATH"
+_EXTERNAL_APP_DATABASE_URL_ENV = "ARC_TEST_EXTERNAL_APP_DATABASE_URL"
 _EXTERNAL_WEBDAV_BASE_URL_ENV = "ARC_TEST_EXTERNAL_WEBDAV_BASE_URL"
 _EXTERNAL_APP_RESTART_PATH_ENV = "ARC_TEST_EXTERNAL_APP_RESTART_PATH"
 _EXTERNAL_APP_RESET_PATH_ENV = "ARC_TEST_EXTERNAL_APP_RESET_PATH"
 _ACCEPTANCE_ROOT_ENV = "ARC_TEST_ACCEPTANCE_ROOT"
 _CANONICAL_TEST_ENTRYPOINT_ENV = "ARC_TEST_CANONICAL_ENTRYPOINT"
 _DEFAULT_EXTERNAL_APP_BASE_URL = "http://app:8000"
-_DEFAULT_EXTERNAL_APP_DB_PATH = "/app/.compose/state.sqlite3"
+_DEFAULT_EXTERNAL_APP_DATABASE_URL = "postgresql+psycopg://riverhog:riverhog@postgres:5432/riverhog"
 _DEFAULT_EXTERNAL_WEBDAV_BASE_URL = "http://webdav:8080"
 _DEFAULT_EXTERNAL_APP_RESTART_PATH = "/_test/restart"
 _DEFAULT_EXTERNAL_APP_RESET_PATH = "/_test/reset"
@@ -716,7 +716,7 @@ class ProductionSystem:
     webdav_url: str
     server: _ExternalAppHandle
     base_url: str
-    db_path: Path
+    db_path: str
     fixture_path: Path
     collections: ProductionCollectionsClient
     fetches: ProductionFetchesClient
@@ -727,11 +727,12 @@ class ProductionSystem:
     @classmethod
     def create(cls, workspace: Path) -> ProductionSystem:
         with time_block("fixture.acceptance_system.create"):
-            db_path = (
-                Path(os.environ.get(_EXTERNAL_APP_DB_PATH_ENV, _DEFAULT_EXTERNAL_APP_DB_PATH))
-                .expanduser()
-                .resolve()
-            )
+            database_url = os.environ.get(
+                _EXTERNAL_APP_DATABASE_URL_ENV,
+                _DEFAULT_EXTERNAL_APP_DATABASE_URL,
+            ).strip()
+            if not database_url:
+                raise RuntimeError(f"{_EXTERNAL_APP_DATABASE_URL_ENV} must not be empty")
             fixture_path = workspace / "arc_disc_fixture.json"
             _wait_for_s3_bucket()
             _wait_for_tusd(load_runtime_config().tusd_base_url)
@@ -743,7 +744,7 @@ class ProductionSystem:
                 webdav_url=webdav_url,
                 server=server,
                 base_url=server.base_url,
-                db_path=db_path,
+                db_path=database_url,
                 fixture_path=fixture_path,
                 collections=cast(ProductionCollectionsClient, None),
                 fetches=cast(ProductionFetchesClient, None),
@@ -1900,7 +1901,7 @@ class ProductionSystem:
             pythonpath_parts.append(existing)
         env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
         env["ARC_BASE_URL"] = self.base_url
-        env["ARC_DB_PATH"] = str(self.db_path)
+        env["ARC_DATABASE_URL"] = self.db_path
         if extra:
             env.update(extra)
         _reject_prod_arc_disc_factory_env(env)

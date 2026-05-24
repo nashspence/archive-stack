@@ -29,9 +29,9 @@ from arc_api.routers.plan import router as plan_router
 from arc_api.routers.recovery_sessions import router as recovery_sessions_router
 from arc_api.routers.search import router as search_router
 from arc_api.schemas.common import ErrorBody, ErrorResponse
+from arc_core.catalog_db import Base, create_catalog_engine, initialize_db
 from arc_core.domain.errors import ArcError
 from arc_core.runtime_config import load_runtime_config
-from arc_core.sqlite_db import Base, create_sqlite_engine, initialize_db
 from arc_core.stores.s3_support import delete_keys_with_prefixes, ensure_bucket_exists
 
 _LOG = logging.getLogger(__name__)
@@ -265,12 +265,12 @@ def _reset_runtime_state() -> None:
     _ = _catalog_models
     config = load_runtime_config()
     _clear_runtime_storage()
-    engine = create_sqlite_engine(str(config.sqlite_path))
+    engine = create_catalog_engine(config.database_url)
     try:
         Base.metadata.drop_all(engine)
     finally:
         engine.dispose()
-    initialize_db(str(config.sqlite_path))
+    initialize_db(config.database_url)
     _clear_test_webhook_state()
 
 

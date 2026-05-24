@@ -3,6 +3,7 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from arc_core.catalog_db import make_session_factory, session_scope
 from arc_core.catalog_models import (
     ActivePinRecord,
     CollectionFileRecord,
@@ -17,14 +18,13 @@ from arc_core.ports.hot_store import HotStore
 from arc_core.ports.upload_store import UploadStore
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.fetches import delete_fetch_entries
-from arc_core.sqlite_db import make_session_factory, session_scope
 
 
 class SqlAlchemyPinService:
     def __init__(
         self, config: RuntimeConfig, hot_store: HotStore, upload_store: UploadStore
     ) -> None:
-        self._session_factory = make_session_factory(str(config.sqlite_path))
+        self._session_factory = make_session_factory(config.database_url)
         self._hot_store = hot_store
         self._upload_store = upload_store
 

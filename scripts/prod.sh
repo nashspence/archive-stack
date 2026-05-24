@@ -9,7 +9,11 @@ isolate_test_compose_runtime
 
 cleanup() {
   local status="$?"
-  compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+  if [[ "${TEST_COMPOSE_PROJECT_ISOLATED:-0}" == "1" ]]; then
+    compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+  else
+    compose down --remove-orphans >/dev/null 2>&1 || true
+  fi
   cleanup_test_compose_runtime "${status}"
   return "${status}"
 }

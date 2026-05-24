@@ -47,7 +47,7 @@ src/
     fs_paths.py
     hashing.py
     proofs.py
-    sqlite_db.py
+    catalog_db.py
     webhooks.py
   arc_api/
     app.py

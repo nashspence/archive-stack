@@ -3,14 +3,14 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from arc_core.catalog_db import make_session_factory, session_scope
 from arc_core.catalog_models import CollectionFileRecord, CollectionRecord
 from arc_core.runtime_config import RuntimeConfig
-from arc_core.sqlite_db import make_session_factory, session_scope
 
 
 class SqlAlchemySearchService:
     def __init__(self, config: RuntimeConfig) -> None:
-        self._session_factory = make_session_factory(str(config.sqlite_path))
+        self._session_factory = make_session_factory(config.database_url)
 
     def search(self, query: str, limit: int) -> list[dict[str, object]]:
         needle = query.casefold()

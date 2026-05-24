@@ -38,8 +38,8 @@ def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
                         "\"$*\" "
                         "\"${ARC_API_PORT:-}\" "
                         "\"${ARC_WEBDAV_PORT:-}\" "
-                        "\"${ARC_DB_PATH:-}\" "
-                        "\"${ARC_TEST_EXTERNAL_APP_DB_PATH:-}\" "
+                        "\"${ARC_DATABASE_URL:-}\" "
+                        "\"${ARC_TEST_EXTERNAL_APP_DATABASE_URL:-}\" "
                         "\"${ARC_TEST_WEBHOOK_CAPTURE_PATH:-}\" "
                         "\"${ARC_TEST_ACCEPTANCE_ROOT:-}\" >> "
                         f"{log_path}"
@@ -81,8 +81,8 @@ def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
                         "\"$*\" "
                         "\"${ARC_API_PORT:-}\" "
                         "\"${ARC_WEBDAV_PORT:-}\" "
-                        "\"${ARC_DB_PATH:-}\" "
-                        "\"${ARC_TEST_EXTERNAL_APP_DB_PATH:-}\" "
+                        "\"${ARC_DATABASE_URL:-}\" "
+                        "\"${ARC_TEST_EXTERNAL_APP_DATABASE_URL:-}\" "
                         "\"${ARC_TEST_WEBHOOK_CAPTURE_PATH:-}\" "
                         "\"${ARC_TEST_ACCEPTANCE_ROOT:-}\" >> "
                         f"{log_path}"
@@ -110,8 +110,8 @@ def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
                         "\"$*\" "
                         "\"${ARC_API_PORT:-}\" "
                         "\"${ARC_WEBDAV_PORT:-}\" "
-                        "\"${ARC_DB_PATH:-}\" "
-                        "\"${ARC_TEST_EXTERNAL_APP_DB_PATH:-}\" "
+                        "\"${ARC_DATABASE_URL:-}\" "
+                        "\"${ARC_TEST_EXTERNAL_APP_DATABASE_URL:-}\" "
                         "\"${ARC_TEST_WEBHOOK_CAPTURE_PATH:-}\" "
                         "\"${ARC_TEST_ACCEPTANCE_ROOT:-}\" >> "
                         f"{log_path}"
@@ -167,16 +167,18 @@ def _assert_isolated_prod_runtime(line: str) -> str:
         _,
         api_port,
         webdav_port,
-        db_path,
-        external_db_path,
+        database_url,
+        external_database_url,
         webhook_path,
         acceptance_root,
     ) = _split_docker_log_line(line)
     assert isolated == "1"
     assert api_port == "0"
     assert webdav_port == "0"
-    assert db_path == f"/app/.compose/{project}/state.sqlite3"
-    assert external_db_path == db_path
+    assert database_url == (
+        "postgresql+psycopg://riverhog:riverhog@postgres:5432/riverhog"
+    )
+    assert external_database_url == database_url
     assert webhook_path == f"/app/.compose/{project}/webhook-captures.jsonl"
     assert acceptance_root == f"/app/.compose/{project}/acceptance"
     return project
@@ -338,6 +340,9 @@ def test_prod_preserves_explicit_shared_bind_mount_state(tmp_path: Path) -> None
     log_lines = _read_log_lines(docker_log_path)
     assert {line.split("|", 1)[0] for line in log_lines} == {shared_project}
     assert {line.split("|", 2)[1] for line in log_lines} == {"0"}
+    docker_log = "\n".join(log_lines)
+    assert " down --remove-orphans" in docker_log
+    assert " down --volumes --remove-orphans" not in docker_log
     assert (tmp_path / "compose-state" / shared_project / "marker").exists()
 
 
@@ -418,7 +423,7 @@ def test_locked_dependency_files_cover_runtime_and_test_db_extras() -> None:
 
     assert "--extra db" in runtime_requirements.splitlines()[1]
     assert "--extra db" in test_requirements.splitlines()[1]
-    for package in ("boto3", "fastapi", "sqlalchemy", "uvicorn"):
+    for package in ("boto3", "fastapi", "psycopg", "psycopg-binary", "sqlalchemy", "uvicorn"):
         assert f"{package}==" in runtime_requirements
         assert f"{package}==" in test_requirements
     assert "--hash=sha256:" in runtime_requirements

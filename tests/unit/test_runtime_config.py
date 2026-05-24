@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from arc_core.runtime_config import (
+    DEFAULT_DATABASE_URL,
     DEV_RECOVERY_PAYLOAD_PASSPHRASE,
     RuntimeConfig,
     load_runtime_config,
@@ -80,6 +81,32 @@ def test_load_runtime_config_accepts_explicit_test_recovery_passphrase(
 
     assert config.recovery_payload_require_explicit_passphrase is True
     assert config.recovery_payload_passphrase == "unit-test-secret"
+    assert config.database_url == f"sqlite:///{tmp_path / 'state.sqlite3'}"
+
+
+def test_load_runtime_config_prefers_database_url_over_legacy_db_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ARC_DB_PATH", str(tmp_path / "state.sqlite3"))
+    monkeypatch.setenv("ARC_DATABASE_URL", "postgresql+psycopg://unit:unit@postgres/unit")
+
+    config = load_runtime_config()
+
+    assert config.database_url == "postgresql+psycopg://unit:unit@postgres/unit"
+    assert config.sqlite_path == tmp_path / "state.sqlite3"
+
+
+def test_load_runtime_config_defaults_to_postgres_database_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ARC_DB_PATH", raising=False)
+    monkeypatch.delenv("ARC_DATABASE_URL", raising=False)
+
+    config = load_runtime_config()
+
+    assert config.database_url == DEFAULT_DATABASE_URL
+    assert config.sqlite_path is None
 
 
 def test_load_runtime_config_rejects_required_default_recovery_passphrase(

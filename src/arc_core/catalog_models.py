@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import Boolean, ForeignKeyConstraint, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from arc_core.sqlite_db import Base
+from arc_core.catalog_db import Base
 
 
 class CollectionRecord(Base):

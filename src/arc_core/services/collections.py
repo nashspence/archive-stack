@@ -19,6 +19,7 @@ from arc_core.archive_compliance import (
     normalize_verification_state,
     registered_copy_shortfall,
 )
+from arc_core.catalog_db import make_session_factory, session_scope
 from arc_core.catalog_models import (
     CollectionArchiveRecord,
     CollectionFileRecord,
@@ -58,7 +59,6 @@ from arc_core.services.resumable_uploads import (
     upload_expiry_timestamp,
     upload_state_name,
 )
-from arc_core.sqlite_db import make_session_factory, session_scope
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -80,7 +80,7 @@ class SqlAlchemyCollectionService:
         self._hot_store = hot_store
         self._upload_store = upload_store
         self._upload_ttl = config.incomplete_upload_ttl
-        self._session_factory = make_session_factory(str(config.sqlite_path))
+        self._session_factory = make_session_factory(config.database_url)
 
     def create_or_resume_upload(
         self,

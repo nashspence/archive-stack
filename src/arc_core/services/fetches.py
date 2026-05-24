@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, object_session, selectinload
 
+from arc_core.catalog_db import make_session_factory, session_scope
 from arc_core.catalog_models import (
     ActivePinRecord,
     CollectionFileRecord,
@@ -35,7 +36,6 @@ from arc_core.services.resumable_uploads import (
     sync_upload_state,
     upload_expiry_timestamp,
 )
-from arc_core.sqlite_db import make_session_factory, session_scope
 
 
 def _read_collection_file_content(
@@ -87,7 +87,7 @@ class SqlAlchemyFetchService:
             )
         )
         self._upload_ttl = config.incomplete_upload_ttl
-        self._session_factory = make_session_factory(str(config.sqlite_path))
+        self._session_factory = make_session_factory(config.database_url)
 
     def get(self, fetch_id: str) -> FetchSummary:
         with session_scope(self._session_factory) as session:

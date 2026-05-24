@@ -15,6 +15,7 @@ from arc_core.archive_compliance import (
     normalize_required_copy_count,
     normalize_verification_state,
 )
+from arc_core.catalog_db import make_session_factory, session_scope
 from arc_core.catalog_models import (
     CollectionFileRecord,
     FileCopyRecord,
@@ -38,7 +39,6 @@ from arc_core.recovery_payloads import (
 )
 from arc_core.runtime_config import RuntimeConfig
 from arc_core.services.recovery_sessions import ensure_glacier_recovery_session_for_image
-from arc_core.sqlite_db import make_session_factory, session_scope
 
 _REGISTERABLE_STATES = {CopyState.NEEDED, CopyState.BURNING}
 
@@ -61,7 +61,7 @@ class SqlAlchemyCopyService:
                 max_work_factor=config.recovery_payload_max_work_factor,
             )
         )
-        self._session_factory = make_session_factory(str(config.sqlite_path))
+        self._session_factory = make_session_factory(config.database_url)
 
     def register(
         self,
