@@ -17,6 +17,7 @@ XORRISO = shutil.which("xorriso") or "xorriso"
 CHUNK_BYTES = 1024 * 1024
 ISO_BLOCK_BYTES = 2048
 _PRINT_SIZE_RE = re.compile(r"(?:^|\b)(?:size=)?(?P<blocks>\d+)(?:\b|$)")
+_IMAGE_SIZE_RE = re.compile(r"Image size\s*:\s*(?P<blocks>\d+)s\b")
 
 
 @dataclass(frozen=True)
@@ -129,6 +130,9 @@ def _parse_print_size_blocks(output: str) -> int:
         stripped = line.strip()
         if not stripped:
             continue
+        image_size_match = _IMAGE_SIZE_RE.search(stripped)
+        if image_size_match is not None:
+            return int(image_size_match.group("blocks"))
         match = _PRINT_SIZE_RE.search(stripped)
         if match is None:
             continue
@@ -140,11 +144,17 @@ def _parse_print_size_blocks(output: str) -> int:
 def estimate_iso_size_from_root(*, image_root: Path, volume_id: str, fallback_bytes: int) -> int:
     cmd = build_iso_print_size_cmd_from_root(image_root=image_root, volume_id=volume_id)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        proc = subprocess.run(cmd, capture_output=True, text=False, check=False)
     except FileNotFoundError:
         return fallback_bytes
 
-    combined = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
+    def as_bytes(part: bytes | str) -> bytes:
+        return part.encode("utf-8") if isinstance(part, str) else part
+
+    combined = b"\n".join(as_bytes(part) for part in (proc.stdout, proc.stderr) if part).decode(
+        "utf-8",
+        errors="replace",
+    ).strip()
     if proc.returncode != 0:
         detail = combined[-1500:] or f"xorriso exited {proc.returncode}"
         raise RuntimeError(detail)

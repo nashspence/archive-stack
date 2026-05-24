@@ -8,8 +8,12 @@ from datetime import timedelta
 from pathlib import Path
 
 _DURATION_RE = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
+_BYTES_RE = re.compile(r"^(\d+(?:_\d+)*)([kmgt]i?b?|b)?$", re.IGNORECASE)
 DEV_RECOVERY_PAYLOAD_PASSPHRASE = "riverhog-dev-recovery-passphrase"
 DEFAULT_DATABASE_URL = "postgresql+psycopg://riverhog:riverhog@127.0.0.1:5432/riverhog"
+DEFAULT_PLANNER_DISC_TARGET_BYTES = 50_000_000_000
+DEFAULT_PLANNER_MIN_FILL_RATIO = 0.96
+DEFAULT_UNBURNED_COLLECTION_BYTES_LIMIT = 500_000_000_000
 
 
 def _parse_duration(value: str) -> timedelta:
@@ -38,10 +42,49 @@ def _parse_int(value: str, *, name: str, minimum: int = 0) -> int:
     return parsed
 
 
+def _parse_bytes(value: str, *, name: str, minimum: int = 0) -> int:
+    raw = value.strip().replace(" ", "")
+    match = _BYTES_RE.fullmatch(raw)
+    if match is None:
+        raise ValueError(f"invalid {name} {value!r}: expected bytes like '500GB' or '536870912000'")
+    amount = int(match.group(1).replace("_", ""))
+    unit = (match.group(2) or "b").casefold()
+    scale = {
+        "b": 1,
+        "kb": 1_000,
+        "k": 1_000,
+        "mb": 1_000_000,
+        "m": 1_000_000,
+        "gb": 1_000_000_000,
+        "g": 1_000_000_000,
+        "tb": 1_000_000_000_000,
+        "t": 1_000_000_000_000,
+        "kib": 1024,
+        "mib": 1024**2,
+        "gib": 1024**3,
+        "tib": 1024**4,
+    }[unit]
+    parsed = amount * scale
+    if parsed < minimum:
+        raise ValueError(f"invalid {name} {value!r}: expected >= {minimum}")
+    return parsed
+
+
 def _parse_float(value: str, *, name: str, minimum: float = 0.0) -> float:
     parsed = float(value.strip())
     if parsed < minimum:
         raise ValueError(f"invalid {name} {value!r}: expected >= {minimum}")
+    return parsed
+
+
+def _parse_ratio(value: str, *, name: str) -> float:
+    raw = value.strip()
+    if raw.endswith("%"):
+        parsed = float(raw[:-1].strip()) / 100.0
+    else:
+        parsed = float(raw)
+    if parsed <= 0.0 or parsed > 1.0:
+        raise ValueError(f"invalid {name} {value!r}: expected a ratio in (0, 1]")
     return parsed
 
 
@@ -167,6 +210,13 @@ class RuntimeConfig:
     recovery_payload_work_factor: int = 18
     recovery_payload_max_work_factor: int = 30
     public_base_url: str | None = None
+    planner_disc_target_bytes: int = DEFAULT_PLANNER_DISC_TARGET_BYTES
+    planner_min_fill_ratio: float = DEFAULT_PLANNER_MIN_FILL_RATIO
+    planner_min_fill_bytes: int = int(
+        DEFAULT_PLANNER_DISC_TARGET_BYTES * DEFAULT_PLANNER_MIN_FILL_RATIO
+    )
+    planner_image_root: Path = field(default_factory=lambda: Path(".riverhog/images"))
+    unburned_collection_bytes_limit: int = DEFAULT_UNBURNED_COLLECTION_BYTES_LIMIT
 
     def __post_init__(self) -> None:
         if not self.database_url:
@@ -193,6 +243,23 @@ class RuntimeConfig:
                     "timeout plus RIVERHOG_GLACIER_RECOVERY_WEBHOOK_RETRY_DELAY when "
                     "RIVERHOG_GLACIER_RECOVERY_WEBHOOK_URL is configured"
                 )
+        if self.planner_disc_target_bytes < 1:
+            raise ValueError("RIVERHOG_PLANNER_DISC_TARGET_BYTES must be >= 1")
+        if self.planner_min_fill_bytes < 1:
+            raise ValueError("RIVERHOG_PLANNER_MIN_FILL_BYTES must be >= 1")
+        if self.planner_min_fill_ratio <= 0.0 or self.planner_min_fill_ratio > 1.0:
+            raise ValueError("RIVERHOG_PLANNER_MIN_FILL_RATIO must be in (0, 1]")
+        if self.planner_min_fill_bytes > self.planner_disc_target_bytes:
+            raise ValueError(
+                "RIVERHOG_PLANNER_MIN_FILL_BYTES must be <= RIVERHOG_PLANNER_DISC_TARGET_BYTES"
+            )
+        if self.unburned_collection_bytes_limit < 0:
+            raise ValueError("RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT must be >= 0")
+        object.__setattr__(
+            self,
+            "planner_image_root",
+            self.planner_image_root.expanduser().resolve(),
+        )
 
 
 def load_runtime_config() -> RuntimeConfig:
@@ -419,6 +486,38 @@ def load_runtime_config() -> RuntimeConfig:
     if recovery_payload_max_work_factor > 30:
         raise ValueError("RIVERHOG_RECOVERY_PAYLOAD_MAX_WORK_FACTOR must be <= 30")
 
+    planner_disc_target_bytes = _parse_bytes(
+        os.getenv("RIVERHOG_PLANNER_DISC_TARGET_BYTES", str(DEFAULT_PLANNER_DISC_TARGET_BYTES)),
+        name="RIVERHOG_PLANNER_DISC_TARGET_BYTES",
+        minimum=1,
+    )
+    planner_min_fill_ratio = _parse_ratio(
+        os.getenv("RIVERHOG_PLANNER_MIN_FILL_RATIO", str(DEFAULT_PLANNER_MIN_FILL_RATIO)),
+        name="RIVERHOG_PLANNER_MIN_FILL_RATIO",
+    )
+    planner_min_fill_bytes_raw = os.getenv("RIVERHOG_PLANNER_MIN_FILL_BYTES", "").strip()
+    planner_min_fill_bytes = (
+        _parse_bytes(
+            planner_min_fill_bytes_raw,
+            name="RIVERHOG_PLANNER_MIN_FILL_BYTES",
+            minimum=1,
+        )
+        if planner_min_fill_bytes_raw
+        else int(planner_disc_target_bytes * planner_min_fill_ratio)
+    )
+    planner_image_root = Path(
+        os.getenv("RIVERHOG_PLANNER_IMAGE_ROOT", ".riverhog/images").strip()
+        or ".riverhog/images"
+    )
+    unburned_collection_bytes_limit = _parse_bytes(
+        os.getenv(
+            "RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT",
+            str(DEFAULT_UNBURNED_COLLECTION_BYTES_LIMIT),
+        ),
+        name="RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT",
+        minimum=0,
+    )
+
     return RuntimeConfig(
         object_store=object_store,
         s3_endpoint_url=s3_endpoint_url,
@@ -504,4 +603,9 @@ def load_runtime_config() -> RuntimeConfig:
         recovery_payload_work_factor=recovery_payload_work_factor,
         recovery_payload_max_work_factor=recovery_payload_max_work_factor,
         public_base_url=public_base_url,
+        planner_disc_target_bytes=planner_disc_target_bytes,
+        planner_min_fill_ratio=planner_min_fill_ratio,
+        planner_min_fill_bytes=planner_min_fill_bytes,
+        planner_image_root=planner_image_root,
+        unburned_collection_bytes_limit=unburned_collection_bytes_limit,
     )

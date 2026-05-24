@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from typing import Any, cast
 
 from riverhog_core.domain.errors import NotFound
@@ -143,16 +143,50 @@ class S3HotStore:
             raise
 
     def get_collection_file(self, collection_id: str, path: str) -> bytes:
+        return b"".join(self.iter_collection_file(collection_id, path))
+
+    def iter_collection_file(
+        self,
+        collection_id: str,
+        path: str,
+        *,
+        offset: int = 0,
+        size: int | None = None,
+    ) -> Iterator[bytes]:
+        if offset < 0:
+            raise ValueError("offset must be >= 0")
+        if size is not None and size < 0:
+            raise ValueError("size must be >= 0")
+        if size == 0:
+            return
+
+        request: dict[str, object] = {
+            "Bucket": self._bucket,
+            "Key": self._key(collection_id, path),
+        }
+        if offset or size is not None:
+            if size is None:
+                request["Range"] = f"bytes={offset}-"
+            else:
+                request["Range"] = f"bytes={offset}-{offset + size - 1}"
+
         try:
-            response = self._client.get_object(
-                Bucket=self._bucket,
-                Key=self._key(collection_id, path),
-            )
+            response = self._client.get_object(**request)
         except self._client.exceptions.ClientError as exc:
             if exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode") != 404:
                 raise
             raise NotFound(f"file not found in hot store: {collection_id}/{path}") from exc
-        return cast(bytes, response["Body"].read())
+        body = response["Body"]
+        try:
+            iter_chunks = getattr(body, "iter_chunks", None)
+            if callable(iter_chunks):
+                yield from iter_chunks(chunk_size=1024 * 1024)
+            else:
+                yield cast(bytes, body.read())
+        finally:
+            close = getattr(body, "close", None)
+            if callable(close):
+                close()
 
     def has_collection_file(self, collection_id: str, path: str) -> bool:
         try:

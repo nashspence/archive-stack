@@ -5,19 +5,29 @@ import hashlib
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
+import pytest
+from sqlalchemy import select
+
 from riverhog_core.catalog_models import (
     CollectionFileRecord,
     CollectionRecord,
     FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
+    PlannedCandidateRecord,
 )
+from riverhog_core.domain.errors import Conflict
+from riverhog_core.finalized_image_coverage import (
+    read_finalized_image_collection_artifacts,
+    read_finalized_image_coverage_parts,
+)
+from riverhog_core.planner.manifest import MANIFEST_FILENAME
 from riverhog_core.ports.archive_store import ArchiveUploadReceipt, CollectionArchiveUploadReceipt
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.glacier_uploads import SqlAlchemyGlacierUploadService
 from riverhog_core.sqlite_db import initialize_db, make_session_factory, session_scope
-from tests.fixtures.crypto import FixtureProofStamper
+from tests.fixtures.crypto import FixtureProofStamper, FixtureRecoveryPayloadCodec
 from tests.fixtures.data import DOCS_FILES
 
 
@@ -42,6 +52,17 @@ class _FakeHotStore:
 
     def get_collection_file(self, collection_id: str, path: str) -> bytes:
         return self._files[(collection_id, path)]
+
+    def iter_collection_file(
+        self,
+        collection_id: str,
+        path: str,
+        *,
+        offset: int = 0,
+        size: int | None = None,
+    ) -> Iterator[bytes]:
+        content = self.get_collection_file(collection_id, path)
+        yield content[offset:] if size is None else content[offset : offset + size]
 
     def has_collection_file(self, collection_id: str, path: str) -> bool:
         return (collection_id, path) in self._files
@@ -142,7 +163,7 @@ class _FakeArchiveStore:
         )
 
 
-def _config(sqlite_path: Path) -> RuntimeConfig:
+def _config(sqlite_path: Path, **overrides: object) -> RuntimeConfig:
     return RuntimeConfig(
         object_store="s3",
         s3_endpoint_url="http://example.invalid:9000",
@@ -154,6 +175,7 @@ def _config(sqlite_path: Path) -> RuntimeConfig:
         tusd_base_url="http://example.invalid:1080/files",
         tusd_hook_secret="hook-secret",
         sqlite_path=sqlite_path,
+        **overrides,
     )
 
 
@@ -291,11 +313,148 @@ def test_completed_collection_upload_promotes_from_staging_and_cleans_up(tmp_pat
         hot_store,
         upload_store,
         proof_stamper=FixtureProofStamper(),
+        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
     )
     assert upload_service.process_due_uploads() == 1
 
     assert hot_store.get_collection_file(collection_id, relpath) == content
     assert staging_target in upload_store.deleted_targets
+
+
+def test_completed_glacier_upload_refreshes_provisional_disc_plan(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+
+    config = _config(
+        sqlite_path,
+        planner_disc_target_bytes=10_000_000,
+        planner_min_fill_bytes=1,
+        planner_image_root=tmp_path / "images",
+    )
+    hot_store = _FakeHotStore()
+    upload_store = _FakeUploadStore()
+    service = SqlAlchemyCollectionService(config, hot_store, upload_store)
+
+    content = b"planner payload\n"
+    sha256 = hashlib.sha256(content).hexdigest()
+    collection_id = "photos-2024"
+    relpath = "albums/day-01.txt"
+
+    service.create_or_resume_upload(
+        collection_id=collection_id,
+        files=[{"path": relpath, "bytes": len(content), "sha256": sha256}],
+        ingest_source="/tmp/source",
+    )
+    upload_session = service.create_or_resume_file_upload(collection_id, relpath)
+    service.append_upload_chunk(
+        collection_id,
+        relpath,
+        offset=int(upload_session["offset"]),
+        checksum="sha256 " + base64.b64encode(hashlib.sha256(content).digest()).decode("ascii"),
+        content=content,
+    )
+
+    upload_service = SqlAlchemyGlacierUploadService(
+        config,
+        _FakeArchiveStore(),
+        hot_store,
+        upload_store,
+        proof_stamper=FixtureProofStamper(),
+        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
+    )
+    assert upload_service.process_due_uploads() == 1
+
+    session_factory = make_session_factory(str(sqlite_path))
+    with session_scope(session_factory) as session:
+        candidate = session.scalars(select(PlannedCandidateRecord)).one()
+        image_root = Path(candidate.image_root)
+        assert candidate.target_bytes == 10_000_000
+        assert candidate.min_fill_bytes == 1
+        assert candidate.iso_ready is True
+        assert [(cp.collection_id, cp.path) for cp in candidate.covered_paths] == [
+            (collection_id, relpath)
+        ]
+
+    assert (image_root / MANIFEST_FILENAME).exists()
+    assert read_finalized_image_coverage_parts(
+        image_root,
+        FixtureRecoveryPayloadCodec(),
+    )[0].path == relpath
+    assert read_finalized_image_collection_artifacts(
+        image_root,
+        FixtureRecoveryPayloadCodec(),
+    )[0].collection_id == collection_id
+
+
+def test_new_collection_uploads_are_blocked_over_unburned_limit(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+
+    hot_store = _FakeHotStore()
+    upload_store = _FakeUploadStore()
+    service = SqlAlchemyCollectionService(
+        _config(sqlite_path, unburned_collection_bytes_limit=10),
+        hot_store,
+        upload_store,
+    )
+
+    first = b"12345678"
+    service.create_or_resume_upload(
+        collection_id="first",
+        files=[
+            {
+                "path": "a.txt",
+                "bytes": len(first),
+                "sha256": hashlib.sha256(first).hexdigest(),
+            }
+        ],
+    )
+
+    second = b"123"
+    with pytest.raises(Conflict, match="unburned collection limit exceeded"):
+        service.create_or_resume_upload(
+            collection_id="second",
+            files=[
+                {
+                    "path": "b.txt",
+                    "bytes": len(second),
+                    "sha256": hashlib.sha256(second).hexdigest(),
+                }
+            ],
+        )
+
+
+def test_existing_collection_upload_can_resume_when_over_unburned_limit(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+
+    hot_store = _FakeHotStore()
+    upload_store = _FakeUploadStore()
+    initial = SqlAlchemyCollectionService(
+        _config(sqlite_path, unburned_collection_bytes_limit=10),
+        hot_store,
+        upload_store,
+    )
+
+    content = b"12345678"
+    files = [
+        {
+            "path": "a.txt",
+            "bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+    ]
+    initial.create_or_resume_upload(collection_id="first", files=files)
+
+    stricter = SqlAlchemyCollectionService(
+        _config(sqlite_path, unburned_collection_bytes_limit=7),
+        hot_store,
+        upload_store,
+    )
+
+    resumed = stricter.create_or_resume_upload(collection_id="first", files=files)
+
+    assert resumed["collection_id"] == "first"
 
 
 def test_collection_summary_does_not_count_finalized_image_parts_as_glacier_recovery(

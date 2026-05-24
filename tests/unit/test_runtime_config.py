@@ -109,6 +109,48 @@ def test_load_runtime_config_defaults_to_postgres_database_url(
     assert config.sqlite_path is None
 
 
+def test_load_runtime_config_parses_planner_runtime_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_DB_PATH", str(tmp_path / "state.sqlite3"))
+    monkeypatch.setenv("RIVERHOG_PLANNER_DISC_TARGET_BYTES", "50GB")
+    monkeypatch.setenv("RIVERHOG_PLANNER_MIN_FILL_RATIO", "96%")
+    monkeypatch.setenv("RIVERHOG_PLANNER_IMAGE_ROOT", str(tmp_path / "planner"))
+    monkeypatch.setenv("RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT", "500GB")
+
+    config = load_runtime_config()
+
+    assert config.planner_disc_target_bytes == 50_000_000_000
+    assert config.planner_min_fill_ratio == 0.96
+    assert config.planner_min_fill_bytes == 48_000_000_000
+    assert config.planner_image_root == tmp_path / "planner"
+    assert config.unburned_collection_bytes_limit == 500_000_000_000
+
+
+def test_load_runtime_config_accepts_explicit_planner_min_fill_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_DB_PATH", str(tmp_path / "state.sqlite3"))
+    monkeypatch.setenv("RIVERHOG_PLANNER_DISC_TARGET_BYTES", "1GiB")
+    monkeypatch.setenv("RIVERHOG_PLANNER_MIN_FILL_BYTES", "900MiB")
+
+    config = load_runtime_config()
+
+    assert config.planner_disc_target_bytes == 1024**3
+    assert config.planner_min_fill_bytes == 900 * 1024**2
+
+
+def test_runtime_config_rejects_planner_min_fill_larger_than_target(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="RIVERHOG_PLANNER_MIN_FILL_BYTES"):
+        _base_runtime_config(
+            tmp_path,
+            planner_disc_target_bytes=100,
+            planner_min_fill_bytes=101,
+        )
+
+
 def test_load_runtime_config_rejects_required_default_recovery_passphrase(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

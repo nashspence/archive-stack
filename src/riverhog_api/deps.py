@@ -76,6 +76,7 @@ def default_container() -> ServiceContainer:
             hot_store,
             upload_store,
             proof_stamper=proof_stamper,
+            recovery_payload_codec=recovery_payload_codec,
         ),
         glacier_reporting=SqlAlchemyGlacierReportingService(config),
         recovery_sessions=SqlAlchemyRecoverySessionService(

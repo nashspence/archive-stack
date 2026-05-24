@@ -4,6 +4,7 @@ import hashlib
 import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from typing import cast
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -106,6 +107,11 @@ class SqlAlchemyCollectionService:
 
             if upload is None:
                 _ensure_collection_upload_conflict_free(session, normalized_collection_id)
+                _ensure_unburned_collection_limit_allows(
+                    session,
+                    incoming_bytes=sum(cast(int, item["bytes"]) for item in normalized_files),
+                    limit_bytes=self._config.unburned_collection_bytes_limit,
+                )
                 upload = CollectionUploadRecord(
                     collection_id=normalized_collection_id,
                     ingest_source=ingest_source,
@@ -476,6 +482,64 @@ def _ensure_collection_upload_conflict_free(session: Session, collection_id: str
     )
     if conflict is not None:
         raise Conflict(f"collection id conflicts with existing collection: {conflict}")
+
+
+def _ensure_unburned_collection_limit_allows(
+    session: Session,
+    *,
+    incoming_bytes: int,
+    limit_bytes: int,
+) -> None:
+    if limit_bytes <= 0:
+        return
+
+    current_bytes = _unburned_collection_bytes(session)
+    projected_bytes = current_bytes + incoming_bytes
+    if projected_bytes <= limit_bytes:
+        return
+
+    raise Conflict(
+        "unburned collection limit exceeded: "
+        f"{projected_bytes} bytes would exceed the configured {limit_bytes} byte limit; "
+        "finalize, burn, and register enough physical image copies before uploading "
+        "new collections"
+    )
+
+
+def _unburned_collection_bytes(session: Session) -> int:
+    upload_bytes = 0
+    uploads = session.scalars(
+        select(CollectionUploadRecord).options(selectinload(CollectionUploadRecord.files))
+    ).all()
+    for upload in uploads:
+        if upload.state == "finalized":
+            continue
+        upload_bytes += sum(file_record.bytes for file_record in upload.files)
+
+    committed_unprotected_bytes = 0
+    collections = session.scalars(
+        select(CollectionRecord)
+        .options(selectinload(CollectionRecord.files))
+        .options(selectinload(CollectionRecord.archive))
+        .order_by(CollectionRecord.id.asc())
+    ).all()
+    for collection in collections:
+        (
+            image_coverage,
+            covered_paths,
+            recovery_parts_by_image_path,
+        ) = _collection_image_coverage(session, collection.id)
+        summary = _summary_from_records(
+            collection.id,
+            collection.files,
+            archive=collection.archive,
+            image_coverage=image_coverage,
+            covered_paths=covered_paths,
+            recovery_parts_by_image_path=recovery_parts_by_image_path,
+        )
+        committed_unprotected_bytes += max(summary.bytes - summary.protected_bytes, 0)
+
+    return upload_bytes + committed_unprotected_bytes
 
 
 def _validate_existing_upload_manifest(

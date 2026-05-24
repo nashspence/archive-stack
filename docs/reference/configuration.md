@@ -223,6 +223,53 @@ Scrypt work factor supplied during encryption through
 Maximum accepted scrypt work factor during decryption through
 `AGE_PASSPHRASE_MAX_WORK_FACTOR`.
 
+## `RIVERHOG_PLANNER_DISC_TARGET_BYTES`
+
+- type: byte size
+- default: `50GB`
+
+Target size for provisional disc images. Byte sizes accept plain bytes and
+decimal or binary suffixes such as `50GB`, `500GB`, `46GiB`, and `900MiB`.
+
+## `RIVERHOG_PLANNER_MIN_FILL_RATIO`
+
+- type: ratio or percent
+- default: `96%`
+
+Default minimum fill target for ISO-ready planner candidates. Riverhog computes
+`RIVERHOG_PLANNER_MIN_FILL_BYTES` from this ratio when an explicit byte value is
+not supplied.
+
+## `RIVERHOG_PLANNER_MIN_FILL_BYTES`
+
+- type: byte size
+- default: derived from `RIVERHOG_PLANNER_DISC_TARGET_BYTES` and
+  `RIVERHOG_PLANNER_MIN_FILL_RATIO`
+
+Explicit minimum ISO size required before a provisional candidate can be
+finalized. This must be less than or equal to
+`RIVERHOG_PLANNER_DISC_TARGET_BYTES`.
+
+## `RIVERHOG_PLANNER_IMAGE_ROOT`
+
+- type: filesystem path
+- default: `.riverhog/images`
+
+Directory where Riverhog stores provisional image roots and cached collection
+manifest/proof bytes needed for future disc planning. In production this should
+be backed by persistent local storage because Glacier manifest and proof objects
+may be uploaded directly to archive storage classes.
+
+## `RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT`
+
+- type: byte size
+- default: `500GB`
+
+Maximum bytes Riverhog will admit as unburned collection data. The count includes
+active collection uploads plus committed collection bytes that are not yet
+protected by enough registered physical image copies. Set to `0` to disable the
+admission cap.
+
 ## `RIVERHOG_GLACIER_UPLOAD_RETRY_LIMIT`
 
 - type: integer

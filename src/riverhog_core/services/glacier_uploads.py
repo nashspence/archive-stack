@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from datetime import datetime
 
@@ -22,14 +23,24 @@ from riverhog_core.ports.archive_store import ArchiveStore
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.proofs import CommandProofStamper, ProofStamper
+from riverhog_core.recovery_payloads import (
+    CommandAgeBatchpassRecoveryPayloadCodec,
+    RecoveryPayloadCodec,
+)
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collections import _collection_upload_target_path
 from riverhog_core.services.glacier_reporting import record_glacier_usage_snapshot
+from riverhog_core.services.planning import (
+    cache_collection_archive_artifacts,
+    refresh_provisional_plan,
+)
 from riverhog_core.webhooks import (
     WebhookConfig,
     post_webhook,
     utcnow,
 )
+
+_LOG = logging.getLogger(__name__)
 
 
 class SqlAlchemyGlacierUploadService:
@@ -41,12 +52,22 @@ class SqlAlchemyGlacierUploadService:
         upload_store: UploadStore | None = None,
         *,
         proof_stamper: ProofStamper | None = None,
+        recovery_payload_codec: RecoveryPayloadCodec | None = None,
     ) -> None:
         self._config = config
         self._archive_store = archive_store
         self._hot_store = hot_store
         self._upload_store = upload_store
         self._proof_stamper = proof_stamper or CommandProofStamper(config.ots_stamp_command)
+        self._recovery_payload_codec = (
+            recovery_payload_codec
+            or CommandAgeBatchpassRecoveryPayloadCodec(
+                command=config.recovery_payload_command,
+                passphrase=config.recovery_payload_passphrase,
+                work_factor=config.recovery_payload_work_factor,
+                max_work_factor=config.recovery_payload_max_work_factor,
+            )
+        )
         self._session_factory = make_session_factory(config.database_url)
 
     def process_due_uploads(self, *, limit: int = 1) -> int:
@@ -137,6 +158,12 @@ class SqlAlchemyGlacierUploadService:
                 collection_id=collection_id,
                 package=package,
             )
+            cache_collection_archive_artifacts(
+                self._config,
+                collection_id=collection_id,
+                manifest_bytes=package.manifest_bytes,
+                proof_bytes=package.proof_bytes,
+            )
         except Exception as exc:
             self._record_collection_failure(collection_id=collection_id, error=_error_text(exc))
             return
@@ -191,6 +218,15 @@ class SqlAlchemyGlacierUploadService:
             )
             session.delete(upload)
             record_glacier_usage_snapshot(session, config=self._config)
+
+        try:
+            refresh_provisional_plan(
+                config=self._config,
+                hot_store=hot_store,
+                recovery_payload_codec=self._recovery_payload_codec,
+            )
+        except Exception:
+            _LOG.exception("failed to refresh provisional plan after archiving %s", collection_id)
 
     def _record_collection_failure(self, *, collection_id: str, error: str) -> None:
         current = utcnow()
