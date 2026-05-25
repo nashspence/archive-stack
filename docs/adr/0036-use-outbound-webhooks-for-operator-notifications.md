@@ -2,8 +2,11 @@
 
 ## Decision
 
-Riverhog emits configured outbound webhooks for operator-relevant archive and recovery events.
+Riverhog emits configured outbound webhooks for operator-relevant collection,
+archive, planner, and recovery events.
 
 ## Reason
 
-Recovery readiness and persistent archive failures need notification without creating additional product API surface.
+Recovery readiness, collection upload handoff, archive/promotion progress, planner
+completion, and persistent failures need notification without creating additional
+product API surface.

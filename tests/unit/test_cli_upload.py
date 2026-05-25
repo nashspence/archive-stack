@@ -5,6 +5,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+import typer
 
 from riverhog_cli import main as riverhog_main
 from riverhog_core.domain.errors import NotFound, ServiceUnavailable
@@ -453,3 +454,39 @@ def test_wait_for_finalized_collection_returns_failed_upload(
 
     assert state == "failed"
     assert payload["archive_failure"] == "archive bucket unavailable"
+
+
+def test_staged_collection_upload_payload_returns_archiving_session() -> None:
+    manifest: list[riverhog_main.CollectionManifestEntry] = [
+        {"path": "clip.bin", "bytes": 3, "sha256": hashlib.sha256(b"abc").hexdigest()}
+    ]
+
+    class FakeApi:
+        def get_collection_upload(self, collection_id: str) -> dict[str, object]:
+            return {
+                "collection_id": collection_id,
+                "state": "archiving",
+                "files_total": 1,
+                "files_uploaded": 1,
+                "bytes_total": 3,
+                "uploaded_bytes": 3,
+                "files": [],
+                "collection": None,
+            }
+
+        def get_collection(self, collection_id: str) -> dict[str, object]:
+            raise AssertionError("staged mode should not need finalized collection")
+
+    payload = riverhog_main._staged_collection_upload_payload(
+        FakeApi(),  # type: ignore[arg-type]
+        "2025/docs",
+        manifest,
+    )
+
+    assert payload["state"] == "archiving"
+    assert payload["files_uploaded"] == 1
+
+
+def test_normalize_upload_wait_mode_rejects_unknown_value() -> None:
+    with pytest.raises(typer.BadParameter):
+        riverhog_main._normalize_upload_wait_mode("forever")

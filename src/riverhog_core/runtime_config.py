@@ -156,6 +156,10 @@ class RuntimeConfig:
     glacier_upload_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=5))
     glacier_upload_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
     glacier_failure_webhook_url: str | None = None
+    collection_lifecycle_webhook_url: str | None = None
+    collection_lifecycle_webhook_timeout: timedelta = field(
+        default_factory=lambda: timedelta(seconds=5)
+    )
     glacier_recovery_sweep_interval: timedelta = field(
         default_factory=lambda: timedelta(seconds=30)
     )
@@ -312,6 +316,12 @@ def load_runtime_config() -> RuntimeConfig:
     )
     glacier_failure_webhook_url = (
         os.getenv("RIVERHOG_GLACIER_FAILURE_WEBHOOK_URL", "").strip() or None
+    )
+    collection_lifecycle_webhook_url = (
+        os.getenv("RIVERHOG_COLLECTION_LIFECYCLE_WEBHOOK_URL", "").strip() or None
+    )
+    collection_lifecycle_webhook_timeout = _parse_duration(
+        os.getenv("RIVERHOG_COLLECTION_LIFECYCLE_WEBHOOK_TIMEOUT", "5s")
     )
     glacier_recovery_sweep_interval = _parse_duration(
         os.getenv("RIVERHOG_GLACIER_RECOVERY_SWEEP_INTERVAL", "30s")
@@ -573,6 +583,8 @@ def load_runtime_config() -> RuntimeConfig:
         glacier_upload_retry_delay=glacier_retry_delay,
         glacier_upload_sweep_interval=glacier_upload_sweep_interval,
         glacier_failure_webhook_url=glacier_failure_webhook_url,
+        collection_lifecycle_webhook_url=collection_lifecycle_webhook_url,
+        collection_lifecycle_webhook_timeout=collection_lifecycle_webhook_timeout,
         glacier_recovery_sweep_interval=glacier_recovery_sweep_interval,
         glacier_recovery_restore_latency=glacier_recovery_restore_latency,
         glacier_recovery_ready_ttl=glacier_recovery_ready_ttl,

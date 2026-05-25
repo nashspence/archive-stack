@@ -120,6 +120,11 @@ def test_load_runtime_config_parses_planner_runtime_settings(
     monkeypatch.setenv("RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT", "500GB")
     monkeypatch.setenv("RIVERHOG_TUSD_APPEND_TIMEOUT_SECONDS", "45.5")
     monkeypatch.setenv("RIVERHOG_GLACIER_MULTIPART_PART_BYTES", "128MiB")
+    monkeypatch.setenv(
+        "RIVERHOG_COLLECTION_LIFECYCLE_WEBHOOK_URL",
+        "http://example.invalid/webhook/riverhog",
+    )
+    monkeypatch.setenv("RIVERHOG_COLLECTION_LIFECYCLE_WEBHOOK_TIMEOUT", "2s")
 
     config = load_runtime_config()
 
@@ -130,6 +135,8 @@ def test_load_runtime_config_parses_planner_runtime_settings(
     assert config.unburned_collection_bytes_limit == 500_000_000_000
     assert config.tusd_append_timeout_seconds == 45.5
     assert config.glacier_multipart_part_bytes == 128 * 1024**2
+    assert config.collection_lifecycle_webhook_url == "http://example.invalid/webhook/riverhog"
+    assert config.collection_lifecycle_webhook_timeout == timedelta(seconds=2)
 
 
 def test_load_runtime_config_accepts_explicit_planner_min_fill_bytes(

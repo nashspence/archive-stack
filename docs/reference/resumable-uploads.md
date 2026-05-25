@@ -106,6 +106,11 @@ promoted only after the hot object verifies. Retries skip verified hot files,
 finish the remaining files, then atomically commit the finalized collection and
 archive records before deleting staged upload objects.
 
+When `RIVERHOG_COLLECTION_LIFECYCLE_WEBHOOK_URL` is configured, Riverhog emits
+best-effort milestone notifications across these phases. The CLI can therefore
+exit at the staged handoff while operators receive phone or automation updates
+for archive completion, promotion, planner refresh, and persistent failures.
+
 This follows Amazon S3's multipart contract: the upload id is required to upload
 parts, list parts, complete, or abort; completion requires part numbers and
 ETags; and uploading the same part number replaces that part. S3 also bills

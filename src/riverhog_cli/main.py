@@ -5,7 +5,7 @@ import os
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 
 import httpx
 import typer
@@ -46,6 +46,7 @@ TRANSIENT_UPLOAD_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 UPLOAD_RESUME_RETRY_ATTEMPTS = 5
 UPLOAD_RESUME_RETRY_INITIAL_DELAY_SECONDS = 1.0
 UPLOAD_RESUME_RETRY_MAX_DELAY_SECONDS = 10.0
+UploadWaitMode = Literal["staged", "finalized"]
 
 
 class CollectionManifestEntry(TypedDict):
@@ -131,6 +132,17 @@ def _upload_finalize_timeout_seconds() -> float | None:
     if value == 0:
         return None
     return value
+
+
+def _default_upload_wait_mode() -> str:
+    return os.getenv("RIVERHOG_UPLOAD_WAIT", "staged").strip().lower() or "staged"
+
+
+def _normalize_upload_wait_mode(value: str) -> UploadWaitMode:
+    normalized = value.strip().lower()
+    if normalized not in {"staged", "finalized"}:
+        raise typer.BadParameter("upload wait mode must be 'staged' or 'finalized'")
+    return "staged" if normalized == "staged" else "finalized"
 
 
 def _format_bytes(value: int) -> str:
@@ -325,8 +337,10 @@ def _finalized_collection_upload_payload(
         "files_pending": 0,
         "files_partial": 0,
         "files_uploaded": len(files),
+        "hot_promoted_files": len(files),
         "bytes_total": bytes_total,
         "uploaded_bytes": bytes_total,
+        "hot_promoted_bytes": bytes_total,
         "missing_bytes": 0,
         "upload_state_expires_at": None,
         "files": files,
@@ -418,6 +432,48 @@ def _wait_for_finalized_collection(
         time.sleep(sleep_seconds)
 
 
+def _staged_collection_upload_payload(
+    api: ApiClient,
+    collection_id: str,
+    manifest: list[CollectionManifestEntry],
+) -> dict[str, object]:
+    try:
+        return api.get_collection_upload(collection_id)
+    except NotFound:
+        collection = api.get_collection(collection_id)
+        return _finalized_collection_upload_payload(collection_id, manifest, collection)
+    except Exception as exc:
+        if not _is_transient_upload_error(exc):
+            raise
+        bytes_total = sum(item["bytes"] for item in manifest)
+        return {
+            "collection_id": collection_id,
+            "state": "archiving",
+            "files_total": len(manifest),
+            "files_pending": 0,
+            "files_partial": 0,
+            "files_uploaded": len(manifest),
+            "hot_promoted_files": 0,
+            "bytes_total": bytes_total,
+            "uploaded_bytes": bytes_total,
+            "hot_promoted_bytes": 0,
+            "missing_bytes": 0,
+            "upload_state_expires_at": None,
+            "files": [
+                {
+                    "path": item["path"],
+                    "bytes": item["bytes"],
+                    "sha256": item["sha256"],
+                    "upload_state": "uploaded",
+                    "uploaded_bytes": item["bytes"],
+                    "upload_state_expires_at": None,
+                }
+                for item in manifest
+            ],
+            "collection": None,
+        }
+
+
 def _archive_wait_status(payload: dict[str, object]) -> str:
     phase = payload.get("archive_phase")
     if not phase:
@@ -473,8 +529,16 @@ def upload_cmd(
             help="Use UTC upload timestamp YYYYMMDDTHHMMSSZ in the collection id",
         ),
     ] = None,
+    wait: Annotated[
+        str,
+        typer.Option(
+            "--wait",
+            help="Wait until 'staged' server handoff or full 'finalized' collection archival",
+        ),
+    ] = _default_upload_wait_mode(),
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    wait_mode = _normalize_upload_wait_mode(wait)
     resolved_root = root.expanduser().resolve()
     if not resolved_root.is_dir():
         raise typer.BadParameter("collection source must be a directory")
@@ -536,11 +600,18 @@ def upload_cmd(
             progress=note_uploaded,
         )
 
-    final_payload, completion_state = _wait_for_finalized_collection(
-        api,
-        collection_id,
-        manifest,
-    )
+    if wait_mode == "finalized":
+        final_payload, completion_state = _wait_for_finalized_collection(
+            api,
+            collection_id,
+            manifest,
+        )
+    else:
+        _log_upload(
+            "All files uploaded; collection finalization will continue in the background"
+        )
+        final_payload = _staged_collection_upload_payload(api, collection_id, manifest)
+        completion_state = "staged"
     emit(
         final_payload if json_mode else format_collection_upload(final_payload),
         json_mode=json_mode,

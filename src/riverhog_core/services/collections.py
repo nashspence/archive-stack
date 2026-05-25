@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -64,8 +65,15 @@ from riverhog_core.services.resumable_uploads import (
     upload_expiry_timestamp,
     upload_state_name,
 )
+from riverhog_core.webhooks import (
+    WebhookConfig,
+    build_collection_lifecycle_payload,
+    post_webhook,
+    utcnow,
+)
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,6 +285,7 @@ class SqlAlchemyCollectionService:
     ) -> dict[str, object]:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
         normalized_path = _normalize_relpath_or_raise(path)
+        staged_webhook_details: dict[str, object] | None = None
 
         with session_scope(self._session_factory) as session:
             upload = session.get(CollectionUploadRecord, normalized_collection_id)
@@ -314,13 +323,24 @@ class SqlAlchemyCollectionService:
                 file_record.upload_expires_at = upload_expiry_timestamp(self._upload_ttl)
 
             if _collection_upload_is_complete(upload.files):
+                was_archiving = upload.state == "archiving"
                 _ensure_collection_upload_archiving(upload)
+                if not was_archiving:
+                    staged_webhook_details = _collection_upload_webhook_details(upload)
 
-            return {
+            response: dict[str, object] = {
                 "offset": file_record.uploaded_bytes,
                 "length": file_record.bytes,
                 "expires_at": file_record.upload_expires_at,
             }
+        if staged_webhook_details is not None:
+            _post_collection_lifecycle_webhook(
+                self._config,
+                event="collections.upload_staged",
+                collection_id=normalized_collection_id,
+                details=staged_webhook_details,
+            )
+        return response
 
     def get_file_upload(self, collection_id: str, path: str) -> dict[str, object]:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
@@ -873,6 +893,48 @@ def _collection_upload_session_state(upload: CollectionUploadRecord) -> str:
     if upload.state == "failed":
         return "failed"
     return "archiving"
+
+
+def _collection_upload_webhook_details(upload: CollectionUploadRecord) -> dict[str, object]:
+    files = upload.files
+    bytes_total = sum(file_record.bytes for file_record in files)
+    uploaded_bytes = sum(file_record.uploaded_bytes for file_record in files)
+    return {
+        "state": _collection_upload_session_state(upload),
+        "files_total": len(files),
+        "files_uploaded": sum(
+            file_record.uploaded_bytes >= file_record.bytes for file_record in files
+        ),
+        "bytes_total": bytes_total,
+        "uploaded_bytes": uploaded_bytes,
+    }
+
+
+def _post_collection_lifecycle_webhook(
+    config: RuntimeConfig,
+    *,
+    event: str,
+    collection_id: str,
+    details: dict[str, object] | None = None,
+) -> None:
+    if not config.collection_lifecycle_webhook_url:
+        return
+    try:
+        webhook_config = WebhookConfig(
+            url=config.collection_lifecycle_webhook_url,
+            base_url=config.public_base_url or "",
+            timeout_seconds=config.collection_lifecycle_webhook_timeout.total_seconds(),
+        )
+        payload = build_collection_lifecycle_payload(
+            config=webhook_config,
+            event=event,
+            collection_id=collection_id,
+            delivered_at=utcnow(),
+            details=details,
+        )
+        post_webhook(config=webhook_config, payload=payload)
+    except Exception:
+        _LOG.warning("failed to deliver %s webhook for %s", event, collection_id, exc_info=True)
 
 
 def _ensure_collection_upload_archiving(upload: CollectionUploadRecord) -> None:

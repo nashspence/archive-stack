@@ -46,6 +46,7 @@ from riverhog_core.services.planning import (
 )
 from riverhog_core.webhooks import (
     WebhookConfig,
+    build_collection_lifecycle_payload,
     post_webhook,
     utcnow,
 )
@@ -157,6 +158,7 @@ class SqlAlchemyGlacierUploadService:
             ]
 
         try:
+            archive_details = _upload_files_webhook_details(upload_files)
             if receipt is None or manifest_bytes is None or proof_bytes is None:
                 target_path_by_archive_path: dict[str, str] = {}
                 package_files: list[CollectionArchiveExpectedFile] = []
@@ -178,6 +180,15 @@ class SqlAlchemyGlacierUploadService:
                 manifest_bytes = package.manifest_bytes
                 proof_bytes = package.proof_bytes
                 if receipt is None:
+                    self._post_collection_lifecycle_webhook(
+                        event="collections.archive_started",
+                        collection_id=collection_id,
+                        details={
+                            **archive_details,
+                            "archive_total_bytes": package.archive_size,
+                            "archive_sha256": package.archive_sha256,
+                        },
+                    )
                     self._record_archive_phase(
                         collection_id=collection_id,
                         phase="uploading",
@@ -189,6 +200,16 @@ class SqlAlchemyGlacierUploadService:
                         multipart_tracker=_SqlAlchemyArchiveMultipartUploadTracker(
                             self._session_factory
                         ),
+                    )
+                    self._post_collection_lifecycle_webhook(
+                        event="collections.archive_uploaded",
+                        collection_id=collection_id,
+                        details={
+                            **archive_details,
+                            "archive_object_path": receipt.archive.object_path,
+                            "archive_total_bytes": receipt.archive.stored_bytes,
+                            "archive_sha256": receipt.archive_sha256,
+                        },
                     )
                 self._record_completed_archive(
                     collection_id=collection_id,
@@ -203,6 +224,11 @@ class SqlAlchemyGlacierUploadService:
                 collection_id=collection_id,
                 manifest_bytes=manifest_bytes,
                 proof_bytes=proof_bytes,
+            )
+            self._post_collection_lifecycle_webhook(
+                event="collections.promotion_started",
+                collection_id=collection_id,
+                details=archive_details,
             )
         except Exception as exc:
             self._record_collection_failure(collection_id=collection_id, error=_error_text(exc))
@@ -226,6 +252,16 @@ class SqlAlchemyGlacierUploadService:
                 receipt=receipt,
                 upload_files=upload_files,
             )
+            self._post_collection_lifecycle_webhook(
+                event="collections.finalized",
+                collection_id=collection_id,
+                details={
+                    **archive_details,
+                    "archive_object_path": receipt.archive.object_path,
+                    "archive_total_bytes": receipt.archive.stored_bytes,
+                    "archive_sha256": receipt.archive_sha256,
+                },
+            )
         except Exception as exc:
             self._record_collection_failure(collection_id=collection_id, error=_error_text(exc))
             return
@@ -247,8 +283,18 @@ class SqlAlchemyGlacierUploadService:
                 hot_store=hot_store,
                 recovery_payload_codec=self._recovery_payload_codec,
             )
+            self._post_collection_lifecycle_webhook(
+                event="collections.planner_refreshed",
+                collection_id=collection_id,
+                details=archive_details,
+            )
         except Exception:
             _LOG.exception("failed to refresh provisional plan after archiving %s", collection_id)
+            self._post_collection_lifecycle_webhook(
+                event="collections.planner_failed",
+                collection_id=collection_id,
+                details=archive_details,
+            )
 
     def _promote_one_collection_file(
         self,
@@ -390,6 +436,32 @@ class SqlAlchemyGlacierUploadService:
             upload.archive_phase_updated_at = current_text
             upload.archive_failure = None
 
+    def _post_collection_lifecycle_webhook(
+        self,
+        *,
+        event: str,
+        collection_id: str,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        if not self._config.collection_lifecycle_webhook_url:
+            return
+        try:
+            webhook_config = WebhookConfig(
+                url=self._config.collection_lifecycle_webhook_url,
+                base_url=self._config.public_base_url or "",
+                timeout_seconds=self._config.collection_lifecycle_webhook_timeout.total_seconds(),
+            )
+            payload = build_collection_lifecycle_payload(
+                config=webhook_config,
+                event=event,
+                collection_id=collection_id,
+                delivered_at=utcnow(),
+                details=details,
+            )
+            post_webhook(config=webhook_config, payload=payload)
+        except Exception:
+            _LOG.warning("failed to deliver %s webhook for %s", event, collection_id, exc_info=True)
+
     def _record_collection_failure(self, *, collection_id: str, error: str) -> None:
         current = utcnow()
         current_text = _isoformat_z(current)
@@ -432,6 +504,15 @@ class SqlAlchemyGlacierUploadService:
         error: str,
         failed_at: str,
     ) -> None:
+        self._post_collection_lifecycle_webhook(
+            event="collections.failed",
+            collection_id=collection_id,
+            details={
+                "attempts": attempt_count,
+                "failed_at": failed_at,
+                "error": error,
+            },
+        )
         if not self._config.glacier_failure_webhook_url:
             return
         payload = {
@@ -605,6 +686,17 @@ def _multipart_parts_to_json(parts: tuple[ArchiveMultipartUploadedPart, ...]) ->
         [{"part_number": part.part_number, "etag": part.etag, "size": part.size} for part in parts],
         separators=(",", ":"),
     )
+
+
+def _upload_files_webhook_details(
+    upload_files: list[tuple[str, int, str, str]],
+) -> dict[str, object]:
+    return {
+        "files_total": len(upload_files),
+        "files_uploaded": len(upload_files),
+        "bytes_total": sum(file_record[1] for file_record in upload_files),
+        "uploaded_bytes": sum(file_record[1] for file_record in upload_files),
+    }
 
 
 def _hot_file_matches(

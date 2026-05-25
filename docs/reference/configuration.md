@@ -352,6 +352,32 @@ reaches persistent failure after automatic retries.
 The payload includes the `collection_id`, archive package object paths, failure
 timestamp, attempt count, and error context.
 
+## `RIVERHOG_COLLECTION_LIFECYCLE_WEBHOOK_URL`
+
+- type: URL
+- default: unset
+
+Optional webhook endpoint notified for collection ingest milestones after the
+client has handed bytes to Riverhog. Events include `collections.upload_staged`,
+`collections.archive_started`, `collections.archive_uploaded`,
+`collections.promotion_started`, `collections.finalized`,
+`collections.planner_refreshed`, `collections.planner_failed`, and
+`collections.failed`.
+
+These notifications are operator-facing and best-effort; Riverhog catalog state
+remains authoritative. The payload includes `collection_id`, links back to the
+collection when `RIVERHOG_PUBLIC_BASE_URL` is configured, and event-specific
+progress such as file counts, staged bytes, archive bytes, object path, or
+failure details.
+
+## `RIVERHOG_COLLECTION_LIFECYCLE_WEBHOOK_TIMEOUT`
+
+- type: duration
+- default: `5s`
+
+Outbound timeout for one collection lifecycle webhook delivery. Webhook
+failures are logged but never block archival finalization.
+
 ## `RIVERHOG_GLACIER_RECOVERY_SWEEP_INTERVAL`
 
 - type: duration

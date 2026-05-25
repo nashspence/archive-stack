@@ -75,6 +75,22 @@ def recovery_session_url(base_url: str, session_id: str) -> str:
     return f"{base_url.rstrip('/')}{recovery_session_path(session_id)}"
 
 
+def collection_path(collection_id: str) -> str:
+    return f"/v1/collections/{collection_id}"
+
+
+def collection_upload_path(collection_id: str) -> str:
+    return f"/v1/collection-uploads/{collection_id}"
+
+
+def collection_url(base_url: str, collection_id: str) -> str:
+    return f"{base_url.rstrip('/')}{collection_path(collection_id)}"
+
+
+def collection_upload_url(base_url: str, collection_id: str) -> str:
+    return f"{base_url.rstrip('/')}{collection_upload_path(collection_id)}"
+
+
 def build_images_ready_payload(
     *, config: WebhookConfig, batch: ImagesReadyBatch, delivered_at: datetime
 ) -> dict[str, object]:
@@ -130,6 +146,28 @@ def build_recovery_ready_payload(
     }
     if config.base_url:
         payload["session_url"] = recovery_session_url(config.base_url, session_id)
+    return payload
+
+
+def build_collection_lifecycle_payload(
+    *,
+    config: WebhookConfig,
+    event: str,
+    collection_id: str,
+    delivered_at: datetime,
+    details: dict[str, object] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "event": event,
+        "type": "collection_lifecycle",
+        "collection_id": collection_id,
+        "delivered_at": isoformat_z(delivered_at),
+    }
+    if config.base_url:
+        payload["collection_url"] = collection_url(config.base_url, collection_id)
+        payload["upload_url"] = collection_upload_url(config.base_url, collection_id)
+    if details:
+        payload.update(details)
     return payload
 
 

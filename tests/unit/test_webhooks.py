@@ -6,6 +6,7 @@ from riverhog_core.webhooks import (
     ImagesReadyBatch,
     ReadyImage,
     WebhookConfig,
+    build_collection_lifecycle_payload,
     build_images_ready_payload,
     build_recovery_ready_payload,
 )
@@ -64,3 +65,25 @@ def test_build_recovery_ready_payload_includes_session_and_image_urls() -> None:
             }
         ],
     }
+
+
+def test_build_collection_lifecycle_payload_includes_links_and_details() -> None:
+    payload = build_collection_lifecycle_payload(
+        config=WebhookConfig(url="https://example.test/hook", base_url="https://api.test"),
+        event="collections.upload_staged",
+        collection_id="2025/20250712T213200Z__home-videos",
+        delivered_at=datetime(2026, 5, 25, 18, 0, tzinfo=UTC),
+        details={
+            "files_total": 572,
+            "files_uploaded": 572,
+            "bytes_total": 73763193518,
+        },
+    )
+
+    assert payload["event"] == "collections.upload_staged"
+    assert payload["type"] == "collection_lifecycle"
+    assert payload["collection_id"] == "2025/20250712T213200Z__home-videos"
+    assert payload["collection_url"].endswith(
+        "/v1/collections/2025/20250712T213200Z__home-videos"
+    )
+    assert payload["files_total"] == 572

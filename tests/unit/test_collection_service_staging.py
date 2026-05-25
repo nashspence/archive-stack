@@ -371,13 +371,28 @@ def test_partial_collection_upload_does_not_publish_committed_hot_file(tmp_path:
     assert not hot_store.has_collection_file(collection_id, relpath)
 
 
-def test_completed_collection_upload_promotes_from_staging_and_cleans_up(tmp_path: Path) -> None:
+def test_completed_collection_upload_promotes_from_staging_and_cleans_up(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     initialize_db(str(sqlite_path))
 
+    webhook_payloads: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "riverhog_core.services.collections.post_webhook",
+        lambda *, config, payload: webhook_payloads.append(payload),
+    )
     hot_store = _FakeHotStore()
     upload_store = _StreamingOnlyUploadStore()
-    service = SqlAlchemyCollectionService(_config(sqlite_path), hot_store, upload_store)
+    service = SqlAlchemyCollectionService(
+        _config(
+            sqlite_path,
+            collection_lifecycle_webhook_url="http://example.invalid/webhook",
+        ),
+        hot_store,
+        upload_store,
+    )
 
     content = b"hello world\n"
     sha256 = hashlib.sha256(content).hexdigest()
@@ -412,6 +427,9 @@ def test_completed_collection_upload_promotes_from_staging_and_cleans_up(tmp_pat
 
     assert hot_store.get_collection_file(collection_id, relpath) == content
     assert staging_target in upload_store.deleted_targets
+    assert [payload["event"] for payload in webhook_payloads] == [
+        "collections.upload_staged"
+    ]
 
 
 def test_failed_hot_promotion_keeps_staging_for_retry(tmp_path: Path) -> None:
