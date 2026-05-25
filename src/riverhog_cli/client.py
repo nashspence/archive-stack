@@ -100,6 +100,7 @@ class ApiClient:
         self.upload_base_url = (os.getenv("RIVERHOG_UPLOAD_BASE_URL", "").rstrip("/") or None)
         self.host_header = os.getenv("RIVERHOG_HOST_HEADER", "").strip() or None
         self.verify_tls = _bool_env("RIVERHOG_TLS_VERIFY", True)
+        self.http2 = _bool_env("RIVERHOG_HTTP2", True)
         self._request_client: httpx.Client | None = None
 
     def _client(self) -> httpx.Client:
@@ -113,6 +114,7 @@ class ApiClient:
             headers=headers,
             timeout=_HTTP_TIMEOUT_SECONDS,
             verify=self.verify_tls,
+            http2=self.http2,
         )
 
     def _persistent_client(self) -> httpx.Client:
