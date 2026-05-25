@@ -23,6 +23,8 @@ For collection ingest specifically:
 - staged collection bytes are retained until the finalized collection and
   archive records commit; post-finalization staging cleanup is best-effort, so a
   restart cannot make a retry depend on already-deleted staged bytes
+- the S3 multipart upload used for the collection Glacier object is also
+  restart-resumable while the remote multipart upload still exists
 - once the last resumable collection-file state expires, Riverhog forgets the upload session instead of keeping an empty pending record
 
 ## Collection Upload Creation
@@ -71,6 +73,54 @@ The response exposes at least:
 - `length`
 - `expires_at`
 - `checksum_algorithm`
+
+## Collection Archive Multipart Resume
+
+Collection archive upload is a second resumable phase after all logical files
+are staged. Riverhog creates one deterministic tar archive for the collection
+and stores it as one Glacier object at:
+
+```text
+{RIVERHOG_GLACIER_PREFIX}/collections/{collection_id}/archive.tar
+```
+
+The tar includes the logical files plus the Riverhog archive manifest and OTS
+proof at `.riverhog/manifest.yml` and `.riverhog/manifest.yml.ots`. Those
+metadata files are not separate S3 objects.
+
+For archives that use S3 multipart upload, Riverhog persists the multipart
+`UploadId`, object key, part size, archive length, archive SHA-256, and progress
+on the collection upload row. It also records each uploaded part number, ETag,
+and size. If the app restarts or an upload attempt fails, the retry lists
+uploaded parts for that `UploadId`, verifies them against the recorded part
+metadata, skips the already uploaded contiguous prefix of the deterministic
+archive stream, uploads the remaining parts, and completes the same multipart
+upload using the recorded part numbers and ETags.
+
+This follows Amazon S3's multipart contract: the upload id is required to upload
+parts, list parts, complete, or abort; completion requires part numbers and
+ETags; and uploading the same part number replaces that part. S3 also bills
+incomplete multipart parts until the upload is completed or aborted, so the
+bucket lifecycle rule for aborting old incomplete multipart uploads remains a
+backup guard. See the AWS S3 multipart overview:
+https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpuoverview.html
+
+## Planner Materialization Resume
+
+After a collection has finalized and archive artifacts have cached locally,
+Riverhog refreshes provisional optical-disc candidates. Candidate rows are
+created before materialization starts with stable candidate ids derived from the
+planned contents and planner sizing config. A candidate root is first written as
+`.candidate-*.tmp`; completed encrypted payloads, sidecars, manifests, and
+readme files are left in that temp root if materialization fails or the app
+restarts.
+
+The next planner refresh reuses the same candidate row and temp root, skips
+already completed encrypted files, finishes the missing files, then atomically
+renames the temp root to the final candidate root and marks the candidate
+`ready`. A background planner refresh worker checks for missing, failed, or
+still-materializing provisional candidates every
+`RIVERHOG_PLANNER_REFRESH_SWEEP_INTERVAL`.
 
 ## Fetch Entry Upload Session
 

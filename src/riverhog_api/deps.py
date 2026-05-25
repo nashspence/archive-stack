@@ -69,7 +69,7 @@ def default_container() -> ServiceContainer:
     return ServiceContainer(
         collections=SqlAlchemyCollectionService(config, hot_store, upload_store),
         search=SqlAlchemySearchService(config),
-        planning=SqlAlchemyPlanningService(config, recovery_payload_codec),
+        planning=SqlAlchemyPlanningService(config, hot_store, recovery_payload_codec),
         glacier_uploads=SqlAlchemyGlacierUploadService(
             config,
             archive_store,

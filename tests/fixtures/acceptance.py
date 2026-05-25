@@ -327,6 +327,7 @@ class _RecoveryParts:
     part_count: int
     present_parts: frozenset[int]
 
+
 @dataclass(slots=True)
 class FetchEntryRecord:
     id: EntryId
@@ -508,9 +509,7 @@ class AcceptanceState:
                     attempt_payload["result"] = "timeout"
                     attempt_payload["status_code"] = 0
                     self.record_webhook_attempt(attempt_payload)
-                    raise httpx.ReadTimeout(
-                        f"test webhook sink timed out after {timeout_seconds}s"
-                    )
+                    raise httpx.ReadTimeout(f"test webhook sink timed out after {timeout_seconds}s")
                 status_code = int(behavior.get("status_code", 503))
                 if status_code >= 400:
                     attempt_payload["result"] = "failed"
@@ -719,9 +718,7 @@ class AcceptanceState:
             if volume_id == image_id
         ]
         existing_ids = {
-            str(copy_id)
-            for volume_id, copy_id in self.copy_summaries
-            if volume_id == image_id
+            str(copy_id) for volume_id, copy_id in self.copy_summaries if volume_id == image_id
         }
 
         if not copies:
@@ -848,10 +845,11 @@ class AcceptanceState:
         )
         if status.state != GlacierState.UPLOADED:
             return None
+        archive_path = f"glacier/collections/{collection_id}/archive.tar"
         return CollectionArchiveManifestStatus(
-            object_path=f"glacier/collections/{collection_id}/manifest.yml",
+            object_path=archive_path,
             sha256="0" * 64,
-            ots_object_path=f"glacier/collections/{collection_id}/manifest.yml.ots",
+            ots_object_path=archive_path,
             ots_state="uploaded",
             ots_sha256="1" * 64,
         )
@@ -1078,9 +1076,7 @@ class AcceptanceCollectionService:
     ) -> dict[str, object]:
         normalized_slug = normalize_upload_slug(upload_slug)
         normalized_upload_timestamp = (
-            normalize_upload_timestamp(upload_timestamp)
-            if upload_timestamp is not None
-            else None
+            normalize_upload_timestamp(upload_timestamp) if upload_timestamp is not None else None
         )
         requested_collection_id = (
             self._collection_id_for_upload_timestamp(
@@ -1436,9 +1432,7 @@ class AcceptanceCollectionService:
             for collection_id in sorted(self.state.files_by_collection)
         ]
         if needle is not None:
-            summaries = [
-                summary for summary in summaries if needle in str(summary.id).casefold()
-            ]
+            summaries = [summary for summary in summaries if needle in str(summary.id).casefold()]
         if protection_state is not None:
             summaries = [
                 summary
@@ -1673,6 +1667,11 @@ class AcceptanceSearchService:
 class AcceptancePlanningService:
     def __init__(self, state: AcceptanceState) -> None:
         self.state = state
+
+    @_with_state_lock
+    def process_due_refresh(self, *, limit: int = 1) -> int:
+        _ = limit
+        return 0
 
     @_with_state_lock
     def get_plan(
@@ -2352,11 +2351,7 @@ class AcceptanceRecoverySessionService:
         )
         collection_ids = record.collection_ids or tuple(
             sorted(
-                {
-                    collection_id
-                    for image in images
-                    for collection_id, _path in image.covered_paths
-                }
+                {collection_id for image in images for collection_id, _path in image.covered_paths}
             )
         )
         collection_statuses = [
@@ -2438,9 +2433,9 @@ class AcceptanceRecoverySessionService:
                     id=collection_id,
                     glacier=self.state.collection_glacier_status(str(collection_id)),
                     archive_manifest=CollectionArchiveManifestStatus(
-                        object_path=f"glacier/collections/{collection_id}/manifest.yml",
+                        object_path=f"glacier/collections/{collection_id}/archive.tar",
                         sha256="0" * 64,
-                        ots_object_path=f"glacier/collections/{collection_id}/manifest.yml.ots",
+                        ots_object_path=f"glacier/collections/{collection_id}/archive.tar",
                         ots_state="uploaded",
                         ots_sha256="1" * 64,
                     ),
@@ -2794,7 +2789,7 @@ def _acceptance_glacier_collections(
                 estimated_monthly_cost_usd=_round_usd(
                     _acceptance_estimated_monthly_cost_usd(
                         measured_storage_bytes,
-                        object_count=3 if measured_storage_bytes > 0 else 0,
+                        object_count=1 if measured_storage_bytes > 0 else 0,
                         pricing_basis=pricing_basis,
                     )
                 ),
@@ -2802,10 +2797,10 @@ def _acceptance_glacier_collections(
                 glacier=glacier,
                 archive_manifest=(
                     CollectionArchiveManifestStatus(
-                        object_path=f"glacier/collections/{normalized_collection_id}/manifest.yml",
+                        object_path=(f"glacier/collections/{normalized_collection_id}/archive.tar"),
                         sha256="0" * 64,
                         ots_object_path=(
-                            f"glacier/collections/{normalized_collection_id}/manifest.yml.ots"
+                            f"glacier/collections/{normalized_collection_id}/archive.tar"
                         ),
                         ots_state="uploaded",
                         ots_sha256="1" * 64,
@@ -4303,10 +4298,13 @@ class AcceptanceSystem:
         with self.state.lock:
             if CollectionId(normalized_collection_id) not in self.state.files_by_collection:
                 raise NotFound(f"collection not found: {normalized_collection_id}")
-        self.seed_collection_source(normalized_collection_id, {
-            record.path: record.content
-            for record in self.state.collection_files(normalized_collection_id)
-        })
+        self.seed_collection_source(
+            normalized_collection_id,
+            {
+                record.path: record.content
+                for record in self.state.collection_files(normalized_collection_id)
+            },
+        )
         with self.state.lock:
             records = self.state.collection_files(normalized_collection_id)
             self.state.collection_uploads[CollectionId(normalized_collection_id)] = (
@@ -4745,9 +4743,7 @@ class AcceptanceSystem:
     def seed_candidate_for_collection(self, collection_id: str) -> None:
         normalized_collection_id = normalize_collection_id(collection_id)
         with self.state.lock:
-            records = self.state.collection_uploads.get(
-                CollectionId(normalized_collection_id)
-            )
+            records = self.state.collection_uploads.get(CollectionId(normalized_collection_id))
             source_files = (
                 {
                     path: file_record.uploaded_content or b""
@@ -4772,8 +4768,7 @@ class AcceptanceSystem:
                 bytes=sum(len(content) for content in source_files.values()),
                 iso_ready=True,
                 covered_paths=tuple(
-                    (CollectionId(normalized_collection_id), path)
-                    for path in sorted(source_files)
+                    (CollectionId(normalized_collection_id), path) for path in sorted(source_files)
                 ),
             )
         )
@@ -4968,9 +4963,7 @@ class AcceptanceSystem:
         manifest = cast(dict[str, Any], self.fetches.manifest(fetch_id))
         with self.state.lock:
             fetch_record = self.state.fetches[FetchId(fetch_id)]
-            content_by_path = {
-                entry.path: entry.content for entry in fetch_record.entries.values()
-            }
+            content_by_path = {entry.path: entry.content for entry in fetch_record.entries.values()}
         payload_by_disc_path: dict[str, str] = {}
         fail_disc_paths: list[str] = []
         fail_copy_ids = fail_copy_ids or set()

@@ -94,6 +94,7 @@ class SearchService(Protocol):
 
 
 class PlanningService(Protocol):
+    def process_due_refresh(self, *, limit: int = 1) -> int: ...
     def get_plan(
         self,
         *,

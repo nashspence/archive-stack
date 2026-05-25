@@ -217,6 +217,7 @@ class RuntimeConfig:
         DEFAULT_PLANNER_DISC_TARGET_BYTES * DEFAULT_PLANNER_MIN_FILL_RATIO
     )
     planner_image_root: Path = field(default_factory=lambda: Path(".riverhog/images"))
+    planner_refresh_sweep_interval: timedelta = field(default_factory=lambda: timedelta(minutes=1))
     unburned_collection_bytes_limit: int = DEFAULT_UNBURNED_COLLECTION_BYTES_LIMIT
 
     def __post_init__(self) -> None:
@@ -258,6 +259,8 @@ class RuntimeConfig:
             raise ValueError(
                 "RIVERHOG_PLANNER_MIN_FILL_BYTES must be <= RIVERHOG_PLANNER_DISC_TARGET_BYTES"
             )
+        if self.planner_refresh_sweep_interval.total_seconds() <= 0.0:
+            raise ValueError("RIVERHOG_PLANNER_REFRESH_SWEEP_INTERVAL must be > 0")
         if self.unburned_collection_bytes_limit < 0:
             raise ValueError("RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT must be >= 0")
         object.__setattr__(
@@ -515,6 +518,9 @@ def load_runtime_config() -> RuntimeConfig:
     planner_image_root = Path(
         os.getenv("RIVERHOG_PLANNER_IMAGE_ROOT", ".riverhog/images").strip() or ".riverhog/images"
     )
+    planner_refresh_sweep_interval = _parse_duration(
+        os.getenv("RIVERHOG_PLANNER_REFRESH_SWEEP_INTERVAL", "60s")
+    )
     unburned_collection_bytes_limit = _parse_bytes(
         os.getenv(
             "RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT",
@@ -617,5 +623,6 @@ def load_runtime_config() -> RuntimeConfig:
         planner_min_fill_ratio=planner_min_fill_ratio,
         planner_min_fill_bytes=planner_min_fill_bytes,
         planner_image_root=planner_image_root,
+        planner_refresh_sweep_interval=planner_refresh_sweep_interval,
         unburned_collection_bytes_limit=unburned_collection_bytes_limit,
     )

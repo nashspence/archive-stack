@@ -1886,6 +1886,36 @@ components:
             - type: string
             - type: "null"
           description: Latest collection archive failure, when archiving exhausted retries.
+        archive_phase:
+          oneOf:
+            - type: string
+            - type: "null"
+          description: Current long-running archive phase for upload finalization.
+        archive_phase_updated_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        archive_object_path:
+          oneOf:
+            - type: string
+            - type: "null"
+        archive_uploaded_bytes:
+          oneOf:
+            - type: integer
+            - type: "null"
+        archive_total_bytes:
+          oneOf:
+            - type: integer
+            - type: "null"
+        archive_uploaded_parts:
+          oneOf:
+            - type: integer
+            - type: "null"
+        archive_total_parts:
+          oneOf:
+            - type: integer
+            - type: "null"
         files:
           type: array
           items:

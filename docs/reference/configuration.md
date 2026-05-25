@@ -114,16 +114,20 @@ Enables path-style requests for Glacier-upload backends that require them.
 - type: normalized path prefix
 - default: `glacier`
 
-Collection Glacier archive packages use privacy-safe keys below the configured prefix:
+Collection Glacier archive packages use canonical collection ids below the configured prefix:
 
 ```text
-glacier/collections/{collection_id_hash}/archive.tar
-glacier/collections/{collection_id_hash}/manifest.yml
-glacier/collections/{collection_id_hash}/manifest.yml.ots
+glacier/collections/{year}/{timestamp}__{slug}/archive.tar
 ```
 
-The hash segment is derived from the canonical collection id. These keys must
-not embed raw collection ids or logical file paths.
+The archive tar is the only Glacier object for the collection. It contains the
+logical collection files plus Riverhog's archive manifest and OpenTimestamps
+proof as internal members:
+
+```text
+.riverhog/manifest.yml
+.riverhog/manifest.yml.ots
+```
 
 ## `RIVERHOG_GLACIER_BACKEND`
 
@@ -148,10 +152,16 @@ Target S3 multipart part size for collection Glacier archive packages. Riverhog
 rounds this up when needed to satisfy S3 minimum part size and maximum part
 count constraints.
 
-Larger parts reduce request overhead for large migrations. An interrupted
-server-side multipart stream is not part-level resumable; the durable retry
-resumes the collection archive job, skips already-verified committed archive
-objects, and starts a fresh multipart stream for any missing archive object.
+Larger parts reduce request overhead for large migrations. Riverhog persists
+the S3 multipart upload id, object key, part size, content length, archive
+SHA-256, uploaded part numbers, ETags, sizes, and observed progress in the
+catalog while the archive is uploading.
+On retry or app restart it lists the uploaded parts for that upload id, skips
+the already uploaded contiguous part range in the deterministic archive stream,
+uploads the remaining parts, and completes the same multipart upload. S3 keeps
+incomplete multipart parts billable until the upload is completed or aborted,
+so production buckets should also keep an abort-incomplete-multipart lifecycle
+rule as a final cleanup guard.
 
 ## `RIVERHOG_OTS_STAMP_COMMAND`
 
@@ -312,8 +322,21 @@ Delay between automatic retry attempts for one failed Glacier upload.
 How often Riverhog's Glacier-upload worker scans for due collection archive
 uploads, retries, and restart-recovered work.
 
-Restart-recovered work resumes one durable job record. It does not resume one
-interrupted multipart byte stream inside the remote object store.
+Restart-recovered work resumes one durable job record. For interrupted
+collection archive uploads, that job reuses its persisted S3 multipart upload id
+when the remote multipart upload still exists.
+
+## `RIVERHOG_PLANNER_REFRESH_SWEEP_INTERVAL`
+
+- type: duration
+- default: `60s`
+
+How often Riverhog checks for uploaded collections whose provisional optical
+disc candidates are missing, failed, or still materializing after an app
+restart. Planner candidate rows are inserted before materialization begins, and
+partial encrypted candidate roots are retained under `.candidate-*.tmp` so the
+next refresh can skip already completed encrypted files and finish the same
+candidate id.
 
 ## `RIVERHOG_GLACIER_FAILURE_WEBHOOK_URL`
 

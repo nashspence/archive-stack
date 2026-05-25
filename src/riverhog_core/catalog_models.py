@@ -117,6 +117,10 @@ class PlannedCandidateRecord(Base):
 
     candidate_id: Mapped[str] = mapped_column(String, primary_key=True)
     finalized_id: Mapped[str] = mapped_column(String, unique=True)
+    plan_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    state: Mapped[str | None] = mapped_column(String, default="ready", nullable=True)
+    failure: Mapped[str | None] = mapped_column(String, nullable=True)
+    updated_at: Mapped[str | None] = mapped_column(String, nullable=True)
     filename: Mapped[str] = mapped_column(String)
     bytes: Mapped[int] = mapped_column(BigInteger)
     iso_ready: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -427,10 +431,27 @@ class CollectionUploadRecord(Base):
     collection_id: Mapped[str] = mapped_column(String, primary_key=True)
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
     state: Mapped[str | None] = mapped_column(String, default="uploading", nullable=True)
+    archive_phase: Mapped[str | None] = mapped_column(String, nullable=True)
+    archive_phase_updated_at: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_attempt_count: Mapped[int | None] = mapped_column(Integer, default=0, nullable=True)
     archive_next_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_last_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_failure: Mapped[str | None] = mapped_column(String, nullable=True)
+    archive_object_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    archive_multipart_upload_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    archive_multipart_part_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    archive_multipart_content_length: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    archive_multipart_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    archive_multipart_parts_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    archive_multipart_uploaded_bytes: Mapped[int | None] = mapped_column(
+        BigInteger, default=0, nullable=True
+    )
+    archive_multipart_uploaded_parts: Mapped[int | None] = mapped_column(
+        Integer, default=0, nullable=True
+    )
+    archive_multipart_total_parts: Mapped[int | None] = mapped_column(
+        Integer, default=0, nullable=True
+    )
 
     files: Mapped[list[CollectionUploadFileRecord]] = relationship(
         back_populates="upload",

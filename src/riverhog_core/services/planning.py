@@ -5,6 +5,7 @@ import logging
 import math
 import os
 import subprocess
+import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -68,6 +69,7 @@ from riverhog_core.runtime_config import RuntimeConfig
 
 _LOG = logging.getLogger(__name__)
 _ENCRYPTED_SIZE_PAD_BYTES = 8192
+_REFRESH_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,14 +117,24 @@ class _MaterializedCandidate:
     covered_paths: tuple[tuple[str, str], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _CandidateSpec:
+    candidate_id: str
+    plan_fingerprint: str
+    finalized_id: str
+    pieces: tuple[_PlanPiece, ...]
+
+
 class SqlAlchemyPlanningService:
     def __init__(
         self,
         config: RuntimeConfig,
+        hot_store: HotStore | None = None,
         recovery_payload_codec: RecoveryPayloadCodec | None = None,
     ) -> None:
         self._config = config
         self._session_factory = make_session_factory(config.database_url)
+        self._hot_store = hot_store
         self._recovery_payload_codec = (
             recovery_payload_codec
             or CommandAgeBatchpassRecoveryPayloadCodec(
@@ -139,6 +151,19 @@ class SqlAlchemyPlanningService:
             finalize_lookup=self.finalize_image,
         )
 
+    def process_due_refresh(self, *, limit: int = 1) -> int:
+        if limit < 1 or self._hot_store is None:
+            return 0
+        with session_scope(self._session_factory) as session:
+            if not _planner_refresh_needed(session, self._config):
+                return 0
+        refresh_provisional_plan(
+            config=self._config,
+            hot_store=self._hot_store,
+            recovery_payload_codec=self._recovery_payload_codec,
+        )
+        return 1
+
     def get_plan(
         self,
         *,
@@ -153,7 +178,11 @@ class SqlAlchemyPlanningService:
         with session_scope(self._session_factory) as session:
             finalized_ids = set(session.scalars(select(FinalizedImageRecord.image_id)).all())
             all_candidates = session.scalars(select(PlannedCandidateRecord)).all()
-            candidates = [c for c in all_candidates if c.finalized_id not in finalized_ids]
+            candidates = [
+                c
+                for c in all_candidates
+                if c.finalized_id not in finalized_ids and _candidate_state(c) == "ready"
+            ]
             active_upload_collection_ids = {
                 upload.collection_id
                 for upload in session.scalars(select(CollectionUploadRecord)).all()
@@ -179,7 +208,7 @@ class SqlAlchemyPlanningService:
             min_fill_bytes = self._config.planner_min_fill_bytes
 
             covered_file_pairs: set[tuple[str, str]] = set()
-            for cand in all_candidates:
+            for cand in candidates:
                 for cp in cand.covered_paths:
                     covered_file_pairs.add((cp.collection_id, cp.path))
 
@@ -302,6 +331,8 @@ class SqlAlchemyPlanningService:
             candidate = session.get(PlannedCandidateRecord, candidate_id)
             if candidate is None:
                 raise NotFound(f"candidate not found: {candidate_id}")
+            if _candidate_state(candidate) != "ready":
+                raise InvalidState("image must finish materializing before finalization")
             if not candidate.iso_ready:
                 raise InvalidState("image must be ISO-ready before finalization")
             existing = session.get(FinalizedImageRecord, candidate.finalized_id)
@@ -393,59 +424,89 @@ def refresh_provisional_plan(
     hot_store: HotStore,
     recovery_payload_codec: RecoveryPayloadCodec,
 ) -> None:
+    if not _REFRESH_LOCK.acquire(blocking=False):
+        _LOG.info("skipping provisional plan refresh because one is already running")
+        return
+    try:
+        _refresh_provisional_plan_locked(
+            config=config,
+            hot_store=hot_store,
+            recovery_payload_codec=recovery_payload_codec,
+        )
+    finally:
+        _REFRESH_LOCK.release()
+
+
+def _refresh_provisional_plan_locked(
+    *,
+    config: RuntimeConfig,
+    hot_store: HotStore,
+    recovery_payload_codec: RecoveryPayloadCodec,
+) -> None:
     session_factory = make_session_factory(config.database_url)
     with session_scope(session_factory) as session:
-        old_image_roots = _delete_provisional_candidates(session)
         plan_files = _load_plan_files(session, config)
-        reserved_finalized_ids, reserved_candidate_ids = _reserved_plan_ids(session)
+        piece_groups = _build_plan_piece_groups(plan_files, config)
+        desired_ids = {
+            _candidate_id_from_fingerprint(_candidate_plan_fingerprint(pieces, config))
+            for pieces in piece_groups
+        }
+        old_image_roots = _delete_stale_provisional_candidates(session, keep_ids=desired_ids)
+        specs = _ensure_candidate_specs(session, config=config, piece_groups=piece_groups)
 
     _remove_provisional_image_roots(config, old_image_roots)
-    piece_groups = _build_plan_piece_groups(plan_files, config)
     candidates_root = _candidate_image_root(config)
     candidates_root.mkdir(parents=True, exist_ok=True)
 
-    materialized: list[_MaterializedCandidate] = []
-    for pieces in piece_groups:
-        finalized_id = _next_finalized_id(reserved_finalized_ids)
-        reserved_finalized_ids.add(finalized_id)
-        candidate_id = _next_candidate_id(finalized_id, reserved_candidate_ids)
-        reserved_candidate_ids.add(candidate_id)
-        materialized.append(
-            _materialize_candidate(
+    for spec in specs:
+        with session_scope(session_factory) as session:
+            record = session.get(PlannedCandidateRecord, spec.candidate_id)
+            if record is None:
+                continue
+            if _candidate_state(record) == "ready" and Path(record.image_root).exists():
+                continue
+            finalized_ids = set(session.scalars(select(FinalizedImageRecord.image_id)).all())
+            if record.finalized_id in finalized_ids:
+                continue
+            record.state = "materializing"
+            record.failure = None
+            record.updated_at = _utc_now()
+
+        try:
+            materialized = _materialize_candidate(
                 config=config,
                 hot_store=hot_store,
                 recovery_payload_codec=recovery_payload_codec,
-                candidate_id=candidate_id,
-                finalized_id=finalized_id,
-                pieces=pieces,
+                candidate_id=spec.candidate_id,
+                finalized_id=spec.finalized_id,
+                pieces=spec.pieces,
                 candidates_root=candidates_root,
             )
-        )
+        except Exception as exc:
+            with session_scope(session_factory) as session:
+                record = session.get(PlannedCandidateRecord, spec.candidate_id)
+                if record is not None:
+                    record.state = "failed"
+                    record.failure = str(exc).strip() or exc.__class__.__name__
+                    record.updated_at = _utc_now()
+            raise
 
-    with session_scope(session_factory) as session:
-        finalized_ids = set(session.scalars(select(FinalizedImageRecord.image_id)).all())
-        for candidate in materialized:
-            if candidate.finalized_id in finalized_ids:
+        with session_scope(session_factory) as session:
+            finalized_ids = set(session.scalars(select(FinalizedImageRecord.image_id)).all())
+            record = session.get(PlannedCandidateRecord, spec.candidate_id)
+            if record is None or materialized.finalized_id in finalized_ids:
                 continue
-            record = PlannedCandidateRecord(
-                candidate_id=candidate.candidate_id,
-                finalized_id=candidate.finalized_id,
-                filename=candidate.filename,
-                bytes=candidate.bytes,
-                iso_ready=candidate.iso_ready,
-                image_root=str(candidate.image_root),
-                target_bytes=config.planner_disc_target_bytes,
-                min_fill_bytes=config.planner_min_fill_bytes,
-            )
-            session.add(record)
-            for collection_id, path in candidate.covered_paths:
-                record.covered_paths.append(
-                    CandidateCoveredPathRecord(
-                        candidate_id=candidate.candidate_id,
-                        collection_id=collection_id,
-                        path=path,
-                    )
-                )
+            record.finalized_id = materialized.finalized_id
+            record.filename = materialized.filename
+            record.bytes = materialized.bytes
+            record.iso_ready = materialized.iso_ready
+            record.image_root = str(materialized.image_root)
+            record.target_bytes = config.planner_disc_target_bytes
+            record.min_fill_bytes = config.planner_min_fill_bytes
+            record.plan_fingerprint = spec.plan_fingerprint
+            record.state = "ready"
+            record.failure = None
+            record.updated_at = _utc_now()
 
 
 def _collection_artifact_cache_root(config: RuntimeConfig) -> Path:
@@ -484,12 +545,73 @@ def _write_bytes_atomic(path: Path, content: bytes) -> None:
     os.replace(tmp_path, path)
 
 
-def _delete_provisional_candidates(session: Session) -> list[str]:
+def _ensure_candidate_specs(
+    session: Session,
+    *,
+    config: RuntimeConfig,
+    piece_groups: Sequence[Sequence[_PlanPiece]],
+) -> list[_CandidateSpec]:
+    reserved_finalized_ids, _reserved_candidate_ids = _reserved_plan_ids(session)
+    specs: list[_CandidateSpec] = []
+    current_time = _utc_now()
+    candidates_root = _candidate_image_root(config)
+    for pieces in piece_groups:
+        piece_tuple = tuple(pieces)
+        fingerprint = _candidate_plan_fingerprint(piece_tuple, config)
+        candidate_id = _candidate_id_from_fingerprint(fingerprint)
+        record = session.get(PlannedCandidateRecord, candidate_id)
+        if record is None:
+            finalized_id = _next_finalized_id(reserved_finalized_ids)
+            reserved_finalized_ids.add(finalized_id)
+            record = PlannedCandidateRecord(
+                candidate_id=candidate_id,
+                finalized_id=finalized_id,
+                plan_fingerprint=fingerprint,
+                state="materializing",
+                failure=None,
+                updated_at=current_time,
+                filename=f"{finalized_id}.iso",
+                bytes=0,
+                iso_ready=False,
+                image_root=str(candidates_root / candidate_id),
+                target_bytes=config.planner_disc_target_bytes,
+                min_fill_bytes=config.planner_min_fill_bytes,
+            )
+            session.add(record)
+            for collection_id, path in _covered_paths_for_pieces(piece_tuple):
+                record.covered_paths.append(
+                    CandidateCoveredPathRecord(
+                        candidate_id=candidate_id,
+                        collection_id=collection_id,
+                        path=path,
+                    )
+                )
+        else:
+            finalized_id = record.finalized_id
+            reserved_finalized_ids.add(finalized_id)
+            record.plan_fingerprint = fingerprint
+            record.target_bytes = config.planner_disc_target_bytes
+            record.min_fill_bytes = config.planner_min_fill_bytes
+            record.updated_at = record.updated_at or current_time
+        specs.append(
+            _CandidateSpec(
+                candidate_id=candidate_id,
+                plan_fingerprint=fingerprint,
+                finalized_id=finalized_id,
+                pieces=piece_tuple,
+            )
+        )
+    return specs
+
+
+def _delete_stale_provisional_candidates(session: Session, *, keep_ids: set[str]) -> list[str]:
     finalized_ids = set(session.scalars(select(FinalizedImageRecord.image_id)).all())
     candidates = session.scalars(select(PlannedCandidateRecord)).all()
     image_roots: list[str] = []
     for candidate in candidates:
         if candidate.finalized_id in finalized_ids:
+            continue
+        if candidate.candidate_id in keep_ids:
             continue
         image_roots.append(candidate.image_root)
         session.delete(candidate)
@@ -505,6 +627,9 @@ def _remove_provisional_image_roots(config: RuntimeConfig, image_roots: Sequence
             _LOG.warning("skipping non-provisional image root cleanup: %s", image_root)
             continue
         safe_remove_tree(image_root)
+        tmp_root = image_root.with_name(f".{image_root.name}.tmp")
+        if tmp_root != candidates_root and tmp_root.is_relative_to(candidates_root):
+            safe_remove_tree(tmp_root)
 
 
 def _reserved_plan_ids(session: Session) -> tuple[set[str], set[str]]:
@@ -512,6 +637,62 @@ def _reserved_plan_ids(session: Session) -> tuple[set[str], set[str]]:
     planned_finalized_ids = set(session.scalars(select(PlannedCandidateRecord.finalized_id)).all())
     candidate_ids = set(session.scalars(select(PlannedCandidateRecord.candidate_id)).all())
     return finalized_ids | planned_finalized_ids, candidate_ids
+
+
+def _candidate_state(candidate: PlannedCandidateRecord) -> str:
+    return candidate.state or "ready"
+
+
+def _covered_paths_for_pieces(pieces: Sequence[_PlanPiece]) -> tuple[tuple[str, str], ...]:
+    return tuple(sorted({(piece.collection_id, piece.path) for piece in pieces}))
+
+
+def _candidate_plan_fingerprint(
+    pieces: Sequence[_PlanPiece],
+    config: RuntimeConfig,
+) -> str:
+    digest = hashlib.sha256()
+    digest.update(f"target\t{config.planner_disc_target_bytes}\n".encode())
+    digest.update(f"min\t{config.planner_min_fill_bytes}\n".encode())
+    for piece in pieces:
+        digest.update(
+            (
+                f"{piece.collection_id}\t{piece.path}\t{piece.sha256}\t{piece.bytes}\t"
+                f"{piece.part_index}\t{piece.part_count}\t{piece.offset}\t"
+                f"{piece.plaintext_bytes}\n"
+            ).encode()
+        )
+    return digest.hexdigest()
+
+
+def _candidate_id_from_fingerprint(fingerprint: str) -> str:
+    return f"candidate-{fingerprint[:24]}"
+
+
+def _planner_refresh_needed(session: Session, config: RuntimeConfig) -> bool:
+    plan_files = _load_plan_files(session, config)
+    plan_pairs = {(file.collection_id, file.path) for file in plan_files}
+    candidates = [
+        candidate
+        for candidate in session.scalars(select(PlannedCandidateRecord)).all()
+        if session.get(FinalizedImageRecord, candidate.finalized_id) is None
+    ]
+    if not plan_pairs:
+        return bool(candidates)
+    if any(_candidate_state(candidate) != "ready" for candidate in candidates):
+        return True
+    if any(
+        candidate.target_bytes != config.planner_disc_target_bytes
+        or candidate.min_fill_bytes != config.planner_min_fill_bytes
+        for candidate in candidates
+    ):
+        return True
+    covered_pairs = {
+        (covered.collection_id, covered.path)
+        for candidate in candidates
+        for covered in candidate.covered_paths
+    }
+    return not plan_pairs.issubset(covered_pairs)
 
 
 def _load_plan_files(session: Session, config: RuntimeConfig) -> list[_PlanFile]:
@@ -669,8 +850,23 @@ def _materialize_candidate(
 ) -> _MaterializedCandidate:
     tmp_root = candidates_root / f".{candidate_id}.tmp"
     image_root = candidates_root / candidate_id
-    safe_remove_tree(tmp_root)
-    safe_remove_tree(image_root)
+    if image_root.exists():
+        actual_bytes = estimate_iso_size_from_root(
+            image_root=image_root,
+            volume_id=finalized_id,
+            fallback_bytes=_tree_file_bytes(image_root),
+        )
+        return _MaterializedCandidate(
+            candidate_id=candidate_id,
+            finalized_id=finalized_id,
+            filename=f"{finalized_id}.iso",
+            bytes=actual_bytes,
+            iso_ready=(
+                config.planner_min_fill_bytes <= actual_bytes <= config.planner_disc_target_bytes
+            ),
+            image_root=image_root,
+            covered_paths=_covered_paths_for_pieces(pieces),
+        )
     tmp_root.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -683,22 +879,25 @@ def _materialize_candidate(
             artifact = _read_collection_artifact_cache(config, collection_id)
             if artifact is None:
                 raise FileNotFoundError(f"missing cached archive artifacts for {collection_id}")
-            _write_encrypted_bytes(
+            _write_encrypted_bytes_if_missing(
                 artifact.manifest_bytes,
                 tmp_root / manifest_path,
                 recovery_payload_codec,
             )
-            _write_encrypted_bytes(
+            _write_encrypted_bytes_if_missing(
                 artifact.proof_bytes,
                 tmp_root / proof_path,
                 recovery_payload_codec,
             )
 
+        written = 0
+        skipped = 0
+        total_piece_files = len(pieces) * 2
         for piece in pieces:
             payload_path, sidecar_path = path_map[
                 (piece.collection_id, piece.file_id, piece.part_index)
             ]
-            _write_encrypted_chunks(
+            if _write_encrypted_chunks_if_missing(
                 hot_store.iter_collection_file(
                     piece.collection_id,
                     piece.path,
@@ -707,14 +906,34 @@ def _materialize_candidate(
                 ),
                 tmp_root / payload_path,
                 recovery_payload_codec,
-            )
+            ):
+                written += 1
+            else:
+                skipped += 1
             sidecar = sidecar_bytes(
                 _planner_file_meta(path=piece.path, bytes=piece.bytes, sha256=piece.sha256),
                 collection_id=piece.collection_id,
                 part_index=piece.part_index,
                 part_count=piece.part_count,
             )
-            _write_encrypted_bytes(sidecar, tmp_root / sidecar_path, recovery_payload_codec)
+            if _write_encrypted_bytes_if_missing(
+                sidecar,
+                tmp_root / sidecar_path,
+                recovery_payload_codec,
+            ):
+                written += 1
+            else:
+                skipped += 1
+            completed = written + skipped
+            if completed == total_piece_files or completed % 50 == 0:
+                _LOG.info(
+                    "planner materialization progress for %s: files=%s/%s written=%s skipped=%s",
+                    candidate_id,
+                    completed,
+                    total_piece_files,
+                    written,
+                    skipped,
+                )
 
         manifest = manifest_bytes(
             finalized_id,
@@ -723,8 +942,13 @@ def _materialize_candidate(
             volume_id=finalized_id,
             collection_artifact_paths=artifact_paths,
         )
-        _write_encrypted_bytes(manifest, tmp_root / MANIFEST_FILENAME, recovery_payload_codec)
-        _write_bytes_atomic(tmp_root / README_FILENAME, recovery_readme_bytes(finalized_id))
+        _write_encrypted_bytes_if_missing(
+            manifest,
+            tmp_root / MANIFEST_FILENAME,
+            recovery_payload_codec,
+        )
+        if not (tmp_root / README_FILENAME).exists():
+            _write_bytes_atomic(tmp_root / README_FILENAME, recovery_readme_bytes(finalized_id))
 
         actual_bytes = estimate_iso_size_from_root(
             image_root=tmp_root,
@@ -733,7 +957,11 @@ def _materialize_candidate(
         )
         tmp_root.rename(image_root)
     except Exception:
-        safe_remove_tree(tmp_root)
+        _LOG.exception(
+            "planner materialization failed for %s; keeping %s for resumable retry",
+            candidate_id,
+            tmp_root,
+        )
         raise
 
     return _MaterializedCandidate(
@@ -745,7 +973,7 @@ def _materialize_candidate(
             config.planner_min_fill_bytes <= actual_bytes <= config.planner_disc_target_bytes
         ),
         image_root=image_root,
-        covered_paths=tuple(sorted({(piece.collection_id, piece.path) for piece in pieces})),
+        covered_paths=_covered_paths_for_pieces(pieces),
     )
 
 
@@ -800,6 +1028,28 @@ def _write_encrypted_bytes(
     _write_encrypted_chunks((content,), path, recovery_payload_codec)
 
 
+def _write_encrypted_bytes_if_missing(
+    content: bytes,
+    path: Path,
+    recovery_payload_codec: RecoveryPayloadCodec,
+) -> bool:
+    if path.exists():
+        return False
+    _write_encrypted_bytes(content, path, recovery_payload_codec)
+    return True
+
+
+def _write_encrypted_chunks_if_missing(
+    chunks: Iterable[bytes],
+    path: Path,
+    recovery_payload_codec: RecoveryPayloadCodec,
+) -> bool:
+    if path.exists():
+        return False
+    _write_encrypted_chunks(chunks, path, recovery_payload_codec)
+    return True
+
+
 def _write_encrypted_chunks(
     chunks: Iterable[bytes],
     path: Path,
@@ -807,6 +1057,7 @@ def _write_encrypted_chunks(
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f".{path.name}.tmp")
+    tmp_path.unlink(missing_ok=True)
     if isinstance(recovery_payload_codec, CommandAgeBatchpassRecoveryPayloadCodec):
         _write_age_batchpass_stream(chunks, tmp_path, recovery_payload_codec)
     else:

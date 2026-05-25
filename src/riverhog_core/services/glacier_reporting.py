@@ -225,7 +225,7 @@ def _direct_collection_usage_reports(
                 estimated_billable_bytes=billable_bytes,
                 estimated_monthly_cost_usd=_estimate_monthly_cost_usd(
                     measured_storage_bytes,
-                    object_count=3 if measured_storage_bytes > 0 else 0,
+                    object_count=1 if measured_storage_bytes > 0 else 0,
                     pricing_basis=pricing_basis,
                 ),
                 images=tuple(image_contributions.get(collection.id, ())),
@@ -296,8 +296,10 @@ def _image_contributions_by_collection(
 def _collection_measured_storage_bytes(archive: CollectionArchiveRecord | None) -> int:
     if archive is None or normalize_glacier_state(archive.state).value != "uploaded":
         return 0
-    return int(archive.stored_bytes or 0) + int(archive.manifest_stored_bytes or 0) + int(
-        archive.ots_stored_bytes or 0
+    return (
+        int(archive.stored_bytes or 0)
+        + int(archive.manifest_stored_bytes or 0)
+        + int(archive.ots_stored_bytes or 0)
     )
 
 
@@ -415,10 +417,10 @@ def _ensure_usage_snapshot(
     if latest is not None and _snapshot_matches(latest, totals=totals, pricing_basis=pricing_basis):
         return
     session.add(
-            GlacierUsageSnapshotRecord(
-                captured_at=_isoformat_z(utcnow()),
-                uploaded_images=totals.uploaded_collections,
-                measured_storage_bytes=totals.measured_storage_bytes,
+        GlacierUsageSnapshotRecord(
+            captured_at=_isoformat_z(utcnow()),
+            uploaded_images=totals.uploaded_collections,
+            measured_storage_bytes=totals.measured_storage_bytes,
             estimated_billable_bytes=totals.estimated_billable_bytes,
             estimated_monthly_cost_usd=totals.estimated_monthly_cost_usd,
             pricing_label=pricing_basis.label,

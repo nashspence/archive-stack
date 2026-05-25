@@ -10,9 +10,17 @@ from typing import Any, cast
 import pytest
 
 from riverhog_core.collection_archives import (
+    COLLECTION_ARCHIVE_MANIFEST_PATH,
+    COLLECTION_ARCHIVE_PROOF_PATH,
     CollectionArchiveFile,
     CollectionArchivePackage,
     build_collection_archive_package,
+    read_collection_archive_internal_file,
+)
+from riverhog_core.ports.archive_store import (
+    ArchiveMultipartUploadedPart,
+    ArchiveMultipartUploadState,
+    ArchiveMultipartUploadTracker,
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.stores.s3_archive_store import (
@@ -55,6 +63,8 @@ class _FakeS3Client:
         self.completed_uploads: list[str] = []
         self.restore_requests: list[str] = []
         self._next_upload_id = 1
+        self.fail_next_upload_part_after_successes: int | None = None
+        self.successful_upload_part_calls = 0
 
     def head_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:
         _ = Bucket
@@ -97,9 +107,38 @@ class _FakeS3Client:
         _ = Bucket
         upload = self.uploads[UploadId]
         assert upload["Key"] == Key
+        if (
+            self.fail_next_upload_part_after_successes is not None
+            and self.successful_upload_part_calls >= self.fail_next_upload_part_after_successes
+        ):
+            self.fail_next_upload_part_after_successes = None
+            raise RuntimeError("synthetic upload_part failure")
         upload["Parts"][PartNumber] = Body
+        self.successful_upload_part_calls += 1
         self.uploaded_part_sizes.append(len(Body))
         return {"ETag": f"etag-{UploadId}-{PartNumber}"}
+
+    def list_parts(
+        self,
+        *,
+        Bucket: str,
+        Key: str,
+        UploadId: str,
+        PartNumberMarker: int = 0,
+    ) -> dict[str, object]:
+        _ = Bucket
+        upload = self.uploads[UploadId]
+        assert upload["Key"] == Key
+        parts = [
+            {
+                "PartNumber": part_number,
+                "ETag": f"etag-{UploadId}-{part_number}",
+                "Size": len(body),
+            }
+            for part_number, body in sorted(upload["Parts"].items())
+            if part_number > PartNumberMarker
+        ]
+        return {"IsTruncated": False, "Parts": parts}
 
     def complete_multipart_upload(
         self,
@@ -140,6 +179,73 @@ class _FakeS3Client:
     def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
         _ = Bucket
         return {"Body": _FakeBody(cast(bytes, self.objects[Key]["Body"]))}
+
+
+class _FakeMultipartTracker(ArchiveMultipartUploadTracker):
+    def __init__(self) -> None:
+        self.state: ArchiveMultipartUploadState | None = None
+        self.progress: list[tuple[int, int, int]] = []
+        self.parts: list[ArchiveMultipartUploadedPart] = []
+        self.cleared: list[str] = []
+
+    def load_multipart_upload(
+        self,
+        *,
+        collection_id: str,
+        object_path: str,
+        part_size: int,
+        content_length: int,
+        sha256: str,
+    ) -> ArchiveMultipartUploadState | None:
+        _ = collection_id
+        if self.state is None:
+            return None
+        if self.state.object_path != object_path:
+            return None
+        if self.state.part_size != part_size:
+            return None
+        if self.state.content_length != content_length:
+            return None
+        if self.state.sha256 != sha256:
+            return None
+        return replace(self.state, parts=tuple(self.parts))
+
+    def save_multipart_upload(
+        self,
+        *,
+        collection_id: str,
+        state: ArchiveMultipartUploadState,
+    ) -> None:
+        _ = collection_id
+        self.state = state
+        self.parts = list(state.parts)
+
+    def record_multipart_upload_progress(
+        self,
+        *,
+        collection_id: str,
+        state: ArchiveMultipartUploadState,
+        part: ArchiveMultipartUploadedPart,
+        uploaded_bytes: int,
+        uploaded_parts: int,
+        total_parts: int,
+    ) -> None:
+        _ = collection_id, state
+        self.parts = [current for current in self.parts if current.part_number != part.part_number]
+        self.parts.append(part)
+        self.parts.sort(key=lambda current: current.part_number)
+        self.progress.append((uploaded_bytes, uploaded_parts, total_parts))
+
+    def clear_multipart_upload(
+        self,
+        *,
+        collection_id: str,
+        upload_id: str,
+    ) -> None:
+        _ = collection_id
+        self.cleared.append(upload_id)
+        self.state = None
+        self.parts = []
 
 
 def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
@@ -186,7 +292,7 @@ def _store_with_client(
     return S3ArchiveStore(_config(tmp_path, **config_overrides))
 
 
-def test_upload_collection_archive_package_uploads_archive_manifest_and_proof(
+def test_upload_collection_archive_package_uploads_single_archive_with_embedded_manifest_and_proof(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -197,11 +303,29 @@ def test_upload_collection_archive_package_uploads_archive_manifest_and_proof(
     receipt = store.upload_collection_archive_package(collection_id="docs", package=package)
 
     assert receipt.archive.object_path.endswith("/archive.tar")
-    assert receipt.manifest.object_path.endswith("/manifest.yml")
-    assert receipt.proof.object_path.endswith("/manifest.yml.ots")
+    assert receipt.archive.object_path == "glacier/collections/docs/archive.tar"
+    assert receipt.manifest.object_path == receipt.archive.object_path
+    assert receipt.proof.object_path == receipt.archive.object_path
+    assert receipt.manifest.stored_bytes == 0
+    assert receipt.proof.stored_bytes == 0
     assert receipt.archive_format == "tar"
     assert receipt.compression == "none"
     archive_head = client.objects[receipt.archive.object_path]
+    assert set(client.objects) == {receipt.archive.object_path}
+    assert (
+        read_collection_archive_internal_file(
+            (archive_head["Body"],),
+            path=COLLECTION_ARCHIVE_MANIFEST_PATH,
+        )
+        == package.manifest_bytes
+    )
+    assert (
+        read_collection_archive_internal_file(
+            (archive_head["Body"],),
+            path=COLLECTION_ARCHIVE_PROOF_PATH,
+        )
+        == package.proof_bytes
+    )
     archive_metadata = archive_head["Metadata"]
     assert archive_metadata[COLLECTION_BYTES_METADATA] == str(len(package.archive_bytes))
     assert archive_metadata[COLLECTION_SHA256_METADATA] == package.archive_sha256
@@ -236,7 +360,56 @@ def test_upload_collection_archive_package_streams_archive_with_multipart(
     assert archive_head["Metadata"][COLLECTION_SHA256_METADATA] == package.archive_sha256
 
 
-def test_request_collection_archive_restore_requests_all_package_objects(
+def test_upload_collection_archive_package_resumes_existing_multipart_upload(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    store = _store_with_client(
+        monkeypatch,
+        tmp_path,
+        client,
+        glacier_multipart_part_bytes=4,
+    )
+    tracker = _FakeMultipartTracker()
+    monkeypatch.setattr("riverhog_core.stores.s3_archive_store._MIN_MULTIPART_PART_SIZE", 4)
+    package = _package()
+    client.fail_next_upload_part_after_successes = 1
+
+    with pytest.raises(RuntimeError, match="synthetic upload_part failure"):
+        store.upload_collection_archive_package(
+            collection_id="docs",
+            package=package,
+            multipart_tracker=tracker,
+        )
+
+    assert tracker.state is not None
+    assert tracker.progress == [(4, 1, (len(package.archive_bytes) + 3) // 4)]
+    assert [(part.part_number, part.etag, part.size) for part in tracker.parts] == [
+        (1, "etag-upload-1-1", 4)
+    ]
+    assert client.aborted_uploads == []
+    first_upload_id = tracker.state.upload_id
+    stored_first_part = client.uploads[first_upload_id]["Parts"][1]
+
+    receipt = store.upload_collection_archive_package(
+        collection_id="docs",
+        package=package,
+        multipart_tracker=tracker,
+    )
+
+    assert receipt.archive.object_path == "glacier/collections/docs/archive.tar"
+    assert client.completed_uploads == [first_upload_id]
+    assert client.aborted_uploads == []
+    assert tracker.state is None
+    assert tracker.cleared == [first_upload_id]
+    assert client.uploads == {}
+    assert client.objects[receipt.archive.object_path]["Body"] == package.archive_bytes
+    assert client.uploaded_part_sizes[0] == 4
+    assert stored_first_part == package.archive_bytes[:4]
+
+
+def test_request_collection_archive_restore_deduplicates_embedded_artifact_paths(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -264,11 +437,7 @@ def test_request_collection_archive_restore_requests_all_package_objects(
     )
 
     assert status.state == "requested"
-    assert client.restore_requests == [
-        receipt.archive.object_path,
-        receipt.manifest.object_path,
-        receipt.proof.object_path,
-    ]
+    assert client.restore_requests == [receipt.archive.object_path]
 
 
 def test_iter_restored_collection_archive_streams_when_ready(

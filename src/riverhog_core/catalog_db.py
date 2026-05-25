@@ -69,6 +69,32 @@ _COLUMN_MIGRATIONS: list[list[tuple[str, str, str]]] = [
         ("glacier_recovery_sessions", "extraction_state", "TEXT"),
         ("glacier_recovery_sessions", "materialization_state", "TEXT"),
     ],
+    # version 10 is reserved by _TYPE_MIGRATIONS.
+    [],
+    # version 11
+    [
+        ("collection_uploads", "archive_phase", "TEXT"),
+        ("collection_uploads", "archive_phase_updated_at", "TEXT"),
+        ("collection_uploads", "archive_object_path", "TEXT"),
+        ("collection_uploads", "archive_multipart_upload_id", "TEXT"),
+        ("collection_uploads", "archive_multipart_part_size", "BIGINT"),
+        ("collection_uploads", "archive_multipart_content_length", "BIGINT"),
+        ("collection_uploads", "archive_multipart_sha256", "TEXT"),
+        ("collection_uploads", "archive_multipart_uploaded_bytes", "BIGINT"),
+        ("collection_uploads", "archive_multipart_uploaded_parts", "INTEGER"),
+        ("collection_uploads", "archive_multipart_total_parts", "INTEGER"),
+    ],
+    # version 12
+    [
+        ("planned_candidates", "plan_fingerprint", "TEXT"),
+        ("planned_candidates", "state", "TEXT"),
+        ("planned_candidates", "failure", "TEXT"),
+        ("planned_candidates", "updated_at", "TEXT"),
+    ],
+    # version 13
+    [
+        ("collection_uploads", "archive_multipart_parts_json", "TEXT"),
+    ],
 ]
 _TYPE_MIGRATIONS: dict[int, list[tuple[str, str, str]]] = {
     # version 10

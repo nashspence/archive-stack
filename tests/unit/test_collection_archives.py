@@ -10,11 +10,14 @@ import pytest
 from riverhog_core.collection_archives import (
     COLLECTION_ARCHIVE_COMPRESSION,
     COLLECTION_ARCHIVE_FORMAT,
+    COLLECTION_ARCHIVE_MANIFEST_PATH,
+    COLLECTION_ARCHIVE_PROOF_PATH,
     CollectionArchiveExpectedFile,
     CollectionArchiveFile,
     build_collection_archive_package,
     build_collection_archive_package_from_chunk_reader,
     iter_collection_archive_files,
+    read_collection_archive_internal_file,
     verify_collection_archive_files,
     verify_collection_archive_manifest,
     verify_collection_archive_proof,
@@ -45,7 +48,25 @@ def test_collection_archive_package_uses_plain_tar_contract() -> None:
     assert not package.archive_bytes.startswith(b"\x28\xb5\x2f\xfd")
 
     with tarfile.open(fileobj=BytesIO(package.archive_bytes), mode="r:") as archive:
-        assert archive.getnames() == ["tax/2022/invoice.pdf"]
+        assert archive.getnames() == [
+            COLLECTION_ARCHIVE_MANIFEST_PATH,
+            COLLECTION_ARCHIVE_PROOF_PATH,
+            "tax/2022/invoice.pdf",
+        ]
+    assert (
+        read_collection_archive_internal_file(
+            (package.archive_bytes,),
+            path=COLLECTION_ARCHIVE_MANIFEST_PATH,
+        )
+        == package.manifest_bytes
+    )
+    assert (
+        read_collection_archive_internal_file(
+            (package.archive_bytes,),
+            path=COLLECTION_ARCHIVE_PROOF_PATH,
+        )
+        == package.proof_bytes
+    )
 
 
 def test_manifest_and_proof_verification_use_catalog_and_manifest_digest() -> None:
@@ -148,9 +169,7 @@ def test_collection_archive_package_from_chunk_reader_does_not_require_whole_fil
 
     assert max(chunk_sizes) == 13
     assert package.archive_size == len(package.archive_bytes)
-    assert list(iter_collection_archive_files(package.iter_archive())) == [
-        ("large.bin", content)
-    ]
+    assert list(iter_collection_archive_files(package.iter_archive())) == [("large.bin", content)]
 
 
 def test_collection_archive_file_verification_rejects_mismatched_members() -> None:

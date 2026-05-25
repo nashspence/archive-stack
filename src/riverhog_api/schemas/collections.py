@@ -46,9 +46,9 @@ class CollectionCoverageImageOut(RiverhogModel):
 
     id: str
     filename: str
-    physical_protection_state: (
-        Literal["unprotected", "partially_protected", "protected"] | None
-    ) = None
+    physical_protection_state: Literal["unprotected", "partially_protected", "protected"] | None = (
+        None
+    )
     physical_copies_required: int
     physical_copies_registered: int
     physical_copies_verified: int
@@ -96,6 +96,13 @@ class CollectionUploadSessionOut(RiverhogModel):
     missing_bytes: int
     upload_state_expires_at: str | None
     latest_failure: str | None = None
+    archive_phase: str | None = None
+    archive_phase_updated_at: str | None = None
+    archive_object_path: str | None = None
+    archive_uploaded_bytes: int | None = None
+    archive_total_bytes: int | None = None
+    archive_uploaded_parts: int | None = None
+    archive_total_parts: int | None = None
     files: list[CollectionUploadFileOut]
     collection: CollectionSummaryOut | None
 

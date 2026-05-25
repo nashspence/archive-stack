@@ -54,7 +54,7 @@ def test_format_archive_status_surfaces_ready_backlog_and_noncompliant_collectio
                     "collections": 1,
                     "collection_ids": ["docs"],
                 }
-            ]
+            ],
         },
         {
             "total": 1,
@@ -197,8 +197,7 @@ def test_format_collection_summary_surfaces_recovery_paths_labels_and_glacier_co
     assert "verified_physical=partial 18/33" in rendered
     assert "glacier=full 33/33" in rendered
     assert (
-        "glacier_footprint: bytes=33 measured_storage_bytes=8200 "
-        "estimated_billable_bytes=49160"
+        "glacier_footprint: bytes=33 measured_storage_bytes=8200 estimated_billable_bytes=49160"
     ) in rendered
     assert "paths: tax/2022/invoice-123.pdf" in rendered
     assert "collection_archive_contribution: represented_bytes=33" in rendered
@@ -243,8 +242,8 @@ def test_format_glacier_report_surfaces_pricing_basis_and_collection_storage() -
                     "bytes": 33,
                     "glacier": {"state": "uploaded"},
                     "archive_manifest": {
-                        "object_path": "glacier/collections/abc/manifest.yml",
-                        "ots_object_path": "glacier/collections/abc/manifest.yml.ots",
+                        "object_path": "glacier/collections/abc/archive.tar",
+                        "ots_object_path": "glacier/collections/abc/archive.tar",
                     },
                     "archive_format": "tar",
                     "compression": "none",

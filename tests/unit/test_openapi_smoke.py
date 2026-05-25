@@ -408,6 +408,10 @@ class _StubFiles:
 
 
 class _StubPlanning:
+    def process_due_refresh(self, *, limit: int = 1) -> int:
+        assert limit >= 0
+        return 0
+
     async def get_iso_stream(self, image_id: str) -> IsoStream:
         assert image_id
 

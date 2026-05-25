@@ -8,8 +8,17 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, TypedDict, cast
 
-from riverhog_core.collection_archives import CollectionArchivePackage
+from riverhog_core.collection_archives import (
+    COLLECTION_ARCHIVE_MANIFEST_PATH,
+    COLLECTION_ARCHIVE_PROOF_PATH,
+    CollectionArchivePackage,
+    read_collection_archive_internal_file,
+)
+from riverhog_core.fs_paths import normalize_collection_id
 from riverhog_core.ports.archive_store import (
+    ArchiveMultipartUploadedPart,
+    ArchiveMultipartUploadState,
+    ArchiveMultipartUploadTracker,
     ArchiveRestoreStatus,
     ArchiveUploadReceipt,
     CollectionArchiveUploadReceipt,
@@ -103,6 +112,34 @@ def _single_put_body(content: Any) -> Any:
     return b"".join(_iter_content_chunks(content))
 
 
+def _iter_chunks_after_skipping(chunks: Iterable[bytes], skip_bytes: int) -> Iterator[bytes]:
+    remaining = skip_bytes
+    for chunk in chunks:
+        if remaining <= 0:
+            yield chunk
+            continue
+        if len(chunk) <= remaining:
+            remaining -= len(chunk)
+            continue
+        yield chunk[remaining:]
+        remaining = 0
+    if remaining:
+        raise ValueError("collection archive stream ended before resumable upload offset")
+
+
+def _validate_recorded_parts_exist_remotely(
+    recorded_parts: list[ArchiveMultipartUploadedPart],
+    remote_parts: list[dict[str, object]],
+) -> None:
+    remote_parts_by_number = {int(str(part["PartNumber"])): part for part in remote_parts}
+    for part in recorded_parts:
+        remote = remote_parts_by_number.get(part.part_number)
+        if remote is None:
+            raise ValueError("collection archive multipart upload is missing a recorded part")
+        if str(remote["ETag"]) != part.etag or int(str(remote["Size"])) != part.size:
+            raise ValueError("collection archive multipart upload remote part mismatch")
+
+
 class S3ArchiveStore:
     def __init__(self, config: RuntimeConfig) -> None:
         self._config = config
@@ -110,13 +147,14 @@ class S3ArchiveStore:
         self._client = create_glacier_s3_client(config)
 
     def _collection_object_keys(self, *, collection_id: str) -> dict[str, str]:
-        collection_hash = hashlib.sha256(collection_id.encode("utf-8")).hexdigest()
         prefix = self._config.glacier_prefix
-        collection_prefix = f"{prefix}/collections/{collection_hash}"
+        normalized_collection_id = normalize_collection_id(collection_id)
+        collection_prefix = f"{prefix}/collections/{normalized_collection_id}"
+        archive_key = f"{collection_prefix}/archive.tar"
         return {
-            "archive": f"{collection_prefix}/archive.tar",
-            "manifest": f"{collection_prefix}/manifest.yml",
-            "proof": f"{collection_prefix}/manifest.yml.ots",
+            "archive": archive_key,
+            "manifest": archive_key,
+            "proof": archive_key,
         }
 
     def _head_object(self, *, object_key: str) -> dict[str, Any] | None:
@@ -170,31 +208,34 @@ class S3ArchiveStore:
         *,
         collection_id: str,
         package: CollectionArchivePackage,
+        multipart_tracker: ArchiveMultipartUploadTracker | None = None,
     ) -> CollectionArchiveUploadReceipt:
         keys = self._collection_object_keys(collection_id=collection_id)
         archive = self._put_collection_package_object(
+            collection_id=collection_id,
             object_key=keys["archive"],
             content=package.iter_archive(),
             content_length=package.archive_size,
             sha256=package.archive_sha256,
             kind="archive",
             package=package,
+            multipart_tracker=multipart_tracker,
         )
-        manifest = self._put_collection_package_object(
-            object_key=keys["manifest"],
-            content=package.manifest_bytes,
-            content_length=len(package.manifest_bytes),
-            sha256=package.manifest_sha256,
-            kind="manifest",
-            package=package,
+        manifest = ArchiveUploadReceipt(
+            object_path=keys["manifest"],
+            stored_bytes=0,
+            backend=archive.backend,
+            storage_class=archive.storage_class,
+            uploaded_at=archive.uploaded_at,
+            verified_at=archive.verified_at,
         )
-        proof = self._put_collection_package_object(
-            object_key=keys["proof"],
-            content=package.proof_bytes,
-            content_length=len(package.proof_bytes),
-            sha256=package.proof_sha256,
-            kind="ots-proof",
-            package=package,
+        proof = ArchiveUploadReceipt(
+            object_path=keys["proof"],
+            stored_bytes=0,
+            backend=archive.backend,
+            storage_class=archive.storage_class,
+            uploaded_at=archive.uploaded_at,
+            verified_at=archive.verified_at,
         )
         return CollectionArchiveUploadReceipt(
             archive=archive,
@@ -210,12 +251,14 @@ class S3ArchiveStore:
     def _put_collection_package_object(
         self,
         *,
+        collection_id: str,
         object_key: str,
         content: Any,
         content_length: int,
         sha256: str,
         kind: str,
         package: CollectionArchivePackage,
+        multipart_tracker: ArchiveMultipartUploadTracker | None,
     ) -> ArchiveUploadReceipt:
         existing = self._head_object(object_key=object_key)
         if existing is not None:
@@ -239,6 +282,8 @@ class S3ArchiveStore:
                 "riverhog-compression": package.compression,
                 "riverhog-archive-bytes": str(content_length),
                 "riverhog-archive-sha256": sha256,
+                "riverhog-manifest-sha256": package.manifest_sha256,
+                "riverhog-ots-sha256": package.proof_sha256,
                 COLLECTION_BYTES_METADATA: str(content_length),
                 COLLECTION_SHA256_METADATA: sha256,
             }
@@ -247,10 +292,13 @@ class S3ArchiveStore:
             extra_args["StorageClass"] = self._config.glacier_storage_class
         if _should_use_multipart(content=content, content_length=content_length):
             self._put_collection_package_object_multipart(
+                collection_id=collection_id,
                 object_key=object_key,
                 chunks=_iter_content_chunks(content),
                 content_length=content_length,
+                sha256=sha256,
                 extra_args=extra_args,
+                multipart_tracker=multipart_tracker,
             )
         else:
             self._client.put_object(
@@ -275,14 +323,16 @@ class S3ArchiveStore:
     def _put_collection_package_object_multipart(
         self,
         *,
+        collection_id: str,
         object_key: str,
         chunks: Iterable[bytes],
         content_length: int,
+        sha256: str,
         extra_args: dict[str, Any],
+        multipart_tracker: ArchiveMultipartUploadTracker | None,
     ) -> None:
-        upload_id: str | None = None
         part_number = 1
-        uploaded_parts: list[dict[str, object]] = []
+        upload_state: ArchiveMultipartUploadState | None = None
         buffer = bytearray()
         part_size = _multipart_part_size(
             content_length,
@@ -291,10 +341,55 @@ class S3ArchiveStore:
         expected_part_count = (content_length + part_size - 1) // part_size
         uploaded_bytes = 0
         size = 0
+        resumed_part_count = 0
+        skip_bytes = 0
+        completed_parts: list[ArchiveMultipartUploadedPart] = []
+
+        if multipart_tracker is not None:
+            upload_state = multipart_tracker.load_multipart_upload(
+                collection_id=collection_id,
+                object_path=object_key,
+                part_size=part_size,
+                content_length=content_length,
+                sha256=sha256,
+            )
+            if upload_state is not None:
+                try:
+                    resumed_parts = self._contiguous_uploaded_parts(
+                        object_key=object_key,
+                        upload_id=upload_state.upload_id,
+                        recorded_parts=upload_state.parts,
+                        part_size=part_size,
+                        content_length=content_length,
+                    )
+                except Exception as exc:
+                    if not _is_missing_upload_error(exc):
+                        raise
+                    multipart_tracker.clear_multipart_upload(
+                        collection_id=collection_id,
+                        upload_id=upload_state.upload_id,
+                    )
+                    upload_state = None
+                    resumed_parts = []
+                if upload_state is not None:
+                    resumed_part_count = len(resumed_parts)
+                    skip_bytes = sum(part.size for part in resumed_parts)
+                    part_number = resumed_part_count + 1
+                    uploaded_bytes = skip_bytes
+                    completed_parts.extend(resumed_parts)
+                    _LOG.info(
+                        "resuming S3 multipart upload for %s: upload_id=%s parts=%s/%s bytes=%s/%s",
+                        object_key,
+                        upload_state.upload_id,
+                        resumed_part_count,
+                        expected_part_count,
+                        uploaded_bytes,
+                        content_length,
+                    )
 
         def ensure_upload() -> str:
-            nonlocal upload_id
-            if upload_id is None:
+            nonlocal upload_state
+            if upload_state is None:
                 _LOG.info(
                     "starting S3 multipart upload for %s: size=%s part_size=%s parts=%s",
                     object_key,
@@ -310,8 +405,19 @@ class S3ArchiveStore:
                         **extra_args,
                     ),
                 )
-                upload_id = str(response["UploadId"])
-            return upload_id
+                upload_state = ArchiveMultipartUploadState(
+                    upload_id=str(response["UploadId"]),
+                    object_path=object_key,
+                    part_size=part_size,
+                    content_length=content_length,
+                    sha256=sha256,
+                )
+                if multipart_tracker is not None:
+                    multipart_tracker.save_multipart_upload(
+                        collection_id=collection_id,
+                        state=upload_state,
+                    )
+            return upload_state.upload_id
 
         def upload_part(body: bytes) -> None:
             nonlocal part_number, uploaded_bytes
@@ -326,10 +432,22 @@ class S3ArchiveStore:
                     Body=body,
                 ),
             )
-            uploaded_parts.append(
-                {"PartNumber": current_part_number, "ETag": str(response["ETag"])}
+            part = ArchiveMultipartUploadedPart(
+                part_number=current_part_number,
+                etag=str(response["ETag"]),
+                size=len(body),
             )
+            completed_parts.append(part)
             uploaded_bytes += len(body)
+            if multipart_tracker is not None and upload_state is not None:
+                multipart_tracker.record_multipart_upload_progress(
+                    collection_id=collection_id,
+                    state=upload_state,
+                    part=part,
+                    uploaded_bytes=uploaded_bytes,
+                    uploaded_parts=current_part_number,
+                    total_parts=expected_part_count,
+                )
             if _should_log_multipart_progress(current_part_number, expected_part_count):
                 _LOG.info(
                     "S3 multipart upload progress for %s: part=%s/%s bytes=%s/%s pct=%.2f",
@@ -343,7 +461,7 @@ class S3ArchiveStore:
             part_number += 1
 
         try:
-            for chunk in chunks:
+            for chunk in _iter_chunks_after_skipping(chunks, skip_bytes):
                 size += len(chunk)
                 chunk_view = memoryview(chunk)
                 offset = 0
@@ -358,12 +476,12 @@ class S3ArchiveStore:
                         upload_part(bytes(buffer))
                         buffer.clear()
 
-            if size != content_length:
+            if size + skip_bytes != content_length:
                 raise ValueError("collection archive stream byte count mismatch")
             if buffer:
                 upload_part(bytes(buffer))
                 buffer.clear()
-            if upload_id is None:
+            if upload_state is None:
                 self._client.put_object(
                     Bucket=self._bucket,
                     Key=object_key,
@@ -372,31 +490,119 @@ class S3ArchiveStore:
                     **extra_args,
                 )
                 return
+            remote_parts = self._list_uploaded_parts(
+                object_key=object_key,
+                upload_id=upload_state.upload_id,
+            )
+            if len(completed_parts) != expected_part_count:
+                raise ValueError(
+                    "collection archive multipart upload is missing parts before completion"
+                )
+            _validate_recorded_parts_exist_remotely(completed_parts, remote_parts)
             self._client.complete_multipart_upload(
                 Bucket=self._bucket,
                 Key=object_key,
-                UploadId=upload_id,
-                MultipartUpload={"Parts": uploaded_parts},
+                UploadId=upload_state.upload_id,
+                MultipartUpload={
+                    "Parts": [
+                        {"PartNumber": part.part_number, "ETag": part.etag}
+                        for part in completed_parts
+                    ]
+                },
             )
+            if multipart_tracker is not None:
+                multipart_tracker.clear_multipart_upload(
+                    collection_id=collection_id,
+                    upload_id=upload_state.upload_id,
+                )
             _LOG.info(
                 "completed S3 multipart upload for %s: parts=%s bytes=%s",
                 object_key,
-                len(uploaded_parts),
+                len(completed_parts),
                 uploaded_bytes,
             )
-        except Exception as exc:
-            if upload_id is not None:
-                try:
-                    self._client.abort_multipart_upload(
-                        Bucket=self._bucket,
-                        Key=object_key,
-                        UploadId=upload_id,
-                    )
-                except Exception as cleanup_exc:
-                    exc.add_note(
-                        f"failed to abort S3 multipart upload {upload_id}: {cleanup_exc!r}"
-                    )
+        except Exception:
+            if upload_state is not None:
+                _LOG.warning(
+                    "leaving incomplete S3 multipart upload for %s resumable: upload_id=%s "
+                    "uploaded_bytes=%s/%s resumed_parts=%s",
+                    object_key,
+                    upload_state.upload_id,
+                    uploaded_bytes,
+                    content_length,
+                    resumed_part_count,
+                    exc_info=True,
+                )
             raise
+
+    def _list_uploaded_parts(
+        self,
+        *,
+        object_key: str,
+        upload_id: str,
+    ) -> list[dict[str, object]]:
+        parts: list[dict[str, object]] = []
+        marker = 0
+        while True:
+            request: dict[str, object] = {
+                "Bucket": self._bucket,
+                "Key": object_key,
+                "UploadId": upload_id,
+            }
+            if marker:
+                request["PartNumberMarker"] = marker
+            response = cast(
+                dict[str, Any],
+                self._client.list_parts(**request),
+            )
+            for part in response.get("Parts", []):
+                if not isinstance(part, dict):
+                    continue
+                part_number = int(part["PartNumber"])
+                parts.append(
+                    {
+                        "PartNumber": part_number,
+                        "ETag": str(part["ETag"]),
+                        "Size": int(part.get("Size", 0)),
+                    }
+                )
+                marker = part_number
+            if not response.get("IsTruncated"):
+                return sorted(parts, key=lambda current: int(str(current["PartNumber"])))
+            marker = int(str(response.get("NextPartNumberMarker", marker)))
+
+    def _contiguous_uploaded_parts(
+        self,
+        *,
+        object_key: str,
+        upload_id: str,
+        recorded_parts: tuple[ArchiveMultipartUploadedPart, ...],
+        part_size: int,
+        content_length: int,
+    ) -> list[ArchiveMultipartUploadedPart]:
+        expected_part_count = (content_length + part_size - 1) // part_size
+        remote_parts_by_number = {
+            int(str(part["PartNumber"])): part
+            for part in self._list_uploaded_parts(object_key=object_key, upload_id=upload_id)
+        }
+        recorded_parts_by_number = {part.part_number: part for part in recorded_parts}
+        contiguous: list[ArchiveMultipartUploadedPart] = []
+        for part_number in range(1, expected_part_count + 1):
+            recorded = recorded_parts_by_number.get(part_number)
+            remote = remote_parts_by_number.get(part_number)
+            if recorded is None or remote is None:
+                break
+            expected_size = (
+                content_length - part_size * (expected_part_count - 1)
+                if part_number == expected_part_count
+                else part_size
+            )
+            if recorded.size != expected_size:
+                break
+            if str(remote["ETag"]) != recorded.etag or int(str(remote["Size"])) != recorded.size:
+                break
+            contiguous.append(recorded)
+        return contiguous
 
     def request_collection_archive_restore(
         self,
@@ -576,9 +782,12 @@ class S3ArchiveStore:
         collection_id: str,
         object_path: str,
     ) -> bytes:
-        return self._read_restored_collection_object(
-            collection_id=collection_id,
-            object_path=object_path,
+        return read_collection_archive_internal_file(
+            self.iter_restored_collection_archive(
+                collection_id=collection_id,
+                object_path=object_path,
+            ),
+            path=COLLECTION_ARCHIVE_MANIFEST_PATH,
         )
 
     def read_restored_collection_archive_proof(
@@ -587,9 +796,12 @@ class S3ArchiveStore:
         collection_id: str,
         object_path: str,
     ) -> bytes:
-        return self._read_restored_collection_object(
-            collection_id=collection_id,
-            object_path=object_path,
+        return read_collection_archive_internal_file(
+            self.iter_restored_collection_archive(
+                collection_id=collection_id,
+                object_path=object_path,
+            ),
+            path=COLLECTION_ARCHIVE_PROOF_PATH,
         )
 
     def _read_restored_collection_object(
@@ -647,9 +859,12 @@ def _collection_restore_paths(
     manifest_object_path: str | None,
     proof_object_path: str | None,
 ) -> tuple[str, ...]:
-    return tuple(
-        path for path in (object_path, manifest_object_path, proof_object_path) if path is not None
-    )
+    paths: list[str] = []
+    for path in (object_path, manifest_object_path, proof_object_path):
+        if path is None or path in paths:
+            continue
+        paths.append(path)
+    return tuple(paths)
 
 
 def _combine_collection_restore_statuses(
@@ -804,6 +1019,17 @@ def _is_missing_object_error(exc: Exception) -> bool:
         return False
     code = str(error.get("Code", "")).strip()
     return code in {"NoSuchKey", "404", "NotFound"}
+
+
+def _is_missing_upload_error(exc: Exception) -> bool:
+    response = getattr(exc, "response", None)
+    if not isinstance(response, dict):
+        return False
+    error = response.get("Error", {})
+    if not isinstance(error, dict):
+        return False
+    code = str(error.get("Code", "")).strip()
+    return code in {"NoSuchUpload", "404", "NotFound"}
 
 
 def _restore_request_error_code(exc: Exception) -> str | None:

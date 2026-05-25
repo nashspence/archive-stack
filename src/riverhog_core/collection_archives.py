@@ -16,6 +16,12 @@ from riverhog_core.proofs import CommandProofStamper, ProofStamper, ProofVerifie
 COLLECTION_ARCHIVE_MANIFEST_SCHEMA = "collection-archive-manifest/v1"
 COLLECTION_ARCHIVE_FORMAT = "tar"
 COLLECTION_ARCHIVE_COMPRESSION = "none"
+COLLECTION_ARCHIVE_MANIFEST_PATH = ".riverhog/manifest.yml"
+COLLECTION_ARCHIVE_PROOF_PATH = ".riverhog/manifest.yml.ots"
+_COLLECTION_ARCHIVE_INTERNAL_PATHS = {
+    COLLECTION_ARCHIVE_MANIFEST_PATH,
+    COLLECTION_ARCHIVE_PROOF_PATH,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,9 +75,8 @@ def build_collection_archive_package(
     return _build_collection_archive_package(
         collection_id=normalized_collection_id,
         files=expected_files,
-        archive_chunks=lambda: _archive_chunks_from_reader(
-            expected_files,
-            lambda path: (next(file.content for file in normalized_files if file.path == path),),
+        read_file_chunks=lambda path: (
+            next(file.content for file in normalized_files if file.path == path),
         ),
         stamper=stamper,
     )
@@ -106,10 +111,7 @@ def build_collection_archive_package_from_chunk_reader(
     return _build_collection_archive_package(
         collection_id=normalized_collection_id,
         files=normalized_files,
-        archive_chunks=lambda: _archive_chunks_from_reader(
-            normalized_files,
-            read_file_chunks,
-        ),
+        read_file_chunks=read_file_chunks,
         stamper=stamper,
     )
 
@@ -118,7 +120,7 @@ def _build_collection_archive_package(
     *,
     collection_id: str,
     files: Sequence[CollectionArchiveExpectedFile],
-    archive_chunks: Callable[[], Iterator[bytes]],
+    read_file_chunks: Callable[[str], Iterable[bytes]],
     stamper: ProofStamper | None,
 ) -> CollectionArchivePackage:
     manifest = _manifest_payload(
@@ -131,6 +133,15 @@ def _build_collection_archive_package(
         allow_unicode=True,
     ).encode("utf-8")
     proof_bytes = _stamp_manifest_bytes(manifest_bytes, stamper=stamper)
+
+    def archive_chunks() -> Iterator[bytes]:
+        return _archive_chunks_from_reader(
+            files,
+            read_file_chunks,
+            manifest_bytes=manifest_bytes,
+            proof_bytes=proof_bytes,
+        )
+
     archive_size, archive_sha256 = _sized_sha256(archive_chunks())
     return CollectionArchivePackage(
         collection_id=collection_id,
@@ -221,10 +232,34 @@ def iter_collection_archive_files(
         for member in archive:
             if not member.isfile():
                 continue
+            if normalize_relpath(member.name) in _COLLECTION_ARCHIVE_INTERNAL_PATHS:
+                continue
             handle = archive.extractfile(member)
             if handle is None:
                 continue
             yield normalize_relpath(member.name), handle.read()
+
+
+def read_collection_archive_internal_file(
+    chunks: Iterable[bytes],
+    *,
+    path: str,
+) -> bytes:
+    normalized_path = normalize_relpath(path)
+    if normalized_path not in _COLLECTION_ARCHIVE_INTERNAL_PATHS:
+        raise ValueError(f"not a collection archive internal path: {path}")
+    stream = _ChunkIteratorReader(chunks)
+    with tarfile.open(fileobj=cast(Any, stream), mode="r|*") as archive:
+        for member in archive:
+            if not member.isfile():
+                continue
+            if normalize_relpath(member.name) != normalized_path:
+                continue
+            handle = archive.extractfile(member)
+            if handle is None:
+                raise ValueError(f"collection archive member cannot be read: {path}")
+            return handle.read()
+    raise FileNotFoundError(f"collection archive is missing internal member: {path}")
 
 
 def verify_collection_archive_files(
@@ -240,6 +275,8 @@ def verify_collection_archive_files(
             if not member.isfile():
                 continue
             path = normalize_relpath(member.name)
+            if path in _COLLECTION_ARCHIVE_INTERNAL_PATHS:
+                continue
             if path in seen:
                 raise ValueError(f"duplicate collection archive member: {path}")
             seen.add(path)
@@ -282,9 +319,7 @@ def iter_verified_collection_archive_file_chunks(
 ) -> Iterator[tuple[str, Iterator[bytes], int]]:
     expected = {file.path: file for file in _normalized_expected_files(files)}
     normalized_selected = (
-        {normalize_relpath(path) for path in selected_paths}
-        if selected_paths is not None
-        else None
+        {normalize_relpath(path) for path in selected_paths} if selected_paths is not None else None
     )
     seen: set[str] = set()
     yielded: set[str] = set()
@@ -294,6 +329,8 @@ def iter_verified_collection_archive_file_chunks(
             if not member.isfile():
                 continue
             path = normalize_relpath(member.name)
+            if path in _COLLECTION_ARCHIVE_INTERNAL_PATHS:
+                continue
             if path in seen:
                 raise ValueError(f"duplicate collection archive member: {path}")
             seen.add(path)
@@ -341,6 +378,8 @@ def _normalized_files(
         path = normalize_relpath(file.path)
         if path in seen:
             raise ValueError(f"duplicate collection archive path: {path}")
+        if path in _COLLECTION_ARCHIVE_INTERNAL_PATHS:
+            raise ValueError(f"collection archive path is reserved for Riverhog metadata: {path}")
         seen.add(path)
         digest = _sha256(file.content)
         if digest != file.sha256:
@@ -360,6 +399,8 @@ def _normalized_expected_files(
         path = normalize_relpath(file.path)
         if path in seen:
             raise ValueError(f"duplicate collection archive path: {path}")
+        if path in _COLLECTION_ARCHIVE_INTERNAL_PATHS:
+            raise ValueError(f"collection archive path is reserved for Riverhog metadata: {path}")
         seen.add(path)
         out.append(
             CollectionArchiveExpectedFile(
@@ -472,7 +513,12 @@ def _stamp_manifest_bytes(
 def _archive_chunks_from_reader(
     files: Sequence[CollectionArchiveExpectedFile],
     read_file_chunks: Callable[[str], Iterable[bytes]],
+    *,
+    manifest_bytes: bytes,
+    proof_bytes: bytes,
 ) -> Iterator[bytes]:
+    yield from _archive_bytes_member(COLLECTION_ARCHIVE_MANIFEST_PATH, manifest_bytes)
+    yield from _archive_bytes_member(COLLECTION_ARCHIVE_PROOF_PATH, proof_bytes)
     for file in files:
         yield _tar_header(file.path, file.bytes)
         digest = hashlib.sha256()
@@ -491,6 +537,14 @@ def _archive_chunks_from_reader(
         if padding:
             yield b"\0" * padding
     yield b"\0" * 1024
+
+
+def _archive_bytes_member(path: str, content: bytes) -> Iterator[bytes]:
+    yield _tar_header(path, len(content))
+    yield content
+    padding = (-len(content)) % 512
+    if padding:
+        yield b"\0" * padding
 
 
 def _tar_header(path: str, size: int) -> bytes:

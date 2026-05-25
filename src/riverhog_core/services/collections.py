@@ -532,10 +532,7 @@ def _normalize_upload_files(files: Sequence[dict[str, object]]) -> list[_UploadM
 def _collection_upload_manifest_fingerprint(
     files: Sequence[_UploadManifestEntry | _StoredManifestEntry],
 ) -> str:
-    payload = [
-        _manifest_entry_payload(file_record)
-        for file_record in files
-    ]
+    payload = [_manifest_entry_payload(file_record) for file_record in files]
     content = json.dumps(
         sorted(payload, key=lambda item: item["path"]),
         sort_keys=True,
@@ -949,6 +946,7 @@ def _finalized_collection_upload_payload(
     )
     files = sorted(collection.files, key=lambda current: current.path)
     bytes_total = sum(file_record.bytes for file_record in files)
+    archive = collection.archive
     return {
         "collection_id": collection.id,
         "ingest_source": collection.ingest_source,
@@ -962,6 +960,13 @@ def _finalized_collection_upload_payload(
         "missing_bytes": 0,
         "upload_state_expires_at": None,
         "latest_failure": None,
+        "archive_phase": "completed",
+        "archive_phase_updated_at": archive.last_verified_at if archive is not None else None,
+        "archive_object_path": archive.object_path if archive is not None else None,
+        "archive_uploaded_bytes": archive.stored_bytes if archive is not None else None,
+        "archive_total_bytes": archive.stored_bytes if archive is not None else None,
+        "archive_uploaded_parts": None,
+        "archive_total_parts": None,
         "files": [
             {
                 "path": file_record.path,
@@ -1024,6 +1029,25 @@ def _collection_upload_payload(
         "missing_bytes": max(bytes_total - uploaded_bytes, 0),
         "upload_state_expires_at": max(expiries) if expiries else None,
         "latest_failure": getattr(files[0].upload, "archive_failure", None) if files else None,
+        "archive_phase": getattr(files[0].upload, "archive_phase", None) if files else None,
+        "archive_phase_updated_at": getattr(files[0].upload, "archive_phase_updated_at", None)
+        if files
+        else None,
+        "archive_object_path": getattr(files[0].upload, "archive_object_path", None)
+        if files
+        else None,
+        "archive_uploaded_bytes": getattr(files[0].upload, "archive_multipart_uploaded_bytes", None)
+        if files
+        else None,
+        "archive_total_bytes": getattr(files[0].upload, "archive_multipart_content_length", None)
+        if files
+        else None,
+        "archive_uploaded_parts": getattr(files[0].upload, "archive_multipart_uploaded_parts", None)
+        if files
+        else None,
+        "archive_total_parts": getattr(files[0].upload, "archive_multipart_total_parts", None)
+        if files
+        else None,
         "files": [
             {
                 "path": file_record.path,

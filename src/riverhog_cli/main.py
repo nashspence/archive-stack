@@ -381,6 +381,7 @@ def _wait_for_finalized_collection(
             if state == "failed":
                 return last_payload, "failed"
             if now - last_status_log_at >= UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS:
+                archive_status = _archive_wait_status(last_payload)
                 _log_upload(
                     "Waiting for collection finalization: "
                     f"state={state}, "
@@ -388,6 +389,7 @@ def _wait_for_finalized_collection(
                     f"{last_payload.get('files_total', 0)} files, "
                     f"{last_payload.get('uploaded_bytes', 0)}/"
                     f"{last_payload.get('bytes_total', 0)} bytes staged"
+                    f"{archive_status}"
                 )
                 last_status_log_at = now
         elif now - last_status_log_at >= UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS:
@@ -414,6 +416,29 @@ def _wait_for_finalized_collection(
         if deadline is not None:
             sleep_seconds = max(0.0, min(poll_seconds, deadline - now))
         time.sleep(sleep_seconds)
+
+
+def _archive_wait_status(payload: dict[str, object]) -> str:
+    phase = payload.get("archive_phase")
+    if not phase:
+        return ""
+    status = f", archive_phase={phase}"
+    uploaded_bytes = payload.get("archive_uploaded_bytes")
+    total_bytes = payload.get("archive_total_bytes")
+    if isinstance(uploaded_bytes, int) and isinstance(total_bytes, int) and total_bytes > 0:
+        percent = uploaded_bytes / total_bytes * 100.0
+        status += (
+            f", archive={_format_bytes(uploaded_bytes)} / {_format_bytes(total_bytes)} "
+            f"({percent:.1f}%)"
+        )
+    uploaded_parts = payload.get("archive_uploaded_parts")
+    total_parts = payload.get("archive_total_parts")
+    if isinstance(uploaded_parts, int) and isinstance(total_parts, int) and total_parts > 0:
+        status += f", parts={uploaded_parts}/{total_parts}"
+    latest_failure = payload.get("latest_failure")
+    if latest_failure:
+        status += f", latest_failure={latest_failure}"
+    return status
 
 
 @app.command("upload")

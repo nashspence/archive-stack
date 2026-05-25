@@ -168,12 +168,13 @@ permission, media, and product regressions stay visible.
 `make ci-opt-in-glacier-restore` is an opt-in lane for live AWS S3 Glacier restore
 behavior. It is selected with
 `ci_opt_in and requires_aws_s3 and requires_glacier_restore`. The lane validates
-the collection archive package path: archive tar, manifest, and OTS proof upload
-to the configured AWS archive bucket/storage class, restore request,
-restored-object polling, and package verification when AWS reports the objects
-are readable. It is not part of `make test`, `make spec`, or `make prod`,
-because it can issue real restore requests, depends on account permissions and
-object storage class, and may take hours before restored objects are readable.
+the collection archive package path: one archive tar object containing the
+manifest and OTS proof, upload to the configured AWS archive bucket/storage
+class, restore request, restored-object polling, and package verification when
+AWS reports the object is readable. It is not part of `make test`, `make spec`,
+or `make prod`, because it can issue real restore requests, depends on account
+permissions and object storage class, and may take hours before restored objects
+are readable.
 
 Restore validation requires the normal `RIVERHOG_GLACIER_*` archive backend
 configuration and explicit restore confirmation:

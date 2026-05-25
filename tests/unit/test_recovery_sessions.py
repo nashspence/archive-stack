@@ -62,9 +62,7 @@ class _FakeHotStore:
         chunk_list = list(chunks)
         content = b"".join(chunk_list)
         assert len(content) == content_length
-        self.stream_chunk_lengths[(collection_id, path)] = [
-            len(chunk) for chunk in chunk_list
-        ]
+        self.stream_chunk_lengths[(collection_id, path)] = [len(chunk) for chunk in chunk_list]
         self.puts[(collection_id, path)] = content
 
     def get_collection_file(self, collection_id: str, path: str) -> bytes:
@@ -274,13 +272,14 @@ def _docs_collection_archive_package() -> CollectionArchivePackage:
 
 
 def _seed_collection_archive(sqlite_path: Path, package: CollectionArchivePackage) -> None:
+    object_path = f"glacier/collections/{package.collection_id}/archive.tar"
     session_factory = make_session_factory(str(sqlite_path))
     with session_scope(session_factory) as session:
         session.add(
             CollectionArchiveRecord(
                 collection_id=package.collection_id,
                 state="uploaded",
-                object_path=f"glacier/collections/{package.collection_id}/archive.tar",
+                object_path=object_path,
                 stored_bytes=len(package.archive_bytes),
                 sha256=package.archive_sha256,
                 backend="s3",
@@ -289,13 +288,13 @@ def _seed_collection_archive(sqlite_path: Path, package: CollectionArchivePackag
                 last_verified_at="2026-04-20T04:00:01Z",
                 archive_format=package.archive_format,
                 compression=package.compression,
-                manifest_object_path=f"glacier/collections/{package.collection_id}/manifest.yml",
+                manifest_object_path=object_path,
                 manifest_sha256=package.manifest_sha256,
-                manifest_stored_bytes=len(package.manifest_bytes),
+                manifest_stored_bytes=0,
                 manifest_uploaded_at="2026-04-20T04:00:00Z",
-                ots_object_path=f"glacier/collections/{package.collection_id}/manifest.yml.ots",
+                ots_object_path=object_path,
                 ots_sha256=package.proof_sha256,
-                ots_stored_bytes=len(package.proof_bytes),
+                ots_stored_bytes=0,
                 ots_uploaded_at="2026-04-20T04:00:00Z",
             )
         )
@@ -461,8 +460,8 @@ def test_collection_restore_requests_and_verifies_manifest_and_proof(
     assert store.restore_requests == [
         (
             "glacier/collections/docs/archive.tar",
-            "glacier/collections/docs/manifest.yml",
-            "glacier/collections/docs/manifest.yml.ots",
+            "glacier/collections/docs/archive.tar",
+            "glacier/collections/docs/archive.tar",
         )
     ]
 
@@ -474,13 +473,13 @@ def test_collection_restore_requests_and_verifies_manifest_and_proof(
 
     assert completed.state == RecoverySessionState.COMPLETED
     assert store.archive_reads == ["glacier/collections/docs/archive.tar"]
-    assert store.manifest_reads == ["glacier/collections/docs/manifest.yml"]
-    assert store.proof_reads == ["glacier/collections/docs/manifest.yml.ots"]
+    assert store.manifest_reads == ["glacier/collections/docs/archive.tar"]
+    assert store.proof_reads == ["glacier/collections/docs/archive.tar"]
     assert store.cleanup_requests == [
         (
             "glacier/collections/docs/archive.tar",
-            "glacier/collections/docs/manifest.yml",
-            "glacier/collections/docs/manifest.yml.ots",
+            "glacier/collections/docs/archive.tar",
+            "glacier/collections/docs/archive.tar",
         )
     ]
 
@@ -773,8 +772,8 @@ def test_image_rebuild_verifies_manifest_and_proof_before_streaming_archive(
     )
 
     assert chunks == [b"rebuilt-iso"]
-    assert store.manifest_reads == ["glacier/collections/docs/manifest.yml"]
-    assert store.proof_reads == ["glacier/collections/docs/manifest.yml.ots"]
+    assert store.manifest_reads == ["glacier/collections/docs/archive.tar"]
+    assert store.proof_reads == ["glacier/collections/docs/archive.tar"]
 
 
 def test_recovery_session_retries_initial_ready_notification_before_reminders(

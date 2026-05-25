@@ -30,6 +30,60 @@ class CollectionArchiveUploadReceipt:
 
 
 @dataclass(frozen=True)
+class ArchiveMultipartUploadedPart:
+    part_number: int
+    etag: str
+    size: int
+
+
+@dataclass(frozen=True)
+class ArchiveMultipartUploadState:
+    upload_id: str
+    object_path: str
+    part_size: int
+    content_length: int
+    sha256: str
+    parts: tuple[ArchiveMultipartUploadedPart, ...] = ()
+
+
+class ArchiveMultipartUploadTracker(Protocol):
+    def load_multipart_upload(
+        self,
+        *,
+        collection_id: str,
+        object_path: str,
+        part_size: int,
+        content_length: int,
+        sha256: str,
+    ) -> ArchiveMultipartUploadState | None: ...
+
+    def save_multipart_upload(
+        self,
+        *,
+        collection_id: str,
+        state: ArchiveMultipartUploadState,
+    ) -> None: ...
+
+    def record_multipart_upload_progress(
+        self,
+        *,
+        collection_id: str,
+        state: ArchiveMultipartUploadState,
+        part: ArchiveMultipartUploadedPart,
+        uploaded_bytes: int,
+        uploaded_parts: int,
+        total_parts: int,
+    ) -> None: ...
+
+    def clear_multipart_upload(
+        self,
+        *,
+        collection_id: str,
+        upload_id: str,
+    ) -> None: ...
+
+
+@dataclass(frozen=True)
 class ArchiveRestoreStatus:
     state: str
     ready_at: str | None = None
@@ -43,6 +97,7 @@ class ArchiveStore(Protocol):
         *,
         collection_id: str,
         package: CollectionArchivePackage,
+        multipart_tracker: ArchiveMultipartUploadTracker | None = None,
     ) -> CollectionArchiveUploadReceipt: ...
 
     def request_collection_archive_restore(

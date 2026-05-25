@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from riverhog_core.catalog_models import (
+    CollectionArchiveRecord,
     CollectionFileRecord,
     CollectionRecord,
     CollectionUploadRecord,
@@ -16,6 +17,10 @@ from riverhog_core.catalog_models import (
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
     PlannedCandidateRecord,
+)
+from riverhog_core.collection_archives import (
+    CollectionArchiveFile,
+    build_collection_archive_package,
 )
 from riverhog_core.domain.errors import Conflict
 from riverhog_core.finalized_image_coverage import (
@@ -27,6 +32,10 @@ from riverhog_core.ports.archive_store import ArchiveUploadReceipt, CollectionAr
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.glacier_uploads import SqlAlchemyGlacierUploadService
+from riverhog_core.services.planning import (
+    cache_collection_archive_artifacts,
+    refresh_provisional_plan,
+)
 from riverhog_core.sqlite_db import initialize_db, make_session_factory, session_scope
 from tests.fixtures.crypto import FixtureProofStamper, FixtureRecoveryPayloadCodec
 from tests.fixtures.data import DOCS_FILES
@@ -67,6 +76,25 @@ class _FakeHotStore:
 
     def has_collection_file(self, collection_id: str, path: str) -> bool:
         return (collection_id, path) in self._files
+
+
+class _FailOnceRecoveryPayloadCodec:
+    def __init__(self, *, fail_after_successes: int) -> None:
+        self._fail_after_successes = fail_after_successes
+        self._successes = 0
+
+    @property
+    def metadata(self):
+        return {"alg": "age-plugin-batchpass/v1", "fixture": True}
+
+    def encrypt(self, content: bytes) -> bytes:
+        if self._successes >= self._fail_after_successes:
+            raise RuntimeError("synthetic planner encryption failure")
+        self._successes += 1
+        return FixtureRecoveryPayloadCodec().encrypt(content)
+
+    def decrypt(self, content: bytes) -> bytes:
+        return FixtureRecoveryPayloadCodec().decrypt(content)
 
     def delete_collection_file(self, collection_id: str, path: str) -> None:
         self._files.pop((collection_id, path), None)
@@ -164,10 +192,12 @@ class _StreamingOnlyUploadStore(_FakeUploadStore):
 
 
 class _FakeArchiveStore:
-    def upload_collection_archive_package(self, *, collection_id, package):
+    def upload_collection_archive_package(self, *, collection_id, package, multipart_tracker=None):
+        _ = multipart_tracker
+        object_path = f"glacier/collections/{collection_id}/archive.tar"
         return CollectionArchiveUploadReceipt(
             archive=ArchiveUploadReceipt(
-                object_path=f"glacier/collections/{collection_id}/archive.tar",
+                object_path=object_path,
                 stored_bytes=len(package.archive_bytes),
                 backend="s3",
                 storage_class="DEEP_ARCHIVE",
@@ -175,16 +205,16 @@ class _FakeArchiveStore:
                 verified_at="2026-04-20T04:00:01Z",
             ),
             manifest=ArchiveUploadReceipt(
-                object_path=f"glacier/collections/{collection_id}/manifest.yml",
-                stored_bytes=len(package.manifest_bytes),
+                object_path=object_path,
+                stored_bytes=0,
                 backend="s3",
                 storage_class="DEEP_ARCHIVE",
                 uploaded_at="2026-04-20T04:00:00Z",
                 verified_at="2026-04-20T04:00:01Z",
             ),
             proof=ArchiveUploadReceipt(
-                object_path=f"glacier/collections/{collection_id}/manifest.yml.ots",
-                stored_bytes=len(package.proof_bytes),
+                object_path=object_path,
+                stored_bytes=0,
                 backend="s3",
                 storage_class="DEEP_ARCHIVE",
                 uploaded_at="2026-04-20T04:00:00Z",
@@ -628,6 +658,106 @@ def test_completed_glacier_upload_refreshes_provisional_disc_plan(tmp_path: Path
         )[0].collection_id
         == collection_id
     )
+
+
+def test_provisional_disc_plan_materialization_resumes_partial_candidate(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+    config = _config(
+        sqlite_path,
+        planner_disc_target_bytes=10_000_000,
+        planner_min_fill_bytes=1,
+        planner_image_root=tmp_path / "images",
+    )
+    collection_id = "2026/20260525T000000Z__docs"
+    path = "albums/day-01.txt"
+    content = b"planner payload\n"
+    sha256 = hashlib.sha256(content).hexdigest()
+    hot_store = _FakeHotStore()
+    hot_store.put_collection_file(collection_id, path, content)
+
+    archive_package = build_collection_archive_package(
+        collection_id=collection_id,
+        files=(
+            CollectionArchiveFile(
+                path=path,
+                content=content,
+                sha256=sha256,
+            ),
+        ),
+        stamper=FixtureProofStamper(),
+    )
+    package = _FakeArchiveStore().upload_collection_archive_package(
+        collection_id=collection_id,
+        package=archive_package,
+    )
+    cache_collection_archive_artifacts(
+        config,
+        collection_id=collection_id,
+        manifest_bytes=archive_package.manifest_bytes,
+        proof_bytes=archive_package.proof_bytes,
+    )
+    session_factory = make_session_factory(str(sqlite_path))
+    with session_scope(session_factory) as session:
+        collection = CollectionRecord(id=collection_id)
+        collection.files.append(
+            CollectionFileRecord(
+                collection_id=collection_id,
+                path=path,
+                bytes=len(content),
+                sha256=sha256,
+                hot=True,
+                archived=False,
+            )
+        )
+        session.add(collection)
+        session.add(
+            CollectionArchiveRecord(
+                collection_id=collection_id,
+                state="uploaded",
+                object_path=package.archive.object_path,
+                stored_bytes=package.archive.stored_bytes,
+                sha256=package.archive_sha256,
+                backend="s3",
+                storage_class="DEEP_ARCHIVE",
+                manifest_object_path=package.manifest.object_path,
+                manifest_sha256=package.manifest_sha256,
+                manifest_stored_bytes=0,
+                ots_object_path=package.proof.object_path,
+                ots_sha256=package.proof_sha256,
+                ots_stored_bytes=0,
+            )
+        )
+
+    with pytest.raises(RuntimeError, match="synthetic planner encryption failure"):
+        refresh_provisional_plan(
+            config=config,
+            hot_store=hot_store,
+            recovery_payload_codec=_FailOnceRecoveryPayloadCodec(fail_after_successes=1),
+        )
+    with session_scope(session_factory) as session:
+        failed = session.scalars(select(PlannedCandidateRecord)).one()
+        assert failed.state == "failed"
+        failed_candidate_id = failed.candidate_id
+        tmp_root = Path(failed.image_root).with_name(f".{failed.candidate_id}.tmp")
+        assert tmp_root.exists()
+        assert any(path.is_file() for path in tmp_root.rglob("*"))
+
+    refresh_provisional_plan(
+        config=config,
+        hot_store=hot_store,
+        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
+    )
+
+    with session_scope(session_factory) as session:
+        candidate = session.scalars(select(PlannedCandidateRecord)).one()
+        assert candidate.candidate_id == failed_candidate_id
+        assert candidate.state == "ready"
+        assert candidate.failure is None
+        assert Path(candidate.image_root).exists()
+        assert not Path(candidate.image_root).with_name(f".{candidate.candidate_id}.tmp").exists()
 
 
 def test_new_collection_uploads_are_blocked_over_unburned_limit(tmp_path: Path) -> None:
