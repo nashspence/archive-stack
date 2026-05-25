@@ -435,6 +435,27 @@ def _archive_wait_status(payload: dict[str, object]) -> str:
     total_parts = payload.get("archive_total_parts")
     if isinstance(uploaded_parts, int) and isinstance(total_parts, int) and total_parts > 0:
         status += f", parts={uploaded_parts}/{total_parts}"
+    hot_promoted_bytes = payload.get("hot_promoted_bytes")
+    bytes_total = payload.get("bytes_total")
+    if (
+        phase == "promoting"
+        and isinstance(hot_promoted_bytes, int)
+        and isinstance(bytes_total, int)
+        and bytes_total > 0
+    ):
+        percent = hot_promoted_bytes / bytes_total * 100.0
+        status += (
+            f", hot={_format_bytes(hot_promoted_bytes)} / {_format_bytes(bytes_total)} "
+            f"({percent:.1f}%)"
+        )
+    hot_promoted_files = payload.get("hot_promoted_files")
+    files_total = payload.get("files_total")
+    if (
+        phase == "promoting"
+        and isinstance(hot_promoted_files, int)
+        and isinstance(files_total, int)
+    ):
+        status += f", hot_files={hot_promoted_files}/{files_total}"
     latest_failure = payload.get("latest_failure")
     if latest_failure:
         status += f", latest_failure={latest_failure}"

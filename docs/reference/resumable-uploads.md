@@ -97,6 +97,15 @@ metadata, skips the already uploaded contiguous prefix of the deterministic
 archive stream, uploads the remaining parts, and completes the same multipart
 upload using the recorded part numbers and ETags.
 
+After S3 accepts the completed archive object, Riverhog persists the archive
+receipt plus the embedded manifest and proof bytes on the same upload row before
+promoting hot files. A restart after Glacier completion therefore resumes from
+the recorded receipt instead of rebuilding or re-uploading the archive. During
+promotion, each hot file is written with byte and SHA-256 metadata and marked
+promoted only after the hot object verifies. Retries skip verified hot files,
+finish the remaining files, then atomically commit the finalized collection and
+archive records before deleting staged upload objects.
+
 This follows Amazon S3's multipart contract: the upload id is required to upload
 parts, list parts, complete, or abort; completion requires part numbers and
 ETags; and uploading the same part number replaces that part. S3 also bills

@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterable, Iterator
 from typing import Any, cast
 
 from riverhog_core.domain.errors import NotFound
+from riverhog_core.ports.hot_store import HotFileStat
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.stores.s3_support import create_s3_client
 
 _MIN_MULTIPART_PART_SIZE = 5 * 1024 * 1024
 _MAX_MULTIPART_PART_SIZE = 5 * 1024 * 1024 * 1024
 _MAX_MULTIPART_PARTS = 10_000
+_FILE_BYTES_METADATA = "riverhog-file-bytes"
+_FILE_SHA256_METADATA = "riverhog-file-sha256"
 
 
 def _multipart_part_size(content_length: int) -> int:
@@ -31,10 +35,13 @@ class S3HotStore:
         return f"collections/{collection_id}/{path}"
 
     def put_collection_file(self, collection_id: str, path: str, content: bytes) -> None:
+        sha256 = hashlib.sha256(content).hexdigest()
         self._client.put_object(
             Bucket=self._bucket,
             Key=self._key(collection_id, path),
             Body=content,
+            ContentLength=len(content),
+            Metadata=_file_metadata(content_length=len(content), sha256=sha256),
         )
 
     def put_collection_file_stream(
@@ -44,8 +51,10 @@ class S3HotStore:
         chunks: Iterable[bytes],
         *,
         content_length: int,
+        sha256: str | None = None,
     ) -> None:
         final_key = self._key(collection_id, path)
+        metadata = _file_metadata(content_length=content_length, sha256=sha256)
         if content_length == 0:
             size = sum(len(chunk) for chunk in chunks)
             if size != 0:
@@ -55,6 +64,7 @@ class S3HotStore:
                 Key=final_key,
                 Body=b"",
                 ContentLength=0,
+                Metadata=metadata,
             )
             return
 
@@ -73,6 +83,7 @@ class S3HotStore:
                     self._client.create_multipart_upload(
                         Bucket=self._bucket,
                         Key=final_key,
+                        Metadata=metadata,
                     ),
                 )
                 upload_id = str(response["UploadId"])
@@ -120,6 +131,7 @@ class S3HotStore:
                     Key=final_key,
                     Body=b"",
                     ContentLength=0,
+                    Metadata=metadata,
                 )
                 return
             self._client.complete_multipart_upload(
@@ -188,14 +200,19 @@ class S3HotStore:
             if callable(close):
                 close()
 
-    def has_collection_file(self, collection_id: str, path: str) -> bool:
+    def stat_collection_file(self, collection_id: str, path: str) -> HotFileStat | None:
         try:
-            self._client.head_object(Bucket=self._bucket, Key=self._key(collection_id, path))
-            return True
+            head = self._client.head_object(Bucket=self._bucket, Key=self._key(collection_id, path))
         except self._client.exceptions.ClientError as exc:
             if exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode") == 404:
-                return False
+                return None
             raise
+        metadata = cast(dict[str, str], head.get("Metadata") or {})
+        sha256 = metadata.get(_FILE_SHA256_METADATA)
+        return HotFileStat(bytes=int(head.get("ContentLength", 0)), sha256=sha256 or None)
+
+    def has_collection_file(self, collection_id: str, path: str) -> bool:
+        return self.stat_collection_file(collection_id, path) is not None
 
     def delete_collection_file(self, collection_id: str, path: str) -> None:
         self._client.delete_object(Bucket=self._bucket, Key=self._key(collection_id, path))
@@ -211,3 +228,10 @@ class S3HotStore:
                     continue
                 results.append((key.removeprefix(prefix), int(entry.get("Size", 0))))
         return sorted(results)
+
+
+def _file_metadata(*, content_length: int, sha256: str | None) -> dict[str, str]:
+    metadata = {_FILE_BYTES_METADATA: str(content_length)}
+    if sha256:
+        metadata[_FILE_SHA256_METADATA] = sha256
+    return metadata

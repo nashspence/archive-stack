@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from botocore.exceptions import ClientError
 
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.stores.s3_hot_store import S3HotStore, _multipart_part_size
@@ -20,6 +21,9 @@ class _FakeBody:
 
 
 class _FakeS3Client:
+    class exceptions:
+        ClientError = ClientError
+
     def __init__(self) -> None:
         self.objects: dict[str, dict[str, Any]] = {}
         self.uploads: dict[str, dict[str, Any]] = {}
@@ -42,11 +46,11 @@ class _FakeS3Client:
             **kwargs,
         }
 
-    def create_multipart_upload(self, *, Bucket: str, Key: str) -> dict[str, str]:
+    def create_multipart_upload(self, *, Bucket: str, Key: str, **kwargs: Any) -> dict[str, str]:
         _ = Bucket
         upload_id = f"upload-{self._next_upload_id}"
         self._next_upload_id += 1
-        self.uploads[upload_id] = {"Key": Key, "Parts": {}}
+        self.uploads[upload_id] = {"Key": Key, "Parts": {}, **kwargs}
         return {"UploadId": upload_id}
 
     def upload_part(
@@ -84,6 +88,7 @@ class _FakeS3Client:
             "Body": body,
             "ContentLength": len(body),
             "LastModified": datetime(2026, 4, 20, 4, 1, 0, tzinfo=UTC),
+            "Metadata": upload.get("Metadata", {}),
         }
         self.completed_uploads.append(UploadId)
 
@@ -99,6 +104,23 @@ class _FakeS3Client:
     def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
         _ = Bucket
         return {"Body": _FakeBody(cast(bytes, self.objects[Key]["Body"]))}
+
+    def head_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
+        _ = Bucket
+        try:
+            return {
+                "ContentLength": self.objects[Key]["ContentLength"],
+                "LastModified": self.objects[Key]["LastModified"],
+                "Metadata": self.objects[Key].get("Metadata", {}),
+            }
+        except KeyError as exc:
+            raise ClientError(
+                {
+                    "Error": {"Code": "NoSuchKey"},
+                    "ResponseMetadata": {"HTTPStatusCode": 404},
+                },
+                "HeadObject",
+            ) from exc
 
 
 def _config(tmp_path: Path) -> RuntimeConfig:
@@ -142,9 +164,15 @@ def test_put_collection_file_stream_completes_multipart_upload(
         "large.bin",
         (chunk for chunk in [b"abc", b"defg", b"hi"]),
         content_length=9,
+        sha256="19cc02f26df43cc571bc9ed7b0c4d29224a3ec229529221725ef76d021c8326f",
     )
 
     assert store.get_collection_file("docs", "large.bin") == b"abcdefghi"
+    assert store.stat_collection_file("docs", "large.bin").bytes == 9
+    assert (
+        store.stat_collection_file("docs", "large.bin").sha256
+        == "19cc02f26df43cc571bc9ed7b0c4d29224a3ec229529221725ef76d021c8326f"
+    )
     assert client.uploaded_part_sizes == [4, 4, 1]
     assert client.completed_uploads == ["upload-1"]
     assert client.aborted_uploads == []

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import logging
 from collections.abc import Iterator
@@ -25,6 +27,8 @@ from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadState,
     ArchiveMultipartUploadTracker,
     ArchiveStore,
+    ArchiveUploadReceipt,
+    CollectionArchiveUploadReceipt,
 )
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.ports.upload_store import UploadStore
@@ -118,6 +122,9 @@ class SqlAlchemyGlacierUploadService:
         upload_store = self._upload_store
         current = utcnow()
         current_text = _isoformat_z(current)
+        receipt: CollectionArchiveUploadReceipt | None = None
+        manifest_bytes: bytes | None = None
+        proof_bytes: bytes | None = None
         with session_scope(self._session_factory) as session:
             upload = session.get(CollectionUploadRecord, collection_id)
             if upload is None or upload.state != "archiving":
@@ -126,10 +133,13 @@ class SqlAlchemyGlacierUploadService:
                 upload.state = "uploading"
                 upload.archive_next_attempt_at = None
                 return
+            receipt = _archive_receipt_from_json(upload.archive_receipt_json)
+            manifest_bytes = _decode_b64(upload.archive_manifest_bytes_b64)
+            proof_bytes = _decode_b64(upload.archive_proof_bytes_b64)
             upload.archive_attempt_count = int(upload.archive_attempt_count or 0) + 1
             upload.archive_last_attempt_at = current_text
             upload.archive_next_attempt_at = current_text
-            upload.archive_phase = "packaging"
+            upload.archive_phase = "promoting" if receipt is not None else "packaging"
             upload.archive_phase_updated_at = current_text
             upload.archive_failure = None
             sorted_files = sorted(
@@ -147,38 +157,52 @@ class SqlAlchemyGlacierUploadService:
             ]
 
         try:
-            target_path_by_archive_path: dict[str, str] = {}
-            package_files: list[CollectionArchiveExpectedFile] = []
-            for path, _bytes, sha256, target_path in upload_files:
-                target_path_by_archive_path[path] = target_path
-                package_files.append(
-                    CollectionArchiveExpectedFile(path=path, bytes=_bytes, sha256=sha256)
+            if receipt is None or manifest_bytes is None or proof_bytes is None:
+                target_path_by_archive_path: dict[str, str] = {}
+                package_files: list[CollectionArchiveExpectedFile] = []
+                for path, _bytes, sha256, target_path in upload_files:
+                    target_path_by_archive_path[path] = target_path
+                    package_files.append(
+                        CollectionArchiveExpectedFile(path=path, bytes=_bytes, sha256=sha256)
+                    )
+
+                def _read_archive_file_chunks(path: str) -> Iterator[bytes]:
+                    return upload_store.iter_target(target_path_by_archive_path[path])
+
+                package = build_collection_archive_package_from_chunk_reader(
+                    collection_id=collection_id,
+                    files=package_files,
+                    read_file_chunks=_read_archive_file_chunks,
+                    stamper=self._proof_stamper,
                 )
-
-            def _read_archive_file_chunks(path: str) -> Iterator[bytes]:
-                return upload_store.iter_target(target_path_by_archive_path[path])
-
-            package = build_collection_archive_package_from_chunk_reader(
-                collection_id=collection_id,
-                files=package_files,
-                read_file_chunks=_read_archive_file_chunks,
-                stamper=self._proof_stamper,
-            )
-            self._record_archive_phase(
-                collection_id=collection_id,
-                phase="uploading",
-                updated_at=_isoformat_z(utcnow()),
-            )
-            receipt = self._archive_store.upload_collection_archive_package(
-                collection_id=collection_id,
-                package=package,
-                multipart_tracker=_SqlAlchemyArchiveMultipartUploadTracker(self._session_factory),
-            )
+                manifest_bytes = package.manifest_bytes
+                proof_bytes = package.proof_bytes
+                if receipt is None:
+                    self._record_archive_phase(
+                        collection_id=collection_id,
+                        phase="uploading",
+                        updated_at=_isoformat_z(utcnow()),
+                    )
+                    receipt = self._archive_store.upload_collection_archive_package(
+                        collection_id=collection_id,
+                        package=package,
+                        multipart_tracker=_SqlAlchemyArchiveMultipartUploadTracker(
+                            self._session_factory
+                        ),
+                    )
+                self._record_completed_archive(
+                    collection_id=collection_id,
+                    receipt=receipt,
+                    manifest_bytes=manifest_bytes,
+                    proof_bytes=proof_bytes,
+                )
+            if manifest_bytes is None or proof_bytes is None:
+                raise RuntimeError("collection archive artifacts were not recorded")
             cache_collection_archive_artifacts(
                 self._config,
                 collection_id=collection_id,
-                manifest_bytes=package.manifest_bytes,
-                proof_bytes=package.proof_bytes,
+                manifest_bytes=manifest_bytes,
+                proof_bytes=proof_bytes,
             )
         except Exception as exc:
             self._record_collection_failure(collection_id=collection_id, error=_error_text(exc))
@@ -186,63 +210,22 @@ class SqlAlchemyGlacierUploadService:
 
         cleanup_targets: list[str] = []
         try:
-            with session_scope(self._session_factory) as session:
-                upload = session.get(CollectionUploadRecord, collection_id)
-                if upload is None:
-                    return
-                upload.archive_phase = "promoting"
-                upload.archive_phase_updated_at = _isoformat_z(utcnow())
-                session.flush()
-                collection = CollectionRecord(id=collection_id, ingest_source=upload.ingest_source)
-                session.add(collection)
-                for file_record in sorted(
-                    upload.files,
-                    key=lambda current_file: current_file.file_order,
-                ):
-                    target_path = _collection_upload_target_path(collection_id, file_record.path)
-                    hot_store.put_collection_file_stream(
-                        collection_id,
-                        file_record.path,
-                        upload_store.iter_target(target_path),
-                        content_length=file_record.bytes,
-                    )
-                    cleanup_targets.append(target_path)
-                    collection.files.append(
-                        CollectionFileRecord(
-                            collection_id=collection_id,
-                            path=file_record.path,
-                            bytes=file_record.bytes,
-                            sha256=file_record.sha256,
-                            hot=True,
-                            archived=False,
-                        )
-                    )
-                session.add(
-                    CollectionArchiveRecord(
-                        collection_id=collection_id,
-                        state="uploaded",
-                        object_path=receipt.archive.object_path,
-                        stored_bytes=receipt.archive.stored_bytes,
-                        sha256=receipt.archive_sha256,
-                        backend=receipt.archive.backend,
-                        storage_class=receipt.archive.storage_class,
-                        last_uploaded_at=receipt.archive.uploaded_at,
-                        last_verified_at=receipt.archive.verified_at,
-                        failure=None,
-                        archive_format=receipt.archive_format,
-                        compression=receipt.compression,
-                        manifest_object_path=receipt.manifest.object_path,
-                        manifest_sha256=receipt.manifest_sha256,
-                        manifest_stored_bytes=receipt.manifest.stored_bytes,
-                        manifest_uploaded_at=receipt.manifest.uploaded_at,
-                        ots_object_path=receipt.proof.object_path,
-                        ots_sha256=receipt.proof_sha256,
-                        ots_stored_bytes=receipt.proof.stored_bytes,
-                        ots_uploaded_at=receipt.proof.uploaded_at,
-                    )
+            if receipt is None:
+                raise RuntimeError("collection archive receipt was not recorded")
+            for path, _bytes, sha256, target_path in upload_files:
+                self._promote_one_collection_file(
+                    collection_id=collection_id,
+                    path=path,
+                    target_path=target_path,
+                    byte_count=_bytes,
+                    sha256=sha256,
                 )
-                session.delete(upload)
-                record_glacier_usage_snapshot(session, config=self._config)
+                cleanup_targets.append(target_path)
+            self._finalize_archived_collection(
+                collection_id=collection_id,
+                receipt=receipt,
+                upload_files=upload_files,
+            )
         except Exception as exc:
             self._record_collection_failure(collection_id=collection_id, error=_error_text(exc))
             return
@@ -266,6 +249,146 @@ class SqlAlchemyGlacierUploadService:
             )
         except Exception:
             _LOG.exception("failed to refresh provisional plan after archiving %s", collection_id)
+
+    def _promote_one_collection_file(
+        self,
+        *,
+        collection_id: str,
+        path: str,
+        target_path: str,
+        byte_count: int,
+        sha256: str,
+    ) -> None:
+        hot_store = self._hot_store
+        upload_store = self._upload_store
+        if hot_store is None or upload_store is None:
+            return
+        self._record_archive_phase(
+            collection_id=collection_id,
+            phase="promoting",
+            updated_at=_isoformat_z(utcnow()),
+        )
+        if _hot_file_matches(
+            hot_store,
+            collection_id=collection_id,
+            path=path,
+            expected_bytes=byte_count,
+            expected_sha256=sha256,
+        ):
+            self._mark_collection_upload_file_promoted(collection_id=collection_id, path=path)
+            return
+
+        digest = hashlib.sha256()
+
+        def digesting_chunks() -> Iterator[bytes]:
+            for chunk in upload_store.iter_target(target_path):
+                digest.update(chunk)
+                yield chunk
+
+        hot_store.put_collection_file_stream(
+            collection_id,
+            path,
+            digesting_chunks(),
+            content_length=byte_count,
+            sha256=sha256,
+        )
+        if digest.hexdigest() != sha256:
+            hot_store.delete_collection_file(collection_id, path)
+            raise ValueError(f"promoted collection file sha256 mismatch: {collection_id}/{path}")
+        if not _hot_file_matches(
+            hot_store,
+            collection_id=collection_id,
+            path=path,
+            expected_bytes=byte_count,
+            expected_sha256=sha256,
+        ):
+            raise ValueError(f"promoted collection file metadata mismatch: {collection_id}/{path}")
+        self._mark_collection_upload_file_promoted(collection_id=collection_id, path=path)
+
+    def _mark_collection_upload_file_promoted(self, *, collection_id: str, path: str) -> None:
+        with session_scope(self._session_factory) as session:
+            upload = session.get(CollectionUploadRecord, collection_id)
+            file_record = session.get(CollectionUploadFileRecord, (collection_id, path))
+            if upload is None or file_record is None:
+                return
+            current_text = _isoformat_z(utcnow())
+            file_record.hot_promoted_at = current_text
+            upload.archive_phase = "promoting"
+            upload.archive_phase_updated_at = current_text
+            upload.archive_failure = None
+
+    def _finalize_archived_collection(
+        self,
+        *,
+        collection_id: str,
+        receipt: CollectionArchiveUploadReceipt,
+        upload_files: list[tuple[str, int, str, str]],
+    ) -> None:
+        with session_scope(self._session_factory) as session:
+            upload = session.get(CollectionUploadRecord, collection_id)
+            if upload is None:
+                return
+            upload.archive_phase = "finalizing"
+            upload.archive_phase_updated_at = _isoformat_z(utcnow())
+            session.flush()
+            unpromoted = [
+                file_record.path
+                for file_record in upload.files
+                if file_record.hot_promoted_at is None
+            ]
+            if unpromoted:
+                raise RuntimeError(f"collection has unpromoted files: {unpromoted[0]}")
+            collection = session.get(CollectionRecord, collection_id)
+            if collection is None:
+                collection = CollectionRecord(id=collection_id, ingest_source=upload.ingest_source)
+                session.add(collection)
+                session.flush()
+            existing_paths = {file_record.path for file_record in collection.files}
+            for path, _bytes, sha256, _target_path in upload_files:
+                if path in existing_paths:
+                    continue
+                collection.files.append(
+                    CollectionFileRecord(
+                        collection_id=collection_id,
+                        path=path,
+                        bytes=_bytes,
+                        sha256=sha256,
+                        hot=True,
+                        archived=False,
+                    )
+                )
+            archive = session.get(CollectionArchiveRecord, collection_id)
+            if archive is None:
+                archive = CollectionArchiveRecord(collection_id=collection_id)
+                session.add(archive)
+            _apply_archive_receipt(archive, receipt)
+            session.delete(upload)
+            record_glacier_usage_snapshot(session, config=self._config)
+
+    def _record_completed_archive(
+        self,
+        *,
+        collection_id: str,
+        receipt: CollectionArchiveUploadReceipt,
+        manifest_bytes: bytes,
+        proof_bytes: bytes,
+    ) -> None:
+        current_text = _isoformat_z(utcnow())
+        with session_scope(self._session_factory) as session:
+            upload = session.get(CollectionUploadRecord, collection_id)
+            if upload is None:
+                return
+            upload.archive_receipt_json = _archive_receipt_to_json(receipt)
+            upload.archive_manifest_bytes_b64 = _encode_b64(manifest_bytes)
+            upload.archive_proof_bytes_b64 = _encode_b64(proof_bytes)
+            upload.archive_object_path = receipt.archive.object_path
+            upload.archive_multipart_content_length = receipt.archive.stored_bytes
+            upload.archive_multipart_sha256 = receipt.archive_sha256
+            upload.archive_multipart_uploaded_bytes = receipt.archive.stored_bytes
+            upload.archive_multipart_uploaded_parts = upload.archive_multipart_total_parts
+            upload.archive_phase = "promoting"
+            upload.archive_phase_updated_at = current_text
+            upload.archive_failure = None
 
     def _record_collection_failure(self, *, collection_id: str, error: str) -> None:
         current = utcnow()
@@ -482,6 +605,127 @@ def _multipart_parts_to_json(parts: tuple[ArchiveMultipartUploadedPart, ...]) ->
         [{"part_number": part.part_number, "etag": part.etag, "size": part.size} for part in parts],
         separators=(",", ":"),
     )
+
+
+def _hot_file_matches(
+    hot_store: HotStore,
+    *,
+    collection_id: str,
+    path: str,
+    expected_bytes: int,
+    expected_sha256: str,
+) -> bool:
+    stat = hot_store.stat_collection_file(collection_id, path)
+    if stat is None:
+        return False
+    if stat.bytes != expected_bytes:
+        return False
+    if stat.sha256 is not None:
+        return stat.sha256 == expected_sha256
+
+    digest = hashlib.sha256()
+    byte_count = 0
+    for chunk in hot_store.iter_collection_file(collection_id, path):
+        digest.update(chunk)
+        byte_count += len(chunk)
+    return byte_count == expected_bytes and digest.hexdigest() == expected_sha256
+
+
+def _apply_archive_receipt(
+    archive: CollectionArchiveRecord,
+    receipt: CollectionArchiveUploadReceipt,
+) -> None:
+    archive.state = "uploaded"
+    archive.object_path = receipt.archive.object_path
+    archive.stored_bytes = receipt.archive.stored_bytes
+    archive.sha256 = receipt.archive_sha256
+    archive.backend = receipt.archive.backend
+    archive.storage_class = receipt.archive.storage_class
+    archive.last_uploaded_at = receipt.archive.uploaded_at
+    archive.last_verified_at = receipt.archive.verified_at
+    archive.failure = None
+    archive.archive_format = receipt.archive_format
+    archive.compression = receipt.compression
+    archive.manifest_object_path = receipt.manifest.object_path
+    archive.manifest_sha256 = receipt.manifest_sha256
+    archive.manifest_stored_bytes = receipt.manifest.stored_bytes
+    archive.manifest_uploaded_at = receipt.manifest.uploaded_at
+    archive.ots_object_path = receipt.proof.object_path
+    archive.ots_sha256 = receipt.proof_sha256
+    archive.ots_stored_bytes = receipt.proof.stored_bytes
+    archive.ots_uploaded_at = receipt.proof.uploaded_at
+
+
+def _archive_receipt_to_json(receipt: CollectionArchiveUploadReceipt) -> str:
+    payload = {
+        "archive": _archive_upload_receipt_to_payload(receipt.archive),
+        "manifest": _archive_upload_receipt_to_payload(receipt.manifest),
+        "proof": _archive_upload_receipt_to_payload(receipt.proof),
+        "archive_sha256": receipt.archive_sha256,
+        "manifest_sha256": receipt.manifest_sha256,
+        "proof_sha256": receipt.proof_sha256,
+        "archive_format": receipt.archive_format,
+        "compression": receipt.compression,
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _archive_receipt_from_json(raw: str | None) -> CollectionArchiveUploadReceipt | None:
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            return None
+        return CollectionArchiveUploadReceipt(
+            archive=_archive_upload_receipt_from_payload(payload["archive"]),
+            manifest=_archive_upload_receipt_from_payload(payload["manifest"]),
+            proof=_archive_upload_receipt_from_payload(payload["proof"]),
+            archive_sha256=str(payload["archive_sha256"]),
+            manifest_sha256=str(payload["manifest_sha256"]),
+            proof_sha256=str(payload["proof_sha256"]),
+            archive_format=str(payload["archive_format"]),
+            compression=str(payload["compression"]),
+        )
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _archive_upload_receipt_to_payload(receipt: ArchiveUploadReceipt) -> dict[str, object]:
+    return {
+        "object_path": receipt.object_path,
+        "stored_bytes": receipt.stored_bytes,
+        "backend": receipt.backend,
+        "storage_class": receipt.storage_class,
+        "uploaded_at": receipt.uploaded_at,
+        "verified_at": receipt.verified_at,
+    }
+
+
+def _archive_upload_receipt_from_payload(payload: object) -> ArchiveUploadReceipt:
+    if not isinstance(payload, dict):
+        raise ValueError("archive upload receipt payload must be an object")
+    return ArchiveUploadReceipt(
+        object_path=str(payload["object_path"]),
+        stored_bytes=int(payload["stored_bytes"]),
+        backend=str(payload["backend"]),
+        storage_class=str(payload["storage_class"]),
+        uploaded_at=str(payload["uploaded_at"]),
+        verified_at=str(payload["verified_at"]) if payload.get("verified_at") is not None else None,
+    )
+
+
+def _encode_b64(content: bytes) -> str:
+    return base64.b64encode(content).decode("ascii")
+
+
+def _decode_b64(raw: str | None) -> bytes | None:
+    if raw is None:
+        return None
+    try:
+        return base64.b64decode(raw.encode("ascii"), validate=True)
+    except (ValueError, UnicodeEncodeError):
+        return None
 
 
 def enqueue_collection_archive_upload(

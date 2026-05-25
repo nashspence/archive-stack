@@ -95,6 +95,13 @@ _COLUMN_MIGRATIONS: list[list[tuple[str, str, str]]] = [
     [
         ("collection_uploads", "archive_multipart_parts_json", "TEXT"),
     ],
+    # version 14
+    [
+        ("collection_uploads", "archive_receipt_json", "TEXT"),
+        ("collection_uploads", "archive_manifest_bytes_b64", "TEXT"),
+        ("collection_uploads", "archive_proof_bytes_b64", "TEXT"),
+        ("collection_upload_files", "hot_promoted_at", "TEXT"),
+    ],
 ]
 _TYPE_MIGRATIONS: dict[int, list[tuple[str, str, str]]] = {
     # version 10

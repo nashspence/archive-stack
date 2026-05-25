@@ -29,6 +29,7 @@ from riverhog_core.finalized_image_coverage import (
 )
 from riverhog_core.planner.manifest import MANIFEST_FILENAME
 from riverhog_core.ports.archive_store import ArchiveUploadReceipt, CollectionArchiveUploadReceipt
+from riverhog_core.ports.hot_store import HotFileStat
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.glacier_uploads import SqlAlchemyGlacierUploadService
@@ -55,7 +56,9 @@ class _FakeHotStore:
         chunks: Iterable[bytes],
         *,
         content_length: int,
+        sha256: str | None = None,
     ) -> None:
+        _ = sha256
         content = b"".join(chunks)
         assert len(content) == content_length
         self._files[(collection_id, path)] = content
@@ -76,6 +79,12 @@ class _FakeHotStore:
 
     def has_collection_file(self, collection_id: str, path: str) -> bool:
         return (collection_id, path) in self._files
+
+    def stat_collection_file(self, collection_id: str, path: str):
+        content = self._files.get((collection_id, path))
+        if content is None:
+            return None
+        return HotFileStat(bytes=len(content), sha256=hashlib.sha256(content).hexdigest())
 
 
 class _FailOnceRecoveryPayloadCodec:
@@ -119,7 +128,9 @@ class _FailingHotStore(_FakeHotStore):
         chunks: Iterable[bytes],
         *,
         content_length: int,
+        sha256: str | None = None,
     ) -> None:
+        _ = sha256
         if path == self._fail_path:
             raise RuntimeError("hot store unavailable")
         super().put_collection_file_stream(
@@ -127,6 +138,7 @@ class _FailingHotStore(_FakeHotStore):
             path,
             chunks,
             content_length=content_length,
+            sha256=sha256,
         )
 
 
@@ -225,6 +237,19 @@ class _FakeArchiveStore:
             proof_sha256=package.proof_sha256,
             archive_format=package.archive_format,
             compression=package.compression,
+        )
+
+
+class _CountingArchiveStore(_FakeArchiveStore):
+    def __init__(self) -> None:
+        self.uploads = 0
+
+    def upload_collection_archive_package(self, *, collection_id, package, multipart_tracker=None):
+        self.uploads += 1
+        return super().upload_collection_archive_package(
+            collection_id=collection_id,
+            package=package,
+            multipart_tracker=multipart_tracker,
         )
 
 
@@ -421,9 +446,10 @@ def test_failed_hot_promotion_keeps_staging_for_retry(tmp_path: Path) -> None:
             content=content,
         )
 
+    archive_store = _CountingArchiveStore()
     upload_service = SqlAlchemyGlacierUploadService(
         config,
-        _FakeArchiveStore(),
+        archive_store,
         hot_store,
         upload_store,
         proof_stamper=FixtureProofStamper(),
@@ -431,14 +457,37 @@ def test_failed_hot_promotion_keeps_staging_for_retry(tmp_path: Path) -> None:
     )
     assert upload_service.process_due_uploads() == 1
 
+    first_target = f"/.riverhog/uploads/collections/{collection_id}/albums/day-01.txt"
+    second_target = f"/.riverhog/uploads/collections/{collection_id}/albums/day-02.txt"
     assert upload_store.deleted_targets == []
+    assert hot_store.get_collection_file(collection_id, "albums/day-01.txt") == files[0][1]
+    assert archive_store.uploads == 1
     session_factory = make_session_factory(str(sqlite_path))
     with session_scope(session_factory) as session:
         upload = session.get(CollectionUploadRecord, collection_id)
         assert upload is not None
         assert upload.state == "archiving"
         assert upload.archive_failure == "hot store unavailable"
+        assert upload.archive_receipt_json is not None
+        assert upload.archive_manifest_bytes_b64 is not None
+        assert upload.archive_proof_bytes_b64 is not None
+        upload_files_by_path = {file_record.path: file_record for file_record in upload.files}
+        assert upload_files_by_path["albums/day-01.txt"].hot_promoted_at is not None
+        assert upload_files_by_path["albums/day-02.txt"].hot_promoted_at is None
         assert session.get(CollectionRecord, collection_id) is None
+        upload.archive_next_attempt_at = "2026-04-20T04:00:00Z"
+
+    hot_store._fail_path = ""
+
+    assert upload_service.process_due_uploads() == 1
+
+    assert archive_store.uploads == 1
+    assert sorted(upload_store.deleted_targets) == sorted([first_target, second_target])
+    with session_scope(session_factory) as session:
+        assert session.get(CollectionUploadRecord, collection_id) is None
+        collection = session.get(CollectionRecord, collection_id)
+        assert collection is not None
+        assert len(collection.files) == 2
 
 
 def test_finalized_collection_upload_is_idempotent_for_same_slug_and_manifest(

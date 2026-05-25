@@ -955,8 +955,10 @@ def _finalized_collection_upload_payload(
         "files_pending": 0,
         "files_partial": 0,
         "files_uploaded": len(files),
+        "hot_promoted_files": len(files),
         "bytes_total": bytes_total,
         "uploaded_bytes": bytes_total,
+        "hot_promoted_bytes": bytes_total,
         "missing_bytes": 0,
         "upload_state_expires_at": None,
         "latest_failure": None,
@@ -1009,7 +1011,11 @@ def _collection_upload_payload(
         if upload_state_name(uploaded_bytes=file_record.uploaded_bytes, length=file_record.bytes)
         == "uploaded"
     )
+    hot_promoted_files = sum(1 for file_record in files if file_record.hot_promoted_at is not None)
     uploaded_bytes = sum(file_record.uploaded_bytes for file_record in files)
+    hot_promoted_bytes = sum(
+        file_record.bytes for file_record in files if file_record.hot_promoted_at is not None
+    )
     bytes_total = sum(file_record.bytes for file_record in files)
     expiries = [
         file_record.upload_expires_at
@@ -1024,8 +1030,10 @@ def _collection_upload_payload(
         "files_pending": files_pending,
         "files_partial": files_partial,
         "files_uploaded": files_uploaded,
+        "hot_promoted_files": hot_promoted_files,
         "bytes_total": bytes_total,
         "uploaded_bytes": uploaded_bytes,
+        "hot_promoted_bytes": hot_promoted_bytes,
         "missing_bytes": max(bytes_total - uploaded_bytes, 0),
         "upload_state_expires_at": max(expiries) if expiries else None,
         "latest_failure": getattr(files[0].upload, "archive_failure", None) if files else None,

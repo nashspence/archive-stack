@@ -45,16 +45,19 @@ storage, search, read-only browsing, or disc planning.
 ## Collection Glacier archive
 
 Accepted collections have a deterministic whole-collection archive package under
-the Glacier archive prefix. The package contains the compressed collection
-archive, a collection manifest, and the OpenTimestamps proof for that manifest.
+the Glacier archive prefix. The package is a deterministic tar archive that
+contains the logical files, the collection manifest, and the OpenTimestamps
+proof for that manifest.
 
 Glacier stores collection archives. Finalized images remain physical disc
 artifacts and do not define the cloud archive unit.
 
-Finalization is gated by verified archive receipt. Riverhog promotes staged
-bytes into the hot collection namespace and commits the collection/archive
-records before deleting staging objects, so a retry after restart still has the
-staged bytes it needs unless the collection has already finalized.
+Finalization is gated by verified archive receipt. Riverhog persists that
+receipt, promotes staged bytes into the hot collection namespace with per-file
+verification markers, and commits the collection/archive records before deleting
+staging objects. A retry after restart resumes the archive multipart upload, the
+completed archive receipt, or the hot-file promotion phase according to the last
+durable state.
 
 ## Read-only browsing
 

@@ -452,6 +452,9 @@ class CollectionUploadRecord(Base):
     archive_multipart_total_parts: Mapped[int | None] = mapped_column(
         Integer, default=0, nullable=True
     )
+    archive_receipt_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    archive_manifest_bytes_b64: Mapped[str | None] = mapped_column(String, nullable=True)
+    archive_proof_bytes_b64: Mapped[str | None] = mapped_column(String, nullable=True)
 
     files: Mapped[list[CollectionUploadFileRecord]] = relationship(
         back_populates="upload",
@@ -470,6 +473,7 @@ class CollectionUploadFileRecord(Base):
     uploaded_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     upload_expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
     tus_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    hot_promoted_at: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(

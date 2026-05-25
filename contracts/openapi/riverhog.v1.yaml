@@ -1851,8 +1851,10 @@ components:
           files_pending,
           files_partial,
           files_uploaded,
+          hot_promoted_files,
           bytes_total,
           uploaded_bytes,
+          hot_promoted_bytes,
           missing_bytes,
           upload_state_expires_at,
           files,
@@ -1873,8 +1875,14 @@ components:
         files_pending: { type: integer }
         files_partial: { type: integer }
         files_uploaded: { type: integer }
+        hot_promoted_files:
+          type: integer
+          description: Files verified in the hot collection namespace during finalization.
         bytes_total: { type: integer }
         uploaded_bytes: { type: integer }
+        hot_promoted_bytes:
+          type: integer
+          description: Bytes verified in the hot collection namespace during finalization.
         missing_bytes: { type: integer }
         upload_state_expires_at:
           oneOf:

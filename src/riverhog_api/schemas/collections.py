@@ -91,8 +91,10 @@ class CollectionUploadSessionOut(RiverhogModel):
     files_pending: int
     files_partial: int
     files_uploaded: int
+    hot_promoted_files: int = 0
     bytes_total: int
     uploaded_bytes: int
+    hot_promoted_bytes: int = 0
     missing_bytes: int
     upload_state_expires_at: str | None
     latest_failure: str | None = None

@@ -324,7 +324,10 @@ uploads, retries, and restart-recovered work.
 
 Restart-recovered work resumes one durable job record. For interrupted
 collection archive uploads, that job reuses its persisted S3 multipart upload id
-when the remote multipart upload still exists.
+when the remote multipart upload still exists. Once S3 has accepted the archive
+object, Riverhog persists the object receipt and embedded archive artifacts so a
+restart can resume hot-file promotion without rebuilding or re-uploading the
+Glacier object.
 
 ## `RIVERHOG_PLANNER_REFRESH_SWEEP_INTERVAL`
 
@@ -746,7 +749,8 @@ chunk bodies are cleaned up promptly without racing normal uploads.
 Polling interval after all collection files are staged. The CLI keeps waiting
 until the collection is finalized, which means the Glacier archive package has
 uploaded, verified, hot files have been promoted, and the planner refresh has
-been requested.
+been requested. While waiting, the CLI reports archive phase, multipart progress,
+and hot-promotion progress when the server has those counters.
 
 ### `RIVERHOG_UPLOAD_FINALIZE_TIMEOUT_SECONDS`
 
