@@ -694,8 +694,8 @@ request bodies. HTTPS API clients prefer HTTP/2 by default; set
 `RIVERHOG_HTTP2=false` to force HTTP/1.1 for deployments that cannot negotiate
 HTTP/2. Each PATCH body is also written to the HTTP client in smaller
 sub-writes so reverse proxies and client TCP stacks can apply backpressure
-without dropping the resumable chunk. The default write size is 64 KiB with a
-0.01 second delay between writes; operators may tune these with
+without dropping the resumable chunk. The default write size is 256 KiB with a
+0.005 second delay between writes; operators may tune these with
 `RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES` and `RIVERHOG_UPLOAD_WRITE_DELAY_SECONDS`
 when a deployment path needs different pacing. The default pacing favors
 stability on LAN/Wi-Fi paths that drop or stall aggressive bulk writes; increase

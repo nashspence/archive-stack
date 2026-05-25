@@ -672,7 +672,7 @@ at least 16 MiB is recommended for the default 8 MiB chunk.
 ### `RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES`
 
 - type: positive integer byte count
-- default: `65536`
+- default: `262144`
 
 Maximum sub-write size used while the CLI streams one upload request body into
 the HTTP client. This is intentionally much smaller than
@@ -681,7 +681,7 @@ the HTTP client. This is intentionally much smaller than
 ### `RIVERHOG_UPLOAD_WRITE_DELAY_SECONDS`
 
 - type: non-negative number of seconds
-- default: `0.01`
+- default: `0.005`
 
 Delay inserted between CLI upload sub-writes. Setting this to `0` can improve
 throughput on a proven stable wired path, but it can also reproduce stalls where

@@ -25,8 +25,8 @@ from riverhog_core.domain.errors import (
 
 _HTTP_TIMEOUT_SECONDS = 300.0
 _UPLOAD_TIMEOUT_SECONDS = 60.0
-_UPLOAD_WRITE_CHUNK_BYTES = 64 * 1024
-_UPLOAD_WRITE_DELAY_SECONDS = 0.01
+_UPLOAD_WRITE_CHUNK_BYTES = 256 * 1024
+_UPLOAD_WRITE_DELAY_SECONDS = 0.005
 
 
 def _bool_env(env_name: str, default: bool) -> bool:

@@ -113,8 +113,8 @@ Split files still use one upload resource per logical file; `djdan` streams part
 ascending order.
 
 CLI uploads use bounded request chunks plus paced socket writes. The default
-request chunk size is 8 MiB. The default write pacing is 64 KiB sub-writes with
-a 0.01 second delay, which keeps upload progress stable on paths where
+request chunk size is 8 MiB. The default write pacing is 256 KiB sub-writes with
+a 0.005 second delay, which keeps upload progress stable on paths where
 aggressive client-side bulk writes can stall below HTTP. Operators may tune
 `RIVERHOG_UPLOAD_CHUNK_BYTES`, `RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES`, and
 `RIVERHOG_UPLOAD_WRITE_DELAY_SECONDS` after validating the target network and

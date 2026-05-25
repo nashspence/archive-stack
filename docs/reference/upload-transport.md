@@ -5,8 +5,8 @@ Riverhog uploads use two separate byte granularities:
 - the resumable request chunk, controlled by `RIVERHOG_UPLOAD_CHUNK_BYTES`
 - the client socket write slice, controlled by `RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES`
 
-The default request chunk is 8 MiB. The default socket write pacing is 64 KiB
-sub-writes with a 0.01 second delay between sub-writes.
+The default request chunk is 8 MiB. The default socket write pacing is 256 KiB
+sub-writes with a 0.005 second delay between sub-writes.
 
 ## Why Riverhog Paces Upload Writes
 
@@ -32,8 +32,8 @@ The default upload profile is:
 
 ```text
 RIVERHOG_UPLOAD_CHUNK_BYTES=8388608
-RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES=65536
-RIVERHOG_UPLOAD_WRITE_DELAY_SECONDS=0.01
+RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES=262144
+RIVERHOG_UPLOAD_WRITE_DELAY_SECONDS=0.005
 RIVERHOG_UPLOAD_TIMEOUT_SECONDS=60
 ```
 
@@ -46,9 +46,10 @@ reducing per-request overhead, but they also increase:
 - the reverse-proxy `client_max_body_size` required for uploads
 
 Larger socket write slices or shorter write delays are riskier than larger
-request chunks. Repeated testing found that 128 KiB sub-writes with a 0.01
-second delay could pass several raw transfers and then fail later, while 64 KiB
-sub-writes with a 0.01 second delay repeatedly completed cleanly.
+request chunks. Do not benchmark more aggressive values after a failed or
+aborted bulk upload unless local stale sockets have cleared first; orphaned
+`FIN_WAIT_1` sockets with queued send data can make an otherwise stable profile
+look broken.
 
 ## Proxy Guidance
 
@@ -114,6 +115,15 @@ as follows:
   second delay
 - Riverhog soak tests with 8 MiB request chunks and 64 KiB paced writes completed
   20 chunks over HTTP/1.1 and 20 chunks over HTTP/2 with exact offset progression
+- later real-upload and synthetic probes exposed that previous failed attempts
+  had left 73 orphaned local sockets to the SWAG endpoint, with about 103 MB of
+  queued unsent data; those stale sockets survived Wi-Fi and interface toggles
+  and required a reboot to clear
+- after rebooting into a clean local TCP state, the same HTTP/2 path completed a
+  100-chunk 8 MiB soak with the conservative 64 KiB/0.01s pacing profile
+- clean-state tuning then completed 100-chunk and 200-chunk soaks with
+  256 KiB/0.005s socket pacing, averaging about 10 MiB/s with no retries and no
+  stale local sockets afterward
 
 This points to aggressive client-to-server bulk writes on the local network path,
 not an nginx/SWAG HTTP body-size limitation and not a Riverhog/tusd partial-chunk
