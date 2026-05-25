@@ -5,7 +5,7 @@ import hashlib
 
 import httpx
 
-from riverhog_cli.client import ApiClient
+from riverhog_cli.client import ApiClient, _iter_upload_body
 
 
 def test_create_or_resume_collection_upload_uses_collection_upload_endpoint(monkeypatch) -> None:
@@ -360,11 +360,23 @@ def test_append_upload_chunk_uses_tus_patch_headers(monkeypatch) -> None:
     request = captured[0]
     assert request.method == "PATCH"
     assert str(request.url) == "https://uploads.test/fx-1/e1"
+    assert request.headers["Content-Length"] == str(len(content))
     assert request.headers["Content-Type"] == "application/offset+octet-stream"
     assert request.headers["Tus-Resumable"] == "1.0.0"
     assert request.headers["Upload-Offset"] == "0"
     assert request.headers["Upload-Checksum"] == f"sha256 {checksum}"
     assert request.read() == content
+
+
+def test_iter_upload_body_splits_configured_write_chunks() -> None:
+    content = b"invoice fixture bytes\n"
+
+    assert list(_iter_upload_body(content, chunk_bytes=7, delay_seconds=0)) == [
+        b"invoice",
+        b" fixtur",
+        b"e bytes",
+        b"\n",
+    ]
 
 
 def test_append_upload_chunk_can_override_absolute_upload_base_url(monkeypatch) -> None:

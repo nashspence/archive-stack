@@ -690,12 +690,18 @@ The `riverhog` CLI is a thin API client and should provide at least:
 `riverhog upload` streams files in bounded tus-compatible chunks. The default
 chunk size is 4 MiB; operators may set `RIVERHOG_UPLOAD_CHUNK_BYTES` to a
 positive byte count when a specific deployment path needs smaller or larger
-request bodies. `RIVERHOG_UPLOAD_BASE_URL` may override the scheme and host of
-absolute upload URLs while preserving the API-provided path, which is useful
-when bulk upload traffic is sent through a local tunnel. `RIVERHOG_HOST_HEADER`
-and `RIVERHOG_TLS_VERIFY=false` let operators pin the connect address to a LAN
-IP while still routing through a name-based reverse proxy during DNS outages or
-hairpin edge cases. During uploads the CLI
+request bodies. Each PATCH body is written to the HTTP client in smaller
+sub-writes so reverse proxies and client TCP stacks can apply backpressure
+without dropping the resumable chunk. The default write size is 64 KiB with a
+0.005 second delay between writes; operators may tune these with
+`RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES` and `RIVERHOG_UPLOAD_WRITE_DELAY_SECONDS`
+when a deployment path needs different pacing. `RIVERHOG_UPLOAD_BASE_URL` may
+override the scheme and host of absolute upload URLs while preserving the
+API-provided path, which is useful when bulk upload traffic is sent through a
+local tunnel. `RIVERHOG_HOST_HEADER` and `RIVERHOG_TLS_VERIFY=false` let
+operators pin the connect address to a LAN IP while still routing through a
+name-based reverse proxy during DNS outages or hairpin edge cases. During
+uploads the CLI
 prints manifest, resume, per-file, and throttled total progress messages to
 stderr; `--json` output remains reserved for the final machine-readable payload
 on stdout. `RIVERHOG_UPLOAD_TIMEOUT_SECONDS` controls the per-chunk PATCH

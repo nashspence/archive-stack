@@ -3,7 +3,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -24,6 +25,8 @@ from riverhog_core.domain.errors import (
 
 _HTTP_TIMEOUT_SECONDS = 300.0
 _UPLOAD_TIMEOUT_SECONDS = 60.0
+_UPLOAD_WRITE_CHUNK_BYTES = 64 * 1024
+_UPLOAD_WRITE_DELAY_SECONDS = 0.005
 
 
 def _bool_env(env_name: str, default: bool) -> bool:
@@ -49,6 +52,43 @@ def _timeout_seconds(env_name: str, default: float) -> float:
     if value <= 0:
         raise BadRequest(f"{env_name} must be a positive number of seconds")
     return value
+
+
+def _positive_int_env(env_name: str, default: int) -> int:
+    raw_value = os.getenv(env_name)
+    if raw_value is None or raw_value.strip() == "":
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise BadRequest(f"{env_name} must be a positive integer") from exc
+    if value <= 0:
+        raise BadRequest(f"{env_name} must be a positive integer")
+    return value
+
+
+def _nonnegative_seconds_env(env_name: str, default: float) -> float:
+    raw_value = os.getenv(env_name)
+    if raw_value is None or raw_value.strip() == "":
+        return default
+    try:
+        value = float(raw_value)
+    except ValueError as exc:
+        raise BadRequest(f"{env_name} must be a non-negative number of seconds") from exc
+    if value < 0:
+        raise BadRequest(f"{env_name} must be a non-negative number of seconds")
+    return value
+
+
+def _iter_upload_body(content: bytes, *, chunk_bytes: int, delay_seconds: float) -> Iterable[bytes]:
+    def chunks() -> Iterator[bytes]:
+        for offset in range(0, len(content), chunk_bytes):
+            next_offset = offset + chunk_bytes
+            yield content[offset:next_offset]
+            if delay_seconds > 0 and next_offset < len(content):
+                time.sleep(delay_seconds)
+
+    return chunks()
 
 
 class ApiClient:
@@ -360,16 +400,29 @@ class ApiClient:
         checksum = base64.b64encode(hashlib.new(checksum_algorithm, content).digest()).decode(
             "ascii"
         )
+        write_chunk_bytes = _positive_int_env(
+            "RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES",
+            _UPLOAD_WRITE_CHUNK_BYTES,
+        )
+        write_delay_seconds = _nonnegative_seconds_env(
+            "RIVERHOG_UPLOAD_WRITE_DELAY_SECONDS",
+            _UPLOAD_WRITE_DELAY_SECONDS,
+        )
         response = self._request(
             "PATCH",
             self._upload_url(upload_url),
             headers={
+                "Content-Length": str(len(content)),
                 "Content-Type": "application/offset+octet-stream",
                 "Tus-Resumable": "1.0.0",
                 "Upload-Offset": str(offset),
                 "Upload-Checksum": f"{checksum_algorithm} {checksum}",
             },
-            content=content,
+            content=_iter_upload_body(
+                content,
+                chunk_bytes=write_chunk_bytes,
+                delay_seconds=write_delay_seconds,
+            ),
             timeout=_timeout_seconds("RIVERHOG_UPLOAD_TIMEOUT_SECONDS", _UPLOAD_TIMEOUT_SECONDS),
         )
         next_offset = int(response.headers.get("Upload-Offset", offset + len(content)))
