@@ -27,6 +27,7 @@ _HTTP_TIMEOUT_SECONDS = 300.0
 _UPLOAD_TIMEOUT_SECONDS = 60.0
 _UPLOAD_WRITE_CHUNK_BYTES = 256 * 1024
 _UPLOAD_WRITE_DELAY_SECONDS = 0.005
+_TRANSIENT_HTTP_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 
 
 def _bool_env(env_name: str, default: bool) -> bool:
@@ -93,11 +94,11 @@ def _iter_upload_body(content: bytes, *, chunk_bytes: int, delay_seconds: float)
 
 class ApiClient:
     def __init__(self, base_url: str | None = None, token: str | None = None) -> None:
-        self.base_url = (base_url or os.getenv("RIVERHOG_BASE_URL") or "http://127.0.0.1:8000").rstrip(
-            "/"
-        )
+        self.base_url = (
+            base_url or os.getenv("RIVERHOG_BASE_URL") or "http://127.0.0.1:8000"
+        ).rstrip("/")
         self.token = token or os.getenv("RIVERHOG_TOKEN")
-        self.upload_base_url = (os.getenv("RIVERHOG_UPLOAD_BASE_URL", "").rstrip("/") or None)
+        self.upload_base_url = os.getenv("RIVERHOG_UPLOAD_BASE_URL", "").rstrip("/") or None
         self.host_header = os.getenv("RIVERHOG_HOST_HEADER", "").strip() or None
         self.verify_tls = _bool_env("RIVERHOG_TLS_VERIFY", True)
         self.http2 = _bool_env("RIVERHOG_HTTP2", True)
@@ -151,7 +152,13 @@ class ApiClient:
         raise exc_map.get(code, RiverhogError)(str(message))
 
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        response = self._persistent_client().request(method, path, **kwargs)
+        try:
+            response = self._persistent_client().request(method, path, **kwargs)
+        except httpx.TransportError:
+            self.close()
+            raise
+        if response.status_code in _TRANSIENT_HTTP_STATUS_CODES:
+            self.close()
         self._raise_for_error(response)
         return response
 

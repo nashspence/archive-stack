@@ -4,6 +4,7 @@ import base64
 import hashlib
 
 import httpx
+import pytest
 
 from riverhog_cli.client import ApiClient, _iter_upload_body
 
@@ -448,6 +449,80 @@ def test_api_client_reuses_http_client_for_requests(monkeypatch) -> None:
         "https://api.test/v1/collections?page=1&per_page=25",
         "https://api.test/v1/collections?page=1&per_page=25",
     ]
+
+
+def test_api_client_closes_http_client_after_transport_error(monkeypatch) -> None:
+    created = 0
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ReadError("broken stream", request=request)
+        return httpx.Response(
+            200,
+            json={
+                "page": 1,
+                "per_page": 25,
+                "total": 0,
+                "pages": 0,
+                "collections": [],
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_client(self: ApiClient) -> httpx.Client:
+        nonlocal created
+        created += 1
+        return httpx.Client(base_url=self.base_url, transport=transport)
+
+    monkeypatch.setattr(ApiClient, "_client", fake_client)
+
+    client = ApiClient(base_url="https://api.test")
+    with pytest.raises(httpx.ReadError):
+        client.list_collections()
+    client.list_collections()
+
+    assert created == 2
+
+
+def test_api_client_closes_http_client_after_transient_status(monkeypatch) -> None:
+    created = 0
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(502, request=request, content=b"bad gateway")
+        return httpx.Response(
+            200,
+            json={
+                "page": 1,
+                "per_page": 25,
+                "total": 0,
+                "pages": 0,
+                "collections": [],
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_client(self: ApiClient) -> httpx.Client:
+        nonlocal created
+        created += 1
+        return httpx.Client(base_url=self.base_url, transport=transport)
+
+    monkeypatch.setattr(ApiClient, "_client", fake_client)
+
+    client = ApiClient(base_url="https://api.test")
+    with pytest.raises(httpx.HTTPStatusError):
+        client.list_collections()
+    client.list_collections()
+
+    assert created == 2
 
 
 def test_register_copy_uses_generated_copy_endpoint(monkeypatch) -> None:
