@@ -688,7 +688,7 @@ The `riverhog` CLI is a thin API client and should provide at least:
 - `riverhog fetch FETCH_ID`
 
 `riverhog upload` streams files in bounded tus-compatible chunks. The default
-chunk size is 4 MiB; operators may set `RIVERHOG_UPLOAD_CHUNK_BYTES` to a
+chunk size is 8 MiB; operators may set `RIVERHOG_UPLOAD_CHUNK_BYTES` to a
 positive byte count when a specific deployment path needs smaller or larger
 request bodies. HTTPS API clients prefer HTTP/2 by default; set
 `RIVERHOG_HTTP2=false` to force HTTP/1.1 for deployments that cannot negotiate
@@ -697,7 +697,12 @@ sub-writes so reverse proxies and client TCP stacks can apply backpressure
 without dropping the resumable chunk. The default write size is 64 KiB with a
 0.01 second delay between writes; operators may tune these with
 `RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES` and `RIVERHOG_UPLOAD_WRITE_DELAY_SECONDS`
-when a deployment path needs different pacing. `RIVERHOG_UPLOAD_BASE_URL` may
+when a deployment path needs different pacing. The default pacing favors
+stability on LAN/Wi-Fi paths that drop or stall aggressive bulk writes; increase
+it only after repeated end-to-end upload tests on the target network.
+See [Upload Transport Reference](upload-transport.md) for the operational
+findings, proxy guidance, and tuning procedure behind these defaults.
+`RIVERHOG_UPLOAD_BASE_URL` may
 override the scheme and host of absolute upload URLs while preserving the
 API-provided path, which is useful when bulk upload traffic is sent through a
 local tunnel. `RIVERHOG_HOST_HEADER` and `RIVERHOG_TLS_VERIFY=false` let

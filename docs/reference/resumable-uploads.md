@@ -112,6 +112,15 @@ Once the recovery-byte stream reaches full length, the manifest entry becomes `b
 Split files still use one upload resource per logical file; `djdan` streams parts into that one resource in
 ascending order.
 
+CLI uploads use bounded request chunks plus paced socket writes. The default
+request chunk size is 8 MiB. The default write pacing is 64 KiB sub-writes with
+a 0.01 second delay, which keeps upload progress stable on paths where
+aggressive client-side bulk writes can stall below HTTP. Operators may tune
+`RIVERHOG_UPLOAD_CHUNK_BYTES`, `RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES`, and
+`RIVERHOG_UPLOAD_WRITE_DELAY_SECONDS` after validating the target network and
+reverse-proxy body limits. See [Upload Transport Reference](upload-transport.md)
+for the operational findings and tuning guidance.
+
 When `complete` rejects `byte_complete` recovery bytes, the canonical operator recovery path is an explicit
 `DELETE` of the affected fetch-entry upload resource before retry. `djdan fetch` performs that reset for entries it
 has made byte-complete, reports that the fetch remains active and incomplete, and lets the next attempt start from offset

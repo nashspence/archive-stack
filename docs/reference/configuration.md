@@ -653,6 +653,81 @@ Base URL for the internal `tusd` service that owns resumable staging uploads.
 Riverhog remains the public upload contract and maps logical upload resources to
 internal `tusd` uploads.
 
+## CLI upload transport
+
+The following variables are read by the `riverhog` CLI process. They tune the
+public client-to-API upload path, not the internal API-to-tusd forwarding path.
+See [Upload Transport Reference](upload-transport.md) before increasing these
+values on a new network path.
+
+### `RIVERHOG_UPLOAD_CHUNK_BYTES`
+
+- type: positive integer byte count
+- default: `8388608`
+
+Size of each tus-compatible `PATCH` request body sent by `riverhog upload`.
+Reverse proxies must allow bodies larger than this value. A proxy body limit of
+at least 16 MiB is recommended for the default 8 MiB chunk.
+
+### `RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES`
+
+- type: positive integer byte count
+- default: `65536`
+
+Maximum sub-write size used while the CLI streams one upload request body into
+the HTTP client. This is intentionally much smaller than
+`RIVERHOG_UPLOAD_CHUNK_BYTES` so the TCP path can apply backpressure.
+
+### `RIVERHOG_UPLOAD_WRITE_DELAY_SECONDS`
+
+- type: non-negative number of seconds
+- default: `0.01`
+
+Delay inserted between CLI upload sub-writes. Setting this to `0` can improve
+throughput on a proven stable wired path, but it can also reproduce stalls where
+the client socket accepts bytes faster than the server receives them.
+
+### `RIVERHOG_UPLOAD_TIMEOUT_SECONDS`
+
+- type: positive number of seconds
+- default: `60`
+
+Per-chunk client timeout for the public upload `PATCH`. Proxy request-body and
+proxy send/read timeouts should be slightly higher than this value so abandoned
+chunk bodies are cleaned up promptly without racing normal uploads.
+
+### `RIVERHOG_HTTP2`
+
+- type: boolean
+- default: `true`
+
+Whether the CLI attempts HTTP/2 for HTTPS API requests. Uploads must work over
+HTTP/1.1 and HTTP/2 when write pacing and proxy limits are correct.
+
+### `RIVERHOG_UPLOAD_BASE_URL`
+
+- type: URL
+- default: unset
+
+Optional scheme and host override for absolute upload URLs returned by the API.
+The API-provided path is preserved. This is useful when upload traffic is sent
+through a tunnel or a LAN address while normal API URLs remain public.
+
+### `RIVERHOG_HOST_HEADER`
+
+- type: string
+- default: unset
+
+Optional `Host` header override for CLI requests, useful when connecting to a
+specific LAN IP behind a name-based reverse proxy.
+
+### `RIVERHOG_TLS_VERIFY`
+
+- type: boolean
+- default: `true`
+
+Whether the CLI verifies TLS certificates.
+
 ## `RIVERHOG_TUSD_HOOK_SECRET`
 
 - type: secret string
