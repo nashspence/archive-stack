@@ -693,7 +693,7 @@ positive byte count when a specific deployment path needs smaller or larger
 request bodies. Each PATCH body is written to the HTTP client in smaller
 sub-writes so reverse proxies and client TCP stacks can apply backpressure
 without dropping the resumable chunk. The default write size is 64 KiB with a
-0.005 second delay between writes; operators may tune these with
+0.01 second delay between writes; operators may tune these with
 `RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES` and `RIVERHOG_UPLOAD_WRITE_DELAY_SECONDS`
 when a deployment path needs different pacing. `RIVERHOG_UPLOAD_BASE_URL` may
 override the scheme and host of absolute upload URLs while preserving the
