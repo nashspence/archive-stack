@@ -789,10 +789,10 @@ def test_recovery_session_retries_initial_ready_notification_before_reminders(
 
     config = _config(
         sqlite_path,
-        glacier_recovery_webhook_url="http://example.invalid/webhooks/recovery",
+        operator_webhook_url="http://example.invalid/webhooks/operator",
         glacier_recovery_restore_latency=timedelta(seconds=10),
-        glacier_recovery_webhook_retry_delay=timedelta(seconds=1),
-        glacier_recovery_webhook_reminder_interval=timedelta(seconds=5),
+        operator_webhook_retry_delay=timedelta(seconds=1),
+        operator_webhook_reminder_interval=timedelta(seconds=5),
     )
     copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
     recovery_service = SqlAlchemyRecoverySessionService(
@@ -854,11 +854,11 @@ def test_recovery_session_retries_initial_ready_notification_before_expiring(
 
     config = _config(
         sqlite_path,
-        glacier_recovery_webhook_url="http://example.invalid/webhooks/recovery",
+        operator_webhook_url="http://example.invalid/webhooks/operator",
         glacier_recovery_restore_latency=timedelta(seconds=10),
         glacier_recovery_ready_ttl=timedelta(seconds=12),
-        glacier_recovery_webhook_retry_delay=timedelta(seconds=1),
-        glacier_recovery_webhook_reminder_interval=timedelta(seconds=5),
+        operator_webhook_retry_delay=timedelta(seconds=1),
+        operator_webhook_reminder_interval=timedelta(seconds=5),
     )
     copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
     recovery_service = SqlAlchemyRecoverySessionService(

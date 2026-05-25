@@ -18,8 +18,10 @@ For collection ingest specifically:
   Glacier archive package uploads and verifies
 - an archive upload failure leaves the collection upload `failed` and keeps the
   collection invisible until retry succeeds
-- `riverhog upload` waits for `finalized` by default; it does not treat staged
-  file bytes or `archiving` as a successful completed upload
+- `riverhog upload` waits for staged handoff by default, which means all files
+  have reached Riverhog and the server has accepted responsibility for archive
+  finalization; operators can use `--wait finalized` when a stricter blocking
+  client run is desired
 - staged collection bytes are retained until the finalized collection and
   archive records commit; post-finalization staging cleanup is best-effort, so a
   restart cannot make a retry depend on already-deleted staged bytes
@@ -106,10 +108,11 @@ promoted only after the hot object verifies. Retries skip verified hot files,
 finish the remaining files, then atomically commit the finalized collection and
 archive records before deleting staged upload objects.
 
-When `RIVERHOG_COLLECTION_LIFECYCLE_WEBHOOK_URL` is configured, Riverhog emits
-best-effort milestone notifications across these phases. The CLI can therefore
-exit at the staged handoff while operators receive phone or automation updates
-for archive completion, promotion, planner refresh, and persistent failures.
+When `RIVERHOG_OPERATOR_WEBHOOK_URL` is configured, Riverhog emits best-effort
+milestone notifications across these phases. The CLI can therefore exit at the
+staged handoff while operators receive phone or automation updates for archive
+completion, promotion, planner refresh, recovery readiness, and persistent
+failures.
 
 This follows Amazon S3's multipart contract: the upload id is required to upload
 parts, list parts, complete, or abort; completion requires part numbers and
@@ -187,9 +190,10 @@ a 0.005 second delay, which keeps upload progress stable on paths where
 aggressive client-side bulk writes can stall below HTTP. Operators may tune
 `RIVERHOG_UPLOAD_CHUNK_BYTES`, `RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES`, and
 `RIVERHOG_UPLOAD_WRITE_DELAY_SECONDS` after validating the target network and
-reverse-proxy body limits. After all files are staged, `riverhog upload` polls
-until the collection finalizes; `RIVERHOG_UPLOAD_FINALIZE_TIMEOUT_SECONDS` can
-bound that wait when automation needs a hard deadline. See
+reverse-proxy body limits. After all files are staged, `riverhog upload` exits
+by default; `--wait finalized` polls until the collection finalizes, and
+`RIVERHOG_UPLOAD_FINALIZE_TIMEOUT_SECONDS` can bound that wait when automation
+needs a hard deadline. See
 [Upload Transport Reference](upload-transport.md) for the operational findings
 and tuning guidance.
 

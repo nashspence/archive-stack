@@ -388,7 +388,7 @@ def test_completed_collection_upload_promotes_from_staging_and_cleans_up(
     service = SqlAlchemyCollectionService(
         _config(
             sqlite_path,
-            collection_lifecycle_webhook_url="http://example.invalid/webhook",
+            operator_webhook_url="http://example.invalid/webhook",
         ),
         hot_store,
         upload_store,

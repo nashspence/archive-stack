@@ -65,12 +65,12 @@ Feature: Outbound operator webhooks
     And captured webhook event "images.rebuild_ready.reminder" has 0 successful deliveries
     And captured webhook attempt "images.rebuild_ready" result "delivered" attempt 1 happened at least 1 seconds after result "timeout" attempt 1
   @ci_opt_in @requires_webhook_capture @issue_186
-  Scenario: Persistent collection Glacier upload failure webhook is captured
+  Scenario: Persistent collection failure operator webhook is captured
     Given an archive with planner fixtures
     And the glacier upload fixture fails for collection "docs" with error "s3 timeout"
     When collection "docs" starts Glacier archiving
     And the client waits for collection "docs" glacier state "failed"
-    And the client waits for captured webhook event "collections.glacier_upload.failed"
+    And the client waits for captured webhook event "collections.failed"
     Then the captured webhook payload field "collection_id" equals "docs"
     And the captured webhook payload field "error" equals "s3 timeout"
     And the captured webhook payload integer field "attempts" equals 2

@@ -341,42 +341,59 @@ partial encrypted candidate roots are retained under `.candidate-*.tmp` so the
 next refresh can skip already completed encrypted files and finish the same
 candidate id.
 
-## `RIVERHOG_GLACIER_FAILURE_WEBHOOK_URL`
+## `RIVERHOG_OPERATOR_WEBHOOK_URL`
 
 - type: URL
 - default: unset
 
-Optional webhook endpoint notified when one collection Glacier archive upload
-reaches persistent failure after automatic retries.
+Single optional operator notification endpoint. Riverhog posts all
+operator-facing notifications to this endpoint, including collection ingest
+milestones, persistent archival failures after retries, and recovery-ready
+notifications or reminders.
 
-The payload includes the `collection_id`, archive package object paths, failure
-timestamp, attempt count, and error context.
-
-## `RIVERHOG_COLLECTION_LIFECYCLE_WEBHOOK_URL`
-
-- type: URL
-- default: unset
-
-Optional webhook endpoint notified for collection ingest milestones after the
-client has handed bytes to Riverhog. Events include `collections.upload_staged`,
+Collection events include `collections.upload_staged`,
 `collections.archive_started`, `collections.archive_uploaded`,
 `collections.promotion_started`, `collections.finalized`,
 `collections.planner_refreshed`, `collections.planner_failed`, and
-`collections.failed`.
+`collections.failed`. Recovery events include `images.rebuild_ready` and
+`images.rebuild_ready.reminder`.
 
-These notifications are operator-facing and best-effort; Riverhog catalog state
-remains authoritative. The payload includes `collection_id`, links back to the
-collection when `RIVERHOG_PUBLIC_BASE_URL` is configured, and event-specific
-progress such as file counts, staged bytes, archive bytes, object path, or
-failure details.
+Webhook delivery is best-effort; Riverhog catalog state remains authoritative.
+Collection payloads include `collection_id`, links back to the collection when
+`RIVERHOG_PUBLIC_BASE_URL` is configured, and event-specific progress such as
+file counts, staged bytes, archive bytes, object path, or failure details.
+Recovery payloads include the recovery session id, affected images, ready-data
+expiry, and reminder count.
 
-## `RIVERHOG_COLLECTION_LIFECYCLE_WEBHOOK_TIMEOUT`
+## `RIVERHOG_OPERATOR_WEBHOOK_TIMEOUT`
 
 - type: duration
 - default: `5s`
 
-Outbound timeout for one collection lifecycle webhook delivery. Webhook
-failures are logged but never block archival finalization.
+Outbound timeout for one operator webhook delivery. Collection lifecycle webhook
+failures are logged but never block archival finalization. Recovery-ready
+delivery failures are retried while the restored archive data remains within
+its ready TTL.
+
+## `RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY`
+
+- type: duration
+- default: `60s`
+
+Delay before Riverhog retries a failed recovery-ready webhook delivery.
+
+With `RIVERHOG_OPERATOR_WEBHOOK_URL` configured, Riverhog rejects startup if
+`RIVERHOG_GLACIER_RECOVERY_READY_TTL` is shorter than
+`RIVERHOG_OPERATOR_WEBHOOK_TIMEOUT` plus this retry delay.
+
+## `RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL`
+
+- type: duration
+- default: `1h`
+
+Interval between repeated ready reminders while restored collection archive data
+or image rebuild staging data remains available and the recovery session is
+still incomplete.
 
 ## `RIVERHOG_GLACIER_RECOVERY_SWEEP_INTERVAL`
 
@@ -405,39 +422,10 @@ How long Riverhog keeps restored Standard-storage collection archive data or
 rebuilt ISO staging data available after the archive becomes ready before
 automatic cleanup expires that recovery session.
 
-When `RIVERHOG_GLACIER_RECOVERY_WEBHOOK_URL` is configured, this value must be at
-least Riverhog's fixed 10-second outbound recovery-webhook timeout plus
-`RIVERHOG_GLACIER_RECOVERY_WEBHOOK_RETRY_DELAY` so one failed ready notification can
+When `RIVERHOG_OPERATOR_WEBHOOK_URL` is configured, this value must be at least
+`RIVERHOG_OPERATOR_WEBHOOK_TIMEOUT` plus
+`RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY` so one failed ready notification can
 still be retried before cleanup.
-
-## `RIVERHOG_GLACIER_RECOVERY_WEBHOOK_URL`
-
-- type: URL
-- default: unset
-
-Optional webhook endpoint notified when restored collection archive data or image
-rebuild staging data becomes ready and when reminders are sent before cleanup
-expiry.
-
-## `RIVERHOG_GLACIER_RECOVERY_WEBHOOK_RETRY_DELAY`
-
-- type: duration
-- default: `60s`
-
-Delay before Riverhog retries a failed recovery-ready webhook delivery.
-
-With `RIVERHOG_GLACIER_RECOVERY_WEBHOOK_URL` configured, Riverhog rejects startup if
-`RIVERHOG_GLACIER_RECOVERY_READY_TTL` is shorter than the fixed 10-second outbound
-recovery-webhook timeout plus this retry delay.
-
-## `RIVERHOG_GLACIER_RECOVERY_WEBHOOK_REMINDER_INTERVAL`
-
-- type: duration
-- default: `1h`
-
-Interval between repeated ready reminders while restored collection archive data
-or image rebuild staging data remains available and the recovery session is
-still incomplete.
 
 ## `RIVERHOG_GLACIER_RECOVERY_RETRIEVAL_TIER`
 

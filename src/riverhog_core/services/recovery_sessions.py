@@ -1430,7 +1430,7 @@ def _session_summary(
         )
     estimate = RecoveryCostEstimate(**json.loads(record.estimate_json))
     notification = RecoveryNotificationStatus(
-        webhook_configured=bool(config.glacier_recovery_webhook_url),
+        webhook_configured=bool(config.operator_webhook_url),
         reminder_count=record.reminder_count,
         next_reminder_at=record.next_reminder_at,
         last_notified_at=record.last_notified_at,
@@ -1584,10 +1584,10 @@ def _build_warnings(config: RuntimeConfig) -> tuple[str, ...]:
     restore_latency = _format_timedelta(config.glacier_recovery_restore_latency)
     cleanup_window = _format_timedelta(config.glacier_recovery_ready_ttl)
     reminder = (
-        "Riverhog will notify and remind the operator through the configured recovery webhook "
+        "Riverhog will notify and remind the operator through the configured operator webhook "
         "while restored ISO data is ready."
-        if config.glacier_recovery_webhook_url
-        else "No recovery webhook URL is configured; operators must poll the recovery session "
+        if config.operator_webhook_url
+        else "No operator webhook URL is configured; operators must poll the recovery session "
         "manually for readiness."
     )
     return (
@@ -1607,7 +1607,7 @@ def _notify_recovery_ready(
     current: datetime,
     reminder: bool,
 ) -> None:
-    if not config.glacier_recovery_webhook_url:
+    if not config.operator_webhook_url:
         record.next_reminder_at = None
         return
     try:
@@ -1640,14 +1640,14 @@ def _notify_recovery_ready(
             f"{str(exc).strip() or exc.__class__.__name__}"
         )
         record.next_reminder_at = _isoformat_z(
-            current + config.glacier_recovery_webhook_retry_delay
+            current + config.operator_webhook_retry_delay
         )
         return
 
     record.last_notified_at = _isoformat_z(current)
     if reminder:
         record.reminder_count += 1
-    interval = config.glacier_recovery_webhook_reminder_interval
+    interval = config.operator_webhook_reminder_interval
     if interval.total_seconds() > 0:
         record.next_reminder_at = _isoformat_z(current + interval)
     else:
@@ -1656,11 +1656,11 @@ def _notify_recovery_ready(
 
 def _webhook_config(config: RuntimeConfig) -> WebhookConfig:
     return WebhookConfig(
-        url=config.glacier_recovery_webhook_url or "",
+        url=config.operator_webhook_url or "",
         base_url=config.public_base_url or "",
-        timeout_seconds=config.glacier_recovery_webhook_timeout.total_seconds(),
-        retry_seconds=config.glacier_recovery_webhook_retry_delay.total_seconds(),
-        reminder_interval_seconds=config.glacier_recovery_webhook_reminder_interval.total_seconds(),
+        timeout_seconds=config.operator_webhook_timeout.total_seconds(),
+        retry_seconds=config.operator_webhook_retry_delay.total_seconds(),
+        reminder_interval_seconds=config.operator_webhook_reminder_interval.total_seconds(),
     )
 
 

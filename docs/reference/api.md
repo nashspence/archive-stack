@@ -732,7 +732,7 @@ request, including HEAD, targets the same upload resource.
 `riverhog upload` defaults to `--wait staged`: it exits successfully once every
 source file is verified and staged on the server, while Glacier archive upload,
 hot-file promotion, and planner refresh continue in the background. Operators
-should track those longer phases with collection lifecycle webhooks or
+should track those longer phases with the configured operator webhook or
 `riverhog show`. Use `riverhog upload --wait finalized` for acceptance tests or
 terminal sessions that should keep polling until the collection is fully
 finalized. `RIVERHOG_UPLOAD_WAIT` may be set to `staged` or `finalized` to

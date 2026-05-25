@@ -155,26 +155,17 @@ class RuntimeConfig:
     glacier_upload_retry_limit: int = 3
     glacier_upload_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=5))
     glacier_upload_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
-    glacier_failure_webhook_url: str | None = None
-    collection_lifecycle_webhook_url: str | None = None
-    collection_lifecycle_webhook_timeout: timedelta = field(
-        default_factory=lambda: timedelta(seconds=5)
+    operator_webhook_url: str | None = None
+    operator_webhook_timeout: timedelta = field(default_factory=lambda: timedelta(seconds=5))
+    operator_webhook_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=1))
+    operator_webhook_reminder_interval: timedelta = field(
+        default_factory=lambda: timedelta(hours=1)
     )
     glacier_recovery_sweep_interval: timedelta = field(
         default_factory=lambda: timedelta(seconds=30)
     )
     glacier_recovery_restore_latency: timedelta = field(default_factory=lambda: timedelta(hours=48))
     glacier_recovery_ready_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
-    glacier_recovery_webhook_url: str | None = None
-    glacier_recovery_webhook_timeout: timedelta = field(
-        default_factory=lambda: timedelta(seconds=10)
-    )
-    glacier_recovery_webhook_retry_delay: timedelta = field(
-        default_factory=lambda: timedelta(minutes=1)
-    )
-    glacier_recovery_webhook_reminder_interval: timedelta = field(
-        default_factory=lambda: timedelta(hours=1)
-    )
     glacier_recovery_retrieval_tier: str = "bulk"
     glacier_recovery_restore_mode: str = "auto"
     glacier_bulk_retrieval_rate_usd_per_gib: float = 0.0025
@@ -242,16 +233,14 @@ class RuntimeConfig:
             raise ValueError("RIVERHOG_TUSD_APPEND_TIMEOUT_SECONDS must be > 0")
         if self.glacier_multipart_part_bytes < 1:
             raise ValueError("RIVERHOG_GLACIER_MULTIPART_PART_BYTES must be >= 1")
-        if self.glacier_recovery_webhook_url:
-            minimum_ready_ttl = (
-                self.glacier_recovery_webhook_timeout + self.glacier_recovery_webhook_retry_delay
-            )
+        if self.operator_webhook_url:
+            minimum_ready_ttl = self.operator_webhook_timeout + self.operator_webhook_retry_delay
             if self.glacier_recovery_ready_ttl < minimum_ready_ttl:
                 raise ValueError(
-                    "invalid Glacier recovery webhook timing: "
+                    "invalid operator webhook timing: "
                     "RIVERHOG_GLACIER_RECOVERY_READY_TTL must be at least the outbound webhook "
-                    "timeout plus RIVERHOG_GLACIER_RECOVERY_WEBHOOK_RETRY_DELAY when "
-                    "RIVERHOG_GLACIER_RECOVERY_WEBHOOK_URL is configured"
+                    "timeout plus RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY when "
+                    "RIVERHOG_OPERATOR_WEBHOOK_URL is configured"
                 )
         if self.planner_disc_target_bytes < 1:
             raise ValueError("RIVERHOG_PLANNER_DISC_TARGET_BYTES must be >= 1")
@@ -314,14 +303,15 @@ def load_runtime_config() -> RuntimeConfig:
     glacier_upload_sweep_interval = _parse_duration(
         os.getenv("RIVERHOG_GLACIER_UPLOAD_SWEEP_INTERVAL", "30s")
     )
-    glacier_failure_webhook_url = (
-        os.getenv("RIVERHOG_GLACIER_FAILURE_WEBHOOK_URL", "").strip() or None
+    operator_webhook_url = os.getenv("RIVERHOG_OPERATOR_WEBHOOK_URL", "").strip() or None
+    operator_webhook_timeout = _parse_duration(
+        os.getenv("RIVERHOG_OPERATOR_WEBHOOK_TIMEOUT", "5s")
     )
-    collection_lifecycle_webhook_url = (
-        os.getenv("RIVERHOG_COLLECTION_LIFECYCLE_WEBHOOK_URL", "").strip() or None
+    operator_webhook_retry_delay = _parse_duration(
+        os.getenv("RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY", "60s")
     )
-    collection_lifecycle_webhook_timeout = _parse_duration(
-        os.getenv("RIVERHOG_COLLECTION_LIFECYCLE_WEBHOOK_TIMEOUT", "5s")
+    operator_webhook_reminder_interval = _parse_duration(
+        os.getenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL", "1h")
     )
     glacier_recovery_sweep_interval = _parse_duration(
         os.getenv("RIVERHOG_GLACIER_RECOVERY_SWEEP_INTERVAL", "30s")
@@ -331,15 +321,6 @@ def load_runtime_config() -> RuntimeConfig:
     )
     glacier_recovery_ready_ttl = _parse_duration(
         os.getenv("RIVERHOG_GLACIER_RECOVERY_READY_TTL", "24h")
-    )
-    glacier_recovery_webhook_url = (
-        os.getenv("RIVERHOG_GLACIER_RECOVERY_WEBHOOK_URL", "").strip() or None
-    )
-    glacier_recovery_webhook_retry_delay = _parse_duration(
-        os.getenv("RIVERHOG_GLACIER_RECOVERY_WEBHOOK_RETRY_DELAY", "60s")
-    )
-    glacier_recovery_webhook_reminder_interval = _parse_duration(
-        os.getenv("RIVERHOG_GLACIER_RECOVERY_WEBHOOK_REMINDER_INTERVAL", "1h")
     )
     glacier_recovery_retrieval_tier = _parse_choice(
         os.getenv("RIVERHOG_GLACIER_RECOVERY_RETRIEVAL_TIER", "bulk"),
@@ -582,15 +563,13 @@ def load_runtime_config() -> RuntimeConfig:
         glacier_upload_retry_limit=glacier_retry_limit,
         glacier_upload_retry_delay=glacier_retry_delay,
         glacier_upload_sweep_interval=glacier_upload_sweep_interval,
-        glacier_failure_webhook_url=glacier_failure_webhook_url,
-        collection_lifecycle_webhook_url=collection_lifecycle_webhook_url,
-        collection_lifecycle_webhook_timeout=collection_lifecycle_webhook_timeout,
+        operator_webhook_url=operator_webhook_url,
+        operator_webhook_timeout=operator_webhook_timeout,
+        operator_webhook_retry_delay=operator_webhook_retry_delay,
+        operator_webhook_reminder_interval=operator_webhook_reminder_interval,
         glacier_recovery_sweep_interval=glacier_recovery_sweep_interval,
         glacier_recovery_restore_latency=glacier_recovery_restore_latency,
         glacier_recovery_ready_ttl=glacier_recovery_ready_ttl,
-        glacier_recovery_webhook_url=glacier_recovery_webhook_url,
-        glacier_recovery_webhook_retry_delay=glacier_recovery_webhook_retry_delay,
-        glacier_recovery_webhook_reminder_interval=glacier_recovery_webhook_reminder_interval,
         glacier_recovery_retrieval_tier=glacier_recovery_retrieval_tier,
         glacier_recovery_restore_mode=glacier_recovery_restore_mode,
         glacier_bulk_retrieval_rate_usd_per_gib=glacier_bulk_retrieval_rate_usd_per_gib,

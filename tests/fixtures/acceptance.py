@@ -143,8 +143,8 @@ _GLACIER_UPLOAD_RETRY_LIMIT = 2
 _GLACIER_RECOVERY_SWEEP_INTERVAL_SECONDS = 0.05
 _GLACIER_RECOVERY_RESTORE_LATENCY_SECONDS = 0.2
 _GLACIER_RECOVERY_READY_TTL_SECONDS = 4.0
-_GLACIER_RECOVERY_WEBHOOK_RETRY_DELAY_SECONDS = 1.0
-_GLACIER_RECOVERY_WEBHOOK_REMINDER_INTERVAL_SECONDS = 2.0
+_OPERATOR_WEBHOOK_RETRY_DELAY_SECONDS = 1.0
+_OPERATOR_WEBHOOK_REMINDER_INTERVAL_SECONDS = 2.0
 
 
 def _generated_copy_id(image_id: str, ordinal: int) -> str:
@@ -524,8 +524,8 @@ class AcceptanceState:
         return WebhookConfig(
             url=url,
             base_url=self.public_base_url,
-            retry_seconds=_GLACIER_RECOVERY_WEBHOOK_RETRY_DELAY_SECONDS,
-            reminder_interval_seconds=_GLACIER_RECOVERY_WEBHOOK_REMINDER_INTERVAL_SECONDS,
+            retry_seconds=_OPERATOR_WEBHOOK_RETRY_DELAY_SECONDS,
+            reminder_interval_seconds=_OPERATOR_WEBHOOK_REMINDER_INTERVAL_SECONDS,
         )
 
     def register_local_collection_source(self, collection_id: str, root: Path) -> None:
@@ -1959,7 +1959,7 @@ class AcceptanceGlacierUploadService:
                     )
                     self.state.deliver_webhook_payload(
                         {
-                            "event": "collections.glacier_upload.failed",
+                            "event": "collections.failed",
                             "collection_id": str(collection_id),
                             "error": failure,
                             "attempts": upload.archive_attempt_count,
@@ -2254,14 +2254,14 @@ class AcceptanceRecoverySessionService:
                         )
                         record.next_reminder_at = _acceptance_isoformat(
                             current
-                            + timedelta(seconds=_GLACIER_RECOVERY_WEBHOOK_RETRY_DELAY_SECONDS)
+                            + timedelta(seconds=_OPERATOR_WEBHOOK_RETRY_DELAY_SECONDS)
                         )
                         processed += 1
                         continue
                     record.last_notified_at = current_text
                     record.next_reminder_at = _acceptance_isoformat(
                         current
-                        + timedelta(seconds=_GLACIER_RECOVERY_WEBHOOK_REMINDER_INTERVAL_SECONDS)
+                        + timedelta(seconds=_OPERATOR_WEBHOOK_REMINDER_INTERVAL_SECONDS)
                     )
                     if initial_notification_succeeded:
                         record.reminder_count += 1
@@ -2326,12 +2326,12 @@ class AcceptanceRecoverySessionService:
                 f"{str(exc).strip() or exc.__class__.__name__}"
             )
             record.next_reminder_at = _acceptance_isoformat(
-                current + timedelta(seconds=_GLACIER_RECOVERY_WEBHOOK_RETRY_DELAY_SECONDS)
+                current + timedelta(seconds=_OPERATOR_WEBHOOK_RETRY_DELAY_SECONDS)
             )
             return
         record.last_notified_at = current_text
         record.next_reminder_at = _acceptance_isoformat(
-            current + timedelta(seconds=_GLACIER_RECOVERY_WEBHOOK_REMINDER_INTERVAL_SECONDS)
+            current + timedelta(seconds=_OPERATOR_WEBHOOK_REMINDER_INTERVAL_SECONDS)
         )
 
     def _generated_collection_restore_session_id(self, collection_id: str) -> str:
@@ -2400,7 +2400,7 @@ class AcceptanceRecoverySessionService:
             "Archive restore requests take time; the configured restore latency "
             "estimate is short in test fixtures.",
             "Riverhog will notify and remind the operator through the configured "
-            "recovery webhook in test fixtures.",
+            "operator webhook in test fixtures.",
             "Restored ISO data will be cleaned up after the configured ready "
             "window if recovery is not completed sooner.",
         )

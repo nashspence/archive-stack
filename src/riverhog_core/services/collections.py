@@ -334,7 +334,7 @@ class SqlAlchemyCollectionService:
                 "expires_at": file_record.upload_expires_at,
             }
         if staged_webhook_details is not None:
-            _post_collection_lifecycle_webhook(
+            _post_collection_operator_webhook(
                 self._config,
                 event="collections.upload_staged",
                 collection_id=normalized_collection_id,
@@ -910,20 +910,20 @@ def _collection_upload_webhook_details(upload: CollectionUploadRecord) -> dict[s
     }
 
 
-def _post_collection_lifecycle_webhook(
+def _post_collection_operator_webhook(
     config: RuntimeConfig,
     *,
     event: str,
     collection_id: str,
     details: dict[str, object] | None = None,
 ) -> None:
-    if not config.collection_lifecycle_webhook_url:
+    if not config.operator_webhook_url:
         return
     try:
         webhook_config = WebhookConfig(
-            url=config.collection_lifecycle_webhook_url,
+            url=config.operator_webhook_url,
             base_url=config.public_base_url or "",
-            timeout_seconds=config.collection_lifecycle_webhook_timeout.total_seconds(),
+            timeout_seconds=config.operator_webhook_timeout.total_seconds(),
         )
         payload = build_collection_lifecycle_payload(
             config=webhook_config,
