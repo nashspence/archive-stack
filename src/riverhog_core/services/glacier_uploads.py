@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -465,8 +465,9 @@ class SqlAlchemyGlacierUploadService:
     def _record_collection_failure(self, *, collection_id: str, error: str) -> None:
         current = utcnow()
         current_text = _isoformat_z(current)
-        notify_failure = False
+        notify_retrying = False
         attempt_count = 0
+        next_retry_at = _isoformat_z(current + self._config.glacier_upload_retry_delay)
 
         with session_scope(self._session_factory) as session:
             upload = session.get(CollectionUploadRecord, collection_id)
@@ -474,42 +475,44 @@ class SqlAlchemyGlacierUploadService:
                 return
             attempt_count = int(upload.archive_attempt_count or 0)
             upload.archive_failure = error
-            if attempt_count < self._config.glacier_upload_retry_limit:
-                upload.archive_next_attempt_at = _isoformat_z(
-                    current + self._config.glacier_upload_retry_delay
-                )
-                upload.archive_phase = "retry_wait"
-                upload.archive_phase_updated_at = current_text
-                upload.state = "archiving"
-                return
-            upload.archive_next_attempt_at = None
-            upload.archive_phase = "failed"
+            upload.archive_next_attempt_at = next_retry_at
+            upload.archive_phase = "retry_wait"
             upload.archive_phase_updated_at = current_text
-            upload.state = "failed"
-            notify_failure = True
+            upload.state = "archiving"
+            if _operator_failure_notification_due(
+                upload.archive_last_failure_notification_at,
+                current=current,
+                interval=self._config.operator_failure_notification_interval,
+            ):
+                upload.archive_last_failure_notification_at = current_text
+                notify_retrying = True
 
-        if notify_failure:
-            self._notify_persistent_collection_failure(
+        if notify_retrying:
+            self._notify_collection_archive_retrying(
                 collection_id=collection_id,
                 attempt_count=attempt_count,
                 error=error,
                 failed_at=current_text,
+                next_retry_at=next_retry_at,
             )
 
-    def _notify_persistent_collection_failure(
+    def _notify_collection_archive_retrying(
         self,
         *,
         collection_id: str,
         attempt_count: int,
         error: str,
         failed_at: str,
+        next_retry_at: str,
     ) -> None:
         self._post_collection_operator_webhook(
-            event="collections.failed",
+            event="collections.archive_retrying",
             collection_id=collection_id,
             details={
                 "attempts": attempt_count,
                 "failed_at": failed_at,
+                "next_retry_at": next_retry_at,
+                "retry_delay_seconds": self._config.glacier_upload_retry_delay.total_seconds(),
                 "error": error,
             },
         )
@@ -822,6 +825,23 @@ def _upload_files_complete(file_records: list[CollectionUploadFileRecord]) -> bo
 def _error_text(exc: Exception) -> str:
     detail = str(exc).strip()
     return detail or exc.__class__.__name__
+
+
+def _operator_failure_notification_due(
+    last_notified_at: str | None,
+    *,
+    current: datetime,
+    interval: timedelta,
+) -> bool:
+    if last_notified_at is None:
+        return True
+    if interval.total_seconds() <= 0:
+        return True
+    try:
+        previous = datetime.fromisoformat(last_notified_at.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    return current.astimezone(UTC) - previous.astimezone(UTC) >= interval
 
 
 def _isoformat_z(value: datetime) -> str:

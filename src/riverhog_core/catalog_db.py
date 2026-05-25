@@ -102,6 +102,10 @@ _COLUMN_MIGRATIONS: list[list[tuple[str, str, str]]] = [
         ("collection_uploads", "archive_proof_bytes_b64", "TEXT"),
         ("collection_upload_files", "hot_promoted_at", "TEXT"),
     ],
+    # version 15
+    [
+        ("collection_uploads", "archive_last_failure_notification_at", "TEXT"),
+    ],
 ]
 _TYPE_MIGRATIONS: dict[int, list[tuple[str, str, str]]] = {
     # version 10

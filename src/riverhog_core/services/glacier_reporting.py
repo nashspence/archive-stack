@@ -340,6 +340,8 @@ def _collection_archive_manifest_status(
 def _upload_glacier_state(upload: CollectionUploadRecord) -> GlacierState:
     if upload.state == "failed":
         return GlacierState.FAILED
+    if upload.archive_phase == "retry_wait":
+        return GlacierState.RETRYING
     if upload.state == "archiving":
         return GlacierState.UPLOADING
     return GlacierState.PENDING

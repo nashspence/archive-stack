@@ -152,7 +152,6 @@ class RuntimeConfig:
     glacier_backend: str = "s3"
     glacier_storage_class: str = "DEEP_ARCHIVE"
     glacier_multipart_part_bytes: int = DEFAULT_GLACIER_MULTIPART_PART_BYTES
-    glacier_upload_retry_limit: int = 3
     glacier_upload_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=5))
     glacier_upload_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
     operator_webhook_url: str | None = None
@@ -160,6 +159,9 @@ class RuntimeConfig:
     operator_webhook_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=1))
     operator_webhook_reminder_interval: timedelta = field(
         default_factory=lambda: timedelta(hours=1)
+    )
+    operator_failure_notification_interval: timedelta = field(
+        default_factory=lambda: timedelta(hours=24)
     )
     glacier_recovery_sweep_interval: timedelta = field(
         default_factory=lambda: timedelta(seconds=30)
@@ -289,11 +291,6 @@ def load_runtime_config() -> RuntimeConfig:
     s3_secret_access_key = os.getenv("RIVERHOG_S3_SECRET_ACCESS_KEY", "minioadmin")
     s3_force_path_style = _parse_bool(os.getenv("RIVERHOG_S3_FORCE_PATH_STYLE", "true"))
 
-    glacier_retry_limit = _parse_int(
-        os.getenv("RIVERHOG_GLACIER_UPLOAD_RETRY_LIMIT", "3"),
-        name="RIVERHOG_GLACIER_UPLOAD_RETRY_LIMIT",
-        minimum=1,
-    )
     glacier_multipart_part_bytes = _parse_bytes(
         os.getenv("RIVERHOG_GLACIER_MULTIPART_PART_BYTES", "64MiB"),
         name="RIVERHOG_GLACIER_MULTIPART_PART_BYTES",
@@ -312,6 +309,9 @@ def load_runtime_config() -> RuntimeConfig:
     )
     operator_webhook_reminder_interval = _parse_duration(
         os.getenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL", "1h")
+    )
+    operator_failure_notification_interval = _parse_duration(
+        os.getenv("RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL", "24h")
     )
     glacier_recovery_sweep_interval = _parse_duration(
         os.getenv("RIVERHOG_GLACIER_RECOVERY_SWEEP_INTERVAL", "30s")
@@ -560,13 +560,13 @@ def load_runtime_config() -> RuntimeConfig:
         glacier_storage_class=os.getenv("RIVERHOG_GLACIER_STORAGE_CLASS", "DEEP_ARCHIVE").strip()
         or "DEEP_ARCHIVE",
         glacier_multipart_part_bytes=glacier_multipart_part_bytes,
-        glacier_upload_retry_limit=glacier_retry_limit,
         glacier_upload_retry_delay=glacier_retry_delay,
         glacier_upload_sweep_interval=glacier_upload_sweep_interval,
         operator_webhook_url=operator_webhook_url,
         operator_webhook_timeout=operator_webhook_timeout,
         operator_webhook_retry_delay=operator_webhook_retry_delay,
         operator_webhook_reminder_interval=operator_webhook_reminder_interval,
+        operator_failure_notification_interval=operator_failure_notification_interval,
         glacier_recovery_sweep_interval=glacier_recovery_sweep_interval,
         glacier_recovery_restore_latency=glacier_recovery_restore_latency,
         glacier_recovery_ready_ttl=glacier_recovery_ready_ttl,

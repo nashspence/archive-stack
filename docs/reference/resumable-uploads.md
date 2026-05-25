@@ -16,8 +16,9 @@ For collection ingest specifically:
   upload from `uploading` to `archiving` once every required file verifies
 - the collection upload reaches `finalized` only after the whole-collection
   Glacier archive package uploads and verifies
-- an archive upload failure leaves the collection upload `failed` and keeps the
-  collection invisible until retry succeeds
+- archival finalization failures leave the collection upload `archiving` with a
+  retry phase, keep retrying indefinitely, notify the operator on a paced
+  cadence, and keep the collection invisible until retry succeeds
 - `riverhog upload` waits for staged handoff by default, which means all files
   have reached Riverhog and the server has accepted responsibility for archive
   finalization; operators can use `--wait finalized` when a stricter blocking

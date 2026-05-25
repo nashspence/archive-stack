@@ -69,8 +69,8 @@ Feature: Outbound operator webhooks
     Given an archive with planner fixtures
     And the glacier upload fixture fails for collection "docs" with error "s3 timeout"
     When collection "docs" starts Glacier archiving
-    And the client waits for collection "docs" glacier state "failed"
-    And the client waits for captured webhook event "collections.failed"
+    And the client waits for collection "docs" glacier state "retrying"
+    And the client waits for captured webhook event "collections.archive_retrying"
     Then the captured webhook payload field "collection_id" equals "docs"
     And the captured webhook payload field "error" equals "s3 timeout"
     And the captured webhook payload integer field "attempts" equals 2

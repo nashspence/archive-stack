@@ -125,6 +125,7 @@ def test_load_runtime_config_parses_planner_runtime_settings(
     monkeypatch.setenv("RIVERHOG_OPERATOR_WEBHOOK_TIMEOUT", "2s")
     monkeypatch.setenv("RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY", "3s")
     monkeypatch.setenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL", "4s")
+    monkeypatch.setenv("RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL", "5s")
 
     config = load_runtime_config()
 
@@ -139,6 +140,7 @@ def test_load_runtime_config_parses_planner_runtime_settings(
     assert config.operator_webhook_timeout == timedelta(seconds=2)
     assert config.operator_webhook_retry_delay == timedelta(seconds=3)
     assert config.operator_webhook_reminder_interval == timedelta(seconds=4)
+    assert config.operator_failure_notification_interval == timedelta(seconds=5)
 
 
 def test_load_runtime_config_accepts_explicit_planner_min_fill_bytes(

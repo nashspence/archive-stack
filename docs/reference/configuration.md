@@ -299,20 +299,15 @@ active collection uploads plus committed collection bytes that are not yet
 protected by enough registered physical image copies. Set to `0` to disable the
 admission cap.
 
-## `RIVERHOG_GLACIER_UPLOAD_RETRY_LIMIT`
-
-- type: integer
-- default: `3`
-
-Maximum number of automatic Glacier upload attempts per collection archive
-package before the upload becomes a persistent failure.
-
 ## `RIVERHOG_GLACIER_UPLOAD_RETRY_DELAY`
 
 - type: duration
 - default: `5m`
 
-Delay between automatic retry attempts for one failed Glacier upload.
+Delay between automatic retry attempts for failed collection archival
+finalization work. Riverhog keeps retrying this server-owned stage indefinitely
+because packaging, S3 multipart archive upload, hot-file promotion, and final
+catalog commit are designed to resume without operator intervention.
 
 ## `RIVERHOG_GLACIER_UPLOAD_SWEEP_INTERVAL`
 
@@ -354,9 +349,9 @@ notifications or reminders.
 Collection events include `collections.upload_staged`,
 `collections.archive_started`, `collections.archive_uploaded`,
 `collections.promotion_started`, `collections.finalized`,
-`collections.planner_refreshed`, `collections.planner_failed`, and
-`collections.failed`. Recovery events include `images.rebuild_ready` and
-`images.rebuild_ready.reminder`.
+`collections.archive_retrying`, `collections.planner_refreshed`,
+and `collections.planner_failed`. Recovery events include `images.rebuild_ready`
+and `images.rebuild_ready.reminder`.
 
 Webhook delivery is best-effort; Riverhog catalog state remains authoritative.
 Collection payloads include `collection_id`, links back to the collection when
@@ -394,6 +389,16 @@ With `RIVERHOG_OPERATOR_WEBHOOK_URL` configured, Riverhog rejects startup if
 Interval between repeated ready reminders while restored collection archive data
 or image rebuild staging data remains available and the recovery session is
 still incomplete.
+
+## `RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL`
+
+- type: duration
+- default: `24h`
+
+Minimum interval between repeated operator notifications for continuing
+retryable background failures on the same durable unit of work. Collection
+archival finalization uses this for `collections.archive_retrying` notifications
+while continuing to retry on `RIVERHOG_GLACIER_UPLOAD_RETRY_DELAY`.
 
 ## `RIVERHOG_GLACIER_RECOVERY_SWEEP_INTERVAL`
 

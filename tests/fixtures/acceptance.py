@@ -139,7 +139,6 @@ SRC_ROOT = REPO_ROOT / "src"
 FIXTURE_UPLOAD_EXPIRES_AT = "2099-12-31T23:59:59Z"
 _UPLOAD_EXPIRY_SWEEP_INTERVAL_SECONDS = 0.05
 _GLACIER_UPLOAD_SWEEP_INTERVAL_SECONDS = 1.0
-_GLACIER_UPLOAD_RETRY_LIMIT = 2
 _GLACIER_RECOVERY_SWEEP_INTERVAL_SECONDS = 0.05
 _GLACIER_RECOVERY_RESTORE_LATENCY_SECONDS = 0.2
 _GLACIER_RECOVERY_READY_TTL_SECONDS = 4.0
@@ -1949,25 +1948,29 @@ class AcceptanceGlacierUploadService:
             upload.archive_attempt_count += 1
             if failure is not None:
                 upload.latest_failure = failure
-                if upload.archive_attempt_count >= _GLACIER_UPLOAD_RETRY_LIMIT:
-                    upload.state = "failed"
-                    self.state.collection_glacier_status_by_collection[collection_id] = (
-                        GlacierArchiveStatus(
-                            state=GlacierState.FAILED,
-                            failure=failure,
-                        )
+                upload.state = "archiving"
+                self.state.collection_glacier_status_by_collection[collection_id] = (
+                    GlacierArchiveStatus(
+                        state=GlacierState.RETRYING,
+                        failure=failure,
                     )
-                    self.state.deliver_webhook_payload(
-                        {
-                            "event": "collections.failed",
-                            "collection_id": str(collection_id),
-                            "error": failure,
-                            "attempts": upload.archive_attempt_count,
-                            "failed_at": _acceptance_isoformat(datetime.now(UTC)),
-                        },
-                        delivered_at=datetime.now(UTC),
-                        timeout_seconds=self.state.webhook_config().timeout_seconds,
-                    )
+                )
+                self.state.deliver_webhook_payload(
+                    {
+                        "event": "collections.archive_retrying",
+                        "collection_id": str(collection_id),
+                        "error": failure,
+                        "attempts": upload.archive_attempt_count,
+                        "failed_at": _acceptance_isoformat(datetime.now(UTC)),
+                        "next_retry_at": _acceptance_isoformat(
+                            datetime.now(UTC)
+                            + timedelta(seconds=_GLACIER_UPLOAD_SWEEP_INTERVAL_SECONDS)
+                        ),
+                        "retry_delay_seconds": _GLACIER_UPLOAD_SWEEP_INTERVAL_SECONDS,
+                    },
+                    delivered_at=datetime.now(UTC),
+                    timeout_seconds=self.state.webhook_config().timeout_seconds,
+                )
                 attempted += 1
                 continue
             AcceptanceCollectionService(self.state)._finalize_upload(upload)

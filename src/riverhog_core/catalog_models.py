@@ -437,6 +437,9 @@ class CollectionUploadRecord(Base):
     archive_next_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_last_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_failure: Mapped[str | None] = mapped_column(String, nullable=True)
+    archive_last_failure_notification_at: Mapped[str | None] = mapped_column(
+        String, nullable=True
+    )
     archive_object_path: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_multipart_upload_id: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_multipart_part_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

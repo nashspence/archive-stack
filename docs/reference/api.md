@@ -71,7 +71,8 @@ Required behavior:
   collection archive package
 - once the collection finalizes, the upload session is deleted and later reads
   return `not_found`
-- a `failed` session remains retryable and the collection remains invisible
+- retryable archival failures keep the session in `archiving` with retry status,
+  and the collection remains invisible until finalization succeeds
 
 #### `POST /v1/collection-uploads/{collection_id}/files/{path}/upload`
 
