@@ -388,6 +388,46 @@ def test_wait_for_finalized_collection_waits_through_archiving(
     assert payload["collection"]["glacier"]["state"] == "uploaded"  # type: ignore[index]
 
 
+def test_wait_for_finalized_collection_retries_transient_poll_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest: list[riverhog_main.CollectionManifestEntry] = [
+        {"path": "clip.bin", "bytes": 3, "sha256": hashlib.sha256(b"abc").hexdigest()}
+    ]
+    request = httpx.Request("GET", "https://riverhog.test/v1/collections/2025/docs")
+    response = httpx.Response(502, request=request, content=b"Bad Gateway")
+
+    class FakeApi:
+        collection_calls = 0
+
+        def get_collection(self, collection_id: str) -> dict[str, object]:
+            self.collection_calls += 1
+            if self.collection_calls == 1:
+                raise httpx.HTTPStatusError("bad gateway", request=request, response=response)
+            return {
+                "id": collection_id,
+                "files": 1,
+                "bytes": 3,
+                "glacier": {"state": "uploaded"},
+            }
+
+        def get_collection_upload(self, collection_id: str) -> dict[str, object]:
+            raise AssertionError("transient collection polling should retry directly")
+
+    monkeypatch.setattr(riverhog_main.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(riverhog_main, "_upload_finalize_poll_seconds", lambda: 0.001)
+    monkeypatch.setattr(riverhog_main, "_upload_finalize_timeout_seconds", lambda: 1.0)
+
+    payload, state = riverhog_main._wait_for_finalized_collection(
+        FakeApi(),  # type: ignore[arg-type]
+        "2025/docs",
+        manifest,
+    )
+
+    assert state == "finalized"
+    assert payload["state"] == "finalized"
+
+
 def test_wait_for_finalized_collection_returns_failed_upload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

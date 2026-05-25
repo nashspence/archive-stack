@@ -348,6 +348,7 @@ def _wait_for_finalized_collection(
     _log_upload("All files uploaded; waiting for Glacier archive verification")
     while True:
         now = time.monotonic()
+        transient_error: BaseException | None = None
         try:
             collection = api.get_collection(collection_id)
             return (
@@ -359,8 +360,23 @@ def _wait_for_finalized_collection(
                 last_payload = api.get_collection_upload(collection_id)
             except NotFound:
                 last_payload = None
+            except Exception as exc:
+                if not _is_transient_upload_error(exc):
+                    raise
+                transient_error = exc
+        except Exception as exc:
+            if not _is_transient_upload_error(exc):
+                raise
+            transient_error = exc
 
-        if last_payload is not None:
+        if transient_error is not None:
+            if now - last_status_log_at >= UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS:
+                _log_upload(
+                    "Waiting for collection finalization: "
+                    f"{_upload_error_description(transient_error)} while polling; retrying"
+                )
+                last_status_log_at = now
+        elif last_payload is not None:
             state = str(last_payload.get("state", "unknown"))
             if state == "failed":
                 return last_payload, "failed"
