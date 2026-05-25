@@ -79,21 +79,23 @@ class SqlAlchemyGlacierUploadService:
         with session_scope(self._session_factory) as session:
             collection_ids: list[str] = []
             if self._hot_store is not None and self._upload_store is not None:
-                collection_ids = list(session.scalars(
-                    select(CollectionUploadRecord.collection_id)
-                    .where(CollectionUploadRecord.state == "archiving")
-                    .where(
-                        or_(
-                            CollectionUploadRecord.archive_next_attempt_at.is_(None),
-                            CollectionUploadRecord.archive_next_attempt_at <= current_text,
+                collection_ids = list(
+                    session.scalars(
+                        select(CollectionUploadRecord.collection_id)
+                        .where(CollectionUploadRecord.state == "archiving")
+                        .where(
+                            or_(
+                                CollectionUploadRecord.archive_next_attempt_at.is_(None),
+                                CollectionUploadRecord.archive_next_attempt_at <= current_text,
+                            )
                         )
-                    )
-                    .order_by(
-                        CollectionUploadRecord.archive_next_attempt_at,
-                        CollectionUploadRecord.collection_id,
-                    )
-                    .limit(limit)
-                ).all())
+                        .order_by(
+                            CollectionUploadRecord.archive_next_attempt_at,
+                            CollectionUploadRecord.collection_id,
+                        )
+                        .limit(limit)
+                    ).all()
+                )
 
         attempted = 0
         for collection_id in collection_ids:
@@ -168,60 +170,76 @@ class SqlAlchemyGlacierUploadService:
             self._record_collection_failure(collection_id=collection_id, error=_error_text(exc))
             return
 
-        with session_scope(self._session_factory) as session:
-            upload = session.get(CollectionUploadRecord, collection_id)
-            if upload is None:
-                return
-            collection = CollectionRecord(id=collection_id, ingest_source=upload.ingest_source)
-            session.add(collection)
-            for file_record in sorted(
-                upload.files,
-                key=lambda current_file: current_file.file_order,
-            ):
-                target_path = _collection_upload_target_path(collection_id, file_record.path)
-                hot_store.put_collection_file_stream(
-                    collection_id,
-                    file_record.path,
-                    upload_store.iter_target(target_path),
-                    content_length=file_record.bytes,
-                )
-                upload_store.delete_target(target_path)
-                collection.files.append(
-                    CollectionFileRecord(
+        cleanup_targets: list[str] = []
+        try:
+            with session_scope(self._session_factory) as session:
+                upload = session.get(CollectionUploadRecord, collection_id)
+                if upload is None:
+                    return
+                collection = CollectionRecord(id=collection_id, ingest_source=upload.ingest_source)
+                session.add(collection)
+                for file_record in sorted(
+                    upload.files,
+                    key=lambda current_file: current_file.file_order,
+                ):
+                    target_path = _collection_upload_target_path(collection_id, file_record.path)
+                    hot_store.put_collection_file_stream(
+                        collection_id,
+                        file_record.path,
+                        upload_store.iter_target(target_path),
+                        content_length=file_record.bytes,
+                    )
+                    cleanup_targets.append(target_path)
+                    collection.files.append(
+                        CollectionFileRecord(
+                            collection_id=collection_id,
+                            path=file_record.path,
+                            bytes=file_record.bytes,
+                            sha256=file_record.sha256,
+                            hot=True,
+                            archived=False,
+                        )
+                    )
+                session.add(
+                    CollectionArchiveRecord(
                         collection_id=collection_id,
-                        path=file_record.path,
-                        bytes=file_record.bytes,
-                        sha256=file_record.sha256,
-                        hot=True,
-                        archived=False,
+                        state="uploaded",
+                        object_path=receipt.archive.object_path,
+                        stored_bytes=receipt.archive.stored_bytes,
+                        sha256=receipt.archive_sha256,
+                        backend=receipt.archive.backend,
+                        storage_class=receipt.archive.storage_class,
+                        last_uploaded_at=receipt.archive.uploaded_at,
+                        last_verified_at=receipt.archive.verified_at,
+                        failure=None,
+                        archive_format=receipt.archive_format,
+                        compression=receipt.compression,
+                        manifest_object_path=receipt.manifest.object_path,
+                        manifest_sha256=receipt.manifest_sha256,
+                        manifest_stored_bytes=receipt.manifest.stored_bytes,
+                        manifest_uploaded_at=receipt.manifest.uploaded_at,
+                        ots_object_path=receipt.proof.object_path,
+                        ots_sha256=receipt.proof_sha256,
+                        ots_stored_bytes=receipt.proof.stored_bytes,
+                        ots_uploaded_at=receipt.proof.uploaded_at,
                     )
                 )
-            session.add(
-                CollectionArchiveRecord(
-                    collection_id=collection_id,
-                    state="uploaded",
-                    object_path=receipt.archive.object_path,
-                    stored_bytes=receipt.archive.stored_bytes,
-                    sha256=receipt.archive_sha256,
-                    backend=receipt.archive.backend,
-                    storage_class=receipt.archive.storage_class,
-                    last_uploaded_at=receipt.archive.uploaded_at,
-                    last_verified_at=receipt.archive.verified_at,
-                    failure=None,
-                    archive_format=receipt.archive_format,
-                    compression=receipt.compression,
-                    manifest_object_path=receipt.manifest.object_path,
-                    manifest_sha256=receipt.manifest_sha256,
-                    manifest_stored_bytes=receipt.manifest.stored_bytes,
-                    manifest_uploaded_at=receipt.manifest.uploaded_at,
-                    ots_object_path=receipt.proof.object_path,
-                    ots_sha256=receipt.proof_sha256,
-                    ots_stored_bytes=receipt.proof.stored_bytes,
-                    ots_uploaded_at=receipt.proof.uploaded_at,
+                session.delete(upload)
+                record_glacier_usage_snapshot(session, config=self._config)
+        except Exception as exc:
+            self._record_collection_failure(collection_id=collection_id, error=_error_text(exc))
+            return
+
+        for target_path in cleanup_targets:
+            try:
+                upload_store.delete_target(target_path)
+            except Exception:
+                _LOG.warning(
+                    "failed to delete staged collection upload target after finalizing %s: %s",
+                    collection_id,
+                    target_path,
+                    exc_info=True,
                 )
-            )
-            session.delete(upload)
-            record_glacier_usage_snapshot(session, config=self._config)
 
         try:
             refresh_provisional_plan(
@@ -290,6 +308,7 @@ class SqlAlchemyGlacierUploadService:
             ),
             payload=payload,
         )
+
 
 def enqueue_collection_archive_upload(
     session: Session,

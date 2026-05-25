@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
@@ -23,6 +24,7 @@ _MIN_MULTIPART_PART_SIZE = 5 * 1024 * 1024
 _MAX_MULTIPART_PART_SIZE = 5 * 1024 * 1024 * 1024
 _MAX_MULTIPART_PARTS = 10_000
 _MAX_SINGLE_PUT_OBJECT_SIZE = 5 * 1024 * 1024 * 1024
+_LOG = logging.getLogger(__name__)
 
 
 class _RestoreHeader(TypedDict):
@@ -34,14 +36,24 @@ def _utc_now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _multipart_part_size(content_length: int) -> int:
+def _multipart_part_size(content_length: int, configured_part_size: int) -> int:
     part_size = max(
         _MIN_MULTIPART_PART_SIZE,
+        configured_part_size,
         (content_length + _MAX_MULTIPART_PARTS - 1) // _MAX_MULTIPART_PARTS,
     )
     if part_size > _MAX_MULTIPART_PART_SIZE:
         raise ValueError("collection archive stream exceeds S3 multipart object size limit")
     return part_size
+
+
+def _should_log_multipart_progress(part_number: int, expected_part_count: int) -> bool:
+    return (
+        part_number == 1
+        or part_number == expected_part_count
+        or expected_part_count <= 20
+        or part_number % 100 == 0
+    )
 
 
 def _is_chunk_iterable(content: Any) -> bool:
@@ -272,12 +284,24 @@ class S3ArchiveStore:
         part_number = 1
         uploaded_parts: list[dict[str, object]] = []
         buffer = bytearray()
-        part_size = _multipart_part_size(content_length)
+        part_size = _multipart_part_size(
+            content_length,
+            self._config.glacier_multipart_part_bytes,
+        )
+        expected_part_count = (content_length + part_size - 1) // part_size
+        uploaded_bytes = 0
         size = 0
 
         def ensure_upload() -> str:
             nonlocal upload_id
             if upload_id is None:
+                _LOG.info(
+                    "starting S3 multipart upload for %s: size=%s part_size=%s parts=%s",
+                    object_key,
+                    content_length,
+                    part_size,
+                    expected_part_count,
+                )
                 response = cast(
                     dict[str, Any],
                     self._client.create_multipart_upload(
@@ -290,18 +314,32 @@ class S3ArchiveStore:
             return upload_id
 
         def upload_part(body: bytes) -> None:
-            nonlocal part_number
+            nonlocal part_number, uploaded_bytes
+            current_part_number = part_number
             response = cast(
                 dict[str, Any],
                 self._client.upload_part(
                     Bucket=self._bucket,
                     Key=object_key,
                     UploadId=ensure_upload(),
-                    PartNumber=part_number,
+                    PartNumber=current_part_number,
                     Body=body,
                 ),
             )
-            uploaded_parts.append({"PartNumber": part_number, "ETag": str(response["ETag"])})
+            uploaded_parts.append(
+                {"PartNumber": current_part_number, "ETag": str(response["ETag"])}
+            )
+            uploaded_bytes += len(body)
+            if _should_log_multipart_progress(current_part_number, expected_part_count):
+                _LOG.info(
+                    "S3 multipart upload progress for %s: part=%s/%s bytes=%s/%s pct=%.2f",
+                    object_key,
+                    current_part_number,
+                    expected_part_count,
+                    uploaded_bytes,
+                    content_length,
+                    (uploaded_bytes / content_length * 100.0) if content_length else 100.0,
+                )
             part_number += 1
 
         try:
@@ -339,6 +377,12 @@ class S3ArchiveStore:
                 Key=object_key,
                 UploadId=upload_id,
                 MultipartUpload={"Parts": uploaded_parts},
+            )
+            _LOG.info(
+                "completed S3 multipart upload for %s: parts=%s bytes=%s",
+                object_key,
+                len(uploaded_parts),
+                uploaded_bytes,
             )
         except Exception as exc:
             if upload_id is not None:

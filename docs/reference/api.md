@@ -50,6 +50,8 @@ Required behavior:
 - persists enough upload-session state to survive service restart and repeated CLI runs
 - keeps the collection invisible until every required file has uploaded,
   verified successfully, archived to Glacier, and verified by object receipt
+- commits the finalized collection/archive records before deleting staged bytes,
+  preserving restart-safe retries during archive and promotion failures
 - exposes per-file resumable upload state and collection-level progress
 - reports collection-upload state as `uploading`, `archiving`, `finalized`, or
   `failed`

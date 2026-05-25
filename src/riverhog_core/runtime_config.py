@@ -14,6 +14,7 @@ DEFAULT_DATABASE_URL = "postgresql+psycopg://riverhog:riverhog@127.0.0.1:5432/ri
 DEFAULT_PLANNER_DISC_TARGET_BYTES = 50_000_000_000
 DEFAULT_PLANNER_MIN_FILL_RATIO = 0.96
 DEFAULT_UNBURNED_COLLECTION_BYTES_LIMIT = 500_000_000_000
+DEFAULT_GLACIER_MULTIPART_PART_BYTES = 64 * 1024 * 1024
 
 
 def _parse_duration(value: str) -> timedelta:
@@ -150,6 +151,7 @@ class RuntimeConfig:
     glacier_prefix: str = "glacier"
     glacier_backend: str = "s3"
     glacier_storage_class: str = "DEEP_ARCHIVE"
+    glacier_multipart_part_bytes: int = DEFAULT_GLACIER_MULTIPART_PART_BYTES
     glacier_upload_retry_limit: int = 3
     glacier_upload_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=5))
     glacier_upload_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
@@ -157,9 +159,7 @@ class RuntimeConfig:
     glacier_recovery_sweep_interval: timedelta = field(
         default_factory=lambda: timedelta(seconds=30)
     )
-    glacier_recovery_restore_latency: timedelta = field(
-        default_factory=lambda: timedelta(hours=48)
-    )
+    glacier_recovery_restore_latency: timedelta = field(default_factory=lambda: timedelta(hours=48))
     glacier_recovery_ready_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
     glacier_recovery_webhook_url: str | None = None
     glacier_recovery_webhook_timeout: timedelta = field(
@@ -235,6 +235,8 @@ class RuntimeConfig:
             )
         if self.tusd_append_timeout_seconds <= 0.0:
             raise ValueError("RIVERHOG_TUSD_APPEND_TIMEOUT_SECONDS must be > 0")
+        if self.glacier_multipart_part_bytes < 1:
+            raise ValueError("RIVERHOG_GLACIER_MULTIPART_PART_BYTES must be >= 1")
         if self.glacier_recovery_webhook_url:
             minimum_ready_ttl = (
                 self.glacier_recovery_webhook_timeout + self.glacier_recovery_webhook_retry_delay
@@ -294,6 +296,11 @@ def load_runtime_config() -> RuntimeConfig:
     glacier_retry_limit = _parse_int(
         os.getenv("RIVERHOG_GLACIER_UPLOAD_RETRY_LIMIT", "3"),
         name="RIVERHOG_GLACIER_UPLOAD_RETRY_LIMIT",
+        minimum=1,
+    )
+    glacier_multipart_part_bytes = _parse_bytes(
+        os.getenv("RIVERHOG_GLACIER_MULTIPART_PART_BYTES", "64MiB"),
+        name="RIVERHOG_GLACIER_MULTIPART_PART_BYTES",
         minimum=1,
     )
     glacier_retry_delay = _parse_duration(os.getenv("RIVERHOG_GLACIER_UPLOAD_RETRY_DELAY", "5m"))
@@ -359,13 +366,10 @@ def load_runtime_config() -> RuntimeConfig:
     glacier_pricing_api_region = (
         os.getenv("RIVERHOG_GLACIER_PRICING_API_REGION", "us-east-1").strip() or "us-east-1"
     )
-    glacier_pricing_region_code = (
-        os.getenv(
-            "RIVERHOG_GLACIER_PRICING_REGION_CODE",
-            os.getenv("RIVERHOG_GLACIER_REGION", s3_region),
-        ).strip()
-        or os.getenv("RIVERHOG_GLACIER_REGION", s3_region)
-    )
+    glacier_pricing_region_code = os.getenv(
+        "RIVERHOG_GLACIER_PRICING_REGION_CODE",
+        os.getenv("RIVERHOG_GLACIER_REGION", s3_region),
+    ).strip() or os.getenv("RIVERHOG_GLACIER_REGION", s3_region)
     glacier_pricing_currency_code = (
         os.getenv("RIVERHOG_GLACIER_PRICING_CURRENCY_CODE", "USD").strip().upper() or "USD"
     )
@@ -509,8 +513,7 @@ def load_runtime_config() -> RuntimeConfig:
         else int(planner_disc_target_bytes * planner_min_fill_ratio)
     )
     planner_image_root = Path(
-        os.getenv("RIVERHOG_PLANNER_IMAGE_ROOT", ".riverhog/images").strip()
-        or ".riverhog/images"
+        os.getenv("RIVERHOG_PLANNER_IMAGE_ROOT", ".riverhog/images").strip() or ".riverhog/images"
     )
     unburned_collection_bytes_limit = _parse_bytes(
         os.getenv(
@@ -529,7 +532,9 @@ def load_runtime_config() -> RuntimeConfig:
         s3_access_key_id=s3_access_key_id,
         s3_secret_access_key=s3_secret_access_key,
         s3_force_path_style=s3_force_path_style,
-        tusd_base_url=os.getenv("RIVERHOG_TUSD_BASE_URL", "http://127.0.0.1:1080/files").rstrip("/"),
+        tusd_base_url=os.getenv("RIVERHOG_TUSD_BASE_URL", "http://127.0.0.1:1080/files").rstrip(
+            "/"
+        ),
         tusd_hook_secret=os.getenv("RIVERHOG_TUSD_HOOK_SECRET", "dev-tusd-hook-secret"),
         tusd_append_timeout_seconds=_parse_float(
             os.getenv("RIVERHOG_TUSD_APPEND_TIMEOUT_SECONDS", "60"),
@@ -540,9 +545,9 @@ def load_runtime_config() -> RuntimeConfig:
         database_url=database_url,
         incomplete_upload_ttl=incomplete_upload_ttl,
         upload_expiry_sweep_interval=upload_expiry_sweep_interval,
-        glacier_endpoint_url=os.getenv(
-            "RIVERHOG_GLACIER_ENDPOINT_URL", s3_endpoint_url
-        ).rstrip("/"),
+        glacier_endpoint_url=os.getenv("RIVERHOG_GLACIER_ENDPOINT_URL", s3_endpoint_url).rstrip(
+            "/"
+        ),
         glacier_region=os.getenv("RIVERHOG_GLACIER_REGION", s3_region),
         glacier_bucket=os.getenv("RIVERHOG_GLACIER_BUCKET", s3_bucket),
         glacier_access_key_id=os.getenv("RIVERHOG_GLACIER_ACCESS_KEY_ID", s3_access_key_id),
@@ -553,12 +558,11 @@ def load_runtime_config() -> RuntimeConfig:
         glacier_force_path_style=_parse_bool(
             os.getenv("RIVERHOG_GLACIER_FORCE_PATH_STYLE", str(s3_force_path_style).lower())
         ),
-        glacier_prefix=_normalize_prefix(
-            os.getenv("RIVERHOG_GLACIER_PREFIX", "glacier")
-        ),
+        glacier_prefix=_normalize_prefix(os.getenv("RIVERHOG_GLACIER_PREFIX", "glacier")),
         glacier_backend=os.getenv("RIVERHOG_GLACIER_BACKEND", "s3").strip() or "s3",
         glacier_storage_class=os.getenv("RIVERHOG_GLACIER_STORAGE_CLASS", "DEEP_ARCHIVE").strip()
         or "DEEP_ARCHIVE",
+        glacier_multipart_part_bytes=glacier_multipart_part_bytes,
         glacier_upload_retry_limit=glacier_retry_limit,
         glacier_upload_retry_delay=glacier_retry_delay,
         glacier_upload_sweep_interval=glacier_upload_sweep_interval,
@@ -605,9 +609,7 @@ def load_runtime_config() -> RuntimeConfig:
         ots_verify_command=ots_verify_command,
         recovery_payload_command=recovery_payload_command,
         recovery_payload_passphrase=recovery_payload_passphrase,
-        recovery_payload_require_explicit_passphrase=(
-            recovery_payload_require_explicit_passphrase
-        ),
+        recovery_payload_require_explicit_passphrase=(recovery_payload_require_explicit_passphrase),
         recovery_payload_work_factor=recovery_payload_work_factor,
         recovery_payload_max_work_factor=recovery_payload_max_work_factor,
         public_base_url=public_base_url,

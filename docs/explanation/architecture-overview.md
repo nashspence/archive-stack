@@ -51,6 +51,11 @@ archive, a collection manifest, and the OpenTimestamps proof for that manifest.
 Glacier stores collection archives. Finalized images remain physical disc
 artifacts and do not define the cloud archive unit.
 
+Finalization is gated by verified archive receipt. Riverhog promotes staged
+bytes into the hot collection namespace and commits the collection/archive
+records before deleting staging objects, so a retry after restart still has the
+staged bytes it needs unless the collection has already finalized.
+
 ## Read-only browsing
 
 Read-only WebDAV exposes the committed `collections/` namespace for day-to-day

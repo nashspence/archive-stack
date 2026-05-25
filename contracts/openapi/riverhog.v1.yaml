@@ -30,7 +30,7 @@ paths:
   /collection-uploads/{collection_id}:
     get:
       summary: Get one collection upload session
-      description: Returns the current resumable upload state for one server-minted collection id while it remains in progress. The session remains visible through `uploading`, `archiving`, and `failed`; once the collection archive package has uploaded, verified, and promoted the collection, this upload session is deleted and later reads return `not_found`.
+      description: Returns the current resumable upload state for one server-minted collection id while it remains in progress. The session remains visible through `uploading`, `archiving`, and `failed`; once the collection archive package has uploaded, verified, promoted the collection, and committed the collection/archive records, this upload session is deleted and later reads return `not_found`.
       operationId: getCollectionUpload
       parameters:
         - in: path
@@ -87,7 +87,7 @@ paths:
           $ref: "#/components/responses/Error"
     patch:
       summary: Append one collection-file upload chunk
-      description: Streams bytes into the resumable upload resource. When the final required chunk completes the last outstanding file and the full-file hashes verify, Riverhog moves the upload into `archiving`; the collection is not finalized or admitted until its whole-collection Glacier archive package uploads and verifies.
+      description: Streams bytes into the resumable upload resource. When the final required chunk completes the last outstanding file and the full-file hashes verify, Riverhog moves the upload into `archiving`; the collection is not finalized or admitted until its whole-collection Glacier archive package uploads, verifies, promotes to hot storage, and commits.
       operationId: appendCollectionFileUploadChunk
       parameters:
         - in: path

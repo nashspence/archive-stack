@@ -20,6 +20,9 @@ For collection ingest specifically:
   collection invisible until retry succeeds
 - `riverhog upload` waits for `finalized` by default; it does not treat staged
   file bytes or `archiving` as a successful completed upload
+- staged collection bytes are retained until the finalized collection and
+  archive records commit; post-finalization staging cleanup is best-effort, so a
+  restart cannot make a retry depend on already-deleted staged bytes
 - once the last resumable collection-file state expires, Riverhog forgets the upload session instead of keeping an empty pending record
 
 ## Collection Upload Creation

@@ -139,6 +139,20 @@ Opaque backend label recorded on collection Glacier summaries.
 
 Intended Glacier storage class recorded on collection Glacier summaries.
 
+## `RIVERHOG_GLACIER_MULTIPART_PART_BYTES`
+
+- type: positive byte count
+- default: `64MiB`
+
+Target S3 multipart part size for collection Glacier archive packages. Riverhog
+rounds this up when needed to satisfy S3 minimum part size and maximum part
+count constraints.
+
+Larger parts reduce request overhead for large migrations. An interrupted
+server-side multipart stream is not part-level resumable; the durable retry
+resumes the collection archive job, skips already-verified committed archive
+objects, and starts a fresh multipart stream for any missing archive object.
+
 ## `RIVERHOG_OTS_STAMP_COMMAND`
 
 - type: shell command

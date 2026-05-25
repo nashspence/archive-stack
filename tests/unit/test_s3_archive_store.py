@@ -214,7 +214,12 @@ def test_upload_collection_archive_package_streams_archive_with_multipart(
     tmp_path: Path,
 ) -> None:
     client = _FakeS3Client()
-    store = _store_with_client(monkeypatch, tmp_path, client)
+    store = _store_with_client(
+        monkeypatch,
+        tmp_path,
+        client,
+        glacier_multipart_part_bytes=4,
+    )
     monkeypatch.setattr("riverhog_core.stores.s3_archive_store._MIN_MULTIPART_PART_SIZE", 4)
     package = _package()
 

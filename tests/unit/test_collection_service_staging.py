@@ -11,6 +11,7 @@ from sqlalchemy import select
 from riverhog_core.catalog_models import (
     CollectionFileRecord,
     CollectionRecord,
+    CollectionUploadRecord,
     FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
@@ -76,6 +77,29 @@ class _FakeHotStore:
             for (stored_collection_id, path), content in sorted(self._files.items())
             if stored_collection_id == collection_id
         ]
+
+
+class _FailingHotStore(_FakeHotStore):
+    def __init__(self, *, fail_path: str) -> None:
+        super().__init__()
+        self._fail_path = fail_path
+
+    def put_collection_file_stream(
+        self,
+        collection_id: str,
+        path: str,
+        chunks: Iterable[bytes],
+        *,
+        content_length: int,
+    ) -> None:
+        if path == self._fail_path:
+            raise RuntimeError("hot store unavailable")
+        super().put_collection_file_stream(
+            collection_id,
+            path,
+            chunks,
+            content_length=content_length,
+        )
 
 
 class _FakeUploadStore:
@@ -335,6 +359,58 @@ def test_completed_collection_upload_promotes_from_staging_and_cleans_up(tmp_pat
     assert staging_target in upload_store.deleted_targets
 
 
+def test_failed_hot_promotion_keeps_staging_for_retry(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+
+    hot_store = _FailingHotStore(fail_path="albums/day-02.txt")
+    upload_store = _StreamingOnlyUploadStore()
+    config = _config(sqlite_path)
+    service = SqlAlchemyCollectionService(config, hot_store, upload_store)
+
+    files = [
+        ("albums/day-01.txt", b"hello world\n"),
+        ("albums/day-02.txt", b"goodbye world\n"),
+    ]
+    payload = service.create_or_resume_upload(
+        upload_slug="photos 2024",
+        files=[
+            {"path": path, "bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+            for path, content in files
+        ],
+        ingest_source="/tmp/source",
+    )
+    collection_id = str(payload["collection_id"])
+    for relpath, content in files:
+        upload_session = service.create_or_resume_file_upload(collection_id, relpath)
+        service.append_upload_chunk(
+            collection_id,
+            relpath,
+            offset=int(upload_session["offset"]),
+            checksum="sha256 " + base64.b64encode(hashlib.sha256(content).digest()).decode("ascii"),
+            content=content,
+        )
+
+    upload_service = SqlAlchemyGlacierUploadService(
+        config,
+        _FakeArchiveStore(),
+        hot_store,
+        upload_store,
+        proof_stamper=FixtureProofStamper(),
+        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
+    )
+    assert upload_service.process_due_uploads() == 1
+
+    assert upload_store.deleted_targets == []
+    session_factory = make_session_factory(str(sqlite_path))
+    with session_scope(session_factory) as session:
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is not None
+        assert upload.state == "archiving"
+        assert upload.archive_failure == "hot store unavailable"
+        assert session.get(CollectionRecord, collection_id) is None
+
+
 def test_finalized_collection_upload_is_idempotent_for_same_slug_and_manifest(
     tmp_path: Path,
 ) -> None:
@@ -538,14 +614,20 @@ def test_completed_glacier_upload_refreshes_provisional_disc_plan(tmp_path: Path
         ]
 
     assert (image_root / MANIFEST_FILENAME).exists()
-    assert read_finalized_image_coverage_parts(
-        image_root,
-        FixtureRecoveryPayloadCodec(),
-    )[0].path == relpath
-    assert read_finalized_image_collection_artifacts(
-        image_root,
-        FixtureRecoveryPayloadCodec(),
-    )[0].collection_id == collection_id
+    assert (
+        read_finalized_image_coverage_parts(
+            image_root,
+            FixtureRecoveryPayloadCodec(),
+        )[0].path
+        == relpath
+    )
+    assert (
+        read_finalized_image_collection_artifacts(
+            image_root,
+            FixtureRecoveryPayloadCodec(),
+        )[0].collection_id
+        == collection_id
+    )
 
 
 def test_new_collection_uploads_are_blocked_over_unburned_limit(tmp_path: Path) -> None:
