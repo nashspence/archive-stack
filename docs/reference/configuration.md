@@ -83,6 +83,11 @@ When this differs from `RIVERHOG_S3_BUCKET`, that separate archive bucket must p
 the same abort-incomplete-multipart lifecycle rule as the committed hot-store
 bucket.
 
+Collection archive packages are streamed to this bucket. Archives that exceed
+the S3 single-object PUT limit, and streamed archives at or above the multipart
+part size, use S3 multipart upload with the configured Glacier metadata and
+storage class applied at multipart creation time.
+
 ## `RIVERHOG_GLACIER_ACCESS_KEY_ID`
 
 - type: string
@@ -695,6 +700,26 @@ the client socket accepts bytes faster than the server receives them.
 Per-chunk client timeout for the public upload `PATCH`. Proxy request-body and
 proxy send/read timeouts should be slightly higher than this value so abandoned
 chunk bodies are cleaned up promptly without racing normal uploads.
+
+### `RIVERHOG_UPLOAD_FINALIZE_POLL_SECONDS`
+
+- type: positive number of seconds
+- default: `5`
+
+Polling interval after all collection files are staged. The CLI keeps waiting
+until the collection is finalized, which means the Glacier archive package has
+uploaded, verified, hot files have been promoted, and the planner refresh has
+been requested.
+
+### `RIVERHOG_UPLOAD_FINALIZE_TIMEOUT_SECONDS`
+
+- type: non-negative number of seconds
+- default: unset
+
+Maximum time the CLI waits for collection finalization after all files are
+staged. Unset or `0` means wait indefinitely. If this timeout is reached,
+`riverhog upload` prints the current upload session and exits non-zero instead
+of presenting staged bytes as a completed collection.
 
 ### `RIVERHOG_HTTP2`
 

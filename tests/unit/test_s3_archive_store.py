@@ -48,7 +48,13 @@ class _FakeBody:
 class _FakeS3Client:
     def __init__(self) -> None:
         self.objects: dict[str, dict[str, Any]] = {}
+        self.uploads: dict[str, dict[str, Any]] = {}
+        self.put_object_keys: list[str] = []
+        self.uploaded_part_sizes: list[int] = []
+        self.aborted_uploads: list[str] = []
+        self.completed_uploads: list[str] = []
         self.restore_requests: list[str] = []
+        self._next_upload_id = 1
 
     def head_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:
         _ = Bucket
@@ -59,6 +65,7 @@ class _FakeS3Client:
 
     def put_object(self, *, Bucket: str, Key: str, Body: object, **kwargs: Any) -> None:
         _ = Bucket
+        self.put_object_keys.append(Key)
         if isinstance(Body, bytes):
             body = Body
         else:
@@ -70,6 +77,54 @@ class _FakeS3Client:
             "LastModified": datetime(2026, 4, 20, 4, 1, 0, tzinfo=UTC),
             **kwargs,
         }
+
+    def create_multipart_upload(self, *, Bucket: str, Key: str, **kwargs: Any) -> dict[str, str]:
+        _ = Bucket
+        upload_id = f"upload-{self._next_upload_id}"
+        self._next_upload_id += 1
+        self.uploads[upload_id] = {"Key": Key, "Parts": {}, "ExtraArgs": kwargs}
+        return {"UploadId": upload_id}
+
+    def upload_part(
+        self,
+        *,
+        Bucket: str,
+        Key: str,
+        UploadId: str,
+        PartNumber: int,
+        Body: bytes,
+    ) -> dict[str, str]:
+        _ = Bucket
+        upload = self.uploads[UploadId]
+        assert upload["Key"] == Key
+        upload["Parts"][PartNumber] = Body
+        self.uploaded_part_sizes.append(len(Body))
+        return {"ETag": f"etag-{UploadId}-{PartNumber}"}
+
+    def complete_multipart_upload(
+        self,
+        *,
+        Bucket: str,
+        Key: str,
+        UploadId: str,
+        MultipartUpload: dict[str, list[dict[str, object]]],
+    ) -> None:
+        _ = Bucket
+        upload = self.uploads.pop(UploadId)
+        assert upload["Key"] == Key
+        body = b"".join(upload["Parts"][part["PartNumber"]] for part in MultipartUpload["Parts"])
+        self.objects[Key] = {
+            "Body": body,
+            "ContentLength": len(body),
+            "LastModified": datetime(2026, 4, 20, 4, 1, 0, tzinfo=UTC),
+            **upload["ExtraArgs"],
+        }
+        self.completed_uploads.append(UploadId)
+
+    def abort_multipart_upload(self, *, Bucket: str, Key: str, UploadId: str) -> None:
+        _ = Bucket, Key
+        self.aborted_uploads.append(UploadId)
+        self.uploads.pop(UploadId, None)
 
     def restore_object(
         self,
@@ -152,6 +207,28 @@ def test_upload_collection_archive_package_uploads_archive_manifest_and_proof(
     assert archive_metadata[COLLECTION_SHA256_METADATA] == package.archive_sha256
     assert archive_metadata["riverhog-archive-format"] == "tar"
     assert archive_metadata["riverhog-compression"] == "none"
+
+
+def test_upload_collection_archive_package_streams_archive_with_multipart(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    store = _store_with_client(monkeypatch, tmp_path, client)
+    monkeypatch.setattr("riverhog_core.stores.s3_archive_store._MIN_MULTIPART_PART_SIZE", 4)
+    package = _package()
+
+    receipt = store.upload_collection_archive_package(collection_id="docs", package=package)
+
+    archive_head = client.objects[receipt.archive.object_path]
+    assert archive_head["Body"] == package.archive_bytes
+    assert receipt.archive.object_path not in client.put_object_keys
+    assert client.completed_uploads == ["upload-1"]
+    assert client.aborted_uploads == []
+    assert client.uploads == {}
+    assert client.uploaded_part_sizes[:-1]
+    assert all(size == 4 for size in client.uploaded_part_sizes[:-1])
+    assert archive_head["Metadata"][COLLECTION_SHA256_METADATA] == package.archive_sha256
 
 
 def test_request_collection_archive_restore_requests_all_package_objects(

@@ -18,6 +18,8 @@ For collection ingest specifically:
   Glacier archive package uploads and verifies
 - an archive upload failure leaves the collection upload `failed` and keeps the
   collection invisible until retry succeeds
+- `riverhog upload` waits for `finalized` by default; it does not treat staged
+  file bytes or `archiving` as a successful completed upload
 - once the last resumable collection-file state expires, Riverhog forgets the upload session instead of keeping an empty pending record
 
 ## Collection Upload Creation
@@ -118,8 +120,11 @@ a 0.005 second delay, which keeps upload progress stable on paths where
 aggressive client-side bulk writes can stall below HTTP. Operators may tune
 `RIVERHOG_UPLOAD_CHUNK_BYTES`, `RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES`, and
 `RIVERHOG_UPLOAD_WRITE_DELAY_SECONDS` after validating the target network and
-reverse-proxy body limits. See [Upload Transport Reference](upload-transport.md)
-for the operational findings and tuning guidance.
+reverse-proxy body limits. After all files are staged, `riverhog upload` polls
+until the collection finalizes; `RIVERHOG_UPLOAD_FINALIZE_TIMEOUT_SECONDS` can
+bound that wait when automation needs a hard deadline. See
+[Upload Transport Reference](upload-transport.md) for the operational findings
+and tuning guidance.
 
 When `complete` rejects `byte_complete` recovery bytes, the canonical operator recovery path is an explicit
 `DELETE` of the affected fetch-entry upload resource before retry. `djdan fetch` performs that reset for entries it

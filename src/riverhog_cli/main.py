@@ -40,6 +40,8 @@ IMAGE_QUERY_HELP = "Substring match over id, filename, and collection ids"
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 UPLOAD_PROGRESS_INTERVAL_SECONDS = 5.0
+UPLOAD_FINALIZE_POLL_SECONDS = 5.0
+UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS = 30.0
 TRANSIENT_UPLOAD_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 UPLOAD_RESUME_RETRY_ATTEMPTS = 5
 UPLOAD_RESUME_RETRY_INITIAL_DELAY_SECONDS = 1.0
@@ -94,6 +96,40 @@ def _upload_chunk_bytes() -> int:
         raise typer.BadParameter("RIVERHOG_UPLOAD_CHUNK_BYTES must be a positive integer") from exc
     if value <= 0:
         raise typer.BadParameter("RIVERHOG_UPLOAD_CHUNK_BYTES must be a positive integer")
+    return value
+
+
+def _upload_finalize_poll_seconds() -> float:
+    raw_value = os.getenv("RIVERHOG_UPLOAD_FINALIZE_POLL_SECONDS")
+    if raw_value is None or raw_value.strip() == "":
+        return UPLOAD_FINALIZE_POLL_SECONDS
+    try:
+        value = float(raw_value)
+    except ValueError as exc:
+        raise typer.BadParameter(
+            "RIVERHOG_UPLOAD_FINALIZE_POLL_SECONDS must be a positive number"
+        ) from exc
+    if value <= 0:
+        raise typer.BadParameter("RIVERHOG_UPLOAD_FINALIZE_POLL_SECONDS must be a positive number")
+    return value
+
+
+def _upload_finalize_timeout_seconds() -> float | None:
+    raw_value = os.getenv("RIVERHOG_UPLOAD_FINALIZE_TIMEOUT_SECONDS")
+    if raw_value is None or raw_value.strip() == "":
+        return None
+    try:
+        value = float(raw_value)
+    except ValueError as exc:
+        raise typer.BadParameter(
+            "RIVERHOG_UPLOAD_FINALIZE_TIMEOUT_SECONDS must be a non-negative number"
+        ) from exc
+    if value < 0:
+        raise typer.BadParameter(
+            "RIVERHOG_UPLOAD_FINALIZE_TIMEOUT_SECONDS must be a non-negative number"
+        )
+    if value == 0:
+        return None
     return value
 
 
@@ -194,9 +230,7 @@ def _upload_collection_file(
         return
 
     if offset:
-        _log_upload(
-            f"Resuming {path_value} at {_format_bytes(offset)} of {_format_bytes(length)}"
-        )
+        _log_upload(f"Resuming {path_value} at {_format_bytes(offset)} of {_format_bytes(length)}")
     else:
         _log_upload(f"Uploading {path_value} ({_format_bytes(length)})")
 
@@ -262,9 +296,7 @@ def _upload_collection_file(
                 progress(len(chunk))
             offset = next_offset
     if offset != length:
-        raise RuntimeError(
-            f"upload for {path_value} stopped at {offset} of {length} bytes"
-        )
+        raise RuntimeError(f"upload for {path_value} stopped at {offset} of {length} bytes")
     _log_upload(f"Uploaded {path_value} ({_format_bytes(length)})")
 
 
@@ -300,6 +332,72 @@ def _finalized_collection_upload_payload(
         "files": files,
         "collection": collection,
     }
+
+
+def _wait_for_finalized_collection(
+    api: ApiClient,
+    collection_id: str,
+    manifest: list[CollectionManifestEntry],
+) -> tuple[dict[str, object], str]:
+    poll_seconds = _upload_finalize_poll_seconds()
+    timeout_seconds = _upload_finalize_timeout_seconds()
+    deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
+    last_status_log_at = 0.0
+    last_payload: dict[str, object] | None = None
+
+    _log_upload("All files uploaded; waiting for Glacier archive verification")
+    while True:
+        now = time.monotonic()
+        try:
+            collection = api.get_collection(collection_id)
+            return (
+                _finalized_collection_upload_payload(collection_id, manifest, collection),
+                "finalized",
+            )
+        except NotFound:
+            try:
+                last_payload = api.get_collection_upload(collection_id)
+            except NotFound:
+                last_payload = None
+
+        if last_payload is not None:
+            state = str(last_payload.get("state", "unknown"))
+            if state == "failed":
+                return last_payload, "failed"
+            if now - last_status_log_at >= UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS:
+                _log_upload(
+                    "Waiting for collection finalization: "
+                    f"state={state}, "
+                    f"{last_payload.get('files_uploaded', 0)}/"
+                    f"{last_payload.get('files_total', 0)} files, "
+                    f"{last_payload.get('uploaded_bytes', 0)}/"
+                    f"{last_payload.get('bytes_total', 0)} bytes staged"
+                )
+                last_status_log_at = now
+        elif now - last_status_log_at >= UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS:
+            _log_upload("Waiting for collection finalization: upload session not visible yet")
+            last_status_log_at = now
+
+        if deadline is not None and now >= deadline:
+            if last_payload is not None:
+                return last_payload, "timeout"
+            return (
+                {
+                    "collection_id": collection_id,
+                    "state": "archiving",
+                    "files": [],
+                    "files_total": 0,
+                    "files_uploaded": 0,
+                    "bytes_total": 0,
+                    "uploaded_bytes": 0,
+                    "upload_state_expires_at": None,
+                },
+                "timeout",
+            )
+        sleep_seconds = poll_seconds
+        if deadline is not None:
+            sleep_seconds = max(0.0, min(poll_seconds, deadline - now))
+        time.sleep(sleep_seconds)
 
 
 @app.command("upload")
@@ -376,32 +474,19 @@ def upload_cmd(
             progress=note_uploaded,
         )
 
-    final_payload: dict[str, object] | None = None
-    deadline = time.monotonic() + 30.0
-    while time.monotonic() < deadline:
-        try:
-            collection = api.get_collection(collection_id)
-            final_payload = _finalized_collection_upload_payload(
-                collection_id,
-                manifest,
-                collection,
-            )
-            break
-        except NotFound:
-            try:
-                final_payload = api.get_collection_upload(collection_id)
-            except NotFound:
-                time.sleep(0.2)
-                continue
-            if final_payload.get("state") == "failed":
-                break
-            time.sleep(0.2)
-    if final_payload is None:
-        final_payload = api.get_collection_upload(collection_id)
+    final_payload, completion_state = _wait_for_finalized_collection(
+        api,
+        collection_id,
+        manifest,
+    )
     emit(
         final_payload if json_mode else format_collection_upload(final_payload),
         json_mode=json_mode,
     )
+    if completion_state == "failed":
+        raise typer.Exit(1)
+    if completion_state == "timeout":
+        raise typer.Exit(124)
 
 
 @app.command("find")

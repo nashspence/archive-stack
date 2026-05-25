@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-import tempfile
 from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -20,6 +19,10 @@ from riverhog_core.stores.s3_support import create_glacier_s3_client
 COLLECTION_BYTES_METADATA = "riverhog-collection-bytes"
 COLLECTION_SHA256_METADATA = "riverhog-collection-sha256"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_MIN_MULTIPART_PART_SIZE = 5 * 1024 * 1024
+_MAX_MULTIPART_PART_SIZE = 5 * 1024 * 1024 * 1024
+_MAX_MULTIPART_PARTS = 10_000
+_MAX_SINGLE_PUT_OBJECT_SIZE = 5 * 1024 * 1024 * 1024
 
 
 class _RestoreHeader(TypedDict):
@@ -29,6 +32,63 @@ class _RestoreHeader(TypedDict):
 
 def _utc_now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _multipart_part_size(content_length: int) -> int:
+    part_size = max(
+        _MIN_MULTIPART_PART_SIZE,
+        (content_length + _MAX_MULTIPART_PARTS - 1) // _MAX_MULTIPART_PARTS,
+    )
+    if part_size > _MAX_MULTIPART_PART_SIZE:
+        raise ValueError("collection archive stream exceeds S3 multipart object size limit")
+    return part_size
+
+
+def _is_chunk_iterable(content: Any) -> bool:
+    return (
+        isinstance(content, Iterable)
+        and not isinstance(content, (bytes, bytearray, memoryview, str))
+        and not callable(getattr(content, "read", None))
+    )
+
+
+def _should_use_multipart(*, content: Any, content_length: int) -> bool:
+    return content_length > _MAX_SINGLE_PUT_OBJECT_SIZE or (
+        _is_chunk_iterable(content) and content_length >= _MIN_MULTIPART_PART_SIZE
+    )
+
+
+def _iter_content_chunks(content: Any) -> Iterator[bytes]:
+    if isinstance(content, bytes):
+        yield content
+        return
+    if isinstance(content, bytearray):
+        yield bytes(content)
+        return
+    if isinstance(content, memoryview):
+        yield content.tobytes()
+        return
+
+    read = getattr(content, "read", None)
+    if callable(read):
+        while True:
+            chunk = read(1024 * 1024)
+            if not chunk:
+                return
+            yield bytes(chunk)
+
+    for chunk in cast(Iterable[Any], content):
+        yield bytes(chunk)
+
+
+def _single_put_body(content: Any) -> Any:
+    if isinstance(content, (bytes, bytearray)):
+        return bytes(content)
+    if isinstance(content, memoryview):
+        return content.tobytes()
+    if callable(getattr(content, "read", None)):
+        return content
+    return b"".join(_iter_content_chunks(content))
 
 
 class S3ArchiveStore:
@@ -100,18 +160,14 @@ class S3ArchiveStore:
         package: CollectionArchivePackage,
     ) -> CollectionArchiveUploadReceipt:
         keys = self._collection_object_keys(collection_id=collection_id)
-        with tempfile.TemporaryFile() as archive_body:
-            for chunk in package.iter_archive():
-                archive_body.write(chunk)
-            archive_body.seek(0)
-            archive = self._put_collection_package_object(
-                object_key=keys["archive"],
-                content=archive_body,
-                content_length=package.archive_size,
-                sha256=package.archive_sha256,
-                kind="archive",
-                package=package,
-            )
+        archive = self._put_collection_package_object(
+            object_key=keys["archive"],
+            content=package.iter_archive(),
+            content_length=package.archive_size,
+            sha256=package.archive_sha256,
+            kind="archive",
+            package=package,
+        )
         manifest = self._put_collection_package_object(
             object_key=keys["manifest"],
             content=package.manifest_bytes,
@@ -177,13 +233,21 @@ class S3ArchiveStore:
         }
         if self._is_aws_restore_backend():
             extra_args["StorageClass"] = self._config.glacier_storage_class
-        self._client.put_object(
-            Bucket=self._bucket,
-            Key=object_key,
-            Body=content,
-            ContentLength=content_length,
-            **extra_args,
-        )
+        if _should_use_multipart(content=content, content_length=content_length):
+            self._put_collection_package_object_multipart(
+                object_key=object_key,
+                chunks=_iter_content_chunks(content),
+                content_length=content_length,
+                extra_args=extra_args,
+            )
+        else:
+            self._client.put_object(
+                Bucket=self._bucket,
+                Key=object_key,
+                Body=_single_put_body(content),
+                ContentLength=content_length,
+                **extra_args,
+            )
         head = cast(
             dict[str, Any],
             self._client.head_object(Bucket=self._bucket, Key=object_key),
@@ -195,6 +259,100 @@ class S3ArchiveStore:
             expected_sha256=sha256,
             uploaded_at=uploaded_at,
         )
+
+    def _put_collection_package_object_multipart(
+        self,
+        *,
+        object_key: str,
+        chunks: Iterable[bytes],
+        content_length: int,
+        extra_args: dict[str, Any],
+    ) -> None:
+        upload_id: str | None = None
+        part_number = 1
+        uploaded_parts: list[dict[str, object]] = []
+        buffer = bytearray()
+        part_size = _multipart_part_size(content_length)
+        size = 0
+
+        def ensure_upload() -> str:
+            nonlocal upload_id
+            if upload_id is None:
+                response = cast(
+                    dict[str, Any],
+                    self._client.create_multipart_upload(
+                        Bucket=self._bucket,
+                        Key=object_key,
+                        **extra_args,
+                    ),
+                )
+                upload_id = str(response["UploadId"])
+            return upload_id
+
+        def upload_part(body: bytes) -> None:
+            nonlocal part_number
+            response = cast(
+                dict[str, Any],
+                self._client.upload_part(
+                    Bucket=self._bucket,
+                    Key=object_key,
+                    UploadId=ensure_upload(),
+                    PartNumber=part_number,
+                    Body=body,
+                ),
+            )
+            uploaded_parts.append({"PartNumber": part_number, "ETag": str(response["ETag"])})
+            part_number += 1
+
+        try:
+            for chunk in chunks:
+                size += len(chunk)
+                chunk_view = memoryview(chunk)
+                offset = 0
+                while offset < len(chunk_view):
+                    bytes_to_copy = min(
+                        part_size - len(buffer),
+                        len(chunk_view) - offset,
+                    )
+                    buffer.extend(chunk_view[offset : offset + bytes_to_copy])
+                    offset += bytes_to_copy
+                    if len(buffer) == part_size:
+                        upload_part(bytes(buffer))
+                        buffer.clear()
+
+            if size != content_length:
+                raise ValueError("collection archive stream byte count mismatch")
+            if buffer:
+                upload_part(bytes(buffer))
+                buffer.clear()
+            if upload_id is None:
+                self._client.put_object(
+                    Bucket=self._bucket,
+                    Key=object_key,
+                    Body=b"",
+                    ContentLength=0,
+                    **extra_args,
+                )
+                return
+            self._client.complete_multipart_upload(
+                Bucket=self._bucket,
+                Key=object_key,
+                UploadId=upload_id,
+                MultipartUpload={"Parts": uploaded_parts},
+            )
+        except Exception as exc:
+            if upload_id is not None:
+                try:
+                    self._client.abort_multipart_upload(
+                        Bucket=self._bucket,
+                        Key=object_key,
+                        UploadId=upload_id,
+                    )
+                except Exception as cleanup_exc:
+                    exc.add_note(
+                        f"failed to abort S3 multipart upload {upload_id}: {cleanup_exc!r}"
+                    )
+            raise
 
     def request_collection_archive_restore(
         self,
@@ -446,9 +604,7 @@ def _collection_restore_paths(
     proof_object_path: str | None,
 ) -> tuple[str, ...]:
     return tuple(
-        path
-        for path in (object_path, manifest_object_path, proof_object_path)
-        if path is not None
+        path for path in (object_path, manifest_object_path, proof_object_path) if path is not None
     )
 
 

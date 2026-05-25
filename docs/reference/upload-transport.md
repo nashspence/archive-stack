@@ -35,6 +35,8 @@ RIVERHOG_UPLOAD_CHUNK_BYTES=8388608
 RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES=262144
 RIVERHOG_UPLOAD_WRITE_DELAY_SECONDS=0.005
 RIVERHOG_UPLOAD_TIMEOUT_SECONDS=60
+RIVERHOG_UPLOAD_FINALIZE_POLL_SECONDS=5
+RIVERHOG_UPLOAD_FINALIZE_TIMEOUT_SECONDS=0
 ```
 
 This profile keeps retry cost and proxy body size bounded while avoiding the
@@ -50,6 +52,11 @@ request chunks. Do not benchmark more aggressive values after a failed or
 aborted bulk upload unless local stale sockets have cleared first; orphaned
 `FIN_WAIT_1` sockets with queued send data can make an otherwise stable profile
 look broken.
+
+After the final file chunk is accepted, the CLI waits for the service to upload
+and verify the collection-native Glacier archive package before exiting
+successfully. `RIVERHOG_UPLOAD_FINALIZE_TIMEOUT_SECONDS=0` means no CLI-side
+deadline for that custody handoff.
 
 ## Proxy Guidance
 

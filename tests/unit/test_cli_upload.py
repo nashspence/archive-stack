@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from riverhog_cli import main as riverhog_main
-from riverhog_core.domain.errors import ServiceUnavailable
+from riverhog_core.domain.errors import NotFound, ServiceUnavailable
 
 
 def test_local_collection_manifest_streams_file_hashes(
@@ -339,3 +339,77 @@ def test_upload_collection_file_retries_after_service_unavailable(
     )
 
     assert uploaded == [(0, content), (0, content)]
+
+
+def test_wait_for_finalized_collection_waits_through_archiving(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest: list[riverhog_main.CollectionManifestEntry] = [
+        {"path": "clip.bin", "bytes": 3, "sha256": hashlib.sha256(b"abc").hexdigest()}
+    ]
+
+    class FakeApi:
+        collection_calls = 0
+
+        def get_collection(self, collection_id: str) -> dict[str, object]:
+            self.collection_calls += 1
+            if self.collection_calls == 1:
+                raise NotFound("not finalized yet")
+            return {
+                "id": collection_id,
+                "files": 1,
+                "bytes": 3,
+                "glacier": {"state": "uploaded"},
+            }
+
+        def get_collection_upload(self, collection_id: str) -> dict[str, object]:
+            return {
+                "collection_id": collection_id,
+                "state": "archiving",
+                "files_total": 1,
+                "files_uploaded": 1,
+                "bytes_total": 3,
+                "uploaded_bytes": 3,
+                "files": [],
+            }
+
+    monkeypatch.setattr(riverhog_main.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(riverhog_main, "_upload_finalize_poll_seconds", lambda: 0.001)
+    monkeypatch.setattr(riverhog_main, "_upload_finalize_timeout_seconds", lambda: 1.0)
+
+    payload, state = riverhog_main._wait_for_finalized_collection(
+        FakeApi(),  # type: ignore[arg-type]
+        "2025/docs",
+        manifest,
+    )
+
+    assert state == "finalized"
+    assert payload["state"] == "finalized"
+    assert payload["collection"]["glacier"]["state"] == "uploaded"  # type: ignore[index]
+
+
+def test_wait_for_finalized_collection_returns_failed_upload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeApi:
+        def get_collection(self, collection_id: str) -> dict[str, object]:
+            raise NotFound("not finalized")
+
+        def get_collection_upload(self, collection_id: str) -> dict[str, object]:
+            return {
+                "collection_id": collection_id,
+                "state": "failed",
+                "archive_failure": "archive bucket unavailable",
+                "files": [],
+            }
+
+    monkeypatch.setattr(riverhog_main, "_upload_finalize_timeout_seconds", lambda: 1.0)
+
+    payload, state = riverhog_main._wait_for_finalized_collection(
+        FakeApi(),  # type: ignore[arg-type]
+        "2025/docs",
+        [],
+    )
+
+    assert state == "failed"
+    assert payload["archive_failure"] == "archive bucket unavailable"
