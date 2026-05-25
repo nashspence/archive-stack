@@ -20,7 +20,9 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.collection_archives import (
     CollectionArchiveExpectedFile,
+    CollectionArchivePackage,
     build_collection_archive_package_from_chunk_reader,
+    build_collection_archive_package_from_prebuilt_artifacts,
 )
 from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadedPart,
@@ -126,6 +128,8 @@ class SqlAlchemyGlacierUploadService:
         receipt: CollectionArchiveUploadReceipt | None = None
         manifest_bytes: bytes | None = None
         proof_bytes: bytes | None = None
+        packaged_archive_size: int | None = None
+        packaged_archive_sha256: str | None = None
         with session_scope(self._session_factory) as session:
             upload = session.get(CollectionUploadRecord, collection_id)
             if upload is None or upload.state != "archiving":
@@ -137,10 +141,24 @@ class SqlAlchemyGlacierUploadService:
             receipt = _archive_receipt_from_json(upload.archive_receipt_json)
             manifest_bytes = _decode_b64(upload.archive_manifest_bytes_b64)
             proof_bytes = _decode_b64(upload.archive_proof_bytes_b64)
+            packaged_archive_size = _positive_int_or_none(
+                upload.archive_multipart_content_length
+            )
+            packaged_archive_sha256 = upload.archive_multipart_sha256
             upload.archive_attempt_count = int(upload.archive_attempt_count or 0) + 1
             upload.archive_last_attempt_at = current_text
             upload.archive_next_attempt_at = current_text
-            upload.archive_phase = "promoting" if receipt is not None else "packaging"
+            if receipt is not None:
+                upload.archive_phase = "promoting"
+            elif (
+                manifest_bytes is not None
+                and proof_bytes is not None
+                and packaged_archive_size is not None
+                and packaged_archive_sha256 is not None
+            ):
+                upload.archive_phase = "packaged"
+            else:
+                upload.archive_phase = "packaging"
             upload.archive_phase_updated_at = current_text
             upload.archive_failure = None
             sorted_files = sorted(
@@ -171,12 +189,36 @@ class SqlAlchemyGlacierUploadService:
                 def _read_archive_file_chunks(path: str) -> Iterator[bytes]:
                     return upload_store.iter_target(target_path_by_archive_path[path])
 
-                package = build_collection_archive_package_from_chunk_reader(
-                    collection_id=collection_id,
-                    files=package_files,
-                    read_file_chunks=_read_archive_file_chunks,
-                    stamper=self._proof_stamper,
-                )
+                if (
+                    manifest_bytes is not None
+                    and proof_bytes is not None
+                    and packaged_archive_size is not None
+                    and packaged_archive_sha256 is not None
+                ):
+                    package = build_collection_archive_package_from_prebuilt_artifacts(
+                        collection_id=collection_id,
+                        files=package_files,
+                        read_file_chunks=_read_archive_file_chunks,
+                        manifest_bytes=manifest_bytes,
+                        proof_bytes=proof_bytes,
+                        archive_size=packaged_archive_size,
+                        archive_sha256=packaged_archive_sha256,
+                    )
+                else:
+                    package = build_collection_archive_package_from_chunk_reader(
+                        collection_id=collection_id,
+                        files=package_files,
+                        read_file_chunks=_read_archive_file_chunks,
+                        stamper=self._proof_stamper,
+                    )
+                    manifest_bytes = package.manifest_bytes
+                    proof_bytes = package.proof_bytes
+                    self._record_packaged_archive(
+                        collection_id=collection_id,
+                        package=package,
+                        manifest_bytes=manifest_bytes,
+                        proof_bytes=proof_bytes,
+                    )
                 manifest_bytes = package.manifest_bytes
                 proof_bytes = package.proof_bytes
                 if receipt is None:
@@ -331,13 +373,27 @@ class SqlAlchemyGlacierUploadService:
                 digest.update(chunk)
                 yield chunk
 
-        hot_store.put_collection_file_stream(
-            collection_id,
-            path,
-            digesting_chunks(),
-            content_length=byte_count,
-            sha256=sha256,
-        )
+        resumable_put = getattr(hot_store, "put_collection_file_stream_resumable", None)
+        if callable(resumable_put):
+            resumable_put(
+                collection_id,
+                path,
+                digesting_chunks(),
+                content_length=byte_count,
+                sha256=sha256,
+                multipart_tracker=_SqlAlchemyHotMultipartUploadTracker(
+                    self._session_factory,
+                    path=path,
+                ),
+            )
+        else:
+            hot_store.put_collection_file_stream(
+                collection_id,
+                path,
+                digesting_chunks(),
+                content_length=byte_count,
+                sha256=sha256,
+            )
         if digest.hexdigest() != sha256:
             hot_store.delete_collection_file(collection_id, path)
             raise ValueError(f"promoted collection file sha256 mismatch: {collection_id}/{path}")
@@ -433,6 +489,30 @@ class SqlAlchemyGlacierUploadService:
             upload.archive_multipart_uploaded_bytes = receipt.archive.stored_bytes
             upload.archive_multipart_uploaded_parts = upload.archive_multipart_total_parts
             upload.archive_phase = "promoting"
+            upload.archive_phase_updated_at = current_text
+            upload.archive_failure = None
+
+    def _record_packaged_archive(
+        self,
+        *,
+        collection_id: str,
+        package: CollectionArchivePackage,
+        manifest_bytes: bytes,
+        proof_bytes: bytes,
+    ) -> None:
+        current_text = _isoformat_z(utcnow())
+        with session_scope(self._session_factory) as session:
+            upload = session.get(CollectionUploadRecord, collection_id)
+            if upload is None:
+                return
+            upload.archive_manifest_bytes_b64 = _encode_b64(manifest_bytes)
+            upload.archive_proof_bytes_b64 = _encode_b64(proof_bytes)
+            upload.archive_multipart_content_length = package.archive_size
+            upload.archive_multipart_sha256 = package.archive_sha256
+            upload.archive_multipart_uploaded_bytes = upload.archive_multipart_uploaded_bytes or 0
+            upload.archive_multipart_uploaded_parts = upload.archive_multipart_uploaded_parts or 0
+            upload.archive_multipart_total_parts = upload.archive_multipart_total_parts or 0
+            upload.archive_phase = "packaged"
             upload.archive_phase_updated_at = current_text
             upload.archive_failure = None
 
@@ -633,15 +713,110 @@ class _SqlAlchemyArchiveMultipartUploadTracker(ArchiveMultipartUploadTracker):
                 return
             if upload.archive_multipart_upload_id != upload_id:
                 return
-            upload.archive_object_path = None
             upload.archive_multipart_upload_id = None
             upload.archive_multipart_part_size = None
-            upload.archive_multipart_content_length = None
-            upload.archive_multipart_sha256 = None
             upload.archive_multipart_parts_json = None
-            upload.archive_multipart_uploaded_bytes = None
-            upload.archive_multipart_uploaded_parts = None
-            upload.archive_multipart_total_parts = None
+
+
+class _SqlAlchemyHotMultipartUploadTracker(ArchiveMultipartUploadTracker):
+    def __init__(self, session_factory: sessionmaker[Session], *, path: str) -> None:
+        self._session_factory = session_factory
+        self._path = path
+
+    def load_multipart_upload(
+        self,
+        *,
+        collection_id: str,
+        object_path: str,
+        part_size: int,
+        content_length: int,
+        sha256: str,
+    ) -> ArchiveMultipartUploadState | None:
+        with session_scope(self._session_factory) as session:
+            file_record = session.get(CollectionUploadFileRecord, (collection_id, self._path))
+            if file_record is None:
+                return None
+            if not file_record.hot_multipart_upload_id:
+                return None
+            if int(file_record.hot_multipart_part_size or 0) != part_size:
+                return None
+            if int(file_record.bytes) != content_length:
+                return None
+            if file_record.sha256 != sha256:
+                return None
+            return ArchiveMultipartUploadState(
+                upload_id=file_record.hot_multipart_upload_id,
+                object_path=object_path,
+                part_size=part_size,
+                content_length=content_length,
+                sha256=sha256,
+                parts=_multipart_parts_from_json(file_record.hot_multipart_parts_json),
+            )
+
+    def save_multipart_upload(
+        self,
+        *,
+        collection_id: str,
+        state: ArchiveMultipartUploadState,
+    ) -> None:
+        with session_scope(self._session_factory) as session:
+            file_record = session.get(CollectionUploadFileRecord, (collection_id, self._path))
+            if file_record is None:
+                return
+            file_record.hot_multipart_upload_id = state.upload_id
+            file_record.hot_multipart_part_size = state.part_size
+            file_record.hot_multipart_parts_json = _multipart_parts_to_json(())
+            file_record.hot_multipart_uploaded_bytes = 0
+            file_record.hot_multipart_uploaded_parts = 0
+            file_record.hot_multipart_total_parts = max(
+                1,
+                (state.content_length + state.part_size - 1) // state.part_size,
+            )
+
+    def record_multipart_upload_progress(
+        self,
+        *,
+        collection_id: str,
+        state: ArchiveMultipartUploadState,
+        part: ArchiveMultipartUploadedPart,
+        uploaded_bytes: int,
+        uploaded_parts: int,
+        total_parts: int,
+    ) -> None:
+        with session_scope(self._session_factory) as session:
+            file_record = session.get(CollectionUploadFileRecord, (collection_id, self._path))
+            if file_record is None:
+                return
+            if file_record.hot_multipart_upload_id != state.upload_id:
+                return
+            parts = _multipart_parts_from_json(file_record.hot_multipart_parts_json)
+            parts_by_number = {current.part_number: current for current in parts}
+            parts_by_number[part.part_number] = part
+            file_record.hot_multipart_parts_json = _multipart_parts_to_json(
+                tuple(parts_by_number[number] for number in sorted(parts_by_number))
+            )
+            file_record.hot_multipart_uploaded_bytes = uploaded_bytes
+            file_record.hot_multipart_uploaded_parts = uploaded_parts
+            file_record.hot_multipart_total_parts = total_parts
+
+    def clear_multipart_upload(
+        self,
+        *,
+        collection_id: str,
+        upload_id: str,
+    ) -> None:
+        with session_scope(self._session_factory) as session:
+            file_record = session.get(CollectionUploadFileRecord, (collection_id, self._path))
+            if file_record is None:
+                return
+            if file_record.hot_multipart_upload_id != upload_id:
+                return
+            file_record.hot_multipart_upload_id = None
+            file_record.hot_multipart_part_size = None
+            file_record.hot_multipart_parts_json = None
+            file_record.hot_multipart_uploaded_bytes = None
+            file_record.hot_multipart_uploaded_parts = None
+            file_record.hot_multipart_total_parts = None
 
 
 def _multipart_parts_from_json(raw: str | None) -> tuple[ArchiveMultipartUploadedPart, ...]:
@@ -801,6 +976,12 @@ def _decode_b64(raw: str | None) -> bytes | None:
         return base64.b64decode(raw.encode("ascii"), validate=True)
     except (ValueError, UnicodeEncodeError):
         return None
+
+
+def _positive_int_or_none(value: int | None) -> int | None:
+    if value is None or value <= 0:
+        return None
+    return int(value)
 
 
 def enqueue_collection_archive_upload(

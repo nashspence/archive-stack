@@ -100,14 +100,23 @@ metadata, skips the already uploaded contiguous prefix of the deterministic
 archive stream, uploads the remaining parts, and completes the same multipart
 upload using the recorded part numbers and ETags.
 
+After Riverhog has stamped the manifest and measured the deterministic tar
+stream, it persists the package manifest, proof, byte count, and archive SHA-256
+on the upload row before starting S3 multipart upload. A restart after that
+`packaged` point reuses the same package artifacts and proceeds directly to the
+resumable upload instead of restamping or remeasuring the archive.
+
 After S3 accepts the completed archive object, Riverhog persists the archive
-receipt plus the embedded manifest and proof bytes on the same upload row before
-promoting hot files. A restart after Glacier completion therefore resumes from
-the recorded receipt instead of rebuilding or re-uploading the archive. During
-promotion, each hot file is written with byte and SHA-256 metadata and marked
-promoted only after the hot object verifies. Retries skip verified hot files,
-finish the remaining files, then atomically commit the finalized collection and
-archive records before deleting staged upload objects.
+receipt on the same upload row before promoting hot files. A restart after
+Glacier completion therefore resumes from the recorded receipt instead of
+rebuilding or re-uploading the archive. During promotion, each hot file is
+written with byte and SHA-256 metadata and marked promoted only after the hot
+object verifies. For S3-compatible hot stores, in-progress per-file multipart
+uploads also persist their upload id and uploaded parts on the upload-file row,
+so a process restart can list the remote parts, skip the already accepted byte
+range, and complete the same hot-store multipart upload. Retries skip verified
+hot files, finish the remaining files, then atomically commit the finalized
+collection and archive records before deleting staged upload objects.
 
 When `RIVERHOG_OPERATOR_WEBHOOK_URL` is configured, Riverhog emits best-effort
 milestone notifications across these phases. The CLI can therefore exit at the

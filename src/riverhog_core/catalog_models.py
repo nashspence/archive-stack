@@ -477,6 +477,18 @@ class CollectionUploadFileRecord(Base):
     upload_expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
     tus_url: Mapped[str | None] = mapped_column(String, nullable=True)
     hot_promoted_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    hot_multipart_upload_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    hot_multipart_part_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    hot_multipart_parts_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    hot_multipart_uploaded_bytes: Mapped[int | None] = mapped_column(
+        BigInteger, default=0, nullable=True
+    )
+    hot_multipart_uploaded_parts: Mapped[int | None] = mapped_column(
+        Integer, default=0, nullable=True
+    )
+    hot_multipart_total_parts: Mapped[int | None] = mapped_column(
+        Integer, default=0, nullable=True
+    )
 
     __table_args__ = (
         ForeignKeyConstraint(

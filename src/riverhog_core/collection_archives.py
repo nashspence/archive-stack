@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import tarfile
 import tempfile
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -22,6 +23,7 @@ _COLLECTION_ARCHIVE_INTERNAL_PATHS = {
     COLLECTION_ARCHIVE_MANIFEST_PATH,
     COLLECTION_ARCHIVE_PROOF_PATH,
 }
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +115,63 @@ def build_collection_archive_package_from_chunk_reader(
         files=normalized_files,
         read_file_chunks=read_file_chunks,
         stamper=stamper,
+    )
+
+
+def build_collection_archive_package_from_prebuilt_artifacts(
+    *,
+    collection_id: str,
+    files: Sequence[CollectionArchiveExpectedFile],
+    read_file_chunks: Callable[[str], Iterable[bytes]],
+    manifest_bytes: bytes,
+    proof_bytes: bytes,
+    archive_size: int,
+    archive_sha256: str,
+) -> CollectionArchivePackage:
+    normalized_collection_id = normalize_collection_id(collection_id)
+    normalized_files = _normalized_expected_files(files)
+    manifest_sha256 = _sha256(manifest_bytes)
+    proof_sha256 = _sha256(proof_bytes)
+    verify_collection_archive_manifest(
+        manifest_bytes=manifest_bytes,
+        expected_sha256=manifest_sha256,
+        collection_id=normalized_collection_id,
+        files=normalized_files,
+    )
+    verify_collection_archive_proof(
+        proof_bytes=proof_bytes,
+        expected_sha256=proof_sha256,
+        manifest_bytes=manifest_bytes,
+    )
+    expected_size = _archive_stream_size(
+        normalized_files,
+        manifest_bytes=manifest_bytes,
+        proof_bytes=proof_bytes,
+    )
+    if int(archive_size) != expected_size:
+        raise ValueError("collection archive stored package size mismatch")
+    if not _SHA256_RE.fullmatch(archive_sha256):
+        raise ValueError("collection archive stored package sha256 is invalid")
+
+    def archive_chunks() -> Iterator[bytes]:
+        return _archive_chunks_from_reader(
+            normalized_files,
+            read_file_chunks,
+            manifest_bytes=manifest_bytes,
+            proof_bytes=proof_bytes,
+        )
+
+    return CollectionArchivePackage(
+        collection_id=normalized_collection_id,
+        archive_size=int(archive_size),
+        archive_sha256=archive_sha256,
+        manifest_bytes=manifest_bytes,
+        manifest_sha256=manifest_sha256,
+        proof_bytes=proof_bytes,
+        proof_sha256=proof_sha256,
+        archive_format=COLLECTION_ARCHIVE_FORMAT,
+        compression=COLLECTION_ARCHIVE_COMPRESSION,
+        _archive_chunks=archive_chunks,
     )
 
 
@@ -545,6 +604,23 @@ def _archive_bytes_member(path: str, content: bytes) -> Iterator[bytes]:
     padding = (-len(content)) % 512
     if padding:
         yield b"\0" * padding
+
+
+def _archive_stream_size(
+    files: Sequence[CollectionArchiveExpectedFile],
+    *,
+    manifest_bytes: bytes,
+    proof_bytes: bytes,
+) -> int:
+    size = _tar_member_size(len(manifest_bytes))
+    size += _tar_member_size(len(proof_bytes))
+    for file in files:
+        size += _tar_member_size(file.bytes)
+    return size + 1024
+
+
+def _tar_member_size(content_length: int) -> int:
+    return 512 + content_length + ((-content_length) % 512)
 
 
 def _tar_header(path: str, size: int) -> bytes:

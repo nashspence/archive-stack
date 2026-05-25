@@ -16,6 +16,7 @@ from riverhog_core.collection_archives import (
     CollectionArchiveFile,
     build_collection_archive_package,
     build_collection_archive_package_from_chunk_reader,
+    build_collection_archive_package_from_prebuilt_artifacts,
     iter_collection_archive_files,
     read_collection_archive_internal_file,
     verify_collection_archive_files,
@@ -170,6 +171,48 @@ def test_collection_archive_package_from_chunk_reader_does_not_require_whole_fil
     assert max(chunk_sizes) == 13
     assert package.archive_size == len(package.archive_bytes)
     assert list(iter_collection_archive_files(package.iter_archive())) == [("large.bin", content)]
+
+
+def test_collection_archive_package_can_reuse_prebuilt_manifest_proof_and_archive_digest() -> None:
+    content = b"0123456789" * 200
+    digest = hashlib.sha256(content).hexdigest()
+    file = CollectionArchiveExpectedFile(
+        path="large.bin",
+        bytes=len(content),
+        sha256=digest,
+    )
+    original = build_collection_archive_package_from_chunk_reader(
+        collection_id="docs",
+        files=(file,),
+        read_file_chunks=lambda _path: (content,),
+        stamper=_PROOF_STAMPER,
+    )
+    chunk_sizes: list[int] = []
+
+    def read_chunks(path: str) -> Iterator[bytes]:
+        assert path == "large.bin"
+        for offset in range(0, len(content), 17):
+            chunk = content[offset : offset + 17]
+            chunk_sizes.append(len(chunk))
+            yield chunk
+
+    rebuilt = build_collection_archive_package_from_prebuilt_artifacts(
+        collection_id="docs",
+        files=(file,),
+        read_file_chunks=read_chunks,
+        manifest_bytes=original.manifest_bytes,
+        proof_bytes=original.proof_bytes,
+        archive_size=original.archive_size,
+        archive_sha256=original.archive_sha256,
+    )
+
+    assert chunk_sizes == []
+    assert rebuilt.archive_size == original.archive_size
+    assert rebuilt.archive_sha256 == original.archive_sha256
+    assert rebuilt.manifest_sha256 == original.manifest_sha256
+    assert rebuilt.proof_sha256 == original.proof_sha256
+    assert rebuilt.archive_bytes == original.archive_bytes
+    assert max(chunk_sizes) == 17
 
 
 def test_collection_archive_file_verification_rejects_mismatched_members() -> None:

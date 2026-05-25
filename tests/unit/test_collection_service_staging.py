@@ -264,6 +264,31 @@ class _AlwaysFailingArchiveStore(_FakeArchiveStore):
         raise RuntimeError("archive bucket unavailable")
 
 
+class _FailOnceArchiveStore(_FakeArchiveStore):
+    def __init__(self) -> None:
+        self.uploads = 0
+
+    def upload_collection_archive_package(self, *, collection_id, package, multipart_tracker=None):
+        self.uploads += 1
+        if self.uploads == 1:
+            raise RuntimeError("archive bucket unavailable")
+        return super().upload_collection_archive_package(
+            collection_id=collection_id,
+            package=package,
+            multipart_tracker=multipart_tracker,
+        )
+
+
+class _CountingProofStamper:
+    def __init__(self) -> None:
+        self.stamps = 0
+        self._stamper = FixtureProofStamper()
+
+    def stamp(self, manifest_path: Path) -> Path:
+        self.stamps += 1
+        return self._stamper.stamp(manifest_path)
+
+
 def _config(sqlite_path: Path, **overrides: object) -> RuntimeConfig:
     return RuntimeConfig(
         object_store="s3",
@@ -517,6 +542,75 @@ def test_failed_hot_promotion_keeps_staging_for_retry(tmp_path: Path) -> None:
         collection = session.get(CollectionRecord, collection_id)
         assert collection is not None
         assert len(collection.files) == 2
+
+
+def test_packaged_archive_artifacts_are_reused_after_upload_failure(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+
+    hot_store = _FakeHotStore()
+    upload_store = _StreamingOnlyUploadStore()
+    config = _config(sqlite_path, glacier_upload_retry_delay=timedelta(seconds=0))
+    service = SqlAlchemyCollectionService(config, hot_store, upload_store)
+
+    content = b"hello world\n"
+    relpath = "albums/day-01.txt"
+    payload = service.create_or_resume_upload(
+        upload_slug="photos 2024",
+        files=[
+            {
+                "path": relpath,
+                "bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        ],
+        ingest_source="/tmp/source",
+    )
+    collection_id = str(payload["collection_id"])
+    upload_session = service.create_or_resume_file_upload(collection_id, relpath)
+    service.append_upload_chunk(
+        collection_id,
+        relpath,
+        offset=int(upload_session["offset"]),
+        checksum="sha256 " + base64.b64encode(hashlib.sha256(content).digest()).decode("ascii"),
+        content=content,
+    )
+
+    archive_store = _FailOnceArchiveStore()
+    proof_stamper = _CountingProofStamper()
+    upload_service = SqlAlchemyGlacierUploadService(
+        config,
+        archive_store,
+        hot_store,
+        upload_store,
+        proof_stamper=proof_stamper,
+        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
+    )
+
+    assert upload_service.process_due_uploads() == 1
+    assert archive_store.uploads == 1
+    assert proof_stamper.stamps == 1
+
+    session_factory = make_session_factory(str(sqlite_path))
+    with session_scope(session_factory) as session:
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is not None
+        assert upload.archive_phase == "retry_wait"
+        assert upload.archive_manifest_bytes_b64 is not None
+        assert upload.archive_proof_bytes_b64 is not None
+        assert upload.archive_multipart_content_length is not None
+        assert upload.archive_multipart_sha256 is not None
+        upload.archive_next_attempt_at = "2026-04-20T04:00:00Z"
+
+    assert upload_service.process_due_uploads() == 1
+    assert archive_store.uploads == 2
+    assert proof_stamper.stamps == 1
+
+    with session_scope(session_factory) as session:
+        assert session.get(CollectionUploadRecord, collection_id) is None
+        collection = session.get(CollectionRecord, collection_id)
+        assert collection is not None
+        assert len(collection.files) == 1
 
 
 def test_archive_failures_retry_indefinitely_with_throttled_operator_notifications(

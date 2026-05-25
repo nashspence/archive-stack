@@ -8,6 +8,10 @@ from typing import Any, cast
 import pytest
 from botocore.exceptions import ClientError
 
+from riverhog_core.ports.archive_store import (
+    ArchiveMultipartUploadedPart,
+    ArchiveMultipartUploadState,
+)
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.stores.s3_hot_store import S3HotStore, _multipart_part_size
 
@@ -91,6 +95,18 @@ class _FakeS3Client:
             "Metadata": upload.get("Metadata", {}),
         }
         self.completed_uploads.append(UploadId)
+
+    def list_parts(self, **request: object) -> dict[str, object]:
+        upload = self.uploads[str(request["UploadId"])]
+        parts = [
+            {
+                "PartNumber": number,
+                "ETag": f"etag-{request['UploadId']}-{number}",
+                "Size": len(body),
+            }
+            for number, body in sorted(upload["Parts"].items())
+        ]
+        return {"Parts": parts, "IsTruncated": False}
 
     def abort_multipart_upload(self, *, Bucket: str, Key: str, UploadId: str) -> None:
         _ = Bucket, Key
@@ -204,6 +220,101 @@ def test_put_collection_file_stream_aborts_multipart_upload_after_failed_stream(
     assert client.aborted_uploads == ["upload-1"]
     assert client.completed_uploads == []
     assert client.uploads == {}
+
+
+class _MemoryMultipartTracker:
+    def __init__(self) -> None:
+        self.state: ArchiveMultipartUploadState | None = None
+        self.cleared_upload_ids: list[str] = []
+
+    def load_multipart_upload(
+        self,
+        *,
+        collection_id: str,
+        object_path: str,
+        part_size: int,
+        content_length: int,
+        sha256: str,
+    ) -> ArchiveMultipartUploadState | None:
+        _ = collection_id, object_path, part_size, content_length, sha256
+        return self.state
+
+    def save_multipart_upload(
+        self,
+        *,
+        collection_id: str,
+        state: ArchiveMultipartUploadState,
+    ) -> None:
+        _ = collection_id
+        self.state = state
+
+    def record_multipart_upload_progress(
+        self,
+        *,
+        collection_id: str,
+        state: ArchiveMultipartUploadState,
+        part: ArchiveMultipartUploadedPart,
+        uploaded_bytes: int,
+        uploaded_parts: int,
+        total_parts: int,
+    ) -> None:
+        _ = collection_id, uploaded_bytes, uploaded_parts, total_parts
+        self.state = ArchiveMultipartUploadState(
+            upload_id=state.upload_id,
+            object_path=state.object_path,
+            part_size=state.part_size,
+            content_length=state.content_length,
+            sha256=state.sha256,
+            parts=(*state.parts, part),
+        )
+
+    def clear_multipart_upload(self, *, collection_id: str, upload_id: str) -> None:
+        _ = collection_id
+        self.cleared_upload_ids.append(upload_id)
+        self.state = None
+
+
+def test_put_collection_file_stream_resumes_tracked_multipart_upload(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    store = _store_with_client(monkeypatch, tmp_path, client)
+    tracker = _MemoryMultipartTracker()
+    monkeypatch.setattr("riverhog_core.stores.s3_hot_store._MIN_MULTIPART_PART_SIZE", 4)
+
+    def interrupted_chunks() -> Iterable[bytes]:
+        yield b"abcd"
+        raise ValueError("network disappeared")
+
+    with pytest.raises(ValueError, match="network disappeared"):
+        store.put_collection_file_stream_resumable(
+            "docs",
+            "large.bin",
+            interrupted_chunks(),
+            content_length=9,
+            sha256="19cc02f26df43cc571bc9ed7b0c4d29224a3ec229529221725ef76d021c8326f",
+            multipart_tracker=tracker,
+        )
+
+    assert client.aborted_uploads == []
+    assert tracker.state is not None
+    assert len(tracker.state.parts) == 1
+
+    store.put_collection_file_stream_resumable(
+        "docs",
+        "large.bin",
+        (chunk for chunk in [b"abc", b"defg", b"hi"]),
+        content_length=9,
+        sha256="19cc02f26df43cc571bc9ed7b0c4d29224a3ec229529221725ef76d021c8326f",
+        multipart_tracker=tracker,
+    )
+
+    assert store.get_collection_file("docs", "large.bin") == b"abcdefghi"
+    assert client.uploaded_part_sizes == [4, 4, 1]
+    assert client.completed_uploads == ["upload-1"]
+    assert tracker.cleared_upload_ids == ["upload-1"]
+    assert tracker.state is None
 
 
 def test_multipart_part_size_scales_to_s3_part_limit(
