@@ -723,28 +723,22 @@ def test_archive_failures_retry_indefinitely_with_throttled_operator_notificatio
     assert upload_service.process_due_uploads() == 1
     assert archive_store.uploads == 1
     assert [payload["event"] for payload in webhook_payloads] == [
-        "collections.archive_started",
         "collections.archive_retrying",
     ]
-    assert webhook_payloads[1]["attempts"] == 1
+    assert webhook_payloads[0]["attempts"] == 1
 
     current = datetime(2026, 4, 20, 5, 0, tzinfo=UTC)
     assert upload_service.process_due_uploads() == 1
     assert archive_store.uploads == 2
     assert [payload["event"] for payload in webhook_payloads] == [
-        "collections.archive_started",
         "collections.archive_retrying",
-        "collections.archive_started",
     ]
 
     current = datetime(2026, 4, 21, 4, 0, 1, tzinfo=UTC)
     assert upload_service.process_due_uploads() == 1
     assert archive_store.uploads == 3
     assert [payload["event"] for payload in webhook_payloads] == [
-        "collections.archive_started",
         "collections.archive_retrying",
-        "collections.archive_started",
-        "collections.archive_started",
         "collections.archive_retrying",
     ]
     assert webhook_payloads[-1]["attempts"] == 3
@@ -758,6 +752,69 @@ def test_archive_failures_retry_indefinitely_with_throttled_operator_notificatio
         assert upload.archive_failure == "archive bucket unavailable"
         assert upload.archive_last_failure_notification_at == "2026-04-21T04:00:01Z"
         assert session.get(CollectionRecord, collection_id) is None
+
+
+def test_successful_archive_emits_only_finalized_operator_webhook(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+
+    webhook_payloads: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "riverhog_core.services.glacier_uploads.post_webhook",
+        lambda *, config, payload: webhook_payloads.append(payload),
+    )
+
+    hot_store = _FakeHotStore()
+    upload_store = _StreamingOnlyUploadStore()
+    archive_store = _CountingArchiveStore()
+    config = _config(
+        sqlite_path,
+        operator_webhook_url="http://example.invalid/webhook",
+    )
+    service = SqlAlchemyCollectionService(config, hot_store, upload_store)
+
+    content = b"hello world\n"
+    relpath = "albums/day-01.txt"
+    payload = service.create_or_resume_upload(
+        upload_slug="photos 2024",
+        files=[
+            {
+                "path": relpath,
+                "bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        ],
+        ingest_source="/tmp/source",
+    )
+    collection_id = str(payload["collection_id"])
+    upload_session = service.create_or_resume_file_upload(collection_id, relpath)
+    service.append_upload_chunk(
+        collection_id,
+        relpath,
+        offset=int(upload_session["offset"]),
+        checksum="sha256 " + base64.b64encode(hashlib.sha256(content).digest()).decode("ascii"),
+        content=content,
+    )
+
+    upload_service = SqlAlchemyGlacierUploadService(
+        config,
+        archive_store,
+        hot_store,
+        upload_store,
+        proof_stamper=FixtureProofStamper(),
+        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
+    )
+
+    assert upload_service.process_due_uploads() == 1
+
+    assert archive_store.uploads == 1
+    assert [payload["event"] for payload in webhook_payloads] == ["collections.finalized"]
+    assert webhook_payloads[0]["collection_id"] == collection_id
+    assert webhook_payloads[0]["archive_object_path"].endswith("/archive.tar")
+    assert webhook_payloads[0]["files_uploaded"] == 1
 
 
 def test_finalized_collection_upload_is_idempotent_for_same_slug_and_manifest(

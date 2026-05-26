@@ -363,11 +363,15 @@ operator-facing notifications to this endpoint, including collection ingest
 milestones, ready disc-image candidates, persistent archival failures after
 retries, and recovery-ready notifications or reminders.
 
-Collection events include `collections.upload_staged`,
-`collections.archive_started`, `collections.archive_uploaded`,
-`collections.promotion_started`, `collections.finalized`,
-`collections.archive_retrying`, `collections.planner_refreshed`,
-and `collections.planner_failed`. Ready burn candidates use `images.ready` and
+Collection events are intentionally sparse so long-running retries do not spam
+operators. Success milestones include `collections.upload_staged`,
+when the full collection has reached server custody, and
+`collections.finalized`, when the collection archive is safely uploaded to
+Glacier, hot-file promotion has finished, and the collection is available
+through Riverhog/WebDAV. Failure/attention events include
+`collections.archive_retrying`, paced by
+`RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL`, and
+`collections.planner_failed`. Ready burn candidates use `images.ready` and
 `images.ready.reminder`. Recovery events include `images.rebuild_ready` and
 `images.rebuild_ready.reminder`.
 

@@ -126,10 +126,14 @@ hot files, finish the remaining files, then atomically commit the finalized
 collection and archive records before deleting staged upload objects.
 
 When `RIVERHOG_OPERATOR_WEBHOOK_URL` is configured, Riverhog emits best-effort
-milestone notifications across these phases. The CLI can therefore exit at the
-staged handoff while operators receive phone or automation updates for archive
-completion, promotion, planner refresh, recovery readiness, and persistent
-failures.
+milestone notifications across these phases. These notifications are
+intentionally sparse: upload staged, collection finalized, ready disc-image
+candidates, recovery readiness, and persistent failures. The collection
+finalized notification is the reassuring handoff: the archive is safely in
+Glacier, hot-file promotion is complete, and the collection is available through
+Riverhog/WebDAV. The CLI can therefore exit at the staged handoff while
+operators still receive phone or automation updates for the important handoffs
+without per-part or per-retry noise.
 
 This follows Amazon S3's multipart contract: the upload id is required to upload
 parts, list parts, complete, or abort; completion requires part numbers and

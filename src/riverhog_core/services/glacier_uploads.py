@@ -222,15 +222,6 @@ class SqlAlchemyGlacierUploadService:
                 manifest_bytes = package.manifest_bytes
                 proof_bytes = package.proof_bytes
                 if receipt is None:
-                    self._post_collection_operator_webhook(
-                        event="collections.archive_started",
-                        collection_id=collection_id,
-                        details={
-                            **archive_details,
-                            "archive_total_bytes": package.archive_size,
-                            "archive_sha256": package.archive_sha256,
-                        },
-                    )
                     self._record_archive_phase(
                         collection_id=collection_id,
                         phase="uploading",
@@ -242,16 +233,6 @@ class SqlAlchemyGlacierUploadService:
                         multipart_tracker=_SqlAlchemyArchiveMultipartUploadTracker(
                             self._session_factory
                         ),
-                    )
-                    self._post_collection_operator_webhook(
-                        event="collections.archive_uploaded",
-                        collection_id=collection_id,
-                        details={
-                            **archive_details,
-                            "archive_object_path": receipt.archive.object_path,
-                            "archive_total_bytes": receipt.archive.stored_bytes,
-                            "archive_sha256": receipt.archive_sha256,
-                        },
                     )
                 self._record_completed_archive(
                     collection_id=collection_id,
@@ -266,11 +247,6 @@ class SqlAlchemyGlacierUploadService:
                 collection_id=collection_id,
                 manifest_bytes=manifest_bytes,
                 proof_bytes=proof_bytes,
-            )
-            self._post_collection_operator_webhook(
-                event="collections.promotion_started",
-                collection_id=collection_id,
-                details=archive_details,
             )
         except Exception as exc:
             self._record_collection_failure(collection_id=collection_id, error=_error_text(exc))
@@ -324,11 +300,6 @@ class SqlAlchemyGlacierUploadService:
                 config=self._config,
                 hot_store=hot_store,
                 recovery_payload_codec=self._recovery_payload_codec,
-            )
-            self._post_collection_operator_webhook(
-                event="collections.planner_refreshed",
-                collection_id=collection_id,
-                details=archive_details,
             )
         except Exception:
             _LOG.exception("failed to refresh provisional plan after archiving %s", collection_id)
