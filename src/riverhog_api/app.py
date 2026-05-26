@@ -5,6 +5,7 @@ import contextlib
 import json
 import logging
 import os
+import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
@@ -381,6 +382,7 @@ def create_app(
 
     config = load_runtime_config()
     app_container: ServiceContainer | None = container
+    app_container_lock = threading.Lock()
     sweep_interval = (
         timedelta(seconds=upload_expiry_reaper_interval)
         if upload_expiry_reaper_interval is not None
@@ -407,11 +409,15 @@ def create_app(
         if container_provider is not None:
             return container_provider()
         if app_container is None:
-            app_container = default_container()
+            with app_container_lock:
+                if app_container is None:
+                    app_container = default_container()
         return app_container
 
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        if container_provider is None:
+            get_or_create_container()
         upload_task = asyncio.create_task(
             _run_upload_expiry_reaper(
                 get_or_create_container,
