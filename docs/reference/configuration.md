@@ -748,6 +748,16 @@ server-owned file upload resource at a time. Keep the default for large-file
 collections when a single stream already fills the path; raise it for
 collections with many small files where per-file round trips dominate.
 
+### `RIVERHOG_UPLOAD_FILE_LOG_BYTES`
+
+- type: non-negative integer byte count
+- default: `1048576`
+
+Minimum logical file size that gets per-file start/completion log lines during
+`riverhog upload`. Smaller files still contribute to throttled total progress
+logs, and retries/errors always name the affected path. Set this to `0` for
+full per-file logging while debugging a small collection.
+
 ### `RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES`
 
 - type: positive integer byte count

@@ -35,6 +35,7 @@ The default upload profile is:
 ```text
 RIVERHOG_UPLOAD_CHUNK_BYTES=8388608
 RIVERHOG_UPLOAD_FILE_CONCURRENCY=1
+RIVERHOG_UPLOAD_FILE_LOG_BYTES=1048576
 RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES=262144
 RIVERHOG_UPLOAD_WRITE_DELAY_SECONDS=0.005
 RIVERHOG_UPLOAD_TIMEOUT_SECONDS=60
@@ -58,6 +59,11 @@ round-trip latency dominates. It does not change the server-side collection id
 or per-file resume contract; rerunning the same slug and timestamp still resumes
 the same logical collection upload. Increase it gradually and watch CLI retry
 logs plus server load.
+
+The default per-file log threshold keeps tiny-file uploads readable: files below
+`RIVERHOG_UPLOAD_FILE_LOG_BYTES` are represented by throttled total progress
+logs unless they hit a retry or error. Set the threshold to `0` when debugging a
+specific small-file path.
 
 Larger socket write slices or shorter write delays are riskier than larger
 request chunks. Do not benchmark more aggressive values after a failed or

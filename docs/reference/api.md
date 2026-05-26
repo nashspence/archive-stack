@@ -716,6 +716,9 @@ The CLI uploads one file at a time by default. Operators may set
 `RIVERHOG_UPLOAD_FILE_CONCURRENCY` to upload multiple logical files in parallel
 from one process, which is primarily useful for collections with thousands of
 small files. Each worker keeps the normal per-file resumable upload contract.
+Per-file start/completion logs are emitted only for files at or above
+`RIVERHOG_UPLOAD_FILE_LOG_BYTES`; smaller files still appear in total progress
+and in retry/error messages.
 See [Upload Transport Reference](upload-transport.md) for the operational
 findings, proxy guidance, and tuning procedure behind these defaults.
 `RIVERHOG_UPLOAD_BASE_URL` may

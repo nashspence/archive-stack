@@ -42,6 +42,7 @@ IMAGE_QUERY_HELP = "Substring match over id, filename, and collection ids"
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 UPLOAD_FILE_CONCURRENCY = 1
+UPLOAD_FILE_LOG_BYTES = 1 * 1024 * 1024
 UPLOAD_PROGRESS_INTERVAL_SECONDS = 5.0
 DOWNLOAD_PROGRESS_INTERVAL_SECONDS = 5.0
 UPLOAD_FINALIZE_POLL_SECONDS = 5.0
@@ -117,6 +118,23 @@ def _upload_file_concurrency() -> int:
         ) from exc
     if value <= 0:
         raise typer.BadParameter("RIVERHOG_UPLOAD_FILE_CONCURRENCY must be a positive integer")
+    return value
+
+
+def _upload_file_log_bytes() -> int:
+    raw_value = os.getenv("RIVERHOG_UPLOAD_FILE_LOG_BYTES")
+    if raw_value is None or raw_value.strip() == "":
+        return UPLOAD_FILE_LOG_BYTES
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise typer.BadParameter(
+            "RIVERHOG_UPLOAD_FILE_LOG_BYTES must be a non-negative integer"
+        ) from exc
+    if value < 0:
+        raise typer.BadParameter(
+            "RIVERHOG_UPLOAD_FILE_LOG_BYTES must be a non-negative integer"
+        )
     return value
 
 
@@ -285,13 +303,15 @@ def _upload_collection_file(
         raise RuntimeError(
             f"upload offset for {path_value} is {offset}, past expected length {length}"
         )
+    log_file = length >= _upload_file_log_bytes()
     if offset >= length:
-        _log_upload(f"Already uploaded {path_value} ({_format_bytes(length)})")
+        if log_file:
+            _log_upload(f"Already uploaded {path_value} ({_format_bytes(length)})")
         return
 
     if offset:
         _log_upload(f"Resuming {path_value} at {_format_bytes(offset)} of {_format_bytes(length)}")
-    else:
+    elif log_file:
         _log_upload(f"Uploading {path_value} ({_format_bytes(length)})")
 
     chunk_size = _upload_chunk_bytes()
@@ -357,7 +377,8 @@ def _upload_collection_file(
             offset = next_offset
     if offset != length:
         raise RuntimeError(f"upload for {path_value} stopped at {offset} of {length} bytes")
-    _log_upload(f"Uploaded {path_value} ({_format_bytes(length)})")
+    if log_file:
+        _log_upload(f"Uploaded {path_value} ({_format_bytes(length)})")
 
 
 def _upload_collection_files(

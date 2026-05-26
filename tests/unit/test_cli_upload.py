@@ -144,6 +144,21 @@ def test_upload_file_concurrency_rejects_invalid_env(
         riverhog_main._upload_file_concurrency()
 
 
+def test_upload_file_log_bytes_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RIVERHOG_UPLOAD_FILE_LOG_BYTES", "0")
+
+    assert riverhog_main._upload_file_log_bytes() == 0
+
+
+def test_upload_file_log_bytes_rejects_invalid_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_UPLOAD_FILE_LOG_BYTES", "-1")
+
+    with pytest.raises(typer.BadParameter):
+        riverhog_main._upload_file_log_bytes()
+
+
 def test_upload_collection_files_uses_worker_clients_when_concurrent(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
