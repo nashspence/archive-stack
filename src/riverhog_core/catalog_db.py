@@ -115,6 +115,13 @@ _COLUMN_MIGRATIONS: list[list[tuple[str, str, str]]] = [
         ("collection_upload_files", "hot_multipart_uploaded_parts", "INTEGER"),
         ("collection_upload_files", "hot_multipart_total_parts", "INTEGER"),
     ],
+    # version 17
+    [
+        ("planned_candidates", "ready_notification_sent_at", "TEXT"),
+        ("planned_candidates", "ready_notification_next_attempt_at", "TEXT"),
+        ("planned_candidates", "ready_notification_failure", "TEXT"),
+        ("planned_candidates", "ready_notification_count", "INTEGER"),
+    ],
 ]
 _TYPE_MIGRATIONS: dict[int, list[tuple[str, str, str]]] = {
     # version 10

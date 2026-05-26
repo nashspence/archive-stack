@@ -254,6 +254,11 @@ Required behavior:
   package has uploaded and verified
 - a provisional candidate may be re-allocated by the planner
 - finalized images are not returned by `GET /v1/plan`
+- allocation minimizes the number of candidate images that contain each collection before optimizing leftover disc fill;
+  the planner may reorder collection pieces across candidate images when doing so improves packing without increasing a
+  collection's image count
+- underfilled tail candidates are held out of the returned ready plan until future collections push them over the
+  configured minimum fill threshold
 - the response includes pagination metadata and a `candidates` array
 - the default ordering is fullest candidates first using `sort=fill&order=desc`
 - explicit sort and filter controls only change how the current provisional plan is listed; they do not change planner

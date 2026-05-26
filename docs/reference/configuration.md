@@ -345,22 +345,25 @@ encrypted files and finish the same candidate id.
 
 Single optional operator notification endpoint. Riverhog posts all
 operator-facing notifications to this endpoint, including collection ingest
-milestones, persistent archival failures after retries, and recovery-ready
-notifications or reminders.
+milestones, ready disc-image candidates, persistent archival failures after
+retries, and recovery-ready notifications or reminders.
 
 Collection events include `collections.upload_staged`,
 `collections.archive_started`, `collections.archive_uploaded`,
 `collections.promotion_started`, `collections.finalized`,
 `collections.archive_retrying`, `collections.planner_refreshed`,
-and `collections.planner_failed`. Recovery events include `images.rebuild_ready`
-and `images.rebuild_ready.reminder`.
+and `collections.planner_failed`. Ready burn candidates use `images.ready` and
+`images.ready.reminder`. Recovery events include `images.rebuild_ready` and
+`images.rebuild_ready.reminder`.
 
 Webhook delivery is best-effort; Riverhog catalog state remains authoritative.
 Collection payloads include `collection_id`, links back to the collection when
 `RIVERHOG_PUBLIC_BASE_URL` is configured, and event-specific progress such as
-file counts, staged bytes, archive bytes, object path, or failure details.
-Recovery payloads include the recovery session id, affected images, ready-data
-expiry, and reminder count.
+file counts, staged bytes, archive bytes, object path, or failure details. Ready
+image payloads include affected image ids, filenames, download URLs when
+`RIVERHOG_PUBLIC_BASE_URL` is configured, and reminder count. Recovery payloads
+include the recovery session id, affected images, ready-data expiry, and
+reminder count.
 
 ## `RIVERHOG_OPERATOR_WEBHOOK_TIMEOUT`
 
@@ -368,16 +371,16 @@ expiry, and reminder count.
 - default: `5s`
 
 Outbound timeout for one operator webhook delivery. Collection lifecycle webhook
-failures are logged but never block archival finalization. Recovery-ready
-delivery failures are retried while the restored archive data remains within
-its ready TTL.
+failures are logged but never block archival finalization. Ready disc-image and
+recovery-ready delivery failures are retried by their background workers.
 
 ## `RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY`
 
 - type: duration
 - default: `60s`
 
-Delay before Riverhog retries a failed recovery-ready webhook delivery.
+Delay before Riverhog retries a failed ready disc-image or recovery-ready
+webhook delivery.
 
 With `RIVERHOG_OPERATOR_WEBHOOK_URL` configured, Riverhog rejects startup if
 `RIVERHOG_GLACIER_RECOVERY_READY_TTL` is shorter than
@@ -388,9 +391,10 @@ With `RIVERHOG_OPERATOR_WEBHOOK_URL` configured, Riverhog rejects startup if
 - type: duration
 - default: `1h`
 
-Interval between repeated ready reminders while restored collection archive data
-or image rebuild staging data remains available and the recovery session is
-still incomplete.
+Interval between repeated ready reminders while a burnable disc-image candidate
+is still unfinalized, restored collection archive data remains available, or
+image rebuild staging data remains available and the recovery session is still
+incomplete.
 
 ## `RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL`
 

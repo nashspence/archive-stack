@@ -49,8 +49,8 @@ def test_build_recovery_ready_payload_includes_session_and_image_urls() -> None:
         reminder=False,
     )
     assert payload == {
-            "event": "images.rebuild_ready",
-            "type": "image_rebuild",
+        "event": "images.rebuild_ready",
+        "type": "image_rebuild",
         "session_id": "rs-20260420T040001Z-1",
         "session_url": "https://api.test/v1/recovery-sessions/rs-20260420T040001Z-1",
         "delivered_at": "2026-04-20T05:00:00Z",
@@ -83,7 +83,5 @@ def test_build_collection_lifecycle_payload_includes_links_and_details() -> None
     assert payload["event"] == "collections.upload_staged"
     assert payload["type"] == "collection_lifecycle"
     assert payload["collection_id"] == "2025/20250712T213200Z__home-videos"
-    assert payload["collection_url"].endswith(
-        "/v1/collections/2025/20250712T213200Z__home-videos"
-    )
+    assert payload["collection_url"].endswith("/v1/collections/2025/20250712T213200Z__home-videos")
     assert payload["files_total"] == 572

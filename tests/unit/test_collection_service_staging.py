@@ -933,6 +933,79 @@ def test_completed_glacier_upload_refreshes_provisional_disc_plan(tmp_path: Path
     )
 
 
+def test_ready_disc_candidate_sends_operator_webhook(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+
+    config = _config(
+        sqlite_path,
+        planner_disc_target_bytes=10_000_000,
+        planner_min_fill_bytes=1,
+        planner_image_root=tmp_path / "images",
+        operator_webhook_url="http://example.invalid/webhook",
+        operator_webhook_reminder_interval=timedelta(hours=1),
+    )
+    hot_store = _FakeHotStore()
+    upload_store = _FakeUploadStore()
+    service = SqlAlchemyCollectionService(config, hot_store, upload_store)
+
+    content = b"planner payload\n"
+    sha256 = hashlib.sha256(content).hexdigest()
+    relpath = "albums/day-01.txt"
+
+    payload = service.create_or_resume_upload(
+        upload_slug="photos 2024",
+        files=[{"path": relpath, "bytes": len(content), "sha256": sha256}],
+        ingest_source="/tmp/source",
+    )
+    collection_id = str(payload["collection_id"])
+    upload_session = service.create_or_resume_file_upload(collection_id, relpath)
+    service.append_upload_chunk(
+        collection_id,
+        relpath,
+        offset=int(upload_session["offset"]),
+        checksum="sha256 " + base64.b64encode(hashlib.sha256(content).digest()).decode("ascii"),
+        content=content,
+    )
+
+    upload_service = SqlAlchemyGlacierUploadService(
+        config,
+        _FakeArchiveStore(),
+        hot_store,
+        upload_store,
+        proof_stamper=FixtureProofStamper(),
+        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
+    )
+    assert upload_service.process_due_uploads() == 1
+
+    webhook_payloads: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "riverhog_core.services.planning.post_webhook",
+        lambda *, config, payload: webhook_payloads.append(payload),
+    )
+    planning = SqlAlchemyPlanningService(
+        config,
+        hot_store,
+        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
+    )
+
+    assert planning.process_due_refresh() == 1
+    assert planning.process_due_refresh() == 0
+
+    assert [payload["event"] for payload in webhook_payloads] == ["images.ready"]
+    image = webhook_payloads[0]["images"][0]
+    assert image["filename"].endswith(".iso")
+    assert image["download_url"].endswith(f"/v1/images/{image['image_id']}/iso")
+    with session_scope(make_session_factory(str(sqlite_path))) as session:
+        candidate = session.scalars(select(PlannedCandidateRecord)).one()
+        assert candidate.ready_notification_sent_at is not None
+        assert candidate.ready_notification_next_attempt_at is not None
+        assert candidate.ready_notification_count == 1
+
+
 def test_provisional_disc_plan_materialization_resumes_partial_candidate(
     tmp_path: Path,
 ) -> None:

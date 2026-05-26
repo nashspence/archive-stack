@@ -127,6 +127,12 @@ class PlannedCandidateRecord(Base):
     image_root: Mapped[str] = mapped_column(String)
     target_bytes: Mapped[int] = mapped_column(BigInteger)
     min_fill_bytes: Mapped[int] = mapped_column(BigInteger)
+    ready_notification_sent_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    ready_notification_next_attempt_at: Mapped[str | None] = mapped_column(
+        String, nullable=True
+    )
+    ready_notification_failure: Mapped[str | None] = mapped_column(String, nullable=True)
+    ready_notification_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     covered_paths: Mapped[list[CandidateCoveredPathRecord]] = relationship(
         back_populates="candidate",

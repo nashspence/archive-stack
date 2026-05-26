@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from riverhog_core.archive_compliance import (
     copy_counts_as_verified,
@@ -66,6 +66,14 @@ from riverhog_core.recovery_payloads import (
     RecoveryPayloadError,
 )
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.webhooks import (
+    ImagesReadyBatch,
+    ReadyImage,
+    WebhookConfig,
+    build_images_ready_payload,
+    post_webhook,
+    utcnow,
+)
 
 _LOG = logging.getLogger(__name__)
 _ENCRYPTED_SIZE_PAD_BYTES = 8192
@@ -126,6 +134,13 @@ class _CandidateSpec:
     pieces: tuple[_PlanPiece, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _CollectionPieceGroup:
+    collection_id: str
+    pieces: tuple[_PlanPiece, ...]
+    estimated_bytes: int
+
+
 class SqlAlchemyPlanningService:
     def __init__(
         self,
@@ -155,15 +170,22 @@ class SqlAlchemyPlanningService:
     def process_due_refresh(self, *, limit: int = 1) -> int:
         if limit < 1 or self._hot_store is None:
             return 0
+        processed = 0
         with session_scope(self._session_factory) as session:
-            if not _planner_refresh_needed(session, self._config):
-                return 0
-        refresh_provisional_plan(
+            refresh_needed = _planner_refresh_needed(session, self._config)
+        if refresh_needed:
+            refresh_provisional_plan(
+                config=self._config,
+                hot_store=self._hot_store,
+                recovery_payload_codec=self._recovery_payload_codec,
+            )
+            processed = 1
+        if _deliver_due_ready_candidate_notifications(
             config=self._config,
-            hot_store=self._hot_store,
-            recovery_payload_codec=self._recovery_payload_codec,
-        )
-        return 1
+            session_factory=self._session_factory,
+        ):
+            processed = 1
+        return processed
 
     def get_plan(
         self,
@@ -730,6 +752,128 @@ def _planner_refresh_needed(session: Session, config: RuntimeConfig) -> bool:
     return not plan_pairs.issubset(covered_pairs)
 
 
+def _deliver_due_ready_candidate_notifications(
+    *,
+    config: RuntimeConfig,
+    session_factory: sessionmaker[Session],
+) -> int:
+    if not config.operator_webhook_url:
+        return 0
+    current = utcnow()
+    current_text = _isoformat_z(current)
+    with session_scope(session_factory) as session:
+        due_candidates = [
+            candidate
+            for candidate in _ready_notification_candidates(session)
+            if _ready_notification_due(candidate, current_text)
+        ]
+    delivered = 0
+    for candidate_id in [candidate.candidate_id for candidate in due_candidates]:
+        with session_scope(session_factory) as session:
+            candidate = session.get(PlannedCandidateRecord, candidate_id)
+            if candidate is None or not _candidate_is_ready_for_notification(
+                session,
+                candidate,
+            ):
+                continue
+            batch = _candidate_ready_notification_batch(candidate)
+        try:
+            webhook_config = WebhookConfig(
+                url=config.operator_webhook_url,
+                base_url=config.public_base_url or "",
+                timeout_seconds=config.operator_webhook_timeout.total_seconds(),
+                retry_seconds=config.operator_webhook_retry_delay.total_seconds(),
+                reminder_interval_seconds=config.operator_webhook_reminder_interval.total_seconds(),
+            )
+            post_webhook(
+                config=webhook_config,
+                payload=build_images_ready_payload(
+                    config=webhook_config,
+                    batch=batch,
+                    delivered_at=current,
+                ),
+            )
+        except Exception as exc:
+            with session_scope(session_factory) as session:
+                candidate = session.get(PlannedCandidateRecord, candidate_id)
+                if candidate is not None:
+                    candidate.ready_notification_failure = (
+                        str(exc).strip() or exc.__class__.__name__
+                    )
+                    candidate.ready_notification_next_attempt_at = _isoformat_z(
+                        current + config.operator_webhook_retry_delay
+                    )
+            _LOG.warning(
+                "failed to deliver ready image webhook for %s",
+                candidate_id,
+                exc_info=True,
+            )
+            continue
+
+        with session_scope(session_factory) as session:
+            candidate = session.get(PlannedCandidateRecord, candidate_id)
+            if candidate is None:
+                continue
+            if candidate.ready_notification_sent_at is None:
+                candidate.ready_notification_sent_at = current_text
+            candidate.ready_notification_count = int(candidate.ready_notification_count or 0) + 1
+            candidate.ready_notification_failure = None
+            if config.operator_webhook_reminder_interval.total_seconds() > 0:
+                candidate.ready_notification_next_attempt_at = _isoformat_z(
+                    current + config.operator_webhook_reminder_interval
+                )
+            else:
+                candidate.ready_notification_next_attempt_at = None
+        delivered += 1
+    return delivered
+
+
+def _ready_notification_candidates(session: Session) -> list[PlannedCandidateRecord]:
+    finalized_ids = set(session.scalars(select(FinalizedImageRecord.image_id)).all())
+    return [
+        candidate
+        for candidate in session.scalars(select(PlannedCandidateRecord)).all()
+        if candidate.finalized_id not in finalized_ids
+        if _candidate_state(candidate) == "ready"
+        if candidate.iso_ready
+    ]
+
+
+def _candidate_is_ready_for_notification(
+    session: Session,
+    candidate: PlannedCandidateRecord,
+) -> bool:
+    if session.get(FinalizedImageRecord, candidate.finalized_id) is not None:
+        return False
+    return _candidate_state(candidate) == "ready" and bool(candidate.iso_ready)
+
+
+def _ready_notification_due(candidate: PlannedCandidateRecord, current_text: str) -> bool:
+    if candidate.ready_notification_sent_at is None:
+        return True
+    next_attempt = candidate.ready_notification_next_attempt_at
+    return next_attempt is not None and next_attempt <= current_text
+
+
+def _candidate_ready_notification_batch(
+    candidate: PlannedCandidateRecord,
+) -> ImagesReadyBatch:
+    notification_count = int(candidate.ready_notification_count or 0)
+    return ImagesReadyBatch(
+        batch_id=f"candidate-ready-{candidate.candidate_id}",
+        images=[
+            ReadyImage(
+                image_id=candidate.finalized_id,
+                filename=candidate.filename,
+                iso_available=True,
+            )
+        ],
+        reminder_count=max(0, notification_count - 1),
+        initial_sent_at=_parse_isoformat_z(candidate.ready_notification_sent_at),
+        next_attempt_at=_parse_isoformat_z(candidate.ready_notification_next_attempt_at),
+    )
+
+
 def _load_plan_files(session: Session, config: RuntimeConfig) -> list[_PlanFile]:
     finalized_paths = {
         (str(collection_id), str(path))
@@ -816,39 +960,117 @@ def _build_plan_piece_groups(
                 )
             )
 
-    pieces.sort(key=lambda piece: (piece.collection_id, piece.path, piece.part_index))
+    pieces_by_collection: dict[str, list[_PlanPiece]] = {}
+    for piece in sorted(pieces, key=lambda p: (p.collection_id, p.path, p.part_index)):
+        pieces_by_collection.setdefault(piece.collection_id, []).append(piece)
     artifact_estimates = {
         collection_id: _collection_artifact_estimate(config, collection_id)
         for collection_id in sorted({piece.collection_id for piece in pieces})
     }
     metadata_pad = _candidate_metadata_pad(config.planner_disc_target_bytes)
-    groups: list[list[_PlanPiece]] = []
-    current: list[_PlanPiece] = []
-    current_estimated_bytes = 0
-    current_collections: set[str] = set()
+    payload_capacity = max(1, config.planner_disc_target_bytes - metadata_pad)
+    collection_groups: list[_CollectionPieceGroup] = []
+    for collection_id in sorted(pieces_by_collection):
+        collection_groups.extend(
+            _build_collection_piece_groups(
+                pieces_by_collection[collection_id],
+                artifact_estimate=artifact_estimates[collection_id],
+                payload_capacity=payload_capacity,
+            )
+        )
+    return _pack_collection_piece_groups(
+        collection_groups,
+        payload_capacity=payload_capacity,
+    )
 
-    for piece in pieces:
-        additional_bytes = piece.estimated_total_bytes
-        if piece.collection_id not in current_collections:
-            additional_bytes += artifact_estimates[piece.collection_id]
-        if (
-            current
-            and current_estimated_bytes + additional_bytes + metadata_pad
-            > config.planner_disc_target_bytes
-        ):
-            groups.append(current)
-            current = []
-            current_estimated_bytes = 0
-            current_collections = set()
-            additional_bytes = piece.estimated_total_bytes + artifact_estimates[piece.collection_id]
 
-        current.append(piece)
-        current_estimated_bytes += additional_bytes
-        current_collections.add(piece.collection_id)
+def _build_collection_piece_groups(
+    pieces: Sequence[_PlanPiece],
+    *,
+    artifact_estimate: int,
+    payload_capacity: int,
+) -> list[_CollectionPieceGroup]:
+    if not pieces:
+        return []
 
-    if current:
-        groups.append(current)
-    return groups
+    collection_id = pieces[0].collection_id
+    bins: list[tuple[int, list[_PlanPiece]]] = []
+    for piece in sorted(
+        pieces,
+        key=lambda p: (-p.estimated_total_bytes, p.path, p.part_index),
+    ):
+        best_index: int | None = None
+        best_remaining: int | None = None
+        for idx, (estimated_bytes, _bin_pieces) in enumerate(bins):
+            next_bytes = estimated_bytes + piece.estimated_total_bytes
+            if next_bytes > payload_capacity:
+                continue
+            remaining = payload_capacity - next_bytes
+            if best_remaining is None or remaining < best_remaining:
+                best_index = idx
+                best_remaining = remaining
+
+        if best_index is None:
+            bins.append((artifact_estimate + piece.estimated_total_bytes, [piece]))
+            continue
+
+        estimated_bytes, bin_pieces = bins[best_index]
+        bin_pieces.append(piece)
+        bins[best_index] = (estimated_bytes + piece.estimated_total_bytes, bin_pieces)
+
+    return [
+        _CollectionPieceGroup(
+            collection_id=collection_id,
+            pieces=tuple(sorted(bin_pieces, key=lambda p: (p.path, p.part_index))),
+            estimated_bytes=estimated_bytes,
+        )
+        for estimated_bytes, bin_pieces in bins
+    ]
+
+
+def _pack_collection_piece_groups(
+    collection_groups: Sequence[_CollectionPieceGroup],
+    *,
+    payload_capacity: int,
+) -> list[list[_PlanPiece]]:
+    candidate_bins: list[tuple[int, set[str], list[_CollectionPieceGroup]]] = []
+    for group in sorted(
+        collection_groups,
+        key=lambda g: (-g.estimated_bytes, g.collection_id, g.pieces[0].path),
+    ):
+        best_index: int | None = None
+        best_remaining: int | None = None
+        for idx, (estimated_bytes, collection_ids, _groups) in enumerate(candidate_bins):
+            if group.collection_id in collection_ids:
+                continue
+            next_bytes = estimated_bytes + group.estimated_bytes
+            if next_bytes > payload_capacity:
+                continue
+            remaining = payload_capacity - next_bytes
+            if best_remaining is None or remaining < best_remaining:
+                best_index = idx
+                best_remaining = remaining
+
+        if best_index is None:
+            candidate_bins.append((group.estimated_bytes, {group.collection_id}, [group]))
+            continue
+
+        estimated_bytes, collection_ids, groups = candidate_bins[best_index]
+        collection_ids.add(group.collection_id)
+        groups.append(group)
+        candidate_bins[best_index] = (
+            estimated_bytes + group.estimated_bytes,
+            collection_ids,
+            groups,
+        )
+
+    return [
+        sorted(
+            [piece for group in groups for piece in group.pieces],
+            key=lambda p: (p.collection_id, p.path, p.part_index),
+        )
+        for _estimated_bytes, _collection_ids, groups in candidate_bins
+    ]
 
 
 def _collection_artifact_estimate(config: RuntimeConfig, collection_id: str) -> int:
@@ -1310,6 +1532,16 @@ def _utc_now() -> str:
     from datetime import UTC, datetime  # noqa: PLC0415
 
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _isoformat_z(value: datetime) -> str:
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_isoformat_z(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
 
 
 def _image_id_to_finalized_at(image_id: str) -> str:
