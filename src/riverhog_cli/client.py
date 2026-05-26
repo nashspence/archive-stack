@@ -4,7 +4,7 @@ import base64
 import hashlib
 import os
 import time
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -27,7 +27,9 @@ _HTTP_TIMEOUT_SECONDS = 300.0
 _UPLOAD_TIMEOUT_SECONDS = 60.0
 _UPLOAD_WRITE_CHUNK_BYTES = 256 * 1024
 _UPLOAD_WRITE_DELAY_SECONDS = 0.005
+_DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 _TRANSIENT_HTTP_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+DownloadProgress = Callable[[int, int | None], None]
 
 
 def _bool_env(env_name: str, default: bool) -> bool:
@@ -318,31 +320,67 @@ class ApiClient:
             f"/v1/recovery-sessions/{quote(session_id, safe='/')}/complete",
         )
 
-    def download_iso(self, image_id: str, output: Path | None = None) -> bytes:
+    def _download(
+        self,
+        path: str,
+        output: Path | None = None,
+        *,
+        progress: DownloadProgress | None = None,
+    ) -> bytes | int:
         with self._client() as client:
-            response = client.get(f"/v1/images/{image_id}/iso")
-        self._raise_for_error(response)
-        content = response.content
-        if output is not None:
-            output.write_bytes(content)
-        return content
+            if output is None:
+                response = client.get(path)
+                self._raise_for_error(response)
+                return response.content
+
+            with client.stream("GET", path) as response:
+                if not response.is_success:
+                    response.read()
+                    self._raise_for_error(response)
+
+                content_length = response.headers.get("Content-Length")
+                try:
+                    total_bytes = int(content_length) if content_length is not None else None
+                except ValueError:
+                    total_bytes = None
+                tmp_output = output.with_name(f".{output.name}.part")
+                output.parent.mkdir(parents=True, exist_ok=True)
+
+                downloaded = 0
+                with tmp_output.open("wb") as handle:
+                    for chunk in response.iter_bytes(chunk_size=_DOWNLOAD_CHUNK_BYTES):
+                        if not chunk:
+                            continue
+                        handle.write(chunk)
+                        downloaded += len(chunk)
+                        if progress is not None:
+                            progress(downloaded, total_bytes)
+                tmp_output.replace(output)
+                return downloaded
+
+    def download_iso(
+        self,
+        image_id: str,
+        output: Path | None = None,
+        *,
+        progress: DownloadProgress | None = None,
+    ) -> bytes | int:
+        return self._download(f"/v1/images/{image_id}/iso", output, progress=progress)
 
     def download_recovered_iso(
         self,
         session_id: str,
         image_id: str,
         output: Path | None = None,
-    ) -> bytes:
-        with self._client() as client:
-            response = client.get(
-                "/v1/recovery-sessions/"
-                f"{quote(session_id, safe='/')}/images/{quote(image_id, safe='/')}/iso"
-            )
-        self._raise_for_error(response)
-        content = response.content
-        if output is not None:
-            output.write_bytes(content)
-        return content
+        *,
+        progress: DownloadProgress | None = None,
+    ) -> bytes | int:
+        return self._download(
+            "/v1/recovery-sessions/"
+            f"{quote(session_id, safe='/')}/images/{quote(image_id, safe='/')}/iso",
+            output,
+            progress=progress,
+        )
 
     def register_copy(
         self,

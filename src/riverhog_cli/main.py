@@ -41,6 +41,7 @@ IMAGE_QUERY_HELP = "Substring match over id, filename, and collection ids"
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 UPLOAD_PROGRESS_INTERVAL_SECONDS = 5.0
+DOWNLOAD_PROGRESS_INTERVAL_SECONDS = 5.0
 UPLOAD_FINALIZE_POLL_SECONDS = 5.0
 UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS = 30.0
 TRANSIENT_UPLOAD_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
@@ -160,6 +161,33 @@ def _format_bytes(value: int) -> str:
 
 def _log_upload(message: str) -> None:
     typer.echo(message, err=True)
+
+
+def _download_progress_logger() -> Callable[[int, int | None], None]:
+    started_at = time.monotonic()
+    last_logged_at = started_at
+
+    def progress(downloaded_bytes: int, total_bytes: int | None) -> None:
+        nonlocal last_logged_at
+        now = time.monotonic()
+        if now - last_logged_at < DOWNLOAD_PROGRESS_INTERVAL_SECONDS:
+            return
+        elapsed = max(now - started_at, 0.001)
+        rate = downloaded_bytes / elapsed
+        if total_bytes is None or total_bytes <= 0:
+            total_text = "unknown"
+            percent_text = ""
+        else:
+            total_text = _format_bytes(total_bytes)
+            percent_text = f" ({downloaded_bytes / total_bytes * 100.0:.1f}%)"
+        _log_upload(
+            "Download progress: "
+            f"{_format_bytes(downloaded_bytes)} / {total_text}{percent_text} "
+            f"at {_format_bytes(int(rate))}/s"
+        )
+        last_logged_at = now
+
+    return progress
 
 
 def _is_transient_upload_error(exc: BaseException) -> bool:
@@ -815,28 +843,19 @@ def iso_get_cmd(
     image_id: Annotated[str, typer.Argument(help="Image id")],
     output: Annotated[Path | None, typer.Option("-o", "--output", help="Output path")] = None,
 ) -> None:
-    content = client().download_iso(image_id, output)
+    import sys
+
     if output is None:
+        content = client().download_iso(image_id)
+        if not isinstance(content, bytes):
+            raise typer.Exit(code=1)
+        sys.stdout.buffer.write(content)
         raise typer.Exit(code=0)
-    typer.echo(f"wrote {len(content)} bytes to {output}")
 
-
-@iso_app.command("candidates")
-def iso_candidates_cmd(
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
-    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "fill",
-    order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    payload = client().get_plan(
-        page=page,
-        per_page=per_page,
-        sort=sort,
-        order=order,
-        iso_ready=True,
-    )
-    emit(payload if json_mode else format_plan(payload), json_mode=json_mode)
+    typer.echo(f"downloading ISO {image_id} to {output}", err=True)
+    content = client().download_iso(image_id, output, progress=_download_progress_logger())
+    downloaded_bytes = len(content) if isinstance(content, bytes) else content
+    typer.echo(f"wrote {downloaded_bytes} bytes to {output}")
 
 
 @iso_app.command("finalize")

@@ -688,7 +688,6 @@ The `riverhog` CLI is a thin API client and should provide at least:
 - `riverhog plan [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--iso-ready|--not-ready]`
 - `riverhog images [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--has-copies|--no-copies]`
 - `riverhog glacier [--collection ID]`
-- `riverhog iso candidates [--page N] [--per-page N] [--sort FIELD] [--order asc|desc]`
 - `riverhog iso finalize CANDIDATE_ID`
 - `riverhog iso get IMAGE_ID [-o FILE]`
 - `riverhog copy add IMAGE_ID --at LOCATION [--copy-id GENERATED_ID]`
@@ -770,13 +769,12 @@ change the default.
 
 For finalized-image commands:
 
-- `CANDIDATE_ID` means a ready provisional candidate id returned by `riverhog iso candidates` or `riverhog plan --iso-ready`
+- `CANDIDATE_ID` means a ready provisional candidate id returned by `riverhog plan --iso-ready`
 - `IMAGE_ID` means the finalized image id
 - finalized image ids use compact UTC basic form `YYYYMMDDTHHMMSSZ`
 - `riverhog images --json` mirrors the `GET /v1/images` response payload
 - `riverhog glacier --json` mirrors the `GET /v1/glacier` response payload
 - `riverhog plan --json` mirrors the `GET /v1/plan` response payload
-- `riverhog iso candidates` is the operator-facing shortcut for the ready subset of `riverhog plan --iso-ready`
 - `riverhog iso finalize CANDIDATE_ID` mirrors `POST /v1/plan/candidates/{candidate_id}/finalize`
 - non-JSON `riverhog plan` output stays concise and line-oriented while surfacing candidate id, fill, readiness, and
   contained collections

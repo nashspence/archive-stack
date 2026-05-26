@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from pathlib import Path
 
 import httpx
 import pytest
@@ -257,6 +258,44 @@ def test_finalize_image_uses_candidate_finalize_endpoint(monkeypatch) -> None:
 
     assert payload["id"] == "20260420T040001Z"
     assert captured == [("POST", "https://api.test/v1/plan/candidates/img_2026-04-20_01/finalize")]
+
+
+def test_download_iso_streams_to_output_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: list[str] = []
+    content = b"fixture-iso\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(str(request.url))
+        return httpx.Response(
+            200,
+            headers={"Content-Length": str(len(content))},
+            content=content,
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_client(self: ApiClient) -> httpx.Client:
+        return httpx.Client(base_url=self.base_url, transport=transport)
+
+    monkeypatch.setattr(ApiClient, "_client", fake_client)
+
+    progress: list[tuple[int, int | None]] = []
+    output = tmp_path / "image.iso"
+    client = ApiClient(base_url="https://api.test")
+    downloaded = client.download_iso(
+        "20260420T040001Z",
+        output,
+        progress=lambda downloaded, total: progress.append((downloaded, total)),
+    )
+
+    assert downloaded == len(content)
+    assert output.read_bytes() == content
+    assert not (tmp_path / ".image.iso.part").exists()
+    assert progress == [(len(content), len(content))]
+    assert captured == ["https://api.test/v1/images/20260420T040001Z/iso"]
 
 
 def test_get_glacier_report_uses_glacier_endpoint_with_filters(monkeypatch) -> None:
