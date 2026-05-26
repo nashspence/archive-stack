@@ -5,6 +5,7 @@ from pathlib import Path
 
 from riverhog_core.iso.streaming import (
     ISO_BLOCK_BYTES,
+    STDOUT_STREAM_TRAILER_BLOCKS,
     IsoEntry,
     IsoVolume,
     _parse_print_size_blocks,
@@ -116,7 +117,7 @@ def test_estimate_iso_size_from_root_converts_blocks_to_bytes(monkeypatch, tmp_p
 
     monkeypatch.setattr("riverhog_core.iso.streaming.subprocess.run", fake_run)
     used = estimate_iso_size_from_root(image_root=root, volume_id="VOL_ROOT", fallback_bytes=77)
-    assert used == 4321 * ISO_BLOCK_BYTES
+    assert used == (4321 + STDOUT_STREAM_TRAILER_BLOCKS) * ISO_BLOCK_BYTES
 
 
 def test_estimate_iso_size_from_root_falls_back_if_xorriso_missing(

@@ -16,6 +16,8 @@ from riverhog_core.domain.errors import Conflict
 XORRISO = shutil.which("xorriso") or "xorriso"
 CHUNK_BYTES = 1024 * 1024
 ISO_BLOCK_BYTES = 2048
+# xorriso's stdout stream outdev writes an 8-sector trailer beyond -print-size.
+STDOUT_STREAM_TRAILER_BLOCKS = 8
 _PRINT_SIZE_RE = re.compile(r"(?:^|\b)(?:size=)?(?P<blocks>\d+)(?:\b|$)")
 _IMAGE_SIZE_RE = re.compile(r"Image size\s*:\s*(?P<blocks>\d+)s\b")
 
@@ -173,7 +175,7 @@ def estimate_iso_size_from_root(*, image_root: Path, volume_id: str, fallback_by
         if not combined:
             return fallback_bytes
         raise
-    return blocks * ISO_BLOCK_BYTES
+    return (blocks + STDOUT_STREAM_TRAILER_BLOCKS) * ISO_BLOCK_BYTES
 
 
 async def _drain_stderr(stream: asyncio.StreamReader | None, *, limit: int = 1_000_000) -> bytes:
