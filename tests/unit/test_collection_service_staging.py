@@ -35,6 +35,7 @@ from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.glacier_uploads import SqlAlchemyGlacierUploadService
 from riverhog_core.services.planning import (
+    SqlAlchemyPlanningService,
     cache_collection_archive_artifacts,
     refresh_provisional_plan,
 )
@@ -463,9 +464,7 @@ def test_completed_collection_upload_promotes_from_staging_and_cleans_up(
 
     assert hot_store.get_collection_file(collection_id, relpath) == content
     assert staging_target in upload_store.deleted_targets
-    assert [payload["event"] for payload in webhook_payloads] == [
-        "collections.upload_staged"
-    ]
+    assert [payload["event"] for payload in webhook_payloads] == ["collections.upload_staged"]
 
 
 def test_failed_hot_promotion_keeps_staging_for_retry(tmp_path: Path) -> None:
@@ -679,7 +678,7 @@ def test_archive_failures_retry_indefinitely_with_throttled_operator_notificatio
     assert archive_store.uploads == 1
     assert [payload["event"] for payload in webhook_payloads] == [
         "collections.archive_started",
-        "collections.archive_retrying"
+        "collections.archive_retrying",
     ]
     assert webhook_payloads[1]["attempts"] == 1
 
@@ -1032,6 +1031,110 @@ def test_provisional_disc_plan_materialization_resumes_partial_candidate(
         assert candidate.failure is None
         assert Path(candidate.image_root).exists()
         assert not Path(candidate.image_root).with_name(f".{candidate.candidate_id}.tmp").exists()
+
+
+def test_underfilled_tail_candidate_waits_without_materializing(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+    config = _config(
+        sqlite_path,
+        planner_disc_target_bytes=10_000_000,
+        planner_min_fill_bytes=9_000_000,
+        planner_image_root=tmp_path / "images",
+    )
+    collection_id = "2026/20260525T000000Z__tail"
+    path = "tail.txt"
+    content = b"tail payload\n"
+    sha256 = hashlib.sha256(content).hexdigest()
+    hot_store = _FakeHotStore()
+    hot_store.put_collection_file(collection_id, path, content)
+
+    archive_package = build_collection_archive_package(
+        collection_id=collection_id,
+        files=(
+            CollectionArchiveFile(
+                path=path,
+                content=content,
+                sha256=sha256,
+            ),
+        ),
+        stamper=FixtureProofStamper(),
+    )
+    package = _FakeArchiveStore().upload_collection_archive_package(
+        collection_id=collection_id,
+        package=archive_package,
+    )
+    cache_collection_archive_artifacts(
+        config,
+        collection_id=collection_id,
+        manifest_bytes=archive_package.manifest_bytes,
+        proof_bytes=archive_package.proof_bytes,
+    )
+    session_factory = make_session_factory(str(sqlite_path))
+    with session_scope(session_factory) as session:
+        collection = CollectionRecord(id=collection_id)
+        collection.files.append(
+            CollectionFileRecord(
+                collection_id=collection_id,
+                path=path,
+                bytes=len(content),
+                sha256=sha256,
+                hot=True,
+                archived=False,
+            )
+        )
+        session.add(collection)
+        session.add(
+            CollectionArchiveRecord(
+                collection_id=collection_id,
+                state="uploaded",
+                object_path=package.archive.object_path,
+                stored_bytes=package.archive.stored_bytes,
+                sha256=package.archive_sha256,
+                backend="s3",
+                storage_class="DEEP_ARCHIVE",
+                manifest_object_path=package.manifest.object_path,
+                manifest_sha256=package.manifest_sha256,
+                manifest_stored_bytes=0,
+                ots_object_path=package.proof.object_path,
+                ots_sha256=package.proof_sha256,
+                ots_stored_bytes=0,
+            )
+        )
+
+    planning = SqlAlchemyPlanningService(
+        config,
+        hot_store,
+        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
+    )
+
+    assert planning.process_due_refresh() == 1
+    assert planning.process_due_refresh() == 0
+
+    with session_scope(session_factory) as session:
+        candidate = session.scalars(select(PlannedCandidateRecord)).one()
+        assert candidate.state == "waiting"
+        assert candidate.bytes == 0
+        assert candidate.iso_ready is False
+        assert [(cp.collection_id, cp.path) for cp in candidate.covered_paths] == [
+            (collection_id, path)
+        ]
+        image_root = Path(candidate.image_root)
+        assert not image_root.exists()
+        assert not image_root.with_name(f".{candidate.candidate_id}.tmp").exists()
+
+    plan = planning.get_plan(
+        page=1,
+        per_page=25,
+        sort="fill",
+        order="desc",
+        q=None,
+        collection=None,
+        iso_ready=None,
+    )
+    assert plan["ready"] is False
+    assert plan["candidates"] == []
+    assert plan["unplanned_bytes"] == len(content)
 
 
 def test_new_collection_uploads_are_blocked_over_unburned_limit(tmp_path: Path) -> None:

@@ -137,7 +137,12 @@ https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpuoverview.html
 After a collection has finalized and archive artifacts have cached locally,
 Riverhog refreshes provisional optical-disc candidates. Candidate rows are
 created before materialization starts with stable candidate ids derived from the
-planned contents and planner sizing config. A candidate root is first written as
+planned contents and planner sizing config. If the final candidate is below
+`RIVERHOG_PLANNER_MIN_FILL_BYTES` or `RIVERHOG_PLANNER_MIN_FILL_RATIO`, it is
+kept in `waiting` state and no image root is materialized; those files stay
+safe in Glacier and wait for future collections to fill a burnable disc.
+
+A burnable candidate root is first written as
 `.candidate-*.tmp`; completed encrypted payloads, sidecars, manifests, and
 readme files are left in that temp root if materialization fails or the app
 restarts.
@@ -145,8 +150,8 @@ restarts.
 The next planner refresh reuses the same candidate row and temp root, skips
 already completed encrypted files, finishes the missing files, then atomically
 renames the temp root to the final candidate root and marks the candidate
-`ready`. A background planner refresh worker checks for missing, failed, or
-still-materializing provisional candidates every
+`ready`. A background planner refresh worker checks for missing, failed,
+waiting, or still-materializing provisional candidates every
 `RIVERHOG_PLANNER_REFRESH_SWEEP_INTERVAL`.
 
 ## Fetch Entry Upload Session

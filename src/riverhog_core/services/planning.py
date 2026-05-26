@@ -122,6 +122,7 @@ class _CandidateSpec:
     candidate_id: str
     plan_fingerprint: str
     finalized_id: str
+    estimated_bytes: int
     pieces: tuple[_PlanPiece, ...]
 
 
@@ -459,6 +460,27 @@ def _refresh_provisional_plan_locked(
     candidates_root.mkdir(parents=True, exist_ok=True)
 
     for spec in specs:
+        if spec.estimated_bytes < config.planner_min_fill_bytes:
+            with session_scope(session_factory) as session:
+                record = session.get(PlannedCandidateRecord, spec.candidate_id)
+                if record is None:
+                    continue
+                record.state = "waiting"
+                record.failure = None
+                record.bytes = 0
+                record.iso_ready = False
+                record.updated_at = _utc_now()
+                image_root = record.image_root
+            _LOG.info(
+                "planner candidate %s is waiting for more data: "
+                "estimated_bytes=%s min_fill_bytes=%s",
+                spec.candidate_id,
+                spec.estimated_bytes,
+                config.planner_min_fill_bytes,
+            )
+            _remove_provisional_image_roots(config, [image_root])
+            continue
+
         with session_scope(session_factory) as session:
             record = session.get(PlannedCandidateRecord, spec.candidate_id)
             if record is None:
@@ -559,6 +581,7 @@ def _ensure_candidate_specs(
         piece_tuple = tuple(pieces)
         fingerprint = _candidate_plan_fingerprint(piece_tuple, config)
         candidate_id = _candidate_id_from_fingerprint(fingerprint)
+        estimated_bytes = _candidate_estimated_bytes(piece_tuple, config)
         record = session.get(PlannedCandidateRecord, candidate_id)
         if record is None:
             finalized_id = _next_finalized_id(reserved_finalized_ids)
@@ -598,6 +621,7 @@ def _ensure_candidate_specs(
                 candidate_id=candidate_id,
                 plan_fingerprint=fingerprint,
                 finalized_id=finalized_id,
+                estimated_bytes=estimated_bytes,
                 pieces=piece_tuple,
             )
         )
@@ -643,6 +667,17 @@ def _candidate_state(candidate: PlannedCandidateRecord) -> str:
     return candidate.state or "ready"
 
 
+def _candidate_estimated_bytes(pieces: Sequence[_PlanPiece], config: RuntimeConfig) -> int:
+    collection_ids = {piece.collection_id for piece in pieces}
+    return (
+        sum(piece.estimated_total_bytes for piece in pieces)
+        + sum(
+            _collection_artifact_estimate(config, collection_id) for collection_id in collection_ids
+        )
+        + _candidate_metadata_pad(config.planner_disc_target_bytes)
+    )
+
+
 def _covered_paths_for_pieces(pieces: Sequence[_PlanPiece]) -> tuple[tuple[str, str], ...]:
     return tuple(sorted({(piece.collection_id, piece.path) for piece in pieces}))
 
@@ -679,7 +714,7 @@ def _planner_refresh_needed(session: Session, config: RuntimeConfig) -> bool:
     ]
     if not plan_pairs:
         return bool(candidates)
-    if any(_candidate_state(candidate) != "ready" for candidate in candidates):
+    if any(_candidate_state(candidate) not in {"ready", "waiting"} for candidate in candidates):
         return True
     if any(
         candidate.target_bytes != config.planner_disc_target_bytes
