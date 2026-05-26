@@ -737,6 +737,17 @@ Size of each tus-compatible `PATCH` request body sent by `riverhog upload`.
 Reverse proxies must allow bodies larger than this value. A proxy body limit of
 at least 16 MiB is recommended for the default 8 MiB chunk.
 
+### `RIVERHOG_UPLOAD_FILE_CONCURRENCY`
+
+- type: positive integer
+- default: `1`
+
+Maximum number of logical files one `riverhog upload` process uploads at the
+same time. Each worker uses its own API client and resumes exactly one
+server-owned file upload resource at a time. Keep the default for large-file
+collections when a single stream already fills the path; raise it for
+collections with many small files where per-file round trips dominate.
+
 ### `RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES`
 
 - type: positive integer byte count

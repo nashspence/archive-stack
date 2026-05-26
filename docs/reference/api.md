@@ -712,6 +712,10 @@ without dropping the resumable chunk. The default write size is 256 KiB with a
 when a deployment path needs different pacing. The default pacing favors
 stability on LAN/Wi-Fi paths that drop or stall aggressive bulk writes; increase
 it only after repeated end-to-end upload tests on the target network.
+The CLI uploads one file at a time by default. Operators may set
+`RIVERHOG_UPLOAD_FILE_CONCURRENCY` to upload multiple logical files in parallel
+from one process, which is primarily useful for collections with thousands of
+small files. Each worker keeps the normal per-file resumable upload contract.
 See [Upload Transport Reference](upload-transport.md) for the operational
 findings, proxy guidance, and tuning procedure behind these defaults.
 `RIVERHOG_UPLOAD_BASE_URL` may

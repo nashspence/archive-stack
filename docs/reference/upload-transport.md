@@ -7,6 +7,8 @@ Riverhog uploads use two separate byte granularities:
 
 The default request chunk is 8 MiB. The default socket write pacing is 256 KiB
 sub-writes with a 0.005 second delay between sub-writes.
+The CLI uploads one file at a time by default; operators may raise
+`RIVERHOG_UPLOAD_FILE_CONCURRENCY` for collections containing many small files.
 
 ## Why Riverhog Paces Upload Writes
 
@@ -32,6 +34,7 @@ The default upload profile is:
 
 ```text
 RIVERHOG_UPLOAD_CHUNK_BYTES=8388608
+RIVERHOG_UPLOAD_FILE_CONCURRENCY=1
 RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES=262144
 RIVERHOG_UPLOAD_WRITE_DELAY_SECONDS=0.005
 RIVERHOG_UPLOAD_TIMEOUT_SECONDS=60
@@ -46,6 +49,15 @@ reducing per-request overhead, but they also increase:
 - memory pressure in the CLI and API process
 - the size of a chunk that must be retried after a transient failure
 - the reverse-proxy `client_max_body_size` required for uploads
+
+File concurrency is orthogonal to request chunk size. A higher
+`RIVERHOG_UPLOAD_FILE_CONCURRENCY` opens multiple per-file upload workers in one
+CLI process, each with its own API client and resumable file resource. This is
+useful for photo and document sets with thousands of small files where
+round-trip latency dominates. It does not change the server-side collection id
+or per-file resume contract; rerunning the same slug and timestamp still resumes
+the same logical collection upload. Increase it gradually and watch CLI retry
+logs plus server load.
 
 Larger socket write slices or shorter write delays are riskier than larger
 request chunks. Do not benchmark more aggressive values after a failed or

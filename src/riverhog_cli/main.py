@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
 import time
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypedDict
 
@@ -39,6 +41,7 @@ PLAN_QUERY_HELP = (
 IMAGE_QUERY_HELP = "Substring match over id, filename, and collection ids"
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
+UPLOAD_FILE_CONCURRENCY = 1
 UPLOAD_PROGRESS_INTERVAL_SECONDS = 5.0
 DOWNLOAD_PROGRESS_INTERVAL_SECONDS = 5.0
 UPLOAD_FINALIZE_POLL_SECONDS = 5.0
@@ -47,6 +50,7 @@ TRANSIENT_UPLOAD_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 UPLOAD_RESUME_RETRY_ATTEMPTS = 5
 UPLOAD_RESUME_RETRY_INITIAL_DELAY_SECONDS = 1.0
 UPLOAD_RESUME_RETRY_MAX_DELAY_SECONDS = 10.0
+UPLOAD_LOG_LOCK = threading.Lock()
 UploadWaitMode = Literal["staged", "finalized"]
 
 
@@ -98,6 +102,21 @@ def _upload_chunk_bytes() -> int:
         raise typer.BadParameter("RIVERHOG_UPLOAD_CHUNK_BYTES must be a positive integer") from exc
     if value <= 0:
         raise typer.BadParameter("RIVERHOG_UPLOAD_CHUNK_BYTES must be a positive integer")
+    return value
+
+
+def _upload_file_concurrency() -> int:
+    raw_value = os.getenv("RIVERHOG_UPLOAD_FILE_CONCURRENCY")
+    if raw_value is None or raw_value.strip() == "":
+        return UPLOAD_FILE_CONCURRENCY
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise typer.BadParameter(
+            "RIVERHOG_UPLOAD_FILE_CONCURRENCY must be a positive integer"
+        ) from exc
+    if value <= 0:
+        raise typer.BadParameter("RIVERHOG_UPLOAD_FILE_CONCURRENCY must be a positive integer")
     return value
 
 
@@ -159,7 +178,8 @@ def _format_bytes(value: int) -> str:
 
 
 def _log_upload(message: str) -> None:
-    typer.echo(message, err=True)
+    with UPLOAD_LOG_LOCK:
+        typer.echo(message, err=True)
 
 
 def _download_progress_logger() -> Callable[[int, int | None], None]:
@@ -338,6 +358,59 @@ def _upload_collection_file(
     if offset != length:
         raise RuntimeError(f"upload for {path_value} stopped at {offset} of {length} bytes")
     _log_upload(f"Uploaded {path_value} ({_format_bytes(length)})")
+
+
+def _upload_collection_files(
+    api: ApiClient,
+    collection_id: str,
+    resolved_root: Path,
+    upload_files: list[dict[str, object]],
+    *,
+    progress: Callable[[int], None],
+    file_concurrency: int,
+    api_factory: Callable[[], ApiClient] = client,
+) -> None:
+    pending_files = [
+        file_payload for file_payload in upload_files if file_payload["upload_state"] != "uploaded"
+    ]
+    if file_concurrency <= 1:
+        for file_payload in pending_files:
+            _upload_collection_file(
+                api,
+                collection_id,
+                resolved_root / str(file_payload["path"]),
+                file_payload,
+                progress=progress,
+            )
+        return
+
+    _log_upload(f"Uploading up to {file_concurrency} files concurrently")
+
+    def upload_one(file_payload: dict[str, object]) -> None:
+        worker_api = api_factory()
+        try:
+            _upload_collection_file(
+                worker_api,
+                collection_id,
+                resolved_root / str(file_payload["path"]),
+                file_payload,
+                progress=progress,
+            )
+        finally:
+            worker_api.close()
+
+    with ThreadPoolExecutor(max_workers=file_concurrency) as executor:
+        futures = {
+            executor.submit(upload_one, file_payload): str(file_payload["path"])
+            for file_payload in pending_files
+        }
+        try:
+            for future in as_completed(futures):
+                future.result()
+        except BaseException:
+            for future in futures:
+                future.cancel()
+            raise
 
 
 def _finalized_collection_upload_payload(
@@ -602,31 +675,31 @@ def upload_cmd(
         f"{_format_bytes(uploaded_bytes)} / {_format_bytes(manifest_bytes)}"
     )
     last_progress_log_at = time.monotonic()
+    progress_lock = threading.Lock()
 
     def note_uploaded(delta: int) -> None:
         nonlocal uploaded_bytes, last_progress_log_at
-        uploaded_bytes += delta
-        now = time.monotonic()
-        if now - last_progress_log_at < UPLOAD_PROGRESS_INTERVAL_SECONDS:
-            return
-        percent = (uploaded_bytes / manifest_bytes * 100.0) if manifest_bytes else 100.0
-        _log_upload(
-            "Upload progress: "
-            f"{_format_bytes(uploaded_bytes)} / {_format_bytes(manifest_bytes)} "
-            f"({percent:.1f}%)"
-        )
-        last_progress_log_at = now
+        with progress_lock:
+            uploaded_bytes += delta
+            now = time.monotonic()
+            if now - last_progress_log_at < UPLOAD_PROGRESS_INTERVAL_SECONDS:
+                return
+            percent = (uploaded_bytes / manifest_bytes * 100.0) if manifest_bytes else 100.0
+            _log_upload(
+                "Upload progress: "
+                f"{_format_bytes(uploaded_bytes)} / {_format_bytes(manifest_bytes)} "
+                f"({percent:.1f}%)"
+            )
+            last_progress_log_at = now
 
-    for file_payload in upload_files:
-        if file_payload["upload_state"] == "uploaded":
-            continue
-        _upload_collection_file(
-            api,
-            collection_id,
-            resolved_root / str(file_payload["path"]),
-            file_payload,
-            progress=note_uploaded,
-        )
+    _upload_collection_files(
+        api,
+        collection_id,
+        resolved_root,
+        upload_files,
+        progress=note_uploaded,
+        file_concurrency=_upload_file_concurrency(),
+    )
 
     if wait_mode == "finalized":
         final_payload, completion_state = _wait_for_finalized_collection(

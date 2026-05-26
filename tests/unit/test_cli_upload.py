@@ -129,6 +129,90 @@ def test_upload_collection_file_honors_chunk_size_env(
     assert uploaded == [b"abcd", b"efgh", b"ij"]
 
 
+def test_upload_file_concurrency_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RIVERHOG_UPLOAD_FILE_CONCURRENCY", "8")
+
+    assert riverhog_main._upload_file_concurrency() == 8
+
+
+def test_upload_file_concurrency_rejects_invalid_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_UPLOAD_FILE_CONCURRENCY", "0")
+
+    with pytest.raises(typer.BadParameter):
+        riverhog_main._upload_file_concurrency()
+
+
+def test_upload_collection_files_uses_worker_clients_when_concurrent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "collection"
+    root.mkdir()
+    (root / "a.txt").write_bytes(b"aaa")
+    (root / "b.txt").write_bytes(b"bbbb")
+    uploaded: list[tuple[str, int]] = []
+    closed_clients: list[str] = []
+    clients: list[object] = []
+
+    class FakeConcurrentUploadApi:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def create_or_resume_collection_file_upload(
+            self,
+            collection_id: str,
+            path: str,
+        ) -> dict[str, object]:
+            assert collection_id == "2025/collection"
+            return {
+                "upload_url": f"https://uploads.test/{path}",
+                "offset": 0,
+                "checksum_algorithm": "sha256",
+            }
+
+        def append_upload_chunk(
+            self,
+            upload_url: str,
+            *,
+            offset: int,
+            checksum_algorithm: str,
+            content: bytes,
+        ) -> dict[str, object]:
+            uploaded.append((self.name, len(content)))
+            return {"offset": offset + len(content), "expires_at": None}
+
+        def close(self) -> None:
+            closed_clients.append(self.name)
+
+    def api_factory() -> FakeConcurrentUploadApi:
+        worker = FakeConcurrentUploadApi(f"worker-{len(clients)}")
+        clients.append(worker)
+        return worker
+
+    monkeypatch.setattr(riverhog_main, "UPLOAD_CHUNK_BYTES", 100)
+    progress: list[int] = []
+
+    riverhog_main._upload_collection_files(
+        FakeConcurrentUploadApi("primary"),  # type: ignore[arg-type]
+        "2025/collection",
+        root,
+        [
+            {"path": "a.txt", "bytes": 3, "upload_state": "pending"},
+            {"path": "b.txt", "bytes": 4, "upload_state": "pending"},
+        ],
+        progress=progress.append,
+        file_concurrency=2,
+        api_factory=api_factory,  # type: ignore[arg-type]
+    )
+
+    assert sorted(size for _, size in uploaded) == [3, 4]
+    assert all(name.startswith("worker-") for name, _ in uploaded)
+    assert sorted(progress) == [3, 4]
+    assert sorted(closed_clients) == ["worker-0", "worker-1"]
+
+
 def test_upload_collection_file_retries_after_interrupted_chunk_with_unchanged_offset(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
