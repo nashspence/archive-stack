@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from riverhog_core.domain.models import (
-    CollectionArchiveManifestStatus,
     CollectionCoverageImage,
     CollectionListPage,
+    CollectionManifestStatus,
     CollectionRecoverySummary,
     CollectionSummary,
     CopyHistoryEntry,
@@ -50,8 +50,8 @@ def map_glacier(summary: GlacierArchiveStatus) -> dict[str, object]:
     }
 
 
-def map_collection_archive_manifest(
-    summary: CollectionArchiveManifestStatus | None,
+def map_collection_manifest(
+    summary: CollectionManifestStatus | None,
 ) -> dict[str, object] | None:
     if summary is None:
         return None
@@ -113,7 +113,7 @@ def map_glacier_usage_collection(summary: GlacierUsageCollection) -> dict[str, o
         "id": str(summary.id),
         "bytes": summary.bytes,
         "glacier": map_glacier(summary.glacier),
-        "archive_manifest": map_collection_archive_manifest(summary.archive_manifest),
+        "collection_manifest": map_collection_manifest(summary.collection_manifest),
         "archive_format": summary.archive_format,
         "compression": summary.compression,
         "measured_storage_bytes": summary.measured_storage_bytes,
@@ -297,7 +297,7 @@ def map_collection(summary: CollectionSummary) -> dict[str, object]:
         "archived_bytes": summary.archived_bytes,
         "pending_bytes": summary.pending_bytes,
         "glacier": map_glacier(summary.glacier),
-        "archive_manifest": map_collection_archive_manifest(summary.archive_manifest),
+        "collection_manifest": map_collection_manifest(summary.collection_manifest),
         "archive_format": summary.archive_format,
         "compression": summary.compression,
         "disc_coverage": map_collection_disc_coverage(summary.recovery.verified_physical),
@@ -402,7 +402,7 @@ def map_recovery_session_collection(summary: RecoverySessionCollection) -> dict[
     return {
         "id": str(summary.id),
         "glacier": map_glacier(summary.glacier),
-        "archive_manifest": map_collection_archive_manifest(summary.archive_manifest),
+        "collection_manifest": map_collection_manifest(summary.collection_manifest),
         "stored_bytes": summary.stored_bytes,
     }
 

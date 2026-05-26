@@ -115,7 +115,7 @@ A collection summary exposes at least:
 - `archived_bytes`
 - `pending_bytes`
 - `glacier`
-- `archive_manifest`
+- `collection_manifest`
 - `archive_format`
 - `compression`
 - `disc_coverage`
@@ -133,7 +133,7 @@ Definitions:
   verified physical copies while the collection archive remains uploaded and
   verified
 - `glacier` — direct collection archive state and object metadata
-- `archive_manifest` — manifest object path, manifest SHA-256, OTS proof object
+- `collection_manifest` — manifest object path, manifest SHA-256, OTS proof object
   path, and OTS proof state for the collection archive package
 - OTS proof state records proof object presence and integrity. Restore/recovery
   verification separately validates the `.ots` proof against the exact
@@ -211,13 +211,16 @@ A Glacier-usage report exposes at least:
 
 Glacier-usage-report rules:
 
-- `totals.measured_storage_bytes` sums measured uploaded Glacier object bytes only
-- `totals.estimated_billable_bytes` adds configured Glacier metadata overhead to that measured storage
+- `totals.measured_storage_bytes` sums measured uploaded archive-store bytes, including
+  Standard S3 collection manifest and OTS proof objects
+- `totals.estimated_billable_bytes` adds configured Glacier metadata overhead for
+  archived tar objects while treating manifest/proof object bytes as Standard S3
+  storage
 - `totals.estimated_monthly_cost_usd` is a derived estimate from the emitted pricing basis
 - `totals.collections` counts collection archive records
 - `totals.uploaded_collections` counts collection archives in `uploaded` state
-- `collections` expose direct measured usage for whole-collection Glacier
-  archives, including manifest and OTS proof state
+- `collections` expose direct measured usage for whole-collection archive object
+  sets, including manifest and OTS proof state
 - `images` may explain which finalized images physically cover reported
   collections
 - `billing.actuals` reports AWS-native actual cost periods separately from Riverhog's own storage snapshots

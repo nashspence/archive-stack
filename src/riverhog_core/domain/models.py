@@ -41,7 +41,7 @@ class GlacierArchiveStatus:
 
 
 @dataclass(frozen=True)
-class CollectionArchiveManifestStatus:
+class CollectionManifestStatus:
     object_path: str | None = None
     sha256: str | None = None
     ots_object_path: str | None = None
@@ -97,7 +97,7 @@ class GlacierUsageCollection:
     estimated_monthly_cost_usd: float
     images: tuple[GlacierCollectionContribution, ...] = ()
     glacier: GlacierArchiveStatus = field(default_factory=GlacierArchiveStatus)
-    archive_manifest: CollectionArchiveManifestStatus | None = None
+    collection_manifest: CollectionManifestStatus | None = None
     archive_format: str | None = None
     compression: str | None = None
 
@@ -287,7 +287,7 @@ class RecoverySessionImage:
 class RecoverySessionCollection:
     id: CollectionId
     glacier: GlacierArchiveStatus
-    archive_manifest: CollectionArchiveManifestStatus | None
+    collection_manifest: CollectionManifestStatus | None
     stored_bytes: int
 
 
@@ -361,7 +361,7 @@ class CollectionSummary:
     )
     image_coverage: list[CollectionCoverageImage] = field(default_factory=list)
     glacier: GlacierArchiveStatus = field(default_factory=GlacierArchiveStatus)
-    archive_manifest: CollectionArchiveManifestStatus | None = None
+    collection_manifest: CollectionManifestStatus | None = None
     archive_format: str | None = None
     compression: str | None = None
 

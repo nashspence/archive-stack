@@ -118,16 +118,14 @@ Collection Glacier archive packages use canonical collection ids below the confi
 
 ```text
 glacier/collections/{year}/{timestamp}__{slug}/archive.tar
+glacier/collections/{year}/{timestamp}__{slug}/manifest.yml
+glacier/collections/{year}/{timestamp}__{slug}/manifest.yml.ots
 ```
 
-The archive tar is the only Glacier object for the collection. It contains the
-logical collection files plus Riverhog's archive manifest and OpenTimestamps
-proof as internal members:
-
-```text
-.riverhog/manifest.yml
-.riverhog/manifest.yml.ots
-```
+The archive tar contains only the logical collection files and uses the configured
+Glacier storage class. Riverhog stores the collection manifest and its matching
+OpenTimestamps proof as sibling Standard S3 objects so operators can inspect and
+verify them without restoring Deep Archive data.
 
 ## `RIVERHOG_GLACIER_BACKEND`
 
@@ -320,9 +318,9 @@ uploads, retries, and restart-recovered work.
 Restart-recovered work resumes one durable job record. For interrupted
 collection archive uploads, that job reuses its persisted S3 multipart upload id
 when the remote multipart upload still exists. Once S3 has accepted the archive
-object, Riverhog persists the object receipt and embedded archive artifacts so a
-restart can resume hot-file promotion without rebuilding or re-uploading the
-Glacier object.
+object, Riverhog uploads and records the sibling manifest/proof objects. A
+restart can then resume hot-file promotion without rebuilding or re-uploading
+completed Glacier objects.
 
 ## `RIVERHOG_PLANNER_REFRESH_SWEEP_INTERVAL`
 

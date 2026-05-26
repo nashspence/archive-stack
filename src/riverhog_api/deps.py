@@ -83,7 +83,6 @@ def default_container() -> ServiceContainer:
             config,
             archive_store,
             hot_store,
-            proof_stamper=proof_stamper,
             proof_verifier=proof_verifier,
             recovery_payload_codec=recovery_payload_codec,
         ),

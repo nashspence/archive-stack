@@ -59,10 +59,7 @@ LOCKED_HELPER_STATE_ACCESS = {
     "wait_for_collection_upload_cleanup": "polls collection upload cleanup state directly",
     "wait_for_fetch_upload_cleanup": "polls fetch upload cleanup state directly",
     "upload_collection_source": "reads collection source root directly before HTTP upload flow",
-    "seed_photos_hot": "checks collection seed state before HTTP upload flow",
-    "seed_nested_photos_hot": "checks collection seed state before HTTP upload flow",
-    "seed_parent_photos_hot": "checks collection seed state before HTTP upload flow",
-    "seed_docs_hot": "checks collection seed state before HTTP upload flow",
+    "_seed_hot_fixture_collection": "checks and seeds canned hot collection fixture state directly",
     "seed_docs_archive": "checks and adjusts docs archive state around HTTP setup",
     "seed_docs_archive_with_split_invoice": (
         "checks and adjusts split archive state around HTTP setup"

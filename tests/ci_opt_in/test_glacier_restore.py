@@ -13,8 +13,8 @@ from riverhog_core.collection_archives import (
     CollectionArchivePackage,
     build_collection_archive_package,
     verify_collection_archive_files,
-    verify_collection_archive_manifest,
-    verify_collection_archive_proof,
+    verify_collection_manifest,
+    verify_collection_manifest_proof,
 )
 from riverhog_core.ports.archive_store import CollectionArchiveUploadReceipt
 from riverhog_core.runtime_config import RuntimeConfig, load_runtime_config
@@ -135,18 +135,18 @@ def test_live_aws_restored_collection_archive_package_verifies() -> None:
             "the restore"
         )
 
-    manifest_bytes = store.read_restored_collection_archive_manifest(
+    manifest_bytes = store.read_restored_collection_manifest(
         collection_id=fixture.collection_id,
         object_path=fixture.receipt.manifest.object_path,
     )
-    verify_collection_archive_manifest(
+    verify_collection_manifest(
         manifest_bytes=manifest_bytes,
         expected_sha256=fixture.package.manifest_sha256,
         collection_id=fixture.collection_id,
         files=_expected_files(),
     )
-    verify_collection_archive_proof(
-        proof_bytes=store.read_restored_collection_archive_proof(
+    verify_collection_manifest_proof(
+        proof_bytes=store.read_restored_collection_manifest_proof(
             collection_id=fixture.collection_id,
             object_path=fixture.receipt.proof.object_path,
         ),

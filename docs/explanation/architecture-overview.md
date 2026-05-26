@@ -45,9 +45,10 @@ storage, search, read-only browsing, or disc planning.
 ## Collection Glacier archive
 
 Accepted collections have a deterministic whole-collection archive package under
-the Glacier archive prefix. The package is a deterministic tar archive that
-contains the logical files, the collection manifest, and the OpenTimestamps
-proof for that manifest.
+the Glacier archive prefix. The package uses a deterministic tar archive for
+the logical files in the configured Glacier storage class, plus sibling Standard
+S3 collection manifest and OpenTimestamps proof objects under the same
+collection prefix.
 
 Glacier stores collection archives. Finalized images remain physical disc
 artifacts and do not define the cloud archive unit.

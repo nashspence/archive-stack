@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import AliasChoices, ConfigDict, Field
 
-from riverhog_api.schemas.archive import CollectionArchiveManifestOut, GlacierArchiveOut
+from riverhog_api.schemas.archive import CollectionManifestOut, GlacierArchiveOut
 from riverhog_api.schemas.common import RiverhogModel
 
 
@@ -57,7 +57,7 @@ class RecoverySessionImageOut(RiverhogModel):
 class RecoverySessionCollectionOut(RiverhogModel):
     id: str
     glacier: GlacierArchiveOut
-    archive_manifest: CollectionArchiveManifestOut | None = None
+    collection_manifest: CollectionManifestOut | None = None
     stored_bytes: int
 
 

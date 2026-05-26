@@ -136,7 +136,7 @@ Feature: Plan and images API
       And the downloaded ISO passes ISO verification
       And the extracted ISO root matches the disc layout contract
       And the decrypted disc manifest matches the disc manifest contract
-      And every referenced collection manifest matches the collection hash manifest contract
+      And every referenced collection manifest matches the collection manifest contract
       And every referenced file sidecar matches the file sidecar contract
       And the current ISO README documents split-file recovery
       And the current ISO payload for "docs/tax/2022/invoice-123.pdf" decrypts to the original plaintext
@@ -150,7 +150,7 @@ Feature: Plan and images API
       And the downloaded ISO passes ISO verification
       And the extracted ISO root matches the disc layout contract
       And the decrypted disc manifest matches the disc manifest contract
-      And every referenced collection manifest matches the collection hash manifest contract
+      And every referenced collection manifest matches the collection manifest contract
       And every referenced file sidecar matches the file sidecar contract
       And the current ISO lists split file "/tax/2022/invoice-123.pdf" part 1 of 2
       And the current split payload for "/tax/2022/invoice-123.pdf" is recorded
@@ -159,7 +159,7 @@ Feature: Plan and images API
       And the downloaded ISO passes ISO verification
       And the extracted ISO root matches the disc layout contract
       And the decrypted disc manifest matches the disc manifest contract
-      And every referenced collection manifest matches the collection hash manifest contract
+      And every referenced collection manifest matches the collection manifest contract
       And every referenced file sidecar matches the file sidecar contract
       And the current ISO lists split file "/tax/2022/invoice-123.pdf" part 2 of 2
       And the current split payload for "/tax/2022/invoice-123.pdf" is recorded

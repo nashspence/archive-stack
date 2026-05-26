@@ -16,7 +16,7 @@ class GlacierArchiveOut(RiverhogModel):
     failure: str | None
 
 
-class CollectionArchiveManifestOut(RiverhogModel):
+class CollectionManifestOut(RiverhogModel):
     object_path: str | None = None
     sha256: str | None = None
     ots_object_path: str | None = None

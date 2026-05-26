@@ -19,7 +19,7 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.domain.enums import GlacierState
 from riverhog_core.domain.models import (
-    CollectionArchiveManifestStatus,
+    CollectionManifestStatus,
     GlacierArchiveStatus,
     GlacierCollectionContribution,
     GlacierPricingBasis,
@@ -213,8 +213,13 @@ def _direct_collection_usage_reports(
         seen.add(collection.id)
         archive = collection.archive
         measured_storage_bytes = _collection_measured_storage_bytes(archive)
-        billable_bytes = _billable_bytes_for_object(
-            measured_storage_bytes,
+        archived_storage_bytes = _collection_archived_storage_bytes(archive)
+        standard_storage_bytes = _collection_standard_storage_bytes(archive)
+        archived_object_count = _collection_archived_object_count(archive)
+        billable_bytes = _billable_bytes_for_storage_classes(
+            archived_storage_bytes=archived_storage_bytes,
+            standard_storage_bytes=standard_storage_bytes,
+            archived_object_count=archived_object_count,
             pricing_basis=pricing_basis,
         )
         reports.append(
@@ -224,13 +229,14 @@ def _direct_collection_usage_reports(
                 measured_storage_bytes=measured_storage_bytes,
                 estimated_billable_bytes=billable_bytes,
                 estimated_monthly_cost_usd=_estimate_monthly_cost_usd(
-                    measured_storage_bytes,
-                    object_count=1 if measured_storage_bytes > 0 else 0,
+                    archived_storage_bytes=archived_storage_bytes,
+                    standard_storage_bytes=standard_storage_bytes,
+                    archived_object_count=archived_object_count,
                     pricing_basis=pricing_basis,
                 ),
                 images=tuple(image_contributions.get(collection.id, ())),
                 glacier=_collection_glacier_archive_status(archive),
-                archive_manifest=_collection_archive_manifest_status(archive),
+                collection_manifest=_collection_manifest_status(archive),
                 archive_format=archive.archive_format if archive is not None else None,
                 compression=archive.compression if archive is not None else None,
             )
@@ -253,7 +259,7 @@ def _direct_collection_usage_reports(
                     state=_upload_glacier_state(upload),
                     failure=upload.archive_failure,
                 ),
-                archive_manifest=None,
+                collection_manifest=None,
                 archive_format=None,
                 compression=None,
             )
@@ -303,6 +309,38 @@ def _collection_measured_storage_bytes(archive: CollectionArchiveRecord | None) 
     )
 
 
+def _collection_archived_storage_bytes(archive: CollectionArchiveRecord | None) -> int:
+    if archive is None or normalize_glacier_state(archive.state).value != "uploaded":
+        return 0
+    if _is_archival_storage_class(archive.storage_class):
+        return int(archive.stored_bytes or 0)
+    return 0
+
+
+def _collection_standard_storage_bytes(archive: CollectionArchiveRecord | None) -> int:
+    if archive is None or normalize_glacier_state(archive.state).value != "uploaded":
+        return 0
+    standard_bytes = int(archive.manifest_stored_bytes or 0) + int(
+        archive.ots_stored_bytes or 0
+    )
+    if not _is_archival_storage_class(archive.storage_class):
+        standard_bytes += int(archive.stored_bytes or 0)
+    return standard_bytes
+
+
+def _collection_archived_object_count(archive: CollectionArchiveRecord | None) -> int:
+    if archive is None or normalize_glacier_state(archive.state).value != "uploaded":
+        return 0
+    if archive.object_path and _is_archival_storage_class(archive.storage_class):
+        return 1
+    return 0
+
+
+def _is_archival_storage_class(storage_class: str | None) -> bool:
+    normalized = str(storage_class or "").strip().upper()
+    return normalized not in {"", "STANDARD", "REDUCED_REDUNDANCY", "INTELLIGENT_TIERING"}
+
+
 def _collection_glacier_archive_status(
     archive: CollectionArchiveRecord | None,
 ) -> GlacierArchiveStatus:
@@ -320,15 +358,15 @@ def _collection_glacier_archive_status(
     )
 
 
-def _collection_archive_manifest_status(
+def _collection_manifest_status(
     archive: CollectionArchiveRecord | None,
-) -> CollectionArchiveManifestStatus | None:
+) -> CollectionManifestStatus | None:
     if archive is None:
         return None
     ots_state = "uploaded" if archive.ots_object_path else "pending"
     if normalize_glacier_state(archive.state).value == "failed":
         ots_state = "failed"
-    return CollectionArchiveManifestStatus(
+    return CollectionManifestStatus(
         object_path=archive.manifest_object_path,
         sha256=archive.manifest_sha256,
         ots_object_path=archive.ots_object_path,
@@ -363,38 +401,44 @@ def _totals_from_collections(collections: tuple[GlacierUsageCollection, ...]) ->
     )
 
 
-def _billable_bytes_for_object(
-    measured_storage_bytes: int, *, pricing_basis: GlacierPricingBasis
+def _billable_bytes_for_storage_classes(
+    *,
+    archived_storage_bytes: int,
+    standard_storage_bytes: int,
+    archived_object_count: int,
+    pricing_basis: GlacierPricingBasis,
 ) -> int:
-    if measured_storage_bytes <= 0:
+    if archived_storage_bytes <= 0 and standard_storage_bytes <= 0:
         return 0
     return (
-        measured_storage_bytes
-        + pricing_basis.archived_metadata_bytes_per_object
-        + pricing_basis.standard_metadata_bytes_per_object
+        archived_storage_bytes
+        + standard_storage_bytes
+        + pricing_basis.archived_metadata_bytes_per_object * archived_object_count
+        + pricing_basis.standard_metadata_bytes_per_object * archived_object_count
     )
 
 
 def _estimate_monthly_cost_usd(
-    measured_storage_bytes: int,
     *,
-    object_count: int,
+    archived_storage_bytes: int,
+    standard_storage_bytes: int,
+    archived_object_count: int,
     pricing_basis: GlacierPricingBasis,
     archived_metadata_bytes: float | None = None,
     standard_metadata_bytes: float | None = None,
 ) -> float:
-    archived_bytes = Decimal(measured_storage_bytes) + Decimal(
+    archived_bytes = Decimal(archived_storage_bytes) + Decimal(
         str(
             archived_metadata_bytes
             if archived_metadata_bytes is not None
-            else pricing_basis.archived_metadata_bytes_per_object * object_count
+            else pricing_basis.archived_metadata_bytes_per_object * archived_object_count
         )
     )
-    standard_bytes = Decimal(
+    standard_bytes = Decimal(standard_storage_bytes) + Decimal(
         str(
             standard_metadata_bytes
             if standard_metadata_bytes is not None
-            else pricing_basis.standard_metadata_bytes_per_object * object_count
+            else pricing_basis.standard_metadata_bytes_per_object * archived_object_count
         )
     )
     glacier_rate = Decimal(str(pricing_basis.glacier_storage_rate_usd_per_gib_month))

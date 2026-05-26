@@ -98,8 +98,8 @@ _COLUMN_MIGRATIONS: list[list[tuple[str, str, str]]] = [
     # version 14
     [
         ("collection_uploads", "archive_receipt_json", "TEXT"),
-        ("collection_uploads", "archive_manifest_bytes_b64", "TEXT"),
-        ("collection_uploads", "archive_proof_bytes_b64", "TEXT"),
+        ("collection_uploads", "collection_manifest_bytes_b64", "TEXT"),
+        ("collection_uploads", "collection_manifest_proof_bytes_b64", "TEXT"),
         ("collection_upload_files", "hot_promoted_at", "TEXT"),
     ],
     # version 15

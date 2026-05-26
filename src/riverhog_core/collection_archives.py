@@ -14,15 +14,9 @@ import yaml
 from riverhog_core.fs_paths import normalize_collection_id, normalize_relpath
 from riverhog_core.proofs import CommandProofStamper, ProofStamper, ProofVerifier
 
-COLLECTION_ARCHIVE_MANIFEST_SCHEMA = "collection-archive-manifest/v1"
+COLLECTION_MANIFEST_SCHEMA = "collection-manifest/v1"
 COLLECTION_ARCHIVE_FORMAT = "tar"
 COLLECTION_ARCHIVE_COMPRESSION = "none"
-COLLECTION_ARCHIVE_MANIFEST_PATH = ".riverhog/manifest.yml"
-COLLECTION_ARCHIVE_PROOF_PATH = ".riverhog/manifest.yml.ots"
-_COLLECTION_ARCHIVE_INTERNAL_PATHS = {
-    COLLECTION_ARCHIVE_MANIFEST_PATH,
-    COLLECTION_ARCHIVE_PROOF_PATH,
-}
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
@@ -132,22 +126,18 @@ def build_collection_archive_package_from_prebuilt_artifacts(
     normalized_files = _normalized_expected_files(files)
     manifest_sha256 = _sha256(manifest_bytes)
     proof_sha256 = _sha256(proof_bytes)
-    verify_collection_archive_manifest(
+    verify_collection_manifest(
         manifest_bytes=manifest_bytes,
         expected_sha256=manifest_sha256,
         collection_id=normalized_collection_id,
         files=normalized_files,
     )
-    verify_collection_archive_proof(
+    verify_collection_manifest_proof(
         proof_bytes=proof_bytes,
         expected_sha256=proof_sha256,
         manifest_bytes=manifest_bytes,
     )
-    expected_size = _archive_stream_size(
-        normalized_files,
-        manifest_bytes=manifest_bytes,
-        proof_bytes=proof_bytes,
-    )
+    expected_size = _archive_stream_size(normalized_files)
     if int(archive_size) != expected_size:
         raise ValueError("collection archive stored package size mismatch")
     if not _SHA256_RE.fullmatch(archive_sha256):
@@ -157,8 +147,6 @@ def build_collection_archive_package_from_prebuilt_artifacts(
         return _archive_chunks_from_reader(
             normalized_files,
             read_file_chunks,
-            manifest_bytes=manifest_bytes,
-            proof_bytes=proof_bytes,
         )
 
     return CollectionArchivePackage(
@@ -197,8 +185,6 @@ def _build_collection_archive_package(
         return _archive_chunks_from_reader(
             files,
             read_file_chunks,
-            manifest_bytes=manifest_bytes,
-            proof_bytes=proof_bytes,
         )
 
     archive_size, archive_sha256 = _sized_sha256(archive_chunks())
@@ -227,7 +213,7 @@ def verify_collection_archive_member(
         raise ValueError(f"collection archive member sha256 mismatch: {path}")
 
 
-def verify_collection_archive_manifest(
+def verify_collection_manifest(
     *,
     manifest_bytes: bytes,
     expected_sha256: str,
@@ -236,38 +222,32 @@ def verify_collection_archive_manifest(
 ) -> None:
     digest = _sha256(manifest_bytes)
     if digest != expected_sha256:
-        raise ValueError("collection archive manifest sha256 mismatch")
+        raise ValueError("collection manifest sha256 mismatch")
     try:
         manifest = yaml.safe_load(manifest_bytes)
     except yaml.YAMLError as exc:
-        raise ValueError("collection archive manifest is not valid YAML") from exc
+        raise ValueError("collection manifest is not valid YAML") from exc
     if not isinstance(manifest, dict):
-        raise ValueError("collection archive manifest must be a mapping")
+        raise ValueError("collection manifest must be a mapping")
     normalized_collection_id = normalize_collection_id(collection_id)
-    if manifest.get("schema") != COLLECTION_ARCHIVE_MANIFEST_SCHEMA:
-        raise ValueError("collection archive manifest schema mismatch")
+    if manifest.get("schema") != COLLECTION_MANIFEST_SCHEMA:
+        raise ValueError("collection manifest schema mismatch")
     if manifest.get("collection") != normalized_collection_id:
-        raise ValueError("collection archive manifest collection mismatch")
-
-    archive = _mapping(manifest.get("archive"), "archive")
-    if archive.get("format") != COLLECTION_ARCHIVE_FORMAT:
-        raise ValueError("collection archive manifest format mismatch")
-    if archive.get("compression") != COLLECTION_ARCHIVE_COMPRESSION:
-        raise ValueError("collection archive manifest compression mismatch")
+        raise ValueError("collection manifest collection mismatch")
 
     expected_rows, expected_tree = _expected_manifest_rows(files)
     rows = _manifest_rows(manifest.get("files"))
     if rows != expected_rows:
-        raise ValueError("collection archive manifest files do not match catalog")
+        raise ValueError("collection manifest files do not match catalog")
 
     tree = _mapping(manifest.get("tree"), "tree")
     if tree.get("sha256") != expected_tree["sha256"]:
-        raise ValueError("collection archive manifest tree sha256 mismatch")
+        raise ValueError("collection manifest tree sha256 mismatch")
     if tree.get("total_bytes") != expected_tree["total_bytes"]:
-        raise ValueError("collection archive manifest total bytes mismatch")
+        raise ValueError("collection manifest total bytes mismatch")
 
 
-def verify_collection_archive_proof(
+def verify_collection_manifest_proof(
     *,
     proof_bytes: bytes,
     expected_sha256: str,
@@ -276,9 +256,9 @@ def verify_collection_archive_proof(
 ) -> None:
     digest = _sha256(proof_bytes)
     if digest != expected_sha256:
-        raise ValueError("collection archive proof sha256 mismatch")
+        raise ValueError("collection manifest proof sha256 mismatch")
     if not proof_bytes:
-        raise ValueError("collection archive proof is empty")
+        raise ValueError("collection manifest proof is empty")
     if verifier is not None:
         verifier.verify(manifest_bytes=manifest_bytes, proof_bytes=proof_bytes)
 
@@ -291,34 +271,10 @@ def iter_collection_archive_files(
         for member in archive:
             if not member.isfile():
                 continue
-            if normalize_relpath(member.name) in _COLLECTION_ARCHIVE_INTERNAL_PATHS:
-                continue
             handle = archive.extractfile(member)
             if handle is None:
                 continue
             yield normalize_relpath(member.name), handle.read()
-
-
-def read_collection_archive_internal_file(
-    chunks: Iterable[bytes],
-    *,
-    path: str,
-) -> bytes:
-    normalized_path = normalize_relpath(path)
-    if normalized_path not in _COLLECTION_ARCHIVE_INTERNAL_PATHS:
-        raise ValueError(f"not a collection archive internal path: {path}")
-    stream = _ChunkIteratorReader(chunks)
-    with tarfile.open(fileobj=cast(Any, stream), mode="r|*") as archive:
-        for member in archive:
-            if not member.isfile():
-                continue
-            if normalize_relpath(member.name) != normalized_path:
-                continue
-            handle = archive.extractfile(member)
-            if handle is None:
-                raise ValueError(f"collection archive member cannot be read: {path}")
-            return handle.read()
-    raise FileNotFoundError(f"collection archive is missing internal member: {path}")
 
 
 def verify_collection_archive_files(
@@ -334,8 +290,6 @@ def verify_collection_archive_files(
             if not member.isfile():
                 continue
             path = normalize_relpath(member.name)
-            if path in _COLLECTION_ARCHIVE_INTERNAL_PATHS:
-                continue
             if path in seen:
                 raise ValueError(f"duplicate collection archive member: {path}")
             seen.add(path)
@@ -388,8 +342,6 @@ def iter_verified_collection_archive_file_chunks(
             if not member.isfile():
                 continue
             path = normalize_relpath(member.name)
-            if path in _COLLECTION_ARCHIVE_INTERNAL_PATHS:
-                continue
             if path in seen:
                 raise ValueError(f"duplicate collection archive member: {path}")
             seen.add(path)
@@ -437,8 +389,6 @@ def _normalized_files(
         path = normalize_relpath(file.path)
         if path in seen:
             raise ValueError(f"duplicate collection archive path: {path}")
-        if path in _COLLECTION_ARCHIVE_INTERNAL_PATHS:
-            raise ValueError(f"collection archive path is reserved for Riverhog metadata: {path}")
         seen.add(path)
         digest = _sha256(file.content)
         if digest != file.sha256:
@@ -458,8 +408,6 @@ def _normalized_expected_files(
         path = normalize_relpath(file.path)
         if path in seen:
             raise ValueError(f"duplicate collection archive path: {path}")
-        if path in _COLLECTION_ARCHIVE_INTERNAL_PATHS:
-            raise ValueError(f"collection archive path is reserved for Riverhog metadata: {path}")
         seen.add(path)
         out.append(
             CollectionArchiveExpectedFile(
@@ -501,12 +449,8 @@ def _manifest_payload(
         )
         tree_digest.update(f"{file.path}\t{file.bytes}\t{file.sha256}\n".encode())
     return {
-        "schema": COLLECTION_ARCHIVE_MANIFEST_SCHEMA,
+        "schema": COLLECTION_MANIFEST_SCHEMA,
         "collection": collection_id,
-        "archive": {
-            "format": COLLECTION_ARCHIVE_FORMAT,
-            "compression": COLLECTION_ARCHIVE_COMPRESSION,
-        },
         "tree": {
             "sha256": tree_digest.hexdigest(),
             "total_bytes": total_bytes,
@@ -531,13 +475,13 @@ def _expected_manifest_rows(
         rows.append({"path": path, "bytes": file.bytes, "sha256": file.sha256})
         tree_digest.update(f"{path}\t{file.bytes}\t{file.sha256}\n".encode())
     if not rows:
-        raise ValueError("collection archive manifest requires at least one file")
+        raise ValueError("collection manifest requires at least one file")
     return tuple(rows), {"sha256": tree_digest.hexdigest(), "total_bytes": total_bytes}
 
 
 def _manifest_rows(value: object) -> tuple[dict[str, object], ...]:
     if not isinstance(value, list):
-        raise ValueError("collection archive manifest files must be a list")
+        raise ValueError("collection manifest files must be a list")
     rows: list[dict[str, object]] = []
     for row in value:
         mapping = _mapping(row, "file")
@@ -545,7 +489,7 @@ def _manifest_rows(value: object) -> tuple[dict[str, object], ...]:
         try:
             byte_count = int(mapping.get("bytes", -1))
         except (TypeError, ValueError) as exc:
-            raise ValueError("collection archive manifest file has invalid byte count") from exc
+            raise ValueError("collection manifest file has invalid byte count") from exc
         sha256 = str(mapping.get("sha256", ""))
         rows.append({"path": path, "bytes": byte_count, "sha256": sha256})
     return tuple(sorted(rows, key=lambda current: str(current["path"])))
@@ -553,7 +497,7 @@ def _manifest_rows(value: object) -> tuple[dict[str, object], ...]:
 
 def _mapping(value: object, name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
-        raise ValueError(f"collection archive manifest {name} must be a mapping")
+        raise ValueError(f"collection manifest {name} must be a mapping")
     return value
 
 
@@ -562,7 +506,7 @@ def _stamp_manifest_bytes(
     *,
     stamper: ProofStamper | None,
 ) -> bytes:
-    with tempfile.TemporaryDirectory(prefix="riverhog-collection-archive-proof-") as tmpdir:
+    with tempfile.TemporaryDirectory(prefix="riverhog-collection-manifest-proof-") as tmpdir:
         manifest_path = Path(tmpdir) / "manifest.yml"
         manifest_path.write_bytes(manifest_bytes)
         proof_path = (stamper or CommandProofStamper()).stamp(manifest_path)
@@ -572,12 +516,7 @@ def _stamp_manifest_bytes(
 def _archive_chunks_from_reader(
     files: Sequence[CollectionArchiveExpectedFile],
     read_file_chunks: Callable[[str], Iterable[bytes]],
-    *,
-    manifest_bytes: bytes,
-    proof_bytes: bytes,
 ) -> Iterator[bytes]:
-    yield from _archive_bytes_member(COLLECTION_ARCHIVE_MANIFEST_PATH, manifest_bytes)
-    yield from _archive_bytes_member(COLLECTION_ARCHIVE_PROOF_PATH, proof_bytes)
     for file in files:
         yield _tar_header(file.path, file.bytes)
         digest = hashlib.sha256()
@@ -598,22 +537,8 @@ def _archive_chunks_from_reader(
     yield b"\0" * 1024
 
 
-def _archive_bytes_member(path: str, content: bytes) -> Iterator[bytes]:
-    yield _tar_header(path, len(content))
-    yield content
-    padding = (-len(content)) % 512
-    if padding:
-        yield b"\0" * padding
-
-
-def _archive_stream_size(
-    files: Sequence[CollectionArchiveExpectedFile],
-    *,
-    manifest_bytes: bytes,
-    proof_bytes: bytes,
-) -> int:
-    size = _tar_member_size(len(manifest_bytes))
-    size += _tar_member_size(len(proof_bytes))
+def _archive_stream_size(files: Sequence[CollectionArchiveExpectedFile]) -> int:
+    size = 0
     for file in files:
         size += _tar_member_size(file.bytes)
     return size + 1024

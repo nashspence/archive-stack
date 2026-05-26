@@ -8,12 +8,7 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, TypedDict, cast
 
-from riverhog_core.collection_archives import (
-    COLLECTION_ARCHIVE_MANIFEST_PATH,
-    COLLECTION_ARCHIVE_PROOF_PATH,
-    CollectionArchivePackage,
-    read_collection_archive_internal_file,
-)
+from riverhog_core.collection_archives import CollectionArchivePackage
 from riverhog_core.fs_paths import normalize_collection_id
 from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadedPart,
@@ -153,8 +148,8 @@ class S3ArchiveStore:
         archive_key = f"{collection_prefix}/archive.tar"
         return {
             "archive": archive_key,
-            "manifest": archive_key,
-            "proof": archive_key,
+            "manifest": f"{collection_prefix}/manifest.yml",
+            "proof": f"{collection_prefix}/manifest.yml.ots",
         }
 
     def _head_object(self, *, object_key: str) -> dict[str, Any] | None:
@@ -175,6 +170,7 @@ class S3ArchiveStore:
         head: dict[str, Any],
         expected_bytes: int,
         expected_sha256: str,
+        expected_storage_class: str,
         uploaded_at: str | None = None,
     ) -> ArchiveUploadReceipt:
         _validate_uploaded_collection_metadata(
@@ -187,14 +183,14 @@ class S3ArchiveStore:
             _validate_aws_storage_class(
                 object_key=object_key,
                 head=head,
-                expected_storage_class=self._config.glacier_storage_class,
+                expected_storage_class=expected_storage_class,
             )
         verified_at = _utc_now()
         return ArchiveUploadReceipt(
             object_path=object_key,
             stored_bytes=int(head.get("ContentLength", 0)),
             backend=self._config.glacier_backend,
-            storage_class=self._config.glacier_storage_class,
+            storage_class=_configured_s3_storage_class(expected_storage_class),
             uploaded_at=uploaded_at
             or _format_s3_timestamp(
                 head.get("LastModified"),
@@ -221,21 +217,25 @@ class S3ArchiveStore:
             package=package,
             multipart_tracker=multipart_tracker,
         )
-        manifest = ArchiveUploadReceipt(
-            object_path=keys["manifest"],
-            stored_bytes=0,
-            backend=archive.backend,
-            storage_class=archive.storage_class,
-            uploaded_at=archive.uploaded_at,
-            verified_at=archive.verified_at,
+        manifest = self._put_collection_package_object(
+            collection_id=collection_id,
+            object_key=keys["manifest"],
+            content=package.manifest_bytes,
+            content_length=len(package.manifest_bytes),
+            sha256=package.manifest_sha256,
+            kind="manifest",
+            package=package,
+            multipart_tracker=None,
         )
-        proof = ArchiveUploadReceipt(
-            object_path=keys["proof"],
-            stored_bytes=0,
-            backend=archive.backend,
-            storage_class=archive.storage_class,
-            uploaded_at=archive.uploaded_at,
-            verified_at=archive.verified_at,
+        proof = self._put_collection_package_object(
+            collection_id=collection_id,
+            object_key=keys["proof"],
+            content=package.proof_bytes,
+            content_length=len(package.proof_bytes),
+            sha256=package.proof_sha256,
+            kind="manifest-proof",
+            package=package,
+            multipart_tracker=None,
         )
         return CollectionArchiveUploadReceipt(
             archive=archive,
@@ -260,6 +260,10 @@ class S3ArchiveStore:
         package: CollectionArchivePackage,
         multipart_tracker: ArchiveMultipartUploadTracker | None,
     ) -> ArchiveUploadReceipt:
+        storage_class = _collection_object_storage_class(
+            archive_storage_class=self._config.glacier_storage_class,
+            kind=kind,
+        )
         existing = self._head_object(object_key=object_key)
         if existing is not None:
             return self._collection_receipt_from_head(
@@ -267,29 +271,32 @@ class S3ArchiveStore:
                 head=existing,
                 expected_bytes=content_length,
                 expected_sha256=sha256,
+                expected_storage_class=storage_class,
             )
 
         uploaded_at = _utc_now()
         extra_args: dict[str, Any] = {
             "Metadata": {
                 "riverhog-backend": self._config.glacier_backend,
-                "riverhog-storage-class": self._config.glacier_storage_class,
+                "riverhog-storage-class": _configured_s3_storage_class(storage_class),
                 "riverhog-object-kind": f"collection-{kind}",
                 "riverhog-collection-sha256": hashlib.sha256(
                     package.collection_id.encode("utf-8")
                 ).hexdigest(),
                 "riverhog-archive-format": package.archive_format,
                 "riverhog-compression": package.compression,
-                "riverhog-archive-bytes": str(content_length),
-                "riverhog-archive-sha256": sha256,
+                "riverhog-archive-bytes": str(package.archive_size),
+                "riverhog-archive-sha256": package.archive_sha256,
                 "riverhog-manifest-sha256": package.manifest_sha256,
                 "riverhog-ots-sha256": package.proof_sha256,
                 COLLECTION_BYTES_METADATA: str(content_length),
                 COLLECTION_SHA256_METADATA: sha256,
             }
         }
-        if self._is_aws_restore_backend():
-            extra_args["StorageClass"] = self._config.glacier_storage_class
+        if self._is_aws_restore_backend() and _configured_s3_storage_class(
+            storage_class
+        ) != "STANDARD":
+            extra_args["StorageClass"] = storage_class
         if _should_use_multipart(content=content, content_length=content_length):
             self._put_collection_package_object_multipart(
                 collection_id=collection_id,
@@ -317,6 +324,7 @@ class S3ArchiveStore:
             head=head,
             expected_bytes=content_length,
             expected_sha256=sha256,
+            expected_storage_class=storage_class,
             uploaded_at=uploaded_at,
         )
 
@@ -776,32 +784,26 @@ class S3ArchiveStore:
             if callable(close):
                 close()
 
-    def read_restored_collection_archive_manifest(
+    def read_restored_collection_manifest(
         self,
         *,
         collection_id: str,
         object_path: str,
     ) -> bytes:
-        return read_collection_archive_internal_file(
-            self.iter_restored_collection_archive(
-                collection_id=collection_id,
-                object_path=object_path,
-            ),
-            path=COLLECTION_ARCHIVE_MANIFEST_PATH,
+        return self._read_restored_collection_object(
+            collection_id=collection_id,
+            object_path=object_path,
         )
 
-    def read_restored_collection_archive_proof(
+    def read_restored_collection_manifest_proof(
         self,
         *,
         collection_id: str,
         object_path: str,
     ) -> bytes:
-        return read_collection_archive_internal_file(
-            self.iter_restored_collection_archive(
-                collection_id=collection_id,
-                object_path=object_path,
-            ),
-            path=COLLECTION_ARCHIVE_PROOF_PATH,
+        return self._read_restored_collection_object(
+            collection_id=collection_id,
+            object_path=object_path,
         )
 
     def _read_restored_collection_object(
@@ -987,6 +989,16 @@ def _configured_s3_storage_class(value: str) -> str:
     return normalized
 
 
+def _collection_object_storage_class(
+    *,
+    archive_storage_class: str,
+    kind: str,
+) -> str:
+    if kind == "archive":
+        return _configured_s3_storage_class(archive_storage_class)
+    return "STANDARD"
+
+
 def _validate_aws_storage_class(
     *,
     object_key: str,
@@ -998,8 +1010,8 @@ def _validate_aws_storage_class(
     if actual == expected:
         return
     raise RuntimeError(
-        "existing AWS Glacier object storage class does not match configured "
-        f"RIVERHOG_GLACIER_STORAGE_CLASS for {object_key}: expected {expected}, got {actual}. "
+        "existing AWS archive-store object storage class does not match Riverhog's "
+        f"expected class for {object_key}: expected {expected}, got {actual}. "
         "Delete the stale object or choose a fresh RIVERHOG_GLACIER_PREFIX before rerunning."
     )
 

@@ -28,7 +28,7 @@ Feature: Recovery sessions API
     Then the response status is 200
     And the response recovery session type is "collection_restore"
     And the response recovery session collection "docs" glacier state is "uploaded"
-    And the response recovery session collection "docs" archive manifest state is "uploaded"
+    And the response recovery session collection "docs" collection manifest state is "uploaded"
     And the response recovery session collection "docs" OTS proof state is "uploaded"
     When the client posts to "/v1/recovery-sessions/rs-docs-restore-1/complete"
     Then the response status is 200

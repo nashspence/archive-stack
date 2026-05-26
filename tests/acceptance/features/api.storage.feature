@@ -64,7 +64,7 @@ Feature: Read-only hot storage browsing
       And the response Glacier totals estimated_monthly_cost_usd is greater than 0
       And the response Glacier collection "docs" glacier state is "uploaded"
       And the response Glacier collection "docs" measured_storage_bytes is greater than 0
-      And the response Glacier collection "docs" archive manifest state is "uploaded"
+      And the response Glacier collection "docs" collection manifest state is "uploaded"
       And the response Glacier collection "docs" OTS proof state is "uploaded"
     Scenario: Glacier usage report can focus on one collection
       Given an archive with split planner fixtures

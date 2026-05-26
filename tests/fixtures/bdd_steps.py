@@ -2131,8 +2131,8 @@ def then_collection_glacier_state_is(
     assert response.json()["glacier"]["state"] == state
 
 
-@then(parsers.parse('collection "{collection_id}" archive manifest state is "{state}"'))
-def then_named_collection_archive_manifest_state_is(
+@then(parsers.parse('collection "{collection_id}" manifest state is "{state}"'))
+def then_named_collection_manifest_state_is(
     acceptance_system: AcceptanceSystem,
     collection_id: str,
     state: str,
@@ -2142,7 +2142,7 @@ def then_named_collection_archive_manifest_state_is(
         f"/v1/collections/{quote(collection_id, safe='/')}",
     )
     assert response.status_code == 200, response.text
-    manifest = response.json()["archive_manifest"]
+    manifest = response.json()["collection_manifest"]
     assert manifest is not None
     assert ("uploaded" if manifest["object_path"] else "pending") == state
 
@@ -2158,7 +2158,7 @@ def then_named_collection_ots_proof_state_is(
         f"/v1/collections/{quote(collection_id, safe='/')}",
     )
     assert response.status_code == 200, response.text
-    manifest = response.json()["archive_manifest"]
+    manifest = response.json()["collection_manifest"]
     assert manifest is not None
     assert manifest["ots_state"] == state
 
@@ -2240,13 +2240,13 @@ def then_response_collection_glacier_state_is(
     assert payload["glacier"]["state"] == state
 
 
-@then(parsers.parse('collection archive manifest state is "{state}"'))
-def then_response_collection_archive_manifest_state_is(
+@then(parsers.parse('collection manifest state is "{state}"'))
+def then_response_collection_manifest_state_is(
     acceptance_context: AcceptanceScenarioContext,
     state: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    manifest = payload["archive_manifest"]
+    manifest = payload["collection_manifest"]
     assert manifest is not None
     assert ("uploaded" if manifest["object_path"] else "pending") == state
 
@@ -2257,7 +2257,7 @@ def then_response_collection_ots_proof_state_is(
     state: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    manifest = payload["archive_manifest"]
+    manifest = payload["collection_manifest"]
     assert manifest is not None
     assert manifest["ots_state"] == state
 
@@ -3275,7 +3275,7 @@ def then_response_recovery_session_collection_glacier_state_is(
 @then(
     parsers.parse(
         'the response recovery session collection "{collection_id}" '
-        'archive manifest state is "{state}"'
+        'collection manifest state is "{state}"'
     )
 )
 def then_response_recovery_session_collection_manifest_state_is(
@@ -3285,7 +3285,7 @@ def then_response_recovery_session_collection_manifest_state_is(
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     collection = next(item for item in payload["collections"] if item["id"] == collection_id)
-    manifest = collection["archive_manifest"]
+    manifest = collection["collection_manifest"]
     assert manifest is not None
     assert ("uploaded" if manifest["object_path"] else "pending") == state
 
@@ -3302,7 +3302,7 @@ def then_response_recovery_session_collection_ots_state_is(
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     collection = next(item for item in payload["collections"] if item["id"] == collection_id)
-    manifest = collection["archive_manifest"]
+    manifest = collection["collection_manifest"]
     assert manifest is not None
     assert manifest["ots_state"] == state
 
@@ -3531,17 +3531,17 @@ def then_response_glacier_collection_measured_storage_bytes_is_greater_than_zero
 
 @then(
     parsers.parse(
-        'the response Glacier collection "{collection_id}" archive manifest state is "{state}"'
+        'the response Glacier collection "{collection_id}" collection manifest state is "{state}"'
     )
 )
-def then_response_glacier_collection_archive_manifest_state_is(
+def then_response_glacier_collection_manifest_state_is(
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
     state: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     collection = next(item for item in payload["collections"] if item["id"] == collection_id)
-    manifest = collection["archive_manifest"]
+    manifest = collection["collection_manifest"]
     assert manifest is not None
     assert ("uploaded" if manifest["object_path"] else "pending") == state
 
@@ -3558,7 +3558,7 @@ def then_response_glacier_collection_ots_state_is(
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     collection = next(item for item in payload["collections"] if item["id"] == collection_id)
-    manifest = collection["archive_manifest"]
+    manifest = collection["collection_manifest"]
     assert manifest is not None
     assert manifest["ots_state"] == state
 
@@ -4117,7 +4117,7 @@ def then_decrypted_disc_manifest_matches_contract(
     assert_disc_manifest_semantics(inspected.disc_manifest)
 
 
-@then("every referenced collection manifest matches the collection hash manifest contract")
+@then("every referenced collection manifest matches the collection manifest contract")
 def then_every_collection_manifest_matches_contract(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
@@ -4125,7 +4125,7 @@ def then_every_collection_manifest_matches_contract(
     inspected = _require_inspected_iso(acceptance_context)
     for collection in inspected.disc_manifest["collections"]:
         payload = decrypt_yaml_file(inspected.extract_root / collection["manifest"])
-        assert_contract_schema("collection-hash-manifest.schema.json", payload)
+        assert_contract_schema("collection-manifest.schema.json", payload)
         collection_id = str(collection["id"])
         request_path = f"/v1/collection-files/{quote(collection_id, safe='/')}"
         resp = acceptance_system.request("GET", request_path)

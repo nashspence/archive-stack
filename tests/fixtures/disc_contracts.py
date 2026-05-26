@@ -213,11 +213,9 @@ def assert_collection_manifest_semantics(
     expected_files: list[str],
 ) -> None:
     assert collection_manifest["collection"] == expected_collection_id
-    directories = cast(list[str], collection_manifest["directories"])
     file_rows = cast(list[dict[str, Any]], collection_manifest["files"])
-    assert directories == sorted(directories)
-    assert [row["relative_path"] for row in file_rows] == expected_files
-    total_bytes = sum(int(row["size_bytes"]) for row in file_rows)
+    assert [row["path"] for row in file_rows] == expected_files
+    total_bytes = sum(int(row["bytes"]) for row in file_rows)
     assert int(collection_manifest["tree"]["total_bytes"]) == total_bytes
 
 

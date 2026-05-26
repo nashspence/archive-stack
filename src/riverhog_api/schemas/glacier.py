@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from riverhog_api.schemas.archive import CollectionArchiveManifestOut, GlacierArchiveOut
+from riverhog_api.schemas.archive import CollectionManifestOut, GlacierArchiveOut
 from riverhog_api.schemas.common import RiverhogModel
 
 
@@ -45,7 +45,7 @@ class GlacierUsageCollectionOut(RiverhogModel):
     id: str
     bytes: int
     glacier: GlacierArchiveOut | None = None
-    archive_manifest: CollectionArchiveManifestOut | None = None
+    collection_manifest: CollectionManifestOut | None = None
     archive_format: str | None = None
     compression: str | None = None
     measured_storage_bytes: int

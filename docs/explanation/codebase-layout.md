@@ -42,7 +42,6 @@ src/
       streaming.py
     imports/
       tar_stream.py
-    archive_artifacts.py
     crypto_age.py
     fs_paths.py
     hashing.py

@@ -9,11 +9,7 @@ from typing import cast
 
 import yaml
 
-from riverhog_core.archive_artifacts import (
-    COLLECTION_HASH_MANIFEST_NAME,
-    COLLECTION_HASH_MANIFEST_SCHEMA,
-)
-from riverhog_core.fs_paths import path_parents
+from riverhog_core.collection_archives import COLLECTION_MANIFEST_SCHEMA
 from riverhog_core.planner.layout import assign_paths, manifest_bytes
 from riverhog_core.planner.manifest import (
     MANIFEST_FILENAME,
@@ -100,7 +96,6 @@ def split_fixture_plaintext(data: bytes, piece_count: int) -> tuple[bytes, ...]:
 
 
 def _collection_manifest_bytes(collection_id: str, files: Mapping[str, bytes]) -> bytes:
-    directories = sorted({parent for relpath in files for parent in path_parents(relpath)})
     rows: list[dict[str, object]] = []
     total = 0
     tree_digest = hashlib.sha256()
@@ -112,8 +107,8 @@ def _collection_manifest_bytes(collection_id: str, files: Mapping[str, bytes]) -
         total += size
         rows.append(
             {
-                "relative_path": relpath,
-                "size_bytes": size,
+                "path": relpath,
+                "bytes": size,
                 "sha256": sha256,
             }
         )
@@ -121,14 +116,12 @@ def _collection_manifest_bytes(collection_id: str, files: Mapping[str, bytes]) -
 
     return yaml.safe_dump(
         {
-            "schema": COLLECTION_HASH_MANIFEST_SCHEMA,
+            "schema": COLLECTION_MANIFEST_SCHEMA,
             "collection": collection_id,
-            "generated_at": DEFAULT_COPY_CREATED_AT,
             "tree": {
                 "sha256": tree_digest.hexdigest(),
                 "total_bytes": total,
             },
-            "directories": directories,
             "files": rows,
         },
         sort_keys=False,
@@ -141,7 +134,7 @@ def _collection_proof_bytes(manifest_bytes: bytes) -> bytes:
     return "\n".join(
         [
             "OpenTimestamps stub proof v1",
-            f"file: {COLLECTION_HASH_MANIFEST_NAME}",
+            "file: manifest.yml",
             f"sha256: {digest}",
             "",
         ]

@@ -13,7 +13,6 @@ from typing import cast
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from riverhog_core.archive_artifacts import generate_collection_hash_artifacts
 from riverhog_core.archive_compliance import (
     copy_counts_toward_protection,
     normalize_copy_state,
@@ -38,14 +37,14 @@ from riverhog_core.collection_archives import (
     iter_collection_archive_files,
     iter_verified_collection_archive_file_chunks,
     verify_collection_archive_files,
-    verify_collection_archive_manifest,
     verify_collection_archive_member,
-    verify_collection_archive_proof,
+    verify_collection_manifest,
+    verify_collection_manifest_proof,
 )
 from riverhog_core.domain.enums import CopyState, GlacierState, RecoverySessionState
 from riverhog_core.domain.errors import Conflict, InvalidState, NotFound
 from riverhog_core.domain.models import (
-    CollectionArchiveManifestStatus,
+    CollectionManifestStatus,
     GlacierArchiveStatus,
     RecoveryCostEstimate,
     RecoveryNotificationStatus,
@@ -68,9 +67,7 @@ from riverhog_core.planner.manifest import (
 from riverhog_core.ports.archive_store import ArchiveRestoreStatus, ArchiveStore
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.proofs import (
-    CommandProofStamper,
     CommandProofVerifier,
-    ProofStamper,
     ProofVerifier,
 )
 from riverhog_core.recovery_payloads import (
@@ -104,6 +101,18 @@ class _CollectionArchiveObjects:
     proof_sha256: str
 
 
+@dataclass(frozen=True, slots=True)
+class _RestoredCollectionArtifact:
+    manifest_bytes: bytes
+    proof_bytes: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _RestoredCollectionArchives:
+    files: dict[tuple[str, str], bytes]
+    artifacts: dict[str, _RestoredCollectionArtifact]
+
+
 class SqlAlchemyRecoverySessionService:
     def __init__(
         self,
@@ -111,14 +120,12 @@ class SqlAlchemyRecoverySessionService:
         archive_store: ArchiveStore,
         hot_store: HotStore | None = None,
         *,
-        proof_stamper: ProofStamper | None = None,
         proof_verifier: ProofVerifier | None = None,
         recovery_payload_codec: RecoveryPayloadCodec | None = None,
     ) -> None:
         self._config = config
         self._archive_store = archive_store
         self._hot_store = hot_store
-        self._proof_stamper = proof_stamper or CommandProofStamper(config.ots_stamp_command)
         self._proof_verifier = proof_verifier or CommandProofVerifier(config.ots_verify_command)
         self._recovery_payload_codec = (
             recovery_payload_codec
@@ -322,21 +329,21 @@ class SqlAlchemyRecoverySessionService:
             record.extraction_state = "in_progress"
             record.materialization_state = "in_progress"
             session.flush()
-            manifest_bytes = self._archive_store.read_restored_collection_archive_manifest(
+            manifest_bytes = self._archive_store.read_restored_collection_manifest(
                 collection_id=archive.collection_id,
                 object_path=archive.manifest_object_path,
             )
-            verify_collection_archive_manifest(
+            verify_collection_manifest(
                 manifest_bytes=manifest_bytes,
                 expected_sha256=archive.manifest_sha256,
                 collection_id=archive.collection_id,
                 files=expected_files,
             )
-            proof_bytes = self._archive_store.read_restored_collection_archive_proof(
+            proof_bytes = self._archive_store.read_restored_collection_manifest_proof(
                 collection_id=archive.collection_id,
                 object_path=archive.proof_object_path,
             )
-            verify_collection_archive_proof(
+            verify_collection_manifest_proof(
                 proof_bytes=proof_bytes,
                 expected_sha256=archive.proof_sha256,
                 manifest_bytes=manifest_bytes,
@@ -426,7 +433,6 @@ class SqlAlchemyRecoverySessionService:
                     collection_artifacts=collection_artifacts,
                     coverage_parts=coverage_parts,
                     file_lookup=file_lookup,
-                    proof_stamper=self._proof_stamper,
                     proof_verifier=self._proof_verifier,
                     recovery_payload_codec=self._recovery_payload_codec,
                 )
@@ -844,22 +850,22 @@ def _require_collection_archive_objects(collection: CollectionRecord) -> _Collec
         )
     if not archive.manifest_object_path:
         raise InvalidState(
-            f"collection archive manifest object path is missing and cannot be restored: "
+            f"collection manifest object path is missing and cannot be restored: "
             f"{collection.id}"
         )
     if not archive.ots_object_path:
         raise InvalidState(
-            f"collection archive proof object path is missing and cannot be restored: "
+            f"collection manifest proof object path is missing and cannot be restored: "
             f"{collection.id}"
         )
     if not archive.manifest_sha256:
         raise InvalidState(
-            f"collection archive manifest sha256 is missing and cannot be verified: "
+            f"collection manifest sha256 is missing and cannot be verified: "
             f"{collection.id}"
         )
     if not archive.ots_sha256:
         raise InvalidState(
-            f"collection archive proof sha256 is missing and cannot be verified: {collection.id}"
+            f"collection manifest proof sha256 is missing and cannot be verified: {collection.id}"
         )
     return _CollectionArchiveObjects(
         collection_id=collection.id,
@@ -880,7 +886,6 @@ def _iter_rebuilt_iso_from_collection_archives(
     collection_artifacts: Sequence[FinalizedImageCollectionArtifactRecord],
     coverage_parts: Sequence[FinalizedImageCoveragePartRecord],
     file_lookup: dict[tuple[str, str], tuple[str, int]],
-    proof_stamper: ProofStamper,
     proof_verifier: ProofVerifier,
     recovery_payload_codec: RecoveryPayloadCodec,
 ) -> Iterator[bytes]:
@@ -888,25 +893,22 @@ def _iter_rebuilt_iso_from_collection_archives(
         work_root = Path(tmpdir)
         image_root = work_root / "image-root"
         image_root.mkdir()
-        restored_files = _restore_collection_archives(
+        restored = _restore_collection_archives(
             archive_store=archive_store,
             collection_archives=collection_archives,
-            work_root=work_root,
             file_lookup=file_lookup,
             proof_verifier=proof_verifier,
         )
         _write_rebuilt_collection_artifacts(
             image_root=image_root,
             collection_artifacts=collection_artifacts,
-            restored_files=restored_files,
-            work_root=work_root,
-            proof_stamper=proof_stamper,
+            restored_artifacts=restored.artifacts,
             recovery_payload_codec=recovery_payload_codec,
         )
         _write_rebuilt_image_payloads(
             image_root=image_root,
             coverage_parts=coverage_parts,
-            restored_files=restored_files,
+            restored_files=restored.files,
             file_lookup=file_lookup,
             recovery_payload_codec=recovery_payload_codec,
         )
@@ -933,23 +935,23 @@ def _restore_collection_archives(
     *,
     archive_store: ArchiveStore,
     collection_archives: Sequence[_CollectionArchiveObjects],
-    work_root: Path,
     file_lookup: dict[tuple[str, str], tuple[str, int]],
     proof_verifier: ProofVerifier,
-) -> dict[tuple[str, str], bytes]:
+) -> _RestoredCollectionArchives:
     restored_files: dict[tuple[str, str], bytes] = {}
+    restored_artifacts: dict[str, _RestoredCollectionArtifact] = {}
     for collection_archive in collection_archives:
-        _verify_restored_collection_archive(
-            archive_store=archive_store,
-            archive=collection_archive,
-            expected_files=_expected_files_from_lookup(
-                file_lookup=file_lookup,
-                collection_id=collection_archive.collection_id,
-            ),
-            proof_verifier=proof_verifier,
+        restored_artifacts[collection_archive.collection_id] = (
+            _verify_restored_collection_archive(
+                archive_store=archive_store,
+                archive=collection_archive,
+                expected_files=_expected_files_from_lookup(
+                    file_lookup=file_lookup,
+                    collection_id=collection_archive.collection_id,
+                ),
+                proof_verifier=proof_verifier,
+            )
         )
-        collection_root = work_root / "collections" / collection_archive.collection_id
-        collection_root.mkdir(parents=True, exist_ok=True)
         archive_chunks = (
             archive_store.iter_restored_collection_archive(
                 collection_id=collection_archive.collection_id,
@@ -965,8 +967,7 @@ def _restore_collection_archives(
                     expected_sha256=expected[0],
                 )
             restored_files[(collection_archive.collection_id, path)] = content
-            _write_image_root_file(collection_root, path, content)
-    return restored_files
+    return _RestoredCollectionArchives(files=restored_files, artifacts=restored_artifacts)
 
 
 def _verify_restored_collection_archives(
@@ -995,22 +996,22 @@ def _verify_restored_collection_archive(
     archive: _CollectionArchiveObjects,
     expected_files: Sequence[CollectionArchiveExpectedFile],
     proof_verifier: ProofVerifier,
-) -> None:
-    manifest_bytes = archive_store.read_restored_collection_archive_manifest(
+) -> _RestoredCollectionArtifact:
+    manifest_bytes = archive_store.read_restored_collection_manifest(
         collection_id=archive.collection_id,
         object_path=archive.manifest_object_path,
     )
-    verify_collection_archive_manifest(
+    verify_collection_manifest(
         manifest_bytes=manifest_bytes,
         expected_sha256=archive.manifest_sha256,
         collection_id=archive.collection_id,
         files=expected_files,
     )
-    proof_bytes = archive_store.read_restored_collection_archive_proof(
+    proof_bytes = archive_store.read_restored_collection_manifest_proof(
         collection_id=archive.collection_id,
         object_path=archive.proof_object_path,
     )
-    verify_collection_archive_proof(
+    verify_collection_manifest_proof(
         proof_bytes=proof_bytes,
         expected_sha256=archive.proof_sha256,
         manifest_bytes=manifest_bytes,
@@ -1023,6 +1024,7 @@ def _verify_restored_collection_archive(
         ),
         files=expected_files,
     )
+    return _RestoredCollectionArtifact(manifest_bytes=manifest_bytes, proof_bytes=proof_bytes)
 
 
 def _collection_archive_expected_files(
@@ -1063,36 +1065,20 @@ def _write_rebuilt_collection_artifacts(
     *,
     image_root: Path,
     collection_artifacts: Sequence[FinalizedImageCollectionArtifactRecord],
-    restored_files: dict[tuple[str, str], bytes],
-    work_root: Path,
-    proof_stamper: ProofStamper,
+    restored_artifacts: dict[str, _RestoredCollectionArtifact],
     recovery_payload_codec: RecoveryPayloadCodec,
 ) -> None:
-    collection_ids = sorted({collection_id for collection_id, _ in restored_files})
-    for collection_id in collection_ids:
-        collection_root = work_root / "collections" / collection_id
-        artifact_root = work_root / "collection-artifacts" / collection_id
-        generated = generate_collection_hash_artifacts(
-            collection_id=collection_id,
-            source_root=collection_root,
-            artifact_root=artifact_root,
-            stamper=proof_stamper,
-        )
-        artifact = next(
-            (
-                current
-                for current in collection_artifacts
-                if current.collection_id == collection_id
-            ),
-            None,
-        )
-        if artifact is None:
-            raise InvalidState(f"image collection artifact is missing: {collection_id}")
+    for artifact in sorted(collection_artifacts, key=lambda current: current.collection_id):
+        restored = restored_artifacts.get(artifact.collection_id)
+        if restored is None:
+            raise InvalidState(
+                f"restored collection artifacts are missing: {artifact.collection_id}"
+            )
         _write_image_root_file(
             image_root,
             artifact.manifest_path,
             encrypt_recovery_payload(
-                generated.manifest_path.read_bytes(),
+                restored.manifest_bytes,
                 recovery_payload_codec,
             ),
         )
@@ -1100,7 +1086,7 @@ def _write_rebuilt_collection_artifacts(
             image_root,
             artifact.proof_path,
             encrypt_recovery_payload(
-                generated.proof_path.read_bytes(),
+                restored.proof_bytes,
                 recovery_payload_codec,
             ),
         )
@@ -1132,10 +1118,6 @@ def _write_rebuilt_image_payloads(
                 "relpath": part.path,
                 "sha256": sha256,
                 "plaintext_bytes": plaintext_bytes,
-                "mode": 0o644,
-                "mtime": None,
-                "uid": None,
-                "gid": None,
             },
         )
         _write_image_root_file(
@@ -1410,7 +1392,7 @@ def _session_summary(
             RecoverySessionCollection(
                 id=CollectionId(collection.id),
                 glacier=_collection_glacier_archive_status(archive),
-                archive_manifest=_collection_archive_manifest_status(archive),
+                collection_manifest=_collection_manifest_status(archive),
                 stored_bytes=_collection_stored_bytes(archive),
             )
         )
@@ -1491,15 +1473,15 @@ def _recovery_session_image_rebuild_state(record: GlacierRecoverySessionRecord) 
     return "pending"
 
 
-def _collection_archive_manifest_status(
+def _collection_manifest_status(
     archive: CollectionArchiveRecord | None,
-) -> CollectionArchiveManifestStatus | None:
+) -> CollectionManifestStatus | None:
     if archive is None:
         return None
     ots_state = "uploaded" if archive.ots_object_path else "pending"
     if normalize_glacier_state(archive.state) == GlacierState.FAILED:
         ots_state = "failed"
-    return CollectionArchiveManifestStatus(
+    return CollectionManifestStatus(
         object_path=archive.manifest_object_path,
         sha256=archive.manifest_sha256,
         ots_object_path=archive.ots_object_path,

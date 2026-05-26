@@ -36,7 +36,7 @@ from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.glacier_uploads import SqlAlchemyGlacierUploadService
 from riverhog_core.services.planning import (
     SqlAlchemyPlanningService,
-    cache_collection_archive_artifacts,
+    cache_collection_manifest_artifacts,
     refresh_provisional_plan,
 )
 from riverhog_core.sqlite_db import initialize_db, make_session_factory, session_scope
@@ -209,6 +209,8 @@ class _FakeArchiveStore:
     def upload_collection_archive_package(self, *, collection_id, package, multipart_tracker=None):
         _ = multipart_tracker
         object_path = f"glacier/collections/{collection_id}/archive.tar"
+        manifest_object_path = f"glacier/collections/{collection_id}/manifest.yml"
+        proof_object_path = f"glacier/collections/{collection_id}/manifest.yml.ots"
         return CollectionArchiveUploadReceipt(
             archive=ArchiveUploadReceipt(
                 object_path=object_path,
@@ -219,18 +221,18 @@ class _FakeArchiveStore:
                 verified_at="2026-04-20T04:00:01Z",
             ),
             manifest=ArchiveUploadReceipt(
-                object_path=object_path,
-                stored_bytes=0,
+                object_path=manifest_object_path,
+                stored_bytes=len(package.manifest_bytes),
                 backend="s3",
-                storage_class="DEEP_ARCHIVE",
+                storage_class="STANDARD",
                 uploaded_at="2026-04-20T04:00:00Z",
                 verified_at="2026-04-20T04:00:01Z",
             ),
             proof=ArchiveUploadReceipt(
-                object_path=object_path,
-                stored_bytes=0,
+                object_path=proof_object_path,
+                stored_bytes=len(package.proof_bytes),
                 backend="s3",
-                storage_class="DEEP_ARCHIVE",
+                storage_class="STANDARD",
                 uploaded_at="2026-04-20T04:00:00Z",
                 verified_at="2026-04-20T04:00:01Z",
             ),
@@ -522,8 +524,8 @@ def test_failed_hot_promotion_keeps_staging_for_retry(tmp_path: Path) -> None:
         assert upload.state == "archiving"
         assert upload.archive_failure == "hot store unavailable"
         assert upload.archive_receipt_json is not None
-        assert upload.archive_manifest_bytes_b64 is not None
-        assert upload.archive_proof_bytes_b64 is not None
+        assert upload.collection_manifest_bytes_b64 is not None
+        assert upload.collection_manifest_proof_bytes_b64 is not None
         upload_files_by_path = {file_record.path: file_record for file_record in upload.files}
         assert upload_files_by_path["albums/day-01.txt"].hot_promoted_at is not None
         assert upload_files_by_path["albums/day-02.txt"].hot_promoted_at is None
@@ -595,8 +597,8 @@ def test_packaged_archive_artifacts_are_reused_after_upload_failure(tmp_path: Pa
         upload = session.get(CollectionUploadRecord, collection_id)
         assert upload is not None
         assert upload.archive_phase == "retry_wait"
-        assert upload.archive_manifest_bytes_b64 is not None
-        assert upload.archive_proof_bytes_b64 is not None
+        assert upload.collection_manifest_bytes_b64 is not None
+        assert upload.collection_manifest_proof_bytes_b64 is not None
         assert upload.archive_multipart_content_length is not None
         assert upload.archive_multipart_sha256 is not None
         upload.archive_next_attempt_at = "2026-04-20T04:00:00Z"
@@ -1039,7 +1041,7 @@ def test_provisional_disc_plan_materialization_resumes_partial_candidate(
         collection_id=collection_id,
         package=archive_package,
     )
-    cache_collection_archive_artifacts(
+    cache_collection_manifest_artifacts(
         config,
         collection_id=collection_id,
         manifest_bytes=archive_package.manifest_bytes,
@@ -1070,10 +1072,10 @@ def test_provisional_disc_plan_materialization_resumes_partial_candidate(
                 storage_class="DEEP_ARCHIVE",
                 manifest_object_path=package.manifest.object_path,
                 manifest_sha256=package.manifest_sha256,
-                manifest_stored_bytes=0,
+                manifest_stored_bytes=package.manifest.stored_bytes,
                 ots_object_path=package.proof.object_path,
                 ots_sha256=package.proof_sha256,
-                ots_stored_bytes=0,
+                ots_stored_bytes=package.proof.stored_bytes,
             )
         )
 
@@ -1137,7 +1139,7 @@ def test_underfilled_tail_candidate_waits_without_materializing(tmp_path: Path) 
         collection_id=collection_id,
         package=archive_package,
     )
-    cache_collection_archive_artifacts(
+    cache_collection_manifest_artifacts(
         config,
         collection_id=collection_id,
         manifest_bytes=archive_package.manifest_bytes,
@@ -1168,10 +1170,10 @@ def test_underfilled_tail_candidate_waits_without_materializing(tmp_path: Path) 
                 storage_class="DEEP_ARCHIVE",
                 manifest_object_path=package.manifest.object_path,
                 manifest_sha256=package.manifest_sha256,
-                manifest_stored_bytes=0,
+                manifest_stored_bytes=package.manifest.stored_bytes,
                 ots_object_path=package.proof.object_path,
                 ots_sha256=package.proof_sha256,
-                ots_stored_bytes=0,
+                ots_stored_bytes=package.proof.stored_bytes,
             )
         )
 
@@ -1248,7 +1250,7 @@ def test_planner_continues_after_partially_finalized_collection(tmp_path: Path) 
         collection_id=collection_id,
         package=archive_package,
     )
-    cache_collection_archive_artifacts(
+    cache_collection_manifest_artifacts(
         config,
         collection_id=collection_id,
         manifest_bytes=archive_package.manifest_bytes,
@@ -1283,10 +1285,10 @@ def test_planner_continues_after_partially_finalized_collection(tmp_path: Path) 
                 storage_class="DEEP_ARCHIVE",
                 manifest_object_path=package.manifest.object_path,
                 manifest_sha256=package.manifest_sha256,
-                manifest_stored_bytes=0,
+                manifest_stored_bytes=package.manifest.stored_bytes,
                 ots_object_path=package.proof.object_path,
                 ots_sha256=package.proof_sha256,
-                ots_stored_bytes=0,
+                ots_stored_bytes=package.proof.stored_bytes,
             )
         )
         session.add(

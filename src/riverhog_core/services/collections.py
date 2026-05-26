@@ -36,9 +36,9 @@ from riverhog_core.catalog_models import (
 from riverhog_core.domain.enums import GlacierState, RecoveryCoverageState
 from riverhog_core.domain.errors import BadRequest, Conflict, HashMismatch, NotFound
 from riverhog_core.domain.models import (
-    CollectionArchiveManifestStatus,
     CollectionCoverageImage,
     CollectionListPage,
+    CollectionManifestStatus,
     CollectionRecoverySummary,
     CollectionSummary,
     CopySummary,
@@ -1153,7 +1153,7 @@ def _collection_summary_payload(summary: CollectionSummary) -> dict[str, object]
             "last_verified_at": summary.glacier.last_verified_at,
             "failure": summary.glacier.failure,
         },
-        "archive_manifest": _archive_manifest_payload(summary.archive_manifest),
+        "collection_manifest": _collection_manifest_payload(summary.collection_manifest),
         "archive_format": summary.archive_format,
         "compression": summary.compression,
         "protection_state": summary.protection_state.value,
@@ -1196,8 +1196,8 @@ def _collection_summary_payload(summary: CollectionSummary) -> dict[str, object]
     }
 
 
-def _archive_manifest_payload(
-    summary: CollectionArchiveManifestStatus | None,
+def _collection_manifest_payload(
+    summary: CollectionManifestStatus | None,
 ) -> dict[str, object] | None:
     if summary is None:
         return None
@@ -1294,7 +1294,7 @@ def _summary_from_records(
         recovery=recovery,
         image_coverage=list(image_coverage),
         glacier=_collection_glacier_status(archive),
-        archive_manifest=_collection_archive_manifest_status(archive),
+        collection_manifest=_collection_manifest_status(archive),
         archive_format=archive.archive_format if archive is not None else None,
         compression=archive.compression if archive is not None else None,
     )
@@ -1315,15 +1315,15 @@ def _collection_glacier_status(archive: CollectionArchiveRecord | None) -> Glaci
     )
 
 
-def _collection_archive_manifest_status(
+def _collection_manifest_status(
     archive: CollectionArchiveRecord | None,
-) -> CollectionArchiveManifestStatus | None:
+) -> CollectionManifestStatus | None:
     if archive is None:
         return None
     ots_state = "uploaded" if archive.ots_object_path else "pending"
     if archive.state == "failed":
         ots_state = "failed"
-    return CollectionArchiveManifestStatus(
+    return CollectionManifestStatus(
         object_path=archive.manifest_object_path,
         sha256=archive.manifest_sha256,
         ots_object_path=archive.ots_object_path,

@@ -395,17 +395,17 @@ def format_collection_summary(
         if direct_glacier.get("failure"):
             lines.append(f"glacier_failure: {direct_glacier.get('failure')}")
 
-    archive_manifest = payload.get("archive_manifest")
-    if isinstance(archive_manifest, Mapping):
+    collection_manifest = payload.get("collection_manifest")
+    if isinstance(collection_manifest, Mapping):
         lines.append(
-            "archive_manifest: "
-            f"{archive_manifest.get('object_path') or 'missing'} "
-            f"sha256={archive_manifest.get('sha256') or 'unknown'}"
+            "collection_manifest: "
+            f"{collection_manifest.get('object_path') or 'missing'} "
+            f"sha256={collection_manifest.get('sha256') or 'unknown'}"
         )
-        ots_state = "uploaded" if archive_manifest.get("ots_object_path") else "missing"
+        ots_state = "uploaded" if collection_manifest.get("ots_object_path") else "missing"
         lines.append(
             f"ots: {ots_state} "
-            f"path={archive_manifest.get('ots_object_path') or 'missing'}"
+            f"path={collection_manifest.get('ots_object_path') or 'missing'}"
         )
 
     disc_coverage = payload.get("disc_coverage")
@@ -549,7 +549,7 @@ def format_glacier_report(payload: Mapping[str, Any]) -> str:
             glacier_state = (
                 glacier.get("state", "unknown") if isinstance(glacier, Mapping) else "unknown"
             )
-            manifest = collection.get("archive_manifest")
+            manifest = collection.get("collection_manifest")
             ots_state = (
                 "uploaded"
                 if isinstance(manifest, Mapping) and manifest.get("ots_object_path")
@@ -567,7 +567,7 @@ def format_glacier_report(payload: Mapping[str, Any]) -> str:
             if isinstance(glacier, Mapping) and glacier.get("object_path"):
                 lines.append(f"  glacier_path: {glacier.get('object_path')}")
             if isinstance(manifest, Mapping) and manifest.get("object_path"):
-                lines.append(f"  archive_manifest: {manifest.get('object_path')}")
+                lines.append(f"  collection_manifest: {manifest.get('object_path')}")
 
     billing = payload.get("billing")
     lines.append("billing:")

@@ -50,9 +50,9 @@ Required behavior:
 - persists enough upload-session state to survive service restart and repeated CLI runs
 - keeps the collection invisible until every required file has uploaded,
   verified successfully, archived to Glacier, and verified by object receipt
-- persists the completed archive receipt and embedded archive artifacts before
-  hot-file promotion, so restart retries do not re-upload completed Glacier
-  objects
+- persists the completed archive, collection manifest, and OTS proof receipts
+  before hot-file promotion, so restart retries do not re-upload completed
+  archive-store objects
 - commits the finalized collection/archive records before deleting staged bytes,
   preserving restart-safe retries during archive and promotion failures
 - exposes per-file resumable upload state and collection-level progress
@@ -169,12 +169,12 @@ Required behavior:
 
 - collection ids may span multiple path segments, for example `GET /v1/collections/photos/2024`
 - API and CLI collection lookup treat slash-bearing ids as first-class
-- collection summaries expose `glacier`, `archive_manifest`, `archive_format`,
+- collection summaries expose `glacier`, `collection_manifest`, `archive_format`,
   `compression`, `disc_coverage`, `protection_state`, `protected_bytes`, and
   per-image physical coverage details
 - `glacier` is direct collection archive state, not a value derived from image
   coverage
-- `archive_manifest` exposes manifest object path, manifest SHA-256, OTS proof
+- `collection_manifest` exposes manifest object path, manifest SHA-256, OTS proof
   object path, and OTS proof state
 - per-image coverage details expose `covered_paths`, `physical_copies_registered`,
   `physical_copies_verified`, copy labels and locations
@@ -446,12 +446,13 @@ Required behavior:
   rates from the AWS price-list API or from manual fallback values
 - `pricing_basis.currency_code`, `pricing_basis.region_code`, and `pricing_basis.effective_at` make the AWS lookup
   basis explicit when Riverhog resolves live pricing
-- `totals.measured_storage_bytes` reports measured uploaded Glacier object bytes, not billing overhead
-- `totals.estimated_billable_bytes` includes configured Glacier metadata overhead on top of measured uploaded bytes
+- `totals.measured_storage_bytes` reports measured uploaded archive-store bytes, not billing overhead
+- `totals.estimated_billable_bytes` includes configured Glacier metadata overhead for archived tar objects and
+  Standard S3 bytes for manifest/proof objects
 - `totals.estimated_monthly_cost_usd` is derived from the emitted pricing basis rather than observed cloud bills
 - `totals.collections` counts collection archive records and
   `totals.uploaded_collections` counts those uploaded and verified
-- each returned collection exposes direct Glacier archive state, measured
+- each returned collection exposes direct archive-store state, measured
   uploaded bytes, estimated billable bytes, estimated monthly cost, manifest
   state, and OTS proof state
 - returned image entries, when present, explain physical coverage of collections

@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import ConfigDict
 
-from riverhog_api.schemas.archive import CollectionArchiveManifestOut, GlacierArchiveOut
+from riverhog_api.schemas.archive import CollectionManifestOut, GlacierArchiveOut
 from riverhog_api.schemas.common import RiverhogModel
 from riverhog_api.schemas.images import CopyOut
 
@@ -32,7 +32,7 @@ class CollectionSummaryOut(RiverhogModel):
     archived_bytes: int
     pending_bytes: int
     glacier: GlacierArchiveOut | None = None
-    archive_manifest: CollectionArchiveManifestOut | None = None
+    collection_manifest: CollectionManifestOut | None = None
     archive_format: str | None = None
     compression: str | None = None
     disc_coverage: CollectionDiscCoverageOut | None = None

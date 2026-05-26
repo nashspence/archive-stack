@@ -114,15 +114,19 @@ def sidecar_dict(
         "path": _manifest_relpath(file_meta["relpath"]),
         "sha256": file_meta["sha256"],
         "bytes": file_meta["plaintext_bytes"],
-        "mode": file_meta.get("mode"),
-        "mtime": file_meta.get("mtime"),
     }
+    mode = file_meta.get("mode")
+    if mode is not None:
+        data["mode"] = int(mode)
+    mtime = file_meta.get("mtime")
+    if mtime is not None:
+        data["mtime"] = int(mtime)
     uid = file_meta.get("uid")
     if uid is not None:
-        data["uid"] = uid
+        data["uid"] = int(uid)
     gid = file_meta.get("gid")
     if gid is not None:
-        data["gid"] = gid
+        data["gid"] = int(gid)
     if part_count > 1:
         data["part"] = {"index": part_index + 1, "count": part_count}
     return data

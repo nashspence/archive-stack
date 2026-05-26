@@ -1199,10 +1199,10 @@ components:
           oneOf:
             - type: string
             - type: "null"
-    ArchiveManifestProofState:
+    CollectionManifestProofState:
       type: string
       enum: [pending, uploaded, failed]
-    CollectionArchiveManifest:
+    CollectionManifest:
       type: object
       required: [object_path, sha256, ots_object_path, ots_state]
       properties:
@@ -1220,7 +1220,7 @@ components:
             - type: string
             - type: "null"
         ots_state:
-          $ref: "#/components/schemas/ArchiveManifestProofState"
+          $ref: "#/components/schemas/CollectionManifestProofState"
     GlacierPricingBasis:
       type: object
       required:
@@ -1320,7 +1320,7 @@ components:
           id,
           bytes,
           glacier,
-          archive_manifest,
+          collection_manifest,
           archive_format,
           compression,
           measured_storage_bytes,
@@ -1335,9 +1335,9 @@ components:
           minimum: 0
         glacier:
           $ref: "#/components/schemas/GlacierArchive"
-        archive_manifest:
+        collection_manifest:
           oneOf:
-            - $ref: "#/components/schemas/CollectionArchiveManifest"
+            - $ref: "#/components/schemas/CollectionManifest"
             - type: "null"
         archive_format:
           oneOf:
@@ -1730,7 +1730,7 @@ components:
     CollectionSummary:
       type: object
       required:
-        [id, files, bytes, hot_bytes, archived_bytes, pending_bytes, glacier, archive_manifest, archive_format, compression, disc_coverage, protection_state, protected_bytes, image_coverage]
+        [id, files, bytes, hot_bytes, archived_bytes, pending_bytes, glacier, collection_manifest, archive_format, compression, disc_coverage, protection_state, protected_bytes, image_coverage]
       properties:
         id:
           type: string
@@ -1742,8 +1742,8 @@ components:
         pending_bytes: { type: integer }
         glacier:
           $ref: "#/components/schemas/GlacierArchive"
-        archive_manifest:
-          $ref: "#/components/schemas/CollectionArchiveManifest"
+        collection_manifest:
+          $ref: "#/components/schemas/CollectionManifest"
         archive_format:
           type: string
         compression:
@@ -2298,14 +2298,14 @@ components:
           enum: [pending, restoring_collections, rebuilding, ready, failed]
     RecoverySessionCollection:
       type: object
-      required: [id, glacier, archive_manifest, stored_bytes]
+      required: [id, glacier, collection_manifest, stored_bytes]
       properties:
         id:
           type: string
         glacier:
           $ref: "#/components/schemas/GlacierArchive"
-        archive_manifest:
-          $ref: "#/components/schemas/CollectionArchiveManifest"
+        collection_manifest:
+          $ref: "#/components/schemas/CollectionManifest"
         stored_bytes:
           type: integer
     HotStatus:

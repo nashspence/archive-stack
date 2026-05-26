@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from riverhog_core.catalog_models import (
+    CollectionArchiveRecord,
     CollectionFileRecord,
     CollectionRecord,
     FinalizedImageCollectionArtifactRecord,
@@ -171,6 +172,48 @@ def test_get_report_does_not_derive_collection_usage_from_finalized_image_covera
     assert report.collections[0].estimated_billable_bytes == 0
     assert report.collections[0].images
     assert report.collections[0].images[0].represented_bytes > 0
+
+
+def test_get_report_counts_manifest_and_proof_as_standard_s3_storage(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    _seed_docs_collection(config)
+    session_factory = make_session_factory(str(config.sqlite_path))
+    with session_scope(session_factory) as session:
+        session.add(
+            CollectionArchiveRecord(
+                collection_id=DOCS_COLLECTION_ID,
+                state="uploaded",
+                object_path=f"glacier/collections/{DOCS_COLLECTION_ID}/archive.tar",
+                stored_bytes=1000,
+                sha256="a" * 64,
+                backend="aws",
+                storage_class="DEEP_ARCHIVE",
+                archive_format="tar",
+                compression="none",
+                manifest_object_path=f"glacier/collections/{DOCS_COLLECTION_ID}/manifest.yml",
+                manifest_sha256="b" * 64,
+                manifest_stored_bytes=200,
+                ots_object_path=f"glacier/collections/{DOCS_COLLECTION_ID}/manifest.yml.ots",
+                ots_sha256="c" * 64,
+                ots_stored_bytes=20,
+            )
+        )
+
+    report = SqlAlchemyGlacierReportingService(config).get_report(collection=DOCS_COLLECTION_ID)
+
+    collection = report.collections[0]
+    pricing = report.pricing_basis
+    assert collection.measured_storage_bytes == 1220
+    assert collection.estimated_billable_bytes == (
+        1220
+        + pricing.archived_metadata_bytes_per_object
+        + pricing.standard_metadata_bytes_per_object
+    )
+    assert collection.collection_manifest is not None
+    assert collection.collection_manifest.object_path.endswith("/manifest.yml")
+    assert collection.collection_manifest.ots_object_path.endswith("/manifest.yml.ots")
 
 
 def test_initialize_db_backfills_coverage_parts_for_existing_finalized_images(

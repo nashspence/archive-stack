@@ -132,14 +132,14 @@ class ArchiveStore(Protocol):
         object_path: str,
     ) -> Iterator[bytes]: ...
 
-    def read_restored_collection_archive_manifest(
+    def read_restored_collection_manifest(
         self,
         *,
         collection_id: str,
         object_path: str,
     ) -> bytes: ...
 
-    def read_restored_collection_archive_proof(
+    def read_restored_collection_manifest_proof(
         self,
         *,
         collection_id: str,

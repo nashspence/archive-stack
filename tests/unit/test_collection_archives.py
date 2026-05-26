@@ -6,22 +6,21 @@ from collections.abc import Iterator
 from io import BytesIO
 
 import pytest
+import yaml
 
 from riverhog_core.collection_archives import (
     COLLECTION_ARCHIVE_COMPRESSION,
     COLLECTION_ARCHIVE_FORMAT,
-    COLLECTION_ARCHIVE_MANIFEST_PATH,
-    COLLECTION_ARCHIVE_PROOF_PATH,
+    COLLECTION_MANIFEST_SCHEMA,
     CollectionArchiveExpectedFile,
     CollectionArchiveFile,
     build_collection_archive_package,
     build_collection_archive_package_from_chunk_reader,
     build_collection_archive_package_from_prebuilt_artifacts,
     iter_collection_archive_files,
-    read_collection_archive_internal_file,
     verify_collection_archive_files,
-    verify_collection_archive_manifest,
-    verify_collection_archive_proof,
+    verify_collection_manifest,
+    verify_collection_manifest_proof,
 )
 from tests.fixtures.crypto import FixtureProofStamper, FixtureProofVerifier
 
@@ -49,25 +48,7 @@ def test_collection_archive_package_uses_plain_tar_contract() -> None:
     assert not package.archive_bytes.startswith(b"\x28\xb5\x2f\xfd")
 
     with tarfile.open(fileobj=BytesIO(package.archive_bytes), mode="r:") as archive:
-        assert archive.getnames() == [
-            COLLECTION_ARCHIVE_MANIFEST_PATH,
-            COLLECTION_ARCHIVE_PROOF_PATH,
-            "tax/2022/invoice.pdf",
-        ]
-    assert (
-        read_collection_archive_internal_file(
-            (package.archive_bytes,),
-            path=COLLECTION_ARCHIVE_MANIFEST_PATH,
-        )
-        == package.manifest_bytes
-    )
-    assert (
-        read_collection_archive_internal_file(
-            (package.archive_bytes,),
-            path=COLLECTION_ARCHIVE_PROOF_PATH,
-        )
-        == package.proof_bytes
-    )
+        assert archive.getnames() == ["tax/2022/invoice.pdf"]
 
 
 def test_manifest_and_proof_verification_use_catalog_and_manifest_digest() -> None:
@@ -91,14 +72,18 @@ def test_manifest_and_proof_verification_use_catalog_and_manifest_digest() -> No
             sha256=digest,
         ),
     )
+    manifest = yaml.safe_load(package.manifest_bytes.decode("utf-8"))
 
-    verify_collection_archive_manifest(
+    assert manifest["schema"] == COLLECTION_MANIFEST_SCHEMA
+    assert "archive" not in manifest
+
+    verify_collection_manifest(
         manifest_bytes=package.manifest_bytes,
         expected_sha256=package.manifest_sha256,
         collection_id="docs",
         files=expected_files,
     )
-    verify_collection_archive_proof(
+    verify_collection_manifest_proof(
         proof_bytes=package.proof_bytes,
         expected_sha256=package.proof_sha256,
         manifest_bytes=package.manifest_bytes,
@@ -107,7 +92,7 @@ def test_manifest_and_proof_verification_use_catalog_and_manifest_digest() -> No
 
     bad_proof = b""
     with pytest.raises(ValueError, match="proof is empty"):
-        verify_collection_archive_proof(
+        verify_collection_manifest_proof(
             proof_bytes=bad_proof,
             expected_sha256=hashlib.sha256(bad_proof).hexdigest(),
             manifest_bytes=package.manifest_bytes,

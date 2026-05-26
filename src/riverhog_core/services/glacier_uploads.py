@@ -43,7 +43,7 @@ from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collections import _collection_upload_target_path
 from riverhog_core.services.glacier_reporting import record_glacier_usage_snapshot
 from riverhog_core.services.planning import (
-    cache_collection_archive_artifacts,
+    cache_collection_manifest_artifacts,
     refresh_provisional_plan,
 )
 from riverhog_core.webhooks import (
@@ -139,8 +139,8 @@ class SqlAlchemyGlacierUploadService:
                 upload.archive_next_attempt_at = None
                 return
             receipt = _archive_receipt_from_json(upload.archive_receipt_json)
-            manifest_bytes = _decode_b64(upload.archive_manifest_bytes_b64)
-            proof_bytes = _decode_b64(upload.archive_proof_bytes_b64)
+            manifest_bytes = _decode_b64(upload.collection_manifest_bytes_b64)
+            proof_bytes = _decode_b64(upload.collection_manifest_proof_bytes_b64)
             packaged_archive_size = _positive_int_or_none(
                 upload.archive_multipart_content_length
             )
@@ -261,7 +261,7 @@ class SqlAlchemyGlacierUploadService:
                 )
             if manifest_bytes is None or proof_bytes is None:
                 raise RuntimeError("collection archive artifacts were not recorded")
-            cache_collection_archive_artifacts(
+            cache_collection_manifest_artifacts(
                 self._config,
                 collection_id=collection_id,
                 manifest_bytes=manifest_bytes,
@@ -481,8 +481,8 @@ class SqlAlchemyGlacierUploadService:
             if upload is None:
                 return
             upload.archive_receipt_json = _archive_receipt_to_json(receipt)
-            upload.archive_manifest_bytes_b64 = _encode_b64(manifest_bytes)
-            upload.archive_proof_bytes_b64 = _encode_b64(proof_bytes)
+            upload.collection_manifest_bytes_b64 = _encode_b64(manifest_bytes)
+            upload.collection_manifest_proof_bytes_b64 = _encode_b64(proof_bytes)
             upload.archive_object_path = receipt.archive.object_path
             upload.archive_multipart_content_length = receipt.archive.stored_bytes
             upload.archive_multipart_sha256 = receipt.archive_sha256
@@ -505,8 +505,8 @@ class SqlAlchemyGlacierUploadService:
             upload = session.get(CollectionUploadRecord, collection_id)
             if upload is None:
                 return
-            upload.archive_manifest_bytes_b64 = _encode_b64(manifest_bytes)
-            upload.archive_proof_bytes_b64 = _encode_b64(proof_bytes)
+            upload.collection_manifest_bytes_b64 = _encode_b64(manifest_bytes)
+            upload.collection_manifest_proof_bytes_b64 = _encode_b64(proof_bytes)
             upload.archive_multipart_content_length = package.archive_size
             upload.archive_multipart_sha256 = package.archive_sha256
             upload.archive_multipart_uploaded_bytes = upload.archive_multipart_uploaded_bytes or 0

@@ -462,8 +462,8 @@ class CollectionUploadRecord(Base):
         Integer, default=0, nullable=True
     )
     archive_receipt_json: Mapped[str | None] = mapped_column(String, nullable=True)
-    archive_manifest_bytes_b64: Mapped[str | None] = mapped_column(String, nullable=True)
-    archive_proof_bytes_b64: Mapped[str | None] = mapped_column(String, nullable=True)
+    collection_manifest_bytes_b64: Mapped[str | None] = mapped_column(String, nullable=True)
+    collection_manifest_proof_bytes_b64: Mapped[str | None] = mapped_column(String, nullable=True)
 
     files: Mapped[list[CollectionUploadFileRecord]] = relationship(
         back_populates="upload",

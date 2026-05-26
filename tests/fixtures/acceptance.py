@@ -49,9 +49,9 @@ from riverhog_core.domain.enums import (
 )
 from riverhog_core.domain.errors import Conflict, HashMismatch, InvalidState, NotFound
 from riverhog_core.domain.models import (
-    CollectionArchiveManifestStatus,
     CollectionCoverageImage,
     CollectionListPage,
+    CollectionManifestStatus,
     CollectionRecoverySummary,
     CollectionSummary,
     CopyHistoryEntry,
@@ -820,7 +820,7 @@ class AcceptanceState:
             recovery=recovery,
             image_coverage=image_coverage,
             glacier=self._collection_glacier_status(str(collection_id), records),
-            archive_manifest=self._collection_archive_manifest_status(str(collection_id)),
+            collection_manifest=self._collection_manifest_status(str(collection_id)),
             archive_format="tar",
             compression="none",
         )
@@ -834,21 +834,20 @@ class AcceptanceState:
         direct = self.collection_glacier_status(collection_id)
         return direct
 
-    def _collection_archive_manifest_status(
+    def _collection_manifest_status(
         self,
         collection_id: str,
-    ) -> CollectionArchiveManifestStatus | None:
+    ) -> CollectionManifestStatus | None:
         status = self._collection_glacier_status(
             collection_id,
             self.collection_files(collection_id),
         )
         if status.state != GlacierState.UPLOADED:
             return None
-        archive_path = f"glacier/collections/{collection_id}/archive.tar"
-        return CollectionArchiveManifestStatus(
-            object_path=archive_path,
+        return CollectionManifestStatus(
+            object_path=f"glacier/collections/{collection_id}/manifest.yml",
             sha256="0" * 64,
-            ots_object_path=archive_path,
+            ots_object_path=f"glacier/collections/{collection_id}/manifest.yml.ots",
             ots_state="uploaded",
             ots_sha256="1" * 64,
         )
@@ -2435,10 +2434,10 @@ class AcceptanceRecoverySessionService:
                 RecoverySessionCollection(
                     id=collection_id,
                     glacier=self.state.collection_glacier_status(str(collection_id)),
-                    archive_manifest=CollectionArchiveManifestStatus(
-                        object_path=f"glacier/collections/{collection_id}/archive.tar",
+                    collection_manifest=CollectionManifestStatus(
+                        object_path=f"glacier/collections/{collection_id}/manifest.yml",
                         sha256="0" * 64,
-                        ots_object_path=f"glacier/collections/{collection_id}/archive.tar",
+                        ots_object_path=f"glacier/collections/{collection_id}/manifest.yml.ots",
                         ots_state="uploaded",
                         ots_sha256="1" * 64,
                     ),
@@ -2779,8 +2778,10 @@ def _acceptance_glacier_collections(
         measured_storage_bytes = (
             int(glacier.stored_bytes or 0) if glacier.state == GlacierState.UPLOADED else 0
         )
+        archived_object_count = 1 if measured_storage_bytes > 0 else 0
         billable_bytes = _acceptance_billable_bytes(
             measured_storage_bytes,
+            archived_object_count=archived_object_count,
             pricing_basis=pricing_basis,
         )
         reports.append(
@@ -2792,18 +2793,20 @@ def _acceptance_glacier_collections(
                 estimated_monthly_cost_usd=_round_usd(
                     _acceptance_estimated_monthly_cost_usd(
                         measured_storage_bytes,
-                        object_count=1 if measured_storage_bytes > 0 else 0,
+                        object_count=archived_object_count,
                         pricing_basis=pricing_basis,
                     )
                 ),
                 images=tuple(contributions),
                 glacier=glacier,
-                archive_manifest=(
-                    CollectionArchiveManifestStatus(
-                        object_path=(f"glacier/collections/{normalized_collection_id}/archive.tar"),
+                collection_manifest=(
+                    CollectionManifestStatus(
+                        object_path=(
+                            f"glacier/collections/{normalized_collection_id}/manifest.yml"
+                        ),
                         sha256="0" * 64,
                         ots_object_path=(
-                            f"glacier/collections/{normalized_collection_id}/archive.tar"
+                            f"glacier/collections/{normalized_collection_id}/manifest.yml.ots"
                         ),
                         ots_state="uploaded",
                         ots_sha256="1" * 64,
@@ -2968,14 +2971,15 @@ def _acceptance_glacier_snapshot(state: AcceptanceState) -> GlacierUsageSnapshot
 def _acceptance_billable_bytes(
     measured_storage_bytes: int,
     *,
+    archived_object_count: int,
     pricing_basis: GlacierPricingBasis,
 ) -> int:
     if measured_storage_bytes <= 0:
         return 0
     return (
         measured_storage_bytes
-        + pricing_basis.archived_metadata_bytes_per_object
-        + pricing_basis.standard_metadata_bytes_per_object
+        + pricing_basis.archived_metadata_bytes_per_object * archived_object_count
+        + pricing_basis.standard_metadata_bytes_per_object * archived_object_count
     )
 
 
@@ -4589,32 +4593,30 @@ class AcceptanceSystem:
             return self.wait_for_collection_upload_state(minted_collection_id, "archiving")
 
     def seed_photos_hot(self) -> None:
-        normalized = normalize_collection_id(PHOTOS_COLLECTION_ID)
-        with self.state.lock:
-            if CollectionId(normalized) in self.state.files_by_collection:
-                return
-        self.upload_collection_source(PHOTOS_COLLECTION_ID, PHOTOS_2024_FILES)
+        self._seed_hot_fixture_collection(PHOTOS_COLLECTION_ID, PHOTOS_2024_FILES)
 
     def seed_nested_photos_hot(self) -> None:
-        normalized = normalize_collection_id(PHOTOS_NESTED_COLLECTION_ID)
-        with self.state.lock:
-            if CollectionId(normalized) in self.state.files_by_collection:
-                return
-        self.upload_collection_source(PHOTOS_NESTED_COLLECTION_ID, PHOTOS_2024_FILES)
+        self._seed_hot_fixture_collection(PHOTOS_NESTED_COLLECTION_ID, PHOTOS_2024_FILES)
 
     def seed_parent_photos_hot(self) -> None:
-        normalized = normalize_collection_id(PHOTOS_PARENT_COLLECTION_ID)
-        with self.state.lock:
-            if CollectionId(normalized) in self.state.files_by_collection:
-                return
-        self.upload_collection_source(PHOTOS_PARENT_COLLECTION_ID, PHOTOS_2024_FILES)
+        self._seed_hot_fixture_collection(PHOTOS_PARENT_COLLECTION_ID, PHOTOS_2024_FILES)
 
     def seed_docs_hot(self) -> None:
-        normalized = normalize_collection_id(DOCS_COLLECTION_ID)
+        self._seed_hot_fixture_collection(DOCS_COLLECTION_ID, DOCS_FILES)
+
+    def _seed_hot_fixture_collection(self, collection_id: str, files: Mapping[str, bytes]) -> None:
+        normalized = normalize_collection_id(collection_id)
+        collection_key = CollectionId(normalized)
         with self.state.lock:
-            if CollectionId(normalized) in self.state.files_by_collection:
+            if collection_key in self.state.files_by_collection:
                 return
-        self.upload_collection_source(DOCS_COLLECTION_ID, DOCS_FILES)
+        self.seed_collection_source(normalized, files)
+        self.state.seed_collection(
+            normalized,
+            files,
+            hot_paths={path.lstrip("/") for path in files},
+            archived_paths=set(),
+        )
 
     def seed_docs_archive(self) -> None:
         docs_key = CollectionId(normalize_collection_id(DOCS_COLLECTION_ID))

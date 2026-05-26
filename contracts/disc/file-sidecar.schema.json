@@ -7,8 +7,6 @@
   "required": [
     "bytes",
     "collection",
-    "mode",
-    "mtime",
     "path",
     "schema",
     "sha256"
@@ -34,16 +32,10 @@
       "pattern": "^[0-9a-f]{64}$"
     },
     "mode": {
-      "type": [
-        "integer",
-        "null"
-      ]
+      "type": "integer"
     },
     "mtime": {
-      "type": [
-        "integer",
-        "null"
-      ]
+      "type": "integer"
     },
     "uid": {
       "type": "integer"

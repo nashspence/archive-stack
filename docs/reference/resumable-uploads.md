@@ -81,15 +81,17 @@ The response exposes at least:
 
 Collection archive upload is a second resumable phase after all logical files
 are staged. Riverhog creates one deterministic tar archive for the collection
-and stores it as one Glacier object at:
+and stores it with sibling manifest/proof objects at:
 
 ```text
 {RIVERHOG_GLACIER_PREFIX}/collections/{collection_id}/archive.tar
+{RIVERHOG_GLACIER_PREFIX}/collections/{collection_id}/manifest.yml
+{RIVERHOG_GLACIER_PREFIX}/collections/{collection_id}/manifest.yml.ots
 ```
 
-The tar includes the logical files plus the Riverhog archive manifest and OTS
-proof at `.riverhog/manifest.yml` and `.riverhog/manifest.yml.ots`. Those
-metadata files are not separate S3 objects.
+The tar contains only the logical files and uses the configured Glacier storage
+class. The collection manifest and OTS proof are separate Standard S3 objects
+under the same collection prefix.
 
 For archives that use S3 multipart upload, Riverhog persists the multipart
 `UploadId`, object key, part size, archive length, archive SHA-256, and progress

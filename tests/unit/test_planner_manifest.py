@@ -63,18 +63,20 @@ def test_sidecar_helpers_include_uid_gid_and_part_when_present() -> None:
     assert sidecar["part"] == {"index": 2, "count": 3}
 
 
-def test_sidecar_dict_omits_uid_gid_and_part_for_unsplit_files() -> None:
+def test_sidecar_dict_omits_unknown_metadata_and_part_for_unsplit_files() -> None:
     sidecar = sidecar_dict(
         {
             "relpath": "/tax/2022/report.pdf",
             "sha256": "c" * 64,
             "plaintext_bytes": 111,
-            "mode": 0o600,
-            "mtime": 1_700_000_000,
+            "mode": None,
+            "mtime": None,
         },
         collection_id="docs",
     )
 
+    assert "mode" not in sidecar
+    assert "mtime" not in sidecar
     assert "uid" not in sidecar
     assert "gid" not in sidecar
     assert "part" not in sidecar

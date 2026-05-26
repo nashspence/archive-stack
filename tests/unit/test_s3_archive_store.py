@@ -10,12 +10,9 @@ from typing import Any, cast
 import pytest
 
 from riverhog_core.collection_archives import (
-    COLLECTION_ARCHIVE_MANIFEST_PATH,
-    COLLECTION_ARCHIVE_PROOF_PATH,
     CollectionArchiveFile,
     CollectionArchivePackage,
     build_collection_archive_package,
-    read_collection_archive_internal_file,
 )
 from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadedPart,
@@ -292,45 +289,55 @@ def _store_with_client(
     return S3ArchiveStore(_config(tmp_path, **config_overrides))
 
 
-def test_upload_collection_archive_package_uploads_single_archive_with_embedded_manifest_and_proof(
+def test_upload_collection_archive_package_uploads_collection_manifest_and_proof_objects(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     client = _FakeS3Client()
-    store = _store_with_client(monkeypatch, tmp_path, client)
+    store = _store_with_client(
+        monkeypatch,
+        tmp_path,
+        client,
+        glacier_backend="aws",
+        glacier_endpoint_url="https://s3.us-west-2.amazonaws.com",
+        glacier_storage_class="DEEP_ARCHIVE",
+    )
     package = _package()
 
     receipt = store.upload_collection_archive_package(collection_id="docs", package=package)
 
     assert receipt.archive.object_path.endswith("/archive.tar")
     assert receipt.archive.object_path == "glacier/collections/docs/archive.tar"
-    assert receipt.manifest.object_path == receipt.archive.object_path
-    assert receipt.proof.object_path == receipt.archive.object_path
-    assert receipt.manifest.stored_bytes == 0
-    assert receipt.proof.stored_bytes == 0
+    assert receipt.manifest.object_path == "glacier/collections/docs/manifest.yml"
+    assert receipt.proof.object_path == "glacier/collections/docs/manifest.yml.ots"
+    assert receipt.manifest.stored_bytes == len(package.manifest_bytes)
+    assert receipt.proof.stored_bytes == len(package.proof_bytes)
+    assert receipt.archive.storage_class == "DEEP_ARCHIVE"
+    assert receipt.manifest.storage_class == "STANDARD"
+    assert receipt.proof.storage_class == "STANDARD"
     assert receipt.archive_format == "tar"
     assert receipt.compression == "none"
     archive_head = client.objects[receipt.archive.object_path]
-    assert set(client.objects) == {receipt.archive.object_path}
-    assert (
-        read_collection_archive_internal_file(
-            (archive_head["Body"],),
-            path=COLLECTION_ARCHIVE_MANIFEST_PATH,
-        )
-        == package.manifest_bytes
-    )
-    assert (
-        read_collection_archive_internal_file(
-            (archive_head["Body"],),
-            path=COLLECTION_ARCHIVE_PROOF_PATH,
-        )
-        == package.proof_bytes
-    )
+    manifest_head = client.objects[receipt.manifest.object_path]
+    proof_head = client.objects[receipt.proof.object_path]
+    assert set(client.objects) == {
+        receipt.archive.object_path,
+        receipt.manifest.object_path,
+        receipt.proof.object_path,
+    }
+    assert manifest_head["Body"] == package.manifest_bytes
+    assert proof_head["Body"] == package.proof_bytes
+    assert archive_head["StorageClass"] == "DEEP_ARCHIVE"
+    assert "StorageClass" not in manifest_head
+    assert "StorageClass" not in proof_head
     archive_metadata = archive_head["Metadata"]
     assert archive_metadata[COLLECTION_BYTES_METADATA] == str(len(package.archive_bytes))
     assert archive_metadata[COLLECTION_SHA256_METADATA] == package.archive_sha256
     assert archive_metadata["riverhog-archive-format"] == "tar"
     assert archive_metadata["riverhog-compression"] == "none"
+    assert archive_metadata["riverhog-storage-class"] == "DEEP_ARCHIVE"
+    assert manifest_head["Metadata"]["riverhog-storage-class"] == "STANDARD"
+    assert proof_head["Metadata"]["riverhog-storage-class"] == "STANDARD"
 
 
 def test_upload_collection_archive_package_streams_archive_with_multipart(
@@ -409,7 +416,7 @@ def test_upload_collection_archive_package_resumes_existing_multipart_upload(
     assert stored_first_part == package.archive_bytes[:4]
 
 
-def test_request_collection_archive_restore_deduplicates_embedded_artifact_paths(
+def test_request_collection_archive_restore_requests_collection_manifest_and_proof(
     monkeypatch,
     tmp_path: Path,
 ) -> None:

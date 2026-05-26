@@ -428,7 +428,7 @@ class SqlAlchemyPlanningService:
             )
 
 
-def cache_collection_archive_artifacts(
+def cache_collection_manifest_artifacts(
     config: RuntimeConfig,
     *,
     collection_id: str,
@@ -1277,8 +1277,6 @@ def _planner_file_meta(*, path: str, bytes: int, sha256: str) -> PlannerFileMeta
         "relpath": path,
         "sha256": sha256,
         "plaintext_bytes": bytes,
-        "mode": None,
-        "mtime": None,
     }
 
 

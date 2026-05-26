@@ -132,7 +132,7 @@ class _FakeArchiveStore:
         for offset in range(0, len(archive_bytes), 7):
             yield archive_bytes[offset : offset + 7]
 
-    def read_restored_collection_archive_manifest(
+    def read_restored_collection_manifest(
         self,
         *,
         collection_id: str,
@@ -141,7 +141,7 @@ class _FakeArchiveStore:
         self.manifest_reads.append(object_path)
         return self.collection_packages[collection_id].manifest_bytes
 
-    def read_restored_collection_archive_proof(
+    def read_restored_collection_manifest_proof(
         self,
         *,
         collection_id: str,
@@ -273,6 +273,8 @@ def _docs_collection_archive_package() -> CollectionArchivePackage:
 
 def _seed_collection_archive(sqlite_path: Path, package: CollectionArchivePackage) -> None:
     object_path = f"glacier/collections/{package.collection_id}/archive.tar"
+    manifest_object_path = f"glacier/collections/{package.collection_id}/manifest.yml"
+    proof_object_path = f"glacier/collections/{package.collection_id}/manifest.yml.ots"
     session_factory = make_session_factory(str(sqlite_path))
     with session_scope(session_factory) as session:
         session.add(
@@ -288,13 +290,13 @@ def _seed_collection_archive(sqlite_path: Path, package: CollectionArchivePackag
                 last_verified_at="2026-04-20T04:00:01Z",
                 archive_format=package.archive_format,
                 compression=package.compression,
-                manifest_object_path=object_path,
+                manifest_object_path=manifest_object_path,
                 manifest_sha256=package.manifest_sha256,
-                manifest_stored_bytes=0,
+                manifest_stored_bytes=len(package.manifest_bytes),
                 manifest_uploaded_at="2026-04-20T04:00:00Z",
-                ots_object_path=object_path,
+                ots_object_path=proof_object_path,
                 ots_sha256=package.proof_sha256,
-                ots_stored_bytes=0,
+                ots_stored_bytes=len(package.proof_bytes),
                 ots_uploaded_at="2026-04-20T04:00:00Z",
             )
         )
@@ -447,7 +449,6 @@ def test_collection_restore_requests_and_verifies_manifest_and_proof(
     recovery_service = SqlAlchemyRecoverySessionService(
         config,
         store,
-        proof_stamper=_PROOF_STAMPER,
         recovery_payload_codec=_RECOVERY_CODEC,
     )
 
@@ -460,8 +461,8 @@ def test_collection_restore_requests_and_verifies_manifest_and_proof(
     assert store.restore_requests == [
         (
             "glacier/collections/docs/archive.tar",
-            "glacier/collections/docs/archive.tar",
-            "glacier/collections/docs/archive.tar",
+            "glacier/collections/docs/manifest.yml",
+            "glacier/collections/docs/manifest.yml.ots",
         )
     ]
 
@@ -473,13 +474,13 @@ def test_collection_restore_requests_and_verifies_manifest_and_proof(
 
     assert completed.state == RecoverySessionState.COMPLETED
     assert store.archive_reads == ["glacier/collections/docs/archive.tar"]
-    assert store.manifest_reads == ["glacier/collections/docs/archive.tar"]
-    assert store.proof_reads == ["glacier/collections/docs/archive.tar"]
+    assert store.manifest_reads == ["glacier/collections/docs/manifest.yml"]
+    assert store.proof_reads == ["glacier/collections/docs/manifest.yml.ots"]
     assert store.cleanup_requests == [
         (
             "glacier/collections/docs/archive.tar",
-            "glacier/collections/docs/archive.tar",
-            "glacier/collections/docs/archive.tar",
+            "glacier/collections/docs/manifest.yml",
+            "glacier/collections/docs/manifest.yml.ots",
         )
     ]
 
@@ -665,7 +666,6 @@ def test_collection_restore_rejects_empty_proof_before_completion(
     recovery_service = SqlAlchemyRecoverySessionService(
         config,
         store,
-        proof_stamper=_PROOF_STAMPER,
         recovery_payload_codec=_RECOVERY_CODEC,
     )
 
@@ -748,7 +748,6 @@ def test_image_rebuild_verifies_manifest_and_proof_before_streaming_archive(
     recovery_service = SqlAlchemyRecoverySessionService(
         config,
         store,
-        proof_stamper=_PROOF_STAMPER,
         recovery_payload_codec=_RECOVERY_CODEC,
     )
 
@@ -772,8 +771,8 @@ def test_image_rebuild_verifies_manifest_and_proof_before_streaming_archive(
     )
 
     assert chunks == [b"rebuilt-iso"]
-    assert store.manifest_reads == ["glacier/collections/docs/archive.tar"]
-    assert store.proof_reads == ["glacier/collections/docs/archive.tar"]
+    assert store.manifest_reads == ["glacier/collections/docs/manifest.yml"]
+    assert store.proof_reads == ["glacier/collections/docs/manifest.yml.ots"]
 
 
 def test_recovery_session_retries_initial_ready_notification_before_reminders(

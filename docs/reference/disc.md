@@ -7,7 +7,7 @@ The machine-readable contract files live in `contracts/disc/`:
 - `root-layout.json`
 - `disc-manifest.schema.json`
 - `file-sidecar.schema.json`
-- `collection-hash-manifest.schema.json`
+- `collection-manifest.schema.json`
 
 ## Commitment
 
@@ -18,7 +18,7 @@ The machine-readable contract files live in `contracts/disc/`:
 - `README.md` is the only plaintext leaf file on the disc
 - every other leaf file is individually encrypted with `age-plugin-batchpass`
 - on-disc filenames are generic; canonical collection paths live only inside decrypted YAML
-- any collection represented on a disc, whether whole or partial, must also contribute its whole collection hash manifest and its `.ots` proof
+- any collection represented on a disc, whether whole or partial, must also contribute its whole collection manifest and its `.ots` proof
 
 ## Canonical Root Layout
 
@@ -39,8 +39,8 @@ Rules:
 
 - `files/*.age` are encrypted payload objects
 - `files/*.yml.age` are encrypted sidecar YAML files for the payload object with the same stem
-- `collections/*.yml.age` decrypt to the collection hash manifest for one represented collection
-- `collections/*.ots.age` decrypt to the OpenTimestamps proof for that collection hash manifest
+- `collections/*.yml.age` decrypt to the collection manifest for one represented collection
+- `collections/*.ots.age` decrypt to the OpenTimestamps proof for that collection manifest
 - split files use `NNNNNN.PPP` stems, where `PP` is the 1-based part index on that image
 - no other leaf paths are valid contract output
 
@@ -104,47 +104,46 @@ part:
 Rules:
 
 - `part` is omitted for unsplit files
-- the sidecar must contain enough metadata to restore the file without the API
+- `mode`, `mtime`, `uid`, and `gid` are optional and omitted when Riverhog does not know them
+- the sidecar must contain enough metadata to identify, order, and verify the file without the API
 
-## Collection Hash Manifest
+## Collection Manifest
 
-Each `collections/*.yml.age` decrypts to YAML with schema `collection-hash-manifest/v1`.
+Each `collections/*.yml.age` decrypts to YAML with schema `collection-manifest/v1`.
+This exact manifest and its matching OpenTimestamps proof are stored as sibling Standard S3
+objects beside the collection tar and on every disc that represents any part of the collection.
 
 ```yaml
-schema: collection-hash-manifest/v1
+schema: collection-manifest/v1
 collection: docs
-generated_at: 2026-04-20T12:00:00Z
 tree:
   sha256: ...
   total_bytes: 54
-directories:
-  - letters
-  - tax
-  - tax/2022
 files:
-  - relative_path: letters/cover.txt
-    size_bytes: 13
+  - path: letters/cover.txt
+    bytes: 13
     sha256: ...
-  - relative_path: tax/2022/invoice-123.pdf
-    size_bytes: 21
+  - path: tax/2022/invoice-123.pdf
+    bytes: 21
     sha256: ...
 ```
 
 Rules:
 
 - the manifest covers the whole represented collection, not only the files present on the current disc
-- `directories[]` and `files[].relative_path` are lexically sorted for deterministic media
-- `tree.total_bytes` is the sum of every `files[].size_bytes`
+- `files[].path` is lexically sorted for deterministic media
+- `tree.total_bytes` is the sum of every `files[].bytes`
 
 ## Collection Artifacts
 
 For every represented collection:
 
-- the disc must include the whole collection hash manifest, not only the files present on that image
+- the disc must include the whole collection manifest, not only the files present on that image
 - the disc must include the corresponding OpenTimestamps proof file
 - both are encrypted like any other non-README disc object
 
-This lets a person or tool verify reconstructed files against the collection-level manifest after recovery.
+This lets a person or tool verify reconstructed files against the same collection-level manifest used
+for the Glacier archive object set.
 
 ## `djdan` Expectations
 
@@ -249,6 +248,6 @@ Without `djdan`, the intended recovery path is:
 4. decrypt the referenced payload object and its sidecar
 5. if the file is split, gather every disc whose `DISC.yml.age` lists that same collection id and file path, then concatenate decrypted plaintext parts in ascending `index` order
 6. restore metadata from the sidecar and verify the resulting plaintext hash
-7. decrypt the collection hash manifest and `.ots` proof to validate the reconstructed collection
+7. decrypt the collection manifest and `.ots` proof to validate the reconstructed collection
 
 If a collection spans multiple discs, the merge key is always `collection id + path`, never the generic on-disc object name.

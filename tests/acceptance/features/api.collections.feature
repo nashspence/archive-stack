@@ -51,7 +51,7 @@ Feature: Collections API
       And the response contains the correct file count
       And the response contains the correct total bytes
       And collection "photos-2024" glacier state is "uploaded"
-      And collection "photos-2024" archive manifest state is "uploaded"
+      And collection "photos-2024" manifest state is "uploaded"
       And collection "photos-2024" OTS proof state is "uploaded"
       And collection "photos-2024" has hot_bytes equal to bytes
       And collection "photos-2024" has archived_bytes equal to 0
@@ -138,12 +138,12 @@ Feature: Collections API
     Scenario: Read a collection summary
       When the client gets "/v1/collections/photos-2024"
       Then the response status is 200
-      And the response contains "id", "files", "bytes", "hot_bytes", "archived_bytes", "pending_bytes", "glacier", "archive_manifest", "archive_format", "compression", "disc_coverage", "protection_state", "protected_bytes", and "image_coverage"
+      And the response contains "id", "files", "bytes", "hot_bytes", "archived_bytes", "pending_bytes", "glacier", "collection_manifest", "archive_format", "compression", "disc_coverage", "protection_state", "protected_bytes", and "image_coverage"
       And pending_bytes equals bytes minus archived_bytes
       And hot_bytes is between 0 and bytes
       And archived_bytes is between 0 and bytes
       And collection glacier state is "uploaded"
-      And collection archive manifest state is "uploaded"
+      And collection manifest state is "uploaded"
       And collection OTS proof state is "uploaded"
       And collection disc coverage state is "none"
       And collection protection_state is "cloud_only"
@@ -155,7 +155,7 @@ Feature: Collections API
       When the client gets "/v1/collections/docs"
       Then the response status is 200
       And collection glacier state is "uploaded"
-      And collection archive manifest state is "uploaded"
+      And collection manifest state is "uploaded"
       And collection OTS proof state is "uploaded"
       And collection protection_state is "under_protected"
       And protected_bytes is 0

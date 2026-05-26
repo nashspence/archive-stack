@@ -152,7 +152,7 @@ Feature: riverhog CLI
       When the operator runs 'riverhog show docs'
       Then the command exits with code 0
       And stdout mentions "glacier: uploaded"
-      And stdout mentions "archive_manifest:"
+      And stdout mentions "collection_manifest:"
       And stdout mentions "ots: uploaded"
       And stdout mentions "disc_coverage=partial"
       And stdout mentions "coverage:"
