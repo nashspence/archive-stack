@@ -193,9 +193,13 @@ Expected multipart flow:
 - if that item is still provisional, `djdan burn` finalizes it before continuing
 - the session downloads and stages the image ISO locally before burn work
 - the staged ISO is verified before burn work continues
-- the default burn backend uses `xorriso -as cdrecord` against the configured optical device
+- the default burn backend uses `drutil burn` on macOS and `xorriso -as cdrecord` elsewhere against the configured
+  optical device
 - burned-media verification reads back the staged ISO's byte length from the optical device and compares its SHA-256 to
   the staged ISO
+- `djdan burn --simulate` uses native non-writing burn mode against the configured optical device for the next pending
+  copy (`drutil burn -test` on macOS, xorriso cdrecord-emulation `-dummy` elsewhere), then exits without burned-media
+  verification, label confirmation, copy registration, or local burn checkpoint changes
 - if the staged ISO is missing or no longer matches the last verified staged copy, `djdan burn` downloads it again
 - one physical copy is burned and burned-media-verified at a time
 - `djdan burn` prints the exact label text plus storage guidance before copy registration

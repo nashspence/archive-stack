@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import inspect
 import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any
+from xml.etree import ElementTree
 
 import typer
 
@@ -28,6 +31,7 @@ def djdan_app() -> None:
 
 
 _DISC_IO_CHUNK_BYTES = 1024 * 1024
+_DOWNLOAD_PROGRESS_INTERVAL_SECONDS = 10.0
 
 
 def _require_tool(name: str) -> str:
@@ -49,6 +53,24 @@ def _run_checked(command: list[str], *, action: str) -> None:
         raise RuntimeError(f"{command[0]} is required for {action}") from exc
     if proc.returncode == 0:
         return
+    detail = ((proc.stderr or proc.stdout).strip() or f"{command[0]} exited {proc.returncode}")[
+        -1500:
+    ]
+    raise RuntimeError(f"{action} failed: {detail}")
+
+
+def _run_captured(command: list[str], *, action: str) -> str:
+    try:
+        proc = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"{command[0]} is required for {action}") from exc
+    if proc.returncode == 0:
+        return proc.stdout
     detail = ((proc.stderr or proc.stdout).strip() or f"{command[0]} exited {proc.returncode}")[
         -1500:
     ]
@@ -315,19 +337,126 @@ class XorrisoIsoVerifier:
 
 
 class XorrisoDiscBurner:
+    def __init__(self, *, dummy: bool = False) -> None:
+        self._dummy = dummy
+
     def burn(self, iso_path: Path, *, device: str, copy_id: str) -> None:
         if not iso_path.is_file():
             raise RuntimeError(f"staged ISO is missing for {copy_id}: {iso_path}")
         xorriso = _require_tool("xorriso")
-        _run_checked(
+        command = [
+            xorriso,
+            "-as",
+            "cdrecord",
+            "-v",
+        ]
+        if self._dummy:
+            command.append("-dummy")
+        command.extend(
             [
-                xorriso,
-                "-as",
-                "cdrecord",
-                "-v",
                 f"dev={device}",
                 str(iso_path),
-            ],
+            ]
+        )
+        _run_checked(
+            command,
+            action=f"burning {copy_id} to {device}",
+        )
+
+
+def _normalized_drive_name(value: str) -> str:
+    return " ".join(value.casefold().split())
+
+
+def _parse_diskutil_media_name(output: str, *, device: str) -> str:
+    for line in output.splitlines():
+        key, sep, value = line.partition(":")
+        if sep and key.strip() == "Device / Media Name":
+            media_name = value.strip()
+            if media_name:
+                return media_name
+    raise RuntimeError(f"diskutil did not report a media name for {device}")
+
+
+def _drutil_drive_index_for_device_path(device: str) -> str:
+    diskutil = _require_tool("diskutil")
+    drutil = _require_tool("drutil")
+    media_name = _parse_diskutil_media_name(
+        _run_captured(
+            [diskutil, "info", device],
+            action=f"inspecting macOS optical device {device}",
+        ),
+        device=device,
+    )
+    list_xml = _run_captured(
+        [drutil, "list", "-xml"],
+        action="listing macOS optical drives",
+    )
+    device_list_start = list_xml.find("<deviceList")
+    if device_list_start < 0:
+        raise RuntimeError("drutil list -xml did not include a deviceList payload")
+    try:
+        root = ElementTree.fromstring(list_xml[device_list_start:])
+    except ElementTree.ParseError as exc:
+        raise RuntimeError("drutil list -xml returned invalid XML") from exc
+
+    normalized_media_name = _normalized_drive_name(media_name)
+    matches: list[str] = []
+    for device_element in root.findall("device"):
+        index = device_element.get("index")
+        if not index:
+            continue
+        vendor_element = device_element.find("vendor")
+        product_element = device_element.find("product")
+        vendor_name = vendor_element.get("name", "") if vendor_element is not None else ""
+        product_name = product_element.get("name", "") if product_element is not None else ""
+        names = [
+            device_element.get("name") or "",
+            " ".join(part for part in (vendor_name, product_name) if part),
+        ]
+        if any(_normalized_drive_name(name) == normalized_media_name for name in names):
+            matches.append(index)
+
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise RuntimeError(f"drutil did not list a drive matching {device}: {media_name}")
+    raise RuntimeError(f"drutil listed multiple drives matching {device}: {media_name}")
+
+
+def _drutil_drive_args(device: str) -> list[str]:
+    normalized = device.strip()
+    if normalized.startswith(("/dev/disk", "/dev/rdisk")):
+        return ["-drive", _drutil_drive_index_for_device_path(normalized)]
+    if normalized in {"", "default", "auto"}:
+        return []
+    if normalized == "/dev/sr0":
+        raise RuntimeError(
+            "macOS burn device must be /dev/diskN, a drutil drive index, "
+            "or a drutil selector"
+        )
+    return ["-drive", normalized]
+
+
+class DrutilDiscBurner:
+    def __init__(self, *, dummy: bool = False) -> None:
+        self._dummy = dummy
+
+    def burn(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+        if not iso_path.is_file():
+            raise RuntimeError(f"staged ISO is missing for {copy_id}: {iso_path}")
+        drutil = _require_tool("drutil")
+        command = [
+            drutil,
+            *_drutil_drive_args(device),
+            "burn",
+            "-noverify",
+        ]
+        if self._dummy:
+            command.append("-test")
+        command.append(str(iso_path))
+        _run_checked(
+            command,
             action=f"burning {copy_id} to {device}",
         )
 
@@ -423,7 +552,15 @@ def build_disc_burner() -> object:
     spec = os.getenv("DJDAN_BURNER_FACTORY")
     if spec:
         return _load_factory(spec)
+    if sys.platform == "darwin":
+        return DrutilDiscBurner()
     return XorrisoDiscBurner()
+
+
+def build_simulated_disc_burner() -> object:
+    if sys.platform == "darwin":
+        return DrutilDiscBurner(dummy=True)
+    return XorrisoDiscBurner(dummy=True)
 
 
 def build_burned_media_verifier() -> object:
@@ -537,6 +674,55 @@ def _sha256_file(path: Path) -> str:
             if not chunk:
                 return digest.hexdigest()
             digest.update(chunk)
+
+
+def _format_bytes(value: int) -> str:
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    size = float(value)
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{value} B"
+
+
+def _download_progress_logger(label: str) -> Callable[[int, int | None], None]:
+    last_reported_at = 0.0
+
+    def progress(downloaded: int, total: int | None) -> None:
+        nonlocal last_reported_at
+        now = time.monotonic()
+        complete = total is not None and downloaded >= total
+        if not complete and now - last_reported_at < _DOWNLOAD_PROGRESS_INTERVAL_SECONDS:
+            return
+        last_reported_at = now
+        if total is None or total <= 0:
+            typer.echo(f"{label}: downloaded {_format_bytes(downloaded)}", err=True)
+            return
+        percent = (downloaded / total) * 100
+        typer.echo(
+            (
+                f"{label}: downloaded {_format_bytes(downloaded)} of "
+                f"{_format_bytes(total)} ({percent:.1f}%)"
+            ),
+            err=True,
+        )
+
+    return progress
+
+
+def _call_download_with_optional_progress(
+    method: Any,
+    *args: object,
+    progress: Callable[[int, int | None], None],
+) -> object:
+    try:
+        supports_progress = "progress" in inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        supports_progress = False
+    if supports_progress:
+        return method(*args, progress=progress)
+    return method(*args)
 
 
 def _burn_state_path(staging_dir: Path) -> Path:
@@ -984,10 +1170,21 @@ def _ensure_staged_iso(
 
     if recovery_session_id is None:
         typer.echo(f"downloading ISO {image_id} to {iso_path}", err=True)
-        client.download_iso(image_id, iso_path)
+        _call_download_with_optional_progress(
+            client.download_iso,
+            image_id,
+            iso_path,
+            progress=_download_progress_logger(f"download ISO {image_id}"),
+        )
     else:
         typer.echo(f"downloading restored ISO {image_id} to {iso_path}", err=True)
-        client.download_recovered_iso(recovery_session_id, image_id, iso_path)
+        _call_download_with_optional_progress(
+            client.download_recovered_iso,
+            recovery_session_id,
+            image_id,
+            iso_path,
+            progress=_download_progress_logger(f"download restored ISO {image_id}"),
+        )
     typer.echo(f"verifying staged ISO {iso_path}", err=True)
     verifier.verify(iso_path)
     image_progress.verified_sha256 = _sha256_file(iso_path)
@@ -1087,6 +1284,41 @@ def _burn_pending_copy(
     return copy_id
 
 
+def _simulate_pending_copy(
+    copy_payload: dict[str, Any],
+    *,
+    client: ApiClient,
+    image_id: str,
+    filename: str,
+    staging_dir: Path,
+    session_state: BurnSessionState,
+    iso_verifier: Any,
+    burner: Any,
+    prompts: Any,
+    device: str,
+) -> str:
+    copy_id = str(copy_payload["id"])
+    iso_path = _ensure_staged_iso(
+        client,
+        image_id,
+        filename,
+        staging_dir=staging_dir,
+        verifier=iso_verifier,
+        session_state=session_state,
+    )
+    prompts.wait_for_blank_disc(copy_id, device=device)
+    typer.echo(f"simulating burn copy {copy_id} from {iso_path}", err=True)
+    burner.burn(iso_path, device=device, copy_id=copy_id)
+    typer.echo(
+        (
+            f"simulated burn completed for {copy_id}; "
+            "no media verification, label confirmation, or copy registration was performed"
+        ),
+        err=True,
+    )
+    return copy_id
+
+
 def _process_burn_backlog_item(
     item: BurnBacklogItem,
     *,
@@ -1098,6 +1330,7 @@ def _process_burn_backlog_item(
     media_verifier: Any,
     prompts: Any,
     device: str,
+    simulate: bool = False,
 ) -> list[str]:
     if item.image_id is None:
         assert item.candidate_id is not None
@@ -1120,6 +1353,21 @@ def _process_burn_backlog_item(
             continue
         if str(copy_payload.get("state")) not in _PENDING_BURN_STATES:
             continue
+        if simulate:
+            return [
+                _simulate_pending_copy(
+                    copy_payload,
+                    client=client,
+                    image_id=image_id,
+                    filename=filename,
+                    staging_dir=staging_dir,
+                    session_state=session_state,
+                    iso_verifier=iso_verifier,
+                    burner=burner,
+                    prompts=prompts,
+                    device=device,
+                )
+            ]
         completed.append(
             _burn_pending_copy(
                 copy_payload,
@@ -1338,39 +1586,63 @@ def burn_cmd(
         Path | None,
         typer.Option("--staging-dir", help="Local staging directory for ISO downloads"),
     ] = None,
+    simulate: Annotated[
+        bool,
+        typer.Option(
+            "--simulate",
+            help=(
+                "Use native non-writing burn mode and exit without media "
+                "verification or copy registration"
+            ),
+        ),
+    ] = False,
 ) -> None:
     try:
         client = ApiClient()
         iso_verifier = build_iso_verifier()
-        burner = build_disc_burner()
+        burner = build_simulated_disc_burner() if simulate else build_disc_burner()
         media_verifier = build_burned_media_verifier()
         prompts = build_burn_prompts()
         resolved_staging_dir = (staging_dir or _default_staging_dir()).expanduser()
         session_state = BurnSessionState.load(_burn_state_path(resolved_staging_dir))
         completed_copy_ids: list[str] = []
+        simulated_copy_ids: list[str] = []
 
         while True:
             backlog = _discover_burn_backlog(client)
             if not backlog:
                 break
-            completed_copy_ids.extend(
-                _process_burn_backlog_item(
-                    backlog[0],
-                    client=client,
-                    staging_dir=resolved_staging_dir,
-                    session_state=session_state,
-                    iso_verifier=iso_verifier,
-                    burner=burner,
-                    media_verifier=media_verifier,
-                    prompts=prompts,
-                    device=device,
-                )
+            copy_ids = _process_burn_backlog_item(
+                backlog[0],
+                client=client,
+                staging_dir=resolved_staging_dir,
+                session_state=session_state,
+                iso_verifier=iso_verifier,
+                burner=burner,
+                media_verifier=media_verifier,
+                prompts=prompts,
+                device=device,
+                simulate=simulate,
             )
+            if simulate:
+                simulated_copy_ids.extend(copy_ids)
+                break
+            completed_copy_ids.extend(copy_ids)
 
     except (RiverhogError, RuntimeError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
+    if simulate:
+        if simulated_copy_ids:
+            typer.echo("simulated burn completed; no copies were registered")
+            for copy_id in simulated_copy_ids:
+                typer.echo(copy_id)
+            return
+        recovery_handoffs = _discover_recovery_handoffs(client)
+        typer.echo("burn backlog already clear")
+        _report_recovery_handoffs(recovery_handoffs)
+        return
     recovery_handoffs = _discover_recovery_handoffs(client)
     if completed_copy_ids:
         typer.echo("burn backlog cleared")

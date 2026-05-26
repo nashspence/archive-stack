@@ -66,7 +66,8 @@ Candidate lifecycle rules:
 
 - while a candidate appears in `GET /v1/plan`, it is provisional and its represented collections may be
   re-allocated by the planner
-- `POST /v1/plan/candidates/{candidate_id}/finalize` explicitly finalizes that candidate allocation
+- `POST /v1/plan/candidates/{candidate_id}/finalize` explicitly finalizes that candidate allocation; this is an internal
+  API operation used by `djdan burn`, not a standalone operator CLI action
 - finalized candidates do not appear in `GET /v1/plan`
 - repeated finalization of the same `candidate_id` is idempotent and returns the same finalized image
 
@@ -76,7 +77,8 @@ A finalized optical artifact addressed by finalized API `image.id`.
 
 Image lifecycle rules:
 
-- finalized images are created only by explicit candidate finalization
+- finalized images are created only when `djdan burn` finalizes a ready candidate or when internal/test tooling seeds a
+  finalized image
 - finalized images are not returned by `GET /v1/plan`
 - `GET /v1/images/{image_id}` addresses finalized images only
 - finalized `image.id` uses compact UTC basic form `YYYYMMDDTHHMMSSZ`

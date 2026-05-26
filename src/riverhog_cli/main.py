@@ -22,7 +22,6 @@ from riverhog_cli.output import (
     format_fetch,
     format_files,
     format_glacier_report,
-    format_image,
     format_pin,
     format_plan,
 )
@@ -856,15 +855,6 @@ def iso_get_cmd(
     content = client().download_iso(image_id, output, progress=_download_progress_logger())
     downloaded_bytes = len(content) if isinstance(content, bytes) else content
     typer.echo(f"wrote {downloaded_bytes} bytes to {output}")
-
-
-@iso_app.command("finalize")
-def iso_finalize_cmd(
-    candidate_id: Annotated[str, typer.Argument(help="Ready plan candidate id")],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    payload = client().finalize_image(candidate_id)
-    emit(payload if json_mode else format_image(payload), json_mode=json_mode)
 
 
 @copy_app.command("add")

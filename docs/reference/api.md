@@ -689,7 +689,6 @@ The `riverhog` CLI is a thin API client and should provide at least:
 - `riverhog plan [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--iso-ready|--not-ready]`
 - `riverhog images [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--has-copies|--no-copies]`
 - `riverhog glacier [--collection ID]`
-- `riverhog iso finalize CANDIDATE_ID`
 - `riverhog iso get IMAGE_ID [-o FILE]`
 - `riverhog copy add IMAGE_ID --at LOCATION [--copy-id GENERATED_ID]`
 - `riverhog copy list IMAGE_ID`
@@ -776,7 +775,8 @@ For finalized-image commands:
 - `riverhog images --json` mirrors the `GET /v1/images` response payload
 - `riverhog glacier --json` mirrors the `GET /v1/glacier` response payload
 - `riverhog plan --json` mirrors the `GET /v1/plan` response payload
-- `riverhog iso finalize CANDIDATE_ID` mirrors `POST /v1/plan/candidates/{candidate_id}/finalize`
+- standalone manual candidate finalization is intentionally not exposed in the `riverhog` CLI; `djdan burn` selects and
+  finalizes ready candidates as part of the guided burn workflow
 - non-JSON `riverhog plan` output stays concise and line-oriented while surfacing candidate id, fill, readiness, and
   contained collections
 - non-JSON `riverhog images` acts as the default physical-media status view and stays concise while surfacing:

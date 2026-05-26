@@ -54,7 +54,10 @@ def test_default_djdan_io_builders_use_real_backends(monkeypatch) -> None:
     monkeypatch.delenv("DJDAN_BURNED_MEDIA_VERIFIER_FACTORY", raising=False)
 
     assert isinstance(djdan_main.build_optical_reader(), djdan_main.XorrisoOpticalReader)
-    assert isinstance(djdan_main.build_disc_burner(), djdan_main.XorrisoDiscBurner)
+    if djdan_main.sys.platform == "darwin":
+        assert isinstance(djdan_main.build_disc_burner(), djdan_main.DrutilDiscBurner)
+    else:
+        assert isinstance(djdan_main.build_disc_burner(), djdan_main.XorrisoDiscBurner)
     assert isinstance(
         djdan_main.build_burned_media_verifier(),
         djdan_main.RawBurnedMediaVerifier,
@@ -143,6 +146,102 @@ def test_xorriso_disc_burner_invokes_xorriso_cdrecord(
             "cdrecord",
             "-v",
             "dev=/dev/sr0",
+            str(iso_path),
+        ]
+    ]
+
+
+def test_xorriso_disc_burner_can_run_dummy_burn(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    iso_path = tmp_path / "image.iso"
+    iso_path.write_bytes(b"iso-bytes")
+    commands: list[list[str]] = []
+
+    def fake_run(command, *, capture_output, text, check):
+        commands.append(command)
+        return djdan_main.subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(djdan_main.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(djdan_main.subprocess, "run", fake_run)
+
+    djdan_main.XorrisoDiscBurner(dummy=True).burn(
+        iso_path,
+        device="/dev/sr0",
+        copy_id="20260420T040001Z-1",
+    )
+
+    assert commands == [
+        [
+            "/usr/bin/xorriso",
+            "-as",
+            "cdrecord",
+            "-v",
+            "-dummy",
+            "dev=/dev/sr0",
+            str(iso_path),
+        ]
+    ]
+
+
+def test_drutil_disc_burner_maps_macos_device_path_and_runs_test_burn(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    iso_path = tmp_path / "image.iso"
+    iso_path.write_bytes(b"iso-bytes")
+    commands: list[list[str]] = []
+
+    diskutil_output = """
+   Device Identifier:         disk4
+   Device Node:               /dev/disk4
+   Device / Media Name:       PIONEER BD-RW BDR-UD03
+"""
+    drutil_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!DOCTYPE  [
+    <!ELEMENT deviceList (device)*>
+]>
+
+<deviceList>
+  <device name="PIONEER BD-RW BDR-UD03" index="1">
+    <vendor name="PIONEER"/>
+    <product name="BD-RW   BDR-UD03"/>
+    <firmware revision="1.14"/>
+    <interconnect name="USB"/>
+    <support level="unSupported"/>
+  </device>
+</deviceList>
+"""
+
+    def fake_run(command, *, capture_output, text, check):
+        assert capture_output is True
+        assert text is True
+        assert check is False
+        if command == ["/usr/bin/diskutil", "info", "/dev/disk4"]:
+            return djdan_main.subprocess.CompletedProcess(command, 0, diskutil_output, "")
+        if command == ["/usr/bin/drutil", "list", "-xml"]:
+            return djdan_main.subprocess.CompletedProcess(command, 0, drutil_xml, "")
+        commands.append(command)
+        return djdan_main.subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(djdan_main.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(djdan_main.subprocess, "run", fake_run)
+
+    djdan_main.DrutilDiscBurner(dummy=True).burn(
+        iso_path,
+        device="/dev/disk4",
+        copy_id="20260420T040001Z-1",
+    )
+
+    assert commands == [
+        [
+            "/usr/bin/drutil",
+            "-drive",
+            "1",
+            "burn",
+            "-noverify",
+            "-test",
             str(iso_path),
         ]
     ]
@@ -1293,6 +1392,132 @@ def test_djdan_burn_reports_recovery_handoffs_when_no_standard_backlog_exists(
     assert "rs-20260420T040001Z-1" in result.stdout
     assert "pending_approval" in result.stdout
     assert "Approve the estimated restore cost" in result.stdout
+
+
+def test_djdan_burn_simulate_uses_dummy_burn_without_registration(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    image_id = "20260420T040001Z"
+    copy_id = f"{image_id}-1"
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.finalized = False
+            self.iso_bytes = b"fixture-iso\n"
+            self.register_calls: list[str] = []
+
+        def get_plan(
+            self,
+            *,
+            page: int,
+            per_page: int,
+            sort: str,
+            order: str,
+            iso_ready: bool,
+        ) -> dict[str, object]:
+            if self.finalized:
+                return {"page": 1, "pages": 0, "candidates": []}
+            return {
+                "page": 1,
+                "pages": 1,
+                "candidates": [
+                    {
+                        "candidate_id": "img_2026-04-20_01",
+                        "fill": 0.9,
+                        "iso_ready": True,
+                    }
+                ],
+            }
+
+        def list_images(
+            self,
+            *,
+            page: int,
+            per_page: int,
+            sort: str,
+            order: str,
+        ) -> dict[str, object]:
+            return {"page": 1, "pages": 0, "images": []}
+
+        def finalize_image(self, candidate_id: str) -> dict[str, object]:
+            assert candidate_id == "img_2026-04-20_01"
+            self.finalized = True
+            return {"id": image_id, "filename": f"{image_id}.iso"}
+
+        def list_copies(self, current_image_id: str) -> dict[str, object]:
+            assert current_image_id == image_id
+            return {
+                "copies": [
+                    {
+                        "id": copy_id,
+                        "label_text": copy_id,
+                        "state": "needed",
+                        "verification_state": "pending",
+                        "location": None,
+                    }
+                ]
+            }
+
+        def download_iso(self, current_image_id: str, output: Path) -> bytes:
+            assert current_image_id == image_id
+            output.write_bytes(self.iso_bytes)
+            return self.iso_bytes
+
+        def register_copy(
+            self,
+            current_image_id: str,
+            location: str,
+            *,
+            copy_id: str | None = None,
+        ):
+            self.register_calls.append(str(copy_id))
+            raise AssertionError("simulated burn must not register copies")
+
+        def update_copy(self, *args, **kwargs):
+            raise AssertionError("simulated burn must not update copies")
+
+    class FakeIsoVerifier:
+        def verify(self, iso_path: Path) -> None:
+            assert iso_path.read_bytes() == b"fixture-iso\n"
+
+    commands: list[list[str]] = []
+
+    def fake_run(command, *, capture_output, text, check):
+        commands.append(command)
+        return djdan_main.subprocess.CompletedProcess(command, 0, "", "")
+
+    client = FakeClient()
+    monkeypatch.setattr(djdan_main.sys, "platform", "linux")
+    monkeypatch.setattr(djdan_main, "ApiClient", lambda: client)
+    monkeypatch.setattr(djdan_main, "build_iso_verifier", lambda: FakeIsoVerifier())
+    monkeypatch.setattr(djdan_main.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(djdan_main.subprocess, "run", fake_run)
+
+    result = runner.invoke(
+        djdan_main.app,
+        ["burn", "--simulate", "--device", "/dev/fake-sr0", "--staging-dir", str(tmp_path)],
+        input="\n",
+    )
+
+    assert result.exit_code == 0
+    assert "simulated burn completed; no copies were registered" in result.stdout
+    assert copy_id in result.stdout
+    assert "simulating burn copy 20260420T040001Z-1" in result.stderr
+    assert "verifying burned media" not in result.stderr
+    assert "label text:" not in result.stderr
+    assert client.register_calls == []
+    assert commands == [
+        [
+            "/usr/bin/xorriso",
+            "-as",
+            "cdrecord",
+            "-v",
+            "-dummy",
+            "dev=/dev/fake-sr0",
+            str(tmp_path / image_id / f"{image_id}.iso"),
+        ]
+    ]
 
 
 def test_djdan_burn_waits_for_label_confirmation_before_registration_and_resumes(

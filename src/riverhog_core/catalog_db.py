@@ -122,6 +122,11 @@ _COLUMN_MIGRATIONS: list[list[tuple[str, str, str]]] = [
         ("planned_candidates", "ready_notification_failure", "TEXT"),
         ("planned_candidates", "ready_notification_count", "INTEGER"),
     ],
+    # version 18
+    [
+        ("collection_uploads", "collection_manifest_bytes_b64", "TEXT"),
+        ("collection_uploads", "collection_manifest_proof_bytes_b64", "TEXT"),
+    ],
 ]
 _TYPE_MIGRATIONS: dict[int, list[tuple[str, str, str]]] = {
     # version 10

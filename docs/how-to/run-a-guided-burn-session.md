@@ -7,9 +7,13 @@ that handoff and does not treat it as ordinary replacement backlog.
 
 ## Host requirements
 
-- Install `xorriso` on the operator machine.
-- Run the command as a user that can write to and read from the optical device path, such as `/dev/sr0`.
-- Insert blank writable media when prompted. The default backend burns the staged ISO with `xorriso -as cdrecord`.
+- Install `xorriso` on Linux-style operator machines. On macOS, `djdan` uses the system `drutil` DiscRecording tool.
+- Run the command as a user that can write to and read from the optical device path, such as `/dev/sr0` on Linux or
+  `/dev/disk4` on macOS.
+- Insert blank writable media when prompted. The default backend burns the staged ISO with `drutil burn` on macOS and
+  `xorriso -as cdrecord` elsewhere.
+- For hardware smoke tests before spending media, use `--simulate` to run the native non-writing burn mode with the
+  drive's laser off.
 - After burning, keep the same disc available in the drive. `djdan` verifies the burned media by reading the first
   ISO-sized byte range back from the device and comparing it to the staged ISO.
 
@@ -50,6 +54,39 @@ Optional staging-root example:
 ```bash
 djdan burn --device /dev/sr0 --staging-dir /operator/djdan-staging
 ```
+
+macOS device example:
+
+```bash
+djdan burn --device /dev/disk4 --staging-dir /operator/djdan-staging
+```
+
+## Simulate a burn on real hardware
+
+Use `--simulate` to verify that `djdan`, the platform burn tool, the selected
+optical device, and the inserted media can run the burn path before writing a
+real disc:
+
+```bash
+djdan burn --simulate --device /dev/sr0 --staging-dir /operator/djdan-staging
+```
+
+On macOS, pass the disk device reported by `diskutil`:
+
+```bash
+djdan burn --simulate --device /dev/disk4 --staging-dir /operator/djdan-staging
+```
+
+The simulated run stages and verifies the ISO, then invokes
+the platform's non-writing burn command for the next pending copy:
+`drutil burn -test` on macOS and `xorriso -as cdrecord -dummy` elsewhere. If the
+next burn item is still a ready provisional candidate, the command finalizes it
+first so the normal finalized-image ISO and generated copy id are used.
+
+Because no bytes are written to disc, simulated burns intentionally stop before
+burned-media verification, label confirmation, copy registration, and copy
+checkpoint updates. A successful simulated burn does not protect the image and
+does not clear burn backlog.
 
 ## Recover an image rebuild session
 
