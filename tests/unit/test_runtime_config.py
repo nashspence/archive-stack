@@ -109,7 +109,7 @@ def test_load_runtime_config_defaults_to_postgres_database_url(
 
     assert config.database_url == DEFAULT_DATABASE_URL
     assert config.sqlite_path is None
-    assert config.operator_webhook_reminder_interval == timedelta(0)
+    assert config.operator_webhook_reminder_interval == timedelta(hours=24)
 
 
 def test_load_runtime_config_parses_planner_runtime_settings(

@@ -413,13 +413,13 @@ With `RIVERHOG_OPERATOR_WEBHOOK_URL` configured, Riverhog rejects startup if
 ## `RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL`
 
 - type: duration
-- default: `0s`
+- default: `24h`
 
 Interval between repeated ready reminders while a burnable disc-image candidate
 is still unfinalized, restored collection archive data remains available, or
 image rebuild staging data remains available and the recovery session is still
-incomplete. The default disables reminders; Riverhog sends one ready handoff and
-then stays quiet unless the operator explicitly opts into reminder cadence.
+incomplete. The default provides one daily reminder while disc images remain
+ready to burn; set this to `0s` to disable ready reminders entirely.
 
 ## `RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL`
 
