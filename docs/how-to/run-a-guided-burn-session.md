@@ -7,11 +7,12 @@ that handoff and does not treat it as ordinary replacement backlog.
 
 ## Host requirements
 
-- Install `xorriso` on Linux-style operator machines. On macOS, `djdan` uses the system `drutil` DiscRecording tool.
+- Install `xorriso` on Linux-style operator machines. On macOS, `djdan` uses the system `hdiutil burn` image-burn
+  tool.
 - Run the command as a user that can write to and read from the optical device path, such as `/dev/sr0` on Linux or
   `/dev/disk4` on macOS.
-- Insert blank writable media when prompted. The default backend burns the staged ISO with `drutil burn` on macOS and
-  `xorriso -as cdrecord` elsewhere.
+- Insert blank writable media when prompted. The default backend burns the staged ISO image with `hdiutil burn` on
+  macOS and `xorriso -as cdrecord` elsewhere.
 - For hardware smoke tests before spending media, use `--simulate` to run the native non-writing burn mode with the
   drive's laser off.
 - After burning, keep the same disc available in the drive. `djdan` verifies the burned media by reading the first
@@ -61,6 +62,14 @@ macOS device example:
 djdan burn --device /dev/disk4 --staging-dir /operator/djdan-staging
 ```
 
+On macOS, the `--device` value is validated with `diskutil`, but `djdan` lets
+`hdiutil burn` select the system optical burner. This matches the local
+`burniso` wrapper behavior and avoids the unreliable `hdiutil -device` path for
+USB Blu-ray drives.
+
+If an operator needs to force a native hdiutil target, pass the target reported
+by `hdiutil burn -list` as `--device 'hdiutil:IOService:...'`.
+
 ## Simulate a burn on real hardware
 
 Use `--simulate` to verify that `djdan`, the platform burn tool, the selected
@@ -79,9 +88,16 @@ djdan burn --simulate --device /dev/disk4 --staging-dir /operator/djdan-staging
 
 The simulated run stages and verifies the ISO, then invokes
 the platform's non-writing burn command for the next pending copy:
-`drutil burn -test` on macOS and `xorriso -as cdrecord -dummy` elsewhere. If the
-next burn item is still a ready provisional candidate, the command finalizes it
-first so the normal finalized-image ISO and generated copy id are used.
+`hdiutil burn -testburn` on macOS and `xorriso -as cdrecord -dummy`
+elsewhere. If the next burn item is still a ready provisional candidate, the
+command finalizes it first so the normal finalized-image ISO and generated copy
+id are used.
+
+macOS native test burns depend on the media family and drive support exposed by
+DiscRecording. Some Blu-ray drives can burn BD-R media normally but do not expose
+native BD-R test-burn support; in that case `djdan burn --simulate` fails before
+starting the burn command and the real burn path must be tested with expendable
+media.
 
 Because no bytes are written to disc, simulated burns intentionally stop before
 burned-media verification, label confirmation, copy registration, and copy

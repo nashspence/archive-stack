@@ -14,7 +14,6 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any
-from xml.etree import ElementTree
 
 import typer
 
@@ -57,6 +56,16 @@ def _run_checked(command: list[str], *, action: str) -> None:
         -1500:
     ]
     raise RuntimeError(f"{action} failed: {detail}")
+
+
+def _run_passthrough_checked(command: list[str], *, action: str) -> None:
+    try:
+        proc = subprocess.run(command, check=False)
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"{command[0]} is required for {action}") from exc
+    if proc.returncode == 0:
+        return
+    raise RuntimeError(f"{action} failed: {command[0]} exited {proc.returncode}")
 
 
 def _run_captured(command: list[str], *, action: str) -> str:
@@ -364,98 +373,98 @@ class XorrisoDiscBurner:
         )
 
 
-def _normalized_drive_name(value: str) -> str:
-    return " ".join(value.casefold().split())
-
-
-def _parse_diskutil_media_name(output: str, *, device: str) -> str:
+def _parse_diskutil_field(output: str, field: str, *, device: str) -> str:
     for line in output.splitlines():
         key, sep, value = line.partition(":")
-        if sep and key.strip() == "Device / Media Name":
-            media_name = value.strip()
-            if media_name:
-                return media_name
-    raise RuntimeError(f"diskutil did not report a media name for {device}")
+        if sep and key.strip() == field:
+            field_value = value.strip()
+            if field_value:
+                return field_value
+    raise RuntimeError(f"diskutil did not report {field} for {device}")
 
 
-def _drutil_drive_index_for_device_path(device: str) -> str:
+def _inspect_macos_device_path(device: str) -> str:
     diskutil = _require_tool("diskutil")
-    drutil = _require_tool("drutil")
-    media_name = _parse_diskutil_media_name(
-        _run_captured(
-            [diskutil, "info", device],
-            action=f"inspecting macOS optical device {device}",
-        ),
-        device=device,
+    diskutil_output = _run_captured(
+        [diskutil, "info", device],
+        action=f"inspecting macOS optical device {device}",
     )
-    list_xml = _run_captured(
-        [drutil, "list", "-xml"],
-        action="listing macOS optical drives",
-    )
-    device_list_start = list_xml.find("<deviceList")
-    if device_list_start < 0:
-        raise RuntimeError("drutil list -xml did not include a deviceList payload")
-    try:
-        root = ElementTree.fromstring(list_xml[device_list_start:])
-    except ElementTree.ParseError as exc:
-        raise RuntimeError("drutil list -xml returned invalid XML") from exc
-
-    normalized_media_name = _normalized_drive_name(media_name)
-    matches: list[str] = []
-    for device_element in root.findall("device"):
-        index = device_element.get("index")
-        if not index:
-            continue
-        vendor_element = device_element.find("vendor")
-        product_element = device_element.find("product")
-        vendor_name = vendor_element.get("name", "") if vendor_element is not None else ""
-        product_name = product_element.get("name", "") if product_element is not None else ""
-        names = [
-            device_element.get("name") or "",
-            " ".join(part for part in (vendor_name, product_name) if part),
-        ]
-        if any(_normalized_drive_name(name) == normalized_media_name for name in names):
-            matches.append(index)
-
-    if len(matches) == 1:
-        return matches[0]
-    if not matches:
-        raise RuntimeError(f"drutil did not list a drive matching {device}: {media_name}")
-    raise RuntimeError(f"drutil listed multiple drives matching {device}: {media_name}")
+    _parse_diskutil_field(diskutil_output, "Device / Media Name", device=device)
+    if "Optical Drive Type:" not in diskutil_output:
+        raise RuntimeError(f"{device} is not a macOS optical drive")
+    return diskutil_output
 
 
-def _drutil_drive_args(device: str) -> list[str]:
+def _hdiutil_device_args(device: str) -> tuple[list[str], str | None]:
     normalized = device.strip()
-    if normalized.startswith(("/dev/disk", "/dev/rdisk")):
-        return ["-drive", _drutil_drive_index_for_device_path(normalized)]
     if normalized in {"", "default", "auto"}:
-        return []
+        return [], None
+    if normalized.startswith("hdiutil:"):
+        hdiutil_device = normalized.removeprefix("hdiutil:").strip()
+        if not hdiutil_device:
+            raise RuntimeError("hdiutil device target cannot be empty")
+        return ["-device", hdiutil_device], None
+    if normalized.startswith("IOService:"):
+        return ["-device", normalized], None
     if normalized == "/dev/sr0":
         raise RuntimeError(
-            "macOS burn device must be /dev/diskN, a drutil drive index, "
-            "or a drutil selector"
+            "macOS burn device must be /dev/diskN, /dev/rdiskN, or default"
         )
-    return ["-drive", normalized]
+    if not normalized.startswith(("/dev/disk", "/dev/rdisk")):
+        raise RuntimeError(
+            "macOS burn device must be /dev/diskN, /dev/rdiskN, default, "
+            "or a native hdiutil target like hdiutil:IOService:..."
+        )
+    return [], _inspect_macos_device_path(normalized)
 
 
-class DrutilDiscBurner:
+def _macos_optical_media_type(diskutil_output: str, *, device: str) -> str | None:
+    try:
+        return _parse_diskutil_field(diskutil_output, "Optical Media Type", device=device)
+    except RuntimeError:
+        return None
+
+
+class HdiutilDiscBurner:
     def __init__(self, *, dummy: bool = False) -> None:
         self._dummy = dummy
+
+    def _resolve_device_args(self, device: str) -> list[str]:
+        device_args, diskutil_output = _hdiutil_device_args(device)
+        media_type = (
+            _macos_optical_media_type(diskutil_output, device=device)
+            if diskutil_output is not None
+            else None
+        )
+        if self._dummy and media_type is not None and media_type.startswith("BD-"):
+            raise RuntimeError(
+                f"macOS native test burns are not available for {media_type} media "
+                "on this drive; run a real burn or use CD/DVD media for --simulate"
+            )
+        return device_args
+
+    def preflight(self, *, device: str) -> None:
+        self._resolve_device_args(device)
 
     def burn(self, iso_path: Path, *, device: str, copy_id: str) -> None:
         if not iso_path.is_file():
             raise RuntimeError(f"staged ISO is missing for {copy_id}: {iso_path}")
-        drutil = _require_tool("drutil")
+        hdiutil = _require_tool("hdiutil")
+        device_args = self._resolve_device_args(device)
         command = [
-            drutil,
-            *_drutil_drive_args(device),
+            hdiutil,
             "burn",
-            "-noverify",
+            *device_args,
+            "-verbose",
+            "-speed",
+            "max",
+            "-noverifyburn",
+            "-noeject",
         ]
         if self._dummy:
-            command.append("-test")
+            command.append("-testburn")
         command.append(str(iso_path))
-        _run_checked(
+        _run_passthrough_checked(
             command,
             action=f"burning {copy_id} to {device}",
         )
@@ -553,13 +562,13 @@ def build_disc_burner() -> object:
     if spec:
         return _load_factory(spec)
     if sys.platform == "darwin":
-        return DrutilDiscBurner()
+        return HdiutilDiscBurner()
     return XorrisoDiscBurner()
 
 
 def build_simulated_disc_burner() -> object:
     if sys.platform == "darwin":
-        return DrutilDiscBurner(dummy=True)
+        return HdiutilDiscBurner(dummy=True)
     return XorrisoDiscBurner(dummy=True)
 
 
@@ -1306,6 +1315,9 @@ def _simulate_pending_copy(
         verifier=iso_verifier,
         session_state=session_state,
     )
+    preflight = getattr(burner, "preflight", None)
+    if callable(preflight):
+        preflight(device=device)
     prompts.wait_for_blank_disc(copy_id, device=device)
     typer.echo(f"simulating burn copy {copy_id} from {iso_path}", err=True)
     burner.burn(iso_path, device=device, copy_id=copy_id)

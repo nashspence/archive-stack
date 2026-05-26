@@ -55,7 +55,7 @@ def test_default_djdan_io_builders_use_real_backends(monkeypatch) -> None:
 
     assert isinstance(djdan_main.build_optical_reader(), djdan_main.XorrisoOpticalReader)
     if djdan_main.sys.platform == "darwin":
-        assert isinstance(djdan_main.build_disc_burner(), djdan_main.DrutilDiscBurner)
+        assert isinstance(djdan_main.build_disc_burner(), djdan_main.HdiutilDiscBurner)
     else:
         assert isinstance(djdan_main.build_disc_burner(), djdan_main.XorrisoDiscBurner)
     assert isinstance(
@@ -185,7 +185,7 @@ def test_xorriso_disc_burner_can_run_dummy_burn(
     ]
 
 
-def test_drutil_disc_burner_maps_macos_device_path_and_runs_test_burn(
+def test_hdiutil_disc_burner_validates_macos_device_path_and_runs_test_burn(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -197,38 +197,22 @@ def test_drutil_disc_burner_maps_macos_device_path_and_runs_test_burn(
    Device Identifier:         disk4
    Device Node:               /dev/disk4
    Device / Media Name:       PIONEER BD-RW BDR-UD03
-"""
-    drutil_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<!DOCTYPE  [
-    <!ELEMENT deviceList (device)*>
-]>
-
-<deviceList>
-  <device name="PIONEER BD-RW BDR-UD03" index="1">
-    <vendor name="PIONEER"/>
-    <product name="BD-RW   BDR-UD03"/>
-    <firmware revision="1.14"/>
-    <interconnect name="USB"/>
-    <support level="unSupported"/>
-  </device>
-</deviceList>
+   Optical Drive Type:        CD-ROM, CD-R, CD-RW, DVD-ROM, DVD-R, BD-ROM, BD-R, BD-RE
 """
 
-    def fake_run(command, *, capture_output, text, check):
-        assert capture_output is True
-        assert text is True
-        assert check is False
+    def fake_run(command, **kwargs):
+        assert kwargs.get("check") is False
         if command == ["/usr/bin/diskutil", "info", "/dev/disk4"]:
+            assert kwargs == {"capture_output": True, "text": True, "check": False}
             return djdan_main.subprocess.CompletedProcess(command, 0, diskutil_output, "")
-        if command == ["/usr/bin/drutil", "list", "-xml"]:
-            return djdan_main.subprocess.CompletedProcess(command, 0, drutil_xml, "")
+        assert kwargs == {"check": False}
         commands.append(command)
         return djdan_main.subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(djdan_main.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(djdan_main.subprocess, "run", fake_run)
 
-    djdan_main.DrutilDiscBurner(dummy=True).burn(
+    djdan_main.HdiutilDiscBurner(dummy=True).burn(
         iso_path,
         device="/dev/disk4",
         copy_id="20260420T040001Z-1",
@@ -236,15 +220,91 @@ def test_drutil_disc_burner_maps_macos_device_path_and_runs_test_burn(
 
     assert commands == [
         [
-            "/usr/bin/drutil",
-            "-drive",
-            "1",
+            "/usr/bin/hdiutil",
             "burn",
-            "-noverify",
-            "-test",
+            "-verbose",
+            "-speed",
+            "max",
+            "-noverifyburn",
+            "-noeject",
+            "-testburn",
             str(iso_path),
         ]
     ]
+
+
+def test_hdiutil_disc_burner_allows_native_hdiutil_target(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    iso_path = tmp_path / "image.iso"
+    iso_path.write_bytes(b"iso-bytes")
+    commands: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        assert kwargs == {"check": False}
+        commands.append(command)
+        return djdan_main.subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(djdan_main.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(djdan_main.subprocess, "run", fake_run)
+
+    djdan_main.HdiutilDiscBurner(dummy=True).burn(
+        iso_path,
+        device="hdiutil:IOService:/AppleARMPE/example/IOBDServices",
+        copy_id="20260420T040001Z-1",
+    )
+
+    assert commands == [
+        [
+            "/usr/bin/hdiutil",
+            "burn",
+            "-device",
+            "IOService:/AppleARMPE/example/IOBDServices",
+            "-verbose",
+            "-speed",
+            "max",
+            "-noverifyburn",
+            "-noeject",
+            "-testburn",
+            str(iso_path),
+        ]
+    ]
+
+
+def test_hdiutil_disc_burner_rejects_native_bd_testburn(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    iso_path = tmp_path / "image.iso"
+    iso_path.write_bytes(b"iso-bytes")
+    commands: list[list[str]] = []
+    diskutil_output = """
+   Device Identifier:         disk4
+   Device Node:               /dev/disk4
+   Device / Media Name:       PIONEER BD-RW BDR-UD03
+   Optical Drive Type:        CD-ROM, CD-R, CD-RW, DVD-ROM, DVD-R, BD-ROM, BD-R, BD-RE
+   Optical Media Type:        BD-R
+"""
+
+    def fake_run(command, **kwargs):
+        if command == ["/usr/bin/diskutil", "info", "/dev/disk4"]:
+            assert kwargs == {"capture_output": True, "text": True, "check": False}
+            return djdan_main.subprocess.CompletedProcess(command, 0, diskutil_output, "")
+        commands.append(command)
+        return djdan_main.subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(djdan_main.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(djdan_main.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="native test burns are not available for BD-R"):
+        djdan_main.HdiutilDiscBurner(dummy=True).burn(
+            iso_path,
+            device="/dev/disk4",
+            copy_id="20260420T040001Z-1",
+        )
+
+    assert commands == []
 
 
 def test_raw_burned_media_verifier_compares_the_iso_prefix(tmp_path: Path) -> None:
