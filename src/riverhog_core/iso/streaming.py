@@ -90,6 +90,12 @@ def build_iso_print_size_cmd_from_root(*, image_root: Path, volume_id: str) -> l
     cmd = build_iso_cmd_from_root(image_root=image_root, volume_id=volume_id)
     outdev_index = cmd.index("-outdev") + 1
     cmd[outdev_index] = f"stdio:{os.devnull}"
+    try:
+        md5_index = cmd.index("-md5")
+    except ValueError:
+        pass
+    else:
+        del cmd[md5_index : md5_index + 2]
     return [*cmd[:-1], "-print-size", "-end"]
 
 

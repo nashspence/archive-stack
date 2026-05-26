@@ -46,7 +46,9 @@ def test_build_iso_cmd_from_root_maps_root(tmp_path: Path) -> None:
     assert cmd[-3:] == [str(root), "/", "-commit"]
 
 
-def test_build_print_size_cmd_from_root_reuses_streaming_flags(tmp_path: Path) -> None:
+def test_build_print_size_cmd_from_root_uses_lightweight_streaming_flags(
+    tmp_path: Path,
+) -> None:
     root = tmp_path / "root"
     root.mkdir()
     stream_cmd = build_iso_cmd_from_root(image_root=root, volume_id="VOL_ROOT")
@@ -56,8 +58,12 @@ def test_build_print_size_cmd_from_root_reuses_streaming_flags(tmp_path: Path) -
     size_outdev = size_cmd.index("-outdev") + 1
     comparable_size_cmd = [*size_cmd]
     comparable_size_cmd[size_outdev] = stream_cmd[stream_outdev]
+    comparable_stream_cmd = [*stream_cmd]
+    md5_index = comparable_stream_cmd.index("-md5")
+    del comparable_stream_cmd[md5_index : md5_index + 2]
     assert size_cmd[size_outdev].startswith("stdio:")
-    assert comparable_size_cmd[:-2] == stream_cmd[:-1]
+    assert "-md5" not in size_cmd
+    assert comparable_size_cmd[:-2] == comparable_stream_cmd[:-1]
     assert size_cmd[-2:] == ["-print-size", "-end"]
 
 
