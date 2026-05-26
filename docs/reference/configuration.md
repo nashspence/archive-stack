@@ -358,10 +358,10 @@ encrypted files and finish the same candidate id.
 - type: URL
 - default: unset
 
-Single optional operator notification endpoint. Riverhog posts all
+Single optional operator notification endpoint. Riverhog posts quiet,
 operator-facing notifications to this endpoint, including collection ingest
 milestones, ready disc-image candidates, persistent archival failures after
-retries, and recovery-ready notifications or reminders.
+retries, and recovery-ready notifications.
 
 Collection events are intentionally sparse so long-running retries do not spam
 operators. Success milestones include `collections.upload_staged`,
@@ -371,9 +371,10 @@ Glacier, hot-file promotion has finished, and the collection is available
 through Riverhog/WebDAV. Failure/attention events include
 `collections.archive_retrying`, paced by
 `RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL`, and
-`collections.planner_failed`. Ready burn candidates use `images.ready` and
-`images.ready.reminder`. Recovery events include `images.rebuild_ready` and
-`images.rebuild_ready.reminder`.
+`collections.planner_failed`. Ready burn candidates use `images.ready`; if
+operator reminders are explicitly enabled, repeats use `images.ready.reminder`.
+Recovery events use `images.rebuild_ready`; if reminders are explicitly
+enabled, repeats use `images.rebuild_ready.reminder`.
 
 Webhook delivery is best-effort; Riverhog catalog state remains authoritative.
 Notification receivers should keep these operator messages concise and calm:
@@ -412,12 +413,13 @@ With `RIVERHOG_OPERATOR_WEBHOOK_URL` configured, Riverhog rejects startup if
 ## `RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL`
 
 - type: duration
-- default: `1h`
+- default: `0s`
 
 Interval between repeated ready reminders while a burnable disc-image candidate
 is still unfinalized, restored collection archive data remains available, or
 image rebuild staging data remains available and the recovery session is still
-incomplete.
+incomplete. The default disables reminders; Riverhog sends one ready handoff and
+then stays quiet unless the operator explicitly opts into reminder cadence.
 
 ## `RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL`
 

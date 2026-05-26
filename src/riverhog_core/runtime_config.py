@@ -159,9 +159,7 @@ class RuntimeConfig:
     operator_webhook_url: str | None = None
     operator_webhook_timeout: timedelta = field(default_factory=lambda: timedelta(seconds=5))
     operator_webhook_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=1))
-    operator_webhook_reminder_interval: timedelta = field(
-        default_factory=lambda: timedelta(hours=1)
-    )
+    operator_webhook_reminder_interval: timedelta = field(default_factory=timedelta)
     operator_failure_notification_interval: timedelta = field(
         default_factory=lambda: timedelta(hours=24)
     )
@@ -320,7 +318,7 @@ def load_runtime_config() -> RuntimeConfig:
         os.getenv("RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY", "60s")
     )
     operator_webhook_reminder_interval = _parse_duration(
-        os.getenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL", "1h")
+        os.getenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL", "0s")
     )
     operator_failure_notification_interval = _parse_duration(
         os.getenv("RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL", "24h")
