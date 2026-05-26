@@ -499,6 +499,85 @@ def test_upload_collection_file_retries_after_service_unavailable(
     assert uploaded == [(0, content), (0, content)]
 
 
+def test_create_or_resume_file_upload_keeps_retrying_transient_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = httpx.Request("POST", "https://riverhog.test/upload")
+    response = httpx.Response(502, request=request, content=b"Bad Gateway")
+    sleeps: list[float] = []
+
+    class FakeApi:
+        calls = 0
+
+        def create_or_resume_collection_file_upload(
+            self,
+            collection_id: str,
+            path: str,
+        ) -> dict[str, object]:
+            self.calls += 1
+            if self.calls <= 6:
+                raise httpx.HTTPStatusError("bad gateway", request=request, response=response)
+            return {
+                "upload_url": "https://uploads.test/clip.bin",
+                "offset": 0,
+                "checksum_algorithm": "sha256",
+            }
+
+    fake_api = FakeApi()
+    monkeypatch.setattr(riverhog_main.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    payload = riverhog_main._create_or_resume_collection_file_upload(
+        fake_api,  # type: ignore[arg-type]
+        "2025/collection",
+        "clip.bin",
+    )
+
+    assert fake_api.calls == 7
+    assert sleeps == [1.0, 2.0, 4.0, 8.0, 10.0, 10.0]
+    assert payload["offset"] == 0
+
+
+def test_create_or_resume_collection_upload_retries_transient_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = httpx.Request("POST", "https://riverhog.test/v1/collection-uploads")
+    response = httpx.Response(503, request=request, content=b"Service Unavailable")
+
+    class FakeApi:
+        calls = 0
+
+        def create_or_resume_collection_upload(
+            self,
+            slug: str,
+            files: list[riverhog_main.CollectionManifestEntry],
+            *,
+            ingest_source: str | None,
+            upload_timestamp: str | None,
+        ) -> dict[str, object]:
+            self.calls += 1
+            if self.calls <= 2:
+                raise httpx.HTTPStatusError(
+                    "service unavailable",
+                    request=request,
+                    response=response,
+                )
+            return {"collection_id": "2025/docs", "files": []}
+
+    fake_api = FakeApi()
+    monkeypatch.setattr(riverhog_main.time, "sleep", lambda seconds: None)
+
+    payload = riverhog_main._create_or_resume_collection_upload(
+        fake_api,  # type: ignore[arg-type]
+        "docs",
+        [],
+        ingest_source="/tmp/docs",
+        upload_timestamp="20250101T000000Z",
+    )
+
+    assert fake_api.calls == 3
+    assert payload["collection_id"] == "2025/docs"
+
+
 def test_wait_for_finalized_collection_waits_through_archiving(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

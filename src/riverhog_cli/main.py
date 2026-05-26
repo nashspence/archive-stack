@@ -48,9 +48,9 @@ DOWNLOAD_PROGRESS_INTERVAL_SECONDS = 5.0
 UPLOAD_FINALIZE_POLL_SECONDS = 5.0
 UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS = 30.0
 TRANSIENT_UPLOAD_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
-UPLOAD_RESUME_RETRY_ATTEMPTS = 5
 UPLOAD_RESUME_RETRY_INITIAL_DELAY_SECONDS = 1.0
 UPLOAD_RESUME_RETRY_MAX_DELAY_SECONDS = 10.0
+UPLOAD_RESUME_RETRY_LOG_INTERVAL_SECONDS = 30.0
 UPLOAD_LOG_LOCK = threading.Lock()
 UploadWaitMode = Literal["staged", "finalized"]
 
@@ -245,25 +245,59 @@ def _upload_error_description(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+def _retry_transient_upload_operation(
+    description: str,
+    operation: Callable[[], dict[str, Any]],
+) -> dict[str, Any]:
+    delay = UPLOAD_RESUME_RETRY_INITIAL_DELAY_SECONDS
+    last_log_at = 0.0
+    attempt = 0
+    while True:
+        try:
+            return operation()
+        except (httpx.TransportError, httpx.HTTPStatusError, ServiceUnavailable) as exc:
+            if not _is_transient_upload_error(exc):
+                raise
+            attempt += 1
+            now = time.monotonic()
+            if attempt == 1 or now - last_log_at >= UPLOAD_RESUME_RETRY_LOG_INTERVAL_SECONDS:
+                _log_upload(
+                    f"{description} failed ({_upload_error_description(exc)}); "
+                    f"retrying in {delay:.1f}s"
+                )
+                last_log_at = now
+            time.sleep(delay)
+            delay = min(delay * 2, UPLOAD_RESUME_RETRY_MAX_DELAY_SECONDS)
+
+
+def _create_or_resume_collection_upload(
+    api: ApiClient,
+    slug: str,
+    manifest: list[CollectionManifestEntry],
+    *,
+    ingest_source: str | None,
+    upload_timestamp: str | None,
+) -> dict[str, Any]:
+    return _retry_transient_upload_operation(
+        "Upload session create/resume",
+        lambda: api.create_or_resume_collection_upload(
+            slug,
+            manifest,
+            ingest_source=ingest_source,
+            upload_timestamp=upload_timestamp,
+        ),
+    )
+
+
 def _create_or_resume_collection_file_upload(
     api: ApiClient,
     collection_id: str,
     path_value: str,
 ) -> dict[str, Any]:
-    delay = UPLOAD_RESUME_RETRY_INITIAL_DELAY_SECONDS
-    for attempt in range(UPLOAD_RESUME_RETRY_ATTEMPTS):
-        try:
-            return api.create_or_resume_collection_file_upload(collection_id, path_value)
-        except (httpx.TransportError, httpx.HTTPStatusError, ServiceUnavailable) as exc:
-            if not _is_transient_upload_error(exc) or attempt == UPLOAD_RESUME_RETRY_ATTEMPTS - 1:
-                raise
-            _log_upload(
-                f"Upload resume check for {path_value} failed "
-                f"({_upload_error_description(exc)}); retrying"
-            )
-            time.sleep(delay)
-            delay = min(delay * 2, UPLOAD_RESUME_RETRY_MAX_DELAY_SECONDS)
-    raise AssertionError("unreachable")
+    return _retry_transient_upload_operation(
+        f"Upload resume check for {path_value}",
+        lambda: api.create_or_resume_collection_file_upload(collection_id, path_value),
+    )
 
 
 def _local_collection_manifest(root: Path) -> list[CollectionManifestEntry]:
@@ -692,7 +726,8 @@ def upload_cmd(
         f"{len(manifest)} files, {_format_bytes(manifest_bytes)} "
         f"in {time.monotonic() - manifest_started_at:.1f}s"
     )
-    payload = api.create_or_resume_collection_upload(
+    payload = _create_or_resume_collection_upload(
+        api,
         slug,
         manifest,
         ingest_source=str(resolved_root),

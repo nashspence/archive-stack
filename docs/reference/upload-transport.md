@@ -65,16 +65,24 @@ The default per-file log threshold keeps tiny-file uploads readable: files below
 logs unless they hit a retry or error. Set the threshold to `0` when debugging a
 specific small-file path.
 
+The CLI treats transient transport failures and HTTP 408/425/429/5xx responses
+as resumable. File upload session creation/resume checks retry indefinitely with
+capped backoff and re-check the authoritative server offset before sending more
+bytes. This is intentional: app restarts, proxy reloads, and brief network
+outages should not force the operator to restart a long upload.
+
 Larger socket write slices or shorter write delays are riskier than larger
 request chunks. Do not benchmark more aggressive values after a failed or
 aborted bulk upload unless local stale sockets have cleared first; orphaned
 `FIN_WAIT_1` sockets with queued send data can make an otherwise stable profile
 look broken.
 
-After the final file chunk is accepted, the CLI waits for the service to upload
-and verify the collection-native Glacier archive package before exiting
-successfully. `RIVERHOG_UPLOAD_FINALIZE_TIMEOUT_SECONDS=0` means no CLI-side
-deadline for that custody handoff.
+After the final file chunk is accepted, the default `--wait staged` mode exits
+once server custody has begun and background archival continues through operator
+notifications and the API. Use `--wait finalized` when the CLI should remain
+attached until Riverhog uploads and verifies the collection-native Glacier
+archive package. `RIVERHOG_UPLOAD_FINALIZE_TIMEOUT_SECONDS=0` means no CLI-side
+deadline for that finalized handoff.
 
 ## Proxy Guidance
 
