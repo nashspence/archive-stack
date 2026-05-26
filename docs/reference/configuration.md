@@ -161,6 +161,23 @@ incomplete multipart parts billable until the upload is completed or aborted,
 so production buckets should also keep an abort-incomplete-multipart lifecycle
 rule as a final cleanup guard.
 
+## `RIVERHOG_GLACIER_MULTIPART_CONCURRENCY`
+
+- type: positive integer
+- default: `4`
+
+Maximum number of S3 multipart archive parts Riverhog uploads concurrently for
+one collection Glacier archive. Higher values can improve large migration
+throughput when the server and network have spare capacity, at the cost of
+roughly `part size * concurrency` in buffered archive data plus S3 client
+overhead.
+
+Parallel archive uploads still use the persisted multipart state described
+above. If an app restart or transient S3 failure interrupts a collection,
+Riverhog resumes against the same `UploadId`, verifies the recorded parts that
+S3 still has, skips the deterministic contiguous prefix, and uploads any
+remaining parts.
+
 ## `RIVERHOG_OTS_STAMP_COMMAND`
 
 - type: shell command

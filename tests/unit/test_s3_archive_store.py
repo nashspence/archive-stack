@@ -350,6 +350,7 @@ def test_upload_collection_archive_package_streams_archive_with_multipart(
         tmp_path,
         client,
         glacier_multipart_part_bytes=4,
+        glacier_multipart_concurrency=1,
     )
     monkeypatch.setattr("riverhog_core.stores.s3_archive_store._MIN_MULTIPART_PART_SIZE", 4)
     package = _package()
@@ -367,6 +368,35 @@ def test_upload_collection_archive_package_streams_archive_with_multipart(
     assert archive_head["Metadata"][COLLECTION_SHA256_METADATA] == package.archive_sha256
 
 
+def test_upload_collection_archive_package_tracks_parallel_multipart_progress(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    store = _store_with_client(
+        monkeypatch,
+        tmp_path,
+        client,
+        glacier_multipart_part_bytes=4,
+        glacier_multipart_concurrency=2,
+    )
+    tracker = _FakeMultipartTracker()
+    monkeypatch.setattr("riverhog_core.stores.s3_archive_store._MIN_MULTIPART_PART_SIZE", 4)
+    package = _package()
+
+    receipt = store.upload_collection_archive_package(
+        collection_id="docs",
+        package=package,
+        multipart_tracker=tracker,
+    )
+
+    expected_parts = (len(package.archive_bytes) + 3) // 4
+    assert client.objects[receipt.archive.object_path]["Body"] == package.archive_bytes
+    assert client.completed_uploads == ["upload-1"]
+    assert tracker.progress[-1] == (len(package.archive_bytes), expected_parts, expected_parts)
+    assert tracker.cleared == ["upload-1"]
+
+
 def test_upload_collection_archive_package_resumes_existing_multipart_upload(
     monkeypatch,
     tmp_path: Path,
@@ -377,6 +407,7 @@ def test_upload_collection_archive_package_resumes_existing_multipart_upload(
         tmp_path,
         client,
         glacier_multipart_part_bytes=4,
+        glacier_multipart_concurrency=1,
     )
     tracker = _FakeMultipartTracker()
     monkeypatch.setattr("riverhog_core.stores.s3_archive_store._MIN_MULTIPART_PART_SIZE", 4)

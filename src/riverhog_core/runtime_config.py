@@ -15,6 +15,7 @@ DEFAULT_PLANNER_DISC_TARGET_BYTES = 50_000_000_000
 DEFAULT_PLANNER_MIN_FILL_RATIO = 0.96
 DEFAULT_UNBURNED_COLLECTION_BYTES_LIMIT = 500_000_000_000
 DEFAULT_GLACIER_MULTIPART_PART_BYTES = 64 * 1024 * 1024
+DEFAULT_GLACIER_MULTIPART_CONCURRENCY = 4
 
 
 def _parse_duration(value: str) -> timedelta:
@@ -152,6 +153,7 @@ class RuntimeConfig:
     glacier_backend: str = "s3"
     glacier_storage_class: str = "DEEP_ARCHIVE"
     glacier_multipart_part_bytes: int = DEFAULT_GLACIER_MULTIPART_PART_BYTES
+    glacier_multipart_concurrency: int = DEFAULT_GLACIER_MULTIPART_CONCURRENCY
     glacier_upload_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=5))
     glacier_upload_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
     operator_webhook_url: str | None = None
@@ -235,6 +237,8 @@ class RuntimeConfig:
             raise ValueError("RIVERHOG_TUSD_APPEND_TIMEOUT_SECONDS must be > 0")
         if self.glacier_multipart_part_bytes < 1:
             raise ValueError("RIVERHOG_GLACIER_MULTIPART_PART_BYTES must be >= 1")
+        if self.glacier_multipart_concurrency < 1:
+            raise ValueError("RIVERHOG_GLACIER_MULTIPART_CONCURRENCY must be >= 1")
         if self.operator_webhook_url:
             minimum_ready_ttl = self.operator_webhook_timeout + self.operator_webhook_retry_delay
             if self.glacier_recovery_ready_ttl < minimum_ready_ttl:
@@ -294,6 +298,14 @@ def load_runtime_config() -> RuntimeConfig:
     glacier_multipart_part_bytes = _parse_bytes(
         os.getenv("RIVERHOG_GLACIER_MULTIPART_PART_BYTES", "64MiB"),
         name="RIVERHOG_GLACIER_MULTIPART_PART_BYTES",
+        minimum=1,
+    )
+    glacier_multipart_concurrency = _parse_int(
+        os.getenv(
+            "RIVERHOG_GLACIER_MULTIPART_CONCURRENCY",
+            str(DEFAULT_GLACIER_MULTIPART_CONCURRENCY),
+        ),
+        name="RIVERHOG_GLACIER_MULTIPART_CONCURRENCY",
         minimum=1,
     )
     glacier_retry_delay = _parse_duration(os.getenv("RIVERHOG_GLACIER_UPLOAD_RETRY_DELAY", "5m"))
@@ -560,6 +572,7 @@ def load_runtime_config() -> RuntimeConfig:
         glacier_storage_class=os.getenv("RIVERHOG_GLACIER_STORAGE_CLASS", "DEEP_ARCHIVE").strip()
         or "DEEP_ARCHIVE",
         glacier_multipart_part_bytes=glacier_multipart_part_bytes,
+        glacier_multipart_concurrency=glacier_multipart_concurrency,
         glacier_upload_retry_delay=glacier_retry_delay,
         glacier_upload_sweep_interval=glacier_upload_sweep_interval,
         operator_webhook_url=operator_webhook_url,

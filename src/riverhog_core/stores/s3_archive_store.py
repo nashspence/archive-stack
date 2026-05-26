@@ -4,6 +4,7 @@ import hashlib
 import logging
 import re
 from collections.abc import Iterable, Iterator
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, TypedDict, cast
@@ -346,12 +347,13 @@ class S3ArchiveStore:
             content_length,
             self._config.glacier_multipart_part_bytes,
         )
+        multipart_concurrency = self._config.glacier_multipart_concurrency
         expected_part_count = (content_length + part_size - 1) // part_size
         uploaded_bytes = 0
         size = 0
         resumed_part_count = 0
         skip_bytes = 0
-        completed_parts: list[ArchiveMultipartUploadedPart] = []
+        completed_parts_by_number: dict[int, ArchiveMultipartUploadedPart] = {}
 
         if multipart_tracker is not None:
             upload_state = multipart_tracker.load_multipart_upload(
@@ -384,7 +386,9 @@ class S3ArchiveStore:
                     skip_bytes = sum(part.size for part in resumed_parts)
                     part_number = resumed_part_count + 1
                     uploaded_bytes = skip_bytes
-                    completed_parts.extend(resumed_parts)
+                    completed_parts_by_number.update(
+                        (part.part_number, part) for part in resumed_parts
+                    )
                     _LOG.info(
                         "resuming S3 multipart upload for %s: upload_id=%s parts=%s/%s bytes=%s/%s",
                         object_key,
@@ -399,11 +403,13 @@ class S3ArchiveStore:
             nonlocal upload_state
             if upload_state is None:
                 _LOG.info(
-                    "starting S3 multipart upload for %s: size=%s part_size=%s parts=%s",
+                    "starting S3 multipart upload for %s: size=%s part_size=%s "
+                    "parts=%s concurrency=%s",
                     object_key,
                     content_length,
                     part_size,
                     expected_part_count,
+                    multipart_concurrency,
                 )
                 response = cast(
                     dict[str, Any],
@@ -427,68 +433,116 @@ class S3ArchiveStore:
                     )
             return upload_state.upload_id
 
-        def upload_part(body: bytes) -> None:
-            nonlocal part_number, uploaded_bytes
-            current_part_number = part_number
+        def upload_part_body(
+            *,
+            upload_id: str,
+            current_part_number: int,
+            body: bytes,
+        ) -> ArchiveMultipartUploadedPart:
             response = cast(
                 dict[str, Any],
                 self._client.upload_part(
                     Bucket=self._bucket,
                     Key=object_key,
-                    UploadId=ensure_upload(),
+                    UploadId=upload_id,
                     PartNumber=current_part_number,
                     Body=body,
                 ),
             )
-            part = ArchiveMultipartUploadedPart(
+            return ArchiveMultipartUploadedPart(
                 part_number=current_part_number,
                 etag=str(response["ETag"]),
                 size=len(body),
             )
-            completed_parts.append(part)
-            uploaded_bytes += len(body)
+
+        def record_completed_part(part: ArchiveMultipartUploadedPart) -> None:
+            nonlocal uploaded_bytes
+            completed_parts_by_number[part.part_number] = part
+            uploaded_bytes = sum(current.size for current in completed_parts_by_number.values())
+            uploaded_parts = len(completed_parts_by_number)
             if multipart_tracker is not None and upload_state is not None:
                 multipart_tracker.record_multipart_upload_progress(
                     collection_id=collection_id,
                     state=upload_state,
                     part=part,
                     uploaded_bytes=uploaded_bytes,
-                    uploaded_parts=current_part_number,
+                    uploaded_parts=uploaded_parts,
                     total_parts=expected_part_count,
                 )
-            if _should_log_multipart_progress(current_part_number, expected_part_count):
+            if _should_log_multipart_progress(uploaded_parts, expected_part_count):
                 _LOG.info(
                     "S3 multipart upload progress for %s: part=%s/%s bytes=%s/%s pct=%.2f",
                     object_key,
-                    current_part_number,
+                    uploaded_parts,
                     expected_part_count,
                     uploaded_bytes,
                     content_length,
                     (uploaded_bytes / content_length * 100.0) if content_length else 100.0,
                 )
-            part_number += 1
 
         try:
-            for chunk in _iter_chunks_after_skipping(chunks, skip_bytes):
-                size += len(chunk)
-                chunk_view = memoryview(chunk)
-                offset = 0
-                while offset < len(chunk_view):
-                    bytes_to_copy = min(
-                        part_size - len(buffer),
-                        len(chunk_view) - offset,
-                    )
-                    buffer.extend(chunk_view[offset : offset + bytes_to_copy])
-                    offset += bytes_to_copy
-                    if len(buffer) == part_size:
-                        upload_part(bytes(buffer))
-                        buffer.clear()
+            with ThreadPoolExecutor(
+                max_workers=multipart_concurrency,
+                thread_name_prefix="riverhog-s3-archive",
+            ) as executor:
+                pending: set[Future[ArchiveMultipartUploadedPart]] = set()
 
-            if size + skip_bytes != content_length:
-                raise ValueError("collection archive stream byte count mismatch")
-            if buffer:
-                upload_part(bytes(buffer))
-                buffer.clear()
+                def drain_completed(*, return_when: str) -> None:
+                    if not pending:
+                        return
+                    done, still_pending = wait(pending, return_when=return_when)
+                    pending.clear()
+                    pending.update(still_pending)
+                    error: BaseException | None = None
+                    for future in done:
+                        try:
+                            record_completed_part(future.result())
+                        except BaseException as exc:
+                            error = exc
+                    if error is not None:
+                        for future in pending:
+                            future.cancel()
+                        raise error
+
+                def submit_part(body: bytes) -> None:
+                    nonlocal part_number
+                    current_part_number = part_number
+                    part_number += 1
+                    pending.add(
+                        executor.submit(
+                            upload_part_body,
+                            upload_id=ensure_upload(),
+                            current_part_number=current_part_number,
+                            body=body,
+                        )
+                    )
+                    if len(pending) >= multipart_concurrency:
+                        drain_completed(return_when=FIRST_COMPLETED)
+
+                for chunk in _iter_chunks_after_skipping(chunks, skip_bytes):
+                    size += len(chunk)
+                    chunk_view = memoryview(chunk)
+                    offset = 0
+                    while offset < len(chunk_view):
+                        bytes_to_copy = min(
+                            part_size - len(buffer),
+                            len(chunk_view) - offset,
+                        )
+                        buffer.extend(chunk_view[offset : offset + bytes_to_copy])
+                        offset += bytes_to_copy
+                        if len(buffer) == part_size:
+                            submit_part(bytes(buffer))
+                            buffer.clear()
+
+                if size + skip_bytes != content_length:
+                    raise ValueError("collection archive stream byte count mismatch")
+                if buffer:
+                    submit_part(bytes(buffer))
+                    buffer.clear()
+                drain_completed(return_when=FIRST_COMPLETED)
+                while pending:
+                    drain_completed(return_when=FIRST_COMPLETED)
+
             if upload_state is None:
                 self._client.put_object(
                     Bucket=self._bucket,
@@ -502,6 +556,11 @@ class S3ArchiveStore:
                 object_key=object_key,
                 upload_id=upload_state.upload_id,
             )
+            completed_parts = [
+                completed_parts_by_number[part_number]
+                for part_number in range(1, expected_part_count + 1)
+                if part_number in completed_parts_by_number
+            ]
             if len(completed_parts) != expected_part_count:
                 raise ValueError(
                     "collection archive multipart upload is missing parts before completion"

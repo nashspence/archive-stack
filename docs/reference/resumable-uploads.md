@@ -102,6 +102,11 @@ metadata, skips the already uploaded contiguous prefix of the deterministic
 archive stream, uploads the remaining parts, and completes the same multipart
 upload using the recorded part numbers and ETags.
 
+Multipart archive parts are uploaded with bounded per-collection concurrency,
+configured by `RIVERHOG_GLACIER_MULTIPART_CONCURRENCY`. This is a throughput
+tuning knob only; resumability still comes from the persisted S3 multipart
+upload id and recorded part metadata.
+
 After Riverhog has stamped the manifest and measured the deterministic tar
 stream, it persists the package manifest, proof, byte count, and archive SHA-256
 on the upload row before starting S3 multipart upload. A restart after that
