@@ -27,7 +27,7 @@ from riverhog_cli.output import (
     format_pin,
     format_plan,
 )
-from riverhog_core.domain.errors import NotFound, ServiceUnavailable
+from riverhog_core.domain.errors import Conflict, NotFound, ServiceUnavailable
 
 app = typer.Typer(help="riverhog archival control CLI")
 iso_app = typer.Typer(help="ISO operations")
@@ -240,7 +240,7 @@ def _is_transient_upload_error(exc: BaseException) -> bool:
 def _upload_error_description(exc: BaseException) -> str:
     if isinstance(exc, httpx.HTTPStatusError):
         return f"HTTP {exc.response.status_code}"
-    if isinstance(exc, ServiceUnavailable):
+    if isinstance(exc, (Conflict, ServiceUnavailable)):
         return exc.message
     return f"{type(exc).__name__}: {exc}"
 
@@ -328,8 +328,13 @@ def _upload_collection_file(
                     checksum_algorithm=str(session["checksum_algorithm"]),
                     content=chunk,
                 )
-            except (httpx.TransportError, httpx.HTTPStatusError, ServiceUnavailable) as exc:
-                if not _is_transient_upload_error(exc):
+            except (
+                httpx.TransportError,
+                httpx.HTTPStatusError,
+                Conflict,
+                ServiceUnavailable,
+            ) as exc:
+                if not isinstance(exc, Conflict) and not _is_transient_upload_error(exc):
                     raise
                 _log_upload(
                     f"Upload interrupted for {path_value} at {_format_bytes(offset)}; "
