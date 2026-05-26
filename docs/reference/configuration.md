@@ -376,6 +376,10 @@ through Riverhog/WebDAV. Failure/attention events include
 `images.rebuild_ready.reminder`.
 
 Webhook delivery is best-effort; Riverhog catalog state remains authoritative.
+Notification receivers should keep these operator messages concise and calm:
+successful handoffs and burn/recovery readiness are good fits for time-sensitive
+mobile notifications, while unrecoverable failure events such as
+`collections.planner_failed` should be routed as critical alerts.
 Collection payloads include `collection_id`, links back to the collection when
 `RIVERHOG_PUBLIC_BASE_URL` is configured, and event-specific progress such as
 file counts, staged bytes, archive bytes, object path, or failure details. Ready
