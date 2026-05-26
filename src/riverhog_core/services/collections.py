@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, TypedDict
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from riverhog_core.archive_compliance import (
@@ -253,16 +253,13 @@ class SqlAlchemyCollectionService:
             if upload is None:
                 raise NotFound(f"collection upload not found: {normalized_collection_id}")
 
-            upload = _sync_and_expire_collection_upload(
+            file_record = _get_upload_file_record(
                 session,
-                upload,
-                upload_store=self._upload_store,
+                normalized_collection_id,
+                normalized_path,
             )
-            if upload is None:
-                raise NotFound(f"collection upload not found: {normalized_collection_id}")
-
-            file_record = _get_upload_file(upload.files, normalized_path)
             target_path = _collection_upload_target_path(normalized_collection_id, normalized_path)
+            _expire_collection_upload_file(file_record, self._upload_store)
             updated, tus_url = create_or_resume_upload_state(
                 current=_upload_lifecycle_state(file_record),
                 target_path=target_path,
@@ -292,7 +289,11 @@ class SqlAlchemyCollectionService:
             if upload is None:
                 raise NotFound(f"collection upload not found: {normalized_collection_id}")
 
-            file_record = _get_upload_file(upload.files, normalized_path)
+            file_record = _get_upload_file_record(
+                session,
+                normalized_collection_id,
+                normalized_path,
+            )
             _expire_collection_upload_file(file_record, self._upload_store)
             if file_record.tus_url is None:
                 raise Conflict(f"collection upload file is not resumable: {normalized_path}")
@@ -312,17 +313,20 @@ class SqlAlchemyCollectionService:
 
             if next_offset >= file_record.bytes:
                 file_record.upload_expires_at = None
-                target_path = _collection_upload_target_path(
-                    normalized_collection_id,
-                    normalized_path,
-                )
-                content_digest = _sha256_hex_chunks(self._upload_store.iter_target(target_path))
+                if offset == 0 and len(content) == file_record.bytes:
+                    content_digest = _sha256_hex(content)
+                else:
+                    target_path = _collection_upload_target_path(
+                        normalized_collection_id,
+                        normalized_path,
+                    )
+                    content_digest = _sha256_hex_chunks(self._upload_store.iter_target(target_path))
                 if content_digest != file_record.sha256:
                     raise HashMismatch("sha256 did not match expected file hash")
             else:
                 file_record.upload_expires_at = upload_expiry_timestamp(self._upload_ttl)
 
-            if _collection_upload_is_complete(upload.files):
+            if _collection_upload_is_complete_for_session(session, normalized_collection_id):
                 was_archiving = upload.state == "archiving"
                 _ensure_collection_upload_archiving(upload)
                 if not was_archiving:
@@ -761,6 +765,17 @@ def _get_upload_file(
     raise NotFound(f"collection upload file not found: {path}")
 
 
+def _get_upload_file_record(
+    session: Session,
+    collection_id: str,
+    path: str,
+) -> CollectionUploadFileRecord:
+    file_record = session.get(CollectionUploadFileRecord, (collection_id, path))
+    if file_record is None:
+        raise NotFound(f"collection upload file not found: {path}")
+    return file_record
+
+
 def _upload_lifecycle_state(file_record: CollectionUploadFileRecord) -> UploadLifecycleState:
     return UploadLifecycleState(
         tus_url=file_record.tus_url,
@@ -885,6 +900,17 @@ def _collection_upload_is_complete(file_records: Sequence[CollectionUploadFileRe
         == "uploaded"
         for file_record in file_records
     )
+
+
+def _collection_upload_is_complete_for_session(session: Session, collection_id: str) -> bool:
+    session.flush()
+    remaining = session.scalar(
+        select(func.count())
+        .select_from(CollectionUploadFileRecord)
+        .where(CollectionUploadFileRecord.collection_id == collection_id)
+        .where(CollectionUploadFileRecord.uploaded_bytes < CollectionUploadFileRecord.bytes)
+    )
+    return remaining == 0
 
 
 def _collection_upload_session_state(upload: CollectionUploadRecord) -> str:

@@ -149,6 +149,7 @@ class _FakeUploadStore:
         self._target_by_url: dict[str, str] = {}
         self._content_by_target: dict[str, bytes] = {}
         self.deleted_targets: list[str] = []
+        self.get_offset_calls = 0
 
     def create_upload(self, target_path: str, length: int) -> str:
         tus_url = f"/uploads/{len(self._target_by_url) + 1}"
@@ -157,6 +158,7 @@ class _FakeUploadStore:
         return tus_url
 
     def get_offset(self, tus_url: str) -> int:
+        self.get_offset_calls += 1
         target_path = self._target_by_url.get(tus_url)
         if target_path is None:
             return -1
@@ -408,6 +410,48 @@ def test_partial_collection_upload_does_not_publish_committed_hot_file(tmp_path:
     )
 
     assert not hot_store.has_collection_file(collection_id, relpath)
+
+
+def test_file_upload_resume_does_not_sync_unrelated_upload_files(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+
+    upload_store = _FakeUploadStore()
+    service = SqlAlchemyCollectionService(_config(sqlite_path), _FakeHotStore(), upload_store)
+
+    first_content = b"first-file"
+    second_content = b"second-file"
+    payload = service.create_or_resume_upload(
+        upload_slug="photos 2024",
+        files=[
+            {
+                "path": "first.txt",
+                "bytes": len(first_content),
+                "sha256": hashlib.sha256(first_content).hexdigest(),
+            },
+            {
+                "path": "second.txt",
+                "bytes": len(second_content),
+                "sha256": hashlib.sha256(second_content).hexdigest(),
+            },
+        ],
+    )
+    collection_id = str(payload["collection_id"])
+    first_session = service.create_or_resume_file_upload(collection_id, "first.txt")
+    service.append_upload_chunk(
+        collection_id,
+        "first.txt",
+        offset=int(first_session["offset"]),
+        checksum="sha256 "
+        + base64.b64encode(hashlib.sha256(first_content[:5]).digest()).decode("ascii"),
+        content=first_content[:5],
+    )
+
+    upload_store.get_offset_calls = 0
+    second_session = service.create_or_resume_file_upload(collection_id, "second.txt")
+
+    assert second_session["path"] == "second.txt"
+    assert upload_store.get_offset_calls == 0
 
 
 def test_completed_collection_upload_promotes_from_staging_and_cleans_up(
