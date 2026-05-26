@@ -231,6 +231,7 @@ class SqlAlchemyPlanningService:
             min_fill_bytes = self._config.planner_min_fill_bytes
 
             covered_file_pairs: set[tuple[str, str]] = set()
+            covered_file_pairs.update(_finalized_covered_file_pairs(session))
             for cand in candidates:
                 for cp in cand.covered_paths:
                     covered_file_pairs.add((cp.collection_id, cp.path))
@@ -875,15 +876,7 @@ def _candidate_ready_notification_batch(
 
 
 def _load_plan_files(session: Session, config: RuntimeConfig) -> list[_PlanFile]:
-    finalized_paths = {
-        (str(collection_id), str(path))
-        for collection_id, path in session.execute(
-            select(
-                FinalizedImageCoveredPathRecord.collection_id,
-                FinalizedImageCoveredPathRecord.path,
-            )
-        ).all()
-    }
+    finalized_paths = _finalized_covered_file_pairs(session)
     collections = session.scalars(
         select(CollectionRecord)
         .options(selectinload(CollectionRecord.files))
@@ -917,6 +910,18 @@ def _load_plan_files(session: Session, config: RuntimeConfig) -> list[_PlanFile]
                 )
             )
     return plan_files
+
+
+def _finalized_covered_file_pairs(session: Session) -> set[tuple[str, str]]:
+    return {
+        (str(collection_id), str(path))
+        for collection_id, path in session.execute(
+            select(
+                FinalizedImageCoveredPathRecord.collection_id,
+                FinalizedImageCoveredPathRecord.path,
+            )
+        ).all()
+    }
 
 
 def _build_plan_piece_groups(

@@ -22,6 +22,7 @@ from riverhog_cli.output import (
     format_fetch,
     format_files,
     format_glacier_report,
+    format_image,
     format_pin,
     format_plan,
 )
@@ -818,6 +819,33 @@ def iso_get_cmd(
     if output is None:
         raise typer.Exit(code=0)
     typer.echo(f"wrote {len(content)} bytes to {output}")
+
+
+@iso_app.command("candidates")
+def iso_candidates_cmd(
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "fill",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    payload = client().get_plan(
+        page=page,
+        per_page=per_page,
+        sort=sort,
+        order=order,
+        iso_ready=True,
+    )
+    emit(payload if json_mode else format_plan(payload), json_mode=json_mode)
+
+
+@iso_app.command("finalize")
+def iso_finalize_cmd(
+    candidate_id: Annotated[str, typer.Argument(help="Ready plan candidate id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    payload = client().finalize_image(candidate_id)
+    emit(payload if json_mode else format_image(payload), json_mode=json_mode)
 
 
 @copy_app.command("add")

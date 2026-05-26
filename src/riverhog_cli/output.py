@@ -226,6 +226,26 @@ def format_images(payload: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def format_image(image: Mapping[str, Any]) -> str:
+    return "\n".join(
+        [
+            f"image: {image.get('id', 'unknown')} ({image.get('filename', 'unknown')})",
+            f"finalized_at: {image.get('finalized_at', 'unknown')}",
+            f"bytes: {image.get('bytes', 0)} "
+            f"fill={image.get('fill', 0)} "
+            f"files={image.get('files', 0)}",
+            "protection: "
+            f"{image.get('physical_protection_state', 'unknown')} "
+            f"registered={image.get('physical_copies_registered', 0)}/"
+            f"{image.get('physical_copies_required', 0)} "
+            f"verified={image.get('physical_copies_verified', 0)}/"
+            f"{image.get('physical_copies_required', 0)}",
+            f"collections: {image.get('collections', 0)} "
+            f"[{_collection_ids_text(image.get('collection_ids'))}]",
+        ]
+    )
+
+
 def format_archive_status(
     ready_plan_payload: Mapping[str, Any],
     backlog_plan_payload: Mapping[str, Any],
