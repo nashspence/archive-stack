@@ -385,29 +385,41 @@ def _upload_collection_files(
         return
 
     _log_upload(f"Uploading up to {file_concurrency} files concurrently")
+    next_file_lock = threading.Lock()
+    stop_event = threading.Event()
+    pending_iter = iter(pending_files)
 
-    def upload_one(file_payload: dict[str, object]) -> None:
+    def upload_worker() -> None:
         worker_api = api_factory()
         try:
-            _upload_collection_file(
-                worker_api,
-                collection_id,
-                resolved_root / str(file_payload["path"]),
-                file_payload,
-                progress=progress,
-            )
+            while not stop_event.is_set():
+                with next_file_lock:
+                    if stop_event.is_set():
+                        return
+                    try:
+                        file_payload = next(pending_iter)
+                    except StopIteration:
+                        return
+                _upload_collection_file(
+                    worker_api,
+                    collection_id,
+                    resolved_root / str(file_payload["path"]),
+                    file_payload,
+                    progress=progress,
+                )
         finally:
             worker_api.close()
 
     with ThreadPoolExecutor(max_workers=file_concurrency) as executor:
-        futures = {
-            executor.submit(upload_one, file_payload): str(file_payload["path"])
-            for file_payload in pending_files
-        }
+        futures = [
+            executor.submit(upload_worker)
+            for _ in range(min(file_concurrency, len(pending_files)))
+        ]
         try:
             for future in as_completed(futures):
                 future.result()
         except BaseException:
+            stop_event.set()
             for future in futures:
                 future.cancel()
             raise

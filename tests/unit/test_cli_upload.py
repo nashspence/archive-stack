@@ -152,6 +152,7 @@ def test_upload_collection_files_uses_worker_clients_when_concurrent(
     root.mkdir()
     (root / "a.txt").write_bytes(b"aaa")
     (root / "b.txt").write_bytes(b"bbbb")
+    (root / "c.txt").write_bytes(b"ccccc")
     uploaded: list[tuple[str, int]] = []
     closed_clients: list[str] = []
     clients: list[object] = []
@@ -201,15 +202,17 @@ def test_upload_collection_files_uses_worker_clients_when_concurrent(
         [
             {"path": "a.txt", "bytes": 3, "upload_state": "pending"},
             {"path": "b.txt", "bytes": 4, "upload_state": "pending"},
+            {"path": "c.txt", "bytes": 5, "upload_state": "pending"},
         ],
         progress=progress.append,
         file_concurrency=2,
         api_factory=api_factory,  # type: ignore[arg-type]
     )
 
-    assert sorted(size for _, size in uploaded) == [3, 4]
+    assert len(clients) == 2
+    assert sorted(size for _, size in uploaded) == [3, 4, 5]
     assert all(name.startswith("worker-") for name, _ in uploaded)
-    assert sorted(progress) == [3, 4]
+    assert sorted(progress) == [3, 4, 5]
     assert sorted(closed_clients) == ["worker-0", "worker-1"]
 
 
