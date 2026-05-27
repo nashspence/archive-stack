@@ -158,8 +158,9 @@ Automated multipart recovery uses the fetch manifest as its recovery contract.
 - resumable recovery state for partially uploaded logical files is managed by the server-side fetch manifest
 - fetch copy hints name the exact payload object to read plus the raw encrypted recovery-byte digest and length expected
   from that object
-- those recovery-byte lengths and digests are persisted when a copy is registered, so archived-only files do not need
-  hot plaintext in order to publish or complete a fetch manifest
+- recovery-byte lengths are captured when a copy is registered, and missing recovery-byte digests are lazily
+  backfilled from the finalized image root before a fetch manifest is returned; archived-only files do not need hot
+  plaintext in order to publish or complete a fetch manifest
 - `djdan` does not own decryption or final logical-file hash validation; the server does that behind the upload
   resource as needed
 - any temporary buffering used during recovery is an internal implementation detail

@@ -37,13 +37,8 @@ from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.recovery_payloads import (
     CommandAgeBatchpassRecoveryPayloadCodec,
     RecoveryPayloadCodec,
-    RecoveryPayloadError,
 )
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.copy_recovery_metadata import (
-    CopyRecoveryMetadata,
-    read_copy_recovery_metadata,
-)
 from riverhog_core.services.recovery_sessions import ensure_glacier_recovery_session_for_image
 from riverhog_core.webhooks import (
     WebhookConfig,
@@ -338,14 +333,7 @@ class SqlAlchemyCopyService:
             expected_keys: set[tuple[str, int | None, int | None]] = set()
             for disc_path, part_index, part_count in expected_entries:
                 expected_keys.add((disc_path, part_index, part_count if part_count > 1 else None))
-                payload_metadata = _copy_recovery_metadata(
-                    image,
-                    disc_path,
-                    self._recovery_payload_codec,
-                    include_plaintext=part_count > 1,
-                )
-                part_bytes_val = payload_metadata.plaintext_bytes if part_count > 1 else None
-                part_sha256_val = payload_metadata.plaintext_sha256 if part_count > 1 else None
+                recovery_bytes = _copy_recovery_bytes(image, disc_path)
                 row = existing_by_key.get(
                     (disc_path, part_index, part_count if part_count > 1 else None)
                 )
@@ -364,18 +352,15 @@ class SqlAlchemyCopyService:
                             ),
                             part_index=part_index,
                             part_count=part_count if part_count > 1 else None,
-                            part_bytes=part_bytes_val,
-                            part_sha256=part_sha256_val,
-                            recovery_bytes=payload_metadata.recovery_bytes,
-                            recovery_sha256=payload_metadata.recovery_sha256,
+                            part_bytes=None,
+                            part_sha256=None,
+                            recovery_bytes=recovery_bytes,
+                            recovery_sha256=None,
                         )
                     )
                     continue
                 row.location = copy.location
-                row.part_bytes = part_bytes_val
-                row.part_sha256 = part_sha256_val
-                row.recovery_bytes = payload_metadata.recovery_bytes
-                row.recovery_sha256 = payload_metadata.recovery_sha256
+                row.recovery_bytes = recovery_bytes
 
             for row in existing_rows:
                 row_key = (row.disc_path, row.part_index, row.part_count)
@@ -556,22 +541,12 @@ def _disc_entries_from_coverage_parts(
     return result
 
 
-def _copy_recovery_metadata(
+def _copy_recovery_bytes(
     image: FinalizedImageRecord,
     disc_path: str,
-    recovery_payload_codec: RecoveryPayloadCodec,
-    *,
-    include_plaintext: bool,
-) -> CopyRecoveryMetadata:
+) -> int:
+    payload_path = Path(image.image_root) / disc_path.lstrip("/")
     try:
-        return read_copy_recovery_metadata(
-            image.image_root,
-            disc_path,
-            recovery_payload_codec,
-            include_plaintext=include_plaintext,
-        )
+        return payload_path.stat().st_size
     except FileNotFoundError as exc:
-        missing_path = Path(image.image_root) / disc_path.lstrip("/")
-        raise InvalidState(f"finalized-image payload is missing: {missing_path}") from exc
-    except RecoveryPayloadError as exc:
-        raise InvalidState(f"finalized-image payload could not be decrypted: {disc_path}") from exc
+        raise InvalidState(f"finalized-image payload is missing: {payload_path}") from exc

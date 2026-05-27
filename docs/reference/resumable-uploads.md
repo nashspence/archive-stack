@@ -209,8 +209,9 @@ Once the recovery-byte stream reaches full length, the manifest entry becomes `b
 `uploaded` until `POST /v1/fetches/{fetch_id}/complete` verifies and materializes the recovered logical file.
 Split files still use one upload resource per logical file; `djdan` streams parts into that one resource in
 ascending order.
-The server records exact encrypted payload length and SHA-256 metadata for every registered disc copy, so cold-only
-fetches can publish their manifest, resume uploads, and complete verification without using hot plaintext as an input.
+The server records exact encrypted payload length for every registered disc copy and lazily backfills missing encrypted
+payload SHA-256 metadata before returning a fetch manifest, so cold-only fetches can publish their manifest, resume
+uploads, and complete verification without using hot plaintext as an input.
 
 CLI uploads use bounded request chunks plus paced socket writes. The default
 request chunk size is 8 MiB. The default write pacing is 256 KiB sub-writes with

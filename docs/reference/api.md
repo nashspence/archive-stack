@@ -605,9 +605,9 @@ Returns a stable manifest for the exact pin lifetime.
 - every part hint includes logical plaintext `bytes`, logical plaintext `sha256`, `recovery_bytes`, and at least one
   candidate recovery copy
 - every candidate recovery copy includes `disc_path`, `recovery_bytes`, and `recovery_sha256`
-- Riverhog persists those candidate recovery-byte lengths and digests with the registered physical copy, and may
-  backfill them from the finalized image root for older rows; fetch publication and completion must not require the
-  logical file to already be present in hot storage
+- Riverhog captures candidate recovery-byte lengths with the registered physical copy, and lazily backfills missing
+  recovery-byte digests from the finalized image root before returning a fetch manifest; fetch publication and
+  completion must not require the logical file to already be present in hot storage
 - `djdan` uploads the raw encrypted bytes stored at `disc_path`, not reconstructed logical plaintext
 - logical plaintext hash and size fields remain server-side verification anchors after decryption and reconstruction
 - each manifest entry exposes current upload state, uploaded bytes, and upload expiry if partial state exists
