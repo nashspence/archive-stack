@@ -205,6 +205,11 @@ class RecoverySessionHint:
     images: tuple[RecoverySessionImageHint, ...]
 
 
+@dataclass(slots=True)
+class DiscPromptState:
+    ready_copy_id: str | None = None
+
+
 _PENDING_BURN_STATES = {"needed", "burning"}
 _PROTECTED_COPY_STATES = {"registered", "verified"}
 _ACTIVE_RECOVERY_SESSION_STATES = {"pending_approval", "restore_requested", "ready"}
@@ -1669,12 +1674,10 @@ def _upload_entry_from_disc(
     reader: Any,
     device: str,
     progress: ProgressReporter,
-    assume_inserted: bool = False,
+    prompt_state: DiscPromptState,
 ) -> None:
     offset = session.offset
     part_start = 0
-    ready_copy_id: str | None = None
-    assumed_copy_used = False
 
     for part in entry.parts:
         part_end = part_start + part.recovery_bytes
@@ -1683,19 +1686,9 @@ def _upload_entry_from_disc(
             continue
 
         copy = part.copies[0]
-        if assume_inserted and not assumed_copy_used:
-            typer.echo(
-                (
-                    f"using already-inserted disc {copy.copy_id} from {copy.location} "
-                    f"at {device}"
-                ),
-                err=True,
-            )
-            assumed_copy_used = True
-            ready_copy_id = copy.copy_id
-        elif copy.copy_id != ready_copy_id:
+        if copy.copy_id != prompt_state.ready_copy_id:
             _prompt_for_disc(copy, device=device)
-            ready_copy_id = copy.copy_id
+            prompt_state.ready_copy_id = copy.copy_id
         resume_within_part = max(offset - part_start, 0)
         recovered_chunks = _skip_uploaded_prefix(
             _iter_recovered_chunks(reader, copy, device=device),
@@ -1760,13 +1753,6 @@ def _reset_byte_complete_uploads(
 def fetch_cmd(
     fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
     device: Annotated[str, typer.Option("--device", help="Optical device path")] = "/dev/sr0",
-    assume_inserted: Annotated[
-        bool,
-        typer.Option(
-            "--assume-inserted",
-            help="Skip disc insertion prompts when the required media is already inserted",
-        ),
-    ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     try:
@@ -1785,6 +1771,7 @@ def fetch_cmd(
             entries,
             uploaded_bytes_by_entry={entry.id: sessions[entry.id].offset for entry in entries},
         )
+        prompt_state = DiscPromptState()
         for entry in entries:
             _upload_entry_from_disc(
                 entry,
@@ -1793,7 +1780,7 @@ def fetch_cmd(
                 reader=reader,
                 device=device,
                 progress=progress,
-                assume_inserted=assume_inserted,
+                prompt_state=prompt_state,
             )
 
         try:

@@ -496,66 +496,7 @@ def test_djdan_fetch_recovers_in_memory_and_reports_progress(monkeypatch) -> Non
     ]
 
 
-def test_djdan_fetch_assume_inserted_skips_disc_prompt(monkeypatch) -> None:
-    plaintext = b"invoice fixture bytes\n"
-    recovered = fixture_encrypt_bytes(plaintext)
-    uploaded: list[bytes] = []
-
-    class FakeClient:
-        def get_fetch_manifest(self, fetch_id: str) -> dict[str, object]:
-            assert fetch_id == "fx-1"
-            return _manifest_for(plaintext)
-
-        def create_or_resume_fetch_entry_upload(
-            self, fetch_id: str, entry_id: str
-        ) -> dict[str, object]:
-            return {
-                "entry": entry_id,
-                "protocol": "tus",
-                "upload_url": "https://uploads.test/fx-1/e1",
-                "offset": 0,
-                "length": len(recovered),
-                "checksum_algorithm": "sha256",
-                "expires_at": "2026-04-23T00:00:00Z",
-            }
-
-        def append_upload_chunk(
-            self,
-            upload_url: str,
-            *,
-            offset: int,
-            checksum_algorithm: str,
-            content: bytes,
-        ) -> dict[str, object]:
-            _ = upload_url, checksum_algorithm
-            uploaded.append(content)
-            return {"offset": offset + len(content), "expires_at": None}
-
-        def complete_fetch(self, fetch_id: str) -> dict[str, object]:
-            return {"id": fetch_id, "state": "done"}
-
-    class FakeReader:
-        def read_iter(self, disc_path: str, *, device: str):
-            assert disc_path == "disc/000001.bin"
-            assert device == "/dev/fake-sr0"
-            yield recovered
-
-    monkeypatch.setattr(djdan_main, "ApiClient", FakeClient)
-    monkeypatch.setattr(djdan_main, "build_optical_reader", lambda: FakeReader())
-
-    result = runner.invoke(
-        djdan_main.app,
-        ["fetch", "fx-1", "--device", "/dev/fake-sr0", "--assume-inserted", "--json"],
-    )
-
-    assert result.exit_code == 0
-    assert '"state": "done"' in result.stdout
-    assert "using already-inserted disc 20260420T040001Z-1" in result.stderr
-    assert "Insert disc" not in result.stderr
-    assert uploaded == [recovered]
-
-
-def test_djdan_fetch_assume_inserted_still_prompts_when_split_file_needs_next_disc(
+def test_djdan_fetch_prompts_when_split_file_needs_next_disc(
     monkeypatch,
 ) -> None:
     part_one_plaintext = b"invoice fixture "
@@ -659,16 +600,273 @@ def test_djdan_fetch_assume_inserted_still_prompts_when_split_file_needs_next_di
 
     result = runner.invoke(
         djdan_main.app,
-        ["fetch", "fx-1", "--device", "/dev/fake-sr0", "--assume-inserted", "--json"],
-        input="\n",
+        ["fetch", "fx-1", "--device", "/dev/fake-sr0", "--json"],
+        input="\n\n",
     )
 
     assert result.exit_code == 0
-    assert "using already-inserted disc 20260420T040003Z-1" in result.stderr
+    assert "Insert disc 20260420T040003Z-1 from vault-a/shelf-01" in result.stderr
     assert "Insert disc 20260420T040004Z-1 from vault-a/shelf-02" in result.stderr
     assert uploaded == [
         (0, part_one),
         (len(part_one), part_two),
+    ]
+
+
+def test_djdan_fetch_prompt_state_spans_manifest_entries(
+    monkeypatch,
+) -> None:
+    first_plaintext = b"first collection file\n"
+    second_plaintext = b"second collection file\n"
+    first_recovery = fixture_encrypt_bytes(first_plaintext)
+    second_recovery = fixture_encrypt_bytes(second_plaintext)
+    uploaded: list[tuple[str, int, bytes]] = []
+
+    class FakeClient:
+        def get_fetch_manifest(self, fetch_id: str) -> dict[str, object]:
+            assert fetch_id == "fx-1"
+            return {
+                "id": "fx-1",
+                "target": "2025/",
+                "entries": [
+                    {
+                        "id": "e1",
+                        "path": "alpha/file.txt",
+                        "bytes": len(first_plaintext),
+                        "sha256": hashlib.sha256(first_plaintext).hexdigest(),
+                        "recovery_bytes": len(first_recovery),
+                        "parts": [
+                            {
+                                "index": 0,
+                                "bytes": len(first_plaintext),
+                                "sha256": hashlib.sha256(first_plaintext).hexdigest(),
+                                "recovery_bytes": len(first_recovery),
+                                "copies": [
+                                    {
+                                        "copy": "20260420T040003Z-1",
+                                        "location": "vault-a/shelf-01",
+                                        "disc_path": "disc/000001.bin",
+                                        "recovery_bytes": len(first_recovery),
+                                        "recovery_sha256": hashlib.sha256(
+                                            first_recovery
+                                        ).hexdigest(),
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    {
+                        "id": "e2",
+                        "path": "beta/file.txt",
+                        "bytes": len(second_plaintext),
+                        "sha256": hashlib.sha256(second_plaintext).hexdigest(),
+                        "recovery_bytes": len(second_recovery),
+                        "parts": [
+                            {
+                                "index": 0,
+                                "bytes": len(second_plaintext),
+                                "sha256": hashlib.sha256(second_plaintext).hexdigest(),
+                                "recovery_bytes": len(second_recovery),
+                                "copies": [
+                                    {
+                                        "copy": "20260420T040004Z-1",
+                                        "location": "vault-a/shelf-02",
+                                        "disc_path": "disc/000002.bin",
+                                        "recovery_bytes": len(second_recovery),
+                                        "recovery_sha256": hashlib.sha256(
+                                            second_recovery
+                                        ).hexdigest(),
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                ],
+            }
+
+        def create_or_resume_fetch_entry_upload(
+            self, fetch_id: str, entry_id: str
+        ) -> dict[str, object]:
+            lengths = {"e1": len(first_recovery), "e2": len(second_recovery)}
+            return {
+                "entry": entry_id,
+                "protocol": "tus",
+                "upload_url": f"https://uploads.test/{fetch_id}/{entry_id}",
+                "offset": 0,
+                "length": lengths[entry_id],
+                "checksum_algorithm": "sha256",
+                "expires_at": "2026-04-23T00:00:00Z",
+            }
+
+        def append_upload_chunk(
+            self,
+            upload_url: str,
+            *,
+            offset: int,
+            checksum_algorithm: str,
+            content: bytes,
+        ) -> dict[str, object]:
+            _ = checksum_algorithm
+            uploaded.append((upload_url, offset, content))
+            return {"offset": offset + len(content), "expires_at": None}
+
+        def complete_fetch(self, fetch_id: str) -> dict[str, object]:
+            return {"id": fetch_id, "state": "done"}
+
+    class FakeReader:
+        def read_iter(self, disc_path: str, *, device: str):
+            assert device == "/dev/fake-sr0"
+            if disc_path == "disc/000001.bin":
+                yield first_recovery
+                return
+            if disc_path == "disc/000002.bin":
+                yield second_recovery
+                return
+            raise AssertionError(f"unexpected disc path: {disc_path}")
+
+    monkeypatch.setattr(djdan_main, "ApiClient", FakeClient)
+    monkeypatch.setattr(djdan_main, "build_optical_reader", lambda: FakeReader())
+
+    result = runner.invoke(
+        djdan_main.app,
+        ["fetch", "fx-1", "--device", "/dev/fake-sr0", "--json"],
+        input="\n\n",
+    )
+
+    assert result.exit_code == 0
+    assert "Insert disc 20260420T040003Z-1 from vault-a/shelf-01" in result.stderr
+    assert "Insert disc 20260420T040004Z-1 from vault-a/shelf-02" in result.stderr
+    assert uploaded == [
+        ("https://uploads.test/fx-1/e1", 0, first_recovery),
+        ("https://uploads.test/fx-1/e2", 0, second_recovery),
+    ]
+
+
+def test_djdan_fetch_does_not_reprompt_for_same_disc_across_entries(
+    monkeypatch,
+) -> None:
+    first_plaintext = b"first file\n"
+    second_plaintext = b"second file\n"
+    first_recovery = fixture_encrypt_bytes(first_plaintext)
+    second_recovery = fixture_encrypt_bytes(second_plaintext)
+    uploaded: list[tuple[str, int, bytes]] = []
+
+    class FakeClient:
+        def get_fetch_manifest(self, fetch_id: str) -> dict[str, object]:
+            assert fetch_id == "fx-1"
+            return {
+                "id": "fx-1",
+                "target": "2025/",
+                "entries": [
+                    {
+                        "id": "e1",
+                        "path": "alpha/file.txt",
+                        "bytes": len(first_plaintext),
+                        "sha256": hashlib.sha256(first_plaintext).hexdigest(),
+                        "recovery_bytes": len(first_recovery),
+                        "parts": [
+                            {
+                                "index": 0,
+                                "bytes": len(first_plaintext),
+                                "sha256": hashlib.sha256(first_plaintext).hexdigest(),
+                                "recovery_bytes": len(first_recovery),
+                                "copies": [
+                                    {
+                                        "copy": "20260420T040003Z-1",
+                                        "location": "vault-a/shelf-01",
+                                        "disc_path": "disc/000001.bin",
+                                        "recovery_bytes": len(first_recovery),
+                                        "recovery_sha256": hashlib.sha256(
+                                            first_recovery
+                                        ).hexdigest(),
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    {
+                        "id": "e2",
+                        "path": "beta/file.txt",
+                        "bytes": len(second_plaintext),
+                        "sha256": hashlib.sha256(second_plaintext).hexdigest(),
+                        "recovery_bytes": len(second_recovery),
+                        "parts": [
+                            {
+                                "index": 0,
+                                "bytes": len(second_plaintext),
+                                "sha256": hashlib.sha256(second_plaintext).hexdigest(),
+                                "recovery_bytes": len(second_recovery),
+                                "copies": [
+                                    {
+                                        "copy": "20260420T040003Z-1",
+                                        "location": "vault-a/shelf-01",
+                                        "disc_path": "disc/000002.bin",
+                                        "recovery_bytes": len(second_recovery),
+                                        "recovery_sha256": hashlib.sha256(
+                                            second_recovery
+                                        ).hexdigest(),
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                ],
+            }
+
+        def create_or_resume_fetch_entry_upload(
+            self, fetch_id: str, entry_id: str
+        ) -> dict[str, object]:
+            lengths = {"e1": len(first_recovery), "e2": len(second_recovery)}
+            return {
+                "entry": entry_id,
+                "protocol": "tus",
+                "upload_url": f"https://uploads.test/{fetch_id}/{entry_id}",
+                "offset": 0,
+                "length": lengths[entry_id],
+                "checksum_algorithm": "sha256",
+                "expires_at": "2026-04-23T00:00:00Z",
+            }
+
+        def append_upload_chunk(
+            self,
+            upload_url: str,
+            *,
+            offset: int,
+            checksum_algorithm: str,
+            content: bytes,
+        ) -> dict[str, object]:
+            _ = checksum_algorithm
+            uploaded.append((upload_url, offset, content))
+            return {"offset": offset + len(content), "expires_at": None}
+
+        def complete_fetch(self, fetch_id: str) -> dict[str, object]:
+            return {"id": fetch_id, "state": "done"}
+
+    class FakeReader:
+        def read_iter(self, disc_path: str, *, device: str):
+            assert device == "/dev/fake-sr0"
+            if disc_path == "disc/000001.bin":
+                yield first_recovery
+                return
+            if disc_path == "disc/000002.bin":
+                yield second_recovery
+                return
+            raise AssertionError(f"unexpected disc path: {disc_path}")
+
+    monkeypatch.setattr(djdan_main, "ApiClient", FakeClient)
+    monkeypatch.setattr(djdan_main, "build_optical_reader", lambda: FakeReader())
+
+    result = runner.invoke(
+        djdan_main.app,
+        ["fetch", "fx-1", "--device", "/dev/fake-sr0", "--json"],
+        input="\n",
+    )
+
+    assert result.exit_code == 0
+    assert result.stderr.count("Insert disc 20260420T040003Z-1") == 1
+    assert uploaded == [
+        ("https://uploads.test/fx-1/e1", 0, first_recovery),
+        ("https://uploads.test/fx-1/e2", 0, second_recovery),
     ]
 
 

@@ -8,10 +8,6 @@ The `djdan` CLI is the recovery client for a machine with an optical drive.
 - Run the command as a user that can read the optical device path, such as `/dev/sr0`.
 - A mounted disc directory can be passed to `--device` instead of a raw device path. In that mode, `djdan` reads the
   manifest's hinted payload object path directly from the mounted filesystem.
-- When the first required disc is already inserted or mounted, pass
-  `--assume-inserted` to skip the initial insertion prompt. If a split file or
-  multi-file fetch later needs a different disc, `djdan` still prompts before
-  reading that next copy.
 - For a raw optical device, `djdan` uses `xorriso` to extract each hinted payload object from the inserted disc before
   streaming it to the server.
 
@@ -35,6 +31,12 @@ for that entry when one is available. If every registered copy fails, report the
 damaged copies and complete an image rebuild session before running
 `djdan fetch` again from recovered media.
 
+Fetch fulfillment is intentionally prompt-based because a fetch can span several
+files, collections, and discs. `djdan` prints the exact copy id and stored
+location before reading from a new disc. It does not prompt again while
+consecutive manifest work stays on that same disc, and it prompts again when a
+later split-file part or later manifest entry needs a different copy.
+
 During fulfillment, `djdan` should show:
 
 - current file progress
@@ -51,7 +53,7 @@ djdan fetch fx_01JV8W5J8M8F3J5V4A8Q --device /dev/sr0 --json
 Mounted-media example:
 
 ```bash
-djdan fetch fx_01JV8W5J8M8F3J5V4A8Q --device /media/archive-disc --assume-inserted --json
+djdan fetch fx_01JV8W5J8M8F3J5V4A8Q --device /media/archive-disc --json
 ```
 
 The command should exit successfully only if the fetch reaches `done`.
