@@ -888,6 +888,27 @@ def plan_cmd(
     emit(payload if json_mode else format_plan(payload), json_mode=json_mode)
 
 
+def _filter_collection_list_page(
+    payload: dict[str, Any],
+    *,
+    protection_state: str,
+) -> dict[str, Any]:
+    collections = payload.get("collections")
+    if not isinstance(collections, list):
+        return {**payload, "collections": [], "total": 0, "pages": 0}
+    filtered = [
+        collection
+        for collection in collections
+        if isinstance(collection, dict) and collection.get("protection_state") == protection_state
+    ]
+    return {
+        **payload,
+        "collections": filtered,
+        "total": len(filtered),
+        "pages": 1 if filtered else 0,
+    }
+
+
 @app.command("images")
 def images_cmd(
     page: Annotated[int, typer.Option("--page", min=1)] = 1,
@@ -909,62 +930,89 @@ def images_cmd(
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    api = client()
-    payload = api.list_images(
-        page=page,
-        per_page=per_page,
-        sort=sort,
-        order=order,
-        query=query,
-        collection=collection,
-        has_copies=has_copies,
-    )
     if json_mode:
+        api = client()
+        payload = api.list_images(
+            page=page,
+            per_page=per_page,
+            sort=sort,
+            order=order,
+            query=query,
+            collection=collection,
+            has_copies=has_copies,
+        )
         emit(payload, json_mode=True)
         return
 
-    ready_plan_payload = api.get_plan(
-        page=page,
-        per_page=per_page,
-        sort="fill",
-        order="desc",
-        query=query,
-        collection=collection,
-        iso_ready=True,
-    )
-    backlog_plan_payload = api.get_plan(
-        page=page,
-        per_page=per_page,
-        sort="fill",
-        order="desc",
-        query=query,
-        collection=collection,
-        iso_ready=False,
-    )
     collections_query = collection or query
-    unprotected_collections = api.list_collections(
-        page=page,
-        per_page=per_page,
-        q=collections_query,
+
+    def call_with_client(call: Callable[[ApiClient], dict[str, Any]]) -> dict[str, Any]:
+        local_api = client()
+        try:
+            return call(local_api)
+        finally:
+            local_api.close()
+
+    calls: dict[str, Callable[[ApiClient], dict[str, Any]]] = {
+        "images": lambda api: api.list_images(
+            page=page,
+            per_page=per_page,
+            sort=sort,
+            order=order,
+            query=query,
+            collection=collection,
+            has_copies=has_copies,
+        ),
+        "ready_plan": lambda api: api.get_plan(
+            page=page,
+            per_page=per_page,
+            sort="fill",
+            order="desc",
+            query=query,
+            collection=collection,
+            iso_ready=True,
+        ),
+        "backlog_plan": lambda api: api.get_plan(
+            page=page,
+            per_page=per_page,
+            sort="fill",
+            order="desc",
+            query=query,
+            collection=collection,
+            iso_ready=False,
+        ),
+        "collections": lambda api: api.list_collections(
+            page=page,
+            per_page=per_page,
+            q=collections_query,
+        ),
+    }
+    results: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=len(calls)) as executor:
+        futures = {
+            executor.submit(call_with_client, call): name for name, call in calls.items()
+        }
+        for future in as_completed(futures):
+            results[futures[future]] = future.result()
+
+    collections_payload = results["collections"]
+    unprotected_collections = _filter_collection_list_page(
+        collections_payload,
         protection_state="cloud_only",
     )
-    partially_protected_collections = api.list_collections(
-        page=page,
-        per_page=per_page,
-        q=collections_query,
+    partially_protected_collections = _filter_collection_list_page(
+        collections_payload,
         protection_state="under_protected",
     )
-    protected_collections = api.list_collections(
-        page=page,
-        per_page=per_page,
-        q=collections_query,
+    protected_collections = _filter_collection_list_page(
+        collections_payload,
         protection_state="fully_protected",
     )
     emit(
         format_archive_status(
-            ready_plan_payload,
-            backlog_plan_payload,
-            payload,
+            results["ready_plan"],
+            results["backlog_plan"],
+            results["images"],
             unprotected_collections,
             partially_protected_collections,
             protected_collections,
