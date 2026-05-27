@@ -12,7 +12,8 @@ _BYTES_RE = re.compile(r"^(\d+(?:_\d+)*)([kmgt]i?b?|b)?$", re.IGNORECASE)
 DEV_RECOVERY_PAYLOAD_PASSPHRASE = "riverhog-dev-recovery-passphrase"
 DEFAULT_DATABASE_URL = "postgresql+psycopg://riverhog:riverhog@127.0.0.1:5432/riverhog"
 DEFAULT_PLANNER_DISC_TARGET_BYTES = 50_000_000_000
-DEFAULT_PLANNER_MIN_FILL_RATIO = 0.96
+DEFAULT_PLANNER_MIN_FILL_RATIO = 0.99
+DEFAULT_PLANNER_UNPLANNED_SATURATION_BYTES = 300_000_000_000
 DEFAULT_UNBURNED_COLLECTION_BYTES_LIMIT = 500_000_000_000
 DEFAULT_GLACIER_MULTIPART_PART_BYTES = 64 * 1024 * 1024
 DEFAULT_GLACIER_MULTIPART_CONCURRENCY = 4
@@ -215,6 +216,7 @@ class RuntimeConfig:
     planner_min_fill_bytes: int = int(
         DEFAULT_PLANNER_DISC_TARGET_BYTES * DEFAULT_PLANNER_MIN_FILL_RATIO
     )
+    planner_unplanned_saturation_bytes: int = DEFAULT_PLANNER_UNPLANNED_SATURATION_BYTES
     planner_image_root: Path = field(default_factory=lambda: Path(".riverhog/images"))
     planner_refresh_sweep_interval: timedelta = field(default_factory=lambda: timedelta(minutes=1))
     unburned_collection_bytes_limit: int = DEFAULT_UNBURNED_COLLECTION_BYTES_LIMIT
@@ -258,6 +260,8 @@ class RuntimeConfig:
             raise ValueError(
                 "RIVERHOG_PLANNER_MIN_FILL_BYTES must be <= RIVERHOG_PLANNER_DISC_TARGET_BYTES"
             )
+        if self.planner_unplanned_saturation_bytes < 0:
+            raise ValueError("RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES must be >= 0")
         if self.planner_refresh_sweep_interval.total_seconds() <= 0.0:
             raise ValueError("RIVERHOG_PLANNER_REFRESH_SWEEP_INTERVAL must be > 0")
         if self.unburned_collection_bytes_limit < 0:
@@ -518,6 +522,14 @@ def load_runtime_config() -> RuntimeConfig:
         if planner_min_fill_bytes_raw
         else int(planner_disc_target_bytes * planner_min_fill_ratio)
     )
+    planner_unplanned_saturation_bytes = _parse_bytes(
+        os.getenv(
+            "RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES",
+            str(DEFAULT_PLANNER_UNPLANNED_SATURATION_BYTES),
+        ),
+        name="RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES",
+        minimum=0,
+    )
     planner_image_root = Path(
         os.getenv("RIVERHOG_PLANNER_IMAGE_ROOT", ".riverhog/images").strip() or ".riverhog/images"
     )
@@ -626,6 +638,7 @@ def load_runtime_config() -> RuntimeConfig:
         planner_disc_target_bytes=planner_disc_target_bytes,
         planner_min_fill_ratio=planner_min_fill_ratio,
         planner_min_fill_bytes=planner_min_fill_bytes,
+        planner_unplanned_saturation_bytes=planner_unplanned_saturation_bytes,
         planner_image_root=planner_image_root,
         planner_refresh_sweep_interval=planner_refresh_sweep_interval,
         unburned_collection_bytes_limit=unburned_collection_bytes_limit,

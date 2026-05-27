@@ -152,6 +152,10 @@ planned contents and planner sizing config. If the final candidate is below
 `RIVERHOG_PLANNER_MIN_FILL_BYTES` or `RIVERHOG_PLANNER_MIN_FILL_RATIO`, it is
 kept in `waiting` state and no image root is materialized; those files stay
 safe in Glacier and wait for future collections to fill a burnable disc.
+If waiting candidate bytes exceed `RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES`,
+Riverhog materializes the fullest waiting candidate as ISO-ready anyway so a high
+fill target does not let too much already-archived data accumulate without a
+burnable disc.
 
 A burnable candidate root is first written as
 `.candidate-*.tmp`; completed encrypted payloads, sidecars, manifests, and

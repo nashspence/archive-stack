@@ -12,9 +12,14 @@ The machine-readable contract files live in `contracts/disc/`:
 ## Commitment
 
 - the disc planner must budget every byte that will land on the image: encrypted payloads, encrypted sidecars, encrypted collection manifests, encrypted OpenTimestamps proofs, the encrypted disc manifest, `README.md`, and ISO filesystem overhead
-- the disc planner must minimize the number of candidate images that contain each collection before optimizing leftover
-  disc fill; the planner may reorder collection pieces across candidate images, and a collection may share a disc with
-  another collection, when doing so improves packing without increasing either collection's image count
+- the disc planner must budget every collection's encrypted manifest and encrypted OpenTimestamps proof on every image
+  that contains any part of that collection
+- the disc planner may reorder collection pieces across candidate images to improve packing
+- files are never voluntarily split; file parts only exist when a single file cannot fit on one image
+- collections that require multiple images are split only as required and are not split further for packing
+- collections that could fit on one image may be split once, by whole files, to improve packing
+- each such optionally split collection may appear on at most two candidate images, and each candidate image may contain
+  at most one optionally split collection
 - `README.md` is the only plaintext leaf file on the disc
 - every other leaf file is individually encrypted with `age-plugin-batchpass`
 - on-disc filenames are generic; canonical collection paths live only inside decrypted YAML

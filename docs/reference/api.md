@@ -254,11 +254,18 @@ Required behavior:
   package has uploaded and verified
 - a provisional candidate may be re-allocated by the planner
 - finalized images are not returned by `GET /v1/plan`
-- allocation minimizes the number of candidate images that contain each collection before optimizing leftover disc fill;
-  the planner may reorder collection pieces across candidate images when doing so improves packing without increasing a
-  collection's image count
+- allocation may reorder collection pieces across candidate images to improve packing
+- files are never voluntarily split; file parts only exist when a single file cannot fit on one candidate image
+- collections that require multiple candidate images are split only as required and are not split further for packing
+- collections that could fit on one candidate image may be split once, by whole files, to improve packing
+- each such optionally split collection may appear on at most two candidate images, and each candidate image may contain
+  at most one optionally split collection
+- every candidate image that contains any part of a collection budgets that collection's encrypted manifest and encrypted
+  OpenTimestamps proof
 - underfilled tail candidates are held out of the returned ready plan until future collections push them over the
   configured minimum fill threshold
+- if waiting candidate bytes exceed `RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES`, the planner may release the fullest
+  waiting candidate as ISO-ready even when it remains below the configured minimum fill threshold
 - the response includes pagination metadata and a `candidates` array
 - the default ordering is fullest candidates first using `sort=fill&order=desc`
 - explicit sort and filter controls only change how the current provisional plan is listed; they do not change planner

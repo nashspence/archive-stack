@@ -278,7 +278,7 @@ decimal or binary suffixes such as `50GB`, `500GB`, `46GiB`, and `900MiB`.
 ## `RIVERHOG_PLANNER_MIN_FILL_RATIO`
 
 - type: ratio or percent
-- default: `96%`
+- default: `99%`
 
 Default minimum fill target for ISO-ready planner candidates. Riverhog computes
 `RIVERHOG_PLANNER_MIN_FILL_BYTES` from this ratio when an explicit byte value is
@@ -293,6 +293,19 @@ not supplied.
 Explicit minimum ISO size required before a provisional candidate can be
 finalized. This must be less than or equal to
 `RIVERHOG_PLANNER_DISC_TARGET_BYTES`.
+
+## `RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES`
+
+- type: byte size
+- default: `300GB`
+
+Planner-estimated waiting candidate bytes allowed to accumulate before Riverhog
+releases the fullest waiting candidate even when it is below
+`RIVERHOG_PLANNER_MIN_FILL_BYTES`. A saturation-released candidate is still
+reported as ISO-ready if it fits under `RIVERHOG_PLANNER_DISC_TARGET_BYTES`.
+This keeps normal discs tightly packed while preventing too much
+archived-but-unburned data from sitting behind a high fill target. Set to `0` to
+disable the saturation override.
 
 ## `RIVERHOG_PLANNER_IMAGE_ROOT`
 

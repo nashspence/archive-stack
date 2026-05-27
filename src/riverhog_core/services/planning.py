@@ -139,6 +139,27 @@ class _CollectionPieceGroup:
     collection_id: str
     pieces: tuple[_PlanPiece, ...]
     estimated_bytes: int
+    artifact_estimate: int
+    voluntary_split: bool = False
+
+
+@dataclass(slots=True)
+class _CandidateBin:
+    estimated_bytes: int
+    collection_ids: set[str]
+    groups: list[_CollectionPieceGroup]
+    voluntary_split_collection_ids: set[str]
+
+
+@dataclass(frozen=True, slots=True)
+class _OptionalSplitMove:
+    target_bin_index: int
+    donor_bin_index: int
+    donor_group_index: int
+    collection_id: str
+    moved_pieces: tuple[_PlanPiece, ...]
+    moved_payload_bytes: int
+    target_group_estimated_bytes: int
 
 
 class SqlAlchemyPlanningService:
@@ -481,9 +502,14 @@ def _refresh_provisional_plan_locked(
     _remove_provisional_image_roots(config, old_image_roots)
     candidates_root = _candidate_image_root(config)
     candidates_root.mkdir(parents=True, exist_ok=True)
+    saturation_release_candidate_id = _saturation_release_candidate_id(
+        specs=specs,
+        config=config,
+    )
 
     for spec in specs:
-        if spec.estimated_bytes < config.planner_min_fill_bytes:
+        saturation_release = spec.candidate_id == saturation_release_candidate_id
+        if spec.estimated_bytes < config.planner_min_fill_bytes and not saturation_release:
             with session_scope(session_factory) as session:
                 record = session.get(PlannedCandidateRecord, spec.candidate_id)
                 if record is None:
@@ -503,6 +529,15 @@ def _refresh_provisional_plan_locked(
             )
             _remove_provisional_image_roots(config, [image_root])
             continue
+        if saturation_release:
+            _LOG.info(
+                "planner candidate %s is released by unplanned saturation: "
+                "estimated_bytes=%s min_fill_bytes=%s threshold=%s",
+                spec.candidate_id,
+                spec.estimated_bytes,
+                config.planner_min_fill_bytes,
+                config.planner_unplanned_saturation_bytes,
+            )
 
         with session_scope(session_factory) as session:
             record = session.get(PlannedCandidateRecord, spec.candidate_id)
@@ -526,6 +561,7 @@ def _refresh_provisional_plan_locked(
                 finalized_id=spec.finalized_id,
                 pieces=spec.pieces,
                 candidates_root=candidates_root,
+                allow_underfilled=saturation_release,
             )
         except Exception as exc:
             with session_scope(session_factory) as session:
@@ -677,6 +713,27 @@ def _remove_provisional_image_roots(config: RuntimeConfig, image_roots: Sequence
         tmp_root = image_root.with_name(f".{image_root.name}.tmp")
         if tmp_root != candidates_root and tmp_root.is_relative_to(candidates_root):
             safe_remove_tree(tmp_root)
+
+
+def _saturation_release_candidate_id(
+    *,
+    specs: Sequence[_CandidateSpec],
+    config: RuntimeConfig,
+) -> str | None:
+    if config.planner_unplanned_saturation_bytes <= 0:
+        return None
+    waiting_specs = [
+        spec for spec in specs if spec.estimated_bytes < config.planner_min_fill_bytes
+    ]
+    if not waiting_specs:
+        return None
+    waiting_estimated_bytes = sum(spec.estimated_bytes for spec in waiting_specs)
+    if waiting_estimated_bytes <= config.planner_unplanned_saturation_bytes:
+        return None
+    return max(
+        waiting_specs,
+        key=lambda spec: (spec.estimated_bytes, spec.candidate_id),
+    ).candidate_id
 
 
 def _reserved_plan_ids(session: Session) -> tuple[set[str], set[str]]:
@@ -974,6 +1031,7 @@ def _build_plan_piece_groups(
     }
     metadata_pad = _candidate_metadata_pad(config.planner_disc_target_bytes)
     payload_capacity = max(1, config.planner_disc_target_bytes - metadata_pad)
+    minimum_payload_fill = max(1, config.planner_min_fill_bytes - metadata_pad)
     collection_groups: list[_CollectionPieceGroup] = []
     for collection_id in sorted(pieces_by_collection):
         collection_groups.extend(
@@ -986,6 +1044,7 @@ def _build_plan_piece_groups(
     return _pack_collection_piece_groups(
         collection_groups,
         payload_capacity=payload_capacity,
+        minimum_payload_fill=minimum_payload_fill,
     )
 
 
@@ -1028,6 +1087,7 @@ def _build_collection_piece_groups(
             collection_id=collection_id,
             pieces=tuple(sorted(bin_pieces, key=lambda p: (p.path, p.part_index))),
             estimated_bytes=estimated_bytes,
+            artifact_estimate=artifact_estimate,
         )
         for estimated_bytes, bin_pieces in bins
     ]
@@ -1037,18 +1097,32 @@ def _pack_collection_piece_groups(
     collection_groups: Sequence[_CollectionPieceGroup],
     *,
     payload_capacity: int,
+    minimum_payload_fill: int = 1,
 ) -> list[list[_PlanPiece]]:
-    candidate_bins: list[tuple[int, set[str], list[_CollectionPieceGroup]]] = []
+    collection_group_counts: dict[str, int] = {}
+    for group in collection_groups:
+        collection_group_counts[group.collection_id] = (
+            collection_group_counts.get(group.collection_id, 0) + 1
+        )
+    optionally_splittable_collections = {
+        group.collection_id
+        for group in collection_groups
+        if collection_group_counts[group.collection_id] == 1
+        if len(group.pieces) > 1
+        if all(piece.part_count == 1 for piece in group.pieces)
+    }
+
+    candidate_bins: list[_CandidateBin] = []
     for group in sorted(
         collection_groups,
         key=lambda g: (-g.estimated_bytes, g.collection_id, g.pieces[0].path),
     ):
         best_index: int | None = None
         best_remaining: int | None = None
-        for idx, (estimated_bytes, collection_ids, _groups) in enumerate(candidate_bins):
-            if group.collection_id in collection_ids:
+        for idx, candidate_bin in enumerate(candidate_bins):
+            if group.collection_id in candidate_bin.collection_ids:
                 continue
-            next_bytes = estimated_bytes + group.estimated_bytes
+            next_bytes = candidate_bin.estimated_bytes + group.estimated_bytes
             if next_bytes > payload_capacity:
                 continue
             remaining = payload_capacity - next_bytes
@@ -1057,25 +1131,246 @@ def _pack_collection_piece_groups(
                 best_remaining = remaining
 
         if best_index is None:
-            candidate_bins.append((group.estimated_bytes, {group.collection_id}, [group]))
+            candidate_bins.append(
+                _CandidateBin(
+                    estimated_bytes=group.estimated_bytes,
+                    collection_ids={group.collection_id},
+                    groups=[group],
+                    voluntary_split_collection_ids=set(),
+                )
+            )
             continue
 
-        estimated_bytes, collection_ids, groups = candidate_bins[best_index]
-        collection_ids.add(group.collection_id)
-        groups.append(group)
-        candidate_bins[best_index] = (
-            estimated_bytes + group.estimated_bytes,
-            collection_ids,
-            groups,
-        )
+        candidate_bin = candidate_bins[best_index]
+        candidate_bin.estimated_bytes += group.estimated_bytes
+        candidate_bin.collection_ids.add(group.collection_id)
+        candidate_bin.groups.append(group)
+
+    _apply_optional_whole_file_collection_splits(
+        candidate_bins,
+        optionally_splittable_collections=optionally_splittable_collections,
+        payload_capacity=payload_capacity,
+        minimum_payload_fill=minimum_payload_fill,
+    )
 
     return [
         sorted(
-            [piece for group in groups for piece in group.pieces],
+            [piece for group in candidate_bin.groups for piece in group.pieces],
             key=lambda p: (p.collection_id, p.path, p.part_index),
         )
-        for _estimated_bytes, _collection_ids, groups in candidate_bins
+        for candidate_bin in candidate_bins
     ]
+
+
+def _apply_optional_whole_file_collection_splits(
+    candidate_bins: list[_CandidateBin],
+    *,
+    optionally_splittable_collections: set[str],
+    payload_capacity: int,
+    minimum_payload_fill: int,
+) -> None:
+    split_collection_ids: set[str] = set()
+    while True:
+        move = _find_optional_split_move(
+            candidate_bins,
+            optionally_splittable_collections=optionally_splittable_collections,
+            split_collection_ids=split_collection_ids,
+            payload_capacity=payload_capacity,
+            minimum_payload_fill=minimum_payload_fill,
+        )
+        if move is None:
+            return
+        _apply_optional_split_move(candidate_bins, move)
+        split_collection_ids.add(move.collection_id)
+
+
+def _find_optional_split_move(
+    candidate_bins: Sequence[_CandidateBin],
+    *,
+    optionally_splittable_collections: set[str],
+    split_collection_ids: set[str],
+    payload_capacity: int,
+    minimum_payload_fill: int,
+) -> _OptionalSplitMove | None:
+    for target_idx in sorted(
+        range(len(candidate_bins)),
+        key=lambda idx: (candidate_bins[idx].estimated_bytes, idx),
+    ):
+        target = candidate_bins[target_idx]
+        if target.voluntary_split_collection_ids:
+            continue
+        remaining = payload_capacity - target.estimated_bytes
+        if remaining <= 0:
+            continue
+        move = _best_optional_split_move_for_target(
+            candidate_bins,
+            target_bin_index=target_idx,
+            optionally_splittable_collections=optionally_splittable_collections,
+            split_collection_ids=split_collection_ids,
+            payload_capacity=payload_capacity,
+            minimum_payload_fill=minimum_payload_fill,
+        )
+        if move is not None:
+            return move
+    return None
+
+
+def _best_optional_split_move_for_target(
+    candidate_bins: Sequence[_CandidateBin],
+    *,
+    target_bin_index: int,
+    optionally_splittable_collections: set[str],
+    split_collection_ids: set[str],
+    payload_capacity: int,
+    minimum_payload_fill: int,
+) -> _OptionalSplitMove | None:
+    target = candidate_bins[target_bin_index]
+    target_remaining = payload_capacity - target.estimated_bytes
+    best_move: _OptionalSplitMove | None = None
+    best_key: tuple[int, int, int, tuple[tuple[str, str, int], ...]] | None = None
+    for donor_idx in sorted(
+        range(len(candidate_bins)),
+        key=lambda idx: (-candidate_bins[idx].estimated_bytes, idx),
+    ):
+        if donor_idx == target_bin_index:
+            continue
+        donor = candidate_bins[donor_idx]
+        if donor.voluntary_split_collection_ids:
+            continue
+        if donor.estimated_bytes <= max(target.estimated_bytes, minimum_payload_fill):
+            continue
+        max_movable_from_donor = donor.estimated_bytes - minimum_payload_fill
+        if max_movable_from_donor <= 0:
+            continue
+
+        for group_idx in sorted(
+            range(len(donor.groups)),
+            key=lambda idx: (
+                donor.groups[idx].collection_id,
+                donor.groups[idx].pieces[0].path,
+            ),
+        ):
+            group = donor.groups[group_idx]
+            if group.voluntary_split:
+                continue
+            if group.collection_id not in optionally_splittable_collections:
+                continue
+            if group.collection_id in split_collection_ids:
+                continue
+            if group.collection_id in target.collection_ids:
+                continue
+            move_capacity = min(
+                target_remaining - group.artifact_estimate,
+                max_movable_from_donor,
+            )
+            if move_capacity <= 0:
+                continue
+            moved_pieces = _optional_split_piece_subset(group.pieces, move_capacity)
+            if not moved_pieces:
+                continue
+            moved_payload_bytes = sum(piece.estimated_total_bytes for piece in moved_pieces)
+            target_group_estimated_bytes = group.artifact_estimate + moved_payload_bytes
+            target_after = target.estimated_bytes + target_group_estimated_bytes
+            donor_after = donor.estimated_bytes - moved_payload_bytes
+            if target_after > payload_capacity or donor_after < minimum_payload_fill:
+                continue
+            piece_key = tuple(
+                (piece.collection_id, piece.path, piece.part_index) for piece in moved_pieces
+            )
+            candidate_key = (target_after, donor_after, -len(moved_pieces), piece_key)
+            if best_key is None or candidate_key > best_key:
+                best_key = candidate_key
+                best_move = _OptionalSplitMove(
+                    target_bin_index=target_bin_index,
+                    donor_bin_index=donor_idx,
+                    donor_group_index=group_idx,
+                    collection_id=group.collection_id,
+                    moved_pieces=moved_pieces,
+                    moved_payload_bytes=moved_payload_bytes,
+                    target_group_estimated_bytes=target_group_estimated_bytes,
+                )
+    return best_move
+
+
+def _optional_split_piece_subset(
+    pieces: Sequence[_PlanPiece],
+    capacity: int,
+) -> tuple[_PlanPiece, ...]:
+    selected: list[_PlanPiece] = []
+    used = 0
+    for piece in sorted(
+        pieces,
+        key=lambda current: (
+            -current.estimated_total_bytes,
+            current.path,
+            current.part_index,
+        ),
+    ):
+        next_used = used + piece.estimated_total_bytes
+        if next_used > capacity:
+            continue
+        selected.append(piece)
+        used = next_used
+    if len(selected) == len(pieces):
+        selected.remove(
+            min(
+                selected,
+                key=lambda current: (
+                    current.estimated_total_bytes,
+                    current.path,
+                    current.part_index,
+                ),
+            )
+        )
+    return tuple(sorted(selected, key=lambda piece: (piece.path, piece.part_index)))
+
+
+def _apply_optional_split_move(
+    candidate_bins: list[_CandidateBin],
+    move: _OptionalSplitMove,
+) -> None:
+    target = candidate_bins[move.target_bin_index]
+    donor = candidate_bins[move.donor_bin_index]
+    donor_group = donor.groups[move.donor_group_index]
+    moved_piece_keys = {
+        (piece.file_id, piece.part_index) for piece in move.moved_pieces
+    }
+    remaining_pieces = tuple(
+        piece
+        for piece in donor_group.pieces
+        if (piece.file_id, piece.part_index) not in moved_piece_keys
+    )
+    if not remaining_pieces:
+        raise RuntimeError("optional collection split cannot move every file")
+
+    donor.groups[move.donor_group_index] = _CollectionPieceGroup(
+        collection_id=donor_group.collection_id,
+        pieces=remaining_pieces,
+        estimated_bytes=donor_group.estimated_bytes - move.moved_payload_bytes,
+        artifact_estimate=donor_group.artifact_estimate,
+        voluntary_split=True,
+    )
+    donor.estimated_bytes -= move.moved_payload_bytes
+    donor.voluntary_split_collection_ids.add(move.collection_id)
+
+    target.groups.append(
+        _CollectionPieceGroup(
+            collection_id=move.collection_id,
+            pieces=move.moved_pieces,
+            estimated_bytes=move.target_group_estimated_bytes,
+            artifact_estimate=donor_group.artifact_estimate,
+            voluntary_split=True,
+        )
+    )
+    target.groups.sort(
+        key=lambda group: (
+            group.collection_id,
+            group.pieces[0].path if group.pieces else "",
+        )
+    )
+    target.collection_ids.add(move.collection_id)
+    target.estimated_bytes += move.target_group_estimated_bytes
+    target.voluntary_split_collection_ids.add(move.collection_id)
 
 
 def _collection_artifact_estimate(config: RuntimeConfig, collection_id: str) -> int:
@@ -1109,6 +1404,7 @@ def _materialize_candidate(
     finalized_id: str,
     pieces: Sequence[_PlanPiece],
     candidates_root: Path,
+    allow_underfilled: bool = False,
 ) -> _MaterializedCandidate:
     tmp_root = candidates_root / f".{candidate_id}.tmp"
     image_root = candidates_root / candidate_id
@@ -1123,8 +1419,10 @@ def _materialize_candidate(
             finalized_id=finalized_id,
             filename=f"{finalized_id}.iso",
             bytes=actual_bytes,
-            iso_ready=(
-                config.planner_min_fill_bytes <= actual_bytes <= config.planner_disc_target_bytes
+            iso_ready=_candidate_iso_ready(
+                actual_bytes,
+                config=config,
+                allow_underfilled=allow_underfilled,
             ),
             image_root=image_root,
             covered_paths=_covered_paths_for_pieces(pieces),
@@ -1231,12 +1529,24 @@ def _materialize_candidate(
         finalized_id=finalized_id,
         filename=f"{finalized_id}.iso",
         bytes=actual_bytes,
-        iso_ready=(
-            config.planner_min_fill_bytes <= actual_bytes <= config.planner_disc_target_bytes
+        iso_ready=_candidate_iso_ready(
+            actual_bytes,
+            config=config,
+            allow_underfilled=allow_underfilled,
         ),
         image_root=image_root,
         covered_paths=_covered_paths_for_pieces(pieces),
     )
+
+
+def _candidate_iso_ready(
+    actual_bytes: int,
+    *,
+    config: RuntimeConfig,
+    allow_underfilled: bool,
+) -> bool:
+    min_fill_ok = allow_underfilled or config.planner_min_fill_bytes <= actual_bytes
+    return min_fill_ok and actual_bytes <= config.planner_disc_target_bytes
 
 
 def _collections_layout(pieces: Sequence[_PlanPiece]) -> dict[str, list[LayoutFileMeta]]:

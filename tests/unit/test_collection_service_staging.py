@@ -1313,6 +1313,99 @@ def test_underfilled_tail_candidate_waits_without_materializing(tmp_path: Path) 
     assert plan["unplanned_bytes"] == len(content)
 
 
+def test_saturated_underfilled_candidate_is_iso_ready(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+    config = _config(
+        sqlite_path,
+        planner_disc_target_bytes=10_000_000,
+        planner_min_fill_bytes=9_000_000,
+        planner_unplanned_saturation_bytes=1,
+        planner_image_root=tmp_path / "images",
+    )
+    collection_id = "2026/20260525T000000Z__saturated-tail"
+    path = "tail.txt"
+    content = b"tail payload\n"
+    sha256 = hashlib.sha256(content).hexdigest()
+    hot_store = _FakeHotStore()
+    hot_store.put_collection_file(collection_id, path, content)
+
+    archive_package = build_collection_archive_package(
+        collection_id=collection_id,
+        files=(
+            CollectionArchiveFile(
+                path=path,
+                content=content,
+                sha256=sha256,
+            ),
+        ),
+        stamper=FixtureProofStamper(),
+    )
+    package = _FakeArchiveStore().upload_collection_archive_package(
+        collection_id=collection_id,
+        package=archive_package,
+    )
+    cache_collection_manifest_artifacts(
+        config,
+        collection_id=collection_id,
+        manifest_bytes=archive_package.manifest_bytes,
+        proof_bytes=archive_package.proof_bytes,
+    )
+    session_factory = make_session_factory(str(sqlite_path))
+    with session_scope(session_factory) as session:
+        collection = CollectionRecord(id=collection_id)
+        collection.files.append(
+            CollectionFileRecord(
+                collection_id=collection_id,
+                path=path,
+                bytes=len(content),
+                sha256=sha256,
+                hot=True,
+                archived=False,
+            )
+        )
+        session.add(collection)
+        session.add(
+            CollectionArchiveRecord(
+                collection_id=collection_id,
+                state="uploaded",
+                object_path=package.archive.object_path,
+                stored_bytes=package.archive.stored_bytes,
+                sha256=package.archive_sha256,
+                backend="s3",
+                storage_class="DEEP_ARCHIVE",
+                manifest_object_path=package.manifest.object_path,
+                manifest_sha256=package.manifest_sha256,
+                manifest_stored_bytes=package.manifest.stored_bytes,
+                ots_object_path=package.proof.object_path,
+                ots_sha256=package.proof_sha256,
+                ots_stored_bytes=package.proof.stored_bytes,
+            )
+        )
+
+    planning = SqlAlchemyPlanningService(
+        config,
+        hot_store,
+        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
+    )
+
+    assert planning.process_due_refresh() == 1
+
+    with session_scope(session_factory) as session:
+        candidate = session.scalars(select(PlannedCandidateRecord)).one()
+        candidate_id = candidate.candidate_id
+        assert candidate.state == "ready"
+        assert candidate.bytes < candidate.min_fill_bytes
+        assert candidate.iso_ready is True
+        assert [(cp.collection_id, cp.path) for cp in candidate.covered_paths] == [
+            (collection_id, path)
+        ]
+        assert Path(candidate.image_root).exists()
+
+    finalized = planning.finalize_image(candidate_id)
+    assert finalized["id"]
+
+
 def test_planner_continues_after_partially_finalized_collection(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     initialize_db(str(sqlite_path))

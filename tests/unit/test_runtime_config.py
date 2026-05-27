@@ -104,11 +104,17 @@ def test_load_runtime_config_defaults_to_postgres_database_url(
     monkeypatch.delenv("RIVERHOG_DB_PATH", raising=False)
     monkeypatch.delenv("RIVERHOG_DATABASE_URL", raising=False)
     monkeypatch.delenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL", raising=False)
+    monkeypatch.delenv("RIVERHOG_PLANNER_MIN_FILL_RATIO", raising=False)
+    monkeypatch.delenv("RIVERHOG_PLANNER_MIN_FILL_BYTES", raising=False)
+    monkeypatch.delenv("RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES", raising=False)
 
     config = load_runtime_config()
 
     assert config.database_url == DEFAULT_DATABASE_URL
     assert config.sqlite_path is None
+    assert config.planner_min_fill_ratio == 0.99
+    assert config.planner_min_fill_bytes == 49_500_000_000
+    assert config.planner_unplanned_saturation_bytes == 300_000_000_000
     assert config.operator_webhook_reminder_interval == timedelta(hours=24)
 
 
@@ -119,6 +125,7 @@ def test_load_runtime_config_parses_planner_runtime_settings(
     monkeypatch.setenv("RIVERHOG_DB_PATH", str(tmp_path / "state.sqlite3"))
     monkeypatch.setenv("RIVERHOG_PLANNER_DISC_TARGET_BYTES", "50GB")
     monkeypatch.setenv("RIVERHOG_PLANNER_MIN_FILL_RATIO", "96%")
+    monkeypatch.setenv("RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES", "300GB")
     monkeypatch.setenv("RIVERHOG_PLANNER_IMAGE_ROOT", str(tmp_path / "planner"))
     monkeypatch.setenv("RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT", "500GB")
     monkeypatch.setenv("RIVERHOG_TUSD_APPEND_TIMEOUT_SECONDS", "45.5")
@@ -135,6 +142,7 @@ def test_load_runtime_config_parses_planner_runtime_settings(
     assert config.planner_disc_target_bytes == 50_000_000_000
     assert config.planner_min_fill_ratio == 0.96
     assert config.planner_min_fill_bytes == 48_000_000_000
+    assert config.planner_unplanned_saturation_bytes == 300_000_000_000
     assert config.planner_image_root == tmp_path / "planner"
     assert config.unburned_collection_bytes_limit == 500_000_000_000
     assert config.tusd_append_timeout_seconds == 45.5
