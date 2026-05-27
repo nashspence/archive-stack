@@ -842,7 +842,10 @@ def _iter_paged_payloads(fetch_page: Any) -> list[dict[str, Any]]:
     return results
 
 
-def _images_missing_copy_coverage(client: ApiClient) -> list[dict[str, Any]]:
+def _images_missing_copy_coverage(
+    client: ApiClient,
+    session_state: BurnSessionState | None = None,
+) -> list[dict[str, Any]]:
     images: list[dict[str, Any]] = []
     for payload in _iter_paged_payloads(
         lambda page: client.list_images(page=page, per_page=100, sort="finalized_at", order="desc")
@@ -852,10 +855,33 @@ def _images_missing_copy_coverage(client: ApiClient) -> list[dict[str, Any]]:
                 continue
             registered = int(image.get("physical_copies_registered", 0))
             required = int(image.get("physical_copies_required", 0))
-            if registered >= required:
-                continue
-            images.append(image)
+            if registered < required or _image_has_resumable_copy_verification(
+                client,
+                str(image.get("id")),
+                session_state,
+            ):
+                images.append(image)
     return images
+
+
+def _image_has_resumable_copy_verification(
+    client: ApiClient,
+    image_id: str,
+    session_state: BurnSessionState | None,
+) -> bool:
+    if session_state is None:
+        return False
+    copies = client.list_copies(image_id).get("copies", [])
+    if not isinstance(copies, list):
+        return False
+    return any(
+        isinstance(copy, dict) and _can_mark_copy_verified_from_checkpoint(
+            session_state,
+            image_id,
+            copy,
+        )
+        for copy in copies
+    )
 
 
 def _is_standard_burn_backlog_image(client: ApiClient, image_id: str) -> bool:
@@ -890,7 +916,10 @@ def _is_standard_burn_backlog_image(client: ApiClient, image_id: str) -> bool:
     return False
 
 
-def _discover_burn_backlog(client: ApiClient) -> list[BurnBacklogItem]:
+def _discover_burn_backlog(
+    client: ApiClient,
+    session_state: BurnSessionState | None = None,
+) -> list[BurnBacklogItem]:
     items: list[BurnBacklogItem] = []
 
     for payload in _iter_paged_payloads(
@@ -914,9 +943,13 @@ def _discover_burn_backlog(client: ApiClient) -> list[BurnBacklogItem]:
                 )
             )
 
-    for image in _images_missing_copy_coverage(client):
+    for image in _images_missing_copy_coverage(client, session_state):
         image_id = str(image["id"])
-        if not _is_standard_burn_backlog_image(client, image_id):
+        if not _image_has_resumable_copy_verification(
+            client,
+            image_id,
+            session_state,
+        ) and not _is_standard_burn_backlog_image(client, image_id):
             continue
         items.append(
             BurnBacklogItem(
@@ -1286,6 +1319,16 @@ def _register_burned_copy(
     location: str,
 ) -> None:
     client.register_copy(image_id, location, copy_id=copy_id)
+    _mark_copy_verified(client, image_id, copy_id, location=location)
+
+
+def _mark_copy_verified(
+    client: ApiClient,
+    image_id: str,
+    copy_id: str,
+    *,
+    location: str,
+) -> None:
     client.update_copy(
         image_id,
         copy_id,
@@ -1398,6 +1441,42 @@ def _burn_pending_copy(
     return copy_id
 
 
+def _can_mark_copy_verified_from_checkpoint(
+    session_state: BurnSessionState,
+    image_id: str,
+    copy_payload: dict[str, Any],
+) -> bool:
+    if str(copy_payload.get("state")) not in _PROTECTED_COPY_STATES:
+        return False
+    if str(copy_payload.get("verification_state")) == "verified":
+        return False
+    copy_id = str(copy_payload.get("id"))
+    progress = session_state.images.get(image_id, BurnImageProgress()).copies.get(copy_id)
+    if progress is None:
+        return False
+    return bool(
+        progress.burned
+        and progress.media_verified
+        and progress.label_confirmed
+        and progress.location
+    )
+
+
+def _mark_checkpointed_copy_verified(
+    copy_payload: dict[str, Any],
+    *,
+    client: ApiClient,
+    image_id: str,
+    session_state: BurnSessionState,
+) -> str:
+    copy_id = str(copy_payload["id"])
+    progress = session_state.images[image_id].copies[copy_id]
+    assert progress.location is not None
+    typer.echo(f"resuming verification update for {copy_id}", err=True)
+    _mark_copy_verified(client, image_id, copy_id, location=progress.location)
+    return copy_id
+
+
 def _simulate_pending_copy(
     copy_payload: dict[str, Any],
     *,
@@ -1467,6 +1546,16 @@ def _process_burn_backlog_item(
     completed: list[str] = []
     for copy_payload in payload.get("copies", []):
         if not isinstance(copy_payload, dict):
+            continue
+        if _can_mark_copy_verified_from_checkpoint(session_state, image_id, copy_payload):
+            completed.append(
+                _mark_checkpointed_copy_verified(
+                    copy_payload,
+                    client=client,
+                    image_id=image_id,
+                    session_state=session_state,
+                )
+            )
             continue
         if str(copy_payload.get("state")) not in _PENDING_BURN_STATES:
             continue
@@ -1726,7 +1815,7 @@ def burn_cmd(
         simulated_copy_ids: list[str] = []
 
         while True:
-            backlog = _discover_burn_backlog(client)
+            backlog = _discover_burn_backlog(client, session_state)
             if not backlog:
                 break
             copy_ids = _process_burn_backlog_item(

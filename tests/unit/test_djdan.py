@@ -1554,6 +1554,109 @@ def test_djdan_burn_reports_recovery_handoffs_when_no_standard_backlog_exists(
     assert "Approve the estimated restore cost" in result.stdout
 
 
+def test_djdan_burn_resumes_registered_copy_verification_update(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    image_id = "20260420T040001Z"
+    copy_id = f"{image_id}-2"
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.copy_states = {
+                f"{image_id}-1": {
+                    "id": f"{image_id}-1",
+                    "label_text": f"{image_id}-1",
+                    "state": "verified",
+                    "verification_state": "verified",
+                    "location": "Shelf A",
+                },
+                copy_id: {
+                    "id": copy_id,
+                    "label_text": copy_id,
+                    "state": "registered",
+                    "verification_state": "pending",
+                    "location": "Shelf B",
+                },
+            }
+            self.updated: list[tuple[str, str, str | None, str | None, str | None]] = []
+
+        def get_plan(self, *, page: int, per_page: int, sort: str, order: str, iso_ready: bool):
+            return {"page": 1, "pages": 0, "candidates": []}
+
+        def list_images(self, *, page: int, per_page: int, sort: str, order: str):
+            verified = sum(
+                1
+                for copy in self.copy_states.values()
+                if copy["verification_state"] == "verified"
+            )
+            return {
+                "page": 1,
+                "pages": 1,
+                "images": [
+                    {
+                        "id": image_id,
+                        "filename": f"{image_id}.iso",
+                        "fill": 0.9,
+                        "physical_copies_registered": 2,
+                        "physical_copies_required": 2,
+                        "physical_copies_verified": verified,
+                    }
+                ],
+            }
+
+        def list_copies(self, requested_image_id: str) -> dict[str, object]:
+            assert requested_image_id == image_id
+            return {"copies": list(self.copy_states.values())}
+
+        def update_copy(
+            self,
+            requested_image_id: str,
+            requested_copy_id: str,
+            *,
+            location: str | None = None,
+            state: str | None = None,
+            verification_state: str | None = None,
+        ) -> dict[str, object]:
+            self.updated.append(
+                (requested_image_id, requested_copy_id, location, state, verification_state)
+            )
+            copy = self.copy_states[requested_copy_id]
+            if location is not None:
+                copy["location"] = location
+            if state is not None:
+                copy["state"] = state
+            if verification_state is not None:
+                copy["verification_state"] = verification_state
+            return copy
+
+    state = djdan_main.BurnSessionState.load(djdan_main._burn_state_path(tmp_path))
+    progress = state.copy_progress(image_id, copy_id)
+    progress.burned = True
+    progress.media_verified = True
+    progress.label_confirmed = True
+    progress.location = "Shelf B"
+    state.save()
+
+    client = FakeClient()
+    monkeypatch.setattr(djdan_main, "ApiClient", lambda: client)
+    monkeypatch.setattr(djdan_main, "build_iso_verifier", lambda: object())
+    monkeypatch.setattr(djdan_main, "build_disc_burner", lambda: object())
+    monkeypatch.setattr(djdan_main, "build_burned_media_verifier", lambda: object())
+    monkeypatch.setattr(djdan_main, "build_burn_prompts", lambda: object())
+
+    result = runner.invoke(
+        djdan_main.app,
+        ["burn", "--device", "/dev/fake-sr0", "--staging-dir", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    assert client.updated == [
+        (image_id, copy_id, "Shelf B", "verified", "verified"),
+    ]
+    assert copy_id in result.stdout
+
+
 def test_djdan_burn_simulate_uses_dummy_burn_without_registration(
     monkeypatch,
     tmp_path: Path,
