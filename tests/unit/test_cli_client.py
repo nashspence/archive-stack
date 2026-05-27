@@ -284,7 +284,9 @@ def test_download_iso_streams_to_output_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.delenv("RIVERHOG_DOWNLOAD_TIMEOUT_SECONDS", raising=False)
     captured: list[str] = []
+    captured_timeouts: list[float] = []
     content = b"fixture-iso\n"
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -297,10 +299,11 @@ def test_download_iso_streams_to_output_path(
 
     transport = httpx.MockTransport(handler)
 
-    def fake_client(self: ApiClient) -> httpx.Client:
+    def fake_make_client(self: ApiClient, *, timeout_seconds: float) -> httpx.Client:
+        captured_timeouts.append(timeout_seconds)
         return httpx.Client(base_url=self.base_url, transport=transport)
 
-    monkeypatch.setattr(ApiClient, "_client", fake_client)
+    monkeypatch.setattr(ApiClient, "_make_client", fake_make_client)
 
     progress: list[tuple[int, int | None]] = []
     output = tmp_path / "image.iso"
@@ -316,6 +319,7 @@ def test_download_iso_streams_to_output_path(
     assert not (tmp_path / ".image.iso.part").exists()
     assert progress == [(len(content), len(content))]
     assert captured == ["https://api.test/v1/images/20260420T040001Z/iso"]
+    assert captured_timeouts == [3600.0]
 
 
 def test_get_glacier_report_uses_glacier_endpoint_with_filters(monkeypatch) -> None:

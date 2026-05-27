@@ -1306,6 +1306,10 @@ def _ensure_staged_iso(
 
     if recovery_session_id is None:
         typer.echo(f"downloading ISO {image_id} to {iso_path}", err=True)
+        typer.echo(
+            "server may spend a few minutes preparing ISO metadata before download progress begins",
+            err=True,
+        )
         _call_download_with_optional_progress(
             client.download_iso,
             image_id,
@@ -1314,6 +1318,10 @@ def _ensure_staged_iso(
         )
     else:
         typer.echo(f"downloading restored ISO {image_id} to {iso_path}", err=True)
+        typer.echo(
+            "server may spend a few minutes preparing ISO metadata before download progress begins",
+            err=True,
+        )
         _call_download_with_optional_progress(
             client.download_recovered_iso,
             recovery_session_id,

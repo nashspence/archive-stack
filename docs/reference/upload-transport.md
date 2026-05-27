@@ -95,6 +95,9 @@ For nginx/SWAG deployments:
 - keep request buffering enabled so the API receives complete bounded chunks
 - keep request-body and proxy timeouts slightly above the CLI per-chunk timeout
 - do not leave hour-long request-body timeouts for a bounded 8 MiB chunk path
+- keep proxy read timeouts long enough for ISO download preparation; xorriso can
+  spend more than a minute building metadata for images with many small files
+  before the first response byte is available
 - preserve HTTP/2 support, but expect HTTP/1.1 to work with paced writes too
 
 Example values:
@@ -105,7 +108,7 @@ client_body_timeout 75s;
 send_timeout 75s;
 
 proxy_request_buffering on;
-proxy_read_timeout 75s;
+proxy_read_timeout 1h;
 proxy_send_timeout 75s;
 ```
 

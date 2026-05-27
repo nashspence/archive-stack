@@ -25,6 +25,7 @@ from riverhog_core.domain.errors import (
 
 _HTTP_TIMEOUT_SECONDS = 300.0
 _UPLOAD_TIMEOUT_SECONDS = 60.0
+_DOWNLOAD_TIMEOUT_SECONDS = 3600.0
 _UPLOAD_WRITE_CHUNK_BYTES = 256 * 1024
 _UPLOAD_WRITE_DELAY_SECONDS = 0.005
 _DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
@@ -106,7 +107,7 @@ class ApiClient:
         self.http2 = _bool_env("RIVERHOG_HTTP2", True)
         self._request_client: httpx.Client | None = None
 
-    def _client(self) -> httpx.Client:
+    def _make_client(self, *, timeout_seconds: float) -> httpx.Client:
         headers = {"Accept": "application/json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
@@ -115,10 +116,13 @@ class ApiClient:
         return httpx.Client(
             base_url=self.base_url,
             headers=headers,
-            timeout=_HTTP_TIMEOUT_SECONDS,
+            timeout=timeout_seconds,
             verify=self.verify_tls,
             http2=self.http2,
         )
+
+    def _client(self) -> httpx.Client:
+        return self._make_client(timeout_seconds=_HTTP_TIMEOUT_SECONDS)
 
     def _persistent_client(self) -> httpx.Client:
         if self._request_client is None:
@@ -333,7 +337,11 @@ class ApiClient:
         *,
         progress: DownloadProgress | None = None,
     ) -> bytes | int:
-        with self._client() as client:
+        timeout_seconds = _timeout_seconds(
+            "RIVERHOG_DOWNLOAD_TIMEOUT_SECONDS",
+            _DOWNLOAD_TIMEOUT_SECONDS,
+        )
+        with self._make_client(timeout_seconds=timeout_seconds) as client:
             if output is None:
                 response = client.get(path)
                 self._raise_for_error(response)

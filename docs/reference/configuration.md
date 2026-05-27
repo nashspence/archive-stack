@@ -880,6 +880,17 @@ staged. Unset or `0` means wait indefinitely. If this timeout is reached,
 `riverhog upload` prints the current upload session and exits non-zero instead
 of presenting staged bytes as a completed collection.
 
+### `RIVERHOG_DOWNLOAD_TIMEOUT_SECONDS`
+
+- type: positive number of seconds
+- default: `3600`
+
+Client timeout for large Riverhog downloads such as finalized or restored ISO
+images. The server may spend several minutes preparing ISO metadata before the
+first response bytes arrive, especially for images with many small files.
+Reverse-proxy read timeouts for ISO download routes should be at least this
+large or explicitly chosen to bound that preparation window.
+
 ### `RIVERHOG_HTTP2`
 
 - type: boolean
