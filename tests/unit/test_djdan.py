@@ -496,6 +496,182 @@ def test_djdan_fetch_recovers_in_memory_and_reports_progress(monkeypatch) -> Non
     ]
 
 
+def test_djdan_fetch_assume_inserted_skips_disc_prompt(monkeypatch) -> None:
+    plaintext = b"invoice fixture bytes\n"
+    recovered = fixture_encrypt_bytes(plaintext)
+    uploaded: list[bytes] = []
+
+    class FakeClient:
+        def get_fetch_manifest(self, fetch_id: str) -> dict[str, object]:
+            assert fetch_id == "fx-1"
+            return _manifest_for(plaintext)
+
+        def create_or_resume_fetch_entry_upload(
+            self, fetch_id: str, entry_id: str
+        ) -> dict[str, object]:
+            return {
+                "entry": entry_id,
+                "protocol": "tus",
+                "upload_url": "https://uploads.test/fx-1/e1",
+                "offset": 0,
+                "length": len(recovered),
+                "checksum_algorithm": "sha256",
+                "expires_at": "2026-04-23T00:00:00Z",
+            }
+
+        def append_upload_chunk(
+            self,
+            upload_url: str,
+            *,
+            offset: int,
+            checksum_algorithm: str,
+            content: bytes,
+        ) -> dict[str, object]:
+            _ = upload_url, checksum_algorithm
+            uploaded.append(content)
+            return {"offset": offset + len(content), "expires_at": None}
+
+        def complete_fetch(self, fetch_id: str) -> dict[str, object]:
+            return {"id": fetch_id, "state": "done"}
+
+    class FakeReader:
+        def read_iter(self, disc_path: str, *, device: str):
+            assert disc_path == "disc/000001.bin"
+            assert device == "/dev/fake-sr0"
+            yield recovered
+
+    monkeypatch.setattr(djdan_main, "ApiClient", FakeClient)
+    monkeypatch.setattr(djdan_main, "build_optical_reader", lambda: FakeReader())
+
+    result = runner.invoke(
+        djdan_main.app,
+        ["fetch", "fx-1", "--device", "/dev/fake-sr0", "--assume-inserted", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert '"state": "done"' in result.stdout
+    assert "using already-inserted disc 20260420T040001Z-1" in result.stderr
+    assert "Insert disc" not in result.stderr
+    assert uploaded == [recovered]
+
+
+def test_djdan_fetch_assume_inserted_still_prompts_when_split_file_needs_next_disc(
+    monkeypatch,
+) -> None:
+    part_one_plaintext = b"invoice fixture "
+    part_two_plaintext = b"bytes\n"
+    part_one = fixture_encrypt_bytes(part_one_plaintext)
+    part_two = fixture_encrypt_bytes(part_two_plaintext)
+    uploaded: list[tuple[int, bytes]] = []
+
+    class FakeClient:
+        def get_fetch_manifest(self, fetch_id: str) -> dict[str, object]:
+            assert fetch_id == "fx-1"
+            return {
+                "id": "fx-1",
+                "target": "docs/tax/2022/invoice-123.pdf",
+                "entries": [
+                    {
+                        "id": "e1",
+                        "path": "tax/2022/invoice-123.pdf",
+                        "bytes": len(part_one_plaintext) + len(part_two_plaintext),
+                        "sha256": hashlib.sha256(
+                            part_one_plaintext + part_two_plaintext
+                        ).hexdigest(),
+                        "recovery_bytes": len(part_one) + len(part_two),
+                        "parts": [
+                            {
+                                "index": 0,
+                                "bytes": len(part_one_plaintext),
+                                "sha256": hashlib.sha256(part_one_plaintext).hexdigest(),
+                                "recovery_bytes": len(part_one),
+                                "copies": [
+                                    {
+                                        "copy": "20260420T040003Z-1",
+                                        "location": "vault-a/shelf-01",
+                                        "disc_path": "disc/000001.bin",
+                                        "recovery_bytes": len(part_one),
+                                        "recovery_sha256": hashlib.sha256(part_one).hexdigest(),
+                                    }
+                                ],
+                            },
+                            {
+                                "index": 1,
+                                "bytes": len(part_two_plaintext),
+                                "sha256": hashlib.sha256(part_two_plaintext).hexdigest(),
+                                "recovery_bytes": len(part_two),
+                                "copies": [
+                                    {
+                                        "copy": "20260420T040004Z-1",
+                                        "location": "vault-a/shelf-02",
+                                        "disc_path": "disc/000002.bin",
+                                        "recovery_bytes": len(part_two),
+                                        "recovery_sha256": hashlib.sha256(part_two).hexdigest(),
+                                    }
+                                ],
+                            },
+                        ],
+                    }
+                ],
+            }
+
+        def create_or_resume_fetch_entry_upload(
+            self, fetch_id: str, entry_id: str
+        ) -> dict[str, object]:
+            return {
+                "entry": entry_id,
+                "protocol": "tus",
+                "upload_url": "https://uploads.test/fx-1/e1",
+                "offset": 0,
+                "length": len(part_one) + len(part_two),
+                "checksum_algorithm": "sha256",
+                "expires_at": "2026-04-23T00:00:00Z",
+            }
+
+        def append_upload_chunk(
+            self,
+            upload_url: str,
+            *,
+            offset: int,
+            checksum_algorithm: str,
+            content: bytes,
+        ) -> dict[str, object]:
+            _ = upload_url, checksum_algorithm
+            uploaded.append((offset, content))
+            return {"offset": offset + len(content), "expires_at": None}
+
+        def complete_fetch(self, fetch_id: str) -> dict[str, object]:
+            return {"id": fetch_id, "state": "done"}
+
+    class FakeReader:
+        def read_iter(self, disc_path: str, *, device: str):
+            assert device == "/dev/fake-sr0"
+            if disc_path == "disc/000001.bin":
+                yield part_one
+                return
+            if disc_path == "disc/000002.bin":
+                yield part_two
+                return
+            raise AssertionError(f"unexpected disc path: {disc_path}")
+
+    monkeypatch.setattr(djdan_main, "ApiClient", FakeClient)
+    monkeypatch.setattr(djdan_main, "build_optical_reader", lambda: FakeReader())
+
+    result = runner.invoke(
+        djdan_main.app,
+        ["fetch", "fx-1", "--device", "/dev/fake-sr0", "--assume-inserted", "--json"],
+        input="\n",
+    )
+
+    assert result.exit_code == 0
+    assert "using already-inserted disc 20260420T040003Z-1" in result.stderr
+    assert "Insert disc 20260420T040004Z-1 from vault-a/shelf-02" in result.stderr
+    assert uploaded == [
+        (0, part_one),
+        (len(part_one), part_two),
+    ]
+
+
 def test_djdan_fetch_resets_byte_complete_upload_after_final_verification_failure(
     monkeypatch,
 ) -> None:

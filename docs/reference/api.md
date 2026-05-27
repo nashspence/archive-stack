@@ -829,7 +829,7 @@ For finalized-image commands:
 
 The `djdan` CLI is a fetch-fulfillment client for a machine with an optical drive and should provide:
 
-- `djdan fetch FETCH_ID [--device DEVICE]`
+- `djdan fetch FETCH_ID [--device DEVICE] [--assume-inserted]`
 
 For multipart recovery, one invocation should continue across successive discs until every required
 part has been recovered, streamed, and uploaded.
@@ -841,6 +841,8 @@ Required behavior:
 - split files stream into the same logical-file upload resource in ascending part order
 - the upload resource receives raw encrypted recovery bytes exactly as stored in the hinted payload object(s)
 - `djdan` treats the upload resource as opaque and does not own decryption or final logical-file hash validation
+- by default, `djdan fetch` prompts before reading each required disc; `--assume-inserted` skips only the first
+  prompt for already-inserted or already-mounted media, and still prompts when a later part needs a different copy
 - resumable offsets remain valid only for the exact recovery-byte stream accepted so far for the current span
 - any temporary buffering used during recovery is an internal implementation detail
 - progress output is precise and continuous, including current transfer rate, percent complete for the current file, and
