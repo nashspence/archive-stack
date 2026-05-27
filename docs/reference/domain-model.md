@@ -267,6 +267,14 @@ Recovery-session rules:
 - `image_rebuild` restores the collection archives needed to rebuild a lost
   finalized image from persisted coverage metadata
 - session cost estimates count the required collection archive restores
+- AWS S3 Glacier restores use the configured retrieval tier and ready TTL as a
+  temporary-copy window; the archive object remains in its archive storage class
+  until copied elsewhere
+- collection manifests and OTS proofs are Standard S3 sibling objects, so
+  recovery reads them directly and only restores archived `archive.tar` payloads
+- recovered image rebuilds stream restored archive tars into a temporary image
+  tree and stream the rebuilt ISO from `xorriso`; Riverhog does not keep whole
+  collection archives or replacement ISOs in process memory
 
 ### Copy summary
 

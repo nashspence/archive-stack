@@ -240,6 +240,9 @@ after one or more finalized images lose all protected copies.
   restore request is submitted
 - recovery-session readiness is driven by archive-store restore status, not only by the operator-facing latency
   estimate
+- AWS S3 Glacier Deep Archive Bulk recovery should be expected to wait roughly
+  48 hours; Riverhog polls S3 restore state and uses the configured ready TTL as
+  the temporary-copy window once S3 reports the archive object restored
 - with a session id in `ready`, `djdan recover` stages every still-needed
   rebuilt image ISO in that session before burn work starts so a later retry can
   resume from local artifacts

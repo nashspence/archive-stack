@@ -478,6 +478,34 @@ def test_request_collection_archive_restore_requests_collection_manifest_and_pro
     assert client.restore_requests == [receipt.archive.object_path]
 
 
+def test_intelligent_tiering_archive_access_is_not_treated_as_ready(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    store = _store_with_client(
+        monkeypatch,
+        tmp_path,
+        client,
+        glacier_backend="aws",
+        glacier_endpoint_url="https://s3.us-west-2.amazonaws.com",
+        glacier_storage_class="INTELLIGENT_TIERING",
+    )
+    package = _package()
+    receipt = store.upload_collection_archive_package(collection_id="docs", package=package)
+    client.objects[receipt.archive.object_path]["ArchiveStatus"] = "ARCHIVE_ACCESS"
+
+    status = store.get_collection_archive_restore_status(
+        collection_id="docs",
+        object_path=receipt.archive.object_path,
+        requested_at="2026-04-20T04:00:00Z",
+        estimated_ready_at="2026-04-20T16:00:00Z",
+        estimated_expires_at=None,
+    )
+
+    assert status.state == "requested"
+
+
 def test_iter_restored_collection_archive_streams_when_ready(
     monkeypatch,
     tmp_path: Path,

@@ -7,6 +7,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from math import ceil
 from pathlib import Path
 from typing import cast
 
@@ -34,10 +35,8 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.collection_archives import (
     CollectionArchiveExpectedFile,
-    iter_collection_archive_files,
     iter_verified_collection_archive_file_chunks,
     verify_collection_archive_files,
-    verify_collection_archive_member,
     verify_collection_manifest,
     verify_collection_manifest_proof,
 )
@@ -105,12 +104,6 @@ class _CollectionArchiveObjects:
 class _RestoredCollectionArtifact:
     manifest_bytes: bytes
     proof_bytes: bytes
-
-
-@dataclass(frozen=True, slots=True)
-class _RestoredCollectionArchives:
-    files: dict[tuple[str, str], bytes]
-    artifacts: dict[str, _RestoredCollectionArtifact]
 
 
 class SqlAlchemyRecoverySessionService:
@@ -701,7 +694,7 @@ def _create_recovery_session(
             "Approve the estimated restore cost before Riverhog requests archive restore."
         ),
         retrieval_tier=config.glacier_recovery_retrieval_tier,
-        hold_days=max(int(config.glacier_recovery_ready_ttl.total_seconds() // 86400), 1),
+        hold_days=_restore_hold_days(config),
         estimate_json=json.dumps(asdict(estimate), sort_keys=True),
         warnings_json=json.dumps(list(warnings)),
         reminder_count=0,
@@ -759,7 +752,7 @@ def _create_collection_restore_session(
             "Approve the estimated restore cost before Riverhog requests archive restore."
         ),
         retrieval_tier=config.glacier_recovery_retrieval_tier,
-        hold_days=max(int(config.glacier_recovery_ready_ttl.total_seconds() // 86400), 1),
+        hold_days=_restore_hold_days(config),
         estimate_json=json.dumps(asdict(estimate), sort_keys=True),
         warnings_json=json.dumps(list(warnings)),
         reminder_count=0,
@@ -893,7 +886,7 @@ def _iter_rebuilt_iso_from_collection_archives(
         work_root = Path(tmpdir)
         image_root = work_root / "image-root"
         image_root.mkdir()
-        restored = _restore_collection_archives(
+        restored_artifacts = _restore_collection_artifacts(
             archive_store=archive_store,
             collection_archives=collection_archives,
             file_lookup=file_lookup,
@@ -902,13 +895,14 @@ def _iter_rebuilt_iso_from_collection_archives(
         _write_rebuilt_collection_artifacts(
             image_root=image_root,
             collection_artifacts=collection_artifacts,
-            restored_artifacts=restored.artifacts,
+            restored_artifacts=restored_artifacts,
             recovery_payload_codec=recovery_payload_codec,
         )
-        _write_rebuilt_image_payloads(
+        _write_rebuilt_image_payloads_from_collection_archives(
             image_root=image_root,
+            archive_store=archive_store,
+            collection_archives=collection_archives,
             coverage_parts=coverage_parts,
-            restored_files=restored.files,
             file_lookup=file_lookup,
             recovery_payload_codec=recovery_payload_codec,
         )
@@ -931,18 +925,17 @@ def _iter_rebuilt_iso_from_collection_archives(
         )
 
 
-def _restore_collection_archives(
+def _restore_collection_artifacts(
     *,
     archive_store: ArchiveStore,
     collection_archives: Sequence[_CollectionArchiveObjects],
     file_lookup: dict[tuple[str, str], tuple[str, int]],
     proof_verifier: ProofVerifier,
-) -> _RestoredCollectionArchives:
-    restored_files: dict[tuple[str, str], bytes] = {}
+) -> dict[str, _RestoredCollectionArtifact]:
     restored_artifacts: dict[str, _RestoredCollectionArtifact] = {}
     for collection_archive in collection_archives:
         restored_artifacts[collection_archive.collection_id] = (
-            _verify_restored_collection_archive(
+            _verify_restored_collection_manifest_and_proof(
                 archive_store=archive_store,
                 archive=collection_archive,
                 expected_files=_expected_files_from_lookup(
@@ -952,22 +945,7 @@ def _restore_collection_archives(
                 proof_verifier=proof_verifier,
             )
         )
-        archive_chunks = (
-            archive_store.iter_restored_collection_archive(
-                collection_id=collection_archive.collection_id,
-                object_path=collection_archive.archive_object_path,
-            )
-        )
-        for path, content in iter_collection_archive_files(archive_chunks):
-            expected = file_lookup.get((collection_archive.collection_id, path))
-            if expected is not None:
-                verify_collection_archive_member(
-                    path=path,
-                    content=content,
-                    expected_sha256=expected[0],
-                )
-            restored_files[(collection_archive.collection_id, path)] = content
-    return _RestoredCollectionArchives(files=restored_files, artifacts=restored_artifacts)
+    return restored_artifacts
 
 
 def _verify_restored_collection_archives(
@@ -997,6 +975,29 @@ def _verify_restored_collection_archive(
     expected_files: Sequence[CollectionArchiveExpectedFile],
     proof_verifier: ProofVerifier,
 ) -> _RestoredCollectionArtifact:
+    artifact = _verify_restored_collection_manifest_and_proof(
+        archive_store=archive_store,
+        archive=archive,
+        expected_files=expected_files,
+        proof_verifier=proof_verifier,
+    )
+    verify_collection_archive_files(
+        chunks=archive_store.iter_restored_collection_archive(
+            collection_id=archive.collection_id,
+            object_path=archive.archive_object_path,
+        ),
+        files=expected_files,
+    )
+    return artifact
+
+
+def _verify_restored_collection_manifest_and_proof(
+    *,
+    archive_store: ArchiveStore,
+    archive: _CollectionArchiveObjects,
+    expected_files: Sequence[CollectionArchiveExpectedFile],
+    proof_verifier: ProofVerifier,
+) -> _RestoredCollectionArtifact:
     manifest_bytes = archive_store.read_restored_collection_manifest(
         collection_id=archive.collection_id,
         object_path=archive.manifest_object_path,
@@ -1016,13 +1017,6 @@ def _verify_restored_collection_archive(
         expected_sha256=archive.proof_sha256,
         manifest_bytes=manifest_bytes,
         verifier=proof_verifier,
-    )
-    verify_collection_archive_files(
-        chunks=archive_store.iter_restored_collection_archive(
-            collection_id=archive.collection_id,
-            object_path=archive.archive_object_path,
-        ),
-        files=expected_files,
     )
     return _RestoredCollectionArtifact(manifest_bytes=manifest_bytes, proof_bytes=proof_bytes)
 
@@ -1092,55 +1086,124 @@ def _write_rebuilt_collection_artifacts(
         )
 
 
-def _write_rebuilt_image_payloads(
+def _write_rebuilt_image_payloads_from_collection_archives(
     *,
     image_root: Path,
+    archive_store: ArchiveStore,
+    collection_archives: Sequence[_CollectionArchiveObjects],
     coverage_parts: Sequence[FinalizedImageCoveragePartRecord],
-    restored_files: dict[tuple[str, str], bytes],
     file_lookup: dict[tuple[str, str], tuple[str, int]],
     recovery_payload_codec: RecoveryPayloadCodec,
 ) -> None:
+    parts_by_file: dict[tuple[str, str], list[FinalizedImageCoveragePartRecord]] = {}
     for part in coverage_parts:
         if part.object_path is None or part.sidecar_path is None:
             raise InvalidState(
                 "finalized image coverage part is missing persisted artifact paths: "
                 f"{part.collection_id}/{part.path}"
             )
-        content = restored_files.get((part.collection_id, part.path))
-        if content is None:
-            raise InvalidState(
-                f"restored collection archive is missing {part.collection_id}/{part.path}"
-            )
-        sha256, plaintext_bytes = file_lookup[(part.collection_id, part.path)]
-        file_meta = cast(
-            PlannerFileMeta,
-            {
-                "relpath": part.path,
-                "sha256": sha256,
-                "plaintext_bytes": plaintext_bytes,
-            },
+        parts_by_file.setdefault((part.collection_id, part.path), []).append(part)
+
+    written: set[tuple[str, str, int, int]] = set()
+    for archive in collection_archives:
+        selected_paths = {
+            path for collection_id, path in parts_by_file if collection_id == archive.collection_id
+        }
+        archive_chunks = archive_store.iter_restored_collection_archive(
+            collection_id=archive.collection_id,
+            object_path=archive.archive_object_path,
         )
-        _write_image_root_file(
-            image_root,
-            part.object_path,
-            encrypt_recovery_payload(
-                _content_part(content, part_index=part.part_index, part_count=part.part_count),
-                recovery_payload_codec,
+        expected_files = _expected_files_from_lookup(
+            file_lookup=file_lookup,
+            collection_id=archive.collection_id,
+        )
+        for path, content_chunks, _content_length in iter_verified_collection_archive_file_chunks(
+            archive_chunks,
+            files=expected_files,
+            selected_paths=selected_paths,
+        ):
+            content = b"".join(content_chunks)
+            for part in sorted(
+                parts_by_file.get((archive.collection_id, path), ()),
+                key=lambda current: (current.part_count, current.part_index),
+            ):
+                sha256, plaintext_bytes = file_lookup[(part.collection_id, part.path)]
+                file_meta = cast(
+                    PlannerFileMeta,
+                    {
+                        "relpath": part.path,
+                        "sha256": sha256,
+                        "plaintext_bytes": plaintext_bytes,
+                    },
+                )
+                _write_rebuilt_image_part(
+                    image_root=image_root,
+                    part=part,
+                    content=content,
+                    file_meta=file_meta,
+                    recovery_payload_codec=recovery_payload_codec,
+                )
+                written.add(
+                    (
+                        part.collection_id,
+                        part.path,
+                        int(part.part_index),
+                        int(part.part_count),
+                    )
+                )
+
+    expected = {
+        (
+            part.collection_id,
+            part.path,
+            int(part.part_index),
+            int(part.part_count),
+        )
+        for part in coverage_parts
+    }
+    missing = sorted(expected - written)
+    if missing:
+        collection_id, path, part_index, part_count = missing[0]
+        raise InvalidState(
+            "restored collection archive is missing finalized image part: "
+            f"{collection_id}/{path} part {part_index + 1} of {part_count}"
+        )
+
+
+def _write_rebuilt_image_part(
+    *,
+    image_root: Path,
+    part: FinalizedImageCoveragePartRecord,
+    content: bytes,
+    file_meta: PlannerFileMeta,
+    recovery_payload_codec: RecoveryPayloadCodec,
+) -> None:
+    if part.object_path is None or part.sidecar_path is None:
+        raise InvalidState(
+            "finalized image coverage part is missing persisted artifact paths: "
+            f"{part.collection_id}/{part.path}"
+        )
+    _write_image_root_file(
+        image_root,
+        part.object_path,
+        encrypt_recovery_payload(
+            _content_part(content, part_index=part.part_index, part_count=part.part_count),
+            recovery_payload_codec,
+        ),
+    )
+    _write_image_root_file(
+        image_root,
+        part.sidecar_path,
+        encrypt_recovery_payload(
+            sidecar_bytes(
+                file_meta,
+                collection_id=part.collection_id,
+                part_index=part.part_index,
+                part_count=part.part_count,
             ),
-        )
-        _write_image_root_file(
-            image_root,
-            part.sidecar_path,
-            encrypt_recovery_payload(
-                sidecar_bytes(
-                    file_meta,
-                    collection_id=part.collection_id,
-                    part_index=part.part_index,
-                    part_count=part.part_count,
-                ),
-                recovery_payload_codec,
-            ),
-        )
+            recovery_payload_codec,
+        ),
+    )
 
 
 def _content_part(content: bytes, *, part_index: int, part_count: int) -> bytes:
@@ -1160,15 +1223,28 @@ def _write_image_root_file(root: Path, relpath: str, content: bytes) -> None:
 
 def _run_iso_from_root(*, image_root: Path, volume_id: str, filename: str) -> Iterator[bytes]:
     _ = filename
-    proc = subprocess.run(
-        build_iso_cmd_from_root(image_root=image_root, volume_id=volume_id),
-        capture_output=True,
-        check=False,
-    )
-    if proc.returncode != 0:
-        detail = proc.stderr.decode("utf-8", errors="replace")[-1500:]
-        raise RuntimeError(detail or f"xorriso exited {proc.returncode}")
-    yield proc.stdout
+    cmd = build_iso_cmd_from_root(image_root=image_root, volume_id=volume_id)
+    with tempfile.TemporaryFile() as stderr:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=stderr)
+        assert proc.stdout is not None
+        try:
+            while True:
+                chunk = proc.stdout.read(1024 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+            returncode = proc.wait()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            proc.stdout.close()
+        if returncode != 0:
+            stderr.seek(0, 2)
+            size = stderr.tell()
+            stderr.seek(max(size - 1500, 0))
+            detail = stderr.read().decode("utf-8", errors="replace")
+            raise RuntimeError(detail or f"xorriso exited {returncode}")
 
 
 def _image_collections_archived(session: Session, image: FinalizedImageRecord) -> bool:
@@ -1508,7 +1584,7 @@ def _refresh_recovery_session_metadata(
     estimate = _estimate_collection_recovery_costs(config=config, collections=collections)
     record.estimate_json = json.dumps(asdict(estimate), sort_keys=True)
     record.warnings_json = json.dumps(list(_build_warnings(config=config)))
-    record.hold_days = max(int(config.glacier_recovery_ready_ttl.total_seconds() // 86400), 1)
+    record.hold_days = _restore_hold_days(config)
     record.retrieval_tier = config.glacier_recovery_retrieval_tier
 
 
@@ -1523,7 +1599,7 @@ def _estimate_collection_recovery_costs(
         _collection_stored_bytes(collection.archive) for collection in collection_list
     )
     total_gib = Decimal(total_bytes) / Decimal(1024**3)
-    hold_days = max(int(config.glacier_recovery_ready_ttl.total_seconds() // 86400), 1)
+    hold_days = _restore_hold_days(config)
     retrieval_rate, request_rate = _retrieval_rates(config)
     retrieval_cost = _usd(total_gib * Decimal(str(retrieval_rate)))
     restore_request_count = max(len(collection_list), 1)
@@ -1681,6 +1757,10 @@ def _retrieval_rates(config: RuntimeConfig) -> tuple[float, float]:
         config.glacier_bulk_retrieval_rate_usd_per_gib,
         config.glacier_bulk_request_rate_usd_per_1000,
     )
+
+
+def _restore_hold_days(config: RuntimeConfig) -> int:
+    return max(ceil(config.glacier_recovery_ready_ttl.total_seconds() / 86400), 1)
 
 
 def _format_timedelta(value: timedelta) -> str:

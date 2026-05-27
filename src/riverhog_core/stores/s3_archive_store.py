@@ -1034,11 +1034,17 @@ def _parse_restore_header(value: object) -> _RestoreHeader | None:
 
 def _is_immediately_readable_storage_class(head: dict[str, Any]) -> bool:
     storage_class = _normalized_s3_storage_class(head)
+    if storage_class == "INTELLIGENT_TIERING" and _normalized_s3_archive_status(head):
+        return False
     return storage_class in {"", "STANDARD", "REDUCED_REDUNDANCY", "INTELLIGENT_TIERING"}
 
 
 def _normalized_s3_storage_class(head: dict[str, Any]) -> str:
     return str(head.get("StorageClass", "")).strip().upper()
+
+
+def _normalized_s3_archive_status(head: dict[str, Any]) -> str:
+    return str(head.get("ArchiveStatus", "")).strip().upper()
 
 
 def _configured_s3_storage_class(value: str) -> str:

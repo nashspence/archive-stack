@@ -452,6 +452,12 @@ session waits for archive restore completion. Real readiness is driven by the
 archive object's restore/readability status when a production archive store is
 configured.
 
+For the default `DEEP_ARCHIVE` archive storage class and `bulk` retrieval tier,
+this default matches AWS's normal S3 Glacier Deep Archive Bulk expectation of
+availability within roughly 48 hours. Riverhog treats it as an estimate only:
+the recovery reaper still polls S3 `HeadObject` restore state and only marks the
+session ready after S3 reports the restored copy is readable.
+
 ## `RIVERHOG_GLACIER_RECOVERY_READY_TTL`
 
 - type: duration
@@ -460,6 +466,14 @@ configured.
 How long Riverhog keeps restored Standard-storage collection archive data or
 rebuilt ISO staging data available after the archive becomes ready before
 automatic cleanup expires that recovery session.
+
+For AWS S3 Glacier Flexible Retrieval or Deep Archive objects, Riverhog passes
+this value to `RestoreObject` as whole-object restore days, rounded up to avoid
+shortening the requested operator window. S3 creates a temporary readable copy
+while the underlying object remains in its archive storage class, charges
+Standard-storage rates for that temporary copy, and rounds the expiration to the
+next midnight UTC after the requested duration. Manifest and OTS proof objects
+are stored as Standard S3 siblings and do not require a Glacier restore request.
 
 When `RIVERHOG_OPERATOR_WEBHOOK_URL` is configured, this value must be at least
 `RIVERHOG_OPERATOR_WEBHOOK_TIMEOUT` plus
@@ -472,6 +486,10 @@ still be retried before cleanup.
 - default: `bulk`
 
 Retrieval tier used for recovery-session cost estimates.
+For the default `DEEP_ARCHIVE` storage class, `bulk` is the cheapest supported
+path and typically completes within 48 hours; `standard` typically completes
+within 12 hours and costs more. Expedited retrieval is not exposed because AWS
+does not support Expedited retrieval for S3 Glacier Deep Archive objects.
 
 Allowed values:
 

@@ -31,6 +31,7 @@ from riverhog_core.finalized_image_coverage import (
 )
 from riverhog_core.ports.archive_store import ArchiveRestoreStatus
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services import recovery_sessions as recovery_sessions_module
 from riverhog_core.services.copies import SqlAlchemyCopyService
 from riverhog_core.services.recovery_sessions import SqlAlchemyRecoverySessionService
 from riverhog_core.sqlite_db import initialize_db, make_session_factory, session_scope
@@ -359,6 +360,31 @@ def test_double_copy_loss_creates_pending_recovery_session(tmp_path: Path) -> No
     assert session.cost_estimate.total_estimated_cost_usd > 0
     assert session.notification.webhook_configured is False
     assert [str(image.id) for image in session.images] == ["20260420T040001Z"]
+
+
+def test_recovery_ready_ttl_rounds_up_to_restore_hold_days(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    image_root = tmp_path / "image-root"
+    initialize_db(str(sqlite_path))
+    write_tree(image_root, IMAGE_ONE_FILES)
+    _seed_finalized_image(sqlite_path, image_root)
+    package = _seed_docs_collection_archive(sqlite_path)
+
+    config = _config(sqlite_path, glacier_recovery_ready_ttl=timedelta(hours=25))
+    copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
+    recovery_service = SqlAlchemyRecoverySessionService(
+        config,
+        _FakeArchiveStore(collection_packages={"docs": package}),
+    )
+
+    copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
+    copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
+    copy_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
+    copy_service.update("20260420T040001Z", "20260420T040001Z-2", state="lost")
+
+    session = recovery_service.get_for_image("20260420T040001Z")
+
+    assert session.cost_estimate.hold_days == 2
 
 
 def test_image_recovery_requires_uploaded_collection_archive(tmp_path: Path) -> None:
@@ -773,6 +799,99 @@ def test_image_rebuild_verifies_manifest_and_proof_before_streaming_archive(
     assert chunks == [b"rebuilt-iso"]
     assert store.manifest_reads == ["glacier/collections/docs/manifest.yml"]
     assert store.proof_reads == ["glacier/collections/docs/manifest.yml.ots"]
+    assert store.archive_reads == ["glacier/collections/docs/archive.tar"]
+
+
+def test_run_iso_from_root_streams_process_stdout(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    image_root = tmp_path / "image-root"
+    image_root.mkdir()
+
+    class _Stdout:
+        def __init__(self) -> None:
+            self._chunks = [b"first", b"second", b""]
+            self.closed = False
+
+        def read(self, size: int) -> bytes:
+            assert size == 1024 * 1024
+            return self._chunks.pop(0)
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _Proc:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            _ = args, kwargs
+            self.stdout = _Stdout()
+            self.returncode: int | None = None
+
+        def wait(self) -> int:
+            self.returncode = 0
+            return 0
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    monkeypatch.setattr(recovery_sessions_module.subprocess, "Popen", _Proc)
+
+    chunks = list(
+        recovery_sessions_module._run_iso_from_root(
+            image_root=image_root,
+            volume_id="20260420T040001Z",
+            filename="20260420T040001Z.iso",
+        )
+    )
+
+    assert chunks == [b"first", b"second"]
+
+
+def test_run_iso_from_root_reports_process_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    image_root = tmp_path / "image-root"
+    image_root.mkdir()
+
+    class _Stdout:
+        def read(self, size: int) -> bytes:
+            _ = size
+            return b""
+
+        def close(self) -> None:
+            return
+
+    class _Proc:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            _ = args
+            self.stdout = _Stdout()
+            self.returncode: int | None = None
+            kwargs["stderr"].write(b"synthetic xorriso failure")
+
+        def wait(self) -> int:
+            self.returncode = 7
+            return 7
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    monkeypatch.setattr(recovery_sessions_module.subprocess, "Popen", _Proc)
+
+    with pytest.raises(RuntimeError, match="synthetic xorriso failure"):
+        list(
+            recovery_sessions_module._run_iso_from_root(
+                image_root=image_root,
+                volume_id="20260420T040001Z",
+                filename="20260420T040001Z.iso",
+            )
+        )
 
 
 def test_recovery_session_retries_initial_ready_notification_before_reminders(
