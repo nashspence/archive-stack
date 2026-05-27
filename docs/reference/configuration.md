@@ -263,10 +263,14 @@ passphrase usable.
 ## `RIVERHOG_RECOVERY_PAYLOAD_WORK_FACTOR`
 
 - type: integer, `1..30`
-- default: `18`
+- default: `12`
 
 Scrypt work factor supplied during encryption through
-`AGE_PASSPHRASE_WORK_FACTOR`.
+`AGE_PASSPHRASE_WORK_FACTOR`. Riverhog encrypts each recovery payload file
+individually, so this cost is paid many times while materializing discs with
+large small-file collections. The default is tuned for high-entropy deployment
+passphrases and large optical-image materialization. Higher values are accepted,
+but can make planner materialization extremely slow.
 
 ## `RIVERHOG_RECOVERY_PAYLOAD_MAX_WORK_FACTOR`
 

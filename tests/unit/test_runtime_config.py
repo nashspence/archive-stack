@@ -116,6 +116,8 @@ def test_load_runtime_config_defaults_to_postgres_database_url(
     assert config.planner_min_fill_ratio == 0.99
     assert config.planner_min_fill_bytes == 49_500_000_000
     assert config.planner_unplanned_saturation_bytes == 300_000_000_000
+    assert config.recovery_payload_work_factor == 12
+    assert config.recovery_payload_max_work_factor == 30
     assert config.log_level == "INFO"
     assert config.operator_webhook_reminder_interval == timedelta(hours=24)
 

@@ -18,6 +18,8 @@ DEFAULT_UNBURNED_COLLECTION_BYTES_LIMIT = 500_000_000_000
 DEFAULT_GLACIER_MULTIPART_PART_BYTES = 64 * 1024 * 1024
 DEFAULT_GLACIER_MULTIPART_CONCURRENCY = 4
 DEFAULT_LOG_LEVEL = "INFO"
+DEFAULT_RECOVERY_PAYLOAD_WORK_FACTOR = 12
+DEFAULT_RECOVERY_PAYLOAD_MAX_WORK_FACTOR = 30
 
 
 def _parse_duration(value: str) -> timedelta:
@@ -210,8 +212,8 @@ class RuntimeConfig:
     recovery_payload_command: tuple[str, ...] = ("age",)
     recovery_payload_passphrase: str = DEV_RECOVERY_PAYLOAD_PASSPHRASE
     recovery_payload_require_explicit_passphrase: bool = False
-    recovery_payload_work_factor: int = 18
-    recovery_payload_max_work_factor: int = 30
+    recovery_payload_work_factor: int = DEFAULT_RECOVERY_PAYLOAD_WORK_FACTOR
+    recovery_payload_max_work_factor: int = DEFAULT_RECOVERY_PAYLOAD_MAX_WORK_FACTOR
     public_base_url: str | None = None
     planner_disc_target_bytes: int = DEFAULT_PLANNER_DISC_TARGET_BYTES
     planner_min_fill_ratio: float = DEFAULT_PLANNER_MIN_FILL_RATIO
@@ -498,12 +500,18 @@ def load_runtime_config() -> RuntimeConfig:
             "RIVERHOG_RECOVERY_PAYLOAD_PASSPHRASE to be explicitly set to a non-development secret"
         )
     recovery_payload_work_factor = _parse_int(
-        os.getenv("RIVERHOG_RECOVERY_PAYLOAD_WORK_FACTOR", "18"),
+        os.getenv(
+            "RIVERHOG_RECOVERY_PAYLOAD_WORK_FACTOR",
+            str(DEFAULT_RECOVERY_PAYLOAD_WORK_FACTOR),
+        ),
         name="RIVERHOG_RECOVERY_PAYLOAD_WORK_FACTOR",
         minimum=1,
     )
     recovery_payload_max_work_factor = _parse_int(
-        os.getenv("RIVERHOG_RECOVERY_PAYLOAD_MAX_WORK_FACTOR", "30"),
+        os.getenv(
+            "RIVERHOG_RECOVERY_PAYLOAD_MAX_WORK_FACTOR",
+            str(DEFAULT_RECOVERY_PAYLOAD_MAX_WORK_FACTOR),
+        ),
         name="RIVERHOG_RECOVERY_PAYLOAD_MAX_WORK_FACTOR",
         minimum=1,
     )
