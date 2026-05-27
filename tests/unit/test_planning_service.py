@@ -346,6 +346,39 @@ def test_planner_may_split_one_single_disc_collection_by_whole_files() -> None:
     assert all(piece.part_count == 1 for group in groups for piece in group)
 
 
+def test_planner_may_split_single_disc_collection_to_make_another_disc_ready() -> None:
+    groups = _pack_collection_piece_groups(
+        [
+            _group("2026/20260101T000000Z__alpha", [800]),
+            _group("2026/20260102T000000Z__bravo", [150, 150]),
+        ],
+        payload_capacity=1_000,
+        minimum_payload_fill=900,
+    )
+
+    group_collections = [{piece.collection_id for piece in group} for group in groups]
+
+    assert {
+        "2026/20260101T000000Z__alpha",
+        "2026/20260102T000000Z__bravo",
+    } in group_collections
+    assert _collection_disc_count(groups, "2026/20260102T000000Z__bravo") == 2
+
+
+def test_planner_does_not_optionally_split_remaining_required_split_tail() -> None:
+    groups = _pack_collection_piece_groups(
+        [
+            _group("2026/20260101T000000Z__alpha", [300, 300, 300], artifact_estimate=50),
+            _group("2026/20260102T000000Z__bravo", [100]),
+        ],
+        payload_capacity=1_000,
+        minimum_payload_fill=1,
+        optionally_splittable_collections={"2026/20260102T000000Z__bravo"},
+    )
+
+    assert _collection_disc_count(groups, "2026/20260101T000000Z__alpha") == 1
+
+
 def test_planner_counts_artifacts_when_optionally_splitting_collection() -> None:
     groups = _pack_collection_piece_groups(
         [

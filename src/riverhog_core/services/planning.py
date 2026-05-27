@@ -93,6 +93,7 @@ class _PlanFile:
     path: str
     bytes: int
     sha256: str
+    collection_single_image_possible: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -947,12 +948,19 @@ def _load_plan_files(session: Session, config: RuntimeConfig) -> list[_PlanFile]
             continue
         if normalize_glacier_state(collection.archive.state) is not GlacierState.UPLOADED:
             continue
-        if _read_collection_artifact_cache(config, collection.id) is None:
+        artifact = _read_collection_artifact_cache(config, collection.id)
+        if artifact is None:
             _LOG.warning(
                 "skipping collection %s during planning because archive artifacts are not cached",
                 collection.id,
             )
             continue
+        artifact_estimate = _collection_artifact_bytes_estimate(artifact)
+        collection_single_image_possible = _collection_fits_single_image(
+            collection.files,
+            config=config,
+            artifact_estimate=artifact_estimate,
+        )
         for file_record in sorted(collection.files, key=lambda current: current.path):
             if not file_record.hot:
                 continue
@@ -964,9 +972,44 @@ def _load_plan_files(session: Session, config: RuntimeConfig) -> list[_PlanFile]
                     path=file_record.path,
                     bytes=file_record.bytes,
                     sha256=file_record.sha256,
+                    collection_single_image_possible=collection_single_image_possible,
                 )
             )
     return plan_files
+
+
+def _collection_fits_single_image(
+    files: Sequence[CollectionFileRecord],
+    *,
+    config: RuntimeConfig,
+    artifact_estimate: int,
+) -> bool:
+    max_piece_plaintext_bytes = _max_piece_plaintext_bytes(config.planner_disc_target_bytes)
+    payload_capacity = max(
+        1,
+        config.planner_disc_target_bytes
+        - _candidate_metadata_pad(config.planner_disc_target_bytes),
+    )
+    estimated_bytes = artifact_estimate
+    for file_record in files:
+        piece_count = max(1, math.ceil(file_record.bytes / max_piece_plaintext_bytes))
+        if piece_count != 1:
+            return False
+        sidecar = sidecar_bytes(
+            _planner_file_meta(
+                path=file_record.path,
+                bytes=file_record.bytes,
+                sha256=file_record.sha256,
+            ),
+            collection_id=file_record.collection_id,
+            part_index=0,
+            part_count=1,
+        )
+        estimated_bytes += _estimated_encrypted_size(file_record.bytes)
+        estimated_bytes += _estimated_encrypted_size(len(sidecar))
+        if estimated_bytes > payload_capacity:
+            return False
+    return True
 
 
 def _finalized_covered_file_pairs(session: Session) -> set[tuple[str, str]]:
@@ -1029,6 +1072,11 @@ def _build_plan_piece_groups(
         collection_id: _collection_artifact_estimate(config, collection_id)
         for collection_id in sorted({piece.collection_id for piece in pieces})
     }
+    single_image_collection_ids = {
+        plan_file.collection_id
+        for plan_file in plan_files
+        if plan_file.collection_single_image_possible
+    }
     metadata_pad = _candidate_metadata_pad(config.planner_disc_target_bytes)
     payload_capacity = max(1, config.planner_disc_target_bytes - metadata_pad)
     minimum_payload_fill = max(1, config.planner_min_fill_bytes - metadata_pad)
@@ -1045,6 +1093,7 @@ def _build_plan_piece_groups(
         collection_groups,
         payload_capacity=payload_capacity,
         minimum_payload_fill=minimum_payload_fill,
+        optionally_splittable_collections=single_image_collection_ids,
     )
 
 
@@ -1098,15 +1147,21 @@ def _pack_collection_piece_groups(
     *,
     payload_capacity: int,
     minimum_payload_fill: int = 1,
+    optionally_splittable_collections: set[str] | None = None,
 ) -> list[list[_PlanPiece]]:
     collection_group_counts: dict[str, int] = {}
     for group in collection_groups:
         collection_group_counts[group.collection_id] = (
             collection_group_counts.get(group.collection_id, 0) + 1
         )
-    optionally_splittable_collections = {
+    eligible_collection_ids = (
+        set(collection_group_counts) if optionally_splittable_collections is None
+        else optionally_splittable_collections
+    )
+    optional_collection_ids = {
         group.collection_id
         for group in collection_groups
+        if group.collection_id in eligible_collection_ids
         if collection_group_counts[group.collection_id] == 1
         if len(group.pieces) > 1
         if all(piece.part_count == 1 for piece in group.pieces)
@@ -1148,7 +1203,7 @@ def _pack_collection_piece_groups(
 
     _apply_optional_whole_file_collection_splits(
         candidate_bins,
-        optionally_splittable_collections=optionally_splittable_collections,
+        optionally_splittable_collections=optional_collection_ids,
         payload_capacity=payload_capacity,
         minimum_payload_fill=minimum_payload_fill,
     )
@@ -1192,6 +1247,8 @@ def _find_optional_split_move(
     payload_capacity: int,
     minimum_payload_fill: int,
 ) -> _OptionalSplitMove | None:
+    best_move: _OptionalSplitMove | None = None
+    best_key: tuple[bool, int, int, int, int, tuple[tuple[str, str, int], ...]] | None = None
     for target_idx in sorted(
         range(len(candidate_bins)),
         key=lambda idx: (candidate_bins[idx].estimated_bytes, idx),
@@ -1208,11 +1265,29 @@ def _find_optional_split_move(
             optionally_splittable_collections=optionally_splittable_collections,
             split_collection_ids=split_collection_ids,
             payload_capacity=payload_capacity,
-            minimum_payload_fill=minimum_payload_fill,
         )
-        if move is not None:
-            return move
-    return None
+        if move is None:
+            continue
+        target_after = target.estimated_bytes + move.target_group_estimated_bytes
+        donor_after = (
+            candidate_bins[move.donor_bin_index].estimated_bytes
+            - move.moved_payload_bytes
+        )
+        piece_key = tuple(
+            (piece.collection_id, piece.path, piece.part_index) for piece in move.moved_pieces
+        )
+        candidate_key = (
+            target_after >= minimum_payload_fill,
+            target_after,
+            donor_after,
+            -target_idx,
+            -move.donor_bin_index,
+            piece_key,
+        )
+        if best_key is None or candidate_key > best_key:
+            best_key = candidate_key
+            best_move = move
+    return best_move
 
 
 def _best_optional_split_move_for_target(
@@ -1222,7 +1297,6 @@ def _best_optional_split_move_for_target(
     optionally_splittable_collections: set[str],
     split_collection_ids: set[str],
     payload_capacity: int,
-    minimum_payload_fill: int,
 ) -> _OptionalSplitMove | None:
     target = candidate_bins[target_bin_index]
     target_remaining = payload_capacity - target.estimated_bytes
@@ -1236,11 +1310,6 @@ def _best_optional_split_move_for_target(
             continue
         donor = candidate_bins[donor_idx]
         if donor.voluntary_split_collection_ids:
-            continue
-        if donor.estimated_bytes <= max(target.estimated_bytes, minimum_payload_fill):
-            continue
-        max_movable_from_donor = donor.estimated_bytes - minimum_payload_fill
-        if max_movable_from_donor <= 0:
             continue
 
         for group_idx in sorted(
@@ -1259,10 +1328,7 @@ def _best_optional_split_move_for_target(
                 continue
             if group.collection_id in target.collection_ids:
                 continue
-            move_capacity = min(
-                target_remaining - group.artifact_estimate,
-                max_movable_from_donor,
-            )
+            move_capacity = target_remaining - group.artifact_estimate
             if move_capacity <= 0:
                 continue
             moved_pieces = _optional_split_piece_subset(group.pieces, move_capacity)
@@ -1272,7 +1338,7 @@ def _best_optional_split_move_for_target(
             target_group_estimated_bytes = group.artifact_estimate + moved_payload_bytes
             target_after = target.estimated_bytes + target_group_estimated_bytes
             donor_after = donor.estimated_bytes - moved_payload_bytes
-            if target_after > payload_capacity or donor_after < minimum_payload_fill:
+            if target_after > payload_capacity:
                 continue
             piece_key = tuple(
                 (piece.collection_id, piece.path, piece.part_index) for piece in moved_pieces
@@ -1377,6 +1443,10 @@ def _collection_artifact_estimate(config: RuntimeConfig, collection_id: str) -> 
     artifact = _read_collection_artifact_cache(config, collection_id)
     if artifact is None:
         return 0
+    return _collection_artifact_bytes_estimate(artifact)
+
+
+def _collection_artifact_bytes_estimate(artifact: _CollectionArtifactCache) -> int:
     return _estimated_encrypted_size(len(artifact.manifest_bytes)) + _estimated_encrypted_size(
         len(artifact.proof_bytes)
     )

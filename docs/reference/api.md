@@ -258,6 +258,8 @@ Required behavior:
 - files are never voluntarily split; file parts only exist when a single file cannot fit on one candidate image
 - collections that require multiple candidate images are split only as required and are not split further for packing
 - collections that could fit on one candidate image may be split once, by whole files, to improve packing
+- whether a collection could fit on one candidate image is evaluated against the complete collection, not only its
+  currently unburned remainder
 - each such optionally split collection may appear on at most two candidate images, and each candidate image may contain
   at most one optionally split collection
 - every candidate image that contains any part of a collection budgets that collection's encrypted manifest and encrypted
