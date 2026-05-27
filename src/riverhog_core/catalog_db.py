@@ -372,6 +372,27 @@ def _backfill_finalized_image_manifest_topology(database_url: str) -> None:
     with session_scope(session_factory) as session:
         images = session.query(FinalizedImageRecord).all()
         for image in images:
+            existing_artifacts = (
+                session.query(FinalizedImageCollectionArtifactRecord)
+                .filter_by(image_id=image.image_id)
+                .count()
+            )
+            existing_part_count = (
+                session.query(FinalizedImageCoveragePartRecord)
+                .filter_by(image_id=image.image_id)
+                .count()
+            )
+            missing_part_paths = (
+                session.query(FinalizedImageCoveragePartRecord)
+                .filter_by(image_id=image.image_id)
+                .filter(
+                    (FinalizedImageCoveragePartRecord.object_path.is_(None))
+                    | (FinalizedImageCoveragePartRecord.sidecar_path.is_(None))
+                )
+                .first()
+            )
+            if existing_artifacts > 0 and existing_part_count > 0 and missing_part_paths is None:
+                continue
             try:
                 collection_artifacts = read_finalized_image_collection_artifacts(image.image_root)
                 coverage_parts = read_finalized_image_coverage_parts(image.image_root)

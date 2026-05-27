@@ -4,7 +4,13 @@ from pathlib import Path
 
 from sqlalchemy import inspect, text
 
-from riverhog_core.catalog_db import create_catalog_engine, migrate_schema
+import riverhog_core.finalized_image_coverage as finalized_image_coverage
+from riverhog_core.catalog_db import (
+    _backfill_finalized_image_manifest_topology,
+    create_catalog_engine,
+    initialize_db,
+    migrate_schema,
+)
 
 
 def test_migrate_schema_repairs_manifest_sidecar_columns_when_prior_version_was_recorded(
@@ -70,3 +76,64 @@ def test_migrate_schema_adds_collection_coverage_indexes(tmp_path: Path) -> None
     assert "ix_candidate_covered_paths_collection_path" in index_names
     assert "ix_finalized_image_covered_paths_collection_path" in index_names
     assert "ix_finalized_image_coverage_parts_collection_path" in index_names
+
+
+def test_backfill_skips_images_with_persisted_manifest_topology(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sqlite_path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_path)
+    engine = create_catalog_engine(sqlite_path)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO finalized_images "
+                "(image_id, candidate_id, filename, bytes, image_root, target_bytes, "
+                "required_copy_count) "
+                "VALUES "
+                "('20260420T040001Z', 'candidate-1', '20260420T040001Z.iso', 1, "
+                "'/does/not/exist', 10, 2)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO finalized_image_collection_artifacts "
+                "(image_id, collection_id, manifest_path, proof_path) "
+                "VALUES "
+                "('20260420T040001Z', 'docs', 'collections/000001.yml', "
+                "'collections/000001.yml.ots')"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO finalized_image_coverage_parts "
+                "(image_id, collection_id, path, part_index, part_count, "
+                "object_path, sidecar_path) "
+                "VALUES "
+                "('20260420T040001Z', 'docs', 'invoice.pdf', 0, 1, "
+                "'files/000001.age', 'files/000001.yml.age')"
+            )
+        )
+
+    calls = 0
+
+    def _unexpected_read(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return []
+
+    monkeypatch.setattr(
+        finalized_image_coverage,
+        "read_finalized_image_collection_artifacts",
+        _unexpected_read,
+    )
+    monkeypatch.setattr(
+        finalized_image_coverage,
+        "read_finalized_image_coverage_parts",
+        _unexpected_read,
+    )
+
+    _backfill_finalized_image_manifest_topology(str(sqlite_path))
+
+    assert calls == 0
