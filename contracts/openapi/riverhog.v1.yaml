@@ -851,6 +851,33 @@ paths:
                     $ref: "#/components/schemas/CopySummary"
         default:
           $ref: "#/components/responses/Error"
+  /images/{image_id}/copies/{copy_id}/label-needed:
+    post:
+      summary: Notify that a copy needs labeling
+      description: Sends the best-effort operator notification that a burned and verified copy needs its physical label applied.
+      operationId: notifyCopyLabelNeeded
+      parameters:
+        - in: path
+          name: image_id
+          required: true
+          schema: { type: string }
+        - in: path
+          name: copy_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Current copy record
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [copy]
+                properties:
+                  copy:
+                    $ref: "#/components/schemas/CopySummary"
+        default:
+          $ref: "#/components/responses/Error"
   /pin:
     post:
       summary: Pin a target into hot storage

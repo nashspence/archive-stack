@@ -171,6 +171,27 @@ def build_collection_lifecycle_payload(
     return payload
 
 
+def build_copy_label_needed_payload(
+    *,
+    config: WebhookConfig,
+    image_id: str,
+    copy_id: str,
+    label_text: str,
+    delivered_at: datetime,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "event": "images.copy_label_needed",
+        "type": "copy_lifecycle",
+        "image_id": image_id,
+        "copy_id": copy_id,
+        "label_text": label_text,
+        "delivered_at": isoformat_z(delivered_at),
+    }
+    if config.base_url:
+        payload["image_url"] = image_summary_url(config.base_url, image_id)
+    return payload
+
+
 def post_webhook(*, config: WebhookConfig, payload: dict[str, object]) -> None:
     with httpx.Client(timeout=config.timeout_seconds) as client:
         response = client.post(config.url, json=payload)

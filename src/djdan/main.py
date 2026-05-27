@@ -5,6 +5,7 @@ import importlib
 import inspect
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -31,6 +32,7 @@ def djdan_app() -> None:
 
 _DISC_IO_CHUNK_BYTES = 1024 * 1024
 _DOWNLOAD_PROGRESS_INTERVAL_SECONDS = 10.0
+_VERIFY_PROGRESS_INTERVAL_SECONDS = 10.0
 
 
 def _require_tool(name: str) -> str:
@@ -213,6 +215,7 @@ class BurnCopyProgress:
     burned: bool = False
     media_verified: bool = False
     label_confirmed: bool = False
+    label_notification_sent: bool = False
     location: str | None = None
 
     def to_payload(self) -> dict[str, object]:
@@ -220,6 +223,7 @@ class BurnCopyProgress:
             "burned": self.burned,
             "media_verified": self.media_verified,
             "label_confirmed": self.label_confirmed,
+            "label_notification_sent": self.label_notification_sent,
             "location": self.location,
         }
 
@@ -229,6 +233,7 @@ class BurnCopyProgress:
             burned=bool(payload.get("burned", False)),
             media_verified=bool(payload.get("media_verified", False)),
             label_confirmed=bool(payload.get("label_confirmed", False)),
+            label_notification_sent=bool(payload.get("label_notification_sent", False)),
             location=str(payload["location"]) if payload.get("location") else None,
         )
 
@@ -425,9 +430,44 @@ def _macos_optical_media_type(diskutil_output: str, *, device: str) -> str | Non
         return None
 
 
+def _macos_raw_read_device(device: str) -> str:
+    if sys.platform != "darwin":
+        return device
+    match = re.fullmatch(r"/dev/(r?disk\d+)", device.strip())
+    if match is None:
+        return device
+
+    diskutil = shutil.which("diskutil")
+    if diskutil is None:
+        return device
+
+    disk_id = match.group(1)
+    block_device = f"/dev/{disk_id.removeprefix('r')}"
+    raw_device = f"/dev/r{disk_id.removeprefix('r')}"
+    diskutil_output = _run_captured(
+        [diskutil, "info", block_device],
+        action=f"inspecting macOS optical device {block_device} before media verification",
+    )
+    try:
+        mounted = _parse_diskutil_field(
+            diskutil_output,
+            "Mounted",
+            device=block_device,
+        )
+    except RuntimeError:
+        mounted = "No"
+    if mounted.casefold().startswith("yes"):
+        _run_checked(
+            [diskutil, "unmountDisk", block_device],
+            action=f"unmounting {block_device} before media verification",
+        )
+    return raw_device
+
+
 class HdiutilDiscBurner:
     def __init__(self, *, dummy: bool = False) -> None:
         self._dummy = dummy
+        self.verifies_media = not dummy
 
     def _resolve_device_args(self, device: str) -> list[str]:
         device_args, diskutil_output = _hdiutil_device_args(device)
@@ -455,14 +495,13 @@ class HdiutilDiscBurner:
             hdiutil,
             "burn",
             *device_args,
-            "-verbose",
             "-speed",
             "max",
-            "-noverifyburn",
-            "-noeject",
         ]
         if self._dummy:
-            command.append("-testburn")
+            command.extend(["-noverifyburn", "-noeject", "-testburn"])
+        else:
+            command.extend(["-verifyburn", "-eject"])
         command.append(str(iso_path))
         _run_passthrough_checked(
             command,
@@ -474,12 +513,16 @@ class RawBurnedMediaVerifier:
     def verify(self, iso_path: Path, *, device: str, copy_id: str) -> None:
         if not iso_path.is_file():
             raise RuntimeError(f"staged ISO is missing for {copy_id}: {iso_path}")
+        read_device = _macos_raw_read_device(device)
         expected_size = iso_path.stat().st_size
         expected_digest = hashlib.sha256()
         actual_digest = hashlib.sha256()
         remaining = expected_size
+        verified = 0
+        started_at = time.monotonic()
+        last_report_at = started_at
         try:
-            with iso_path.open("rb") as expected, Path(device).open("rb") as actual:
+            with iso_path.open("rb") as expected, Path(read_device).open("rb") as actual:
                 while remaining > 0:
                     expected_chunk = expected.read(min(_DISC_IO_CHUNK_BYTES, remaining))
                     if not expected_chunk:
@@ -493,8 +536,23 @@ class RawBurnedMediaVerifier:
                     expected_digest.update(expected_chunk)
                     actual_digest.update(actual_chunk)
                     remaining -= len(expected_chunk)
+                    verified += len(expected_chunk)
+                    now = time.monotonic()
+                    if (
+                        now - last_report_at >= _VERIFY_PROGRESS_INTERVAL_SECONDS
+                        or remaining == 0
+                    ):
+                        _print_progress(
+                            label=f"verify {copy_id}",
+                            completed=verified,
+                            total=expected_size,
+                            started_at=started_at,
+                        )
+                        last_report_at = now
         except OSError as exc:
-            raise RuntimeError(f"could not read burned media for {copy_id} from {device}") from exc
+            raise RuntimeError(
+                f"could not read burned media for {copy_id} from {read_device}"
+            ) from exc
 
         expected_sha256 = expected_digest.hexdigest()
         actual_sha256 = actual_digest.hexdigest()
@@ -693,6 +751,25 @@ def _format_bytes(value: int) -> str:
             return f"{size:.1f} {unit}"
         size /= 1024
     return f"{value} B"
+
+
+def _print_progress(
+    *,
+    label: str,
+    completed: int,
+    total: int,
+    started_at: float,
+) -> None:
+    elapsed = max(time.monotonic() - started_at, 0.001)
+    percent = (completed / total) * 100 if total > 0 else 100.0
+    rate = completed / elapsed
+    typer.echo(
+        (
+            f"{label}: {_format_bytes(completed)} of {_format_bytes(total)} "
+            f"({percent:.1f}%, {_format_bytes(int(rate))}/s)"
+        ),
+        err=True,
+    )
 
 
 def _download_progress_logger(label: str) -> Callable[[int, int | None], None]:
@@ -1218,6 +1295,30 @@ def _register_burned_copy(
     )
 
 
+def _notify_label_needed(
+    client: ApiClient,
+    image_id: str,
+    copy_id: str,
+    progress: BurnCopyProgress,
+    session_state: BurnSessionState,
+) -> None:
+    if progress.label_notification_sent:
+        return
+    notify = getattr(client, "notify_copy_label_needed", None)
+    if notify is None:
+        return
+    try:
+        notify(image_id, copy_id)
+    except Exception as exc:
+        typer.echo(
+            f"warning: failed to notify operator that {copy_id} needs labeling: {exc}",
+            err=True,
+        )
+        return
+    progress.label_notification_sent = True
+    session_state.save()
+
+
 def _burn_pending_copy(
     copy_payload: dict[str, Any],
     *,
@@ -1265,6 +1366,8 @@ def _burn_pending_copy(
         typer.echo(f"burning copy {copy_id} from {iso_path}", err=True)
         burner.burn(iso_path, device=device, copy_id=copy_id)
         progress.burned = True
+        if bool(getattr(burner, "verifies_media", False)):
+            progress.media_verified = True
         session_state.save()
 
     if not progress.media_verified:
@@ -1272,6 +1375,8 @@ def _burn_pending_copy(
         media_verifier.verify(iso_path, device=device, copy_id=copy_id)
         progress.media_verified = True
         session_state.save()
+
+    _notify_label_needed(client, image_id, copy_id, progress, session_state)
 
     if progress.label_confirmed:
         typer.echo(f"resuming label confirmation for {copy_id}", err=True)

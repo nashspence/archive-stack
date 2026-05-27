@@ -222,7 +222,6 @@ def test_hdiutil_disc_burner_validates_macos_device_path_and_runs_test_burn(
         [
             "/usr/bin/hdiutil",
             "burn",
-            "-verbose",
             "-speed",
             "max",
             "-noverifyburn",
@@ -261,12 +260,58 @@ def test_hdiutil_disc_burner_allows_native_hdiutil_target(
             "burn",
             "-device",
             "IOService:/AppleARMPE/example/IOBDServices",
-            "-verbose",
             "-speed",
             "max",
             "-noverifyburn",
             "-noeject",
             "-testburn",
+            str(iso_path),
+        ]
+    ]
+
+
+def test_hdiutil_disc_burner_uses_native_verify_and_eject_for_real_burn(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    iso_path = tmp_path / "image.iso"
+    iso_path.write_bytes(b"iso-bytes")
+    commands: list[list[str]] = []
+    diskutil_output = """
+   Device Identifier:         disk4
+   Device Node:               /dev/disk4
+   Device / Media Name:       PIONEER BD-RW BDR-UD03
+   Optical Drive Type:        CD-ROM, CD-R, CD-RW, DVD-ROM, DVD-R, BD-ROM, BD-R, BD-RE
+"""
+
+    def fake_run(command, **kwargs):
+        assert kwargs.get("check") is False
+        if command == ["/usr/bin/diskutil", "info", "/dev/disk4"]:
+            assert kwargs == {"capture_output": True, "text": True, "check": False}
+            return djdan_main.subprocess.CompletedProcess(command, 0, diskutil_output, "")
+        assert kwargs == {"check": False}
+        commands.append(command)
+        return djdan_main.subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(djdan_main.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(djdan_main.subprocess, "run", fake_run)
+
+    burner = djdan_main.HdiutilDiscBurner()
+    burner.burn(
+        iso_path,
+        device="/dev/disk4",
+        copy_id="20260420T040001Z-1",
+    )
+
+    assert burner.verifies_media is True
+    assert commands == [
+        [
+            "/usr/bin/hdiutil",
+            "burn",
+            "-speed",
+            "max",
+            "-verifyburn",
+            "-eject",
             str(iso_path),
         ]
     ]
@@ -326,6 +371,61 @@ def test_raw_burned_media_verifier_compares_the_iso_prefix(tmp_path: Path) -> No
             device=str(device_path),
             copy_id="20260420T040001Z-1",
         )
+
+
+def test_raw_burned_media_verifier_unmounts_macos_optical_media_before_raw_read(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    iso_path = tmp_path / "image.iso"
+    raw_device = tmp_path / "rdisk4"
+    iso_path.write_bytes(b"iso-bytes")
+    raw_device.write_bytes(b"iso-bytes")
+    commands: list[list[str]] = []
+    diskutil_output = """
+   Device Identifier:         disk4
+   Device Node:               /dev/disk4
+   Volume Name:               20260526T204059Z
+   Mounted:                   Yes
+   Mount Point:               /Volumes/20260526T204059Z
+   Device / Media Name:       PIONEER BD-RW BDR-UD03
+   Optical Drive Type:        CD-ROM, CD-R, CD-RW, DVD-ROM, DVD-R, BD-ROM, BD-R, BD-RE
+"""
+
+    def fake_run(command, *, capture_output, text, check):
+        assert check is False
+        commands.append(command)
+        if command == ["/usr/bin/diskutil", "info", "/dev/disk4"]:
+            assert capture_output is True
+            assert text is True
+            return djdan_main.subprocess.CompletedProcess(command, 0, diskutil_output, "")
+        if command == ["/usr/bin/diskutil", "unmountDisk", "/dev/disk4"]:
+            assert capture_output is True
+            assert text is True
+            return djdan_main.subprocess.CompletedProcess(command, 0, "Unmount successful", "")
+        raise AssertionError(f"unexpected command: {command}")
+
+    original_open = Path.open
+
+    monkeypatch.setattr(djdan_main.sys, "platform", "darwin")
+    monkeypatch.setattr(djdan_main.shutil, "which", lambda name: "/usr/bin/diskutil")
+    monkeypatch.setattr(djdan_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(djdan_main.Path, "open", lambda path, mode="r", *args, **kwargs: (
+        original_open(raw_device, mode, *args, **kwargs)
+        if str(path) == "/dev/rdisk4"
+        else original_open(path, mode, *args, **kwargs)
+    ))
+
+    djdan_main.RawBurnedMediaVerifier().verify(
+        iso_path,
+        device="/dev/disk4",
+        copy_id="20260420T040001Z-1",
+    )
+
+    assert commands == [
+        ["/usr/bin/diskutil", "info", "/dev/disk4"],
+        ["/usr/bin/diskutil", "unmountDisk", "/dev/disk4"],
+    ]
 
 
 def test_djdan_fetch_recovers_in_memory_and_reports_progress(monkeypatch) -> None:

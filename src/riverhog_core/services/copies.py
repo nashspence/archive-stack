@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import cast
@@ -39,8 +40,15 @@ from riverhog_core.recovery_payloads import (
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.recovery_sessions import ensure_glacier_recovery_session_for_image
+from riverhog_core.webhooks import (
+    WebhookConfig,
+    build_copy_label_needed_payload,
+    post_webhook,
+    utcnow,
+)
 
 _REGISTERABLE_STATES = {CopyState.NEEDED, CopyState.BURNING}
+_LOG = logging.getLogger(__name__)
 
 
 class SqlAlchemyCopyService:
@@ -89,6 +97,40 @@ class SqlAlchemyCopyService:
             copies = self._ensure_required_copy_slots(session, image)
             session.flush()
             return [self._copy_summary(session, copy) for copy in copies]
+
+    def notify_label_needed(self, image_id: str, copy_id: str) -> CopySummary:
+        with session_scope(self._session_factory) as session:
+            image = self._require_image(session, image_id)
+            self._ensure_required_copy_slots(session, image)
+            target = session.get(ImageCopyRecord, {"image_id": image_id, "copy_id": copy_id})
+            if target is None:
+                raise NotFound(f"copy not found for image: {copy_id}")
+            summary = self._copy_summary(session, target)
+
+        if self._config.operator_webhook_url:
+            try:
+                webhook_config = WebhookConfig(
+                    url=self._config.operator_webhook_url,
+                    base_url=self._config.public_base_url or "",
+                    timeout_seconds=self._config.operator_webhook_timeout.total_seconds(),
+                )
+                post_webhook(
+                    config=webhook_config,
+                    payload=build_copy_label_needed_payload(
+                        config=webhook_config,
+                        image_id=image_id,
+                        copy_id=copy_id,
+                        label_text=summary.label_text,
+                        delivered_at=utcnow(),
+                    ),
+                )
+            except Exception:
+                _LOG.warning(
+                    "failed to deliver copy label-needed webhook for %s",
+                    copy_id,
+                    exc_info=True,
+                )
+        return summary
 
     def update(
         self,

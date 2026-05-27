@@ -361,7 +361,7 @@ encrypted files and finish the same candidate id.
 Single optional operator notification endpoint. Riverhog posts quiet,
 operator-facing notifications to this endpoint, including collection ingest
 milestones, ready disc-image candidates, persistent archival failures after
-retries, and recovery-ready notifications.
+retries, verified-copy labeling handoffs, and recovery-ready notifications.
 
 Collection events are intentionally sparse so long-running retries do not spam
 operators. Success milestones include `collections.upload_staged`,
@@ -373,8 +373,10 @@ through Riverhog/WebDAV. Failure/attention events include
 `RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL`, and
 `collections.planner_failed`. Ready burn candidates use `images.ready`; if
 operator reminders are explicitly enabled, repeats use `images.ready.reminder`.
-Recovery events use `images.rebuild_ready`; if reminders are explicitly
-enabled, repeats use `images.rebuild_ready.reminder`.
+After `djdan` verifies a burned disc but before the operator confirms the
+physical label, it triggers `images.copy_label_needed`. Recovery events use
+`images.rebuild_ready`; if reminders are explicitly enabled, repeats use
+`images.rebuild_ready.reminder`.
 
 Webhook delivery is best-effort; Riverhog catalog state remains authoritative.
 Notification receivers should keep these operator messages concise and calm:
@@ -385,9 +387,10 @@ Collection payloads include `collection_id`, links back to the collection when
 `RIVERHOG_PUBLIC_BASE_URL` is configured, and event-specific progress such as
 file counts, staged bytes, archive bytes, object path, or failure details. Ready
 image payloads include affected image ids, filenames, download URLs when
-`RIVERHOG_PUBLIC_BASE_URL` is configured, and reminder count. Recovery payloads
-include the recovery session id, affected images, ready-data expiry, and
-reminder count.
+`RIVERHOG_PUBLIC_BASE_URL` is configured, and reminder count. Copy-label
+payloads include `image_id`, `copy_id`, the exact `label_text`, and an image
+link when `RIVERHOG_PUBLIC_BASE_URL` is configured. Recovery payloads include
+the recovery session id, affected images, ready-data expiry, and reminder count.
 
 ## `RIVERHOG_OPERATOR_WEBHOOK_TIMEOUT`
 

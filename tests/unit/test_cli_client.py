@@ -590,6 +590,33 @@ def test_register_copy_uses_generated_copy_endpoint(monkeypatch) -> None:
     ]
 
 
+def test_notify_copy_label_needed_uses_copy_endpoint(monkeypatch) -> None:
+    captured: list[tuple[str, str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append((request.method, str(request.url), request.read().decode("utf-8")))
+        return httpx.Response(200, json={"copy": {"id": "20260420T040001Z-1"}})
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_client(self: ApiClient) -> httpx.Client:
+        return httpx.Client(base_url=self.base_url, transport=transport)
+
+    monkeypatch.setattr(ApiClient, "_client", fake_client)
+
+    client = ApiClient(base_url="https://api.test")
+    client.notify_copy_label_needed("20260420T040001Z", "20260420T040001Z-1")
+
+    assert captured == [
+        (
+            "POST",
+            "https://api.test/v1/images/20260420T040001Z/copies/"
+            "20260420T040001Z-1/label-needed",
+            "",
+        )
+    ]
+
+
 def test_update_copy_uses_copy_patch_endpoint(monkeypatch) -> None:
     captured: list[tuple[str, str, str]] = []
 

@@ -96,6 +96,21 @@ def list_copies(
     return ListCopiesResponse.model_validate({"copies": [map_copy(copy) for copy in copies]})
 
 
+@router.post(
+    "/images/{image_id}/copies/{copy_id}/label-needed",
+    response_model=RegisterCopyResponse,
+)
+def notify_copy_label_needed(
+    image_id: str,
+    copy_id: str,
+    container: ContainerDep,
+) -> RegisterCopyResponse:
+    summary = container.copies.notify_label_needed(image_id=image_id, copy_id=copy_id)
+    return RegisterCopyResponse.model_validate(
+        {"copy": CopyOut.model_validate(map_copy(summary)).model_dump()}
+    )
+
+
 @router.patch("/images/{image_id}/copies/{copy_id}", response_model=RegisterCopyResponse)
 def update_copy(
     image_id: str,

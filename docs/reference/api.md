@@ -537,6 +537,19 @@ Required behavior:
 - reporting one confirmed copy `lost` or `damaged` never reuses that same `copy_id` for replacement burn work
 - when another protected copy still exists, replacement burn work is represented as a new generated `copy_id`
 
+#### `POST /v1/images/{image_id}/copies/{copy_id}/label-needed`
+
+Sends the best-effort operator notification that `copy_id` has been burned and
+verified and now needs its physical label applied.
+
+Required behavior:
+
+- this endpoint is used by `djdan burn` after burned-media verification and before label confirmation
+- it does not register the copy, assign a storage location, or count the copy toward physical protection
+- it returns the current generated copy summary
+- if `RIVERHOG_OPERATOR_WEBHOOK_URL` is configured, Riverhog emits `images.copy_label_needed`
+- webhook delivery failures are logged and do not block the burn workflow
+
 ### Pins
 
 #### `POST /v1/pin`

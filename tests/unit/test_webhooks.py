@@ -7,6 +7,7 @@ from riverhog_core.webhooks import (
     ReadyImage,
     WebhookConfig,
     build_collection_lifecycle_payload,
+    build_copy_label_needed_payload,
     build_images_ready_payload,
     build_recovery_ready_payload,
 )
@@ -85,3 +86,23 @@ def test_build_collection_lifecycle_payload_includes_links_and_details() -> None
     assert payload["collection_id"] == "2025/20250712T213200Z__home-videos"
     assert payload["collection_url"].endswith("/v1/collections/2025/20250712T213200Z__home-videos")
     assert payload["files_total"] == 572
+
+
+def test_build_copy_label_needed_payload_includes_label_and_image_url() -> None:
+    payload = build_copy_label_needed_payload(
+        config=WebhookConfig(url="https://example.test/hook", base_url="https://api.test"),
+        image_id="20260526T204059Z",
+        copy_id="20260526T204059Z-1",
+        label_text="20260526T204059Z-1",
+        delivered_at=datetime(2026, 5, 26, 21, 15, tzinfo=UTC),
+    )
+
+    assert payload == {
+        "event": "images.copy_label_needed",
+        "type": "copy_lifecycle",
+        "image_id": "20260526T204059Z",
+        "copy_id": "20260526T204059Z-1",
+        "label_text": "20260526T204059Z-1",
+        "delivered_at": "2026-05-26T21:15:00Z",
+        "image_url": "https://api.test/v1/images/20260526T204059Z",
+    }

@@ -199,8 +199,10 @@ Expected multipart flow:
   system burner instead of passing an `hdiutil -device` value
 - operators may force a native hdiutil target with a device value of `hdiutil:IOService:...` from
   `hdiutil burn -list`
-- burned-media verification reads back the staged ISO's byte length from the optical device and compares its SHA-256 to
-  the staged ISO
+- on macOS real burns use native `hdiutil burn -verifyburn -eject`; `djdan` passes the hdiutil progress output through
+  directly, treats successful completion as burned-media verification, and ejects the disc for labeling
+- other burn backends, and resume paths that still need independent verification, read back the staged ISO's byte length
+  from the optical device and compare its SHA-256 to the staged ISO
 - `djdan burn --simulate` uses native non-writing burn mode against the configured optical device for the next pending
   copy (`hdiutil burn -testburn` on macOS, xorriso cdrecord-emulation `-dummy` elsewhere), then exits without
   burned-media verification, label confirmation, copy registration, or local burn checkpoint changes
@@ -208,7 +210,8 @@ Expected multipart flow:
   exposing native test-burn support through DiscRecording
 - if the staged ISO is missing or no longer matches the last verified staged copy, `djdan burn` downloads it again
 - one physical copy is burned and burned-media-verified at a time
-- `djdan burn` prints the exact label text plus storage guidance before copy registration
+- after burned-media verification, `djdan burn` asks Riverhog to send the best-effort `images.copy_label_needed`
+  operator notification, then prints the exact label text plus storage guidance before copy registration
 - Riverhog does not register the copy, associate that generated `copy_id` with that physical disc, or count the copy
   toward coverage until the operator explicitly confirms that the disc is labeled
 - if the session stops after burning or burned-media verification but before label confirmation, a later run first asks

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 from pathlib import Path
 
 from riverhog_core.catalog_models import (
@@ -258,4 +259,42 @@ def test_register_uses_db_artifact_mapping_after_disc_manifest_is_removed(tmp_pa
     assert [(row.path, row.disc_path) for row in rows] == [
         ("tax/2022/invoice-123.pdf", "files/000001.age"),
         ("tax/2022/receipt-456.pdf", "files/000002.age"),
+    ]
+
+
+def test_notify_label_needed_sends_best_effort_operator_webhook(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    image_root = tmp_path / "image-root"
+    initialize_db(str(sqlite_path))
+    write_tree(image_root, IMAGE_ONE_FILES)
+    _seed_finalized_image(sqlite_path, image_root)
+    config = replace(
+        _config(sqlite_path),
+        operator_webhook_url="https://example.test/hook",
+        public_base_url="https://api.test",
+    )
+    sent: list[dict[str, object]] = []
+
+    def fake_post_webhook(*, config, payload):
+        sent.append(payload)
+
+    monkeypatch.setattr("riverhog_core.services.copies.post_webhook", fake_post_webhook)
+
+    service = SqlAlchemyCopyService(config, _FakeHotStore())
+    copy = service.notify_label_needed("20260420T040001Z", "20260420T040001Z-1")
+
+    assert copy.id == "20260420T040001Z-1"
+    assert sent == [
+        {
+            "event": "images.copy_label_needed",
+            "type": "copy_lifecycle",
+            "image_id": "20260420T040001Z",
+            "copy_id": "20260420T040001Z-1",
+            "label_text": "20260420T040001Z-1",
+            "delivered_at": sent[0]["delivered_at"],
+            "image_url": "https://api.test/v1/images/20260420T040001Z",
+        }
     ]

@@ -397,6 +397,13 @@ class ApiClient:
     def list_copies(self, image_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/images/{image_id}/copies")
 
+    def notify_copy_label_needed(self, image_id: str, copy_id: str) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/images/{quote(image_id, safe='/')}/copies/{quote(copy_id, safe='/')}/"
+            "label-needed",
+        )
+
     def update_copy(
         self,
         image_id: str,

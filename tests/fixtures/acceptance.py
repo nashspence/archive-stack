@@ -3128,6 +3128,15 @@ class AcceptanceCopyService:
         ]
 
     @_with_state_lock
+    def notify_label_needed(self, image_id: str, copy_id: str) -> CopySummary:
+        self.state.ensure_required_copy_slots(image_id)
+        scoped_key = (image_id, CopyId(copy_id))
+        summary = self.state.copy_summaries.get(scoped_key)
+        if summary is None:
+            raise NotFound(f"copy not found for image: {copy_id}")
+        return summary
+
+    @_with_state_lock
     def update(
         self,
         image_id: str,
