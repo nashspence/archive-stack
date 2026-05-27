@@ -9,6 +9,7 @@ Use these core nouns consistently:
 - `image` — one finalized ISO artifact
 - `copy` — one physical burned disc of an image
 - `pin` — a declared requirement to keep a target materialized in hot storage
+- `evict` — an explicit request to remove archived bytes from the hot cache
 - `fetch` — the pin-scoped recovery manifest for one exact selector
 - `recovery_session` — an approved Glacier restore or image rebuild workflow
 
@@ -43,6 +44,10 @@ A logical file identified by `(collection_id, path)`.
 The server-side materialized cache of file bytes currently available without optical recovery.
 
 Selectors operate over the projected hot namespace, not over literal hot-store paths on disk.
+
+Immediately after collection finalization, files are hot cache entries but not
+implicit pins. Operators use `evict` to remove archived hot-cache bytes, and use
+`pin` to keep or recover selected bytes.
 
 ### Durable authoritative state
 

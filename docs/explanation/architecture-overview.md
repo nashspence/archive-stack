@@ -95,5 +95,14 @@ from storage mutations.
 
 1. The user releases an exact selector.
 2. The system removes that exact pin, if present.
-3. The committed hot namespace is reconciled against the remaining union of pins.
-4. Unneeded committed hot files become eligible for cleanup immediately.
+3. Hot files selected by that released pin are evicted when no remaining pin still covers them.
+4. Unrelated hot files are left alone, and a missing exact pin is a successful no-op.
+
+## Eviction flow
+
+1. The user evicts a file, directory, or collection selector from the hot cache.
+2. Riverhog skips any selected file still covered by an active pin.
+3. Riverhog skips any selected file that is not archived, because hot storage is
+   still the only authoritative copy for that file.
+4. Archived selected files are removed from committed hot storage and remain
+   recoverable through pin/fetch from optical media or Glacier.

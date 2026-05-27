@@ -932,6 +932,30 @@ paths:
                     const: false
         default:
           $ref: "#/components/responses/Error"
+  /evict:
+    post:
+      summary: Evict archived bytes from hot cache
+      description: Removes selected archived hot-cache bytes without changing pin intent. Files covered by any active pin, files that are not archived, and files already cold are skipped and counted.
+      operationId: evictTarget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target]
+              properties:
+                target:
+                  $ref: "#/components/schemas/Target"
+      responses:
+        "200":
+          description: Eviction result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvictResponse"
+        default:
+          $ref: "#/components/responses/Error"
   /pins:
     get:
       summary: List active pins
@@ -2553,6 +2577,27 @@ components:
                   type: array
                   items:
                     $ref: "#/components/schemas/FetchCopyHint"
+    EvictResponse:
+      type: object
+      required:
+        - target
+        - selected_files
+        - selected_bytes
+        - evicted_files
+        - evicted_bytes
+        - already_cold_files
+        - pinned_files
+        - unarchived_files
+      properties:
+        target:
+          $ref: "#/components/schemas/Target"
+        selected_files: { type: integer }
+        selected_bytes: { type: integer }
+        evicted_files: { type: integer }
+        evicted_bytes: { type: integer }
+        already_cold_files: { type: integer }
+        pinned_files: { type: integer }
+        unarchived_files: { type: integer }
     FetchUploadSession:
       type: object
       required: [entry, protocol, upload_url, offset, length, checksum_algorithm, expires_at]

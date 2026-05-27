@@ -1018,6 +1018,58 @@ class AcceptanceState:
             for record in collection_files.values():
                 record.hot = (record.collection_id, record.path) in selected_paths
 
+    def release_hot_files_no_longer_pinned(self, raw_target: str) -> None:
+        released_files = self.selected_files(raw_target, missing_ok=True)
+        for record in released_files:
+            if record.hot and not any(
+                self._record_matches_target(record, str(target))
+                for target in self.exact_pins
+            ):
+                record.hot = False
+
+    @staticmethod
+    def _record_matches_target(record: StoredFile, raw_target: str) -> bool:
+        target = parse_target(raw_target)
+        return (
+            record.projected_target.startswith(target.canonical)
+            if target.is_dir
+            else record.projected_target == target.canonical
+        )
+
+    def evict_hot_files(self, raw_target: str) -> dict[str, int]:
+        selected = self.selected_files(raw_target)
+        selected_bytes = sum(record.bytes for record in selected)
+        evicted_files = 0
+        evicted_bytes = 0
+        already_cold_files = 0
+        pinned_files = 0
+        unarchived_files = 0
+        for record in selected:
+            if any(
+                self._record_matches_target(record, str(target))
+                for target in self.exact_pins
+            ):
+                pinned_files += 1
+                continue
+            if not record.archived:
+                unarchived_files += 1
+                continue
+            if not record.hot:
+                already_cold_files += 1
+                continue
+            record.hot = False
+            evicted_files += 1
+            evicted_bytes += record.bytes
+        return {
+            "selected_files": len(selected),
+            "selected_bytes": selected_bytes,
+            "evicted_files": evicted_files,
+            "evicted_bytes": evicted_bytes,
+            "already_cold_files": already_cold_files,
+            "pinned_files": pinned_files,
+            "unarchived_files": unarchived_files,
+        }
+
     def reserve_fetch_id(self, fetch_id: str) -> None:
         if fetch_id.startswith("fx-"):
             suffix = fetch_id.removeprefix("fx-")
@@ -3768,10 +3820,19 @@ class AcceptancePinService:
         self.state.exact_pins.discard(canonical)
         if removed:
             self.fetches.remove_for_target(canonical)
-        self.state.reconcile_hot_from_pins()
+            self.state.release_hot_files_no_longer_pinned(str(canonical))
         return {
             "target": str(canonical),
             "pin": False,
+        }
+
+    @_with_state_lock
+    def evict(self, raw_target: str) -> dict[str, object]:
+        target = parse_target(raw_target)
+        canonical = cast(TargetStr, target.canonical)
+        return {
+            "target": str(canonical),
+            **self.state.evict_hot_files(str(canonical)),
         }
 
     @_with_state_lock

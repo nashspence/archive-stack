@@ -577,7 +577,21 @@ Required behavior:
 - releasing a broader pin must not remove narrower remaining pins
 - releasing a narrower pin must not remove broader remaining pins
 - releasing the last exact pin for one selector abandons and removes that selector's fetch manifest
-- releasing one exact pin also removes any hot files that are no longer selected by a remaining pin
+- releasing one exact pin also removes selected hot files that are no longer covered by a remaining pin
+- releasing a missing pin must not evict unrelated hot files
+
+#### `POST /v1/evict`
+
+Evicts archived bytes from the committed hot cache without changing pin intent.
+
+Required behavior:
+
+- the `target` field carries one canonical selector over the projected hot namespace
+- evicting a file, directory, or collection selector affects only selected files
+- selected files covered by any active pin are skipped
+- selected files that are not yet archived are skipped so Riverhog does not discard the only known copy
+- selected files that are already cold are counted as already cold and left unchanged
+- successful eviction leaves archived files recoverable through a new pin/fetch workflow
 
 #### `GET /v1/pins`
 
@@ -712,6 +726,7 @@ The `riverhog` CLI is a thin API client and should provide at least:
 - `riverhog copy mark IMAGE_ID GENERATED_ID --state STATE [--verification-state STATE]`
 - `riverhog pin TARGET`
 - `riverhog release TARGET`
+- `riverhog evict TARGET`
 - `riverhog pins`
 - `riverhog fetch FETCH_ID`
 
@@ -838,6 +853,8 @@ Required behavior:
 - releasing a target not currently pinned is a successful no-op
 - a file is logically required in hot if and only if at least one active pin selects it
 - immediately after collection finalization, every file in the collection is hot
+- releasing a file pin evicts only that selected file unless another active pin still covers it
+- evicting a target removes archived hot-cache bytes without removing or creating pins
 - every active pin has exactly one associated fetch manifest, even when the selected bytes are already hot
 - a file restored by a completed fetch is hot
 - hot file content is directly downloadable when the target selects exactly one file

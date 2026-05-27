@@ -147,6 +147,28 @@ def format_pin(payload: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def format_evict(payload: Mapping[str, Any]) -> str:
+    lines = [
+        f"target: {payload.get('target', 'unknown')}",
+        "selected: "
+        f"{payload.get('selected_files', 0)} files, "
+        f"{payload.get('selected_bytes', 0)} bytes",
+        "evicted: "
+        f"{payload.get('evicted_files', 0)} files, "
+        f"{payload.get('evicted_bytes', 0)} bytes",
+    ]
+    skipped = [
+        ("already cold", payload.get("already_cold_files", 0)),
+        ("pinned", payload.get("pinned_files", 0)),
+        ("not archived", payload.get("unarchived_files", 0)),
+    ]
+    skipped_lines = [f"{label}: {count}" for label, count in skipped if count]
+    if skipped_lines:
+        lines.append("skipped:")
+        lines.extend(f"- {line}" for line in skipped_lines)
+    return "\n".join(lines)
+
+
 def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> str:
     pending: list[str] = []
     partial: list[str] = []

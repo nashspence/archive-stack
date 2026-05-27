@@ -5,6 +5,8 @@ from fastapi import APIRouter
 from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_pin
 from riverhog_api.schemas.pins import (
+    EvictRequest,
+    EvictResponse,
     PinRequest,
     PinResponse,
     PinsResponse,
@@ -32,6 +34,15 @@ def release_target(
 ) -> ReleaseResponse:
     payload = container.pins.release(request.target)
     return ReleaseResponse.model_validate(payload)
+
+
+@router.post("/evict", response_model=EvictResponse)
+def evict_target(
+    request: EvictRequest,
+    container: ContainerDep,
+) -> EvictResponse:
+    payload = container.pins.evict(request.target)
+    return EvictResponse.model_validate(payload)
 
 
 @router.get("/pins", response_model=PinsResponse)

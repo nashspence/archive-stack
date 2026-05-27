@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -70,6 +72,7 @@ class SqlAlchemyPinService:
         with session_scope(self._session_factory) as session:
             pin_record = session.get(ActivePinRecord, canonical)
             if pin_record is not None:
+                released_files = _selected_files(session, pin_record.target)
                 fetch_id = pin_record.fetch_id
                 entries = session.scalars(
                     select(FetchEntryRecord).where(FetchEntryRecord.fetch_id == fetch_id)
@@ -82,11 +85,48 @@ class SqlAlchemyPinService:
                 delete_fetch_entries(session, fetch_id)
                 session.delete(pin_record)
                 session.flush()
-            _reconcile_hot_from_pins(session, self._hot_store)
+                _release_hot_files_no_longer_pinned(session, self._hot_store, released_files)
         return {
             "target": str(canonical),
             "pin": False,
         }
+
+    def evict(self, raw_target: str) -> dict[str, object]:
+        target = parse_target(raw_target)
+        canonical = TargetStr(target.canonical)
+        with session_scope(self._session_factory) as session:
+            selected = _selected_files(session, target.canonical)
+            active_targets = session.scalars(select(ActivePinRecord.target)).all()
+            selected_bytes = sum(record.bytes for record in selected)
+            evicted_files = 0
+            evicted_bytes = 0
+            already_cold_files = 0
+            pinned_files = 0
+            unarchived_files = 0
+            for record in selected:
+                if _record_selected_by_any_target(record, active_targets):
+                    pinned_files += 1
+                    continue
+                if not record.archived:
+                    unarchived_files += 1
+                    continue
+                if not record.hot:
+                    already_cold_files += 1
+                    continue
+                self._hot_store.delete_collection_file(record.collection_id, record.path)
+                record.hot = False
+                evicted_files += 1
+                evicted_bytes += record.bytes
+            return {
+                "target": str(canonical),
+                "selected_files": len(selected),
+                "selected_bytes": selected_bytes,
+                "evicted_files": evicted_files,
+                "evicted_bytes": evicted_bytes,
+                "already_cold_files": already_cold_files,
+                "pinned_files": pinned_files,
+                "unarchived_files": unarchived_files,
+            }
 
     def list_pins(self) -> list[PinSummary]:
         with session_scope(self._session_factory) as session:
@@ -176,15 +216,29 @@ def _fetch_payload(fetch_summary: FetchSummary) -> dict[str, object]:
     }
 
 
-def _reconcile_hot_from_pins(session: Session, hot_store: HotStore) -> None:
+def _release_hot_files_no_longer_pinned(
+    session: Session,
+    hot_store: HotStore,
+    released_files: list[CollectionFileRecord],
+) -> None:
     active_targets = session.scalars(select(ActivePinRecord.target)).all()
-    selected_paths: set[tuple[str, str]] = set()
-    for raw_target in active_targets:
-        for record in _selected_files(session, raw_target):
-            selected_paths.add((record.collection_id, record.path))
-    records = session.scalars(select(CollectionFileRecord)).all()
-    for record in records:
-        should_be_hot = (record.collection_id, record.path) in selected_paths
-        if record.hot and not should_be_hot:
+    for record in released_files:
+        if record.hot and not _record_selected_by_any_target(record, active_targets):
             hot_store.delete_collection_file(record.collection_id, record.path)
-        record.hot = should_be_hot
+            record.hot = False
+
+
+def _record_selected_by_any_target(
+    record: CollectionFileRecord,
+    raw_targets: Sequence[str],
+) -> bool:
+    projected_path = f"{record.collection_id}/{record.path}"
+    for raw_target in raw_targets:
+        target = parse_target(raw_target)
+        if (
+            projected_path.startswith(target.canonical)
+            if target.is_dir
+            else projected_path == target.canonical
+        ):
+            return True
+    return False

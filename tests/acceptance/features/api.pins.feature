@@ -54,6 +54,7 @@ Feature: Pins API
       When the client posts to "/v1/release" with target "docs/missing/"
       Then the response status is 200
       And pin is false
+      And file "docs/letters/cover.txt" remains hot
 
   Rule: Pin listing exposes the associated fetch manifest
     Background:
