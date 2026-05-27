@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import logging
 import math
 import os
 import subprocess
 import threading
-from collections.abc import Callable, Iterable, Mapping, Sequence
+import time
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -474,14 +477,43 @@ def refresh_provisional_plan(
     if not _REFRESH_LOCK.acquire(blocking=False):
         _LOG.info("skipping provisional plan refresh because one is already running")
         return
+    started = time.perf_counter()
     try:
-        _refresh_provisional_plan_locked(
-            config=config,
-            hot_store=hot_store,
-            recovery_payload_codec=recovery_payload_codec,
-        )
+        with _planner_refresh_file_lock(config) as acquired:
+            if not acquired:
+                _LOG.info(
+                    "skipping provisional plan refresh because another process holds the lock"
+                )
+                return
+            _LOG.info("planner refresh started")
+            _refresh_provisional_plan_locked(
+                config=config,
+                hot_store=hot_store,
+                recovery_payload_codec=recovery_payload_codec,
+            )
+            _LOG.info(
+                "planner refresh completed in %.1fs",
+                time.perf_counter() - started,
+            )
     finally:
         _REFRESH_LOCK.release()
+
+
+@contextmanager
+def _planner_refresh_file_lock(config: RuntimeConfig) -> Iterator[bool]:
+    lock_root = config.planner_image_root
+    lock_root.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_root / ".planner-refresh.lock"
+    with lock_path.open("a+") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _refresh_provisional_plan_locked(
@@ -493,13 +525,38 @@ def _refresh_provisional_plan_locked(
     session_factory = make_session_factory(config.database_url)
     with session_scope(session_factory) as session:
         plan_files = _load_plan_files(session, config)
+        plan_collection_ids = {file.collection_id for file in plan_files}
+        single_image_collection_ids = {
+            file.collection_id for file in plan_files if file.collection_single_image_possible
+        }
+        _LOG.info(
+            "planner refresh loaded plan files: collections=%s single_image_eligible=%s "
+            "files=%s bytes=%s",
+            len(plan_collection_ids),
+            len(single_image_collection_ids),
+            len(plan_files),
+            sum(file.bytes for file in plan_files),
+        )
         piece_groups = _build_plan_piece_groups(plan_files, config)
+        _LOG.info(
+            "planner refresh packed candidate groups: candidates=%s estimated_bytes=%s",
+            len(piece_groups),
+            [
+                _candidate_estimated_bytes(tuple(pieces), config)
+                for pieces in piece_groups
+            ],
+        )
         desired_ids = {
             _candidate_id_from_fingerprint(_candidate_plan_fingerprint(pieces, config))
             for pieces in piece_groups
         }
         old_image_roots = _delete_stale_provisional_candidates(session, keep_ids=desired_ids)
         specs = _ensure_candidate_specs(session, config=config, piece_groups=piece_groups)
+        _LOG.info(
+            "planner refresh synchronized candidate specs: specs=%s stale_roots=%s",
+            len(specs),
+            len(old_image_roots),
+        )
 
     _remove_provisional_image_roots(config, old_image_roots)
     candidates_root = _candidate_image_root(config)
@@ -546,6 +603,12 @@ def _refresh_provisional_plan_locked(
             if record is None:
                 continue
             if _candidate_state(record) == "ready" and Path(record.image_root).exists():
+                _LOG.info(
+                    "planner candidate %s is already ready: bytes=%s iso_ready=%s",
+                    spec.candidate_id,
+                    record.bytes,
+                    record.iso_ready,
+                )
                 continue
             finalized_ids = set(session.scalars(select(FinalizedImageRecord.image_id)).all())
             if record.finalized_id in finalized_ids:
@@ -555,6 +618,16 @@ def _refresh_provisional_plan_locked(
             record.updated_at = _utc_now()
 
         try:
+            _LOG.info(
+                "planner candidate %s materialization started: finalized_id=%s "
+                "estimated_bytes=%s files=%s collections=%s saturation_release=%s",
+                spec.candidate_id,
+                spec.finalized_id,
+                spec.estimated_bytes,
+                len(spec.pieces),
+                len({piece.collection_id for piece in spec.pieces}),
+                saturation_release,
+            )
             materialized = _materialize_candidate(
                 config=config,
                 hot_store=hot_store,
@@ -590,6 +663,12 @@ def _refresh_provisional_plan_locked(
             record.state = "ready"
             record.failure = None
             record.updated_at = _utc_now()
+            _LOG.info(
+                "planner candidate %s materialization completed: bytes=%s iso_ready=%s",
+                materialized.candidate_id,
+                materialized.bytes,
+                materialized.iso_ready,
+            )
 
 
 def _collection_artifact_cache_root(config: RuntimeConfig) -> Path:
@@ -1488,6 +1567,10 @@ def _materialize_candidate(
     tmp_root = candidates_root / f".{candidate_id}.tmp"
     image_root = candidates_root / candidate_id
     if image_root.exists():
+        _LOG.info(
+            "planner candidate %s image root already exists; estimating ISO size",
+            candidate_id,
+        )
         actual_bytes = estimate_iso_size_from_root(
             image_root=image_root,
             volume_id=finalized_id,
@@ -1506,6 +1589,10 @@ def _materialize_candidate(
             image_root=image_root,
             covered_paths=_covered_paths_for_pieces(pieces),
         )
+    if tmp_root.exists():
+        _LOG.info("planner candidate %s resumes materialization from %s", candidate_id, tmp_root)
+    else:
+        _LOG.info("planner candidate %s creates materialization root %s", candidate_id, tmp_root)
     tmp_root.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -1528,6 +1615,11 @@ def _materialize_candidate(
                 tmp_root / proof_path,
                 recovery_payload_codec,
             )
+        _LOG.info(
+            "planner materialization artifacts written for %s: collections=%s",
+            candidate_id,
+            len(artifact_paths),
+        )
 
         written = 0
         skipped = 0
@@ -1593,6 +1685,12 @@ def _materialize_candidate(
             image_root=tmp_root,
             volume_id=finalized_id,
             fallback_bytes=_tree_file_bytes(tmp_root),
+        )
+        _LOG.info(
+            "planner candidate %s ISO estimate complete: bytes=%s target_bytes=%s",
+            candidate_id,
+            actual_bytes,
+            config.planner_disc_target_bytes,
         )
         tmp_root.rename(image_root)
     except Exception:

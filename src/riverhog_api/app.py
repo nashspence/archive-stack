@@ -41,6 +41,16 @@ _TEST_WEBHOOK_CAPTURE_PATH_ENV = "RIVERHOG_TEST_WEBHOOK_CAPTURE_PATH"
 _DEFAULT_TEST_WEBHOOK_CAPTURE_PATH = "/app/.compose/webhook-captures.jsonl"
 
 
+def _configure_logging(level_name: str) -> None:
+    level = getattr(logging, level_name.upper(), logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    for logger_name in ("riverhog_api", "riverhog_core"):
+        logging.getLogger(logger_name).setLevel(level)
+
+
 class TestWebhookBehavior(TypedDict):
     event: str
     mode: str
@@ -381,6 +391,7 @@ def create_app(
         raise ValueError("create_app accepts either container or container_provider, not both")
 
     config = load_runtime_config()
+    _configure_logging(config.log_level)
     app_container: ServiceContainer | None = container
     app_container_lock = threading.Lock()
     sweep_interval = (

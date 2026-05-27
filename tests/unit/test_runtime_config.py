@@ -107,6 +107,7 @@ def test_load_runtime_config_defaults_to_postgres_database_url(
     monkeypatch.delenv("RIVERHOG_PLANNER_MIN_FILL_RATIO", raising=False)
     monkeypatch.delenv("RIVERHOG_PLANNER_MIN_FILL_BYTES", raising=False)
     monkeypatch.delenv("RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES", raising=False)
+    monkeypatch.delenv("RIVERHOG_LOG_LEVEL", raising=False)
 
     config = load_runtime_config()
 
@@ -115,6 +116,7 @@ def test_load_runtime_config_defaults_to_postgres_database_url(
     assert config.planner_min_fill_ratio == 0.99
     assert config.planner_min_fill_bytes == 49_500_000_000
     assert config.planner_unplanned_saturation_bytes == 300_000_000_000
+    assert config.log_level == "INFO"
     assert config.operator_webhook_reminder_interval == timedelta(hours=24)
 
 
@@ -136,6 +138,7 @@ def test_load_runtime_config_parses_planner_runtime_settings(
     monkeypatch.setenv("RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY", "3s")
     monkeypatch.setenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL", "4s")
     monkeypatch.setenv("RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL", "5s")
+    monkeypatch.setenv("RIVERHOG_LOG_LEVEL", "debug")
 
     config = load_runtime_config()
 
@@ -148,6 +151,7 @@ def test_load_runtime_config_parses_planner_runtime_settings(
     assert config.tusd_append_timeout_seconds == 45.5
     assert config.glacier_multipart_part_bytes == 128 * 1024**2
     assert config.glacier_multipart_concurrency == 8
+    assert config.log_level == "DEBUG"
     assert config.operator_webhook_url == "http://example.invalid/webhook/riverhog"
     assert config.operator_webhook_timeout == timedelta(seconds=2)
     assert config.operator_webhook_retry_delay == timedelta(seconds=3)

@@ -17,6 +17,7 @@ DEFAULT_PLANNER_UNPLANNED_SATURATION_BYTES = 300_000_000_000
 DEFAULT_UNBURNED_COLLECTION_BYTES_LIMIT = 500_000_000_000
 DEFAULT_GLACIER_MULTIPART_PART_BYTES = 64 * 1024 * 1024
 DEFAULT_GLACIER_MULTIPART_CONCURRENCY = 4
+DEFAULT_LOG_LEVEL = "INFO"
 
 
 def _parse_duration(value: str) -> timedelta:
@@ -144,6 +145,7 @@ class RuntimeConfig:
     database_url: str = ""
     incomplete_upload_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
     upload_expiry_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
+    log_level: str = DEFAULT_LOG_LEVEL
     glacier_endpoint_url: str = "http://127.0.0.1:9000"
     glacier_region: str = "us-east-1"
     glacier_bucket: str = "riverhog"
@@ -235,6 +237,12 @@ class RuntimeConfig:
                 "sqlite_path",
                 _sqlite_path_from_database_url(self.database_url),
             )
+        log_level = self.log_level.strip().upper()
+        if log_level not in {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}:
+            raise ValueError(
+                "RIVERHOG_LOG_LEVEL must be one of CRITICAL, ERROR, WARNING, INFO, or DEBUG"
+            )
+        object.__setattr__(self, "log_level", log_level)
         if self.tusd_append_timeout_seconds <= 0.0:
             raise ValueError("RIVERHOG_TUSD_APPEND_TIMEOUT_SECONDS must be > 0")
         if self.glacier_multipart_part_bytes < 1:
@@ -282,6 +290,7 @@ def load_runtime_config() -> RuntimeConfig:
     sqlite_path_raw = os.getenv("RIVERHOG_DB_PATH", "").strip()
     ttl_raw = os.getenv("INCOMPLETE_UPLOAD_TTL", "24h")
     sweep_raw = os.getenv("UPLOAD_EXPIRY_SWEEP_INTERVAL", "30s")
+    log_level = os.getenv("RIVERHOG_LOG_LEVEL", DEFAULT_LOG_LEVEL).strip() or DEFAULT_LOG_LEVEL
 
     sqlite_path = Path(sqlite_path_raw).expanduser().resolve() if sqlite_path_raw else None
     if database_url_raw:
@@ -566,6 +575,7 @@ def load_runtime_config() -> RuntimeConfig:
         database_url=database_url,
         incomplete_upload_ttl=incomplete_upload_ttl,
         upload_expiry_sweep_interval=upload_expiry_sweep_interval,
+        log_level=log_level,
         glacier_endpoint_url=os.getenv("RIVERHOG_GLACIER_ENDPOINT_URL", s3_endpoint_url).rstrip(
             "/"
         ),

@@ -162,6 +162,10 @@ A burnable candidate root is first written as
 readme files are left in that temp root if materialization fails or the app
 restarts.
 
+Planner refreshes use a filesystem lock under `RIVERHOG_PLANNER_IMAGE_ROOT` so
+only one app or operator-triggered process can delete stale candidates or write
+candidate temp roots at a time.
+
 The next planner refresh reuses the same candidate row and temp root, skips
 already completed encrypted files, finishes the missing files, then atomically
 renames the temp root to the final candidate root and marks the candidate

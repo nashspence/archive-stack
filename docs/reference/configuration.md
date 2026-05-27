@@ -9,6 +9,15 @@ Selects the committed hot-storage adapter. The active contract is one
 S3-compatible object store for committed hot files and incomplete upload
 staging.
 
+## `RIVERHOG_LOG_LEVEL`
+
+- type: enum
+- default: `INFO`
+
+Minimum Riverhog application log level. Supported values are `CRITICAL`,
+`ERROR`, `WARNING`, `INFO`, and `DEBUG`. Planner refreshes and materialization
+emit operator-useful phase/progress logs at `INFO`.
+
 ## `RIVERHOG_S3_ENDPOINT_URL`
 
 - type: URL

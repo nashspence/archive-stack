@@ -15,6 +15,7 @@ from riverhog_core.services.planning import (
     _CollectionPieceGroup,
     _pack_collection_piece_groups,
     _PlanFile,
+    _planner_refresh_file_lock,
     _PlanPiece,
     _saturation_release_candidate_id,
 )
@@ -199,6 +200,15 @@ def test_image_root_planning_service_requires_list_lookup_when_listing_images() 
             collection=None,
             has_copies=None,
         )
+
+
+def test_planner_refresh_file_lock_rejects_concurrent_holder(tmp_path: Path) -> None:
+    config = _runtime_config(tmp_path, planner_image_root=tmp_path / "images")
+
+    with _planner_refresh_file_lock(config) as first_acquired:
+        assert first_acquired is True
+        with _planner_refresh_file_lock(config) as second_acquired:
+            assert second_acquired is False
 
 
 def test_planner_starts_large_collection_on_fresh_disc_to_minimize_splits(
