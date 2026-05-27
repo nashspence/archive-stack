@@ -30,8 +30,10 @@ from riverhog_core.catalog_models import (
     CollectionRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
+    FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
+    ImageCopyRecord,
 )
 from riverhog_core.domain.enums import GlacierState, RecoveryCoverageState
 from riverhog_core.domain.errors import BadRequest, Conflict, HashMismatch, NotFound
@@ -1366,76 +1368,120 @@ def _collection_image_coverage(
     dict[str, set[str]],
     dict[tuple[str, str], _RecoveryParts],
 ]:
-    images = (
-        session.scalars(
-            select(FinalizedImageRecord)
-            .join(FinalizedImageCoveredPathRecord)
-            .where(FinalizedImageCoveredPathRecord.collection_id == collection_id)
-            .options(
-                selectinload(FinalizedImageRecord.coverage_parts),
-                selectinload(FinalizedImageRecord.covered_paths),
-                selectinload(FinalizedImageRecord.copies),
-            )
+    image_rows = session.execute(
+        select(
+            FinalizedImageRecord.image_id,
+            FinalizedImageRecord.filename,
+            FinalizedImageRecord.required_copy_count,
         )
-        .unique()
-        .all()
-    )
+        .join(FinalizedImageCoveredPathRecord)
+        .where(FinalizedImageCoveredPathRecord.collection_id == collection_id)
+        .distinct()
+    ).all()
+    image_ids = sorted(row.image_id for row in image_rows)
+    if not image_ids:
+        return [], {}, {}
 
-    covered_paths: dict[str, set[str]] = {}
-    recovery_parts_by_image_path: dict[tuple[str, str], _RecoveryParts] = {}
-    image_coverage: list[CollectionCoverageImage] = []
-    for image in sorted(images, key=lambda current: current.image_id):
-        image_paths: set[str] = set()
-        for covered_path in image.covered_paths:
-            if covered_path.collection_id != collection_id:
-                continue
-            covered_paths.setdefault(covered_path.path, set()).add(image.image_id)
-            image_paths.add(covered_path.path)
-        for part in image.coverage_parts:
-            if part.collection_id != collection_id:
-                continue
-            key = (image.image_id, part.path)
-            current = recovery_parts_by_image_path.get(key)
-            present_parts = frozenset({part.part_index})
-            if current is None:
-                recovery_parts_by_image_path[key] = _RecoveryParts(
-                    part_count=part.part_count,
-                    present_parts=present_parts,
-                )
-                continue
-            recovery_parts_by_image_path[key] = _RecoveryParts(
-                part_count=current.part_count,
-                present_parts=current.present_parts | present_parts,
-            )
+    image_metadata = {
+        row.image_id: (row.filename, row.required_copy_count) for row in image_rows
+    }
 
-        copies = [
+    covered_path_rows = session.execute(
+        select(
+            FinalizedImageCoveredPathRecord.image_id,
+            FinalizedImageCoveredPathRecord.path,
+        )
+        .where(FinalizedImageCoveredPathRecord.collection_id == collection_id)
+        .order_by(
+            FinalizedImageCoveredPathRecord.image_id.asc(),
+            FinalizedImageCoveredPathRecord.path.asc(),
+        )
+    ).all()
+    coverage_part_rows = session.execute(
+        select(
+            FinalizedImageCoveragePartRecord.image_id,
+            FinalizedImageCoveragePartRecord.path,
+            FinalizedImageCoveragePartRecord.part_index,
+            FinalizedImageCoveragePartRecord.part_count,
+        )
+        .where(FinalizedImageCoveragePartRecord.collection_id == collection_id)
+        .order_by(
+            FinalizedImageCoveragePartRecord.image_id.asc(),
+            FinalizedImageCoveragePartRecord.path.asc(),
+            FinalizedImageCoveragePartRecord.part_index.asc(),
+        )
+    ).all()
+    copy_rows = session.execute(
+        select(
+            ImageCopyRecord.image_id,
+            ImageCopyRecord.copy_id,
+            ImageCopyRecord.label_text,
+            ImageCopyRecord.location,
+            ImageCopyRecord.created_at,
+            ImageCopyRecord.state,
+            ImageCopyRecord.verification_state,
+        )
+        .where(ImageCopyRecord.image_id.in_(image_ids))
+        .order_by(ImageCopyRecord.image_id.asc(), ImageCopyRecord.copy_id.asc())
+    ).all()
+
+    copies_by_image: dict[str, list[CopySummary]] = {}
+    registered_copy_counts: dict[str, int] = {}
+    verified_copy_counts: dict[str, int] = {}
+    for copy in copy_rows:
+        copies_by_image.setdefault(copy.image_id, []).append(
             CopySummary(
                 id=CopyId(copy.copy_id),
-                volume_id=image.image_id,
+                volume_id=copy.image_id,
                 label_text=copy.label_text or copy.copy_id,
                 location=copy.location,
                 created_at=copy.created_at,
                 state=normalize_copy_state(copy.state),
                 verification_state=normalize_verification_state(copy.verification_state),
             )
-            for copy in sorted(image.copies, key=lambda current: current.copy_id)
-        ]
-        required_copy_count = normalize_required_copy_count(image.required_copy_count)
-        registered_copy_count = sum(
-            1 for copy in image.copies if copy_counts_toward_protection(copy.state)
         )
-        verified_copy_count = sum(
-            1
-            for copy in image.copies
-            if copy_counts_as_verified(
-                state=copy.state,
-                verification_state=copy.verification_state,
+        if copy_counts_toward_protection(copy.state):
+            registered_copy_counts[copy.image_id] = (
+                registered_copy_counts.get(copy.image_id, 0) + 1
             )
+        if copy_counts_as_verified(
+            state=copy.state,
+            verification_state=copy.verification_state,
+        ):
+            verified_copy_counts[copy.image_id] = verified_copy_counts.get(copy.image_id, 0) + 1
+
+    image_paths_by_image: dict[str, set[str]] = {image_id: set() for image_id in image_ids}
+    covered_paths: dict[str, set[str]] = {}
+    for covered_path in covered_path_rows:
+        covered_paths.setdefault(covered_path.path, set()).add(covered_path.image_id)
+        image_paths_by_image.setdefault(covered_path.image_id, set()).add(covered_path.path)
+
+    recovery_parts_by_image_path: dict[tuple[str, str], _RecoveryParts] = {}
+    for part in coverage_part_rows:
+        key = (part.image_id, part.path)
+        current = recovery_parts_by_image_path.get(key)
+        present_parts = frozenset({part.part_index})
+        if current is None:
+            recovery_parts_by_image_path[key] = _RecoveryParts(
+                part_count=part.part_count,
+                present_parts=present_parts,
+            )
+            continue
+        recovery_parts_by_image_path[key] = _RecoveryParts(
+            part_count=current.part_count,
+            present_parts=current.present_parts | present_parts,
         )
+
+    image_coverage: list[CollectionCoverageImage] = []
+    for image_id in image_ids:
+        filename, required_copy_count_value = image_metadata[image_id]
+        required_copy_count = normalize_required_copy_count(required_copy_count_value)
+        registered_copy_count = registered_copy_counts.get(image_id, 0)
+        verified_copy_count = verified_copy_counts.get(image_id, 0)
         image_coverage.append(
             CollectionCoverageImage(
-                id=ImageId(image.image_id),
-                filename=image.filename,
+                id=ImageId(image_id),
+                filename=filename,
                 protection_state=image_protection_state(
                     required_copy_count=required_copy_count,
                     registered_copy_count=registered_copy_count,
@@ -1447,8 +1493,8 @@ def _collection_image_coverage(
                     required_copy_count=required_copy_count,
                     registered_copy_count=registered_copy_count,
                 ),
-                covered_paths=sorted(image_paths),
-                copies=copies,
+                covered_paths=sorted(image_paths_by_image.get(image_id, set())),
+                copies=copies_by_image.get(image_id, []),
             )
         )
 

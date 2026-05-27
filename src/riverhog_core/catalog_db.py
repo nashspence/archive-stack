@@ -158,6 +158,29 @@ _TYPE_MIGRATIONS: dict[int, list[tuple[str, str, str]]] = {
     ],
 }
 
+# New tables are handled by create_all. New indexes on existing tables need
+# explicit migrations because create_all does not revisit existing tables.
+_INDEX_MIGRATIONS: dict[int, list[tuple[str, str, tuple[str, ...]]]] = {
+    # version 20
+    20: [
+        (
+            "ix_candidate_covered_paths_collection_path",
+            "candidate_covered_paths",
+            ("collection_id", "path"),
+        ),
+        (
+            "ix_finalized_image_covered_paths_collection_path",
+            "finalized_image_covered_paths",
+            ("collection_id", "path"),
+        ),
+        (
+            "ix_finalized_image_coverage_parts_collection_path",
+            "finalized_image_coverage_parts",
+            ("collection_id", "path"),
+        ),
+    ],
+}
+
 
 def database_url_from_sqlite_path(sqlite_path: str | Path) -> str:
     path = Path(sqlite_path).expanduser().resolve()
@@ -220,6 +243,10 @@ def _column_exists(conn: Connection, table: str, column: str) -> bool:
     return any(item["name"] == column for item in inspect(conn).get_columns(table))
 
 
+def _index_exists(conn: Connection, table: str, index: str) -> bool:
+    return any(item["name"] == index for item in inspect(conn).get_indexes(table))
+
+
 def _alter_column_type(conn: Connection, table: str, column: str, col_type: str) -> None:
     backend = conn.dialect.name
     if backend == "sqlite":
@@ -239,7 +266,11 @@ def migrate_schema(engine: Engine) -> None:
         applied = {
             row[0] for row in conn.execute(text("SELECT version FROM schema_migrations")).fetchall()
         }
-        max_version = max(len(_COLUMN_MIGRATIONS), max(_TYPE_MIGRATIONS, default=0))
+        max_version = max(
+            len(_COLUMN_MIGRATIONS),
+            max(_TYPE_MIGRATIONS, default=0),
+            max(_INDEX_MIGRATIONS, default=0),
+        )
         for version in range(1, max_version + 1):
             if version in applied:
                 continue
@@ -256,6 +287,13 @@ def migrate_schema(engine: Engine) -> None:
                 if not _column_exists(conn, table, column):
                     continue
                 _alter_column_type(conn, table, column, col_type)
+            for index, table, index_columns in _INDEX_MIGRATIONS.get(version, []):
+                if not _table_exists(conn, table):
+                    continue
+                if _index_exists(conn, table, index):
+                    continue
+                column_sql = ", ".join(index_columns)
+                conn.execute(text(f"CREATE INDEX {index} ON {table} ({column_sql})"))
             conn.execute(
                 text("INSERT INTO schema_migrations (version) VALUES (:v)"), {"v": version}
             )

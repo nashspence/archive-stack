@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import BigInteger, Boolean, ForeignKeyConstraint, Integer, String
+from sqlalchemy import BigInteger, Boolean, ForeignKeyConstraint, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from riverhog_core.catalog_db import Base
@@ -150,6 +150,11 @@ class CandidateCoveredPathRecord(Base):
     path: Mapped[str] = mapped_column(String, primary_key=True)
 
     __table_args__ = (
+        Index(
+            "ix_candidate_covered_paths_collection_path",
+            "collection_id",
+            "path",
+        ),
         ForeignKeyConstraint(
             ["candidate_id"],
             ["planned_candidates.candidate_id"],
@@ -197,6 +202,11 @@ class FinalizedImageCoveredPathRecord(Base):
     path: Mapped[str] = mapped_column(String, primary_key=True)
 
     __table_args__ = (
+        Index(
+            "ix_finalized_image_covered_paths_collection_path",
+            "collection_id",
+            "path",
+        ),
         ForeignKeyConstraint(
             ["image_id"],
             ["finalized_images.image_id"],
@@ -219,6 +229,11 @@ class FinalizedImageCoveragePartRecord(Base):
     sidecar_path: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
+        Index(
+            "ix_finalized_image_coverage_parts_collection_path",
+            "collection_id",
+            "path",
+        ),
         ForeignKeyConstraint(
             ["image_id"],
             ["finalized_images.image_id"],
