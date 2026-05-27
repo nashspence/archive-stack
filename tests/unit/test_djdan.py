@@ -22,6 +22,7 @@ def _manifest_for(plaintext: bytes) -> dict[str, object]:
         "entries": [
             {
                 "id": "e1",
+                "collection_id": "docs",
                 "path": "tax/2022/invoice-123.pdf",
                 "bytes": len(plaintext),
                 "sha256": sha256,
@@ -514,6 +515,7 @@ def test_djdan_fetch_prompts_when_split_file_needs_next_disc(
                 "entries": [
                     {
                         "id": "e1",
+                        "collection_id": "docs",
                         "path": "tax/2022/invoice-123.pdf",
                         "bytes": len(part_one_plaintext) + len(part_two_plaintext),
                         "sha256": hashlib.sha256(
@@ -631,6 +633,7 @@ def test_djdan_fetch_prompt_state_spans_manifest_entries(
                 "entries": [
                     {
                         "id": "e1",
+                        "collection_id": "2025/alpha",
                         "path": "alpha/file.txt",
                         "bytes": len(first_plaintext),
                         "sha256": hashlib.sha256(first_plaintext).hexdigest(),
@@ -657,6 +660,7 @@ def test_djdan_fetch_prompt_state_spans_manifest_entries(
                     },
                     {
                         "id": "e2",
+                        "collection_id": "2025/beta",
                         "path": "beta/file.txt",
                         "bytes": len(second_plaintext),
                         "sha256": hashlib.sha256(second_plaintext).hexdigest(),
@@ -760,6 +764,7 @@ def test_djdan_fetch_does_not_reprompt_for_same_disc_across_entries(
                 "entries": [
                     {
                         "id": "e1",
+                        "collection_id": "2025/alpha",
                         "path": "alpha/file.txt",
                         "bytes": len(first_plaintext),
                         "sha256": hashlib.sha256(first_plaintext).hexdigest(),
@@ -786,6 +791,7 @@ def test_djdan_fetch_does_not_reprompt_for_same_disc_across_entries(
                     },
                     {
                         "id": "e2",
+                        "collection_id": "2025/beta",
                         "path": "beta/file.txt",
                         "bytes": len(second_plaintext),
                         "sha256": hashlib.sha256(second_plaintext).hexdigest(),
@@ -926,7 +932,7 @@ def test_djdan_fetch_resets_byte_complete_upload_after_final_verification_failur
 
     assert result.exit_code == 1
     assert cancelled == [("fx-1", "e1")]
-    assert "reset byte-complete upload for tax/2022/invoice-123.pdf" in result.stderr
+    assert "reset byte-complete upload for docs/tax/2022/invoice-123.pdf" in result.stderr
     assert "try another registered copy or recovered media" in result.stderr
     assert "error: final fetch verification failed: sha256 did not match" in result.stderr
 
@@ -986,6 +992,7 @@ def test_djdan_fetch_resumes_split_entry_from_session_offset(monkeypatch) -> Non
                 "entries": [
                     {
                         "id": "e1",
+                        "collection_id": "docs",
                         "path": "tax/2022/invoice-123.pdf",
                         "bytes": len(part_one_plaintext) + len(part_two_plaintext),
                         "sha256": hashlib.sha256(

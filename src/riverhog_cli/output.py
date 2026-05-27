@@ -180,6 +180,8 @@ def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> str
             if not isinstance(entry, Mapping):
                 continue
             path = str(entry.get("path", "unknown"))
+            collection_id = str(entry.get("collection_id", "")).strip()
+            label = f"{collection_id}/{path}" if collection_id else path
             total_bytes = int(entry.get("recovery_bytes", entry.get("bytes", 0)))
             uploaded_bytes = int(entry.get("uploaded_bytes", 0))
             upload_state = str(entry.get("upload_state", "pending"))
@@ -190,14 +192,14 @@ def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> str
             if upload_state == "byte_complete" or (
                 total_bytes > 0 and uploaded_bytes >= total_bytes
             ):
-                byte_complete.append(f"- {path} ({uploaded_bytes}/{total_bytes} bytes)")
+                byte_complete.append(f"- {label} ({uploaded_bytes}/{total_bytes} bytes)")
                 continue
             if upload_state == "partial" or uploaded_bytes > 0:
                 partial.append(
-                    f"- {path} ({uploaded_bytes}/{total_bytes} bytes, expires {expires_at})"
+                    f"- {label} ({uploaded_bytes}/{total_bytes} bytes, expires {expires_at})"
                 )
                 continue
-            pending.append(f"- {path}")
+            pending.append(f"- {label}")
 
     lines = [
         f"fetch: {summary.get('id', 'unknown')} ({summary.get('state', 'unknown')})",

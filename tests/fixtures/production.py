@@ -1627,14 +1627,9 @@ class ProductionSystem:
     def upload_required_entries(self, fetch_id: str) -> None:
         with time_block("fixture.upload_required_entries"):
             manifest = self.fetches.manifest(fetch_id)
-            with session_scope(make_session_factory(str(self.db_path))) as db_session:
-                entry_records = db_session.scalars(
-                    select(FetchEntryRecord).where(FetchEntryRecord.fetch_id == fetch_id)
-                ).all()
-                collection_id_by_path = {r.path: r.collection_id for r in entry_records}
             for entry in manifest["entries"]:
                 upload = self.fetches.create_or_resume_upload(fetch_id, entry["id"])
-                entry_collection_id = collection_id_by_path[str(entry["path"])]
+                entry_collection_id = str(entry["collection_id"])
                 for part in entry["parts"]:
                     payload = _command_recovery_payload(
                         self._file_part_bytes(
@@ -1687,11 +1682,6 @@ class ProductionSystem:
     ) -> None:
         payload = self._load_djdan_fixture()
         manifest = self.fetches.manifest(fetch_id)
-        with session_scope(make_session_factory(str(self.db_path))) as session:
-            entry_records = session.scalars(
-                select(FetchEntryRecord).where(FetchEntryRecord.fetch_id == fetch_id)
-            ).all()
-            collection_id_by_path = {r.path: r.collection_id for r in entry_records}
         payload_by_disc_path: dict[str, str] = {}
         fail_disc_paths: list[str] = []
         fail_copy_ids = fail_copy_ids or set()
@@ -1699,10 +1689,11 @@ class ProductionSystem:
 
         with time_block("fixture.configure_djdan_fixture"):
             for entry in manifest["entries"]:
+                entry_collection_id = str(entry["collection_id"])
                 entry_path = str(entry["path"])
                 parts = entry["parts"]
                 plaintext_parts = split_fixture_plaintext(
-                    self._file_bytes(collection_id_by_path[entry_path], entry_path),
+                    self._file_bytes(entry_collection_id, entry_path),
                     len(parts),
                 )
                 for part in parts:

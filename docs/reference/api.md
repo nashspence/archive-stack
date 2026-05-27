@@ -614,6 +614,7 @@ Returns a stable manifest for the exact pin lifetime.
 - the fetch manifest is the source of truth for automated multipart recovery
 - multipart logical files include part-level recovery hints
 - `entries[].parts[]` are ordered by zero-based `index`
+- every manifest entry includes `collection_id` and `path` for the target logical file
 - every manifest entry includes logical plaintext `bytes` / `sha256` plus `recovery_bytes` for the ordered upload
   stream
 - every part hint includes logical plaintext `bytes`, logical plaintext `sha256`, `recovery_bytes`, and at least one
@@ -839,6 +840,8 @@ Required behavior:
 - complete files stream straight from optical recovery into the upload resource rather than being materialized to disk
   first
 - split files stream into the same logical-file upload resource in ascending part order
+- manifest entries identify the logical file with both `collection_id` and `path`, so multidisc fetches that span
+  collections remain unambiguous even when relative paths repeat
 - the upload resource receives raw encrypted recovery bytes exactly as stored in the hinted payload object(s)
 - `djdan` treats the upload resource as opaque and does not own decryption or final logical-file hash validation
 - `djdan fetch` is an intentionally prompt-based multidisc flow: it names the exact required copy before reading from a

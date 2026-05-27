@@ -3865,7 +3865,9 @@ def then_both_manifests_contain_same_logical_file_set(
     assert len(acceptance_context.responses) == 2
     first_entries = acceptance_context.responses[0].json()["entries"]
     second_entries = acceptance_context.responses[1].json()["entries"]
-    assert [entry["path"] for entry in first_entries] == [entry["path"] for entry in second_entries]
+    assert [(entry["collection_id"], entry["path"]) for entry in first_entries] == [
+        (entry["collection_id"], entry["path"]) for entry in second_entries
+    ]
 
 
 @then(parsers.parse('fetch manifest entry "{entry_id}" lists split parts 0 and 1'))

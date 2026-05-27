@@ -158,6 +158,7 @@ class RecoveryPartHint:
 @dataclass(frozen=True, slots=True)
 class RecoveryEntry:
     id: str
+    collection_id: str
     path: str
     bytes: int
     recovery_bytes: int
@@ -697,6 +698,7 @@ def _entry_from_manifest(payload: dict[str, Any]) -> RecoveryEntry:
         )
     return RecoveryEntry(
         id=str(payload["id"]),
+        collection_id=str(payload["collection_id"]),
         path=str(payload["path"]),
         bytes=int(payload["bytes"]),
         recovery_bytes=int(payload.get("recovery_bytes", payload["bytes"])),
@@ -704,16 +706,20 @@ def _entry_from_manifest(payload: dict[str, Any]) -> RecoveryEntry:
     )
 
 
+def _entry_label(entry: RecoveryEntry) -> str:
+    return f"{entry.collection_id}/{entry.path}"
+
+
 def _upload_session_from_payload(entry: RecoveryEntry, payload: dict[str, Any]) -> UploadSession:
     if str(payload.get("entry")) != entry.id:
-        raise RuntimeError(f"upload session entry mismatch for {entry.path}")
+        raise RuntimeError(f"upload session entry mismatch for {_entry_label(entry)}")
     if str(payload.get("protocol")) != "tus":
-        raise RuntimeError(f"upload session protocol is not tus for {entry.path}")
+        raise RuntimeError(f"upload session protocol is not tus for {_entry_label(entry)}")
     if int(payload.get("length", -1)) != entry.recovery_bytes:
-        raise RuntimeError(f"upload session length mismatch for {entry.path}")
+        raise RuntimeError(f"upload session length mismatch for {_entry_label(entry)}")
     offset = int(payload.get("offset", -1))
     if offset < 0 or offset > entry.recovery_bytes:
-        raise RuntimeError(f"upload session offset is invalid for {entry.path}")
+        raise RuntimeError(f"upload session offset is invalid for {_entry_label(entry)}")
     return UploadSession(
         entry=entry.id,
         upload_url=str(payload["upload_url"]),
@@ -1638,7 +1644,7 @@ class ProgressReporter:
         rate = self.uploaded_manifest_bytes / elapsed
         typer.echo(
             (
-                f"current file {entry.path}: {entry_percent:.1f}% | "
+                f"current file {_entry_label(entry)}: {entry_percent:.1f}% | "
                 f"manifest: {manifest_percent:.1f}% | rate: {rate:.1f} B/s"
             ),
             err=True,
@@ -1706,7 +1712,9 @@ def _upload_entry_from_disc(
             next_offset = int(upload_result["offset"])
             uploaded_bytes = next_offset - offset
             if uploaded_bytes != len(chunk):
-                raise RuntimeError(f"upload offset advanced unexpectedly for {entry.path}")
+                raise RuntimeError(
+                    f"upload offset advanced unexpectedly for {_entry_label(entry)}"
+                )
             offset = next_offset
             progress.record_uploaded_bytes(entry, uploaded_bytes)
             progress.report(entry)
@@ -1715,7 +1723,8 @@ def _upload_entry_from_disc(
 
     if offset != entry.recovery_bytes:
         raise RuntimeError(
-            f"upload for {entry.path} stopped at {offset} of {entry.recovery_bytes} bytes"
+            f"upload for {_entry_label(entry)} stopped at {offset} of "
+            f"{entry.recovery_bytes} bytes"
         )
 
 
@@ -1733,7 +1742,7 @@ def _reset_byte_complete_uploads(
         reset_entries.append(entry)
         typer.echo(
             (
-                f"reset byte-complete upload for {entry.path}; "
+                f"reset byte-complete upload for {_entry_label(entry)}; "
                 "try another registered copy or recovered media"
             ),
             err=True,

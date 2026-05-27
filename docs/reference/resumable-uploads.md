@@ -170,6 +170,10 @@ waiting, or still-materializing provisional candidates every
 `POST /v1/fetches/{fetch_id}/entries/{entry_id}/upload` creates or resumes the upload resource for one recovery-manifest
 entry.
 
+Fetch manifest entries identify the logical file with both `collection_id` and
+`path`. This keeps recovery unambiguous when one fetch spans multiple
+collections that contain the same relative path.
+
 The returned `upload_url` is a Riverhog-managed tus-compatible upload resource for that manifest entry. Riverhog
 supports:
 

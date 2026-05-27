@@ -32,10 +32,12 @@ damaged copies and complete an image rebuild session before running
 `djdan fetch` again from recovered media.
 
 Fetch fulfillment is intentionally prompt-based because a fetch can span several
-files, collections, and discs. `djdan` prints the exact copy id and stored
-location before reading from a new disc. It does not prompt again while
-consecutive manifest work stays on that same disc, and it prompts again when a
-later split-file part or later manifest entry needs a different copy.
+files, collections, and discs. Each manifest entry carries both `collection_id`
+and `path`, and `djdan` uses that full logical path in progress output. `djdan`
+prints the exact copy id and stored location before reading from a new disc. It
+does not prompt again while consecutive manifest work stays on that same disc,
+and it prompts again when a later split-file part or later manifest entry needs
+a different copy.
 
 During fulfillment, `djdan` should show:
 

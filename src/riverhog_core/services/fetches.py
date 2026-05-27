@@ -528,6 +528,7 @@ def _manifest_entry_payload(
     )
     return {
         "id": entry.entry_id,
+        "collection_id": entry.collection_id,
         "path": entry.path,
         "bytes": entry.bytes,
         "sha256": entry.sha256,

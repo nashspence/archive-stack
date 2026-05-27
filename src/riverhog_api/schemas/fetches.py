@@ -42,6 +42,7 @@ class FetchManifestPartOut(RiverhogModel):
 
 class FetchManifestEntryOut(RiverhogModel):
     id: str
+    collection_id: str
     path: str
     bytes: int
     sha256: str

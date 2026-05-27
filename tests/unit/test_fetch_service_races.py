@@ -317,6 +317,7 @@ def test_cold_fetch_manifest_uses_registered_disc_payload_metadata(tmp_path: Pat
     entry = manifest["entries"][0]
     copy = entry["copies"][0]
 
+    assert entry["collection_id"] == collection_id
     assert entry["recovery_bytes"] == len(encrypted)
     assert copy["recovery_bytes"] == len(encrypted)
     assert copy["recovery_sha256"] == hashlib.sha256(encrypted).hexdigest()
@@ -510,6 +511,13 @@ def test_cold_fetch_complete_restores_matching_paths_across_collections(
                 fetch_state=FetchState.UPLOADING.value,
             )
         )
+
+    manifest = service.manifest("fx-multi")
+
+    assert [
+        (entry["collection_id"], entry["path"])
+        for entry in manifest["entries"]
+    ] == [(collection_id, path) for collection_id, _content in collections]
 
     completed = service.complete("fx-multi")
 

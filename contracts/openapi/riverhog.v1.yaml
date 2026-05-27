@@ -2466,9 +2466,12 @@ components:
     FetchManifestEntry:
       type: object
       required:
-        [id, path, bytes, sha256, recovery_bytes, upload_state, uploaded_bytes, upload_state_expires_at, copies]
+        [id, collection_id, path, bytes, sha256, recovery_bytes, upload_state, uploaded_bytes, upload_state_expires_at, copies]
       properties:
         id: { type: string }
+        collection_id:
+          type: string
+          description: Collection id for this logical file, included so fetches spanning multiple collections remain unambiguous.
         path: { type: string }
         bytes:
           type: integer
