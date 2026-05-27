@@ -1312,6 +1312,19 @@ def test_underfilled_tail_candidate_waits_without_materializing(tmp_path: Path) 
     assert plan["candidates"] == []
     assert plan["unplanned_bytes"] == len(content)
 
+    with session_scope(session_factory) as session:
+        candidate = session.scalars(select(PlannedCandidateRecord)).one()
+        candidate_id = candidate.candidate_id
+        candidate.plan_fingerprint = "stale"
+
+    assert planning.process_due_refresh() == 1
+
+    with session_scope(session_factory) as session:
+        candidate = session.get(PlannedCandidateRecord, candidate_id)
+        assert candidate is not None
+        assert candidate.state == "waiting"
+        assert candidate.plan_fingerprint != "stale"
+
 
 def test_saturated_underfilled_candidate_is_iso_ready(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"

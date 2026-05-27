@@ -77,6 +77,7 @@ from riverhog_core.webhooks import (
 
 _LOG = logging.getLogger(__name__)
 _ENCRYPTED_SIZE_PAD_BYTES = 8192
+_PLANNER_ALLOCATION_VERSION = 2
 _REFRESH_LOCK = threading.Lock()
 
 
@@ -768,6 +769,7 @@ def _candidate_plan_fingerprint(
     config: RuntimeConfig,
 ) -> str:
     digest = hashlib.sha256()
+    digest.update(f"allocation_version\t{_PLANNER_ALLOCATION_VERSION}\n".encode())
     digest.update(f"target\t{config.planner_disc_target_bytes}\n".encode())
     digest.update(f"min\t{config.planner_min_fill_bytes}\n".encode())
     for piece in pieces:
@@ -808,7 +810,14 @@ def _planner_refresh_needed(session: Session, config: RuntimeConfig) -> bool:
         for candidate in candidates
         for covered in candidate.covered_paths
     }
-    return not plan_pairs.issubset(covered_pairs)
+    if not plan_pairs.issubset(covered_pairs):
+        return True
+    desired_fingerprints = {
+        _candidate_plan_fingerprint(pieces, config)
+        for pieces in _build_plan_piece_groups(plan_files, config)
+    }
+    candidate_fingerprints = {candidate.plan_fingerprint for candidate in candidates}
+    return desired_fingerprints != candidate_fingerprints
 
 
 def _deliver_due_ready_candidate_notifications(
