@@ -27,6 +27,24 @@ The machine-readable contract files live in `contracts/disc/`:
 - on-disc filenames are generic; canonical collection paths live only inside decrypted YAML
 - any collection represented on a disc, whether whole or partial, must also contribute its whole collection manifest and its `.ots` proof
 
+## Planner Sizing
+
+Provisional candidates are planned against the configured target byte size before
+any ISO is exposed as ready. The planner budgets:
+
+- each encrypted leaf as the age stream-size estimate plus a 256 byte age-header
+  reserve and a 2048 byte ISO leaf-metadata reserve
+- each represented file part with an additional 256 byte `DISC.yml` manifest
+  entry reserve
+- each collection manifest and `.ots` proof on every candidate that contains
+  any part of that collection
+- a 4 MiB base candidate metadata reserve
+
+After materialization, Riverhog runs `xorriso -print-size` against the actual
+image root. A candidate is reported as ISO-ready only if that measured ISO size
+is at or below `RIVERHOG_PLANNER_DISC_TARGET_BYTES` and satisfies the configured
+minimum fill rule or saturation override.
+
 ## Canonical Root Layout
 
 ```text

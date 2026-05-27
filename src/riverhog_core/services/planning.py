@@ -79,8 +79,14 @@ from riverhog_core.webhooks import (
 )
 
 _LOG = logging.getLogger(__name__)
-_ENCRYPTED_SIZE_PAD_BYTES = 8192
-_PLANNER_ALLOCATION_VERSION = 2
+# These reserves intentionally estimate the represented ISO bytes, not only
+# encrypted payload bytes. They are calibrated from materialized xorriso output
+# and kept conservative enough to avoid overfitting one tiny-file-heavy disc.
+_AGE_ENCRYPTED_HEADER_PAD_BYTES = 256
+_ISO_LEAF_PAD_BYTES = 2048
+_DISC_MANIFEST_ENTRY_PAD_BYTES = 256
+_CANDIDATE_BASE_METADATA_PAD_BYTES = 4 * 1024 * 1024
+_PLANNER_ALLOCATION_VERSION = 3
 _REFRESH_LOCK = threading.Lock()
 
 
@@ -113,10 +119,15 @@ class _PlanPiece:
     part_count: int
     estimated_payload_bytes: int
     estimated_sidecar_bytes: int
+    estimated_disc_manifest_bytes: int = 0
 
     @property
     def estimated_total_bytes(self) -> int:
-        return self.estimated_payload_bytes + self.estimated_sidecar_bytes
+        return (
+            self.estimated_payload_bytes
+            + self.estimated_sidecar_bytes
+            + self.estimated_disc_manifest_bytes
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1093,8 +1104,9 @@ def _collection_fits_single_image(
             part_index=0,
             part_count=1,
         )
-        estimated_bytes += _estimated_encrypted_size(file_record.bytes)
-        estimated_bytes += _estimated_encrypted_size(len(sidecar))
+        estimated_bytes += _estimated_encrypted_leaf_size(file_record.bytes)
+        estimated_bytes += _estimated_encrypted_leaf_size(len(sidecar))
+        estimated_bytes += _DISC_MANIFEST_ENTRY_PAD_BYTES
         if estimated_bytes > payload_capacity:
             return False
     return True
@@ -1148,8 +1160,9 @@ def _build_plan_piece_groups(
                     plaintext_bytes=plaintext_bytes,
                     part_index=part_index,
                     part_count=piece_count,
-                    estimated_payload_bytes=_estimated_encrypted_size(plaintext_bytes),
-                    estimated_sidecar_bytes=_estimated_encrypted_size(len(sidecar)),
+                    estimated_payload_bytes=_estimated_encrypted_leaf_size(plaintext_bytes),
+                    estimated_sidecar_bytes=_estimated_encrypted_leaf_size(len(sidecar)),
+                    estimated_disc_manifest_bytes=_DISC_MANIFEST_ENTRY_PAD_BYTES,
                 )
             )
 
@@ -1535,22 +1548,35 @@ def _collection_artifact_estimate(config: RuntimeConfig, collection_id: str) -> 
 
 
 def _collection_artifact_bytes_estimate(artifact: _CollectionArtifactCache) -> int:
-    return _estimated_encrypted_size(len(artifact.manifest_bytes)) + _estimated_encrypted_size(
+    return _estimated_encrypted_leaf_size(
+        len(artifact.manifest_bytes)
+    ) + _estimated_encrypted_leaf_size(
         len(artifact.proof_bytes)
     )
 
 
-def _estimated_encrypted_size(plaintext_size: int) -> int:
-    return encrypted_size_for_plaintext_size(plaintext_size) + _ENCRYPTED_SIZE_PAD_BYTES
+def _estimated_encrypted_leaf_size(plaintext_size: int) -> int:
+    return (
+        encrypted_size_for_plaintext_size(plaintext_size)
+        + _AGE_ENCRYPTED_HEADER_PAD_BYTES
+        + _ISO_LEAF_PAD_BYTES
+    )
 
 
 def _candidate_metadata_pad(target_bytes: int) -> int:
-    return min(max(32 * 1024, target_bytes // 1000), max(1, target_bytes // 10))
+    return min(_CANDIDATE_BASE_METADATA_PAD_BYTES, max(1, target_bytes // 10))
 
 
 def _max_piece_plaintext_bytes(target_bytes: int) -> int:
     budget = max(1, target_bytes - _candidate_metadata_pad(target_bytes))
-    return max(1, max_plaintext_size_for_encrypted_budget(budget))
+    encrypted_payload_budget = max(
+        1,
+        budget
+        - _AGE_ENCRYPTED_HEADER_PAD_BYTES
+        - _ISO_LEAF_PAD_BYTES
+        - _DISC_MANIFEST_ENTRY_PAD_BYTES,
+    )
+    return max(1, max_plaintext_size_for_encrypted_budget(encrypted_payload_budget))
 
 
 def _materialize_candidate(

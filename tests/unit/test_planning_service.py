@@ -5,14 +5,17 @@ from pathlib import Path
 
 import pytest
 
+from riverhog_core.crypto_age import encrypted_size_for_plaintext_size
 from riverhog_core.domain.errors import NotYetImplemented
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.planning import (
     ImageRootPlanningService,
     ImageRootRecord,
     _build_plan_piece_groups,
+    _candidate_metadata_pad,
     _CandidateSpec,
     _CollectionPieceGroup,
+    _estimated_encrypted_leaf_size,
     _pack_collection_piece_groups,
     _PlanFile,
     _planner_refresh_file_lock,
@@ -87,6 +90,35 @@ def _spec(candidate_id: str, estimated_bytes: int) -> _CandidateSpec:
         estimated_bytes=estimated_bytes,
         pieces=(),
     )
+
+
+def test_planner_uses_tight_file_count_aware_leaf_estimates() -> None:
+    assert _estimated_encrypted_leaf_size(1) == encrypted_size_for_plaintext_size(1) + 2304
+    assert _candidate_metadata_pad(50_000_000_000) == 4 * 1024 * 1024
+
+
+def test_planner_pieces_budget_disc_manifest_entries(tmp_path: Path) -> None:
+    config = _runtime_config(
+        tmp_path,
+        planner_disc_target_bytes=1_000_000,
+        planner_min_fill_bytes=1,
+    )
+    groups = _build_plan_piece_groups(
+        [
+            _PlanFile(
+                collection_id="2026/20260101T000000Z__tiny",
+                path="a.txt",
+                bytes=1,
+                sha256="a" * 64,
+            )
+        ],
+        config,
+    )
+
+    piece = groups[0][0]
+
+    assert piece.estimated_payload_bytes == encrypted_size_for_plaintext_size(1) + 2304
+    assert piece.estimated_disc_manifest_bytes == 256
 
 
 def test_image_root_planning_service_delegates_lookups_and_stream_creation(
@@ -216,7 +248,7 @@ def test_planner_starts_large_collection_on_fresh_disc_to_minimize_splits(
 ) -> None:
     config = _runtime_config(
         tmp_path,
-        planner_disc_target_bytes=1_000_000,
+        planner_disc_target_bytes=1_050_000,
         planner_min_fill_bytes=1,
         planner_image_root=tmp_path / "images",
     )
@@ -257,7 +289,7 @@ def test_planner_uses_leftover_space_when_collection_disc_count_is_unchanged(
 ) -> None:
     config = _runtime_config(
         tmp_path,
-        planner_disc_target_bytes=1_000_000,
+        planner_disc_target_bytes=1_050_000,
         planner_min_fill_bytes=1,
         planner_image_root=tmp_path / "images",
     )
@@ -292,7 +324,7 @@ def test_planner_uses_leftover_space_when_collection_disc_count_is_unchanged(
 def test_planner_reorders_collections_to_pack_candidates_better(tmp_path: Path) -> None:
     config = _runtime_config(
         tmp_path,
-        planner_disc_target_bytes=1_000_000,
+        planner_disc_target_bytes=1_050_000,
         planner_min_fill_bytes=1,
         planner_image_root=tmp_path / "images",
     )
