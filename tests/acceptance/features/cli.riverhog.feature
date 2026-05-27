@@ -126,12 +126,12 @@ Feature: riverhog CLI
       And stdout mentions "iso_ready: True"
       And stdout mentions "collections: 1 [docs]"
 
-    Scenario: riverhog images prints physical media work status
+    Scenario: riverhog dashboard prints physical media work status
       Given an archive with planner fixtures
       And an archive with split planner fixtures
       And candidate "img_2026-04-20_01" is finalized
       And copy "20260420T040001Z-1" already exists
-      When the operator runs 'riverhog images --has-copies'
+      When the operator runs 'riverhog dashboard --has-copies'
       Then the command exits with code 0
       And stdout mentions "ready_to_finalize:"
       And stdout mentions "img_2026-04-20_03"
@@ -143,6 +143,14 @@ Feature: riverhog CLI
       And stdout mentions "noncompliant_collections:"
       And stdout mentions "photos-2024 state=cloud_only"
       And stdout mentions "fully_protected_collections:"
+    Scenario: riverhog images prints finalized image records
+      Given an archive with planner fixtures
+      And candidate "img_2026-04-20_01" is finalized
+      When the operator runs 'riverhog images'
+      Then the command exits with code 0
+      And stdout mentions "images:"
+      And stdout mentions "20260420T040001Z"
+      And stdout mentions "protection:"
     Scenario: riverhog show prints collection Glacier state and physical coverage
       Given an archive with planner fixtures
       And collection "docs" has uploaded Glacier archive package

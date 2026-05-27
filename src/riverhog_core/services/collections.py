@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import re
+from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -35,7 +36,7 @@ from riverhog_core.catalog_models import (
     FinalizedImageRecord,
     ImageCopyRecord,
 )
-from riverhog_core.domain.enums import GlacierState, RecoveryCoverageState
+from riverhog_core.domain.enums import GlacierState, ProtectionState, RecoveryCoverageState
 from riverhog_core.domain.errors import BadRequest, Conflict, HashMismatch, NotFound
 from riverhog_core.domain.models import (
     CollectionCoverageImage,
@@ -500,6 +501,182 @@ class SqlAlchemyCollectionService:
                 pages=pages,
                 collections=summaries[start:stop],
             )
+
+    def list_dashboard_collections(self, *, q: str | None) -> dict[str, object]:
+        needle = q.casefold() if q else None
+        with session_scope(self._session_factory) as session:
+            file_rows = session.execute(
+                select(
+                    CollectionFileRecord.collection_id,
+                    CollectionFileRecord.path,
+                    CollectionFileRecord.bytes,
+                    CollectionFileRecord.hot,
+                    CollectionFileRecord.archived,
+                ).order_by(
+                    CollectionFileRecord.collection_id.asc(),
+                    CollectionFileRecord.path.asc(),
+                )
+            ).all()
+            if not file_rows:
+                return {"collections": []}
+
+            collection_ids = sorted({file_row.collection_id for file_row in file_rows})
+            if needle is not None:
+                collection_ids = [
+                    collection_id
+                    for collection_id in collection_ids
+                    if needle in collection_id.casefold()
+                ]
+            if not collection_ids:
+                return {"collections": []}
+            collection_id_set = set(collection_ids)
+            bytes_by_collection: dict[str, int] = defaultdict(int)
+            for file_row in file_rows:
+                if file_row.collection_id in collection_id_set:
+                    bytes_by_collection[file_row.collection_id] += file_row.bytes
+
+            archive_rows = session.execute(
+                select(CollectionArchiveRecord.collection_id, CollectionArchiveRecord.state).where(
+                    CollectionArchiveRecord.collection_id.in_(collection_ids)
+                )
+            ).all()
+            glacier_bytes_by_collection = {
+                archive_row.collection_id: (
+                    bytes_by_collection.get(archive_row.collection_id, 0)
+                    if normalize_glacier_state(archive_row.state) == GlacierState.UPLOADED
+                    else 0
+                )
+                for archive_row in archive_rows
+            }
+
+            image_states = _finalized_image_protection_states(session)
+            coverage_rows = session.execute(
+                select(
+                    FinalizedImageCoveredPathRecord.collection_id,
+                    FinalizedImageCoveredPathRecord.path,
+                    FinalizedImageCoveredPathRecord.image_id,
+                )
+                .where(FinalizedImageCoveredPathRecord.collection_id.in_(collection_ids))
+                .order_by(
+                    FinalizedImageCoveredPathRecord.collection_id.asc(),
+                    FinalizedImageCoveredPathRecord.path.asc(),
+                    FinalizedImageCoveredPathRecord.image_id.asc(),
+                )
+            ).all()
+            coverage_by_path: dict[tuple[str, str], set[str]] = defaultdict(set)
+            image_states_by_collection: dict[str, set[ProtectionState]] = defaultdict(set)
+            for coverage_row in coverage_rows:
+                image_state = image_states.get(coverage_row.image_id, ProtectionState.UNPROTECTED)
+                coverage_by_path[(coverage_row.collection_id, coverage_row.path)].add(
+                    coverage_row.image_id
+                )
+                image_states_by_collection[coverage_row.collection_id].add(image_state)
+
+            stats = {
+                collection_id: {
+                    "id": collection_id,
+                    "files": 0,
+                    "bytes": 0,
+                    "hot_bytes": 0,
+                    "archived_bytes": 0,
+                    "protected_bytes": 0,
+                }
+                for collection_id in collection_ids
+            }
+            for file_row in file_rows:
+                if file_row.collection_id not in collection_id_set:
+                    continue
+                collection_stats = stats[file_row.collection_id]
+                collection_stats["files"] += 1
+                collection_stats["bytes"] += file_row.bytes
+                if file_row.hot:
+                    collection_stats["hot_bytes"] += file_row.bytes
+                if file_row.archived:
+                    collection_stats["archived_bytes"] += file_row.bytes
+                image_ids = coverage_by_path.get(
+                    (file_row.collection_id, file_row.path), set()
+                )
+                if image_ids and all(
+                    image_states.get(image_id, ProtectionState.UNPROTECTED)
+                    == ProtectionState.PROTECTED
+                    for image_id in image_ids
+                ):
+                    collection_stats["protected_bytes"] += file_row.bytes
+
+            collections: list[dict[str, object]] = []
+            for collection_id in collection_ids:
+                collection_stats = stats[collection_id]
+                bytes_total = int(collection_stats["bytes"])
+                archived_bytes = int(collection_stats["archived_bytes"])
+                protected_bytes = int(collection_stats["protected_bytes"])
+                protection_state = collection_protection_state(
+                    bytes_total=bytes_total,
+                    protected_bytes=protected_bytes,
+                    archived_bytes=archived_bytes,
+                    image_states=image_states_by_collection.get(collection_id, set()),
+                )
+                glacier_bytes = glacier_bytes_by_collection.get(collection_id, 0)
+                collections.append(
+                    {
+                        **collection_stats,
+                        "pending_bytes": bytes_total - archived_bytes,
+                        "protection_state": _api_collection_protection_state(
+                            protection_state
+                        ),
+                        "recovery": {
+                            "available": [
+                                name
+                                for name, available in (
+                                    ("verified_physical", protected_bytes >= bytes_total),
+                                    ("glacier", glacier_bytes >= bytes_total),
+                                )
+                                if bytes_total > 0 and available
+                            ],
+                            "verified_physical": {
+                                "state": _recovery_coverage_state(
+                                    covered_bytes=protected_bytes,
+                                    total_bytes=bytes_total,
+                                ).value,
+                                "bytes": protected_bytes,
+                            },
+                            "glacier": {
+                                "state": _recovery_coverage_state(
+                                    covered_bytes=glacier_bytes,
+                                    total_bytes=bytes_total,
+                                ).value,
+                                "bytes": glacier_bytes,
+                            },
+                        },
+                    }
+                )
+
+            return {"collections": collections}
+
+
+def _finalized_image_protection_states(session: Session) -> dict[str, ProtectionState]:
+    image_rows = session.execute(
+        select(FinalizedImageRecord.image_id, FinalizedImageRecord.required_copy_count)
+    ).all()
+    registered_counts: dict[str, int] = {row.image_id: 0 for row in image_rows}
+    copy_rows = session.execute(select(ImageCopyRecord.image_id, ImageCopyRecord.state)).all()
+    for copy in copy_rows:
+        if copy_counts_toward_protection(copy.state):
+            registered_counts[copy.image_id] = registered_counts.get(copy.image_id, 0) + 1
+    return {
+        row.image_id: image_protection_state(
+            required_copy_count=normalize_required_copy_count(row.required_copy_count),
+            registered_copy_count=registered_counts.get(row.image_id, 0),
+        )
+        for row in image_rows
+    }
+
+
+def _api_collection_protection_state(state: ProtectionState) -> str:
+    if state is ProtectionState.PROTECTED:
+        return "fully_protected"
+    if state is ProtectionState.PARTIALLY_PROTECTED:
+        return "under_protected"
+    return "cloud_only"
 
 
 def _normalize_collection_id_or_raise(raw: str) -> str:

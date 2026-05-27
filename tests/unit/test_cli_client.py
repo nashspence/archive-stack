@@ -139,6 +139,26 @@ def test_list_collections_uses_collection_listing_endpoint(monkeypatch) -> None:
     ]
 
 
+def test_list_dashboard_collections_uses_dashboard_endpoint(monkeypatch) -> None:
+    captured: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(str(request.url))
+        return httpx.Response(200, json={"collections": []})
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_client(self: ApiClient) -> httpx.Client:
+        return httpx.Client(base_url=self.base_url, transport=transport)
+
+    monkeypatch.setattr(ApiClient, "_client", fake_client)
+
+    client = ApiClient(base_url="https://api.test")
+    client.list_dashboard_collections(q="docs")
+
+    assert captured == ["https://api.test/v1/dashboard/collections?q=docs"]
+
+
 def test_create_or_resume_collection_file_upload_quotes_collection_and_path(monkeypatch) -> None:
     captured: list[tuple[str, str]] = []
 

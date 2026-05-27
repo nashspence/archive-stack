@@ -15,16 +15,17 @@ import typer
 from riverhog_cli.client import ApiClient
 from riverhog_cli.output import (
     emit,
-    format_archive_status,
     format_collection_files,
     format_collection_summary,
     format_collection_upload,
     format_copies,
     format_copy,
+    format_dashboard,
     format_evict,
     format_fetch,
     format_files,
     format_glacier_report,
+    format_images,
     format_pin,
     format_plan,
 )
@@ -930,20 +931,42 @@ def images_cmd(
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    if json_mode:
-        api = client()
-        payload = api.list_images(
-            page=page,
-            per_page=per_page,
-            sort=sort,
-            order=order,
-            query=query,
-            collection=collection,
-            has_copies=has_copies,
-        )
-        emit(payload, json_mode=True)
-        return
+    payload = client().list_images(
+        page=page,
+        per_page=per_page,
+        sort=sort,
+        order=order,
+        query=query,
+        collection=collection,
+        has_copies=has_copies,
+    )
+    emit(payload if json_mode else format_images(payload), json_mode=json_mode)
 
+
+@app.command("dashboard")
+def dashboard_cmd(
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[
+        str, typer.Option("--sort", help="Finalized-image sort field")
+    ] = "finalized_at",
+    order: Annotated[str, typer.Option("--order", help="Finalized-image sort order")] = "desc",
+    query: Annotated[
+        str | None,
+        typer.Option("--query", help="Filter dashboard lists by matching text"),
+    ] = None,
+    collection: Annotated[
+        str | None, typer.Option("--collection", help="Filter by exact contained collection id")
+    ] = None,
+    has_copies: Annotated[
+        bool | None,
+        typer.Option(
+            "--has-copies/--no-copies",
+            help="Filter finalized images by whether they have registered copies",
+        ),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
     collections_query = collection or query
 
     def call_with_client(call: Callable[[ApiClient], dict[str, Any]]) -> dict[str, Any]:
@@ -981,9 +1004,7 @@ def images_cmd(
             collection=collection,
             iso_ready=False,
         ),
-        "collections": lambda api: api.list_collections(
-            page=page,
-            per_page=per_page,
+        "collections": lambda api: api.list_dashboard_collections(
             q=collections_query,
         ),
     }
@@ -1008,8 +1029,17 @@ def images_cmd(
         collections_payload,
         protection_state="fully_protected",
     )
+    dashboard_payload = {
+        "ready_to_finalize": results["ready_plan"],
+        "waiting_for_future_iso": results["backlog_plan"],
+        "finalized_images": results["images"],
+        "collections": collections_payload,
+    }
+    if json_mode:
+        emit(dashboard_payload, json_mode=True)
+        return
     emit(
-        format_archive_status(
+        format_dashboard(
             results["ready_plan"],
             results["backlog_plan"],
             results["images"],

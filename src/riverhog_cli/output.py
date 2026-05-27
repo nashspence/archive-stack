@@ -270,7 +270,7 @@ def format_image(image: Mapping[str, Any]) -> str:
     )
 
 
-def format_archive_status(
+def format_dashboard(
     ready_plan_payload: Mapping[str, Any],
     backlog_plan_payload: Mapping[str, Any],
     images_payload: Mapping[str, Any],
@@ -279,7 +279,7 @@ def format_archive_status(
     protected_collections_payload: Mapping[str, Any],
 ) -> str:
     lines = [
-        "archive: "
+        "dashboard: "
         f"page={images_payload.get('page', 1)} "
         f"per_page={images_payload.get('per_page', 25)} "
         f"ready_to_finalize={ready_plan_payload.get('total', 0)} "
