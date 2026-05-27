@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TypedDict
 
-from sqlalchemy import select
+from sqlalchemy import func, insert, select
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from riverhog_core.archive_compliance import (
@@ -408,41 +408,53 @@ class SqlAlchemyPlanningService:
                     required_copy_count=2,
                 )
                 session.add(image)
-                for cp in candidate.covered_paths:
-                    session.add(
-                        FinalizedImageCoveredPathRecord(
-                            image_id=candidate.finalized_id,
-                            collection_id=cp.collection_id,
-                            path=cp.path,
-                        )
+                session.flush()
+                covered_path_rows = [
+                    {
+                        "image_id": candidate.finalized_id,
+                        "collection_id": collection_id,
+                        "path": path,
+                    }
+                    for collection_id, path in session.execute(
+                        select(
+                            CandidateCoveredPathRecord.collection_id,
+                            CandidateCoveredPathRecord.path,
+                        ).where(CandidateCoveredPathRecord.candidate_id == candidate_id)
+                    ).all()
+                ]
+                if covered_path_rows:
+                    session.execute(insert(FinalizedImageCoveredPathRecord), covered_path_rows)
+                artifact_rows = [
+                    {
+                        "image_id": candidate.finalized_id,
+                        "collection_id": artifact.collection_id,
+                        "manifest_path": artifact.manifest_path,
+                        "proof_path": artifact.proof_path,
+                    }
+                    for artifact in read_finalized_image_collection_artifacts(
+                        candidate.image_root,
+                        self._recovery_payload_codec,
                     )
-                for artifact in read_finalized_image_collection_artifacts(
-                    candidate.image_root,
-                    self._recovery_payload_codec,
-                ):
-                    session.add(
-                        FinalizedImageCollectionArtifactRecord(
-                            image_id=candidate.finalized_id,
-                            collection_id=artifact.collection_id,
-                            manifest_path=artifact.manifest_path,
-                            proof_path=artifact.proof_path,
-                        )
+                ]
+                if artifact_rows:
+                    session.execute(insert(FinalizedImageCollectionArtifactRecord), artifact_rows)
+                coverage_part_rows = [
+                    {
+                        "image_id": candidate.finalized_id,
+                        "collection_id": part.collection_id,
+                        "path": part.path,
+                        "part_index": part.part_index,
+                        "part_count": part.part_count,
+                        "object_path": part.object_path,
+                        "sidecar_path": part.sidecar_path,
+                    }
+                    for part in read_finalized_image_coverage_parts(
+                        candidate.image_root,
+                        self._recovery_payload_codec,
                     )
-                for part in read_finalized_image_coverage_parts(
-                    candidate.image_root,
-                    self._recovery_payload_codec,
-                ):
-                    session.add(
-                        FinalizedImageCoveragePartRecord(
-                            image_id=candidate.finalized_id,
-                            collection_id=part.collection_id,
-                            path=part.path,
-                            part_index=part.part_index,
-                            part_count=part.part_count,
-                            object_path=part.object_path,
-                            sidecar_path=part.sidecar_path,
-                        )
-                    )
+                ]
+                if coverage_part_rows:
+                    session.execute(insert(FinalizedImageCoveragePartRecord), coverage_part_rows)
                 _seed_required_copy_slots(session, image)
                 session.flush()
                 session.refresh(image)
@@ -1976,8 +1988,21 @@ def _finalized_image_view(image: FinalizedImageRecord, session: Session) -> Fina
         required_copy_count=required_copy_count,
         registered_copy_count=registered_copy_count,
     )
-    collection_ids = sorted({cp.collection_id for cp in image.covered_paths})
-    files = len(image.covered_paths)
+    collection_ids = sorted(
+        session.scalars(
+            select(FinalizedImageCoveredPathRecord.collection_id)
+            .where(FinalizedImageCoveredPathRecord.image_id == image.image_id)
+            .distinct()
+        ).all()
+    )
+    files = (
+        session.scalar(
+            select(func.count())
+            .select_from(FinalizedImageCoveredPathRecord)
+            .where(FinalizedImageCoveredPathRecord.image_id == image.image_id)
+        )
+        or 0
+    )
     fill = image.bytes / image.target_bytes if image.target_bytes else 0.0
     finalized_at = _image_id_to_finalized_at(image.image_id)
     return {
