@@ -837,6 +837,12 @@ def _storage_guidance(copy_id: str) -> str:
     return "Store this copy in a different physical location from the first copy."
 
 
+def _default_burn_device() -> str:
+    if sys.platform == "darwin":
+        return "default"
+    return "/dev/sr0"
+
+
 def _copy_label(copy_payload: dict[str, Any]) -> str:
     label = copy_payload.get("label_text")
     return str(label if label is not None else copy_payload.get("id"))
@@ -1806,7 +1812,13 @@ def fetch_cmd(
 
 @app.command("burn")
 def burn_cmd(
-    device: Annotated[str, typer.Option("--device", help="Optical device path")] = "/dev/sr0",
+    device: Annotated[
+        str | None,
+        typer.Option(
+            "--device",
+            help="Optical device path; omitted uses the platform default burner",
+        ),
+    ] = None,
     staging_dir: Annotated[
         Path | None,
         typer.Option("--staging-dir", help="Local staging directory for ISO downloads"),
@@ -1829,6 +1841,7 @@ def burn_cmd(
         media_verifier = build_burned_media_verifier()
         prompts = build_burn_prompts()
         resolved_staging_dir = (staging_dir or _default_staging_dir()).expanduser()
+        resolved_device = device or _default_burn_device()
         session_state = BurnSessionState.load(_burn_state_path(resolved_staging_dir))
         completed_copy_ids: list[str] = []
         simulated_copy_ids: list[str] = []
@@ -1846,7 +1859,7 @@ def burn_cmd(
                 burner=burner,
                 media_verifier=media_verifier,
                 prompts=prompts,
-                device=device,
+                device=resolved_device,
                 simulate=simulate,
             )
             if simulate:
@@ -1885,7 +1898,13 @@ def recover_cmd(
         str | None,
         typer.Argument(help="Recovery session id", show_default=False),
     ] = None,
-    device: Annotated[str, typer.Option("--device", help="Optical device path")] = "/dev/sr0",
+    device: Annotated[
+        str | None,
+        typer.Option(
+            "--device",
+            help="Optical device path; omitted uses the platform default burner",
+        ),
+    ] = None,
     staging_dir: Annotated[
         Path | None,
         typer.Option("--staging-dir", help="Local staging directory for ISO downloads"),
@@ -1905,6 +1924,7 @@ def recover_cmd(
         media_verifier = build_burned_media_verifier()
         prompts = build_burn_prompts()
         resolved_staging_dir = (staging_dir or _default_staging_dir()).expanduser()
+        resolved_device = device or _default_burn_device()
         session_state = BurnSessionState.load(_burn_state_path(resolved_staging_dir))
         recovery_session, completed_copy_ids = _process_recovery_session(
             recovery_session,
@@ -1915,7 +1935,7 @@ def recover_cmd(
             burner=burner,
             media_verifier=media_verifier,
             prompts=prompts,
-            device=device,
+            device=resolved_device,
         )
     except (RiverhogError, RuntimeError) as exc:
         typer.echo(f"error: {exc}", err=True)

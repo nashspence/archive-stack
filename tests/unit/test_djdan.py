@@ -1935,6 +1935,79 @@ def test_djdan_burn_reports_recovery_handoffs_when_no_standard_backlog_exists(
     assert "Approve the estimated restore cost" in result.stdout
 
 
+@pytest.mark.parametrize(
+    ("platform", "expected_device"),
+    [
+        ("darwin", "default"),
+        ("linux", "/dev/sr0"),
+    ],
+)
+def test_djdan_burn_without_device_uses_platform_default(
+    monkeypatch,
+    tmp_path: Path,
+    platform: str,
+    expected_device: str,
+) -> None:
+    seen_devices: list[str] = []
+    discover_calls = 0
+
+    class FakeClient:
+        pass
+
+    def fake_discover_burn_backlog(client, session_state=None):
+        nonlocal discover_calls
+        discover_calls += 1
+        if discover_calls == 1:
+            return [
+                djdan_main.BurnBacklogItem(
+                    image_id="20260420T040001Z",
+                    candidate_id=None,
+                    filename="20260420T040001Z.iso",
+                    fill=0.9,
+                )
+            ]
+        return []
+
+    def fake_process_burn_backlog_item(
+        item,
+        *,
+        client,
+        staging_dir,
+        session_state,
+        iso_verifier,
+        burner,
+        media_verifier,
+        prompts,
+        device,
+        simulate=False,
+    ):
+        seen_devices.append(device)
+        return [f"{item.image_id}-1"]
+
+    monkeypatch.setattr(djdan_main.sys, "platform", platform)
+    monkeypatch.setattr(djdan_main, "ApiClient", FakeClient)
+    monkeypatch.setattr(djdan_main, "build_iso_verifier", object)
+    monkeypatch.setattr(djdan_main, "build_disc_burner", object)
+    monkeypatch.setattr(djdan_main, "build_burned_media_verifier", object)
+    monkeypatch.setattr(djdan_main, "build_burn_prompts", object)
+    monkeypatch.setattr(djdan_main, "_discover_burn_backlog", fake_discover_burn_backlog)
+    monkeypatch.setattr(
+        djdan_main,
+        "_process_burn_backlog_item",
+        fake_process_burn_backlog_item,
+    )
+    monkeypatch.setattr(djdan_main, "_discover_recovery_handoffs", lambda client: [])
+
+    result = runner.invoke(
+        djdan_main.app,
+        ["burn", "--staging-dir", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    assert seen_devices == [expected_device]
+    assert "burn backlog cleared" in result.stdout
+
+
 def test_djdan_burn_resumes_registered_copy_verification_update(
     monkeypatch,
     tmp_path: Path,

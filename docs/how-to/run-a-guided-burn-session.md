@@ -9,8 +9,8 @@ that handoff and does not treat it as ordinary replacement backlog.
 
 - Install `xorriso` on Linux-style operator machines. On macOS, `djdan` uses the system `hdiutil burn` image-burn
   tool.
-- Run the command as a user that can write to and read from the optical device path, such as `/dev/sr0` on Linux or
-  `/dev/disk4` on macOS.
+- Run the command as a user that can write to and read from the optical device. When `--device` is omitted,
+  `djdan burn` uses `/dev/sr0` on Linux-style hosts and lets `hdiutil burn` select the system burner on macOS.
 - Insert blank writable media when prompted. The default backend burns the staged ISO image with `hdiutil burn` on
   macOS and `xorriso -as cdrecord` elsewhere.
 - For hardware smoke tests before spending media, use `--simulate` to run the native non-writing burn mode with the
@@ -47,25 +47,32 @@ staged ISO.
 CLI example:
 
 ```bash
-djdan burn --device /dev/sr0
+djdan burn
 ```
 
 Optional staging-root example:
 
 ```bash
+djdan burn --staging-dir /operator/djdan-staging
+```
+
+Linux device example:
+
+```bash
 djdan burn --device /dev/sr0 --staging-dir /operator/djdan-staging
 ```
 
-macOS device example:
+macOS device-validation example:
 
 ```bash
 djdan burn --device /dev/disk4 --staging-dir /operator/djdan-staging
 ```
 
-On macOS, the `--device` value is validated with `diskutil`, but `djdan` lets
-`hdiutil burn` select the system optical burner. This matches the local
-`burniso` wrapper behavior and avoids the unreliable `hdiutil -device` path for
-USB Blu-ray drives.
+On macOS, omitting `--device` lets `hdiutil burn` use its own default burner
+selection. If a `/dev/diskN` value is provided, `djdan` validates it with
+`diskutil`, but still lets `hdiutil burn` select the system optical burner. This
+matches the local `burniso` wrapper behavior and avoids the unreliable
+`hdiutil -device` path for USB Blu-ray drives.
 
 If an operator needs to force a native hdiutil target, pass the target reported
 by `hdiutil burn -list` as `--device 'hdiutil:IOService:...'`.
@@ -77,10 +84,12 @@ optical device, and the inserted media can run the burn path before writing a
 real disc:
 
 ```bash
-djdan burn --simulate --device /dev/sr0 --staging-dir /operator/djdan-staging
+djdan burn --simulate --staging-dir /operator/djdan-staging
 ```
 
-On macOS, pass the disk device reported by `diskutil`:
+On macOS, omitting `--device` lets `hdiutil burn -testburn` use the system
+burner. Pass the disk device reported by `diskutil` when you want `djdan` to
+validate the expected optical drive before the simulated burn:
 
 ```bash
 djdan burn --simulate --device /dev/disk4 --staging-dir /operator/djdan-staging
@@ -113,9 +122,8 @@ clear but image rebuild work remains.
 2. Run `djdan recover <session-id>` once to approve the restore request if the session is still
    `pending_approval`.
 3. Wait until the session reports `ready`.
-4. Run `djdan recover <session-id> --device /dev/sr0` to rebuild and stage the
-   ISO data from restored collection archives, then burn the needed replacement
-   copies.
+4. Run `djdan recover <session-id>` to rebuild and stage the ISO data from
+   restored collection archives, then burn the needed replacement copies.
 5. If that run is interrupted after staging or after partial burn work, run the same command again to resume from the
    local checkpoints and staged ISO artifacts.
 
@@ -123,5 +131,5 @@ Examples:
 
 ```bash
 djdan recover
-djdan recover rs-20260420T040001Z-rebuild-1 --device /dev/sr0
+djdan recover rs-20260420T040001Z-rebuild-1
 ```

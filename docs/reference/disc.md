@@ -221,10 +221,11 @@ Expected multipart flow:
 - if that item is still provisional, `djdan burn` finalizes it before continuing
 - the session downloads and stages the image ISO locally before burn work
 - the staged ISO is verified before burn work continues
-- the default burn backend uses `hdiutil burn` on macOS and `xorriso -as cdrecord` elsewhere against the configured
-  optical device
-- on macOS, `djdan` validates `/dev/diskN` optical-device hints with `diskutil`, then lets `hdiutil burn` select the
-  system burner instead of passing an `hdiutil -device` value
+- the default burn backend uses `hdiutil burn` on macOS and `xorriso -as cdrecord` elsewhere
+- when `--device` is omitted, `djdan burn` lets `hdiutil burn` select the system burner on macOS and uses `/dev/sr0`
+  on Linux-style hosts
+- on macOS, explicit `/dev/diskN` optical-device hints are validated with `diskutil`, then `djdan` still lets
+  `hdiutil burn` select the system burner instead of passing an `hdiutil -device` value
 - operators may force a native hdiutil target with a device value of `hdiutil:IOService:...` from
   `hdiutil burn -list`
 - on macOS real burns use native `hdiutil burn -verifyburn -eject`; `djdan` passes the hdiutil progress output through
