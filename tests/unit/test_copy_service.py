@@ -16,7 +16,7 @@ from riverhog_core.catalog_models import (
     GlacierRecoverySessionImageRecord,
     GlacierRecoverySessionRecord,
 )
-from riverhog_core.domain.enums import CopyState
+from riverhog_core.domain.enums import CopyState, VerificationState
 from riverhog_core.finalized_image_coverage import (
     read_finalized_image_collection_artifacts,
     read_finalized_image_coverage_parts,
@@ -263,6 +263,36 @@ def test_register_uses_db_artifact_mapping_after_disc_manifest_is_removed(tmp_pa
     assert [(row.recovery_bytes, row.recovery_sha256) for row in rows] == [
         (len((image_root / "files/000001.age").read_bytes()), None),
         (len((image_root / "files/000002.age").read_bytes()), None),
+    ]
+
+
+def test_verified_update_after_registration_does_not_resync_copy_rows(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    image_root = tmp_path / "image-root"
+    initialize_db(str(sqlite_path))
+    write_tree(image_root, IMAGE_ONE_FILES)
+    _seed_finalized_image(sqlite_path, image_root)
+
+    service = SqlAlchemyCopyService(_config(sqlite_path), _FakeHotStore())
+    service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
+    (image_root / "files/000001.age").unlink()
+
+    updated = service.update(
+        "20260420T040001Z",
+        "20260420T040001Z-1",
+        state="verified",
+        verification_state="verified",
+    )
+
+    assert updated.state == CopyState.VERIFIED
+    assert updated.verification_state == VerificationState.VERIFIED
+    session_factory = make_session_factory(str(sqlite_path))
+    with session_scope(session_factory) as session:
+        rows = session.query(FileCopyRecord).order_by(FileCopyRecord.disc_path).all()
+
+    assert [(row.path, row.disc_path) for row in rows] == [
+        ("tax/2022/invoice-123.pdf", "files/000001.age"),
+        ("tax/2022/receipt-456.pdf", "files/000002.age"),
     ]
 
 

@@ -169,7 +169,10 @@ class SqlAlchemyCopyService:
                 )
                 target.verification_state = normalized_verification_state.value
 
-            self._sync_file_copy_rows(session, image, target)
+            previous_protected = copy_counts_toward_protection(previous_state.value)
+            next_protected = copy_counts_toward_protection(target.state)
+            if location_changed or previous_protected != next_protected:
+                self._sync_file_copy_rows(session, image, target)
             if location_changed or state_changed or verification_changed:
                 self._append_history(
                     session,
