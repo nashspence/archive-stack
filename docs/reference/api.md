@@ -178,6 +178,25 @@ Required behavior:
   object path, and OTS proof state
 - per-image coverage details expose `covered_paths`, `physical_copies_registered`,
   `physical_copies_verified`, copy labels and locations
+
+#### `GET /v1/dashboard/collections`
+
+Returns lightweight collection compliance rows for the operator dashboard.
+
+Supported query parameters:
+
+- `q` — case-insensitive substring filter over collection ids
+
+Required behavior:
+
+- returned rows include collection byte totals, hot/archive byte totals,
+  `protected_bytes`, `protection_state`, and concise recovery coverage
+- returned rows intentionally do not include full `image_coverage`; use
+  `GET /v1/collections/{collection_id}` when the operator needs per-image path
+  detail
+- the endpoint derives physical compliance from persisted finalized-image
+  coverage rows and registered copy state using aggregate database reads rather
+  than the full collection-summary scan path
 - collection coverage explains which finalized images, paths, and registered
   copies physically cover that collection
 
@@ -728,6 +747,7 @@ The `riverhog` CLI is a thin API client and should provide at least:
 - `riverhog get TARGET [-o FILE]`
 - `riverhog plan [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--iso-ready|--not-ready]`
 - `riverhog images [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--has-copies|--no-copies]`
+- `riverhog dashboard [--page N] [--per-page N] [--query TEXT] [--collection ID] [--has-copies|--no-copies]`
 - `riverhog glacier [--collection ID]`
 - `riverhog iso get IMAGE_ID [-o FILE]`
 - `riverhog copy add IMAGE_ID --at LOCATION [--copy-id GENERATED_ID]`
@@ -821,16 +841,22 @@ For finalized-image commands:
 - `IMAGE_ID` means the finalized image id
 - finalized image ids use compact UTC basic form `YYYYMMDDTHHMMSSZ`
 - `riverhog images --json` mirrors the `GET /v1/images` response payload
+- `riverhog dashboard --json` emits the combined operator dashboard payload
 - `riverhog glacier --json` mirrors the `GET /v1/glacier` response payload
 - `riverhog plan --json` mirrors the `GET /v1/plan` response payload
 - standalone manual candidate finalization is intentionally not exposed in the `riverhog` CLI; `djdan burn` selects and
   finalizes ready candidates as part of the guided burn workflow
 - non-JSON `riverhog plan` output stays concise and line-oriented while surfacing candidate id, fill, readiness, and
   contained collections
-- non-JSON `riverhog images` acts as the default physical-media status view and stays concise while surfacing:
+- non-JSON `riverhog images` is a literal paginated finalized-image listing
+- non-JSON `riverhog dashboard` acts as the default physical-media status view and stays concise while surfacing:
   ready-to-finalize provisional images, backlog still waiting for inclusion in a future ISO, finalized-image burn and
   verification backlog, non-compliant collections, and which collections are
   already fully protected
+- `riverhog dashboard` uses the dedicated dashboard collection endpoint instead
+  of the full collection-summary listing so the operator view does not
+  recompute per-image collection manifests or `image_coverage` details just to
+  answer compliance state
 - non-JSON `riverhog glacier` output stays line-oriented while surfacing measured usage totals, configured pricing basis,
   direct collection archive state, manifest/OTS proof state, and collection
   cost estimates

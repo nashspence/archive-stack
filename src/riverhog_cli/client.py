@@ -233,6 +233,12 @@ class ApiClient:
             params["protection_state"] = protection_state
         return self._json("GET", "/v1/collections", params=params)
 
+    def list_dashboard_collections(self, *, q: str | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if q:
+            params["q"] = q
+        return self._json("GET", "/v1/dashboard/collections", params=params)
+
     def get_plan(
         self,
         *,

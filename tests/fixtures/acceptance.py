@@ -156,6 +156,14 @@ def _copy_counts_toward_slot_pool(state: CopyState) -> bool:
     )
 
 
+def _dashboard_collection_protection_state(state: ProtectionState) -> str:
+    if state is ProtectionState.PROTECTED:
+        return "fully_protected"
+    if state is ProtectionState.PARTIALLY_PROTECTED:
+        return "under_protected"
+    return "cloud_only"
+
+
 def _recovery_coverage_state(
     *,
     covered_bytes: int,
@@ -1500,6 +1508,44 @@ class AcceptanceCollectionService:
             pages=pages,
             collections=summaries[start:stop],
         )
+
+    @_with_state_lock
+    def list_dashboard_collections(self, *, q: str | None) -> dict[str, object]:
+        needle = q.casefold() if q else None
+        summaries = [
+            self.state.collection_summary(str(collection_id))
+            for collection_id in sorted(self.state.files_by_collection)
+        ]
+        if needle is not None:
+            summaries = [summary for summary in summaries if needle in str(summary.id).casefold()]
+        return {
+            "collections": [
+                {
+                    "id": str(summary.id),
+                    "files": summary.files,
+                    "bytes": summary.bytes,
+                    "hot_bytes": summary.hot_bytes,
+                    "archived_bytes": summary.archived_bytes,
+                    "pending_bytes": summary.pending_bytes,
+                    "protection_state": _dashboard_collection_protection_state(
+                        summary.protection_state
+                    ),
+                    "protected_bytes": summary.protected_bytes,
+                    "recovery": {
+                        "available": list(summary.recovery.available),
+                        "verified_physical": {
+                            "state": summary.recovery.verified_physical.state.value,
+                            "bytes": summary.recovery.verified_physical.bytes,
+                        },
+                        "glacier": {
+                            "state": summary.recovery.glacier.state.value,
+                            "bytes": summary.recovery.glacier.bytes,
+                        },
+                    },
+                }
+                for summary in summaries
+            ]
+        }
 
     @staticmethod
     def _normalize_files(files: list[dict[str, object]]) -> list[dict[str, object]]:

@@ -270,7 +270,7 @@ def format_image(image: Mapping[str, Any]) -> str:
     )
 
 
-def format_archive_status(
+def format_dashboard(
     ready_plan_payload: Mapping[str, Any],
     backlog_plan_payload: Mapping[str, Any],
     images_payload: Mapping[str, Any],

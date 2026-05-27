@@ -423,6 +423,26 @@ paths:
                 $ref: "#/components/schemas/RecoverySession"
         default:
           $ref: "#/components/responses/Error"
+  /dashboard/collections:
+    get:
+      summary: List lightweight dashboard collection compliance rows
+      description: Returns collection compliance rows for the operator dashboard without full per-image collection coverage detail.
+      operationId: listDashboardCollections
+      parameters:
+        - in: query
+          name: q
+          required: false
+          description: Case-insensitive substring filter over canonical collection ids.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Dashboard collection compliance rows
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardCollectionsResponse"
+        default:
+          $ref: "#/components/responses/Error"
   /plan:
     get:
       summary: Get current burn plan
@@ -1841,6 +1861,57 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/CollectionSummary"
+    DashboardCollectionsResponse:
+      type: object
+      required: [collections]
+      properties:
+        collections:
+          type: array
+          items:
+            $ref: "#/components/schemas/DashboardCollection"
+    DashboardCollection:
+      type: object
+      required: [id, files, bytes, hot_bytes, archived_bytes, pending_bytes, protection_state, protected_bytes, recovery]
+      properties:
+        id:
+          type: string
+        files:
+          type: integer
+        bytes:
+          type: integer
+        hot_bytes:
+          type: integer
+        archived_bytes:
+          type: integer
+        pending_bytes:
+          type: integer
+        protection_state:
+          type: string
+          enum: [cloud_only, under_protected, fully_protected]
+        protected_bytes:
+          type: integer
+        recovery:
+          $ref: "#/components/schemas/DashboardRecovery"
+    DashboardRecovery:
+      type: object
+      required: [available, verified_physical, glacier]
+      properties:
+        available:
+          type: array
+          items:
+            type: string
+        verified_physical:
+          $ref: "#/components/schemas/DashboardRecoveryCoverage"
+        glacier:
+          $ref: "#/components/schemas/DashboardRecoveryCoverage"
+    DashboardRecoveryCoverage:
+      type: object
+      required: [state, bytes]
+      properties:
+        state:
+          $ref: "#/components/schemas/CoverageState"
+        bytes:
+          type: integer
     CollectionUploadFile:
       type: object
       required: [path, bytes, sha256]

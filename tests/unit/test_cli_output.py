@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from riverhog_cli.output import (
-    format_archive_status,
     format_collection_summary,
+    format_dashboard,
     format_glacier_report,
     format_images,
 )
@@ -42,8 +42,8 @@ def test_format_images_omits_finalized_image_glacier_context() -> None:
     assert "glacier_failure" not in rendered
 
 
-def test_format_archive_status_surfaces_ready_backlog_and_noncompliant_collections() -> None:
-    rendered = format_archive_status(
+def test_format_dashboard_surfaces_ready_backlog_and_noncompliant_collections() -> None:
+    rendered = format_dashboard(
         {
             "total": 1,
             "unplanned_bytes": 6100,

@@ -87,6 +87,7 @@ class CollectionService(Protocol):
         q: str | None,
         protection_state: str | None,
     ) -> CollectionListPage: ...
+    def list_dashboard_collections(self, *, q: str | None) -> JsonObject: ...
 
 
 class SearchService(Protocol):
