@@ -416,6 +416,95 @@ def test_cold_split_fetch_complete_uses_registered_part_sizes(tmp_path: Path) ->
     assert upload_store.deleted_targets == [target_path]
 
 
+def test_cold_fetch_manifest_can_select_multiple_collections_by_prefix(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    image_root = tmp_path / "image-root"
+    initialize_db(str(sqlite_path))
+
+    path = "shared/name.txt"
+    collections = [
+        ("2025/20250712T213200Z__alpha", b"alpha collection payload\n"),
+        ("2025/20250713T145436Z__beta", b"beta collection payload\n"),
+    ]
+    encrypted_by_collection = {
+        collection_id: encrypt_recovery_payload(content, _RECOVERY_CODEC)
+        for collection_id, content in collections
+    }
+    for index, (collection_id, _content) in enumerate(collections, start=1):
+        payload_path = image_root / f"files/{index:06d}.age"
+        payload_path.parent.mkdir(parents=True, exist_ok=True)
+        payload_path.write_bytes(encrypted_by_collection[collection_id])
+
+    service = SqlAlchemyFetchService(
+        _config(sqlite_path),
+        _FakeHotStore({}),
+        _RaceyUploadStore({}),
+        _RECOVERY_CODEC,
+    )
+    session_factory = make_session_factory(str(sqlite_path))
+
+    with session_scope(session_factory) as session:
+        for index, (collection_id, content) in enumerate(collections, start=1):
+            encrypted = encrypted_by_collection[collection_id]
+            session.add(CollectionRecord(id=collection_id))
+            session.add(
+                CollectionFileRecord(
+                    collection_id=collection_id,
+                    path=path,
+                    bytes=len(content),
+                    sha256=hashlib.sha256(content).hexdigest(),
+                    hot=False,
+                    archived=True,
+                )
+            )
+            session.add(
+                FinalizedImageRecord(
+                    image_id=f"vol-{index}",
+                    candidate_id=f"candidate-{index}",
+                    filename=f"vol-{index}.iso",
+                    bytes=len(encrypted),
+                    image_root=str(image_root),
+                    target_bytes=50_000_000_000,
+                )
+            )
+            session.add(
+                FileCopyRecord(
+                    collection_id=collection_id,
+                    path=path,
+                    copy_id=f"copy-{index}",
+                    volume_id=f"vol-{index}",
+                    location=f"vault-a/shelf-{index:02d}",
+                    disc_path=f"files/{index:06d}.age",
+                    enc_json="{}",
+                    part_index=None,
+                    part_count=None,
+                    part_bytes=None,
+                    part_sha256=None,
+                )
+            )
+        session.add(
+            ActivePinRecord(
+                target="2025/",
+                fetch_id="fx-multi",
+                fetch_order=1,
+                fetch_state=FetchState.WAITING_MEDIA.value,
+            )
+        )
+
+    manifest = service.manifest("fx-multi")
+
+    assert manifest["target"] == "2025/"
+    assert [
+        (entry["id"], entry["collection_id"], entry["path"])
+        for entry in manifest["entries"]
+    ] == [
+        ("e1", collections[0][0], path),
+        ("e2", collections[1][0], path),
+    ]
+
+
 def test_cold_fetch_complete_restores_matching_paths_across_collections(
     tmp_path: Path,
 ) -> None:
