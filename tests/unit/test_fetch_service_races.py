@@ -12,6 +12,7 @@ from riverhog_core.catalog_models import (
     CollectionRecord,
     FetchEntryRecord,
     FileCopyRecord,
+    FinalizedImageRecord,
 )
 from riverhog_core.domain.enums import FetchState
 from riverhog_core.recovery_payloads import encrypt_recovery_payload
@@ -102,6 +103,21 @@ class _RaceyUploadStore:
         self.cancelled_uploads.append(tus_url)
 
 
+def _config(sqlite_path: Path) -> RuntimeConfig:
+    return RuntimeConfig(
+        object_store="s3",
+        s3_endpoint_url="http://example.invalid:9000",
+        s3_region="us-east-1",
+        s3_bucket="riverhog",
+        s3_access_key_id="test-access",
+        s3_secret_access_key="test-secret",
+        s3_force_path_style=True,
+        tusd_base_url="http://example.invalid:1080/files",
+        tusd_hook_secret="hook-secret",
+        sqlite_path=sqlite_path,
+    )
+
+
 def test_stale_sync_does_not_rollback_completed_fetch_state(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     initialize_db(str(sqlite_path))
@@ -157,6 +173,8 @@ def test_stale_sync_does_not_rollback_completed_fetch_state(tmp_path: Path) -> N
                 part_count=None,
                 part_bytes=None,
                 part_sha256=None,
+                recovery_bytes=len(encrypted),
+                recovery_sha256=hashlib.sha256(encrypted).hexdigest(),
             )
         )
         session.add(
@@ -222,4 +240,176 @@ def test_stale_sync_does_not_rollback_completed_fetch_state(tmp_path: Path) -> N
         assert entry_record.tus_url is None
 
     assert upload_store.cancelled_uploads == [tus_url]
+    assert upload_store.deleted_targets == [target_path]
+
+
+def test_cold_fetch_manifest_uses_registered_disc_payload_metadata(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    image_root = tmp_path / "image-root"
+    initialize_db(str(sqlite_path))
+
+    collection_id = "docs"
+    path = "file.txt"
+    target = f"{collection_id}/{path}"
+    content = b"cold payload\n"
+    sha256 = hashlib.sha256(content).hexdigest()
+    encrypted = encrypt_recovery_payload(content, _RECOVERY_CODEC)
+    payload_path = image_root / "files/000001.age"
+    payload_path.parent.mkdir(parents=True)
+    payload_path.write_bytes(encrypted)
+
+    hot_store = _FakeHotStore({})
+    service = SqlAlchemyFetchService(
+        _config(sqlite_path),
+        hot_store,
+        _RaceyUploadStore({}),
+        _RECOVERY_CODEC,
+    )
+    session_factory = make_session_factory(str(sqlite_path))
+
+    with session_scope(session_factory) as session:
+        session.add(CollectionRecord(id=collection_id))
+        session.add(
+            CollectionFileRecord(
+                collection_id=collection_id,
+                path=path,
+                bytes=len(content),
+                sha256=sha256,
+                hot=False,
+                archived=True,
+            )
+        )
+        session.add(
+            FinalizedImageRecord(
+                image_id="vol-1",
+                candidate_id="candidate-1",
+                filename="vol-1.iso",
+                bytes=len(encrypted),
+                image_root=str(image_root),
+                target_bytes=50_000_000_000,
+            )
+        )
+        session.add(
+            FileCopyRecord(
+                collection_id=collection_id,
+                path=path,
+                copy_id="copy-1",
+                volume_id="vol-1",
+                location="vault-a/shelf-01",
+                disc_path="files/000001.age",
+                enc_json="{}",
+                part_index=None,
+                part_count=None,
+                part_bytes=None,
+                part_sha256=None,
+            )
+        )
+        session.add(
+            ActivePinRecord(
+                target=target,
+                fetch_id="fx-cold",
+                fetch_order=1,
+                fetch_state=FetchState.WAITING_MEDIA.value,
+            )
+        )
+
+    manifest = service.manifest("fx-cold")
+    entry = manifest["entries"][0]
+    copy = entry["copies"][0]
+
+    assert entry["recovery_bytes"] == len(encrypted)
+    assert copy["recovery_bytes"] == len(encrypted)
+    assert copy["recovery_sha256"] == hashlib.sha256(encrypted).hexdigest()
+
+
+def test_cold_split_fetch_complete_uses_registered_part_sizes(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    image_root = tmp_path / "image-root"
+    initialize_db(str(sqlite_path))
+
+    collection_id = "docs"
+    path = "file.txt"
+    target = f"{collection_id}/{path}"
+    content = b"split cold payload that spans media\n"
+    first = content[: len(content) // 2]
+    second = content[len(content) // 2 :]
+    encrypted_first = encrypt_recovery_payload(first, _RECOVERY_CODEC)
+    encrypted_second = encrypt_recovery_payload(second, _RECOVERY_CODEC)
+    (image_root / "files").mkdir(parents=True)
+    (image_root / "files/000001.age").write_bytes(encrypted_first)
+    (image_root / "files/000002.age").write_bytes(encrypted_second)
+
+    upload_payload = encrypted_first + encrypted_second
+    target_path = "/.riverhog/uploads/recovery/fx-split/e1.enc"
+    hot_store = _FakeHotStore({})
+    upload_store = _RaceyUploadStore({target_path: upload_payload})
+    service = SqlAlchemyFetchService(_config(sqlite_path), hot_store, upload_store, _RECOVERY_CODEC)
+    session_factory = make_session_factory(str(sqlite_path))
+
+    with session_scope(session_factory) as session:
+        session.add(CollectionRecord(id=collection_id))
+        session.add(
+            CollectionFileRecord(
+                collection_id=collection_id,
+                path=path,
+                bytes=len(content),
+                sha256=hashlib.sha256(content).hexdigest(),
+                hot=False,
+                archived=True,
+            )
+        )
+        session.add(
+            FinalizedImageRecord(
+                image_id="vol-1",
+                candidate_id="candidate-1",
+                filename="vol-1.iso",
+                bytes=len(upload_payload),
+                image_root=str(image_root),
+                target_bytes=50_000_000_000,
+            )
+        )
+        for index, disc_path in enumerate(("files/000001.age", "files/000002.age")):
+            session.add(
+                FileCopyRecord(
+                    collection_id=collection_id,
+                    path=path,
+                    copy_id=f"copy-{index + 1}",
+                    volume_id="vol-1",
+                    location=f"vault-a/shelf-{index + 1:02d}",
+                    disc_path=disc_path,
+                    enc_json="{}",
+                    part_index=index,
+                    part_count=2,
+                    part_bytes=None,
+                    part_sha256=None,
+                )
+            )
+        session.add(
+            ActivePinRecord(
+                target=target,
+                fetch_id="fx-split",
+                fetch_order=1,
+                fetch_state=FetchState.UPLOADING.value,
+            )
+        )
+        session.add(
+            FetchEntryRecord(
+                fetch_id="fx-split",
+                entry_id="e1",
+                entry_order=1,
+                collection_id=collection_id,
+                path=path,
+                bytes=len(content),
+                sha256=hashlib.sha256(content).hexdigest(),
+                recovery_bytes=len(upload_payload),
+                uploaded_bytes=len(upload_payload),
+                upload_expires_at=None,
+                tus_url="/uploads/fx-split/e1",
+            )
+        )
+
+    completed = service.complete("fx-split")
+
+    assert completed["state"] == FetchState.DONE.value
+    assert hot_store.get_collection_file(collection_id, path) == content
     assert upload_store.deleted_targets == [target_path]

@@ -972,7 +972,7 @@ paths:
   /fetches/{fetch_id}/manifest:
     get:
       summary: Get fetch manifest
-      description: Returns the stable fetch manifest and any unexpired upload progress for one active exact pin.
+      description: Returns the stable fetch manifest and any unexpired upload progress for one active exact pin. Copy recovery lengths and digests come from registered disc-copy metadata, so archived-only files do not need hot plaintext to publish a manifest.
       operationId: getFetchManifest
       parameters:
         - in: path

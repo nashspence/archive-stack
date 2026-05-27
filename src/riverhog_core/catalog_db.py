@@ -127,6 +127,11 @@ _COLUMN_MIGRATIONS: list[list[tuple[str, str, str]]] = [
         ("collection_uploads", "collection_manifest_bytes_b64", "TEXT"),
         ("collection_uploads", "collection_manifest_proof_bytes_b64", "TEXT"),
     ],
+    # version 19
+    [
+        ("file_copies", "recovery_bytes", "BIGINT"),
+        ("file_copies", "recovery_sha256", "TEXT"),
+    ],
 ]
 _TYPE_MIGRATIONS: dict[int, list[tuple[str, str, str]]] = {
     # version 10

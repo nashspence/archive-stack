@@ -103,6 +103,8 @@ Copy rules:
 - the generated `copy_id` is the exact disc label text to write on media
 - `location` is mutable operational metadata
 - `location` is never part of copy identity
+- each covered file-copy row records the on-disc payload path plus exact encrypted recovery-byte length and digest used
+  by fetch manifests for cold recovery
 
 ## Summary models
 

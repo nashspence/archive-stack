@@ -65,6 +65,8 @@ class FileCopyRecord(Base):
     part_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     part_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     part_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    recovery_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    recovery_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(

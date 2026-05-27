@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import Path
@@ -259,6 +260,16 @@ def test_register_uses_db_artifact_mapping_after_disc_manifest_is_removed(tmp_pa
     assert [(row.path, row.disc_path) for row in rows] == [
         ("tax/2022/invoice-123.pdf", "files/000001.age"),
         ("tax/2022/receipt-456.pdf", "files/000002.age"),
+    ]
+    assert [(row.recovery_bytes, row.recovery_sha256) for row in rows] == [
+        (
+            len((image_root / "files/000001.age").read_bytes()),
+            hashlib.sha256((image_root / "files/000001.age").read_bytes()).hexdigest(),
+        ),
+        (
+            len((image_root / "files/000002.age").read_bytes()),
+            hashlib.sha256((image_root / "files/000002.age").read_bytes()).hexdigest(),
+        ),
     ]
 
 

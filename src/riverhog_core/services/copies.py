@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import cast
 
 from sqlalchemy import delete, select
@@ -37,8 +37,13 @@ from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.recovery_payloads import (
     CommandAgeBatchpassRecoveryPayloadCodec,
     RecoveryPayloadCodec,
+    RecoveryPayloadError,
 )
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.copy_recovery_metadata import (
+    CopyRecoveryMetadata,
+    read_copy_recovery_metadata,
+)
 from riverhog_core.services.recovery_sessions import ensure_glacier_recovery_session_for_image
 from riverhog_core.webhooks import (
     WebhookConfig,
@@ -333,20 +338,18 @@ class SqlAlchemyCopyService:
             expected_keys: set[tuple[str, int | None, int | None]] = set()
             for disc_path, part_index, part_count in expected_entries:
                 expected_keys.add((disc_path, part_index, part_count if part_count > 1 else None))
+                payload_metadata = _copy_recovery_metadata(
+                    image,
+                    disc_path,
+                    self._recovery_payload_codec,
+                    include_plaintext=part_count > 1,
+                )
+                part_bytes_val = payload_metadata.plaintext_bytes if part_count > 1 else None
+                part_sha256_val = payload_metadata.plaintext_sha256 if part_count > 1 else None
                 row = existing_by_key.get(
                     (disc_path, part_index, part_count if part_count > 1 else None)
                 )
                 if row is None:
-                    part_bytes_val = None
-                    part_sha256_val = None
-                    if part_count > 1:
-                        assert part_index is not None
-                        content = self._hot_store.get_collection_file(
-                            covered_path.collection_id, covered_path.path
-                        )
-                        parts = _split_plaintext(content, part_count)
-                        part_bytes_val = len(parts[part_index])
-                        part_sha256_val = hashlib.sha256(parts[part_index]).hexdigest()
                     session.add(
                         FileCopyRecord(
                             collection_id=covered_path.collection_id,
@@ -363,10 +366,16 @@ class SqlAlchemyCopyService:
                             part_count=part_count if part_count > 1 else None,
                             part_bytes=part_bytes_val,
                             part_sha256=part_sha256_val,
+                            recovery_bytes=payload_metadata.recovery_bytes,
+                            recovery_sha256=payload_metadata.recovery_sha256,
                         )
                     )
                     continue
                 row.location = copy.location
+                row.part_bytes = part_bytes_val
+                row.part_sha256 = part_sha256_val
+                row.recovery_bytes = payload_metadata.recovery_bytes
+                row.recovery_sha256 = payload_metadata.recovery_sha256
 
             for row in existing_rows:
                 row_key = (row.disc_path, row.part_index, row.part_count)
@@ -547,12 +556,22 @@ def _disc_entries_from_coverage_parts(
     return result
 
 
-def _split_plaintext(content: bytes, part_count: int) -> tuple[bytes, ...]:
-    base, remainder = divmod(len(content), part_count)
-    offset = 0
-    parts: list[bytes] = []
-    for i in range(part_count):
-        size = base + int(i < remainder)
-        parts.append(content[offset : offset + size])
-        offset += size
-    return tuple(parts)
+def _copy_recovery_metadata(
+    image: FinalizedImageRecord,
+    disc_path: str,
+    recovery_payload_codec: RecoveryPayloadCodec,
+    *,
+    include_plaintext: bool,
+) -> CopyRecoveryMetadata:
+    try:
+        return read_copy_recovery_metadata(
+            image.image_root,
+            disc_path,
+            recovery_payload_codec,
+            include_plaintext=include_plaintext,
+        )
+    except FileNotFoundError as exc:
+        missing_path = Path(image.image_root) / disc_path.lstrip("/")
+        raise InvalidState(f"finalized-image payload is missing: {missing_path}") from exc
+    except RecoveryPayloadError as exc:
+        raise InvalidState(f"finalized-image payload could not be decrypted: {disc_path}") from exc

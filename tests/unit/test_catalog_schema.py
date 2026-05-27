@@ -21,6 +21,7 @@ from riverhog_core.catalog_models import (
     [
         (CollectionFileRecord, "bytes"),
         (FileCopyRecord, "part_bytes"),
+        (FileCopyRecord, "recovery_bytes"),
         (CollectionArchiveRecord, "stored_bytes"),
         (CollectionArchiveRecord, "manifest_stored_bytes"),
         (CollectionArchiveRecord, "ots_stored_bytes"),

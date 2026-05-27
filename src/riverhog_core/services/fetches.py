@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from pathlib import Path
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, object_session, selectinload
@@ -13,6 +14,7 @@ from riverhog_core.catalog_models import (
     CollectionFileRecord,
     FetchEntryRecord,
     FileCopyRecord,
+    FinalizedImageRecord,
 )
 from riverhog_core.domain.enums import FetchState
 from riverhog_core.domain.errors import Conflict, HashMismatch, InvalidState, NotFound
@@ -29,6 +31,10 @@ from riverhog_core.recovery_payloads import (
     encrypt_recovery_payload,
 )
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.copy_recovery_metadata import (
+    CopyRecoveryMetadata,
+    read_copy_recovery_metadata,
+)
 from riverhog_core.services.resumable_uploads import (
     UploadLifecycleState,
     create_or_resume_upload_state,
@@ -60,6 +66,8 @@ class _ManifestCopy:
     part_count: int | None
     part_bytes: int | None
     part_sha256: str | None
+    recovery_bytes: int | None
+    recovery_sha256: str | None
 
     @property
     def hint(self) -> FetchCopyHint:
@@ -118,8 +126,6 @@ class SqlAlchemyFetchService:
                 "target": pin_record.target,
                 "entries": [
                     _manifest_entry_payload(
-                        self._hot_store,
-                        session,
                         entry,
                         recovery_payload_codec=self._recovery_payload_codec,
                         fetch_state=FetchState(pin_record.fetch_state),
@@ -264,10 +270,10 @@ class SqlAlchemyFetchService:
             for pin_record in pin_records:
                 entries = list(
                     session.scalars(
-                    select(FetchEntryRecord)
-                    .where(FetchEntryRecord.fetch_id == pin_record.fetch_id)
-                    .order_by(FetchEntryRecord.entry_order)
-                ).all()
+                        select(FetchEntryRecord)
+                        .where(FetchEntryRecord.fetch_id == pin_record.fetch_id)
+                        .order_by(FetchEntryRecord.entry_order)
+                    ).all()
                 )
                 if not entries:
                     continue
@@ -308,20 +314,16 @@ class SqlAlchemyFetchService:
                 copies = _entry_copies(entry)
                 try:
                     if copies and any(copy.part_index is not None for copy in copies):
-                        part_count = max((copy.part_count or 1) for copy in copies)
-                        content = _read_collection_file_content(
-                            self._hot_store,
-                            entry.collection_id,
-                            entry.path,
+                        copies = _entry_copies(
+                            entry,
+                            recovery_payload_codec=self._recovery_payload_codec,
+                            require_recovery_metadata=True,
                         )
-                        parts = _split_plaintext(content, part_count)
-                        sizes = [
-                            len(encrypt_recovery_payload(part, self._recovery_payload_codec))
-                            for part in parts
-                        ]
+                        part_copies = _ordered_entry_part_copies(entry, copies)
                         offset = 0
                         plaintext_chunks: list[bytes] = []
-                        for size in sizes:
+                        for copy in part_copies:
+                            size = _copy_recovery_bytes(copy)
                             plaintext_chunks.append(
                                 decrypt_recovery_payload(
                                     encrypted[offset : offset + size],
@@ -329,6 +331,8 @@ class SqlAlchemyFetchService:
                                 )
                             )
                             offset += size
+                        if offset != len(encrypted):
+                            raise HashMismatch("uploaded recovery bytes have trailing data")
                         plaintext = b"".join(plaintext_chunks)
                     else:
                         plaintext = decrypt_recovery_payload(
@@ -404,10 +408,10 @@ def _ensure_fetch_entries(
 ) -> list[FetchEntryRecord]:
     existing = list(
         session.scalars(
-        select(FetchEntryRecord)
-        .where(FetchEntryRecord.fetch_id == pin_record.fetch_id)
-        .order_by(FetchEntryRecord.entry_order)
-    ).all()
+            select(FetchEntryRecord)
+            .where(FetchEntryRecord.fetch_id == pin_record.fetch_id)
+            .order_by(FetchEntryRecord.entry_order)
+        ).all()
     )
     if existing:
         return existing
@@ -417,28 +421,25 @@ def _ensure_fetch_entries(
     for index, file_record in enumerate(
         sorted(selected, key=lambda item: (item.collection_id, item.path)), start=1
     ):
-        content = _read_collection_file_content(
-            hot_store,
+        copy_records = _copy_records_for_file(
+            session,
             file_record.collection_id,
             file_record.path,
+            recovery_payload_codec,
+            require_recovery_metadata=True,
         )
-        copy_records = session.scalars(
-            select(FileCopyRecord).where(
-                FileCopyRecord.collection_id == file_record.collection_id,
-                FileCopyRecord.path == file_record.path,
+        if copy_records:
+            recovery_bytes = _file_recovery_bytes_from_copies(file_record, copy_records)
+        else:
+            content = _read_collection_file_content(
+                hot_store,
+                file_record.collection_id,
+                file_record.path,
             )
-        ).all()
-        if not copy_records or all(r.part_index is None for r in copy_records):
             payloads: tuple[bytes, ...] = (
                 encrypt_recovery_payload(content, recovery_payload_codec),
             )
-        else:
-            part_count = max((r.part_count or 1) for r in copy_records)
-            payloads = tuple(
-                encrypt_recovery_payload(part, recovery_payload_codec)
-                for part in _split_plaintext(content, part_count)
-            )
-        recovery_bytes = sum(len(p) for p in payloads)
+            recovery_bytes = sum(len(p) for p in payloads)
 
         entry = FetchEntryRecord(
             fetch_id=pin_record.fetch_id,
@@ -515,13 +516,16 @@ def _summary_copies(entries: list[FetchEntryRecord]) -> list[FetchCopyHint]:
 
 
 def _manifest_entry_payload(
-    hot_store: HotStore,
-    session: Session,
     entry: FetchEntryRecord,
     *,
     recovery_payload_codec: RecoveryPayloadCodec,
     fetch_state: FetchState,
 ) -> dict[str, object]:
+    copies = _entry_copies(
+        entry,
+        recovery_payload_codec=recovery_payload_codec,
+        require_recovery_metadata=True,
+    )
     return {
         "id": entry.entry_id,
         "path": entry.path,
@@ -531,21 +535,15 @@ def _manifest_entry_payload(
         "upload_state": _entry_upload_state(entry, fetch_state=fetch_state),
         "uploaded_bytes": entry.uploaded_bytes,
         "upload_state_expires_at": entry.upload_expires_at,
-        "copies": [
-            _manifest_copy_payload(hot_store, session, entry, copy, recovery_payload_codec)
-            for copy in _entry_copies(entry)
-        ],
-        "parts": _manifest_parts_payload(hot_store, session, entry, recovery_payload_codec),
+        "copies": [_manifest_copy_payload(copy) for copy in copies],
+        "parts": _manifest_parts_payload(entry, copies),
     }
 
 
 def _manifest_parts_payload(
-    hot_store: HotStore,
-    session: Session,
     entry: FetchEntryRecord,
-    recovery_payload_codec: RecoveryPayloadCodec,
+    copies: list[_ManifestCopy],
 ) -> list[dict[str, object]]:
-    copies = _entry_copies(entry)
     if not copies:
         return []
 
@@ -556,12 +554,12 @@ def _manifest_parts_payload(
                 "bytes": entry.bytes,
                 "sha256": entry.sha256,
                 "recovery_bytes": _entry_recovery_bytes(entry),
-                "copies": [
-                    _manifest_copy_payload(hot_store, session, entry, copy, recovery_payload_codec)
-                    for copy in copies
-                ],
+                "copies": [_manifest_copy_payload(copy) for copy in copies],
             }
         ]
+
+    if any(copy.part_index is None for copy in copies):
+        raise InvalidState(f"mixed whole-file and multipart copy hints for {entry.entry_id}")
 
     part_count = max((copy.part_count or 1) for copy in copies)
     parts: list[dict[str, object]] = []
@@ -578,72 +576,56 @@ def _manifest_parts_payload(
                 "index": part_index,
                 "bytes": bytes_hint,
                 "sha256": sha256_hint,
-                "recovery_bytes": len(
-                    _copy_recovery_payload(
-                        hot_store,
-                        session,
-                        entry,
-                        part_copies[0],
-                        recovery_payload_codec,
-                    )
-                ),
-                "copies": [
-                    _manifest_copy_payload(
-                        hot_store,
-                        session,
-                        entry,
-                        copy,
-                        recovery_payload_codec,
-                    )
-                    for copy in part_copies
-                ],
+                "recovery_bytes": _copy_recovery_bytes(part_copies[0]),
+                "copies": [_manifest_copy_payload(copy) for copy in part_copies],
             }
         )
     return parts
 
 
-def _manifest_copy_payload(
-    hot_store: HotStore,
-    session: Session,
+def _ordered_entry_part_copies(
     entry: FetchEntryRecord,
-    copy: _ManifestCopy,
-    recovery_payload_codec: RecoveryPayloadCodec,
-) -> dict[str, object]:
-    recovery_payload = _copy_recovery_payload(
-        hot_store,
-        session,
-        entry,
-        copy,
-        recovery_payload_codec,
-    )
+    copies: list[_ManifestCopy],
+) -> list[_ManifestCopy]:
+    if any(copy.part_index is None for copy in copies):
+        raise InvalidState(f"mixed whole-file and multipart copy hints for {entry.entry_id}")
+    part_count = max((copy.part_count or 1) for copy in copies)
+    selected: list[_ManifestCopy] = []
+    for part_index in range(part_count):
+        part_copies = [copy for copy in copies if copy.part_index == part_index]
+        if not part_copies:
+            raise NotFound(f"missing copy hints for part {part_index} of entry {entry.entry_id}")
+        selected.append(part_copies[0])
+    return selected
+
+
+def _manifest_copy_payload(copy: _ManifestCopy) -> dict[str, object]:
     return {
         "copy": str(copy.id),
         "volume_id": copy.volume_id,
         "location": copy.location,
         "disc_path": copy.disc_path,
-        "recovery_bytes": len(recovery_payload),
-        "recovery_sha256": hashlib.sha256(recovery_payload).hexdigest(),
+        "recovery_bytes": _copy_recovery_bytes(copy),
+        "recovery_sha256": _copy_recovery_sha256(copy),
     }
 
 
-def _entry_copies(entry: FetchEntryRecord) -> list[_ManifestCopy]:
+def _entry_copies(
+    entry: FetchEntryRecord,
+    *,
+    recovery_payload_codec: RecoveryPayloadCodec | None = None,
+    require_recovery_metadata: bool = False,
+) -> list[_ManifestCopy]:
     session = object_session(entry)
     if session is None:
         raise RuntimeError("fetch entry is not bound to a session")
-    copy_records = session.scalars(
-        select(FileCopyRecord)
-        .where(
-            FileCopyRecord.collection_id == entry.collection_id,
-            FileCopyRecord.path == entry.path,
-        )
-        .order_by(
-            FileCopyRecord.part_index.is_(None),
-            FileCopyRecord.part_index,
-            FileCopyRecord.volume_id,
-            FileCopyRecord.copy_id,
-            FileCopyRecord.location,
-        )
-    ).all()
+    copy_records = _copy_records_for_file(
+        session,
+        entry.collection_id,
+        entry.path,
+        recovery_payload_codec,
+        require_recovery_metadata=require_recovery_metadata,
+    )
     return [
         _ManifestCopy(
             id=CopyId(record.copy_id),
@@ -655,39 +637,132 @@ def _entry_copies(entry: FetchEntryRecord) -> list[_ManifestCopy]:
             part_count=record.part_count,
             part_bytes=record.part_bytes,
             part_sha256=record.part_sha256,
+            recovery_bytes=record.recovery_bytes,
+            recovery_sha256=record.recovery_sha256,
         )
         for record in copy_records
     ]
 
 
-def _entry_recovery_payloads(
-    hot_store: HotStore,
+def _copy_records_for_file(
     session: Session,
-    entry: FetchEntryRecord,
+    collection_id: str,
+    path: str,
+    recovery_payload_codec: RecoveryPayloadCodec | None,
+    *,
+    require_recovery_metadata: bool,
+) -> list[FileCopyRecord]:
+    copy_records = session.scalars(
+        select(FileCopyRecord)
+        .where(
+            FileCopyRecord.collection_id == collection_id,
+            FileCopyRecord.path == path,
+        )
+        .order_by(
+            FileCopyRecord.part_index.is_(None),
+            FileCopyRecord.part_index,
+            FileCopyRecord.volume_id,
+            FileCopyRecord.copy_id,
+            FileCopyRecord.location,
+        )
+    ).all()
+    if require_recovery_metadata:
+        if recovery_payload_codec is None:
+            raise RuntimeError("recovery payload codec is required to backfill copy metadata")
+        for record in copy_records:
+            _ensure_file_copy_recovery_metadata(session, record, recovery_payload_codec)
+    return list(copy_records)
+
+
+def _file_recovery_bytes_from_copies(
+    file_record: CollectionFileRecord,
+    copy_records: list[FileCopyRecord],
+) -> int:
+    if not copy_records:
+        return 0
+
+    if all(record.part_index is None for record in copy_records):
+        return _record_recovery_bytes(copy_records[0])
+
+    if any(record.part_index is None for record in copy_records):
+        raise InvalidState(f"mixed whole-file and multipart copy hints for {file_record.path}")
+
+    part_count = max(record.part_count or 1 for record in copy_records)
+    total = 0
+    for part_index in range(part_count):
+        candidates = [record for record in copy_records if record.part_index == part_index]
+        if not candidates:
+            raise NotFound(f"missing copy hints for part {part_index} of {file_record.path}")
+        total += _record_recovery_bytes(candidates[0])
+    return total
+
+
+def _ensure_file_copy_recovery_metadata(
+    session: Session,
+    record: FileCopyRecord,
     recovery_payload_codec: RecoveryPayloadCodec,
-) -> tuple[bytes, ...]:
-    content = _read_collection_file_content(hot_store, entry.collection_id, entry.path)
-    copies = _entry_copies(entry)
-    if not copies or all(copy.part_index is None for copy in copies):
-        return (encrypt_recovery_payload(content, recovery_payload_codec),)
-    part_count = max((copy.part_count or 1) for copy in copies)
-    return tuple(
-        encrypt_recovery_payload(part, recovery_payload_codec)
-        for part in _split_plaintext(content, part_count)
+) -> None:
+    needs_recovery_metadata = record.recovery_bytes is None or not record.recovery_sha256
+    needs_part_metadata = record.part_index is not None and (
+        record.part_bytes is None or record.part_sha256 is None
     )
+    if not needs_recovery_metadata and not needs_part_metadata:
+        return
+
+    image = session.get(FinalizedImageRecord, record.volume_id)
+    if image is None:
+        raise InvalidState(f"finalized image not found for copy metadata: {record.volume_id}")
+
+    metadata = _read_copy_recovery_metadata(
+        image.image_root,
+        record.disc_path,
+        recovery_payload_codec,
+        include_plaintext=needs_part_metadata,
+    )
+    record.recovery_bytes = metadata.recovery_bytes
+    record.recovery_sha256 = metadata.recovery_sha256
+    if record.part_index is not None:
+        record.part_bytes = metadata.plaintext_bytes
+        record.part_sha256 = metadata.plaintext_sha256
 
 
-def _copy_recovery_payload(
-    hot_store: HotStore,
-    session: Session,
-    entry: FetchEntryRecord,
-    copy: _ManifestCopy,
+def _read_copy_recovery_metadata(
+    image_root: str,
+    disc_path: str,
     recovery_payload_codec: RecoveryPayloadCodec,
-) -> bytes:
-    payloads = _entry_recovery_payloads(hot_store, session, entry, recovery_payload_codec)
-    if copy.part_index is None:
-        return payloads[0]
-    return payloads[copy.part_index]
+    *,
+    include_plaintext: bool,
+) -> CopyRecoveryMetadata:
+    try:
+        return read_copy_recovery_metadata(
+            image_root,
+            disc_path,
+            recovery_payload_codec,
+            include_plaintext=include_plaintext,
+        )
+    except FileNotFoundError as exc:
+        missing_path = Path(image_root) / disc_path.lstrip("/")
+        raise InvalidState(f"finalized-image payload is missing: {missing_path}") from exc
+    except RecoveryPayloadError as exc:
+        raise InvalidState(f"finalized-image payload could not be decrypted: {disc_path}") from exc
+
+
+def _record_recovery_bytes(record: FileCopyRecord) -> int:
+    if record.recovery_bytes is None:
+        raise InvalidState(f"missing recovery byte count for copy: {record.copy_id}")
+    return record.recovery_bytes
+
+
+def _copy_recovery_bytes(copy: _ManifestCopy) -> int:
+    if copy.recovery_bytes is None:
+        raise InvalidState(f"missing recovery byte count for copy: {copy.id}")
+    return copy.recovery_bytes
+
+
+def _copy_recovery_sha256(copy: _ManifestCopy) -> str:
+    if not copy.recovery_sha256:
+        raise InvalidState(f"missing recovery sha256 for copy: {copy.id}")
+    return copy.recovery_sha256
 
 
 def _entry_upload_state(entry: FetchEntryRecord, *, fetch_state: FetchState) -> str:
@@ -810,20 +885,6 @@ def _hot_payload(session: Session, raw_target: str) -> dict[str, object]:
         "present_bytes": present_bytes,
         "missing_bytes": missing_bytes,
     }
-
-
-def _split_plaintext(content: bytes, piece_count: int) -> tuple[bytes, ...]:
-    if piece_count < 1:
-        raise ValueError("piece_count must be at least 1")
-
-    base, remainder = divmod(len(content), piece_count)
-    offset = 0
-    out: list[bytes] = []
-    for part_index in range(piece_count):
-        size = base + int(part_index < remainder)
-        out.append(content[offset : offset + size])
-        offset += size
-    return tuple(out)
 
 
 def delete_fetch_entries(session: Session, fetch_id: str) -> None:
