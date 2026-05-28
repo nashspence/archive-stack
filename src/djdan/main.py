@@ -1144,6 +1144,57 @@ def _clear_recovery_artifacts(
         session_state.path.unlink()
 
 
+def _save_or_remove_burn_session_state(session_state: BurnSessionState) -> None:
+    if session_state.images:
+        session_state.save()
+        return
+    if session_state.path.exists():
+        session_state.path.unlink()
+
+
+def _clear_burn_artifacts_if_complete(
+    client: ApiClient,
+    session_state: BurnSessionState,
+    *,
+    staging_dir: Path,
+    image_id: str,
+) -> None:
+    if image_id not in session_state.images:
+        return
+    copies = client.list_copies(image_id).get("copies", [])
+    if not isinstance(copies, list):
+        return
+    for copy_payload in copies:
+        if not isinstance(copy_payload, dict):
+            continue
+        if str(copy_payload.get("state")) in _PENDING_BURN_STATES:
+            return
+        if _can_mark_copy_verified_from_checkpoint(session_state, image_id, copy_payload):
+            return
+
+    staging_root = staging_dir / image_id
+    if staging_root.exists():
+        shutil.rmtree(staging_root)
+        typer.echo(f"cleared staged ISO artifacts for {image_id}", err=True)
+    del session_state.images[image_id]
+    _save_or_remove_burn_session_state(session_state)
+
+
+def _clear_completed_burn_artifacts(
+    client: ApiClient,
+    session_state: BurnSessionState,
+    *,
+    staging_dir: Path,
+) -> None:
+    for image_id in tuple(session_state.images):
+        _clear_burn_artifacts_if_complete(
+            client,
+            session_state,
+            staging_dir=staging_dir,
+            image_id=image_id,
+        )
+
+
 def _image_requires_recovery_burn(client: ApiClient, image_id: str) -> bool:
     copies_payload = client.list_copies(image_id)
     return any(
@@ -1706,6 +1757,13 @@ def _process_burn_backlog_item(
                 device=device,
             )
         )
+    if not simulate:
+        _clear_burn_artifacts_if_complete(
+            client,
+            session_state,
+            staging_dir=staging_dir,
+            image_id=image_id,
+        )
     return completed
 
 
@@ -1981,6 +2039,11 @@ def burn_cmd(
         typer.echo("burn backlog already clear")
         _report_recovery_handoffs(recovery_handoffs)
         return
+    _clear_completed_burn_artifacts(
+        client,
+        session_state,
+        staging_dir=resolved_staging_dir,
+    )
     recovery_handoffs = _discover_recovery_handoffs(client)
     if completed_copy_ids:
         typer.echo("burn backlog cleared")

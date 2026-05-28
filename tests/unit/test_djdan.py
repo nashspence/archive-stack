@@ -1955,6 +1955,84 @@ def test_djdan_burn_reports_recovery_handoffs_when_no_standard_backlog_exists(
     assert "Approve the estimated restore cost" in result.stdout
 
 
+def test_djdan_burn_cleans_stale_completed_staging_when_backlog_is_clear(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    image_id = "20260420T040001Z"
+    iso_dir = tmp_path / image_id
+    iso_dir.mkdir()
+    (iso_dir / f"{image_id}.iso").write_bytes(b"fixture-iso\n")
+
+    state = djdan_main.BurnSessionState.load(djdan_main._burn_state_path(tmp_path))
+    for copy_id, location in {
+        f"{image_id}-1": "vault-a/shelf-01",
+        f"{image_id}-2": "vault-b/shelf-01",
+    }.items():
+        progress = state.copy_progress(image_id, copy_id)
+        progress.burned = True
+        progress.media_verified = True
+        progress.label_confirmed = True
+        progress.location = location
+    state.image_progress(image_id).verified_sha256 = "fixture-sha256"
+    state.save()
+
+    class FakeClient:
+        def get_plan(self, *, page: int, per_page: int, sort: str, order: str, iso_ready: bool):
+            return {"page": 1, "pages": 0, "candidates": []}
+
+        def list_images(self, *, page: int, per_page: int, sort: str, order: str):
+            return {
+                "page": 1,
+                "pages": 1,
+                "images": [
+                    {
+                        "id": image_id,
+                        "filename": f"{image_id}.iso",
+                        "fill": 0.9,
+                        "physical_copies_registered": 2,
+                        "physical_copies_required": 2,
+                    }
+                ],
+            }
+
+        def list_copies(self, requested_image_id: str) -> dict[str, object]:
+            assert requested_image_id == image_id
+            return {
+                "copies": [
+                    {
+                        "id": f"{image_id}-1",
+                        "state": "verified",
+                        "verification_state": "verified",
+                        "location": "vault-a/shelf-01",
+                    },
+                    {
+                        "id": f"{image_id}-2",
+                        "state": "verified",
+                        "verification_state": "verified",
+                        "location": "vault-b/shelf-01",
+                    },
+                ]
+            }
+
+    monkeypatch.setattr(djdan_main, "ApiClient", FakeClient)
+    monkeypatch.setattr(djdan_main, "build_iso_verifier", object)
+    monkeypatch.setattr(djdan_main, "build_disc_burner", object)
+    monkeypatch.setattr(djdan_main, "build_burned_media_verifier", object)
+    monkeypatch.setattr(djdan_main, "build_burn_prompts", object)
+
+    result = runner.invoke(
+        djdan_main.app,
+        ["burn", "--device", "/dev/fake-sr0", "--staging-dir", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    assert "burn backlog already clear" in result.stdout
+    assert f"cleared staged ISO artifacts for {image_id}" in result.stderr
+    assert not iso_dir.exists()
+    assert not (tmp_path / "burn-session.json").exists()
+
+
 @pytest.mark.parametrize(
     ("platform", "expected_device"),
     [
@@ -2457,6 +2535,9 @@ def test_djdan_burn_waits_for_label_confirmation_before_registration_and_resumes
     assert client.register_calls == [copy_one, copy_two]
     assert client.copy_states[copy_one]["state"] == "verified"
     assert client.copy_states[copy_two]["verification_state"] == "verified"
+    assert "cleared staged ISO artifacts for 20260420T040001Z" in second.stderr
+    assert not (tmp_path / "20260420T040001Z").exists()
+    assert not (tmp_path / "burn-session.json").exists()
 
 
 def test_djdan_burn_resumes_from_media_verification_when_unfinished_disc_is_available(

@@ -254,6 +254,8 @@ Expected multipart flow:
 - after label confirmation, `djdan burn` records the storage location, registers the generated copy id, and marks the
   copy verified before moving on; copy registration includes the per-file recovery index, and `djdan` reports that
   this can take time for images with many small files
+- once an ordinary image has no pending burn copies or unfinished local verification checkpoints, `djdan burn` removes
+  that image's staged ISO and local burn checkpoint data
 - if no ordinary burn backlog remains but one or more images are waiting on
   `image_rebuild` work, `djdan burn` reports those recovery sessions instead
   of treating them as ordinary replacement burns
