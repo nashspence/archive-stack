@@ -348,65 +348,6 @@ def test_download_iso_streams_to_output_path(
     assert captured_timeouts == [3600.0]
 
 
-def test_download_iso_resumes_partial_file_after_transport_error(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setenv("RIVERHOG_DOWNLOAD_RETRY_ATTEMPTS", "2")
-    monkeypatch.setenv("RIVERHOG_DOWNLOAD_RETRY_DELAY_SECONDS", "0")
-    prefix = b"a" * (8 * 1024 * 1024)
-    content = prefix + b"fixture-iso-tail"
-    captured_ranges: list[str | None] = []
-
-    class FailingStream(httpx.SyncByteStream):
-        def __iter__(self):
-            yield prefix
-            raise httpx.RemoteProtocolError("fixture stream reset")
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        range_header = request.headers.get("range")
-        captured_ranges.append(range_header)
-        if range_header is None:
-            return httpx.Response(
-                200,
-                headers={"Content-Length": str(len(content))},
-                stream=FailingStream(),
-            )
-        assert range_header == f"bytes={len(prefix)}-"
-        return httpx.Response(
-            206,
-            headers={
-                "Content-Length": str(len(content) - len(prefix)),
-                "Content-Range": f"bytes {len(prefix)}-{len(content) - 1}/{len(content)}",
-            },
-            content=content[len(prefix) :],
-        )
-
-    transport = httpx.MockTransport(handler)
-
-    def fake_make_client(self: ApiClient, *, timeout_seconds: float) -> httpx.Client:
-        _ = timeout_seconds
-        return httpx.Client(base_url=self.base_url, transport=transport)
-
-    monkeypatch.setattr(ApiClient, "_make_client", fake_make_client)
-
-    progress: list[tuple[int, int | None]] = []
-    output = tmp_path / "image.iso"
-    client = ApiClient(base_url="https://api.test")
-    downloaded = client.download_iso(
-        "20260420T040001Z",
-        output,
-        progress=lambda downloaded, total: progress.append((downloaded, total)),
-    )
-
-    assert downloaded == len(content)
-    assert output.read_bytes() == content
-    assert not (tmp_path / ".image.iso.part").exists()
-    assert captured_ranges == [None, f"bytes={len(prefix)}-"]
-    assert progress[0] == (len(prefix), len(content))
-    assert progress[-1] == (len(content), len(content))
-
-
 def test_get_glacier_report_uses_glacier_endpoint_with_filters(monkeypatch) -> None:
     captured: list[str] = []
 

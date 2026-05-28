@@ -240,7 +240,6 @@ Expected multipart flow:
 - macOS native `-testburn` support depends on the drive/media family; BD-R media may be burnable while still not
   exposing native test-burn support through DiscRecording
 - if the staged ISO is missing or no longer matches the last verified staged copy, `djdan burn` downloads it again
-- interrupted ISO downloads keep their `.part` file and retry with HTTP byte-range resume when the server supports it
 - one physical copy is burned and burned-media-verified at a time
 - after burned-media verification, `djdan burn` asks Riverhog to send the best-effort `images.copy_label_needed`
   operator notification, then prints the exact label text plus storage guidance before copy registration

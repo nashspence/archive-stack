@@ -524,9 +524,6 @@ Required behavior:
 - ISO download requires the finalized image to already exist
 - subsequent downloads for the same finalized `image.id` reuse the same represented bytes
 - finalized-image ISO responses include `Content-Length` from the stored materialized ISO byte count
-- finalized-image ISO responses include `Accept-Ranges: bytes`
-- finalized-image ISO responses support a single HTTP byte range and return `206 Partial Content` with
-  `Content-Range` when a valid `Range: bytes=...` request is supplied
 - finalized-image ISO responses include `X-Accel-Buffering: no` so nginx-compatible proxies can forward headers and
   streaming bytes without waiting for the rebuilt body to accumulate
 - this endpoint is not used for recovery-session burns
