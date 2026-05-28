@@ -655,6 +655,21 @@ def test_collection_upload_runtime_matches_contract_headers(monkeypatch) -> None
         )
 
 
+def test_collection_upload_response_preserves_literal_percent_encoded_file_names(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_PUBLIC_BASE_URL", "https://riverhog.test")
+    with _contract_runtime_client() as client:
+        runtime_path = (
+            "/v1/collection-uploads/docs/files/Logos/AZ%2520Logo%2520ClrAZ.jpg/upload"
+        )
+
+        post = client.post(runtime_path)
+
+        assert post.status_code == 200
+        assert post.json()["upload_url"] == f"https://riverhog.test{runtime_path}"
+
+
 def test_fetch_upload_runtime_matches_contract_headers(monkeypatch) -> None:
     monkeypatch.setenv("RIVERHOG_PUBLIC_BASE_URL", "https://riverhog.test")
     with _contract_runtime_client() as client:
