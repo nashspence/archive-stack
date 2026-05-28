@@ -4,6 +4,8 @@ from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from riverhog_core.catalog_models import (
     CollectionArchiveRecord,
     CollectionFileRecord,
@@ -17,6 +19,7 @@ from riverhog_core.catalog_models import (
     GlacierRecoverySessionRecord,
 )
 from riverhog_core.domain.enums import CopyState, VerificationState
+from riverhog_core.domain.errors import InvalidState
 from riverhog_core.finalized_image_coverage import (
     read_finalized_image_collection_artifacts,
     read_finalized_image_coverage_parts,
@@ -320,6 +323,43 @@ def test_register_defers_recovery_index_sync_to_worker(tmp_path: Path) -> None:
     assert [(row.path, row.disc_path, row.location) for row in rows] == [
         ("tax/2022/invoice-123.pdf", "files/000001.age", "Shelf A1"),
         ("tax/2022/receipt-456.pdf", "files/000002.age", "Shelf A1"),
+    ]
+
+
+def test_recovery_index_worker_retries_after_failed_sync(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    image_root = tmp_path / "image-root"
+    initialize_db(str(sqlite_path))
+    write_tree(image_root, IMAGE_ONE_FILES)
+    _seed_finalized_image(sqlite_path, image_root)
+
+    service = SqlAlchemyCopyService(_config(sqlite_path), _FakeHotStore())
+    service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
+    assert service.process_due_file_copy_indexes() == 1
+
+    missing_payload = image_root / "files/000002.age"
+    original_payload = missing_payload.read_bytes()
+    missing_payload.unlink()
+    service.update("20260420T040001Z", "20260420T040001Z-1", location="Shelf B1")
+
+    with pytest.raises(InvalidState):
+        service.process_due_file_copy_indexes()
+
+    session_factory = make_session_factory(str(sqlite_path))
+    with session_scope(session_factory) as session:
+        rows = session.query(FileCopyRecord).order_by(FileCopyRecord.disc_path).all()
+    assert [(row.disc_path, row.location) for row in rows] == [
+        ("files/000001.age", "Shelf A1"),
+        ("files/000002.age", "Shelf A1"),
+    ]
+
+    missing_payload.write_bytes(original_payload)
+    assert service.process_due_file_copy_indexes() == 1
+    with session_scope(session_factory) as session:
+        rows = session.query(FileCopyRecord).order_by(FileCopyRecord.disc_path).all()
+    assert [(row.disc_path, row.location) for row in rows] == [
+        ("files/000001.age", "Shelf B1"),
+        ("files/000002.age", "Shelf B1"),
     ]
 
 
