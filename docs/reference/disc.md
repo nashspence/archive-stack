@@ -219,7 +219,8 @@ Expected multipart flow:
   `copy_id` values in state `needed` or `burning`
 - the session selects the fullest ready backlog item first
 - if that item is still provisional, `djdan burn` finalizes it before continuing
-- the session downloads and stages the image ISO locally before burn work
+- for copies that still need a physical burn, the session asks for blank media before ISO staging/download so an
+  already-inserted disc can start burning as soon as the download and staged-ISO verification complete
 - the staged ISO is verified before burn work continues; silent local verifier stages print periodic heartbeat messages
   because large images and images with many file entries can take several minutes to check
 - the default burn backend uses `hdiutil burn` on macOS and `xorriso -as cdrecord` elsewhere

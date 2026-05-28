@@ -2678,6 +2678,7 @@ def test_djdan_burn_resumes_from_media_verification_when_unfinished_disc_is_avai
 def test_djdan_burn_redownloads_invalid_staged_iso(monkeypatch, tmp_path: Path) -> None:
     copy_one = "20260420T040001Z-1"
     copy_two = "20260420T040001Z-2"
+    events: list[str] = []
 
     class FakeClient:
         def __init__(self) -> None:
@@ -2767,6 +2768,7 @@ def test_djdan_burn_redownloads_invalid_staged_iso(monkeypatch, tmp_path: Path) 
         def download_iso(self, image_id: str, output: Path) -> bytes:
             assert image_id == "20260420T040001Z"
             self.download_calls += 1
+            events.append("download")
             output.write_bytes(self.iso_bytes)
             return self.iso_bytes
 
@@ -2805,6 +2807,7 @@ def test_djdan_burn_redownloads_invalid_staged_iso(monkeypatch, tmp_path: Path) 
 
         def burn(self, iso_path: Path, *, device: str, copy_id: str) -> None:
             assert iso_path.exists()
+            events.append(f"burn:{copy_id}")
             if copy_id in self.fail_copy_ids:
                 raise RuntimeError(f"fixture burn failed for {copy_id}")
 
@@ -2823,6 +2826,7 @@ def test_djdan_burn_redownloads_invalid_staged_iso(monkeypatch, tmp_path: Path) 
 
         def wait_for_blank_disc(self, copy_id: str, *, device: str) -> None:
             assert device == "/dev/fake-sr0"
+            events.append(f"blank:{copy_id}")
 
         def confirm_label(self, copy_id: str, *, label_text: str) -> None:
             if copy_id not in self.confirmed:
@@ -2852,6 +2856,13 @@ def test_djdan_burn_redownloads_invalid_staged_iso(monkeypatch, tmp_path: Path) 
     assert first.exit_code == 1
     assert "fixture burn failed for 20260420T040001Z-2" in first.stderr
     assert client.download_calls == 1
+    assert events == [
+        f"blank:{copy_one}",
+        "download",
+        f"burn:{copy_one}",
+        f"blank:{copy_two}",
+        f"burn:{copy_two}",
+    ]
 
     staged_iso = tmp_path / "20260420T040001Z" / "20260420T040001Z.iso"
     staged_iso.write_bytes(b"corrupted-iso\n")
@@ -2868,6 +2879,7 @@ def test_djdan_burn_redownloads_invalid_staged_iso(monkeypatch, tmp_path: Path) 
     assert "staged ISO is invalid" in second.stderr
     assert "re-downloading" in second.stderr
     assert client.download_calls == 2
+    assert events[-3:] == [f"blank:{copy_two}", "download", f"burn:{copy_two}"]
     assert client.copy_states[copy_two]["state"] == "verified"
 
 

@@ -1497,6 +1497,12 @@ def _burn_pending_copy(
             session_state.image_progress(image_id).copies[copy_id] = progress
             session_state.save()
 
+    if not progress.burned:
+        prompts.wait_for_blank_disc(copy_id, device=device)
+        preflight = getattr(burner, "preflight", None)
+        if callable(preflight):
+            preflight(device=device)
+
     iso_path = _ensure_staged_iso(
         client,
         image_id,
@@ -1508,7 +1514,6 @@ def _burn_pending_copy(
     )
 
     if not progress.burned:
-        prompts.wait_for_blank_disc(copy_id, device=device)
         typer.echo(f"burning copy {copy_id} from {iso_path}", err=True)
         burner.burn(iso_path, device=device, copy_id=copy_id)
         progress.burned = True
@@ -1600,6 +1605,10 @@ def _simulate_pending_copy(
     device: str,
 ) -> str:
     copy_id = str(copy_payload["id"])
+    prompts.wait_for_blank_disc(copy_id, device=device)
+    preflight = getattr(burner, "preflight", None)
+    if callable(preflight):
+        preflight(device=device)
     iso_path = _ensure_staged_iso(
         client,
         image_id,
@@ -1608,10 +1617,6 @@ def _simulate_pending_copy(
         verifier=iso_verifier,
         session_state=session_state,
     )
-    preflight = getattr(burner, "preflight", None)
-    if callable(preflight):
-        preflight(device=device)
-    prompts.wait_for_blank_disc(copy_id, device=device)
     typer.echo(f"simulating burn copy {copy_id} from {iso_path}", err=True)
     burner.burn(iso_path, device=device, copy_id=copy_id)
     typer.echo(
