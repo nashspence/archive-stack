@@ -213,7 +213,11 @@ async def _kill_proc(proc: asyncio.subprocess.Process) -> None:
 
 
 async def _stream_process(
-    cmd: list[str], *, filename: str, content_length: int | None = None
+    cmd: list[str],
+    *,
+    filename: str,
+    content_length: int | None = None,
+    prebuffer_first_chunk: bool = True,
 ) -> IsoStream:
     if os.name != "nt":
         proc = await asyncio.create_subprocess_exec(
@@ -232,16 +236,19 @@ async def _stream_process(
     assert stdout is not None
     stderr_task = asyncio.create_task(_drain_stderr(proc.stderr))
 
-    first = await stdout.read(CHUNK_BYTES)
-    if not first:
-        rc = await proc.wait()
-        stderr = await stderr_task
-        detail = (stderr.decode("utf-8", errors="replace") or f"xorriso exited {rc}")[-1500:]
-        raise Conflict(detail)
+    first: bytes | None = None
+    if prebuffer_first_chunk:
+        first = await stdout.read(CHUNK_BYTES)
+        if not first:
+            rc = await proc.wait()
+            stderr = await stderr_task
+            detail = (stderr.decode("utf-8", errors="replace") or f"xorriso exited {rc}")[-1500:]
+            raise Conflict(detail)
 
     async def body() -> AsyncIterator[bytes]:
         try:
-            yield first
+            if first:
+                yield first
             while True:
                 chunk = await stdout.read(CHUNK_BYTES)
                 if not chunk:
@@ -282,4 +289,5 @@ async def stream_iso_from_root(
         build_iso_cmd_from_root(image_root=image_root, volume_id=volume_id),
         filename=filename,
         content_length=content_length,
+        prebuffer_first_chunk=content_length is None,
     )

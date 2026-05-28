@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from riverhog_core.iso.streaming import (
     build_iso_print_size_cmd_from_root,
     build_iso_validation_cmd,
     estimate_iso_size_from_root,
+    stream_iso_from_root,
     validate_iso_image,
 )
 
@@ -45,6 +47,58 @@ def test_build_iso_cmd_from_root_maps_root(tmp_path: Path) -> None:
     root.mkdir()
     cmd = build_iso_cmd_from_root(image_root=root, volume_id="VOL_ROOT")
     assert cmd[-3:] == [str(root), "/", "-commit"]
+
+
+def test_stream_iso_from_root_with_known_length_sends_headers_before_body(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    reads = 0
+
+    class FakeStream:
+        async def read(self, _size: int) -> bytes:
+            nonlocal reads
+            reads += 1
+            return b""
+
+    class FakeStderr:
+        async def read(self, _size: int) -> bytes:
+            return b""
+
+    class FakeProc:
+        stdout = FakeStream()
+        stderr = FakeStderr()
+        returncode: int | None = None
+        pid = 999999
+
+        async def wait(self) -> int:
+            self.returncode = 0
+            return 0
+
+    async def fake_create_subprocess_exec(*_args, **_kwargs) -> FakeProc:
+        return FakeProc()
+
+    async def run() -> None:
+        stream = await stream_iso_from_root(
+            image_root=root,
+            volume_id="VOL_ROOT",
+            filename="image.iso",
+            content_length=123,
+        )
+        assert stream.headers is not None
+        assert stream.headers["Content-Length"] == "123"
+        assert reads == 0
+        assert [chunk async for chunk in stream.body] == []
+        assert reads == 1
+
+    monkeypatch.setattr(
+        "riverhog_core.iso.streaming.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    asyncio.run(run())
 
 
 def test_build_print_size_cmd_from_root_uses_lightweight_streaming_flags(
