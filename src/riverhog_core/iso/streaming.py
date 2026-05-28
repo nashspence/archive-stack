@@ -268,6 +268,7 @@ async def _stream_process(
     headers = {
         "Content-Disposition": f'attachment; filename="{filename}"',
         "Cache-Control": "no-store",
+        "X-Accel-Buffering": "no",
     }
     if content_length is not None and content_length > 0:
         headers["Content-Length"] = str(content_length)

@@ -89,6 +89,7 @@ def test_stream_iso_from_root_with_known_length_sends_headers_before_body(
         )
         assert stream.headers is not None
         assert stream.headers["Content-Length"] == "123"
+        assert stream.headers["X-Accel-Buffering"] == "no"
         assert reads == 0
         assert [chunk async for chunk in stream.body] == []
         assert reads == 1

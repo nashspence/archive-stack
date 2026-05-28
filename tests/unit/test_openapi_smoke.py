@@ -425,6 +425,7 @@ class _StubPlanning:
                 "Content-Disposition": 'attachment; filename="fixture.iso"',
                 "Cache-Control": "no-store",
                 "Content-Length": str(len(b"fixture iso bytes")),
+                "X-Accel-Buffering": "no",
             },
         )
 
@@ -735,6 +736,7 @@ def test_binary_download_runtime_matches_contract_content_types() -> None:
         assert iso.status_code == 200
         assert iso.content == b"fixture iso bytes"
         assert iso.headers["content-length"] == str(len(b"fixture iso bytes"))
+        assert iso.headers["x-accel-buffering"] == "no"
         _assert_contract_success_content_type(
             iso,
             contract_path="/v1/images/{image_id}/iso",
