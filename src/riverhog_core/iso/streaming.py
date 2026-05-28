@@ -40,6 +40,7 @@ class IsoStream:
     body: AsyncIterator[bytes]
     media_type: str = "application/octet-stream"
     headers: dict[str, str] | None = None
+    status_code: int = 200
 
 
 def _base_xorriso_cmd(*, volume_id: str) -> list[str]:
@@ -267,6 +268,7 @@ async def _stream_process(
 
     headers = {
         "Content-Disposition": f'attachment; filename="{filename}"',
+        "Accept-Ranges": "bytes",
         "Cache-Control": "no-store",
         "X-Accel-Buffering": "no",
     }

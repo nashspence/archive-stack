@@ -30,6 +30,8 @@ _COPY_REGISTRATION_TIMEOUT_SECONDS = 3600.0
 _UPLOAD_WRITE_CHUNK_BYTES = 256 * 1024
 _UPLOAD_WRITE_DELAY_SECONDS = 0.005
 _DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
+_DOWNLOAD_RETRY_ATTEMPTS = 10
+_DOWNLOAD_RETRY_DELAY_SECONDS = 2.0
 _TRANSIENT_HTTP_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 DownloadProgress = Callable[[int, int | None], None]
 
@@ -83,6 +85,55 @@ def _nonnegative_seconds_env(env_name: str, default: float) -> float:
     if value < 0:
         raise BadRequest(f"{env_name} must be a non-negative number of seconds")
     return value
+
+
+def _download_total_from_headers(headers: httpx.Headers, *, downloaded: int) -> int | None:
+    content_range = headers.get("Content-Range")
+    if content_range:
+        _, separator, range_spec = content_range.partition(" ")
+        if separator and "/" in range_spec:
+            total_raw = range_spec.rsplit("/", 1)[-1]
+            if total_raw != "*":
+                try:
+                    return int(total_raw)
+                except ValueError:
+                    pass
+    content_length = headers.get("Content-Length")
+    try:
+        length = int(content_length) if content_length is not None else None
+    except ValueError:
+        return None
+    if length is None:
+        return None
+    return downloaded + length
+
+
+def _content_range_start(headers: httpx.Headers) -> int | None:
+    content_range = headers.get("Content-Range")
+    if not content_range:
+        return None
+    _, separator, range_spec = content_range.partition(" ")
+    if not separator:
+        return None
+    first_range = range_spec.split("/", 1)[0]
+    start_raw = first_range.split("-", 1)[0]
+    try:
+        return int(start_raw)
+    except ValueError:
+        return None
+
+
+def _unsatisfied_range_total(headers: httpx.Headers) -> int | None:
+    content_range = headers.get("Content-Range")
+    if not content_range:
+        return None
+    prefix, _, total_raw = content_range.partition("*/")
+    if prefix.strip() != "bytes" or not total_raw:
+        return None
+    try:
+        return int(total_raw)
+    except ValueError:
+        return None
 
 
 def _iter_upload_body(content: bytes, *, chunk_bytes: int, delay_seconds: float) -> Iterable[bytes]:
@@ -342,36 +393,81 @@ class ApiClient:
             "RIVERHOG_DOWNLOAD_TIMEOUT_SECONDS",
             _DOWNLOAD_TIMEOUT_SECONDS,
         )
-        with self._make_client(timeout_seconds=timeout_seconds) as client:
-            if output is None:
+        if output is None:
+            with self._make_client(timeout_seconds=timeout_seconds) as client:
                 response = client.get(path)
                 self._raise_for_error(response)
                 return response.content
 
-            with client.stream("GET", path) as response:
-                if not response.is_success:
-                    response.read()
-                    self._raise_for_error(response)
+        attempts = _positive_int_env(
+            "RIVERHOG_DOWNLOAD_RETRY_ATTEMPTS",
+            _DOWNLOAD_RETRY_ATTEMPTS,
+        )
+        retry_delay = _nonnegative_seconds_env(
+            "RIVERHOG_DOWNLOAD_RETRY_DELAY_SECONDS",
+            _DOWNLOAD_RETRY_DELAY_SECONDS,
+        )
+        tmp_output = output.with_name(f".{output.name}.part")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        last_error: httpx.TransportError | None = None
 
-                content_length = response.headers.get("Content-Length")
-                try:
-                    total_bytes = int(content_length) if content_length is not None else None
-                except ValueError:
-                    total_bytes = None
-                tmp_output = output.with_name(f".{output.name}.part")
-                output.parent.mkdir(parents=True, exist_ok=True)
-
-                downloaded = 0
-                with tmp_output.open("wb") as handle:
-                    for chunk in response.iter_bytes(chunk_size=_DOWNLOAD_CHUNK_BYTES):
-                        if not chunk:
+        for attempt in range(1, attempts + 1):
+            resume_offset = tmp_output.stat().st_size if tmp_output.exists() else 0
+            headers = {"Range": f"bytes={resume_offset}-"} if resume_offset > 0 else None
+            try:
+                with self._make_client(timeout_seconds=timeout_seconds) as client:
+                    with client.stream("GET", path, headers=headers) as response:
+                        if response.status_code == 416 and resume_offset > 0:
+                            total_bytes = _unsatisfied_range_total(response.headers)
+                            if total_bytes is not None and resume_offset == total_bytes:
+                                tmp_output.replace(output)
+                                if progress is not None:
+                                    progress(total_bytes, total_bytes)
+                                return total_bytes
+                            tmp_output.unlink(missing_ok=True)
                             continue
-                        handle.write(chunk)
-                        downloaded += len(chunk)
-                        if progress is not None:
+                        if not response.is_success:
+                            response.read()
+                            self._raise_for_error(response)
+
+                        downloaded = resume_offset
+                        output_mode = "ab" if resume_offset > 0 else "wb"
+                        if resume_offset > 0:
+                            if response.status_code != 206:
+                                downloaded = 0
+                                output_mode = "wb"
+                            elif _content_range_start(response.headers) != resume_offset:
+                                tmp_output.unlink(missing_ok=True)
+                                continue
+                        total_bytes = _download_total_from_headers(
+                            response.headers,
+                            downloaded=downloaded,
+                        )
+                        if progress is not None and downloaded:
                             progress(downloaded, total_bytes)
-                tmp_output.replace(output)
-                return downloaded
+                        with tmp_output.open(output_mode) as handle:
+                            for chunk in response.iter_bytes(chunk_size=_DOWNLOAD_CHUNK_BYTES):
+                                if not chunk:
+                                    continue
+                                handle.write(chunk)
+                                downloaded += len(chunk)
+                                if progress is not None:
+                                    progress(downloaded, total_bytes)
+                        tmp_output.replace(output)
+                        return downloaded
+            except httpx.TransportError as exc:
+                last_error = exc
+                self.close()
+                if attempt >= attempts:
+                    break
+                if retry_delay > 0:
+                    time.sleep(retry_delay)
+
+        if last_error is not None:
+            raise ServiceUnavailable(
+                f"download interrupted after {attempts} attempts: {last_error}"
+            ) from last_error
+        raise ServiceUnavailable(f"download failed after {attempts} attempts")
 
     def download_iso(
         self,

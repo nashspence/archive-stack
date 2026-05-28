@@ -22,8 +22,21 @@ def test_acceptance_system_can_serve_real_iso_streams_from_fake_backed_state(
         response = system.request("GET", f"/v1/images/{image_id}/iso")
         assert response.status_code == 200, response.text
         assert b'"fixture": "spec-iso"' in response.content
+        full_iso = response.content
         assert int(response.headers["content-length"]) == len(response.content)
+        assert response.headers["accept-ranges"] == "bytes"
         assert response.headers["x-accel-buffering"] == "no"
+
+        response = system.request(
+            "GET",
+            f"/v1/images/{image_id}/iso",
+            headers={"Range": "bytes=5-"},
+        )
+        assert response.status_code == 206, response.text
+        assert response.content == full_iso[5:]
+        assert response.headers["content-length"] == str(len(full_iso) - 5)
+        assert response.headers["content-range"] == f"bytes 5-{len(full_iso) - 1}/{len(full_iso)}"
+        assert response.headers["accept-ranges"] == "bytes"
 
         monkeypatch.setattr(
             subprocess,
