@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import binascii
+
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
@@ -27,6 +30,16 @@ def _hook_error(message: str) -> JSONResponse:
     )
 
 
+def _target_path_from_metadata(metadata: dict[object, object]) -> str:
+    target_path_b64 = metadata.get("target_path_b64")
+    if target_path_b64:
+        try:
+            return base64.b64decode(str(target_path_b64), validate=True).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError):
+            return ""
+    return str(metadata.get("target_path", ""))
+
+
 @router.post("/internal/tusd/hooks")
 async def handle_tusd_hook(request: Request) -> JSONResponse:
     config = load_runtime_config()
@@ -43,7 +56,7 @@ async def handle_tusd_hook(request: Request) -> JSONResponse:
     if not isinstance(metadata, dict):
         return _hook_error("missing target_path metadata")
 
-    raw_target_path = str(metadata.get("target_path", "")).lstrip("/")
+    raw_target_path = _target_path_from_metadata(metadata).lstrip("/")
     if not raw_target_path:
         return _hook_error("missing target_path metadata")
     if raw_target_path.startswith("collections/"):

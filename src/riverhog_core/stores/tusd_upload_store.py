@@ -40,8 +40,9 @@ class TusdUploadStore:
         return target_path.lstrip("/")
 
     def _metadata_header(self, target_path: str) -> str:
-        encoded = base64.b64encode(target_path.encode("utf-8")).decode("ascii")
-        return f"target_path {encoded}"
+        target_path_b64 = base64.b64encode(target_path.encode("utf-8")).decode("ascii")
+        encoded = base64.b64encode(target_path_b64.encode("ascii")).decode("ascii")
+        return f"target_path_b64 {encoded}"
 
     def _tus_headers(self, **headers: str) -> dict[str, str]:
         return {

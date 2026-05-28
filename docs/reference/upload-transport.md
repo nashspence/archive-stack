@@ -71,6 +71,11 @@ capped backoff and re-check the authoritative server offset before sending more
 bytes. This is intentional: app restarts, proxy reloads, and brief network
 outages should not force the operator to restart a long upload.
 
+Riverhog passes tusd a deterministic staging object id through its pre-create
+hook. The target path metadata sent to tusd is itself base64 text, not the raw
+path, so S3-compatible stores never need to sign metadata headers containing
+literal spaces or other path punctuation.
+
 Larger socket write slices or shorter write delays are riskier than larger
 request chunks. Do not benchmark more aggressive values after a failed or
 aborted bulk upload unless local stale sockets have cleared first; orphaned
