@@ -523,7 +523,8 @@ Required behavior:
 - ISO download does not finalize the image
 - ISO download requires the finalized image to already exist
 - subsequent downloads for the same finalized `image.id` reuse the same represented bytes
-- finalized-image ISO responses include `Content-Length` from the stored materialized ISO byte count
+- finalized-image ISO responses are generated streams and do not promise `Content-Length`; callers should use the
+  finalized-image `bytes` field as an estimate for operator progress only
 - finalized-image ISO responses include `X-Accel-Buffering: no` so nginx-compatible proxies can forward headers and
   streaming bytes without waiting for the rebuilt body to accumulate
 - this endpoint is not used for recovery-session burns

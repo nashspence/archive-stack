@@ -362,14 +362,23 @@ class ApiClient:
                 output.parent.mkdir(parents=True, exist_ok=True)
 
                 downloaded = 0
-                with tmp_output.open("wb") as handle:
-                    for chunk in response.iter_bytes(chunk_size=_DOWNLOAD_CHUNK_BYTES):
-                        if not chunk:
-                            continue
-                        handle.write(chunk)
-                        downloaded += len(chunk)
-                        if progress is not None:
-                            progress(downloaded, total_bytes)
+                try:
+                    with tmp_output.open("wb") as handle:
+                        for chunk in response.iter_bytes(chunk_size=_DOWNLOAD_CHUNK_BYTES):
+                            if not chunk:
+                                continue
+                            handle.write(chunk)
+                            downloaded += len(chunk)
+                            if progress is not None:
+                                progress(downloaded, total_bytes)
+                except httpx.TransportError as exc:
+                    tmp_output.unlink(missing_ok=True)
+                    self.close()
+                    raise ServiceUnavailable(
+                        "download stream was interrupted before completion; "
+                        "discarded the partial file because generated ISO streams "
+                        "cannot be resumed without server-side ISO caching"
+                    ) from exc
                 tmp_output.replace(output)
                 return downloaded
 

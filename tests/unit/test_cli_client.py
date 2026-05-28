@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from riverhog_cli.client import ApiClient, _iter_upload_body
+from riverhog_core.domain.errors import ServiceUnavailable
 
 
 def test_create_or_resume_collection_upload_uses_collection_upload_endpoint(monkeypatch) -> None:
@@ -346,6 +347,42 @@ def test_download_iso_streams_to_output_path(
     assert progress == [(len(content), len(content))]
     assert captured == ["https://api.test/v1/images/20260420T040001Z/iso"]
     assert captured_timeouts == [3600.0]
+
+
+def test_download_iso_discards_partial_file_after_stream_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    content = b"fixture-iso\n"
+
+    class FailingStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield content
+            raise httpx.RemoteProtocolError("fixture stream reset")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers.get("range") is None
+        return httpx.Response(
+            200,
+            headers={"Content-Length": str(len(content) + 4096)},
+            stream=FailingStream(),
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_make_client(self: ApiClient, *, timeout_seconds: float) -> httpx.Client:
+        _ = timeout_seconds
+        return httpx.Client(base_url=self.base_url, transport=transport)
+
+    monkeypatch.setattr(ApiClient, "_make_client", fake_make_client)
+
+    output = tmp_path / "image.iso"
+    client = ApiClient(base_url="https://api.test")
+    with pytest.raises(ServiceUnavailable, match="download stream was interrupted"):
+        client.download_iso("20260420T040001Z", output)
+
+    assert not output.exists()
+    assert not (tmp_path / ".image.iso.part").exists()
 
 
 def test_get_glacier_report_uses_glacier_endpoint_with_filters(monkeypatch) -> None:

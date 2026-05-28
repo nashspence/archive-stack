@@ -234,6 +234,8 @@ Expected multipart flow:
   directly, treats successful completion as burned-media verification, and ejects the disc for labeling
 - other burn backends, and resume paths that still need independent verification, read back the staged ISO's byte length
   from the optical device and compare its SHA-256 to the staged ISO
+- finalized ISO downloads are generated streams; interrupted downloads discard the partial `.part` file and must be
+  restarted from the beginning unless Riverhog later gains a file-backed ISO cache
 - `djdan burn --simulate` uses native non-writing burn mode against the configured optical device for the next pending
   copy (`hdiutil burn -testburn` on macOS, xorriso cdrecord-emulation `-dummy` elsewhere), then exits without
   burned-media verification, label confirmation, copy registration, or local burn checkpoint changes
