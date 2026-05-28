@@ -1343,8 +1343,11 @@ def _register_burned_copy(
     *,
     location: str,
 ) -> None:
+    typer.echo(f"registering copy {copy_id}", err=True)
     client.register_copy(image_id, location, copy_id=copy_id)
+    typer.echo(f"marking copy {copy_id} verified", err=True)
     _mark_copy_verified(client, image_id, copy_id, location=location)
+    typer.echo(f"copy {copy_id} verified", err=True)
 
 
 def _mark_copy_verified(

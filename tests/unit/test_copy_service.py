@@ -251,6 +251,7 @@ def test_register_uses_db_artifact_mapping_after_disc_manifest_is_removed(tmp_pa
 
     service = SqlAlchemyCopyService(_config(sqlite_path), _FakeHotStore())
     service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
+    assert service.process_due_file_copy_indexes() == 1
 
     session_factory = make_session_factory(str(sqlite_path))
     with session_scope(session_factory) as session:
@@ -275,6 +276,7 @@ def test_verified_update_after_registration_does_not_resync_copy_rows(tmp_path: 
 
     service = SqlAlchemyCopyService(_config(sqlite_path), _FakeHotStore())
     service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
+    assert service.process_due_file_copy_indexes() == 1
     (image_root / "files/000001.age").unlink()
 
     updated = service.update(
@@ -293,6 +295,31 @@ def test_verified_update_after_registration_does_not_resync_copy_rows(tmp_path: 
     assert [(row.path, row.disc_path) for row in rows] == [
         ("tax/2022/invoice-123.pdf", "files/000001.age"),
         ("tax/2022/receipt-456.pdf", "files/000002.age"),
+    ]
+
+
+def test_register_defers_recovery_index_sync_to_worker(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    image_root = tmp_path / "image-root"
+    initialize_db(str(sqlite_path))
+    write_tree(image_root, IMAGE_ONE_FILES)
+    _seed_finalized_image(sqlite_path, image_root)
+
+    service = SqlAlchemyCopyService(_config(sqlite_path), _FakeHotStore())
+    summary = service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
+
+    assert summary.state == CopyState.REGISTERED
+    session_factory = make_session_factory(str(sqlite_path))
+    with session_scope(session_factory) as session:
+        assert session.query(FileCopyRecord).count() == 0
+
+    assert service.process_due_file_copy_indexes() == 1
+    with session_scope(session_factory) as session:
+        rows = session.query(FileCopyRecord).order_by(FileCopyRecord.disc_path).all()
+
+    assert [(row.path, row.disc_path, row.location) for row in rows] == [
+        ("tax/2022/invoice-123.pdf", "files/000001.age", "Shelf A1"),
+        ("tax/2022/receipt-456.pdf", "files/000002.age", "Shelf A1"),
     ]
 
 

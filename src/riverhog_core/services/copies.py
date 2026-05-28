@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Any, TypeVar, cast
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.orm import Session
 
 from riverhog_core.archive_compliance import (
@@ -48,7 +48,9 @@ from riverhog_core.webhooks import (
 )
 
 _REGISTERABLE_STATES = {CopyState.NEEDED, CopyState.BURNING}
+_BATCH_SIZE = 1_000
 _LOG = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 
 class SqlAlchemyCopyService:
@@ -86,7 +88,6 @@ class SqlAlchemyCopyService:
             target.state = CopyState.REGISTERED.value
             if target.verification_state is None:
                 target.verification_state = VerificationState.PENDING.value
-            self._sync_file_copy_rows(session, image, target)
             self._append_history(session, target, event="registered")
             session.flush()
             return self._copy_summary(session, target)
@@ -169,10 +170,6 @@ class SqlAlchemyCopyService:
                 )
                 target.verification_state = normalized_verification_state.value
 
-            previous_protected = copy_counts_toward_protection(previous_state.value)
-            next_protected = copy_counts_toward_protection(target.state)
-            if location_changed or previous_protected != next_protected:
-                self._sync_file_copy_rows(session, image, target)
             if location_changed or state_changed or verification_changed:
                 self._append_history(
                     session,
@@ -199,6 +196,75 @@ class SqlAlchemyCopyService:
                     image_id=image_id,
                 )
             return self._copy_summary(session, target)
+
+    def process_due_file_copy_indexes(self, *, limit: int = 1) -> int:
+        if limit <= 0:
+            return 0
+        processed = 0
+        with session_scope(self._session_factory) as session:
+            copies = session.scalars(
+                select(ImageCopyRecord).order_by(ImageCopyRecord.image_id, ImageCopyRecord.copy_id)
+            ).all()
+            for copy in copies:
+                image = cast(
+                    FinalizedImageRecord | None,
+                    session.get(FinalizedImageRecord, copy.image_id),
+                )
+                if image is None:
+                    continue
+                if not self._file_copy_index_needs_sync(session, image, copy):
+                    continue
+                _LOG.info(
+                    "syncing recovery index for physical copy %s/%s",
+                    image.image_id,
+                    copy.copy_id,
+                )
+                self._sync_file_copy_rows(session, image, copy)
+                processed += 1
+                session.flush()
+                if processed >= limit:
+                    break
+        return processed
+
+    def _file_copy_index_needs_sync(
+        self,
+        session: Session,
+        image: FinalizedImageRecord,
+        copy: ImageCopyRecord,
+    ) -> bool:
+        actual_count = (
+            session.scalar(
+                select(func.count())
+                .select_from(FileCopyRecord)
+                .where(
+                    FileCopyRecord.volume_id == image.image_id,
+                    FileCopyRecord.copy_id == copy.copy_id,
+                )
+            )
+            or 0
+        )
+        if not copy_counts_toward_protection(copy.state) or not copy.location:
+            return actual_count > 0
+        expected_count = (
+            session.scalar(
+                select(func.count())
+                .select_from(FinalizedImageCoveragePartRecord)
+                .where(FinalizedImageCoveragePartRecord.image_id == image.image_id)
+            )
+            or 0
+        )
+        if actual_count != expected_count:
+            return True
+        stale_location = session.scalar(
+            select(FileCopyRecord.id)
+            .where(
+                FileCopyRecord.volume_id == image.image_id,
+                FileCopyRecord.copy_id == copy.copy_id,
+                FileCopyRecord.location != copy.location,
+            )
+            .limit(1)
+        )
+        return stale_location is not None
 
     def _require_image(self, session: Session, image_id: str) -> FinalizedImageRecord:
         image = cast(FinalizedImageRecord | None, session.get(FinalizedImageRecord, image_id))
@@ -313,62 +379,56 @@ class SqlAlchemyCopyService:
             image.image_id,
             coverage_parts=coverage_parts,
         )
+        enc_json = json.dumps(dict(self._recovery_payload_codec.metadata), sort_keys=True)
+        recovery_bytes_by_disc_path: dict[str, int] = {}
+        rows: list[dict[str, Any]] = []
+        covered_paths_by_collection: dict[str, list[str]] = {}
         for covered_path in covered:
-            file_record = session.get(
-                CollectionFileRecord,
-                {"collection_id": covered_path.collection_id, "path": covered_path.path},
+            covered_paths_by_collection.setdefault(covered_path.collection_id, []).append(
+                covered_path.path
             )
-            if file_record is None:
-                continue
-            file_record.archived = True
             expected_entries = disc_entries.get((covered_path.collection_id, covered_path.path), [])
-            existing_rows = session.scalars(
-                select(FileCopyRecord).where(
-                    FileCopyRecord.collection_id == covered_path.collection_id,
-                    FileCopyRecord.path == covered_path.path,
-                    FileCopyRecord.volume_id == image.image_id,
-                    FileCopyRecord.copy_id == copy.copy_id,
-                )
-            ).all()
-            existing_by_key = {
-                (row.disc_path, row.part_index, row.part_count): row for row in existing_rows
-            }
-            expected_keys: set[tuple[str, int | None, int | None]] = set()
             for disc_path, part_index, part_count in expected_entries:
-                expected_keys.add((disc_path, part_index, part_count if part_count > 1 else None))
-                recovery_bytes = _copy_recovery_bytes(image, disc_path)
-                row = existing_by_key.get(
-                    (disc_path, part_index, part_count if part_count > 1 else None)
+                recovery_bytes = recovery_bytes_by_disc_path.get(disc_path)
+                if recovery_bytes is None:
+                    recovery_bytes = _copy_recovery_bytes(image, disc_path)
+                    recovery_bytes_by_disc_path[disc_path] = recovery_bytes
+                rows.append(
+                    {
+                        "collection_id": covered_path.collection_id,
+                        "path": covered_path.path,
+                        "copy_id": copy.copy_id,
+                        "volume_id": image.image_id,
+                        "location": copy.location,
+                        "disc_path": disc_path,
+                        "enc_json": enc_json,
+                        "part_index": part_index,
+                        "part_count": part_count if part_count > 1 else None,
+                        "part_bytes": None,
+                        "part_sha256": None,
+                        "recovery_bytes": recovery_bytes,
+                        "recovery_sha256": None,
+                    }
                 )
-                if row is None:
-                    session.add(
-                        FileCopyRecord(
-                            collection_id=covered_path.collection_id,
-                            path=covered_path.path,
-                            copy_id=copy.copy_id,
-                            volume_id=image.image_id,
-                            location=copy.location,
-                            disc_path=disc_path,
-                            enc_json=json.dumps(
-                                dict(self._recovery_payload_codec.metadata),
-                                sort_keys=True,
-                            ),
-                            part_index=part_index,
-                            part_count=part_count if part_count > 1 else None,
-                            part_bytes=None,
-                            part_sha256=None,
-                            recovery_bytes=recovery_bytes,
-                            recovery_sha256=None,
-                        )
-                    )
-                    continue
-                row.location = copy.location
-                row.recovery_bytes = recovery_bytes
 
-            for row in existing_rows:
-                row_key = (row.disc_path, row.part_index, row.part_count)
-                if row_key not in expected_keys:
-                    session.delete(row)
+        for collection_id, paths in covered_paths_by_collection.items():
+            for path_batch in _batches(paths, _BATCH_SIZE):
+                session.execute(
+                    update(CollectionFileRecord)
+                    .where(
+                        CollectionFileRecord.collection_id == collection_id,
+                        CollectionFileRecord.path.in_(path_batch),
+                    )
+                    .values(archived=True)
+                )
+        session.execute(
+            delete(FileCopyRecord).where(
+                FileCopyRecord.volume_id == image.image_id,
+                FileCopyRecord.copy_id == copy.copy_id,
+            )
+        )
+        for row_batch in _batches(rows, _BATCH_SIZE):
+            session.execute(insert(FileCopyRecord), row_batch)
 
     def _remove_file_copy_rows(self, session: Session, image_id: str, copy_id: str) -> None:
         impacted_rows = session.scalars(
@@ -500,6 +560,11 @@ def _history_event_name(
 def _copy_counts_toward_slot_pool(state: str | None) -> bool:
     normalized = normalize_copy_state(state)
     return normalized in _REGISTERABLE_STATES or copy_counts_toward_protection(normalized.value)
+
+
+def _batches(items: Sequence[_T], size: int) -> Iterable[Sequence[_T]]:
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
 
 
 def _should_top_up_replacement_slots(*, previous_state: CopyState, next_state: str | None) -> bool:

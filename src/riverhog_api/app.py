@@ -299,6 +299,10 @@ def _process_glacier_recovery_sessions(container: ServiceContainer) -> None:
     container.recovery_sessions.process_due_sessions(limit=10)
 
 
+def _process_physical_copy_indexes(container: ServiceContainer) -> None:
+    container.copies.process_due_file_copy_indexes(limit=1)
+
+
 def _process_planner_refresh(container: ServiceContainer) -> None:
     container.planning.process_due_refresh(limit=1)
 
@@ -360,6 +364,25 @@ async def _run_glacier_recovery_reaper(
             _LOG.exception("glacier recovery reaper sweep failed")
 
 
+async def _run_physical_copy_index_reaper(
+    container_provider: Callable[[], ServiceContainer | None],
+    *,
+    sweep_interval: timedelta,
+) -> None:
+    interval_seconds = max(sweep_interval.total_seconds(), 0.1)
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            container = container_provider()
+            if container is None:
+                continue
+            await asyncio.to_thread(_process_physical_copy_indexes, container)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover - defensive background task logging
+            _LOG.exception("physical copy index reaper sweep failed")
+
+
 async def _run_planner_refresh_reaper(
     container_provider: Callable[[], ServiceContainer | None],
     *,
@@ -386,6 +409,7 @@ def create_app(
     upload_expiry_reaper_interval: float | None = None,
     glacier_upload_reaper_interval: float | None = None,
     glacier_recovery_reaper_interval: float | None = None,
+    physical_copy_index_reaper_interval: float | None = None,
     planner_refresh_reaper_interval: float | None = None,
 ) -> FastAPI:
     if container is not None and container_provider is not None:
@@ -409,6 +433,11 @@ def create_app(
         timedelta(seconds=glacier_recovery_reaper_interval)
         if glacier_recovery_reaper_interval is not None
         else config.glacier_recovery_sweep_interval
+    )
+    physical_copy_index_sweep_interval = (
+        timedelta(seconds=physical_copy_index_reaper_interval)
+        if physical_copy_index_reaper_interval is not None
+        else config.physical_copy_index_sweep_interval
     )
     planner_refresh_sweep_interval = (
         timedelta(seconds=planner_refresh_reaper_interval)
@@ -448,6 +477,12 @@ def create_app(
                 sweep_interval=glacier_recovery_sweep_interval,
             )
         )
+        physical_copy_index_task = asyncio.create_task(
+            _run_physical_copy_index_reaper(
+                get_or_create_container,
+                sweep_interval=physical_copy_index_sweep_interval,
+            )
+        )
         planner_refresh_task = asyncio.create_task(
             _run_planner_refresh_reaper(
                 get_or_create_container,
@@ -460,6 +495,7 @@ def create_app(
             upload_task.cancel()
             glacier_task.cancel()
             glacier_recovery_task.cancel()
+            physical_copy_index_task.cancel()
             planner_refresh_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await upload_task
@@ -467,6 +503,8 @@ def create_app(
                 await glacier_task
             with contextlib.suppress(asyncio.CancelledError):
                 await glacier_recovery_task
+            with contextlib.suppress(asyncio.CancelledError):
+                await physical_copy_index_task
             with contextlib.suppress(asyncio.CancelledError):
                 await planner_refresh_task
 

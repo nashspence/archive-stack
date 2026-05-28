@@ -250,7 +250,7 @@ Expected multipart flow:
 - if that unlabeled disc is no longer available, the local checkpoint is discarded and the copy is burned again as a
   replacement
 - after label confirmation, `djdan burn` records the storage location, registers the generated copy id, and marks the
-  copy verified before moving on
+  copy verified before moving on; Riverhog builds the heavier per-file recovery index for that copy asynchronously
 - if no ordinary burn backlog remains but one or more images are waiting on
   `image_rebuild` work, `djdan burn` reports those recovery sessions instead
   of treating them as ordinary replacement burns

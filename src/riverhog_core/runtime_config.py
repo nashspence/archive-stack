@@ -173,6 +173,9 @@ class RuntimeConfig:
     glacier_recovery_sweep_interval: timedelta = field(
         default_factory=lambda: timedelta(seconds=30)
     )
+    physical_copy_index_sweep_interval: timedelta = field(
+        default_factory=lambda: timedelta(seconds=15)
+    )
     glacier_recovery_restore_latency: timedelta = field(default_factory=lambda: timedelta(hours=48))
     glacier_recovery_ready_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
     glacier_recovery_retrieval_tier: str = "bulk"
@@ -274,6 +277,8 @@ class RuntimeConfig:
             raise ValueError("RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES must be >= 0")
         if self.planner_refresh_sweep_interval.total_seconds() <= 0.0:
             raise ValueError("RIVERHOG_PLANNER_REFRESH_SWEEP_INTERVAL must be > 0")
+        if self.physical_copy_index_sweep_interval.total_seconds() <= 0.0:
+            raise ValueError("RIVERHOG_PHYSICAL_COPY_INDEX_SWEEP_INTERVAL must be > 0")
         if self.unburned_collection_bytes_limit < 0:
             raise ValueError("RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT must be >= 0")
         object.__setattr__(
@@ -342,6 +347,9 @@ def load_runtime_config() -> RuntimeConfig:
     )
     glacier_recovery_sweep_interval = _parse_duration(
         os.getenv("RIVERHOG_GLACIER_RECOVERY_SWEEP_INTERVAL", "30s")
+    )
+    physical_copy_index_sweep_interval = _parse_duration(
+        os.getenv("RIVERHOG_PHYSICAL_COPY_INDEX_SWEEP_INTERVAL", "15s")
     )
     glacier_recovery_restore_latency = _parse_duration(
         os.getenv("RIVERHOG_GLACIER_RECOVERY_RESTORE_LATENCY", "48h")
@@ -611,6 +619,7 @@ def load_runtime_config() -> RuntimeConfig:
         operator_webhook_reminder_interval=operator_webhook_reminder_interval,
         operator_failure_notification_interval=operator_failure_notification_interval,
         glacier_recovery_sweep_interval=glacier_recovery_sweep_interval,
+        physical_copy_index_sweep_interval=physical_copy_index_sweep_interval,
         glacier_recovery_restore_latency=glacier_recovery_restore_latency,
         glacier_recovery_ready_ttl=glacier_recovery_ready_ttl,
         glacier_recovery_retrieval_tier=glacier_recovery_retrieval_tier,

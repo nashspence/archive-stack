@@ -496,6 +496,7 @@ def _contract_runtime_client() -> TestClient:
         container=container,
         upload_expiry_reaper_interval=3600,
         glacier_upload_reaper_interval=3600,
+        physical_copy_index_reaper_interval=3600,
     )
     return TestClient(app)
 
