@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from pathlib import Path
 
 import pytest
@@ -78,6 +79,25 @@ def test_xorriso_optical_reader_reads_from_mounted_media(tmp_path: Path) -> None
     )
 
     assert chunks == [b"recovered-bytes"]
+
+
+def test_run_checked_reports_heartbeat_for_silent_long_stage(monkeypatch, capsys) -> None:
+    def fake_run(command, *, capture_output, text, check):
+        assert command == ["fixture-tool"]
+        assert capture_output is True
+        assert text is True
+        assert check is False
+        time.sleep(0.04)
+        return djdan_main.subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(djdan_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(djdan_main, "_LOCAL_STAGE_HEARTBEAT_INTERVAL_SECONDS", 0.01)
+
+    djdan_main._run_checked(["fixture-tool"], action="fixture local stage")
+
+    stderr = capsys.readouterr().err
+    assert "fixture local stage still running after" in stderr
+    assert "fixture local stage completed in" in stderr
 
 
 def test_xorriso_optical_reader_extracts_from_device_with_xorriso(

@@ -220,7 +220,8 @@ Expected multipart flow:
 - the session selects the fullest ready backlog item first
 - if that item is still provisional, `djdan burn` finalizes it before continuing
 - the session downloads and stages the image ISO locally before burn work
-- the staged ISO is verified before burn work continues
+- the staged ISO is verified before burn work continues; silent local verifier stages print periodic heartbeat messages
+  because large images and images with many file entries can take several minutes to check
 - the default burn backend uses `hdiutil burn` on macOS and `xorriso -as cdrecord` elsewhere
 - when `--device` is omitted, `djdan burn` lets `hdiutil burn` select the system burner on macOS and uses `/dev/sr0`
   on Linux-style hosts

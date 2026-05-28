@@ -125,15 +125,16 @@ def test_image_root_planning_service_delegates_lookups_and_stream_creation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    calls: list[tuple[Path, str, str]] = []
+    calls: list[tuple[Path, str, str, int | None]] = []
 
     async def fake_stream_iso_from_root(
         *,
         image_root: Path,
         volume_id: str,
         filename: str,
+        content_length: int | None = None,
     ) -> object:
-        calls.append((image_root, volume_id, filename))
+        calls.append((image_root, volume_id, filename, content_length))
         return {"filename": filename}
 
     record = ImageRootRecord(
@@ -141,6 +142,7 @@ def test_image_root_planning_service_delegates_lookups_and_stream_creation(
         volume_id="RIVERHOG-IMG-001",
         filename="img_001.iso",
         image_root=tmp_path / "image-root",
+        bytes=12345,
     )
     service = ImageRootPlanningService(
         image_lookup=lambda image_id: record if image_id == "img_001" else None,
@@ -193,7 +195,7 @@ def test_image_root_planning_service_delegates_lookups_and_stream_creation(
     assert service.get_image("img_001") is record
     assert service.finalize_image("img_001") == {"id": "img_001", "volume_id": record.volume_id}
     assert asyncio.run(service.get_iso_stream("img_001")) == {"filename": "img_001.iso"}
-    assert calls == [(record.image_root, record.volume_id, record.filename)]
+    assert calls == [(record.image_root, record.volume_id, record.filename, 12345)]
 
 
 def test_image_root_planning_service_rejects_non_image_root_records() -> None:

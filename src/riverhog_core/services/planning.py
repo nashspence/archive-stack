@@ -474,6 +474,7 @@ class SqlAlchemyPlanningService:
                 volume_id=record.image_id,
                 filename=record.filename,
                 image_root=Path(record.image_root),
+                bytes=record.bytes,
             )
 
 
@@ -2102,6 +2103,7 @@ class ImageRootRecord:
     volume_id: str
     filename: str
     image_root: Path
+    bytes: int | None = None
 
 
 class ImageRootPlanningService:
@@ -2180,4 +2182,5 @@ class ImageRootPlanningService:
             image_root=image.image_root,
             volume_id=image.volume_id,
             filename=image.filename,
+            content_length=image.bytes,
         )

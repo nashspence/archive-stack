@@ -1974,6 +1974,7 @@ class AcceptancePlanningService:
             headers={
                 "Content-Disposition": f'attachment; filename="{image.filename}"',
                 "Cache-Control": "no-store",
+                "Content-Length": str(len(payload)),
             },
         )
 

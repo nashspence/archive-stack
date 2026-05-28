@@ -212,7 +212,9 @@ async def _kill_proc(proc: asyncio.subprocess.Process) -> None:
         await proc.wait()
 
 
-async def _stream_process(cmd: list[str], *, filename: str) -> IsoStream:
+async def _stream_process(
+    cmd: list[str], *, filename: str, content_length: int | None = None
+) -> IsoStream:
     if os.name != "nt":
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -256,12 +258,16 @@ async def _stream_process(cmd: list[str], *, filename: str) -> IsoStream:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await stderr_task
 
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Cache-Control": "no-store",
+    }
+    if content_length is not None and content_length > 0:
+        headers["Content-Length"] = str(content_length)
+
     return IsoStream(
         body=body(),
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Cache-Control": "no-store",
-        },
+        headers=headers,
     )
 
 
@@ -269,7 +275,11 @@ async def stream_iso_from_entries(volume: IsoVolume) -> IsoStream:
     return await _stream_process(build_iso_cmd(volume), filename=volume.filename)
 
 
-async def stream_iso_from_root(*, image_root: Path, volume_id: str, filename: str) -> IsoStream:
+async def stream_iso_from_root(
+    *, image_root: Path, volume_id: str, filename: str, content_length: int | None = None
+) -> IsoStream:
     return await _stream_process(
-        build_iso_cmd_from_root(image_root=image_root, volume_id=volume_id), filename=filename
+        build_iso_cmd_from_root(image_root=image_root, volume_id=volume_id),
+        filename=filename,
+        content_length=content_length,
     )

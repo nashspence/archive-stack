@@ -523,6 +523,7 @@ Required behavior:
 - ISO download does not finalize the image
 - ISO download requires the finalized image to already exist
 - subsequent downloads for the same finalized `image.id` reuse the same represented bytes
+- finalized-image ISO responses include `Content-Length` from the stored materialized ISO byte count
 - this endpoint is not used for recovery-session burns
 
 #### `POST /v1/images/{image_id}/copies`

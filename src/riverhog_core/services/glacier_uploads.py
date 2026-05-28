@@ -174,6 +174,8 @@ class SqlAlchemyGlacierUploadService:
                 )
                 for file_record in sorted_files
             ]
+            upload_file_count = len(upload_files)
+            upload_byte_count = sum(_bytes for _, _bytes, _, _ in upload_files)
 
         try:
             archive_details = _upload_files_webhook_details(upload_files)
@@ -205,11 +207,25 @@ class SqlAlchemyGlacierUploadService:
                         archive_sha256=packaged_archive_sha256,
                     )
                 else:
+                    _LOG.info(
+                        "building collection archive package for %s: files=%s payload_bytes=%s",
+                        collection_id,
+                        upload_file_count,
+                        upload_byte_count,
+                    )
                     package = build_collection_archive_package_from_chunk_reader(
                         collection_id=collection_id,
                         files=package_files,
                         read_file_chunks=_read_archive_file_chunks,
                         stamper=self._proof_stamper,
+                    )
+                    _LOG.info(
+                        "collection archive package built for %s: files=%s payload_bytes=%s "
+                        "archive_bytes=%s",
+                        collection_id,
+                        upload_file_count,
+                        upload_byte_count,
+                        package.archive_size,
                     )
                     manifest_bytes = package.manifest_bytes
                     proof_bytes = package.proof_bytes
@@ -226,6 +242,11 @@ class SqlAlchemyGlacierUploadService:
                         collection_id=collection_id,
                         phase="uploading",
                         updated_at=_isoformat_z(utcnow()),
+                    )
+                    _LOG.info(
+                        "uploading collection archive package for %s: archive_bytes=%s",
+                        collection_id,
+                        package.archive_size,
                     )
                     receipt = self._archive_store.upload_collection_archive_package(
                         collection_id=collection_id,

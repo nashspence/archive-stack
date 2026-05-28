@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ def djdan_app() -> None:
 _DISC_IO_CHUNK_BYTES = 1024 * 1024
 _DOWNLOAD_PROGRESS_INTERVAL_SECONDS = 10.0
 _VERIFY_PROGRESS_INTERVAL_SECONDS = 10.0
+_LOCAL_STAGE_HEARTBEAT_INTERVAL_SECONDS = 30.0
 
 
 def _elapsed_text(started_at: float) -> str:
@@ -70,6 +72,22 @@ def _require_tool(name: str) -> str:
 
 
 def _run_checked(command: list[str], *, action: str) -> None:
+    completed = threading.Event()
+    heartbeat_printed = False
+    started_at = time.monotonic()
+
+    def heartbeat() -> None:
+        nonlocal heartbeat_printed
+        while not completed.wait(_LOCAL_STAGE_HEARTBEAT_INTERVAL_SECONDS):
+            heartbeat_printed = True
+            typer.echo(
+                f"{action} still running after {_elapsed_text(started_at)}; "
+                "large images and many file entries can take some time",
+                err=True,
+            )
+
+    heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
+    heartbeat_thread.start()
     try:
         proc = subprocess.run(
             command,
@@ -78,8 +96,14 @@ def _run_checked(command: list[str], *, action: str) -> None:
             check=False,
         )
     except FileNotFoundError as exc:
+        completed.set()
         raise RuntimeError(f"{command[0]} is required for {action}") from exc
+    finally:
+        completed.set()
+        heartbeat_thread.join(timeout=1)
     if proc.returncode == 0:
+        if heartbeat_printed:
+            typer.echo(f"{action} completed in {_elapsed_text(started_at)}", err=True)
         return
     detail = ((proc.stderr or proc.stdout).strip() or f"{command[0]} exited {proc.returncode}")[
         -1500:

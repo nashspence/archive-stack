@@ -654,6 +654,8 @@ def _archive_wait_status(payload: dict[str, object]) -> str:
     if not phase:
         return ""
     status = f", archive_phase={phase}"
+    if phase == "packaging":
+        status += ", building archive package"
     uploaded_bytes = payload.get("archive_uploaded_bytes")
     total_bytes = payload.get("archive_total_bytes")
     if isinstance(uploaded_bytes, int) and isinstance(total_bytes, int) and total_bytes > 0:

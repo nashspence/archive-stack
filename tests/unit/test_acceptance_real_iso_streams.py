@@ -22,6 +22,7 @@ def test_acceptance_system_can_serve_real_iso_streams_from_fake_backed_state(
         response = system.request("GET", f"/v1/images/{image_id}/iso")
         assert response.status_code == 200, response.text
         assert b'"fixture": "spec-iso"' in response.content
+        assert int(response.headers["content-length"]) == len(response.content)
 
         monkeypatch.setattr(
             subprocess,
@@ -33,6 +34,7 @@ def test_acceptance_system_can_serve_real_iso_streams_from_fake_backed_state(
         response = system.request("GET", f"/v1/images/{image_id}/iso")
         assert response.status_code == 200, response.text
         assert response.content == b"real-iso"
+        assert response.headers["content-length"] == str(len(b"real-iso"))
 
         system.mark_collection_archive_uploaded("docs")
         for copy_id, state in ((f"{image_id}-1", "lost"), (f"{image_id}-2", "damaged")):
