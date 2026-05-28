@@ -254,7 +254,6 @@ def test_register_uses_db_artifact_mapping_after_disc_manifest_is_removed(tmp_pa
 
     service = SqlAlchemyCopyService(_config(sqlite_path), _FakeHotStore())
     service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
-    assert service.process_due_file_copy_indexes() == 1
 
     session_factory = make_session_factory(str(sqlite_path))
     with session_scope(session_factory) as session:
@@ -279,7 +278,6 @@ def test_verified_update_after_registration_does_not_resync_copy_rows(tmp_path: 
 
     service = SqlAlchemyCopyService(_config(sqlite_path), _FakeHotStore())
     service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
-    assert service.process_due_file_copy_indexes() == 1
     (image_root / "files/000001.age").unlink()
 
     updated = service.update(
@@ -301,7 +299,7 @@ def test_verified_update_after_registration_does_not_resync_copy_rows(tmp_path: 
     ]
 
 
-def test_register_defers_recovery_index_sync_to_worker(tmp_path: Path) -> None:
+def test_register_synchronously_writes_recovery_index(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
     initialize_db(str(sqlite_path))
@@ -314,10 +312,6 @@ def test_register_defers_recovery_index_sync_to_worker(tmp_path: Path) -> None:
     assert summary.state == CopyState.REGISTERED
     session_factory = make_session_factory(str(sqlite_path))
     with session_scope(session_factory) as session:
-        assert session.query(FileCopyRecord).count() == 0
-
-    assert service.process_due_file_copy_indexes() == 1
-    with session_scope(session_factory) as session:
         rows = session.query(FileCopyRecord).order_by(FileCopyRecord.disc_path).all()
 
     assert [(row.path, row.disc_path, row.location) for row in rows] == [
@@ -326,7 +320,7 @@ def test_register_defers_recovery_index_sync_to_worker(tmp_path: Path) -> None:
     ]
 
 
-def test_recovery_index_worker_retries_after_failed_sync(tmp_path: Path) -> None:
+def test_recovery_index_sync_rolls_back_and_can_be_retried(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
     initialize_db(str(sqlite_path))
@@ -335,15 +329,13 @@ def test_recovery_index_worker_retries_after_failed_sync(tmp_path: Path) -> None
 
     service = SqlAlchemyCopyService(_config(sqlite_path), _FakeHotStore())
     service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
-    assert service.process_due_file_copy_indexes() == 1
 
     missing_payload = image_root / "files/000002.age"
     original_payload = missing_payload.read_bytes()
     missing_payload.unlink()
-    service.update("20260420T040001Z", "20260420T040001Z-1", location="Shelf B1")
 
     with pytest.raises(InvalidState):
-        service.process_due_file_copy_indexes()
+        service.update("20260420T040001Z", "20260420T040001Z-1", location="Shelf B1")
 
     session_factory = make_session_factory(str(sqlite_path))
     with session_scope(session_factory) as session:
@@ -354,7 +346,7 @@ def test_recovery_index_worker_retries_after_failed_sync(tmp_path: Path) -> None
     ]
 
     missing_payload.write_bytes(original_payload)
-    assert service.process_due_file_copy_indexes() == 1
+    service.update("20260420T040001Z", "20260420T040001Z-1", location="Shelf B1")
     with session_scope(session_factory) as session:
         rows = session.query(FileCopyRecord).order_by(FileCopyRecord.disc_path).all()
     assert [(row.disc_path, row.location) for row in rows] == [

@@ -26,6 +26,7 @@ from riverhog_core.domain.errors import (
 _HTTP_TIMEOUT_SECONDS = 300.0
 _UPLOAD_TIMEOUT_SECONDS = 60.0
 _DOWNLOAD_TIMEOUT_SECONDS = 3600.0
+_COPY_REGISTRATION_TIMEOUT_SECONDS = 3600.0
 _UPLOAD_WRITE_CHUNK_BYTES = 256 * 1024
 _UPLOAD_WRITE_DELAY_SECONDS = 0.005
 _DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
@@ -406,7 +407,15 @@ class ApiClient:
         payload: dict[str, Any] = {"location": location}
         if copy_id is not None:
             payload["copy_id"] = copy_id
-        return self._json("POST", f"/v1/images/{image_id}/copies", json=payload)
+        return self._json(
+            "POST",
+            f"/v1/images/{image_id}/copies",
+            json=payload,
+            timeout=_timeout_seconds(
+                "RIVERHOG_COPY_REGISTRATION_TIMEOUT_SECONDS",
+                _COPY_REGISTRATION_TIMEOUT_SECONDS,
+            ),
+        )
 
     def list_copies(self, image_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/images/{image_id}/copies")
@@ -434,7 +443,15 @@ class ApiClient:
             payload["state"] = state
         if verification_state is not None:
             payload["verification_state"] = verification_state
-        return self._json("PATCH", f"/v1/images/{image_id}/copies/{copy_id}", json=payload)
+        return self._json(
+            "PATCH",
+            f"/v1/images/{image_id}/copies/{copy_id}",
+            json=payload,
+            timeout=_timeout_seconds(
+                "RIVERHOG_COPY_REGISTRATION_TIMEOUT_SECONDS",
+                _COPY_REGISTRATION_TIMEOUT_SECONDS,
+            ),
+        )
 
     def pin(self, target: str) -> dict[str, Any]:
         return self._json("POST", "/v1/pin", json={"target": target})

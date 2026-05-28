@@ -280,6 +280,32 @@ def test_finalize_image_uses_candidate_finalize_endpoint(monkeypatch) -> None:
     assert captured == [("POST", "https://api.test/v1/plan/candidates/img_2026-04-20_01/finalize")]
 
 
+def test_copy_registration_uses_long_timeout(monkeypatch) -> None:
+    monkeypatch.delenv("RIVERHOG_COPY_REGISTRATION_TIMEOUT_SECONDS", raising=False)
+    captured: list[tuple[str, str, float | None]] = []
+
+    def fake_request(self: ApiClient, method: str, path: str, **kwargs) -> httpx.Response:
+        _ = self
+        captured.append((method, path, kwargs.get("timeout")))
+        return httpx.Response(200, json={"copy": {"id": "20260420T040001Z-1"}})
+
+    monkeypatch.setattr(ApiClient, "_request", fake_request)
+
+    client = ApiClient(base_url="https://api.test")
+    client.register_copy("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
+    client.update_copy(
+        "20260420T040001Z",
+        "20260420T040001Z-1",
+        state="verified",
+        verification_state="verified",
+    )
+
+    assert captured == [
+        ("POST", "/v1/images/20260420T040001Z/copies", 3600.0),
+        ("PATCH", "/v1/images/20260420T040001Z/copies/20260420T040001Z-1", 3600.0),
+    ]
+
+
 def test_download_iso_streams_to_output_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

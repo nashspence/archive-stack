@@ -109,8 +109,7 @@ Copy rules:
 - `location` is mutable operational metadata
 - `location` is never part of copy identity
 - copy registration records the generated id, location, and lifecycle state
-  synchronously; per-file recovery-index rows are built by a retrying background
-  worker
+  synchronously with the per-file recovery-index rows
 - each covered file-copy row records the on-disc payload path plus exact encrypted recovery-byte length; missing
   recovery-byte digests are backfilled before fetch manifests expose cold-recovery copy hints
 

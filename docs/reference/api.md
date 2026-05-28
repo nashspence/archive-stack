@@ -540,9 +540,9 @@ Required behavior:
 - the generated `copy_id` is also the exact disc label text Riverhog expects the operator to write
 - `location` is mutable operational metadata and is never part of copy identity
 - successful registration persists across service restart
-- registration does not synchronously build the per-file recovery index; a
-  background worker materializes or refreshes file-copy rows after the copy
-  state and location have been durably recorded
+- successful registration also records the per-file recovery index for every
+  file or file part physically present on that image, so the response means the
+  copy is usable for later fetch planning
 
 #### `GET /v1/images/{image_id}/copies`
 
@@ -565,8 +565,8 @@ Required behavior:
 - location updates never mutate copy identity
 - copy lifecycle state and verification state persist across service restart
 - every location or state change is appended to copy history
-- updates do not synchronously rebuild per-file recovery indexes; a background
-  worker reconciles location and protection changes
+- location or protection changes synchronously reconcile affected per-file
+  recovery-index rows
 - reporting one confirmed copy `lost` or `damaged` never reuses that same `copy_id` for replacement burn work
 - when another protected copy still exists, replacement burn work is represented as a new generated `copy_id`
 

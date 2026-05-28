@@ -3234,10 +3234,6 @@ class AcceptanceCopyService:
             raise NotFound(f"copy not found for image: {copy_id}")
         return summary
 
-    def process_due_file_copy_indexes(self, *, limit: int = 1) -> int:
-        _ = limit
-        return 0
-
     @_with_state_lock
     def update(
         self,
@@ -4115,7 +4111,6 @@ class AcceptanceSystem:
             upload_expiry_reaper_interval=_UPLOAD_EXPIRY_SWEEP_INTERVAL_SECONDS,
             glacier_upload_reaper_interval=_GLACIER_UPLOAD_SWEEP_INTERVAL_SECONDS,
             glacier_recovery_reaper_interval=_GLACIER_RECOVERY_SWEEP_INTERVAL_SECONDS,
-            physical_copy_index_reaper_interval=_UPLOAD_EXPIRY_SWEEP_INTERVAL_SECONDS,
         )
         fixture_path = workspace / "djdan_fixture.json"
         with _reserve_local_port() as reserved:

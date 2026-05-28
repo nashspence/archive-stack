@@ -379,18 +379,6 @@ fill threshold. Burnable candidates retain partial encrypted candidate roots
 under `.candidate-*.tmp` so the next refresh can skip already completed
 encrypted files and finish the same candidate id.
 
-## `RIVERHOG_PHYSICAL_COPY_INDEX_SWEEP_INTERVAL`
-
-- type: duration
-- default: `15s`
-
-How often Riverhog checks registered or verified physical copies for missing or
-stale per-file recovery-index rows. `djdan burn` only needs the copy state and
-storage location to persist synchronously after the operator labels a disc; this
-worker then builds the heavier file-copy index in the background so fetch
-manifests can later name exact disc payload paths and recovery byte lengths.
-The worker is idempotent and will retry after service restarts.
-
 ## `RIVERHOG_OPERATOR_WEBHOOK_URL`
 
 - type: URL
@@ -902,6 +890,17 @@ images. The server may spend several minutes preparing ISO metadata before the
 first response bytes arrive, especially for images with many small files.
 Reverse-proxy read timeouts for ISO download routes should be at least this
 large or explicitly chosen to bound that preparation window.
+
+### `RIVERHOG_COPY_REGISTRATION_TIMEOUT_SECONDS`
+
+- type: positive number of seconds
+- default: `3600`
+
+Client timeout for physical copy registration and copy-state updates. `djdan
+burn` uses this after media verification and label confirmation while Riverhog
+records the generated copy id, storage location, and per-file recovery index for
+the image. Images with many small files can take noticeably longer than ordinary
+API calls, so the default is intentionally long enough for normal operation.
 
 ### `RIVERHOG_HTTP2`
 

@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypeVar, cast
 
-from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.orm import Session
 
 from riverhog_core.archive_compliance import (
@@ -88,6 +88,7 @@ class SqlAlchemyCopyService:
             target.state = CopyState.REGISTERED.value
             if target.verification_state is None:
                 target.verification_state = VerificationState.PENDING.value
+            self._sync_file_copy_rows(session, image, target)
             self._append_history(session, target, event="registered")
             session.flush()
             return self._copy_summary(session, target)
@@ -170,6 +171,10 @@ class SqlAlchemyCopyService:
                 )
                 target.verification_state = normalized_verification_state.value
 
+            previous_protected = copy_counts_toward_protection(previous_state.value)
+            next_protected = copy_counts_toward_protection(target.state)
+            if location_changed or previous_protected != next_protected:
+                self._sync_file_copy_rows(session, image, target)
             if location_changed or state_changed or verification_changed:
                 self._append_history(
                     session,
@@ -196,75 +201,6 @@ class SqlAlchemyCopyService:
                     image_id=image_id,
                 )
             return self._copy_summary(session, target)
-
-    def process_due_file_copy_indexes(self, *, limit: int = 1) -> int:
-        if limit <= 0:
-            return 0
-        processed = 0
-        with session_scope(self._session_factory) as session:
-            copies = session.scalars(
-                select(ImageCopyRecord).order_by(ImageCopyRecord.image_id, ImageCopyRecord.copy_id)
-            ).all()
-            for copy in copies:
-                image = cast(
-                    FinalizedImageRecord | None,
-                    session.get(FinalizedImageRecord, copy.image_id),
-                )
-                if image is None:
-                    continue
-                if not self._file_copy_index_needs_sync(session, image, copy):
-                    continue
-                _LOG.info(
-                    "syncing recovery index for physical copy %s/%s",
-                    image.image_id,
-                    copy.copy_id,
-                )
-                self._sync_file_copy_rows(session, image, copy)
-                processed += 1
-                session.flush()
-                if processed >= limit:
-                    break
-        return processed
-
-    def _file_copy_index_needs_sync(
-        self,
-        session: Session,
-        image: FinalizedImageRecord,
-        copy: ImageCopyRecord,
-    ) -> bool:
-        actual_count = (
-            session.scalar(
-                select(func.count())
-                .select_from(FileCopyRecord)
-                .where(
-                    FileCopyRecord.volume_id == image.image_id,
-                    FileCopyRecord.copy_id == copy.copy_id,
-                )
-            )
-            or 0
-        )
-        if not copy_counts_toward_protection(copy.state) or not copy.location:
-            return actual_count > 0
-        expected_count = (
-            session.scalar(
-                select(func.count())
-                .select_from(FinalizedImageCoveragePartRecord)
-                .where(FinalizedImageCoveragePartRecord.image_id == image.image_id)
-            )
-            or 0
-        )
-        if actual_count != expected_count:
-            return True
-        stale_location = session.scalar(
-            select(FileCopyRecord.id)
-            .where(
-                FileCopyRecord.volume_id == image.image_id,
-                FileCopyRecord.copy_id == copy.copy_id,
-                FileCopyRecord.location != copy.location,
-            )
-            .limit(1)
-        )
-        return stale_location is not None
 
     def _require_image(self, session: Session, image_id: str) -> FinalizedImageRecord:
         image = cast(FinalizedImageRecord | None, session.get(FinalizedImageRecord, image_id))

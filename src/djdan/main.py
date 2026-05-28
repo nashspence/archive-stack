@@ -35,6 +35,33 @@ _DOWNLOAD_PROGRESS_INTERVAL_SECONDS = 10.0
 _VERIFY_PROGRESS_INTERVAL_SECONDS = 10.0
 
 
+def _elapsed_text(started_at: float) -> str:
+    elapsed = time.monotonic() - started_at
+    if elapsed < 60:
+        return f"{elapsed:.1f}s"
+    minutes = int(elapsed // 60)
+    seconds = int(elapsed % 60)
+    return f"{minutes}m {seconds:02d}s"
+
+
+def _file_entry_text(file_count: int | None) -> str:
+    if file_count is None:
+        return "the file entries on this image"
+    return f"{file_count:,} file entries"
+
+
+def _optional_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value)
+    return None
+
+
 def _require_tool(name: str) -> str:
     executable = shutil.which(name)
     if executable is None:
@@ -1102,6 +1129,13 @@ def _image_requires_recovery_burn(client: ApiClient, image_id: str) -> bool:
     )
 
 
+def _image_file_count(client: ApiClient, image_id: str) -> int | None:
+    try:
+        return _optional_int(client.get_image(image_id).get("files"))
+    except Exception:
+        return None
+
+
 def _can_resume_expired_recovery_session(
     recovery_session: RecoverySessionHint,
     *,
@@ -1135,6 +1169,7 @@ def _recover_session_image(
     recovery_session_id: str,
 ) -> list[str]:
     typer.echo(f"recovering image {image.image_id}", err=True)
+    file_count = _image_file_count(client, image.image_id)
     completed: list[str] = []
     while True:
         copies_payload = client.list_copies(image.image_id)
@@ -1152,6 +1187,7 @@ def _recover_session_image(
                 client=client,
                 image_id=image.image_id,
                 filename=image.filename,
+                file_count=file_count,
                 staging_dir=staging_dir,
                 session_state=session_state,
                 iso_verifier=iso_verifier,
@@ -1342,12 +1378,23 @@ def _register_burned_copy(
     copy_id: str,
     *,
     location: str,
+    file_count: int | None,
 ) -> None:
-    typer.echo(f"registering copy {copy_id}", err=True)
+    typer.echo(
+        (
+            f"registering copy {copy_id}; Riverhog is recording this physical disc "
+            f"and indexing {_file_entry_text(file_count)} for recovery"
+        ),
+        err=True,
+    )
+    typer.echo(
+        "this can take a little while for images with many small files; the CLI will wait",
+        err=True,
+    )
+    started_at = time.monotonic()
     client.register_copy(image_id, location, copy_id=copy_id)
-    typer.echo(f"marking copy {copy_id} verified", err=True)
+    typer.echo(f"copy {copy_id} registered and indexed in {_elapsed_text(started_at)}", err=True)
     _mark_copy_verified(client, image_id, copy_id, location=location)
-    typer.echo(f"copy {copy_id} verified", err=True)
 
 
 def _mark_copy_verified(
@@ -1357,6 +1404,8 @@ def _mark_copy_verified(
     *,
     location: str,
 ) -> None:
+    typer.echo(f"marking copy {copy_id} verified", err=True)
+    started_at = time.monotonic()
     client.update_copy(
         image_id,
         copy_id,
@@ -1364,6 +1413,7 @@ def _mark_copy_verified(
         state="verified",
         verification_state="verified",
     )
+    typer.echo(f"copy {copy_id} verified in {_elapsed_text(started_at)}", err=True)
 
 
 def _notify_label_needed(
@@ -1396,6 +1446,7 @@ def _burn_pending_copy(
     client: ApiClient,
     image_id: str,
     filename: str,
+    file_count: int | None,
     staging_dir: Path,
     session_state: BurnSessionState,
     iso_verifier: Any,
@@ -1465,7 +1516,13 @@ def _burn_pending_copy(
 
     if progress.location is None:
         raise RuntimeError(f"storage location required for {copy_id}")
-    _register_burned_copy(client, image_id, copy_id, location=progress.location)
+    _register_burned_copy(
+        client,
+        image_id,
+        copy_id,
+        location=progress.location,
+        file_count=file_count,
+    )
     return copy_id
 
 
@@ -1565,9 +1622,11 @@ def _process_burn_backlog_item(
         image_payload = client.finalize_image(item.candidate_id)
         image_id = str(image_payload["id"])
         filename = str(image_payload["filename"])
+        file_count = _optional_int(image_payload.get("files"))
     else:
         image_id = item.image_id
         filename = item.filename
+        file_count = _image_file_count(client, image_id)
         typer.echo(f"selected image {image_id} (fill={item.fill:.3f})", err=True)
 
     payload = client.list_copies(image_id)
@@ -1608,6 +1667,7 @@ def _process_burn_backlog_item(
                 client=client,
                 image_id=image_id,
                 filename=filename,
+                file_count=file_count,
                 staging_dir=staging_dir,
                 session_state=session_state,
                 iso_verifier=iso_verifier,
