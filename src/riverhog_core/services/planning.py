@@ -86,7 +86,7 @@ _AGE_ENCRYPTED_HEADER_PAD_BYTES = 256
 _ISO_LEAF_PAD_BYTES = 2048
 _DISC_MANIFEST_ENTRY_PAD_BYTES = 256
 _CANDIDATE_BASE_METADATA_PAD_BYTES = 4 * 1024 * 1024
-_PLANNER_ALLOCATION_VERSION = 3
+_PLANNER_ALLOCATION_VERSION = 4
 _REFRESH_LOCK = threading.Lock()
 
 
@@ -103,7 +103,7 @@ class _PlanFile:
     path: str
     bytes: int
     sha256: str
-    collection_single_image_possible: bool = True
+    collection_optional_split_allowed: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -550,14 +550,14 @@ def _refresh_provisional_plan_locked(
     with session_scope(session_factory) as session:
         plan_files = _load_plan_files(session, config)
         plan_collection_ids = {file.collection_id for file in plan_files}
-        single_image_collection_ids = {
-            file.collection_id for file in plan_files if file.collection_single_image_possible
+        optional_split_collection_ids = {
+            file.collection_id for file in plan_files if file.collection_optional_split_allowed
         }
         _LOG.info(
-            "planner refresh loaded plan files: collections=%s single_image_eligible=%s "
+            "planner refresh loaded plan files: collections=%s optional_split_eligible=%s "
             "files=%s bytes=%s",
             len(plan_collection_ids),
-            len(single_image_collection_ids),
+            len(optional_split_collection_ids),
             len(plan_files),
             sum(file.bytes for file in plan_files),
         )
@@ -1047,6 +1047,7 @@ def _candidate_ready_notification_batch(
 
 def _load_plan_files(session: Session, config: RuntimeConfig) -> list[_PlanFile]:
     finalized_paths = _finalized_covered_file_pairs(session)
+    finalized_collection_ids = {collection_id for collection_id, _path in finalized_paths}
     collections = session.scalars(
         select(CollectionRecord)
         .options(selectinload(CollectionRecord.files))
@@ -1068,10 +1069,13 @@ def _load_plan_files(session: Session, config: RuntimeConfig) -> list[_PlanFile]
             )
             continue
         artifact_estimate = _collection_artifact_bytes_estimate(artifact)
-        collection_single_image_possible = _collection_fits_single_image(
-            collection.files,
-            config=config,
-            artifact_estimate=artifact_estimate,
+        collection_optional_split_allowed = (
+            collection.id not in finalized_collection_ids
+            and _collection_fits_single_image(
+                collection.files,
+                config=config,
+                artifact_estimate=artifact_estimate,
+            )
         )
         for file_record in sorted(collection.files, key=lambda current: current.path):
             if not file_record.hot:
@@ -1084,7 +1088,7 @@ def _load_plan_files(session: Session, config: RuntimeConfig) -> list[_PlanFile]
                     path=file_record.path,
                     bytes=file_record.bytes,
                     sha256=file_record.sha256,
-                    collection_single_image_possible=collection_single_image_possible,
+                    collection_optional_split_allowed=collection_optional_split_allowed,
                 )
             )
     return plan_files
@@ -1186,10 +1190,10 @@ def _build_plan_piece_groups(
         collection_id: _collection_artifact_estimate(config, collection_id)
         for collection_id in sorted({piece.collection_id for piece in pieces})
     }
-    single_image_collection_ids = {
+    optional_split_collection_ids = {
         plan_file.collection_id
         for plan_file in plan_files
-        if plan_file.collection_single_image_possible
+        if plan_file.collection_optional_split_allowed
     }
     metadata_pad = _candidate_metadata_pad(config.planner_disc_target_bytes)
     payload_capacity = max(1, config.planner_disc_target_bytes - metadata_pad)
@@ -1207,7 +1211,7 @@ def _build_plan_piece_groups(
         collection_groups,
         payload_capacity=payload_capacity,
         minimum_payload_fill=minimum_payload_fill,
-        optionally_splittable_collections=single_image_collection_ids,
+        optionally_splittable_collections=optional_split_collection_ids,
     )
 
 

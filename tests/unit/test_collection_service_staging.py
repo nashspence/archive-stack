@@ -36,6 +36,7 @@ from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.glacier_uploads import SqlAlchemyGlacierUploadService
 from riverhog_core.services.planning import (
     SqlAlchemyPlanningService,
+    _load_plan_files,
     cache_collection_manifest_artifacts,
     refresh_provisional_plan,
 )
@@ -1522,6 +1523,12 @@ def test_planner_continues_after_partially_finalized_collection(tmp_path: Path) 
         hot_store,
         recovery_payload_codec=FixtureRecoveryPayloadCodec(),
     )
+
+    with session_scope(session_factory) as session:
+        plan_files = _load_plan_files(session, config)
+        assert len(plan_files) == 1
+        assert plan_files[0].path == tail_path
+        assert plan_files[0].collection_optional_split_allowed is False
 
     assert planning.process_due_refresh() == 1
 
