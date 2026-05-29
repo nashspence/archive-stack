@@ -1142,13 +1142,21 @@ def _load_plan_files(
             continue
         if normalize_glacier_state(collection.archive.state) is not GlacierState.UPLOADED:
             continue
+        unfinalized_hot_files = [
+            file_record
+            for file_record in sorted(collection.files, key=lambda current: current.path)
+            if file_record.hot and (collection.id, file_record.path) not in finalized_paths
+        ]
+        if not unfinalized_hot_files:
+            continue
         if config.protection_mirror_enabled:
             mirror = session.get(CollectionProtectionMirrorRecord, collection.id)
             if mirror is None or mirror.state != "complete":
-                _LOG.info(
+                _LOG.debug(
                     "skipping collection %s during planning because protection mirror "
-                    "is not complete",
+                    "is not complete: state=%s",
                     collection.id,
+                    mirror.state if mirror is not None else "missing",
                 )
                 continue
         artifact = _read_collection_artifact_cache(config, collection.id)
@@ -1174,11 +1182,7 @@ def _load_plan_files(
                 artifact_estimate=artifact_estimate,
             )
         )
-        for file_record in sorted(collection.files, key=lambda current: current.path):
-            if not file_record.hot:
-                continue
-            if (collection.id, file_record.path) in finalized_paths:
-                continue
+        for file_record in unfinalized_hot_files:
             plan_files.append(
                 _PlanFile(
                     collection_id=collection.id,

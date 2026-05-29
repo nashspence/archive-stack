@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -2302,6 +2303,103 @@ def test_planner_continues_after_partially_finalized_collection(tmp_path: Path) 
     assert plan["ready"] is False
     assert plan["candidates"] == []
     assert plan["unplanned_bytes"] == len(tail_content)
+
+
+def test_planner_ignores_fully_finalized_collection_without_mirror(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+    config = _config(
+        sqlite_path,
+        protection_mirror_enabled=True,
+        protection_mirror_s3_endpoint_url="https://s3.example.invalid",
+        protection_mirror_s3_bucket="mirror",
+        protection_mirror_s3_access_key_id="mirror-key",
+        protection_mirror_s3_secret_access_key="mirror-secret",
+    )
+    collection_id = "2026/20260529T000000Z__done"
+    relpath = "done.txt"
+    content = b"already planned\n"
+
+    archive_package = build_collection_archive_package(
+        collection_id=collection_id,
+        files=(
+            CollectionArchiveFile(
+                path=relpath,
+                content=content,
+                sha256=hashlib.sha256(content).hexdigest(),
+            ),
+        ),
+        stamper=FixtureProofStamper(),
+    )
+    package = _FakeArchiveStore().upload_collection_archive_package(
+        collection_id=collection_id,
+        package=archive_package,
+    )
+    cache_collection_manifest_artifacts(
+        config,
+        collection_id=collection_id,
+        manifest_bytes=archive_package.manifest_bytes,
+        proof_bytes=archive_package.proof_bytes,
+    )
+
+    session_factory = make_session_factory(str(sqlite_path))
+    with session_scope(session_factory) as session:
+        collection = CollectionRecord(id=collection_id)
+        collection.files.append(
+            CollectionFileRecord(
+                collection_id=collection_id,
+                path=relpath,
+                bytes=len(content),
+                sha256=hashlib.sha256(content).hexdigest(),
+                hot=True,
+                archived=False,
+            )
+        )
+        session.add(collection)
+        session.add(
+            CollectionArchiveRecord(
+                collection_id=collection_id,
+                state="uploaded",
+                object_path=package.archive.object_path,
+                stored_bytes=package.archive.stored_bytes,
+                sha256=package.archive_sha256,
+                backend="s3",
+                storage_class="DEEP_ARCHIVE",
+                manifest_object_path=package.manifest.object_path,
+                manifest_sha256=package.manifest_sha256,
+                manifest_stored_bytes=package.manifest.stored_bytes,
+                ots_object_path=package.proof.object_path,
+                ots_sha256=package.proof_sha256,
+                ots_stored_bytes=package.proof.stored_bytes,
+            )
+        )
+        session.add(
+            FinalizedImageRecord(
+                image_id="20260529T000000Z",
+                candidate_id="candidate-done",
+                filename="20260529T000000Z.iso",
+                bytes=len(content),
+                image_root=str(tmp_path / "finalized-image"),
+                target_bytes=10_000_000,
+                required_copy_count=2,
+            )
+        )
+        session.add(
+            FinalizedImageCoveredPathRecord(
+                image_id="20260529T000000Z",
+                collection_id=collection_id,
+                path=relpath,
+            )
+        )
+
+    with session_scope(session_factory) as session:
+        caplog.set_level(logging.INFO, logger="riverhog_core.services.planning")
+        assert _load_plan_files(session, config) == []
+
+    assert "protection mirror is not complete" not in caplog.text
 
 
 def test_new_collection_uploads_are_blocked_over_unburned_limit(tmp_path: Path) -> None:
