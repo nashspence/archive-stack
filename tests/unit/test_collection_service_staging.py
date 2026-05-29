@@ -23,6 +23,7 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.collection_archives import (
     CollectionArchiveFile,
+    CollectionArchivePackage,
     build_collection_archive_package,
 )
 from riverhog_core.domain.errors import Conflict
@@ -288,6 +289,7 @@ class _FakeProtectionMirrorStore:
     def __init__(self) -> None:
         self.archives: dict[str, bytes] = {}
         self.uploads = 0
+        self.uploaded_collections: list[str] = []
         self.deleted: list[str] = []
 
     def object_path(self, collection_id: str) -> str:
@@ -307,6 +309,7 @@ class _FakeProtectionMirrorStore:
         assert len(content) == content_length
         assert hashlib.sha256(content).hexdigest() == sha256
         self.archives[collection_id] = content
+        self.uploaded_collections.append(collection_id)
         self.uploads += 1
 
     def iter_collection_archive(
@@ -869,6 +872,112 @@ def test_protection_mirror_backfill_failure_notifies_once_per_interval(
     assert [payload["event"] for payload in webhook_payloads] == [
         "collections.protection_mirror_retrying"
     ]
+
+
+def test_protection_mirror_resumes_mirroring_before_new_pending_work(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+
+    config = _config(
+        sqlite_path,
+        protection_mirror_enabled=True,
+        protection_mirror_s3_endpoint_url="https://s3.example.invalid",
+        protection_mirror_s3_bucket="mirror",
+        protection_mirror_s3_access_key_id="mirror-key",
+        protection_mirror_s3_secret_access_key="mirror-secret",
+    )
+    hot_store = _FakeHotStore()
+    mirror_store = _FakeProtectionMirrorStore()
+    session_factory = make_session_factory(str(sqlite_path))
+
+    packages: dict[str, CollectionArchivePackage] = {}
+    for index, collection_id in enumerate(
+        [
+            "20250712T213200Z__resume-first",
+            "20250712T213201Z__pending-second",
+        ],
+        start=1,
+    ):
+        relpath = "albums/day-01.txt"
+        content = f"collection {index}\n".encode()
+        sha256 = hashlib.sha256(content).hexdigest()
+        hot_store.put_collection_file(collection_id, relpath, content)
+        package = build_collection_archive_package(
+            collection_id=collection_id,
+            files=[CollectionArchiveFile(path=relpath, content=content, sha256=sha256)],
+            stamper=FixtureProofStamper(),
+        )
+        packages[collection_id] = package
+        with session_scope(session_factory) as session:
+            collection = CollectionRecord(id=collection_id)
+            collection.files.append(
+                CollectionFileRecord(
+                    collection_id=collection_id,
+                    path=relpath,
+                    bytes=len(content),
+                    sha256=sha256,
+                    hot=True,
+                    archived=False,
+                )
+            )
+            session.add(collection)
+            session.add(
+                CollectionArchiveRecord(
+                    collection_id=collection_id,
+                    state="uploaded",
+                    object_path=f"glacier/collections/{collection_id}/archive.tar",
+                    stored_bytes=package.archive_size,
+                    sha256=package.archive_sha256,
+                )
+            )
+
+    with session_scope(session_factory) as session:
+        resume_package = packages["20250712T213200Z__resume-first"]
+        session.add(
+            CollectionProtectionMirrorRecord(
+                collection_id="20250712T213200Z__resume-first",
+                state="mirroring",
+                object_path=mirror_store.object_path("20250712T213200Z__resume-first"),
+                archive_bytes=resume_package.archive_size,
+                archive_sha256=resume_package.archive_sha256,
+                next_attempt_at="2026-01-01T00:00:02Z",
+            )
+        )
+        session.add(
+            CollectionProtectionMirrorRecord(
+                collection_id="20250712T213201Z__pending-second",
+                state="pending",
+                next_attempt_at="2026-01-01T00:00:01Z",
+            )
+        )
+
+    upload_service = SqlAlchemyGlacierUploadService(
+        config,
+        _FakeArchiveStore(),
+        hot_store,
+        _FakeUploadStore(),
+        mirror_store,
+        proof_stamper=FixtureProofStamper(),
+        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
+    )
+
+    assert upload_service.process_due_uploads() == 1
+    assert mirror_store.uploaded_collections == ["20250712T213200Z__resume-first"]
+    with session_scope(session_factory) as session:
+        resumed = session.get(
+            CollectionProtectionMirrorRecord,
+            "20250712T213200Z__resume-first",
+        )
+        pending = session.get(
+            CollectionProtectionMirrorRecord,
+            "20250712T213201Z__pending-second",
+        )
+        assert resumed is not None
+        assert resumed.state == "complete"
+        assert pending is not None
+        assert pending.state == "pending"
 
 
 def test_planner_hydrates_missing_hot_files_from_protection_mirror(

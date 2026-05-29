@@ -7,7 +7,7 @@ import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import or_, select
+from sqlalchemy import case, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from riverhog_core.archive_compliance import (
@@ -517,6 +517,12 @@ class SqlAlchemyGlacierUploadService:
                         )
                     )
                     .order_by(
+                        case(
+                            (CollectionProtectionMirrorRecord.state == "mirroring", 0),
+                            (CollectionProtectionMirrorRecord.state == "deleting", 1),
+                            (CollectionProtectionMirrorRecord.state == "retry_wait", 2),
+                            else_=3,
+                        ),
                         CollectionProtectionMirrorRecord.next_attempt_at,
                         CollectionProtectionMirrorRecord.collection_id,
                     )
