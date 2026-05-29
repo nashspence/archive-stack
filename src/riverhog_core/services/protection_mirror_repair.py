@@ -14,7 +14,7 @@ from riverhog_core.catalog_db import session_scope
 from riverhog_core.catalog_models import CollectionFileRecord, CollectionProtectionMirrorRecord
 from riverhog_core.collection_archives import (
     CollectionArchiveExpectedFile,
-    iter_verified_collection_archive_file_chunks,
+    iter_selected_collection_archive_file_chunks,
 )
 from riverhog_core.fs_paths import normalize_relpath
 from riverhog_core.ports.archive_store import (
@@ -122,10 +122,10 @@ def repair_collection_hot_files_from_protection_mirror(
     restored_files = 0
     restored_bytes = 0
     paths_to_restore = set(missing_or_mismatched)
-    for path, chunks, content_length in iter_verified_collection_archive_file_chunks(
+    selected_files = [expected_by_path[path] for path in sorted(paths_to_restore)]
+    for path, chunks, content_length in iter_selected_collection_archive_file_chunks(
         protection_mirror_store.iter_collection_archive(collection_id),
-        files=expected_files,
-        selected_paths=paths_to_restore,
+        selected_files=selected_files,
     ):
         expected = expected_by_path[path]
         _put_hot_file_stream_resumable(

@@ -129,11 +129,11 @@ readiness, so it does not block HTTP startup; it may keep the protection worker
 busy if a real restore is needed. Broad audits use the hot-store object listing
 to check expected paths and byte counts in one paginated pass. If any hot object
 for an under-protected mirrored collection is missing or size-mismatched,
-Riverhog restores the whole collection from the mirror archive, verifies the
-archive stream, and rewrites only the files that failed hot-store verification.
-Hot-store writes use the same multipart resume machinery where available; an
-app restart during restore records progress for the current file and retries
-the collection repair when the worker comes back.
+Riverhog streams the mirror archive as needed to reach the failed files,
+verifies those restored file hashes, and rewrites only the files that failed
+hot-store verification. Hot-store writes use the same multipart resume
+machinery where available; an app restart during restore records progress for
+the current file and retries the collection repair when the worker comes back.
 
 During promotion, each hot file is written with byte and
 SHA-256 metadata and marked promoted only after the hot object verifies. For

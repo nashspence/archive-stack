@@ -427,6 +427,8 @@ def iter_selected_collection_archive_file_chunks(
                 ),
                 expected_file.bytes,
             )
+            if len(seen) == len(expected):
+                break
     missing_selected = sorted(set(expected) - seen)
     if missing_selected:
         raise ValueError(f"collection archive missing selected member: {missing_selected[0]}")
