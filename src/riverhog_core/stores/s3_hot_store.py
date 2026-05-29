@@ -33,6 +33,15 @@ def _multipart_part_size(content_length: int) -> int:
     return part_size
 
 
+def _should_log_multipart_progress(part_number: int, expected_part_count: int) -> bool:
+    return (
+        part_number == 1
+        or part_number == expected_part_count
+        or expected_part_count <= 20
+        or part_number % 100 == 0
+    )
+
+
 def _iter_chunks_after_skipping(chunks: Iterable[bytes], skip_bytes: int) -> Iterator[bytes]:
     remaining = skip_bytes
     for chunk in chunks:
@@ -182,6 +191,13 @@ class S3HotStore:
         def ensure_upload() -> str:
             nonlocal upload_id, upload_state
             if upload_id is None:
+                _LOG.info(
+                    "starting hot-store multipart upload for %s: size=%s part_size=%s parts=%s",
+                    final_key,
+                    content_length,
+                    part_size,
+                    expected_part_count,
+                )
                 response = cast(
                     dict[str, Any],
                     self._client.create_multipart_upload(
@@ -233,6 +249,16 @@ class S3HotStore:
                     uploaded_bytes=uploaded_bytes,
                     uploaded_parts=current_part_number,
                     total_parts=expected_part_count,
+                )
+            if _should_log_multipart_progress(current_part_number, expected_part_count):
+                _LOG.info(
+                    "hot-store multipart upload progress for %s: part=%s/%s bytes=%s/%s pct=%.2f",
+                    final_key,
+                    current_part_number,
+                    expected_part_count,
+                    uploaded_bytes,
+                    content_length,
+                    (uploaded_bytes / content_length * 100.0) if content_length else 100.0,
                 )
             part_number += 1
 

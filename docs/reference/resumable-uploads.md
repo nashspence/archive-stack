@@ -124,12 +124,14 @@ restart or transient mirror failures reuse the same remote multipart upload
 where possible.
 
 The protection mirror worker also audits completed mirror rows at startup and
-on the configured interval. If any hot object for an under-protected mirrored
-collection is missing or mismatched, Riverhog restores the whole collection
-from the mirror archive and verifies each restored file hash. Hot-store writes
-use the same multipart resume machinery where available; an app restart during
-restore records progress for the current file and retries the collection repair
-when the worker comes back.
+on the configured interval. The startup audit is queued after the API reaches
+readiness, so it does not block HTTP startup; it may keep the protection worker
+busy if a real restore is needed. If any hot object for an under-protected
+mirrored collection is missing or mismatched, Riverhog restores the whole
+collection from the mirror archive and verifies each restored file hash.
+Hot-store writes use the same multipart resume machinery where available; an
+app restart during restore records progress for the current file and retries
+the collection repair when the worker comes back.
 
 During promotion, each hot file is written with byte and
 SHA-256 metadata and marked promoted only after the hot object verifies. For

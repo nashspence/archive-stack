@@ -348,6 +348,11 @@ async def _run_glacier_upload_reaper(
                 continue
             current_force_hot_repair_audit = force_hot_repair_audit
             force_hot_repair_audit = False
+            if current_force_hot_repair_audit:
+                _LOG.info(
+                    "startup protection mirror hot audit queued in background; "
+                    "API startup is not blocked"
+                )
             await asyncio.to_thread(
                 _process_glacier_uploads,
                 container,

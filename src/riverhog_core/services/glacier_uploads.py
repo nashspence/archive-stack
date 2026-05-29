@@ -7,6 +7,7 @@ import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import case, or_, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -172,15 +173,6 @@ class SqlAlchemyGlacierUploadService:
                         ("complete", "repairing", "repair_wait")
                     )
                 )
-                .order_by(
-                    case(
-                        (CollectionProtectionMirrorRecord.state == "repairing", 0),
-                        (CollectionProtectionMirrorRecord.state == "repair_wait", 1),
-                        else_=2,
-                    ),
-                    CollectionProtectionMirrorRecord.next_attempt_at,
-                    CollectionProtectionMirrorRecord.collection_id,
-                )
             )
             if not force:
                 query = query.where(
@@ -189,6 +181,22 @@ class SqlAlchemyGlacierUploadService:
                         CollectionProtectionMirrorRecord.next_attempt_at <= current_text,
                     )
                 )
+            state_order = case(
+                (CollectionProtectionMirrorRecord.state == "repairing", 0),
+                (CollectionProtectionMirrorRecord.state == "repair_wait", 1),
+                else_=2,
+            )
+            order_by: list[Any] = [state_order]
+            if not force:
+                order_by.append(CollectionProtectionMirrorRecord.next_attempt_at)
+            order_by.extend(
+                [
+                    CollectionProtectionMirrorRecord.archive_bytes.is_(None),
+                    CollectionProtectionMirrorRecord.archive_bytes,
+                    CollectionProtectionMirrorRecord.collection_id,
+                ]
+            )
+            query = query.order_by(*order_by)
             collection_ids = list(session.scalars(query.limit(limit)).all())
 
         if collection_ids:
@@ -199,7 +207,13 @@ class SqlAlchemyGlacierUploadService:
             )
         processed = 0
         repaired = 0
-        for collection_id in collection_ids:
+        for index, collection_id in enumerate(collection_ids, start=1):
+            _LOG.info(
+                "protection mirror hot audit checking collection %s/%s: %s",
+                index,
+                len(collection_ids),
+                collection_id,
+            )
             result = self._repair_one_collection_from_protection_mirror(
                 collection_id=collection_id
             )
@@ -245,6 +259,12 @@ class SqlAlchemyGlacierUploadService:
                     collection_id,
                     result.restored_files,
                     result.restored_bytes,
+                )
+            else:
+                _LOG.info(
+                    "protection mirror hot audit clean for %s: checked_files=%s",
+                    collection_id,
+                    result.checked_files,
                 )
             return _ProtectionMirrorRepairAttempt(processed=True, repaired=result.repaired)
         except Exception as exc:

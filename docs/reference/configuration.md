@@ -205,11 +205,13 @@ committed hot files. After the required verified disc copies exist, Riverhog
 targets the mirror archive for deletion immediately.
 
 On startup, and then periodically, Riverhog audits under-protected mirrored
-collections against hot storage. If any file in a mirrored collection is
-missing or mismatched, Riverhog restores the whole collection from the mirror
-archive, verifies restored file hashes, and marks the files hot again. Planner
-materialization uses the same repair path if it encounters missing inputs before
-the next audit.
+collections against hot storage. The startup audit runs in the background after
+the API is ready; it does not block HTTP startup, but it can occupy the
+Glacier/protection worker while it checks or restores collections. If any file
+in a mirrored collection is missing or mismatched, Riverhog restores the whole
+collection from the mirror archive, verifies restored file hashes, and marks
+the files hot again. Planner materialization uses the same repair path if it
+encounters missing inputs before the next audit.
 
 ## `RIVERHOG_PROTECTION_MIRROR_S3_ENDPOINT_URL`
 
