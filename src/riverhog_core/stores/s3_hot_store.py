@@ -468,6 +468,22 @@ class S3HotStore:
     def delete_collection_file(self, collection_id: str, path: str) -> None:
         self._client.delete_object(Bucket=self._bucket, Key=self._key(collection_id, path))
 
+    def abort_collection_file_multipart_upload(
+        self,
+        collection_id: str,
+        path: str,
+        upload_id: str,
+    ) -> None:
+        try:
+            self._client.abort_multipart_upload(
+                Bucket=self._bucket,
+                Key=self._key(collection_id, path),
+                UploadId=upload_id,
+            )
+        except self._client.exceptions.ClientError as exc:
+            if not _is_missing_upload_error(exc):
+                raise
+
     def list_collection_files(self, collection_id: str) -> list[tuple[str, int]]:
         paginator = self._client.get_paginator("list_objects_v2")
         prefix = f"collections/{collection_id}/"

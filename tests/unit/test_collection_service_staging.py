@@ -52,8 +52,10 @@ from tests.fixtures.data import DOCS_FILES
 class _FakeHotStore:
     def __init__(self) -> None:
         self._files: dict[tuple[str, str], bytes] = {}
+        self.put_paths: list[tuple[str, str]] = []
 
     def put_collection_file(self, collection_id: str, path: str, content: bytes) -> None:
+        self.put_paths.append((collection_id, path))
         self._files[(collection_id, path)] = content
 
     def put_collection_file_stream(
@@ -68,6 +70,7 @@ class _FakeHotStore:
         _ = sha256
         content = b"".join(chunks)
         assert len(content) == content_length
+        self.put_paths.append((collection_id, path))
         self._files[(collection_id, path)] = content
 
     def get_collection_file(self, collection_id: str, path: str) -> bytes:
@@ -788,7 +791,7 @@ def test_protection_mirror_backfills_underprotected_and_cleans_after_verified_co
         assert mirror.state == "deleted"
 
 
-def test_protection_mirror_hot_repair_restores_whole_existing_collection(
+def test_protection_mirror_hot_repair_rewrites_only_missing_or_mismatched_files(
     tmp_path: Path,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
@@ -808,6 +811,7 @@ def test_protection_mirror_hot_repair_restores_whole_existing_collection(
     files = [
         ("albums/day-01.txt", b"existing collection bytes\n"),
         ("albums/day-02.txt", b"second file bytes\n"),
+        ("albums/day-03.txt", b"already valid bytes\n"),
     ]
     archive_files = []
     for relpath, content in files:
@@ -820,8 +824,10 @@ def test_protection_mirror_hot_repair_restores_whole_existing_collection(
         stamper=FixtureProofStamper(),
     )
     mirror_store.archives[collection_id] = package.archive_bytes
+    hot_store.put_paths.clear()
     hot_store.delete_collection_file(collection_id, "albums/day-01.txt")
     hot_store.put_collection_file(collection_id, "albums/day-02.txt", b"wrong bytes\n")
+    hot_store.put_paths.clear()
 
     session_factory = make_session_factory(str(sqlite_path))
     with session_scope(session_factory) as session:
@@ -835,6 +841,9 @@ def test_protection_mirror_hot_repair_restores_whole_existing_collection(
                     sha256=hashlib.sha256(content).hexdigest(),
                     hot=True,
                     archived=False,
+                    hot_multipart_upload_id=(
+                        "stale-upload" if relpath == "albums/day-03.txt" else None
+                    ),
                 )
             )
         session.add(collection)
@@ -873,11 +882,18 @@ def test_protection_mirror_hot_repair_restores_whole_existing_collection(
     ) == 1
     for relpath, content in files:
         assert hot_store.get_collection_file(collection_id, relpath) == content
+    assert hot_store.put_paths == [
+        (collection_id, "albums/day-01.txt"),
+        (collection_id, "albums/day-02.txt"),
+    ]
     with session_scope(session_factory) as session:
         mirror = session.get(CollectionProtectionMirrorRecord, collection_id)
         assert mirror is not None
         assert mirror.state == "complete"
         assert mirror.next_attempt_at is not None
+        valid_file = session.get(CollectionFileRecord, (collection_id, "albums/day-03.txt"))
+        assert valid_file is not None
+        assert valid_file.hot_multipart_upload_id is None
 
 
 def test_protection_mirror_backfill_failure_notifies_once_per_interval(

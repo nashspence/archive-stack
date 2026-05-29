@@ -41,6 +41,15 @@ class _ResumableHotStore(Protocol):
     ) -> None: ...
 
 
+class _AbortableHotMultipartStore(Protocol):
+    def abort_collection_file_multipart_upload(
+        self,
+        collection_id: str,
+        path: str,
+        upload_id: str,
+    ) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ProtectionMirrorRepairResult:
     collection_id: str
@@ -80,18 +89,26 @@ def repair_collection_hot_files_from_protection_mirror(
         else {file.path for file in expected_files}
     )
     expected_by_path = {file.path: file for file in expected_files}
-    missing_or_mismatched = tuple(
-        path
-        for path in sorted(paths_to_check)
-        if path in expected_by_path
-        if not _hot_file_matches(
+    missing_or_mismatched: list[str] = []
+    for path in sorted(paths_to_check):
+        expected = expected_by_path.get(path)
+        if expected is None:
+            continue
+        if _hot_file_matches(
             hot_store,
             collection_id=collection_id,
             path=path,
-            expected_bytes=expected_by_path[path].bytes,
-            expected_sha256=expected_by_path[path].sha256,
-        )
-    )
+            expected_bytes=expected.bytes,
+            expected_sha256=expected.sha256,
+        ):
+            _clear_verified_hot_file_multipart_state(
+                session_factory=session_factory,
+                hot_store=hot_store,
+                collection_id=collection_id,
+                path=path,
+            )
+            continue
+        missing_or_mismatched.append(path)
     if not missing_or_mismatched:
         return ProtectionMirrorRepairResult(
             collection_id=collection_id,
@@ -115,9 +132,11 @@ def repair_collection_hot_files_from_protection_mirror(
     )
     restored_files = 0
     restored_bytes = 0
+    paths_to_restore = set(missing_or_mismatched)
     for path, chunks, content_length in iter_verified_collection_archive_file_chunks(
         protection_mirror_store.iter_collection_archive(collection_id),
         files=expected_files,
+        selected_paths=paths_to_restore,
     ):
         expected = expected_by_path[path]
         _put_hot_file_stream_resumable(
@@ -159,7 +178,7 @@ def repair_collection_hot_files_from_protection_mirror(
         checked_files=len(paths_to_check),
         restored_files=restored_files,
         restored_bytes=restored_bytes,
-        missing_or_mismatched_paths=missing_or_mismatched,
+        missing_or_mismatched_paths=tuple(missing_or_mismatched),
     )
 
 
@@ -249,6 +268,37 @@ def _mark_collection_file_hot(
         if record is None:
             return
         record.hot = True
+
+
+def _clear_verified_hot_file_multipart_state(
+    *,
+    session_factory: sessionmaker[Session],
+    hot_store: HotStore,
+    collection_id: str,
+    path: str,
+) -> None:
+    with session_scope(session_factory) as session:
+        record = session.get(CollectionFileRecord, (collection_id, path))
+        upload_id = record.hot_multipart_upload_id if record is not None else None
+    if not upload_id:
+        return
+    abort_upload = getattr(hot_store, "abort_collection_file_multipart_upload", None)
+    if callable(abort_upload):
+        cast(_AbortableHotMultipartStore, hot_store).abort_collection_file_multipart_upload(
+            collection_id,
+            path,
+            upload_id,
+        )
+    _CollectionFileHotMultipartUploadTracker(session_factory, path=path).clear_multipart_upload(
+        collection_id=collection_id,
+        upload_id=upload_id,
+    )
+    _LOG.info(
+        "cleared stale hot-store multipart restore state for %s/%s: upload_id=%s",
+        collection_id,
+        path,
+        upload_id,
+    )
 
 
 def _hot_file_matches(

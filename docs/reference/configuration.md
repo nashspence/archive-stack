@@ -210,8 +210,10 @@ the API is ready; it does not block HTTP startup, but it can occupy the
 Glacier/protection worker while it checks or restores collections. If any file
 in a mirrored collection is missing or mismatched, Riverhog restores the whole
 collection from the mirror archive, verifies restored file hashes, and marks
-the files hot again. Planner materialization uses the same repair path if it
-encounters missing inputs before the next audit.
+the files hot again. The repair reads and verifies the collection archive while
+rewriting only files that failed hot-store verification, so already-valid hot
+objects are not churned. Planner materialization uses the same repair path if
+it encounters missing inputs before the next audit.
 
 ## `RIVERHOG_PROTECTION_MIRROR_S3_ENDPOINT_URL`
 
