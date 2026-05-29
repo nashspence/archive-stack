@@ -358,8 +358,16 @@ class SqlAlchemyGlacierUploadService:
                     CollectionArchiveExpectedFile(path=path, bytes=_bytes, sha256=sha256)
                 )
 
-            def _read_archive_file_chunks(path: str) -> Iterator[bytes]:
-                return upload_store.iter_target(target_path_by_archive_path[path])
+            def _read_archive_file_chunks(
+                path: str,
+                offset: int = 0,
+                size: int | None = None,
+            ) -> Iterator[bytes]:
+                return upload_store.iter_target(
+                    target_path_by_archive_path[path],
+                    offset=offset,
+                    size=size,
+                )
 
             if receipt is None or manifest_bytes is None or proof_bytes is None:
                 if (
@@ -371,7 +379,8 @@ class SqlAlchemyGlacierUploadService:
                     package = build_collection_archive_package_from_prebuilt_artifacts(
                         collection_id=collection_id,
                         files=package_files,
-                        read_file_chunks=_read_archive_file_chunks,
+                        read_file_chunks=lambda path: _read_archive_file_chunks(path),
+                        read_file_chunks_range=_read_archive_file_chunks,
                         manifest_bytes=manifest_bytes,
                         proof_bytes=proof_bytes,
                         archive_size=packaged_archive_size,
@@ -387,7 +396,8 @@ class SqlAlchemyGlacierUploadService:
                     package = build_collection_archive_package_from_chunk_reader(
                         collection_id=collection_id,
                         files=package_files,
-                        read_file_chunks=_read_archive_file_chunks,
+                        read_file_chunks=lambda path: _read_archive_file_chunks(path),
+                        read_file_chunks_range=_read_archive_file_chunks,
                         stamper=self._proof_stamper,
                     )
                     _LOG.info(
@@ -447,7 +457,8 @@ class SqlAlchemyGlacierUploadService:
                     package = build_collection_archive_package_from_prebuilt_artifacts(
                         collection_id=collection_id,
                         files=package_files,
-                        read_file_chunks=_read_archive_file_chunks,
+                        read_file_chunks=lambda path: _read_archive_file_chunks(path),
+                        read_file_chunks_range=_read_archive_file_chunks,
                         manifest_bytes=manifest_bytes,
                         proof_bytes=proof_bytes,
                         archive_size=receipt.archive.stored_bytes,

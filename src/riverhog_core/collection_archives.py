@@ -50,9 +50,24 @@ class CollectionArchivePackage:
     archive_format: str
     compression: str
     _archive_chunks: Callable[[], Iterator[bytes]] = field(repr=False)
+    _archive_chunks_from_offset: Callable[[int], Iterator[bytes]] | None = field(
+        default=None,
+        repr=False,
+    )
 
     def iter_archive(self) -> Iterator[bytes]:
         yield from self._archive_chunks()
+
+    def iter_archive_from_offset(self, offset: int) -> Iterator[bytes]:
+        if offset < 0:
+            raise ValueError("collection archive offset must be non-negative")
+        if offset == 0:
+            yield from self.iter_archive()
+            return
+        if self._archive_chunks_from_offset is not None:
+            yield from self._archive_chunks_from_offset(offset)
+            return
+        yield from _iter_chunks_after_skipping(self.iter_archive(), offset)
 
     @property
     def archive_bytes(self) -> bytes:
@@ -100,6 +115,7 @@ def build_collection_archive_package_from_chunk_reader(
     collection_id: str,
     files: Sequence[CollectionArchiveExpectedFile],
     read_file_chunks: Callable[[str], Iterable[bytes]],
+    read_file_chunks_range: Callable[[str, int, int | None], Iterable[bytes]] | None = None,
     stamper: ProofStamper | None = None,
 ) -> CollectionArchivePackage:
     normalized_collection_id = normalize_collection_id(collection_id)
@@ -108,6 +124,7 @@ def build_collection_archive_package_from_chunk_reader(
         collection_id=normalized_collection_id,
         files=normalized_files,
         read_file_chunks=read_file_chunks,
+        read_file_chunks_range=read_file_chunks_range,
         stamper=stamper,
     )
 
@@ -117,6 +134,7 @@ def build_collection_archive_package_from_prebuilt_artifacts(
     collection_id: str,
     files: Sequence[CollectionArchiveExpectedFile],
     read_file_chunks: Callable[[str], Iterable[bytes]],
+    read_file_chunks_range: Callable[[str, int, int | None], Iterable[bytes]] | None = None,
     manifest_bytes: bytes,
     proof_bytes: bytes,
     archive_size: int,
@@ -149,6 +167,16 @@ def build_collection_archive_package_from_prebuilt_artifacts(
             read_file_chunks,
         )
 
+    def archive_chunks_from_offset(offset: int) -> Iterator[bytes]:
+        if read_file_chunks_range is None:
+            yield from _iter_chunks_after_skipping(archive_chunks(), offset)
+            return
+        yield from _archive_chunks_from_ranged_reader(
+            normalized_files,
+            read_file_chunks_range,
+            archive_offset=offset,
+        )
+
     return CollectionArchivePackage(
         collection_id=normalized_collection_id,
         archive_size=int(archive_size),
@@ -160,6 +188,7 @@ def build_collection_archive_package_from_prebuilt_artifacts(
         archive_format=COLLECTION_ARCHIVE_FORMAT,
         compression=COLLECTION_ARCHIVE_COMPRESSION,
         _archive_chunks=archive_chunks,
+        _archive_chunks_from_offset=archive_chunks_from_offset,
     )
 
 
@@ -183,6 +212,7 @@ def _build_collection_archive_package(
     collection_id: str,
     files: Sequence[CollectionArchiveExpectedFile],
     read_file_chunks: Callable[[str], Iterable[bytes]],
+    read_file_chunks_range: Callable[[str, int, int | None], Iterable[bytes]] | None = None,
     stamper: ProofStamper | None,
 ) -> CollectionArchivePackage:
     manifest = _manifest_payload(
@@ -202,6 +232,16 @@ def _build_collection_archive_package(
             read_file_chunks,
         )
 
+    def archive_chunks_from_offset(offset: int) -> Iterator[bytes]:
+        if read_file_chunks_range is None:
+            yield from _iter_chunks_after_skipping(archive_chunks(), offset)
+            return
+        yield from _archive_chunks_from_ranged_reader(
+            files,
+            read_file_chunks_range,
+            archive_offset=offset,
+        )
+
     archive_size, archive_sha256 = _sized_sha256(archive_chunks())
     return CollectionArchivePackage(
         collection_id=collection_id,
@@ -214,6 +254,7 @@ def _build_collection_archive_package(
         archive_format=COLLECTION_ARCHIVE_FORMAT,
         compression=COLLECTION_ARCHIVE_COMPRESSION,
         _archive_chunks=archive_chunks,
+        _archive_chunks_from_offset=archive_chunks_from_offset,
     )
 
 
@@ -589,6 +630,84 @@ def _archive_chunks_from_reader(
         if padding:
             yield b"\0" * padding
     yield b"\0" * 1024
+
+
+def _archive_chunks_from_ranged_reader(
+    files: Sequence[CollectionArchiveExpectedFile],
+    read_file_chunks_range: Callable[[str, int, int | None], Iterable[bytes]],
+    *,
+    archive_offset: int,
+) -> Iterator[bytes]:
+    if archive_offset < 0:
+        raise ValueError("collection archive offset must be non-negative")
+
+    requested_offset = archive_offset
+    stream_offset = 0
+    for file in files:
+        header = _tar_header(file.path, file.bytes)
+        padding = (-file.bytes) % 512
+        member_size = _tar_member_size(file.bytes)
+        member_end = stream_offset + member_size
+        if requested_offset >= member_end:
+            stream_offset = member_end
+            continue
+
+        content_offset = 0
+        padding_offset = 0
+        if requested_offset <= stream_offset:
+            yield header
+        else:
+            member_offset = requested_offset - stream_offset
+            if member_offset < 512:
+                yield header[member_offset:]
+            elif member_offset < 512 + file.bytes:
+                content_offset = member_offset - 512
+            elif member_offset < member_size:
+                content_offset = file.bytes
+                padding_offset = member_offset - 512 - file.bytes
+
+        if content_offset < file.bytes:
+            expected_bytes = file.bytes - content_offset
+            yielded_bytes = 0
+            for chunk in read_file_chunks_range(file.path, content_offset, expected_bytes):
+                if not chunk:
+                    continue
+                yielded_bytes += len(chunk)
+                yield chunk
+            if yielded_bytes != expected_bytes:
+                raise ValueError(f"collection archive ranged byte count mismatch: {file.path}")
+
+        if padding and padding_offset < padding:
+            yield (b"\0" * padding)[padding_offset:]
+
+        stream_offset = member_end
+        requested_offset = 0
+
+    final_padding = b"\0" * 1024
+    final_end = stream_offset + len(final_padding)
+    if requested_offset >= final_end:
+        if requested_offset == final_end:
+            return
+        raise ValueError("collection archive stream ended before requested offset")
+    if requested_offset > stream_offset:
+        yield final_padding[requested_offset - stream_offset :]
+    else:
+        yield final_padding
+
+
+def _iter_chunks_after_skipping(chunks: Iterable[bytes], skip_bytes: int) -> Iterator[bytes]:
+    remaining = skip_bytes
+    for chunk in chunks:
+        if remaining <= 0:
+            yield chunk
+            continue
+        if len(chunk) <= remaining:
+            remaining -= len(chunk)
+            continue
+        yield chunk[remaining:]
+        remaining = 0
+    if remaining:
+        raise ValueError("collection archive stream ended before requested offset")
 
 
 def _archive_stream_size(files: Sequence[CollectionArchiveExpectedFile]) -> int:

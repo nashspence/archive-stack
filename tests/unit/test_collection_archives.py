@@ -158,6 +158,45 @@ def test_collection_archive_package_from_chunk_reader_does_not_require_whole_fil
     assert list(iter_collection_archive_files(package.iter_archive())) == [("large.bin", content)]
 
 
+def test_collection_archive_package_can_resume_from_ranged_file_reader() -> None:
+    files_by_path = {
+        "a.txt": b"alpha",
+        "b.txt": b"0123456789" * 50,
+    }
+    files = tuple(
+        CollectionArchiveExpectedFile(
+            path=path,
+            bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+        )
+        for path, content in files_by_path.items()
+    )
+    range_calls: list[tuple[str, int, int | None]] = []
+
+    def read_chunks(path: str) -> Iterator[bytes]:
+        yield files_by_path[path]
+
+    def read_range(path: str, offset: int, size: int | None) -> Iterator[bytes]:
+        range_calls.append((path, offset, size))
+        content = files_by_path[path]
+        yield content[offset:] if size is None else content[offset : offset + size]
+
+    package = build_collection_archive_package_from_chunk_reader(
+        collection_id="docs",
+        files=files,
+        read_file_chunks=read_chunks,
+        read_file_chunks_range=read_range,
+        stamper=_PROOF_STAMPER,
+    )
+    first_member_size = 512 + len(files_by_path["a.txt"]) + ((-len(files_by_path["a.txt"])) % 512)
+    archive_offset = first_member_size + 512 + 17
+
+    assert b"".join(package.iter_archive_from_offset(archive_offset)) == package.archive_bytes[
+        archive_offset:
+    ]
+    assert range_calls == [("b.txt", 17, len(files_by_path["b.txt"]) - 17)]
+
+
 def test_collection_archive_package_can_reuse_prebuilt_manifest_proof_and_archive_digest() -> None:
     content = b"0123456789" * 200
     digest = hashlib.sha256(content).hexdigest()

@@ -92,8 +92,15 @@ class _RaceyUploadStore:
             raise FileNotFoundError(target_path)
         return self._target_payloads[target_path]
 
-    def iter_target(self, target_path: str) -> Iterator[bytes]:
-        yield self.read_target(target_path)
+    def iter_target(
+        self,
+        target_path: str,
+        *,
+        offset: int = 0,
+        size: int | None = None,
+    ) -> Iterator[bytes]:
+        content = self.read_target(target_path)
+        yield content[offset:] if size is None else content[offset : offset + size]
 
     def delete_target(self, target_path: str) -> None:
         self.deleted_targets.append(target_path)

@@ -122,15 +122,35 @@ class TusdUploadStore:
     def read_target(self, target_path: str) -> bytes:
         return b"".join(self.iter_target(target_path))
 
-    def iter_target(self, target_path: str) -> Iterator[bytes]:
+    def iter_target(
+        self,
+        target_path: str,
+        *,
+        offset: int = 0,
+        size: int | None = None,
+    ) -> Iterator[bytes]:
+        if offset < 0:
+            raise ValueError("upload target offset must be non-negative")
+        if size is not None and size < 0:
+            raise ValueError("upload target size must be non-negative")
+        if size == 0:
+            return
+
         keys = [self._object_key(target_path), self._legacy_object_key(target_path)]
         deadline = time.monotonic() + _READ_TARGET_RETRY_SECONDS
+        range_header: str | None = None
+        if offset > 0 or size is not None:
+            end = "" if size is None else str(offset + size - 1)
+            range_header = f"bytes={offset}-{end}"
         while True:
             missing_error: Exception | None = None
             try:
                 for key in keys:
                     try:
-                        response = self._client.get_object(Bucket=self._bucket, Key=key)
+                        kwargs: dict[str, object] = {"Bucket": self._bucket, "Key": key}
+                        if range_header is not None:
+                            kwargs["Range"] = range_header
+                        response = self._client.get_object(**kwargs)
                     except self._client.exceptions.ClientError as exc:
                         if exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode") != 404:
                             raise

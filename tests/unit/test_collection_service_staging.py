@@ -195,8 +195,15 @@ class _FakeUploadStore:
     def read_target(self, target_path: str) -> bytes:
         return self._content_by_target[target_path]
 
-    def iter_target(self, target_path: str) -> Iterator[bytes]:
-        yield self.read_target(target_path)
+    def iter_target(
+        self,
+        target_path: str,
+        *,
+        offset: int = 0,
+        size: int | None = None,
+    ) -> Iterator[bytes]:
+        content = self.read_target(target_path)
+        yield content[offset:] if size is None else content[offset : offset + size]
 
     def delete_target(self, target_path: str) -> None:
         self.deleted_targets.append(target_path)
@@ -210,8 +217,15 @@ class _StreamingOnlyUploadStore(_FakeUploadStore):
     def read_target(self, target_path: str) -> bytes:
         raise AssertionError(f"read_target should not be used for upload promotion: {target_path}")
 
-    def iter_target(self, target_path: str) -> Iterator[bytes]:
+    def iter_target(
+        self,
+        target_path: str,
+        *,
+        offset: int = 0,
+        size: int | None = None,
+    ) -> Iterator[bytes]:
         content = self._content_by_target[target_path]
+        content = content[offset:] if size is None else content[offset : offset + size]
         midpoint = len(content) // 2
         yield content[:midpoint]
         yield content[midpoint:]

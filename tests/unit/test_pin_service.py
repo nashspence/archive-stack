@@ -90,7 +90,14 @@ class _FakeUploadStore:
     def read_target(self, target_path: str) -> bytes:
         raise AssertionError("read_target should not be called")
 
-    def iter_target(self, target_path: str) -> Iterator[bytes]:
+    def iter_target(
+        self,
+        target_path: str,
+        *,
+        offset: int = 0,
+        size: int | None = None,
+    ) -> Iterator[bytes]:
+        _ = target_path, offset, size
         raise AssertionError("iter_target should not be called")
 
     def delete_target(self, target_path: str) -> None:

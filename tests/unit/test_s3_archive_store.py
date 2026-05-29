@@ -430,9 +430,16 @@ def test_upload_collection_archive_package_resumes_existing_multipart_upload(
     first_upload_id = tracker.state.upload_id
     stored_first_part = client.uploads[first_upload_id]["Parts"][1]
 
+    resumed_offsets: list[int] = []
+
+    def resume_archive(offset: int) -> Iterator[bytes]:
+        resumed_offsets.append(offset)
+        yield package.archive_bytes[offset:]
+
+    seekable_package = replace(package, _archive_chunks_from_offset=resume_archive)
     receipt = store.upload_collection_archive_package(
         collection_id="docs",
-        package=package,
+        package=seekable_package,
         multipart_tracker=tracker,
     )
 
@@ -441,6 +448,7 @@ def test_upload_collection_archive_package_resumes_existing_multipart_upload(
     assert client.aborted_uploads == []
     assert tracker.state is None
     assert tracker.cleared == [first_upload_id]
+    assert resumed_offsets == [4]
     assert client.uploads == {}
     assert client.objects[receipt.archive.object_path]["Body"] == package.archive_bytes
     assert client.uploaded_part_sizes[0] == 4

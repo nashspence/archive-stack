@@ -302,9 +302,11 @@ class S3ArchiveStore:
             self._put_collection_package_object_multipart(
                 collection_id=collection_id,
                 object_key=object_key,
-                chunks=_iter_content_chunks(content),
+                content=content,
                 content_length=content_length,
                 sha256=sha256,
+                kind=kind,
+                package=package,
                 extra_args=extra_args,
                 multipart_tracker=multipart_tracker,
             )
@@ -334,9 +336,11 @@ class S3ArchiveStore:
         *,
         collection_id: str,
         object_key: str,
-        chunks: Iterable[bytes],
+        content: Any,
         content_length: int,
         sha256: str,
+        kind: str,
+        package: CollectionArchivePackage,
         extra_args: dict[str, Any],
         multipart_tracker: ArchiveMultipartUploadTracker | None,
     ) -> None:
@@ -519,7 +523,14 @@ class S3ArchiveStore:
                     if len(pending) >= multipart_concurrency:
                         drain_completed(return_when=FIRST_COMPLETED)
 
-                for chunk in _iter_chunks_after_skipping(chunks, skip_bytes):
+                if kind == "archive" and skip_bytes:
+                    chunks = package.iter_archive_from_offset(skip_bytes)
+                else:
+                    chunks = _iter_chunks_after_skipping(
+                        _iter_content_chunks(content),
+                        skip_bytes,
+                    )
+                for chunk in chunks:
                     size += len(chunk)
                     chunk_view = memoryview(chunk)
                     offset = 0

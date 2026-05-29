@@ -31,7 +31,14 @@ class _MissingUploadStore:
         self.read_target_calls += 1
         raise FileNotFoundError(target_path)
 
-    def iter_target(self, target_path: str) -> Iterator[bytes]:
+    def iter_target(
+        self,
+        target_path: str,
+        *,
+        offset: int = 0,
+        size: int | None = None,
+    ) -> Iterator[bytes]:
+        _ = offset, size
         yield self.read_target(target_path)
 
     def delete_target(self, target_path: str) -> None:
