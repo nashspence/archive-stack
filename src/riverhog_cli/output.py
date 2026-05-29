@@ -90,12 +90,38 @@ def _protection_mirror_text(mirror: object) -> str:
         return "unknown"
     if not mirror.get("enabled", False):
         return "disabled"
+    if mirror.get("required") is False or mirror.get("state") == "not_required":
+        return "not required"
     state = mirror.get("state", "unknown")
     byte_count = mirror.get("bytes", 0)
     failure = mirror.get("failure")
     if failure:
         return f"{state} bytes={byte_count} failure={failure}"
     return f"{state} bytes={byte_count}"
+
+
+def _active_upload_progress_text(upload: Mapping[str, object]) -> str:
+    archive_uploaded = upload.get("archive_uploaded_bytes")
+    archive_total = upload.get("archive_total_bytes")
+    archive_phase = upload.get("archive_phase") or "pending"
+    archive_text = f"phase={archive_phase}"
+    if archive_total is not None:
+        archive_text += f" archive_bytes={_int_value(archive_uploaded)}/{_int_value(archive_total)}"
+
+    archive_uploaded_parts = upload.get("archive_uploaded_parts")
+    archive_total_parts = upload.get("archive_total_parts")
+    if archive_total_parts is not None:
+        archive_text += (
+            f" archive_parts={_int_value(archive_uploaded_parts)}/"
+            f"{_int_value(archive_total_parts)}"
+        )
+    next_attempt = upload.get("archive_next_attempt_at")
+    if next_attempt:
+        archive_text += f" next_attempt={next_attempt}"
+    failure = upload.get("latest_failure")
+    if failure:
+        archive_text += f" failure={failure}"
+    return archive_text
 
 
 def format_copy(payload: Mapping[str, Any]) -> str:
@@ -290,6 +316,7 @@ def format_dashboard(
     unprotected_collections_payload: Mapping[str, Any],
     partially_protected_collections_payload: Mapping[str, Any],
     protected_collections_payload: Mapping[str, Any],
+    collections_payload: Mapping[str, Any] | None = None,
 ) -> str:
     lines = [
         "dashboard: "
@@ -298,8 +325,30 @@ def format_dashboard(
         f"ready_to_finalize={ready_plan_payload.get('total', 0)} "
         f"waiting_for_future_iso={backlog_plan_payload.get('total', 0)} "
         f"unplanned_bytes={ready_plan_payload.get('unplanned_bytes', 0)}",
-        "ready_to_finalize:",
+        "active_uploads:",
     ]
+
+    active_uploads = (
+        collections_payload.get("active_uploads")
+        if isinstance(collections_payload, Mapping)
+        else None
+    )
+    if not isinstance(active_uploads, Sequence) or not active_uploads:
+        lines.append("- none")
+    else:
+        for upload in active_uploads:
+            if not isinstance(upload, Mapping):
+                continue
+            lines.append(
+                f"- {upload.get('collection_id', 'unknown')} "
+                f"state={upload.get('state', 'unknown')} "
+                f"files={upload.get('files_uploaded', 0)}/{upload.get('files_total', 0)} "
+                f"hot={upload.get('hot_promoted_files', 0)}/{upload.get('files_total', 0)} "
+                f"bytes={upload.get('uploaded_bytes', 0)}/{upload.get('bytes_total', 0)} "
+                f"{_active_upload_progress_text(upload)}"
+            )
+
+    lines.append("ready_to_finalize:")
 
     candidates = ready_plan_payload.get("candidates")
     if not isinstance(candidates, Sequence) or not candidates:

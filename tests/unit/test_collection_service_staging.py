@@ -15,6 +15,7 @@ from riverhog_core.catalog_models import (
     CollectionFileRecord,
     CollectionProtectionMirrorRecord,
     CollectionRecord,
+    CollectionUploadFileRecord,
     CollectionUploadRecord,
     FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
@@ -367,6 +368,19 @@ class _CountingArchiveStore(_FakeArchiveStore):
         )
 
 
+class _RecordingArchiveStore(_FakeArchiveStore):
+    def __init__(self) -> None:
+        self.collection_ids: list[str] = []
+
+    def upload_collection_archive_package(self, *, collection_id, package, multipart_tracker=None):
+        self.collection_ids.append(collection_id)
+        return super().upload_collection_archive_package(
+            collection_id=collection_id,
+            package=package,
+            multipart_tracker=multipart_tracker,
+        )
+
+
 class _AlwaysFailingArchiveStore(_FakeArchiveStore):
     def __init__(self) -> None:
         self.uploads = 0
@@ -621,6 +635,85 @@ def test_completed_collection_upload_promotes_from_staging_and_cleans_up(
     assert [payload["event"] for payload in webhook_payloads] == ["collections.upload_staged"]
 
 
+def test_glacier_archive_worker_prioritizes_resumable_multipart_upload(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+
+    config = _config(sqlite_path)
+    upload_store = _FakeUploadStore()
+    session_factory = make_session_factory(str(sqlite_path))
+    resumed_id = "20250712T213200Z__resume-first"
+    pending_id = "20250712T213201Z__pending-second"
+
+    for collection_id, content in (
+        (resumed_id, b"resume this archive first\n"),
+        (pending_id, b"pending archive should wait\n"),
+    ):
+        relpath = "albums/day-01.txt"
+        target_path = f"/.riverhog/uploads/collections/{collection_id}/{relpath}"
+        tus_url = upload_store.create_upload(target_path, len(content))
+        upload_store.append_upload_chunk(
+            tus_url,
+            offset=0,
+            checksum="sha256 "
+            + base64.b64encode(hashlib.sha256(content).digest()).decode("ascii"),
+            content=content,
+        )
+        with session_scope(session_factory) as session:
+            upload = CollectionUploadRecord(
+                collection_id=collection_id,
+                state="archiving",
+                archive_phase="uploading" if collection_id == resumed_id else "packaging",
+                archive_next_attempt_at=(
+                    "2026-01-01T00:00:02Z"
+                    if collection_id == resumed_id
+                    else "2026-01-01T00:00:01Z"
+                ),
+                archive_multipart_upload_id=(
+                    "archive-upload-1" if collection_id == resumed_id else None
+                ),
+            )
+            upload.files.append(
+                CollectionUploadFileRecord(
+                    collection_id=collection_id,
+                    path=relpath,
+                    file_order=0,
+                    bytes=len(content),
+                    sha256=hashlib.sha256(content).hexdigest(),
+                    uploaded_bytes=len(content),
+                    tus_url=tus_url,
+                )
+            )
+            session.add(upload)
+
+    dashboard = SqlAlchemyCollectionService(
+        config,
+        _FakeHotStore(),
+        upload_store,
+    ).list_dashboard_collections(q="resume")
+    assert dashboard["collections"] == []
+    assert dashboard["active_uploads"][0]["collection_id"] == resumed_id
+    assert dashboard["active_uploads"][0]["state"] == "archiving"
+    assert dashboard["active_uploads"][0]["archive_phase"] == "uploading"
+
+    archive_store = _RecordingArchiveStore()
+    upload_service = SqlAlchemyGlacierUploadService(
+        config,
+        archive_store,
+        _FakeHotStore(),
+        upload_store,
+        proof_stamper=FixtureProofStamper(),
+        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
+    )
+
+    assert upload_service.process_due_uploads() == 1
+    assert archive_store.collection_ids == [resumed_id]
+    with session_scope(session_factory) as session:
+        assert session.get(CollectionUploadRecord, pending_id) is not None
+
+
 def test_completed_collection_upload_writes_protection_mirror_before_planning(
     tmp_path: Path,
 ) -> None:
@@ -790,6 +883,18 @@ def test_protection_mirror_backfills_underprotected_and_cleans_after_verified_co
         mirror = session.get(CollectionProtectionMirrorRecord, collection_id)
         assert mirror is not None
         assert mirror.state == "deleted"
+
+    collection_service = SqlAlchemyCollectionService(config, hot_store, upload_store)
+    dashboard = collection_service.list_dashboard_collections(q="photos")
+    dashboard_collection = dashboard["collections"][0]
+    assert dashboard_collection["protection_state"] == "fully_protected"
+    assert dashboard_collection["protection_mirror"] == {
+        "enabled": True,
+        "required": False,
+        "state": "not_required",
+        "bytes": 0,
+        "failure": None,
+    }
 
 
 def test_protection_mirror_hot_repair_rewrites_only_missing_or_mismatched_files(

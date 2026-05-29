@@ -130,6 +130,19 @@ class SqlAlchemyGlacierUploadService:
                             )
                         )
                         .order_by(
+                            case(
+                                (CollectionUploadRecord.archive_receipt_json.is_not(None), 0),
+                                (
+                                    CollectionUploadRecord.archive_multipart_upload_id.is_not(
+                                        None
+                                    ),
+                                    1,
+                                ),
+                                (CollectionUploadRecord.archive_phase == "uploading", 1),
+                                (CollectionUploadRecord.archive_phase == "packaged", 2),
+                                (CollectionUploadRecord.archive_phase == "packaging", 3),
+                                else_=4,
+                            ),
                             CollectionUploadRecord.archive_next_attempt_at,
                             CollectionUploadRecord.collection_id,
                         )

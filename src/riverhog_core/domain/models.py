@@ -340,6 +340,7 @@ class CollectionRecoverySummary:
 @dataclass(frozen=True)
 class ProtectionMirrorSummary:
     enabled: bool = False
+    required: bool = False
     state: str = "disabled"
     bytes: int = 0
     failure: str | None = None

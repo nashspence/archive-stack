@@ -66,6 +66,7 @@ class CollectionDiscCoverageOut(RiverhogModel):
 
 class ProtectionMirrorOut(RiverhogModel):
     enabled: bool
+    required: bool = False
     state: str
     bytes: int = 0
     failure: str | None = None

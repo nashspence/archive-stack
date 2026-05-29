@@ -1861,14 +1861,17 @@ components:
           minimum: 0
     ProtectionMirror:
       type: object
-      required: [enabled, state, bytes, failure]
+      required: [enabled, required, state, bytes, failure]
       properties:
         enabled:
           type: boolean
           description: Whether the temporary offsite protection mirror is enabled for this Riverhog deployment.
+        required:
+          type: boolean
+          description: Whether this collection still needs temporary mirror protection. Fully protected collections do not require mirror storage.
         state:
           type: string
-          enum: [disabled, missing, pending, mirroring, retry_wait, complete, deleting, deleted]
+          enum: [disabled, not_required, missing, pending, mirroring, retry_wait, complete, deleting, deleted]
           description: Current temporary mirror state for the collection archive tar.
         bytes:
           type: integer
@@ -1901,12 +1904,17 @@ components:
             $ref: "#/components/schemas/CollectionSummary"
     DashboardCollectionsResponse:
       type: object
-      required: [collections]
+      required: [collections, active_uploads]
       properties:
         collections:
           type: array
           items:
             $ref: "#/components/schemas/DashboardCollection"
+        active_uploads:
+          type: array
+          description: Collection upload sessions that have not yet finalized into the collection catalog.
+          items:
+            $ref: "#/components/schemas/DashboardActiveUpload"
     DashboardCollection:
       type: object
       required:
@@ -1944,6 +1952,81 @@ components:
           $ref: "#/components/schemas/DashboardRecovery"
         protection_mirror:
           $ref: "#/components/schemas/ProtectionMirror"
+    DashboardActiveUpload:
+      type: object
+      required:
+        [
+          collection_id,
+          state,
+          files_total,
+          files_pending,
+          files_partial,
+          files_uploaded,
+          hot_promoted_files,
+          bytes_total,
+          uploaded_bytes,
+          hot_promoted_bytes,
+          missing_bytes,
+        ]
+      properties:
+        collection_id:
+          type: string
+        ingest_source:
+          oneOf:
+            - type: string
+            - type: "null"
+        state:
+          type: string
+          enum: [uploading, archiving]
+        files_total: { type: integer }
+        files_pending: { type: integer }
+        files_partial: { type: integer }
+        files_uploaded: { type: integer }
+        hot_promoted_files: { type: integer }
+        bytes_total: { type: integer }
+        uploaded_bytes: { type: integer }
+        hot_promoted_bytes: { type: integer }
+        missing_bytes: { type: integer }
+        latest_failure:
+          oneOf:
+            - type: string
+            - type: "null"
+        archive_phase:
+          oneOf:
+            - type: string
+            - type: "null"
+        archive_phase_updated_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        archive_object_path:
+          oneOf:
+            - type: string
+            - type: "null"
+        archive_attempt_count:
+          type: integer
+        archive_next_attempt_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        archive_uploaded_bytes:
+          oneOf:
+            - type: integer
+            - type: "null"
+        archive_total_bytes:
+          oneOf:
+            - type: integer
+            - type: "null"
+        archive_uploaded_parts:
+          oneOf:
+            - type: integer
+            - type: "null"
+        archive_total_parts:
+          oneOf:
+            - type: integer
+            - type: "null"
     DashboardRecovery:
       type: object
       required: [available, verified_physical, glacier]

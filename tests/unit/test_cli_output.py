@@ -120,10 +120,39 @@ def test_format_dashboard_surfaces_ready_backlog_and_noncompliant_collections() 
                     "id": "receipts",
                     "bytes": 40,
                     "protected_bytes": 40,
+                    "protection_mirror": {
+                        "enabled": True,
+                        "required": False,
+                        "state": "not_required",
+                        "bytes": 0,
+                    },
+                }
+            ]
+        },
+        {
+            "active_uploads": [
+                {
+                    "collection_id": "photos-2025",
+                    "state": "archiving",
+                    "files_total": 12,
+                    "files_uploaded": 12,
+                    "hot_promoted_files": 12,
+                    "bytes_total": 4096,
+                    "uploaded_bytes": 4096,
+                    "archive_phase": "uploading",
+                    "archive_uploaded_bytes": 2048,
+                    "archive_total_bytes": 4096,
+                    "archive_uploaded_parts": 1,
+                    "archive_total_parts": 2,
                 }
             ]
         },
     )
+    assert "active_uploads:" in rendered
+    assert (
+        "photos-2025 state=archiving files=12/12 hot=12/12 bytes=4096/4096 "
+        "phase=uploading archive_bytes=2048/4096 archive_parts=1/2"
+    ) in rendered
     assert "ready_to_finalize:" in rendered
     assert "img_2026-04-20_01" in rendered
     assert "waiting_for_future_iso:" in rendered
@@ -135,6 +164,7 @@ def test_format_dashboard_surfaces_ready_backlog_and_noncompliant_collections() 
     assert "verified_physical=partial 22/55" in rendered
     assert "fully_protected_collections:" in rendered
     assert "receipts protected_bytes=40/40" in rendered
+    assert "receipts protected_bytes=40/40 mirror=not required" in rendered
 
 
 def test_format_collection_summary_surfaces_recovery_paths_labels_and_glacier_costs() -> None:

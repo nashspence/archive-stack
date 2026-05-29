@@ -1048,6 +1048,7 @@ def dashboard_cmd(
             unprotected_collections,
             partially_protected_collections,
             protected_collections,
+            collections_payload,
         ),
         json_mode=False,
     )

@@ -324,6 +324,7 @@ def map_collection_list_page(summary: CollectionListPage) -> dict[str, object]:
 def map_protection_mirror(summary: ProtectionMirrorSummary) -> dict[str, object]:
     return {
         "enabled": summary.enabled,
+        "required": summary.required,
         "state": summary.state,
         "bytes": summary.bytes,
         "failure": summary.failure,

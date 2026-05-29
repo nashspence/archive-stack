@@ -511,6 +511,7 @@ class SqlAlchemyCollectionService:
     def list_dashboard_collections(self, *, q: str | None) -> dict[str, object]:
         needle = q.casefold() if q else None
         with session_scope(self._session_factory) as session:
+            active_uploads = _dashboard_active_uploads(session, needle=needle)
             file_rows = session.execute(
                 select(
                     CollectionFileRecord.collection_id,
@@ -524,7 +525,7 @@ class SqlAlchemyCollectionService:
                 )
             ).all()
             if not file_rows:
-                return {"collections": []}
+                return {"collections": [], "active_uploads": active_uploads}
 
             collection_ids = sorted({file_row.collection_id for file_row in file_rows})
             if needle is not None:
@@ -534,7 +535,7 @@ class SqlAlchemyCollectionService:
                     if needle in collection_id.casefold()
                 ]
             if not collection_ids:
-                return {"collections": []}
+                return {"collections": [], "active_uploads": active_uploads}
             collection_id_set = set(collection_ids)
             bytes_by_collection: dict[str, int] = defaultdict(int)
             for file_row in file_rows:
@@ -554,13 +555,10 @@ class SqlAlchemyCollectionService:
                 )
                 for archive_row in archive_rows
             }
-            mirror_rows = session.execute(
-                select(
-                    CollectionProtectionMirrorRecord.collection_id,
-                    CollectionProtectionMirrorRecord.state,
-                    CollectionProtectionMirrorRecord.archive_bytes,
-                    CollectionProtectionMirrorRecord.failure,
-                ).where(CollectionProtectionMirrorRecord.collection_id.in_(collection_ids))
+            mirror_rows = session.scalars(
+                select(CollectionProtectionMirrorRecord).where(
+                    CollectionProtectionMirrorRecord.collection_id.in_(collection_ids)
+                )
             ).all()
             mirror_by_collection = {
                 mirror_row.collection_id: mirror_row for mirror_row in mirror_rows
@@ -665,20 +663,15 @@ class SqlAlchemyCollectionService:
                                 "bytes": glacier_bytes,
                             },
                         },
-                        "protection_mirror": {
-                            "enabled": self._config.protection_mirror_enabled,
-                            "state": mirror_row.state if mirror_row is not None else "missing",
-                            "bytes": (
-                                int(mirror_row.archive_bytes or 0)
-                                if mirror_row is not None
-                                else 0
-                            ),
-                            "failure": mirror_row.failure if mirror_row is not None else None,
-                        },
+                        "protection_mirror": _dashboard_protection_mirror_payload(
+                            mirror_row,
+                            enabled=self._config.protection_mirror_enabled,
+                            protection_state=protection_state,
+                        ),
                     }
                 )
 
-            return {"collections": collections}
+            return {"collections": collections, "active_uploads": active_uploads}
 
 
 def _finalized_image_protection_states(session: Session) -> dict[str, ProtectionState]:
@@ -696,6 +689,109 @@ def _finalized_image_protection_states(session: Session) -> dict[str, Protection
             registered_copy_count=registered_counts.get(row.image_id, 0),
         )
         for row in image_rows
+    }
+
+
+def _dashboard_active_uploads(
+    session: Session,
+    *,
+    needle: str | None,
+) -> list[dict[str, object]]:
+    uploads = session.scalars(
+        select(CollectionUploadRecord)
+        .options(selectinload(CollectionUploadRecord.files))
+        .where(CollectionUploadRecord.state.in_(("uploading", "archiving")))
+        .order_by(CollectionUploadRecord.collection_id.asc())
+    ).all()
+    payloads: list[dict[str, object]] = []
+    for upload in uploads:
+        if needle is not None and needle not in upload.collection_id.casefold():
+            continue
+        files = list(upload.files)
+        files_total = len(files)
+        files_uploaded = sum(
+            1
+            for file_record in files
+            if upload_state_name(
+                uploaded_bytes=file_record.uploaded_bytes,
+                length=file_record.bytes,
+            )
+            == "uploaded"
+        )
+        files_partial = sum(
+            1
+            for file_record in files
+            if upload_state_name(
+                uploaded_bytes=file_record.uploaded_bytes,
+                length=file_record.bytes,
+            )
+            == "partial"
+        )
+        hot_promoted_files = sum(
+            1 for file_record in files if file_record.hot_promoted_at is not None
+        )
+        bytes_total = sum(file_record.bytes for file_record in files)
+        uploaded_bytes = sum(file_record.uploaded_bytes for file_record in files)
+        hot_promoted_bytes = sum(
+            file_record.bytes for file_record in files if file_record.hot_promoted_at is not None
+        )
+        payloads.append(
+            {
+                "collection_id": upload.collection_id,
+                "ingest_source": upload.ingest_source,
+                "state": upload.state or "uploading",
+                "files_total": files_total,
+                "files_pending": max(files_total - files_uploaded - files_partial, 0),
+                "files_partial": files_partial,
+                "files_uploaded": files_uploaded,
+                "hot_promoted_files": hot_promoted_files,
+                "bytes_total": bytes_total,
+                "uploaded_bytes": uploaded_bytes,
+                "hot_promoted_bytes": hot_promoted_bytes,
+                "missing_bytes": max(bytes_total - uploaded_bytes, 0),
+                "latest_failure": upload.archive_failure,
+                "archive_phase": upload.archive_phase,
+                "archive_phase_updated_at": upload.archive_phase_updated_at,
+                "archive_object_path": upload.archive_object_path,
+                "archive_attempt_count": int(upload.archive_attempt_count or 0),
+                "archive_next_attempt_at": upload.archive_next_attempt_at,
+                "archive_uploaded_bytes": upload.archive_multipart_uploaded_bytes,
+                "archive_total_bytes": upload.archive_multipart_content_length,
+                "archive_uploaded_parts": upload.archive_multipart_uploaded_parts,
+                "archive_total_parts": upload.archive_multipart_total_parts,
+            }
+        )
+    return payloads
+
+
+def _dashboard_protection_mirror_payload(
+    mirror: CollectionProtectionMirrorRecord | None,
+    *,
+    enabled: bool,
+    protection_state: ProtectionState,
+) -> dict[str, object]:
+    if not enabled:
+        return {
+            "enabled": False,
+            "required": False,
+            "state": "disabled",
+            "bytes": 0,
+            "failure": None,
+        }
+    if protection_state is ProtectionState.PROTECTED:
+        return {
+            "enabled": True,
+            "required": False,
+            "state": "not_required",
+            "bytes": 0,
+            "failure": None,
+        }
+    return {
+        "enabled": True,
+        "required": True,
+        "state": mirror.state if mirror is not None else "missing",
+        "bytes": int(mirror.archive_bytes or 0) if mirror is not None else 0,
+        "failure": mirror.failure if mirror is not None else None,
     }
 
 
@@ -1513,18 +1609,19 @@ def _summary_from_records(
         covered_paths=covered_paths or {},
         recovery_parts_by_image_path=recovery_parts_by_image_path or {},
     )
+    protection_state = collection_protection_state(
+        bytes_total=bytes_total,
+        protected_bytes=protected_bytes,
+        archived_bytes=archived_bytes,
+        image_states=(image.protection_state for image in image_coverage),
+    )
     return CollectionSummary(
         id=CollectionId(collection_id),
         files=len(file_records),
         bytes=bytes_total,
         hot_bytes=sum(record.bytes for record in file_records if record.hot),
         archived_bytes=archived_bytes,
-        protection_state=collection_protection_state(
-            bytes_total=bytes_total,
-            protected_bytes=protected_bytes,
-            archived_bytes=archived_bytes,
-            image_states=(image.protection_state for image in image_coverage),
-        ),
+        protection_state=protection_state,
         protected_bytes=protected_bytes,
         recovery=recovery,
         image_coverage=list(image_coverage),
@@ -1532,7 +1629,11 @@ def _summary_from_records(
         collection_manifest=_collection_manifest_status(archive),
         archive_format=archive.archive_format if archive is not None else None,
         compression=archive.compression if archive is not None else None,
-        protection_mirror=_collection_protection_mirror_status(mirror, enabled=mirror_enabled),
+        protection_mirror=_collection_protection_mirror_status(
+            mirror,
+            enabled=mirror_enabled,
+            protection_state=protection_state,
+        ),
     )
 
 
@@ -1555,11 +1656,17 @@ def _collection_protection_mirror_status(
     mirror: CollectionProtectionMirrorRecord | None,
     *,
     enabled: bool,
+    protection_state: ProtectionState,
 ) -> ProtectionMirrorSummary:
+    if not enabled:
+        return ProtectionMirrorSummary(enabled=False, required=False, state="disabled")
+    if protection_state is ProtectionState.PROTECTED:
+        return ProtectionMirrorSummary(enabled=True, required=False, state="not_required")
     if mirror is None:
-        return ProtectionMirrorSummary(enabled=enabled, state="missing" if enabled else "disabled")
+        return ProtectionMirrorSummary(enabled=True, required=True, state="missing")
     return ProtectionMirrorSummary(
         enabled=True,
+        required=True,
         state=mirror.state,
         bytes=int(mirror.archive_bytes or 0),
         failure=mirror.failure,
