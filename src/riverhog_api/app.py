@@ -42,6 +42,11 @@ _TEST_WEBHOOK_CAPTURE_PATH_ENV = "RIVERHOG_TEST_WEBHOOK_CAPTURE_PATH"
 _DEFAULT_TEST_WEBHOOK_CAPTURE_PATH = "/app/.compose/webhook-captures.jsonl"
 
 
+class _HealthzAccessLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return " /healthz " not in record.getMessage()
+
+
 def _configure_logging(level_name: str) -> None:
     level = getattr(logging, level_name.upper(), logging.INFO)
     logging.basicConfig(
@@ -50,6 +55,9 @@ def _configure_logging(level_name: str) -> None:
     )
     for logger_name in ("riverhog_api", "riverhog_core"):
         logging.getLogger(logger_name).setLevel(level)
+    access_logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(current, _HealthzAccessLogFilter) for current in access_logger.filters):
+        access_logger.addFilter(_HealthzAccessLogFilter())
 
 
 class TestWebhookBehavior(TypedDict):

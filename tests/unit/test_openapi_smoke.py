@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -781,6 +782,31 @@ def test_healthz_is_available_and_hidden_from_openapi() -> None:
     data = client.get("/openapi.json").json()
     assert "/healthz" not in data["paths"]
     assert "/_test/restart" not in data["paths"]
+
+
+def test_healthz_access_log_filter_suppresses_only_healthz() -> None:
+    access_filter = riverhog_app._HealthzAccessLogFilter()
+    health_record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %s',
+        ("127.0.0.1:12345", "GET", "/healthz", "1.1", 200),
+        None,
+    )
+    api_record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %s',
+        ("127.0.0.1:12345", "GET", "/v1/plan", "1.1", 200),
+        None,
+    )
+
+    assert not access_filter.filter(health_record)
+    assert access_filter.filter(api_record)
 
 
 def test_restart_control_route_is_disabled_by_default() -> None:
