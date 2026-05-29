@@ -187,6 +187,95 @@ Riverhog resumes against the same `UploadId`, verifies the recorded parts that
 S3 still has, skips the deterministic contiguous prefix, and uploads any
 remaining parts.
 
+## `RIVERHOG_PROTECTION_MIRROR_ENABLED`
+
+- type: boolean
+- default: `false`
+
+Enables the temporary protection mirror for collections that have reached
+Glacier but are not yet protected by the required verified physical disc copies.
+When enabled, Riverhog stores one deterministic `archive.tar` object per
+under-protected collection in the configured S3-compatible mirror store. The
+mirror is not hot storage and is not used for WebDAV browsing.
+
+Future collection finalization waits for both Glacier archival and protection
+mirror upload before the collection becomes planner-eligible. Existing
+under-protected collections are backfilled by the same resumable worker from
+committed hot files. After the required verified disc copies exist, Riverhog
+targets the mirror archive for deletion immediately.
+
+If local hot files or planner image roots are lost, Riverhog can lazily hydrate
+missing planner inputs from the mirror archive while rebuilding burn candidates.
+It does not eagerly download every mirrored collection on startup.
+
+## `RIVERHOG_PROTECTION_MIRROR_S3_ENDPOINT_URL`
+
+- type: URL
+- default: unset
+
+S3-compatible endpoint for the temporary protection mirror. For Backblaze B2,
+use the bucket's S3 API endpoint, for example
+`https://s3.us-west-004.backblazeb2.com`.
+
+## `RIVERHOG_PROTECTION_MIRROR_S3_REGION`
+
+- type: string
+- default: `us-east-1`
+
+Region sent to the temporary protection mirror S3 client. For Backblaze B2 this
+matches the S3 API endpoint region, such as `us-west-004`.
+
+## `RIVERHOG_PROTECTION_MIRROR_S3_BUCKET`
+
+- type: string
+- default: unset
+
+Bucket used for temporary protection mirror archives.
+
+## `RIVERHOG_PROTECTION_MIRROR_S3_ACCESS_KEY_ID`
+
+- type: string
+- default: unset
+
+Access key id for the temporary protection mirror bucket. The legacy alias
+`RIVERHOG_PROTECTION_MIRROR_S3_BUCKET_KEY_ID` is also accepted.
+
+## `RIVERHOG_PROTECTION_MIRROR_S3_SECRET_ACCESS_KEY`
+
+- type: string
+- default: unset
+
+Secret access key for the temporary protection mirror bucket. The legacy alias
+`RIVERHOG_PROTECTION_MIRROR_S3_BUCKET_APPLICATION_KEY` is also accepted.
+
+## `RIVERHOG_PROTECTION_MIRROR_S3_FORCE_PATH_STYLE`
+
+- type: boolean
+- default: `true`
+
+Enables path-style requests for the temporary protection mirror S3 client.
+
+## `RIVERHOG_PROTECTION_MIRROR_PREFIX`
+
+- type: object key prefix
+- default: `riverhog/protection-mirror`
+
+Object prefix for temporary mirror archives. Collection archives are stored as:
+
+```text
+{prefix}/collections/{collection_id}/archive.tar
+```
+
+## `RIVERHOG_PROTECTION_MIRROR_MULTIPART_PART_BYTES`
+
+- type: positive byte count
+- default: `64MiB`
+
+Target multipart part size for temporary protection mirror archive uploads.
+Riverhog records the mirror multipart upload id, object key, archive size,
+archive SHA-256, uploaded part numbers, ETags, sizes, and progress in the
+catalog so an interrupted mirror upload can resume after retry or app restart.
+
 ## `RIVERHOG_OTS_STAMP_COMMAND`
 
 - type: shell command
@@ -396,7 +485,9 @@ when the full collection has reached server custody, and
 Glacier, hot-file promotion has finished, and the collection is available
 through Riverhog/WebDAV. Failure/attention events include
 `collections.archive_retrying`, paced by
-`RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL`, and
+`RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL`,
+`collections.protection_mirror_retrying` for continuing temporary mirror
+backfill or cleanup failures, and
 `collections.planner_failed`. Ready burn candidates use `images.ready`; if
 operator reminders are explicitly enabled, repeats use `images.ready.reminder`.
 After `djdan` verifies a burned disc but before the operator confirms the
@@ -458,7 +549,9 @@ ready to burn; set this to `0s` to disable ready reminders entirely.
 Minimum interval between repeated operator notifications for continuing
 retryable background failures on the same durable unit of work. Collection
 archival finalization uses this for `collections.archive_retrying` notifications
-while continuing to retry on `RIVERHOG_GLACIER_UPLOAD_RETRY_DELAY`.
+while continuing to retry on `RIVERHOG_GLACIER_UPLOAD_RETRY_DELAY`. Temporary
+protection mirror backfill and cleanup use the same policy via
+`collections.protection_mirror_retrying`.
 
 ## `RIVERHOG_GLACIER_RECOVERY_SWEEP_INTERVAL`
 

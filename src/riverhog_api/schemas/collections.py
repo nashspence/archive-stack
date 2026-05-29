@@ -35,6 +35,7 @@ class CollectionSummaryOut(RiverhogModel):
     collection_manifest: CollectionManifestOut | None = None
     archive_format: str | None = None
     compression: str | None = None
+    protection_mirror: ProtectionMirrorOut | None = None
     disc_coverage: CollectionDiscCoverageOut | None = None
     protection_state: str
     protected_bytes: int
@@ -61,6 +62,13 @@ class CollectionDiscCoverageOut(RiverhogModel):
     state: Literal["none", "partial", "full"]
     covered_bytes: int = 0
     verified_physical_bytes: int = 0
+
+
+class ProtectionMirrorOut(RiverhogModel):
+    enabled: bool
+    state: str
+    bytes: int = 0
+    failure: str | None = None
 
 
 class ListCollectionsResponse(RiverhogModel):

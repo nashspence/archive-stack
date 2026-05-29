@@ -170,12 +170,15 @@ Required behavior:
 - collection ids may span multiple path segments, for example `GET /v1/collections/photos/2024`
 - API and CLI collection lookup treat slash-bearing ids as first-class
 - collection summaries expose `glacier`, `collection_manifest`, `archive_format`,
-  `compression`, `disc_coverage`, `protection_state`, `protected_bytes`, and
-  per-image physical coverage details
+  `compression`, `protection_mirror`, `disc_coverage`, `protection_state`,
+  `protected_bytes`, and per-image physical coverage details
 - `glacier` is direct collection archive state, not a value derived from image
   coverage
 - `collection_manifest` exposes manifest object path, manifest SHA-256, OTS proof
   object path, and OTS proof state
+- `protection_mirror` exposes whether the temporary offsite mirror is enabled,
+  its current per-collection state, mirrored archive bytes, and the latest
+  retryable failure if any
 - per-image coverage details expose `covered_paths`, `physical_copies_registered`,
   `physical_copies_verified`, copy labels and locations
 
@@ -190,7 +193,8 @@ Supported query parameters:
 Required behavior:
 
 - returned rows include collection byte totals, hot/archive byte totals,
-  `protected_bytes`, `protection_state`, and concise recovery coverage
+  `protected_bytes`, `protection_state`, concise recovery coverage, and
+  `protection_mirror`
 - returned rows intentionally do not include full `image_coverage`; use
   `GET /v1/collections/{collection_id}` when the operator needs per-image path
   detail

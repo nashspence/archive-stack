@@ -60,6 +60,33 @@ staging objects. A retry after restart resumes the archive multipart upload, the
 completed archive receipt, or the hot-file promotion phase according to the last
 durable state.
 
+## Temporary protection mirror
+
+Deployments may configure a separate S3-compatible temporary protection mirror
+for collections that are safely archived in Glacier but not yet protected by
+the required verified physical disc copies. Riverhog stores one deterministic
+`archive.tar` object per under-protected collection in that mirror. It does not
+mirror each logical file as a separate remote object, which keeps tiny-file
+collections from creating excessive remote object and request churn.
+
+New uploads enter planner jurisdiction only after Glacier archival and mirror
+upload have both completed. Existing under-protected collections are backfilled
+from committed hot files by the same resumable worker. Once the required
+verified disc copies exist, Riverhog deletes the temporary mirror archive as
+soon as possible.
+
+Mirror upload and cleanup are durable background stages. Multipart state is
+persisted in the catalog, retries continue indefinitely after failures or app
+restarts, and repeated operator notifications are paced by the configured
+failure-notification interval.
+
+The mirror is a disaster-recovery bridge for the window before physical
+protection exists. After a server loss, an operator can restore the catalog
+database backup, configure the Glacier and mirror stores, and let Riverhog
+lazily hydrate missing planner inputs from the mirror archive when it rebuilds
+burn candidates. Riverhog does not eagerly restore every mirrored collection on
+startup.
+
 ## Read-only browsing
 
 Read-only WebDAV exposes the committed `collections/` namespace for day-to-day

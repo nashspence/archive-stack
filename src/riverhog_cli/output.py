@@ -85,6 +85,19 @@ def _recovery_text(recovery: object, *, total_bytes: int) -> str:
     )
 
 
+def _protection_mirror_text(mirror: object) -> str:
+    if not isinstance(mirror, Mapping):
+        return "unknown"
+    if not mirror.get("enabled", False):
+        return "disabled"
+    state = mirror.get("state", "unknown")
+    byte_count = mirror.get("bytes", 0)
+    failure = mirror.get("failure")
+    if failure:
+        return f"{state} bytes={byte_count} failure={failure}"
+    return f"{state} bytes={byte_count}"
+
+
 def format_copy(payload: Mapping[str, Any]) -> str:
     history = payload.get("history")
     lines = [
@@ -361,7 +374,8 @@ def format_dashboard(
                 f"- {collection.get('id', 'unknown')} "
                 f"state={collection.get('protection_state', 'unknown')} "
                 f"protected_bytes={collection.get('protected_bytes', 0)}/{total_bytes} "
-                f"recovery={_recovery_text(collection.get('recovery'), total_bytes=total_bytes)}"
+                f"recovery={_recovery_text(collection.get('recovery'), total_bytes=total_bytes)} "
+                f"mirror={_protection_mirror_text(collection.get('protection_mirror'))}"
             )
 
     lines.append("fully_protected_collections:")
@@ -375,7 +389,8 @@ def format_dashboard(
             lines.append(
                 f"- {collection.get('id', 'unknown')} "
                 f"protected_bytes={collection.get('protected_bytes', 0)}/"
-                f"{collection.get('bytes', 0)}"
+                f"{collection.get('bytes', 0)} "
+                f"mirror={_protection_mirror_text(collection.get('protection_mirror'))}"
             )
     return "\n".join(lines)
 
@@ -403,6 +418,7 @@ def format_collection_summary(
             total_bytes=_int_value(payload.get("bytes", 0)),
         )
     )
+    lines.append(f"protection_mirror: {_protection_mirror_text(payload.get('protection_mirror'))}")
 
     collection_glacier = _find_collection_glacier_entry(collection_id, glacier_payload)
     direct_glacier = payload.get("glacier")

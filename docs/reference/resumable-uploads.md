@@ -116,14 +116,19 @@ resumable upload instead of restamping or remeasuring the archive.
 After S3 accepts the completed archive object, Riverhog persists the archive
 receipt on the same upload row before promoting hot files. A restart after
 Glacier completion therefore resumes from the recorded receipt instead of
-rebuilding or re-uploading the archive. During promotion, each hot file is
-written with byte and SHA-256 metadata and marked promoted only after the hot
-object verifies. For S3-compatible hot stores, in-progress per-file multipart
-uploads also persist their upload id and uploaded parts on the upload-file row,
-so a process restart can list the remote parts, skip the already accepted byte
-range, and complete the same hot-store multipart upload. Retries skip verified
-hot files, finish the remaining files, then atomically commit the finalized
-collection and archive records before deleting staged upload objects.
+rebuilding or re-uploading the archive. If the temporary protection mirror is
+enabled, Riverhog then uploads the same deterministic collection `archive.tar`
+to the mirror before admitting the collection to the planner. Mirror multipart
+state is persisted on `collection_protection_mirrors`, so retries after app
+restart or transient mirror failures reuse the same remote multipart upload
+where possible. During promotion, each hot file is written with byte and
+SHA-256 metadata and marked promoted only after the hot object verifies. For
+S3-compatible hot stores, in-progress per-file multipart uploads also persist
+their upload id and uploaded parts on the upload-file row, so a process restart
+can list the remote parts, skip the already accepted byte range, and complete
+the same hot-store multipart upload. Retries skip verified hot files, finish the
+remaining files, then atomically commit the finalized collection and archive
+records before deleting staged upload objects.
 
 When `RIVERHOG_OPERATOR_WEBHOOK_URL` is configured, Riverhog emits best-effort
 milestone notifications across these phases. These notifications are

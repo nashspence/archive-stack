@@ -163,6 +163,21 @@ def build_collection_archive_package_from_prebuilt_artifacts(
     )
 
 
+def collection_archive_size(files: Sequence[CollectionArchiveExpectedFile]) -> int:
+    return _archive_stream_size(_normalized_expected_files(files))
+
+
+def iter_collection_archive_chunks_from_reader(
+    *,
+    files: Sequence[CollectionArchiveExpectedFile],
+    read_file_chunks: Callable[[str], Iterable[bytes]],
+) -> Iterator[bytes]:
+    yield from _archive_chunks_from_reader(
+        _normalized_expected_files(files),
+        read_file_chunks,
+    )
+
+
 def _build_collection_archive_package(
     *,
     collection_id: str,
@@ -378,6 +393,43 @@ def iter_verified_collection_archive_file_chunks(
         missing_selected = sorted(normalized_selected - yielded)
         if missing_selected:
             raise ValueError(f"collection archive missing selected member: {missing_selected[0]}")
+
+
+def iter_selected_collection_archive_file_chunks(
+    chunks: Iterable[bytes],
+    *,
+    selected_files: Sequence[CollectionArchiveExpectedFile],
+) -> Iterator[tuple[str, Iterator[bytes], int]]:
+    expected = {file.path: file for file in _normalized_expected_files(selected_files)}
+    seen: set[str] = set()
+    stream = _ChunkIteratorReader(chunks)
+    with tarfile.open(fileobj=cast(Any, stream), mode="r|*") as archive:
+        for member in archive:
+            if not member.isfile():
+                continue
+            path = normalize_relpath(member.name)
+            expected_file = expected.get(path)
+            if expected_file is None:
+                continue
+            if path in seen:
+                raise ValueError(f"duplicate collection archive member: {path}")
+            seen.add(path)
+            handle = archive.extractfile(member)
+            if handle is None:
+                raise ValueError(f"collection archive member cannot be read: {path}")
+            yield (
+                path,
+                _verified_collection_archive_member_chunks(
+                    path=path,
+                    chunks=_read_chunks(handle),
+                    expected_bytes=expected_file.bytes,
+                    expected_sha256=expected_file.sha256,
+                ),
+                expected_file.bytes,
+            )
+    missing_selected = sorted(set(expected) - seen)
+    if missing_selected:
+        raise ValueError(f"collection archive missing selected member: {missing_selected[0]}")
 
 
 def _normalized_files(

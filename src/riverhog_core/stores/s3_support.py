@@ -57,6 +57,24 @@ def create_glacier_s3_client(config: RuntimeConfig) -> Any:
     )
 
 
+def create_protection_mirror_s3_client(config: RuntimeConfig) -> Any:
+    if not config.protection_mirror_enabled:
+        raise RuntimeError("protection mirror is not enabled")
+    if (
+        not config.protection_mirror_s3_endpoint_url
+        or not config.protection_mirror_s3_access_key_id
+        or not config.protection_mirror_s3_secret_access_key
+    ):
+        raise RuntimeError("protection mirror S3 configuration is incomplete")
+    return _create_s3_client(
+        endpoint_url=config.protection_mirror_s3_endpoint_url,
+        region=config.protection_mirror_s3_region,
+        access_key_id=config.protection_mirror_s3_access_key_id,
+        secret_access_key=config.protection_mirror_s3_secret_access_key,
+        force_path_style=config.protection_mirror_s3_force_path_style,
+    )
+
+
 def _bucket_missing(exc: Exception) -> bool:
     response = getattr(exc, "response", {})
     if not isinstance(response, dict):
@@ -98,6 +116,14 @@ def ensure_bucket_exists(config: RuntimeConfig) -> None:
         bucket=config.glacier_bucket,
         region=config.glacier_region,
     )
+    if config.protection_mirror_enabled:
+        if config.protection_mirror_s3_bucket is None:
+            raise RuntimeError("protection mirror bucket is not configured")
+        _ensure_bucket_exists(
+            create_protection_mirror_s3_client(config),
+            bucket=config.protection_mirror_s3_bucket,
+            region=config.protection_mirror_s3_region,
+        )
 
 
 def delete_keys_with_prefixes(config: RuntimeConfig, prefixes: list[str]) -> None:

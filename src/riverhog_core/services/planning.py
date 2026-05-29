@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from sqlalchemy import func, insert, select
 from sqlalchemy.orm import Session, selectinload, sessionmaker
@@ -29,7 +29,9 @@ from riverhog_core.archive_compliance import (
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CandidateCoveredPathRecord,
+    CollectionArchiveRecord,
     CollectionFileRecord,
+    CollectionProtectionMirrorRecord,
     CollectionRecord,
     CollectionUploadRecord,
     FinalizedImageCollectionArtifactRecord,
@@ -39,6 +41,10 @@ from riverhog_core.catalog_models import (
     ImageCopyEventRecord,
     ImageCopyRecord,
     PlannedCandidateRecord,
+)
+from riverhog_core.collection_archives import (
+    CollectionArchiveExpectedFile,
+    iter_selected_collection_archive_file_chunks,
 )
 from riverhog_core.crypto_age import (
     encrypted_size_for_plaintext_size,
@@ -62,7 +68,9 @@ from riverhog_core.planner.manifest import (
     recovery_readme_bytes,
     sidecar_bytes,
 )
+from riverhog_core.ports.archive_store import ArchiveStore
 from riverhog_core.ports.hot_store import HotStore
+from riverhog_core.ports.protection_mirror import ProtectionMirrorStore
 from riverhog_core.recovery_payloads import (
     CommandAgeBatchpassRecoveryPayloadCodec,
     RecoveryPayloadCodec,
@@ -183,11 +191,15 @@ class SqlAlchemyPlanningService:
         self,
         config: RuntimeConfig,
         hot_store: HotStore | None = None,
+        archive_store: ArchiveStore | None = None,
+        protection_mirror_store: ProtectionMirrorStore | None = None,
         recovery_payload_codec: RecoveryPayloadCodec | None = None,
     ) -> None:
         self._config = config
         self._session_factory = make_session_factory(config.database_url)
         self._hot_store = hot_store
+        self._archive_store = archive_store
+        self._protection_mirror_store = protection_mirror_store
         self._recovery_payload_codec = (
             recovery_payload_codec
             or CommandAgeBatchpassRecoveryPayloadCodec(
@@ -209,11 +221,17 @@ class SqlAlchemyPlanningService:
             return 0
         processed = 0
         with session_scope(self._session_factory) as session:
-            refresh_needed = _planner_refresh_needed(session, self._config)
+            refresh_needed = _planner_refresh_needed(
+                session,
+                self._config,
+                archive_store=self._archive_store,
+            )
         if refresh_needed:
             refresh_provisional_plan(
                 config=self._config,
                 hot_store=self._hot_store,
+                archive_store=self._archive_store,
+                protection_mirror_store=self._protection_mirror_store,
                 recovery_payload_codec=self._recovery_payload_codec,
             )
             processed = 1
@@ -492,10 +510,59 @@ def cache_collection_manifest_artifacts(
     _write_bytes_atomic(cache_dir / "manifest.yml.ots", proof_bytes)
 
 
+def _restore_collection_artifact_cache(
+    *,
+    config: RuntimeConfig,
+    archive_store: ArchiveStore,
+    collection_id: str,
+    archive: CollectionArchiveRecord,
+) -> _CollectionArtifactCache | None:
+    if not archive.manifest_object_path or not archive.ots_object_path:
+        return None
+    try:
+        manifest_bytes = archive_store.read_restored_collection_manifest(
+            collection_id=collection_id,
+            object_path=archive.manifest_object_path,
+        )
+        proof_bytes = archive_store.read_restored_collection_manifest_proof(
+            collection_id=collection_id,
+            object_path=archive.ots_object_path,
+        )
+    except Exception:
+        _LOG.warning(
+            "failed to restore cached archive artifacts for %s",
+            collection_id,
+            exc_info=True,
+        )
+        return None
+    if (
+        archive.manifest_sha256
+        and hashlib.sha256(manifest_bytes).hexdigest() != archive.manifest_sha256
+    ):
+        _LOG.warning("restored collection manifest sha256 mismatch for %s", collection_id)
+        return None
+    if archive.ots_sha256 and hashlib.sha256(proof_bytes).hexdigest() != archive.ots_sha256:
+        _LOG.warning("restored collection proof sha256 mismatch for %s", collection_id)
+        return None
+    cache_collection_manifest_artifacts(
+        config,
+        collection_id=collection_id,
+        manifest_bytes=manifest_bytes,
+        proof_bytes=proof_bytes,
+    )
+    return _CollectionArtifactCache(
+        collection_id=collection_id,
+        manifest_bytes=manifest_bytes,
+        proof_bytes=proof_bytes,
+    )
+
+
 def refresh_provisional_plan(
     *,
     config: RuntimeConfig,
     hot_store: HotStore,
+    archive_store: ArchiveStore | None = None,
+    protection_mirror_store: ProtectionMirrorStore | None = None,
     recovery_payload_codec: RecoveryPayloadCodec,
 ) -> None:
     if not _REFRESH_LOCK.acquire(blocking=False):
@@ -513,6 +580,8 @@ def refresh_provisional_plan(
             _refresh_provisional_plan_locked(
                 config=config,
                 hot_store=hot_store,
+                archive_store=archive_store,
+                protection_mirror_store=protection_mirror_store,
                 recovery_payload_codec=recovery_payload_codec,
             )
             _LOG.info(
@@ -544,11 +613,13 @@ def _refresh_provisional_plan_locked(
     *,
     config: RuntimeConfig,
     hot_store: HotStore,
+    archive_store: ArchiveStore | None,
+    protection_mirror_store: ProtectionMirrorStore | None,
     recovery_payload_codec: RecoveryPayloadCodec,
 ) -> None:
     session_factory = make_session_factory(config.database_url)
     with session_scope(session_factory) as session:
-        plan_files = _load_plan_files(session, config)
+        plan_files = _load_plan_files(session, config, archive_store=archive_store)
         plan_collection_ids = {file.collection_id for file in plan_files}
         optional_split_collection_ids = {
             file.collection_id for file in plan_files if file.collection_optional_split_allowed
@@ -655,6 +726,7 @@ def _refresh_provisional_plan_locked(
             materialized = _materialize_candidate(
                 config=config,
                 hot_store=hot_store,
+                protection_mirror_store=protection_mirror_store,
                 recovery_payload_codec=recovery_payload_codec,
                 candidate_id=spec.candidate_id,
                 finalized_id=spec.finalized_id,
@@ -890,8 +962,13 @@ def _candidate_id_from_fingerprint(fingerprint: str) -> str:
     return f"candidate-{fingerprint[:24]}"
 
 
-def _planner_refresh_needed(session: Session, config: RuntimeConfig) -> bool:
-    plan_files = _load_plan_files(session, config)
+def _planner_refresh_needed(
+    session: Session,
+    config: RuntimeConfig,
+    *,
+    archive_store: ArchiveStore | None = None,
+) -> bool:
+    plan_files = _load_plan_files(session, config, archive_store=archive_store)
     plan_pairs = {(file.collection_id, file.path) for file in plan_files}
     candidates = [
         candidate
@@ -1045,7 +1122,12 @@ def _candidate_ready_notification_batch(
     )
 
 
-def _load_plan_files(session: Session, config: RuntimeConfig) -> list[_PlanFile]:
+def _load_plan_files(
+    session: Session,
+    config: RuntimeConfig,
+    *,
+    archive_store: ArchiveStore | None = None,
+) -> list[_PlanFile]:
     finalized_paths = _finalized_covered_file_pairs(session)
     finalized_collection_ids = {collection_id for collection_id, _path in finalized_paths}
     collections = session.scalars(
@@ -1061,7 +1143,23 @@ def _load_plan_files(session: Session, config: RuntimeConfig) -> list[_PlanFile]
             continue
         if normalize_glacier_state(collection.archive.state) is not GlacierState.UPLOADED:
             continue
+        if config.protection_mirror_enabled:
+            mirror = session.get(CollectionProtectionMirrorRecord, collection.id)
+            if mirror is None or mirror.state != "complete":
+                _LOG.info(
+                    "skipping collection %s during planning because protection mirror "
+                    "is not complete",
+                    collection.id,
+                )
+                continue
         artifact = _read_collection_artifact_cache(config, collection.id)
+        if artifact is None and archive_store is not None:
+            artifact = _restore_collection_artifact_cache(
+                config=config,
+                archive_store=archive_store,
+                collection_id=collection.id,
+                archive=collection.archive,
+            )
         if artifact is None:
             _LOG.warning(
                 "skipping collection %s during planning because archive artifacts are not cached",
@@ -1600,6 +1698,7 @@ def _materialize_candidate(
     *,
     config: RuntimeConfig,
     hot_store: HotStore,
+    protection_mirror_store: ProtectionMirrorStore | None,
     recovery_payload_codec: RecoveryPayloadCodec,
     candidate_id: str,
     finalized_id: str,
@@ -1662,6 +1761,11 @@ def _materialize_candidate(
             "planner materialization artifacts written for %s: collections=%s",
             candidate_id,
             len(artifact_paths),
+        )
+        _hydrate_missing_piece_files_from_protection_mirror(
+            hot_store=hot_store,
+            protection_mirror_store=protection_mirror_store,
+            pieces=pieces,
         )
 
         written = 0
@@ -1767,6 +1871,74 @@ def _candidate_iso_ready(
 ) -> bool:
     min_fill_ok = allow_underfilled or config.planner_min_fill_bytes <= actual_bytes
     return min_fill_ok and actual_bytes <= config.planner_disc_target_bytes
+
+
+def _hydrate_missing_piece_files_from_protection_mirror(
+    *,
+    hot_store: HotStore,
+    protection_mirror_store: ProtectionMirrorStore | None,
+    pieces: Sequence[_PlanPiece],
+) -> None:
+    if protection_mirror_store is None:
+        return
+    pieces_by_collection: dict[str, list[_PlanPiece]] = {}
+    for piece in pieces:
+        if hot_store.stat_collection_file(piece.collection_id, piece.path) is not None:
+            continue
+        pieces_by_collection.setdefault(piece.collection_id, []).append(piece)
+    for collection_id, missing_pieces in pieces_by_collection.items():
+        selected_paths = {piece.path for piece in missing_pieces}
+        selected_files = _collection_expected_files_from_plan_pieces(
+            collection_id=collection_id,
+            pieces=missing_pieces,
+        )
+        _LOG.info(
+            "hydrating missing planner inputs from protection mirror: collection=%s files=%s",
+            collection_id,
+            len(selected_paths),
+        )
+        for path, chunks, content_length in iter_selected_collection_archive_file_chunks(
+            protection_mirror_store.iter_collection_archive(collection_id),
+            selected_files=selected_files,
+        ):
+            digest = hashlib.sha256()
+
+            def digesting_chunks(
+                source_chunks: Iterator[bytes] = chunks,
+                current_digest: Any = digest,
+            ) -> Iterator[bytes]:
+                for chunk in source_chunks:
+                    current_digest.update(chunk)
+                    yield chunk
+
+            expected = next(file for file in selected_files if file.path == path)
+            hot_store.put_collection_file_stream(
+                collection_id,
+                path,
+                digesting_chunks(),
+                content_length=content_length,
+                sha256=expected.sha256,
+            )
+            if digest.hexdigest() != expected.sha256:
+                hot_store.delete_collection_file(collection_id, path)
+                raise ValueError(f"protection mirror sha256 mismatch: {collection_id}/{path}")
+
+
+def _collection_expected_files_from_plan_pieces(
+    *,
+    collection_id: str,
+    pieces: Sequence[_PlanPiece],
+) -> list[CollectionArchiveExpectedFile]:
+    by_path: dict[str, CollectionArchiveExpectedFile] = {}
+    for piece in pieces:
+        if piece.collection_id != collection_id:
+            continue
+        by_path[piece.path] = CollectionArchiveExpectedFile(
+            path=piece.path,
+            bytes=piece.bytes,
+            sha256=piece.sha256,
+        )
+    return sorted(by_path.values(), key=lambda file: file.path)
 
 
 def _collections_layout(pieces: Sequence[_PlanPiece]) -> dict[str, list[LayoutFileMeta]]:

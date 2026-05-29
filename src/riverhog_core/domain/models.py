@@ -338,6 +338,14 @@ class CollectionRecoverySummary:
 
 
 @dataclass(frozen=True)
+class ProtectionMirrorSummary:
+    enabled: bool = False
+    state: str = "disabled"
+    bytes: int = 0
+    failure: str | None = None
+
+
+@dataclass(frozen=True)
 class CollectionSummary:
     id: CollectionId
     files: int
@@ -364,6 +372,7 @@ class CollectionSummary:
     collection_manifest: CollectionManifestStatus | None = None
     archive_format: str | None = None
     compression: str | None = None
+    protection_mirror: ProtectionMirrorSummary = field(default_factory=ProtectionMirrorSummary)
 
     @property
     def pending_bytes(self) -> int:

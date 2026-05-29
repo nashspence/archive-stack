@@ -1801,7 +1801,23 @@ components:
     CollectionSummary:
       type: object
       required:
-        [id, files, bytes, hot_bytes, archived_bytes, pending_bytes, glacier, collection_manifest, archive_format, compression, disc_coverage, protection_state, protected_bytes, image_coverage]
+        [
+          id,
+          files,
+          bytes,
+          hot_bytes,
+          archived_bytes,
+          pending_bytes,
+          glacier,
+          collection_manifest,
+          archive_format,
+          compression,
+          protection_mirror,
+          disc_coverage,
+          protection_state,
+          protected_bytes,
+          image_coverage,
+        ]
       properties:
         id:
           type: string
@@ -1819,6 +1835,8 @@ components:
           type: string
         compression:
           type: string
+        protection_mirror:
+          $ref: "#/components/schemas/ProtectionMirror"
         disc_coverage:
           $ref: "#/components/schemas/CollectionDiscCoverage"
         protection_state:
@@ -1841,6 +1859,26 @@ components:
         verified_physical_bytes:
           type: integer
           minimum: 0
+    ProtectionMirror:
+      type: object
+      required: [enabled, state, bytes, failure]
+      properties:
+        enabled:
+          type: boolean
+          description: Whether the temporary offsite protection mirror is enabled for this Riverhog deployment.
+        state:
+          type: string
+          enum: [disabled, missing, pending, mirroring, retry_wait, complete, deleting, deleted]
+          description: Current temporary mirror state for the collection archive tar.
+        bytes:
+          type: integer
+          minimum: 0
+          description: Bytes represented by the mirrored collection archive tar, when known.
+        failure:
+          oneOf:
+            - type: string
+            - type: "null"
+          description: Latest mirror failure; Riverhog retries mirror work indefinitely with paced operator notifications.
     CollectionListResponse:
       type: object
       required: [page, per_page, total, pages, collections]
@@ -1871,7 +1909,19 @@ components:
             $ref: "#/components/schemas/DashboardCollection"
     DashboardCollection:
       type: object
-      required: [id, files, bytes, hot_bytes, archived_bytes, pending_bytes, protection_state, protected_bytes, recovery]
+      required:
+        [
+          id,
+          files,
+          bytes,
+          hot_bytes,
+          archived_bytes,
+          pending_bytes,
+          protection_state,
+          protected_bytes,
+          recovery,
+          protection_mirror,
+        ]
       properties:
         id:
           type: string
@@ -1892,6 +1942,8 @@ components:
           type: integer
         recovery:
           $ref: "#/components/schemas/DashboardRecovery"
+        protection_mirror:
+          $ref: "#/components/schemas/ProtectionMirror"
     DashboardRecovery:
       type: object
       required: [available, verified_physical, glacier]

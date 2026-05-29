@@ -270,6 +270,8 @@ async def _stream_process(
         "Cache-Control": "no-store",
         "X-Accel-Buffering": "no",
     }
+    if content_length is not None:
+        headers["Content-Length"] = str(content_length)
 
     return IsoStream(
         body=body(),

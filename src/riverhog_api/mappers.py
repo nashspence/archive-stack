@@ -27,6 +27,7 @@ from riverhog_core.domain.models import (
     GlacierUsageSnapshot,
     GlacierUsageTotals,
     PinSummary,
+    ProtectionMirrorSummary,
     RecoveryCostEstimate,
     RecoveryCoverage,
     RecoveryNotificationStatus,
@@ -300,6 +301,7 @@ def map_collection(summary: CollectionSummary) -> dict[str, object]:
         "collection_manifest": map_collection_manifest(summary.collection_manifest),
         "archive_format": summary.archive_format,
         "compression": summary.compression,
+        "protection_mirror": map_protection_mirror(summary.protection_mirror),
         "disc_coverage": map_collection_disc_coverage(summary.recovery.verified_physical),
         "protection_state": map_collection_protection_state(summary),
         "protected_bytes": summary.protected_bytes,
@@ -316,6 +318,15 @@ def map_collection_list_page(summary: CollectionListPage) -> dict[str, object]:
         "total": summary.total,
         "pages": summary.pages,
         "collections": [map_collection(collection) for collection in summary.collections],
+    }
+
+
+def map_protection_mirror(summary: ProtectionMirrorSummary) -> dict[str, object]:
+    return {
+        "enabled": summary.enabled,
+        "state": summary.state,
+        "bytes": summary.bytes,
+        "failure": summary.failure,
     }
 
 
