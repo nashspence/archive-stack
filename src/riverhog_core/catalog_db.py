@@ -133,6 +133,8 @@ _COLUMN_MIGRATIONS: list[list[tuple[str, str, str]]] = [
         ("file_copies", "recovery_sha256", "TEXT"),
     ],
     # version 20
+    [],
+    # version 21
     [
         ("collection_files", "hot_multipart_upload_id", "TEXT"),
         ("collection_files", "hot_multipart_part_size", "BIGINT"),
