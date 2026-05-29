@@ -125,6 +125,12 @@ class PlanningService(Protocol):
 
 class GlacierUploadService(Protocol):
     def process_due_uploads(self, *, limit: int = 1) -> int: ...
+    def repair_missing_hot_files_from_protection_mirror(
+        self,
+        *,
+        limit: int = 1,
+        force: bool = False,
+    ) -> int: ...
 
 
 class GlacierReportingService(Protocol):

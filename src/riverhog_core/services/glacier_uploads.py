@@ -59,6 +59,10 @@ from riverhog_core.services.planning import (
     cache_collection_manifest_artifacts,
     refresh_provisional_plan,
 )
+from riverhog_core.services.protection_mirror_repair import (
+    ProtectionMirrorRepairResult,
+    repair_collection_hot_files_from_protection_mirror,
+)
 from riverhog_core.webhooks import (
     WebhookConfig,
     build_collection_lifecycle_payload,
@@ -134,6 +138,90 @@ class SqlAlchemyGlacierUploadService:
         if attempted < limit:
             attempted += self._process_due_protection_mirrors(limit=limit - attempted)
         return attempted
+
+    def repair_missing_hot_files_from_protection_mirror(
+        self,
+        *,
+        limit: int = 1,
+        force: bool = False,
+    ) -> int:
+        if (
+            limit < 1
+            or not self._config.protection_mirror_enabled
+            or self._protection_mirror_store is None
+            or self._hot_store is None
+        ):
+            return 0
+
+        current = utcnow()
+        current_text = _isoformat_z(current)
+        with session_scope(self._session_factory) as session:
+            _sync_protection_mirror_targets(session, current_text=current_text)
+            session.flush()
+            query = (
+                select(CollectionProtectionMirrorRecord.collection_id)
+                .where(
+                    CollectionProtectionMirrorRecord.state.in_(
+                        ("complete", "repairing", "repair_wait")
+                    )
+                )
+                .order_by(
+                    case(
+                        (CollectionProtectionMirrorRecord.state == "repairing", 0),
+                        (CollectionProtectionMirrorRecord.state == "repair_wait", 1),
+                        else_=2,
+                    ),
+                    CollectionProtectionMirrorRecord.next_attempt_at,
+                    CollectionProtectionMirrorRecord.collection_id,
+                )
+            )
+            if not force:
+                query = query.where(
+                    or_(
+                        CollectionProtectionMirrorRecord.next_attempt_at.is_(None),
+                        CollectionProtectionMirrorRecord.next_attempt_at <= current_text,
+                    )
+                )
+            collection_ids = list(session.scalars(query.limit(limit)).all())
+
+        processed = 0
+        for collection_id in collection_ids:
+            if self._repair_one_collection_from_protection_mirror(collection_id=collection_id):
+                processed += 1
+        return processed
+
+    def _repair_one_collection_from_protection_mirror(self, *, collection_id: str) -> bool:
+        mirror_store = self._protection_mirror_store
+        hot_store = self._hot_store
+        if mirror_store is None or hot_store is None:
+            return False
+        self._mark_protection_mirror_repairing(collection_id=collection_id)
+        try:
+            result = repair_collection_hot_files_from_protection_mirror(
+                session_factory=self._session_factory,
+                hot_store=hot_store,
+                protection_mirror_store=mirror_store,
+                collection_id=collection_id,
+            )
+            self._mark_protection_mirror_audited(
+                collection_id=collection_id,
+                result=result,
+            )
+            if result.repaired:
+                _LOG.info(
+                    "protection mirror hot repair completed for %s: files=%s bytes=%s",
+                    collection_id,
+                    result.restored_files,
+                    result.restored_bytes,
+                )
+            return result.repaired
+        except Exception as exc:
+            self._record_protection_mirror_failure(
+                collection_id=collection_id,
+                error=_error_text(exc),
+                retry_state="repair_wait",
+            )
+            return True
 
     def _process_one_collection(self, *, collection_id: str) -> None:
         if self._hot_store is None or self._upload_store is None:
@@ -685,6 +773,37 @@ class SqlAlchemyGlacierUploadService:
             mirror.updated_at = current_text
             mirror.completed_at = current_text
 
+    def _mark_protection_mirror_repairing(self, *, collection_id: str) -> None:
+        current_text = _isoformat_z(utcnow())
+        with session_scope(self._session_factory) as session:
+            mirror = session.get(CollectionProtectionMirrorRecord, collection_id)
+            if mirror is None:
+                return
+            mirror.state = "repairing"
+            mirror.failure = None
+            mirror.last_attempt_at = current_text
+            mirror.next_attempt_at = current_text
+            mirror.updated_at = current_text
+
+    def _mark_protection_mirror_audited(
+        self,
+        *,
+        collection_id: str,
+        result: ProtectionMirrorRepairResult,
+    ) -> None:
+        next_audit_at = _isoformat_z(utcnow() + self._config.protection_mirror_hot_audit_interval)
+        current_text = _isoformat_z(utcnow())
+        with session_scope(self._session_factory) as session:
+            mirror = session.get(CollectionProtectionMirrorRecord, collection_id)
+            if mirror is None:
+                return
+            mirror.state = "complete"
+            mirror.failure = None
+            mirror.next_attempt_at = next_audit_at
+            mirror.updated_at = current_text
+            if result.repaired:
+                mirror.last_attempt_at = current_text
+
     def _mark_protection_mirror_deleted(self, *, collection_id: str) -> None:
         current_text = _isoformat_z(utcnow())
         with session_scope(self._session_factory) as session:
@@ -709,12 +828,13 @@ class SqlAlchemyGlacierUploadService:
         collection_id: str,
         error: str,
         keep_deleting: bool = False,
+        retry_state: str | None = None,
     ) -> None:
         current = utcnow()
         current_text = _isoformat_z(current)
         next_retry_at = _isoformat_z(current + self._config.glacier_upload_retry_delay)
         notify_retrying = False
-        state = "deleting" if keep_deleting else "retry_wait"
+        state = retry_state or ("deleting" if keep_deleting else "retry_wait")
         with session_scope(self._session_factory) as session:
             mirror = session.get(CollectionProtectionMirrorRecord, collection_id)
             if mirror is None:

@@ -121,7 +121,17 @@ enabled, Riverhog then uploads the same deterministic collection `archive.tar`
 to the mirror before admitting the collection to the planner. Mirror multipart
 state is persisted on `collection_protection_mirrors`, so retries after app
 restart or transient mirror failures reuse the same remote multipart upload
-where possible. During promotion, each hot file is written with byte and
+where possible.
+
+The protection mirror worker also audits completed mirror rows at startup and
+on the configured interval. If any hot object for an under-protected mirrored
+collection is missing or mismatched, Riverhog restores the whole collection
+from the mirror archive and verifies each restored file hash. Hot-store writes
+use the same multipart resume machinery where available; an app restart during
+restore records progress for the current file and retries the collection repair
+when the worker comes back.
+
+During promotion, each hot file is written with byte and
 SHA-256 metadata and marked promoted only after the hot object verifies. For
 S3-compatible hot stores, in-progress per-file multipart uploads also persist
 their upload id and uploaded parts on the upload-file row, so a process restart

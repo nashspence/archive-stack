@@ -82,10 +82,12 @@ failure-notification interval.
 
 The mirror is a disaster-recovery bridge for the window before physical
 protection exists. After a server loss, an operator can restore the catalog
-database backup, configure the Glacier and mirror stores, and let Riverhog
-lazily hydrate missing planner inputs from the mirror archive when it rebuilds
-burn candidates. Riverhog does not eagerly restore every mirrored collection on
-startup.
+database backup and configure the Glacier and mirror stores. On startup,
+Riverhog audits completed mirror rows against hot storage. If any hot file for
+an under-protected mirrored collection is missing or mismatched, Riverhog
+restores the whole collection from the mirror archive, verifies the restored
+file hashes, and marks those files hot again. The planner uses the same repair
+path if it encounters a missing input before the next scheduled audit.
 
 ## Read-only browsing
 

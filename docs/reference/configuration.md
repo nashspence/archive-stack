@@ -204,9 +204,12 @@ under-protected collections are backfilled by the same resumable worker from
 committed hot files. After the required verified disc copies exist, Riverhog
 targets the mirror archive for deletion immediately.
 
-If local hot files or planner image roots are lost, Riverhog can lazily hydrate
-missing planner inputs from the mirror archive while rebuilding burn candidates.
-It does not eagerly download every mirrored collection on startup.
+On startup, and then periodically, Riverhog audits under-protected mirrored
+collections against hot storage. If any file in a mirrored collection is
+missing or mismatched, Riverhog restores the whole collection from the mirror
+archive, verifies restored file hashes, and marks the files hot again. Planner
+materialization uses the same repair path if it encounters missing inputs before
+the next audit.
 
 ## `RIVERHOG_PROTECTION_MIRROR_S3_ENDPOINT_URL`
 
@@ -275,6 +278,18 @@ Target multipart part size for temporary protection mirror archive uploads.
 Riverhog records the mirror multipart upload id, object key, archive size,
 archive SHA-256, uploaded part numbers, ETags, sizes, and progress in the
 catalog so an interrupted mirror upload can resume after retry or app restart.
+
+## `RIVERHOG_PROTECTION_MIRROR_HOT_AUDIT_INTERVAL`
+
+- type: duration
+- default: `24h`
+
+How often Riverhog re-audits completed protection mirrors for missing hot-store
+files after the startup audit. The audit is collection-level: one missing or
+mismatched hot file causes Riverhog to restore the whole collection from the
+temporary mirror archive. Restore writes use hot-store multipart resume support
+where available, so app restarts retry from recorded multipart progress for the
+current file.
 
 ## `RIVERHOG_OTS_STAMP_COMMAND`
 

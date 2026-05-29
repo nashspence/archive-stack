@@ -2077,6 +2077,16 @@ class AcceptanceGlacierUploadService:
             attempted += 1
         return attempted
 
+    @_with_state_lock
+    def repair_missing_hot_files_from_protection_mirror(
+        self,
+        *,
+        limit: int = 1,
+        force: bool = False,
+    ) -> int:
+        _ = limit, force
+        return 0
+
 
 class AcceptanceRecoverySessionService:
     def __init__(self, state: AcceptanceState) -> None:

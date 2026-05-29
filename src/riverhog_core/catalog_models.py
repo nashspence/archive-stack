@@ -34,6 +34,18 @@ class CollectionFileRecord(Base):
     sha256: Mapped[str] = mapped_column(String(64))
     hot: Mapped[bool] = mapped_column(Boolean, default=True)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    hot_multipart_upload_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    hot_multipart_part_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    hot_multipart_parts_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    hot_multipart_uploaded_bytes: Mapped[int | None] = mapped_column(
+        BigInteger, default=0, nullable=True
+    )
+    hot_multipart_uploaded_parts: Mapped[int | None] = mapped_column(
+        Integer, default=0, nullable=True
+    )
+    hot_multipart_total_parts: Mapped[int | None] = mapped_column(
+        Integer, default=0, nullable=True
+    )
 
     __table_args__ = (
         ForeignKeyConstraint(

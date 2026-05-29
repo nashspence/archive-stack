@@ -132,6 +132,15 @@ _COLUMN_MIGRATIONS: list[list[tuple[str, str, str]]] = [
         ("file_copies", "recovery_bytes", "BIGINT"),
         ("file_copies", "recovery_sha256", "TEXT"),
     ],
+    # version 20
+    [
+        ("collection_files", "hot_multipart_upload_id", "TEXT"),
+        ("collection_files", "hot_multipart_part_size", "BIGINT"),
+        ("collection_files", "hot_multipart_parts_json", "TEXT"),
+        ("collection_files", "hot_multipart_uploaded_bytes", "BIGINT"),
+        ("collection_files", "hot_multipart_uploaded_parts", "INTEGER"),
+        ("collection_files", "hot_multipart_total_parts", "INTEGER"),
+    ],
 ]
 _TYPE_MIGRATIONS: dict[int, list[tuple[str, str, str]]] = {
     # version 10

@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import TypedDict
 
 from sqlalchemy import func, insert, select
 from sqlalchemy.orm import Session, selectinload, sessionmaker
@@ -41,10 +41,6 @@ from riverhog_core.catalog_models import (
     ImageCopyEventRecord,
     ImageCopyRecord,
     PlannedCandidateRecord,
-)
-from riverhog_core.collection_archives import (
-    CollectionArchiveExpectedFile,
-    iter_selected_collection_archive_file_chunks,
 )
 from riverhog_core.crypto_age import (
     encrypted_size_for_plaintext_size,
@@ -77,6 +73,9 @@ from riverhog_core.recovery_payloads import (
     RecoveryPayloadError,
 )
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.protection_mirror_repair import (
+    repair_collection_hot_files_from_protection_mirror,
+)
 from riverhog_core.webhooks import (
     ImagesReadyBatch,
     ReadyImage,
@@ -1763,6 +1762,7 @@ def _materialize_candidate(
             len(artifact_paths),
         )
         _hydrate_missing_piece_files_from_protection_mirror(
+            session_factory=make_session_factory(config.database_url),
             hot_store=hot_store,
             protection_mirror_store=protection_mirror_store,
             pieces=pieces,
@@ -1875,6 +1875,7 @@ def _candidate_iso_ready(
 
 def _hydrate_missing_piece_files_from_protection_mirror(
     *,
+    session_factory: sessionmaker[Session],
     hot_store: HotStore,
     protection_mirror_store: ProtectionMirrorStore | None,
     pieces: Sequence[_PlanPiece],
@@ -1883,62 +1884,20 @@ def _hydrate_missing_piece_files_from_protection_mirror(
         return
     pieces_by_collection: dict[str, list[_PlanPiece]] = {}
     for piece in pieces:
-        if hot_store.stat_collection_file(piece.collection_id, piece.path) is not None:
-            continue
         pieces_by_collection.setdefault(piece.collection_id, []).append(piece)
-    for collection_id, missing_pieces in pieces_by_collection.items():
-        selected_paths = {piece.path for piece in missing_pieces}
-        selected_files = _collection_expected_files_from_plan_pieces(
-            collection_id=collection_id,
-            pieces=missing_pieces,
-        )
+    for collection_id, collection_pieces in pieces_by_collection.items():
         _LOG.info(
-            "hydrating missing planner inputs from protection mirror: collection=%s files=%s",
+            "planner checks protection mirror repair: collection=%s trigger_files=%s",
             collection_id,
-            len(selected_paths),
+            len({piece.path for piece in collection_pieces}),
         )
-        for path, chunks, content_length in iter_selected_collection_archive_file_chunks(
-            protection_mirror_store.iter_collection_archive(collection_id),
-            selected_files=selected_files,
-        ):
-            digest = hashlib.sha256()
-
-            def digesting_chunks(
-                source_chunks: Iterator[bytes] = chunks,
-                current_digest: Any = digest,
-            ) -> Iterator[bytes]:
-                for chunk in source_chunks:
-                    current_digest.update(chunk)
-                    yield chunk
-
-            expected = next(file for file in selected_files if file.path == path)
-            hot_store.put_collection_file_stream(
-                collection_id,
-                path,
-                digesting_chunks(),
-                content_length=content_length,
-                sha256=expected.sha256,
-            )
-            if digest.hexdigest() != expected.sha256:
-                hot_store.delete_collection_file(collection_id, path)
-                raise ValueError(f"protection mirror sha256 mismatch: {collection_id}/{path}")
-
-
-def _collection_expected_files_from_plan_pieces(
-    *,
-    collection_id: str,
-    pieces: Sequence[_PlanPiece],
-) -> list[CollectionArchiveExpectedFile]:
-    by_path: dict[str, CollectionArchiveExpectedFile] = {}
-    for piece in pieces:
-        if piece.collection_id != collection_id:
-            continue
-        by_path[piece.path] = CollectionArchiveExpectedFile(
-            path=piece.path,
-            bytes=piece.bytes,
-            sha256=piece.sha256,
+        repair_collection_hot_files_from_protection_mirror(
+            session_factory=session_factory,
+            hot_store=hot_store,
+            protection_mirror_store=protection_mirror_store,
+            collection_id=collection_id,
+            trigger_paths={piece.path for piece in collection_pieces},
         )
-    return sorted(by_path.values(), key=lambda file: file.path)
 
 
 def _collections_layout(pieces: Sequence[_PlanPiece]) -> dict[str, list[LayoutFileMeta]]:

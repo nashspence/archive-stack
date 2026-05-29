@@ -291,7 +291,15 @@ def _sweep_expired_uploads(container: ServiceContainer) -> None:
     container.fetches.expire_stale_uploads()
 
 
-def _process_glacier_uploads(container: ServiceContainer) -> None:
+def _process_glacier_uploads(
+    container: ServiceContainer,
+    *,
+    force_hot_repair_audit: bool = False,
+) -> None:
+    container.glacier_uploads.repair_missing_hot_files_from_protection_mirror(
+        limit=10_000 if force_hot_repair_audit else 1,
+        force=force_hot_repair_audit,
+    )
     container.glacier_uploads.process_due_uploads(limit=1)
 
 
@@ -328,13 +336,23 @@ async def _run_glacier_upload_reaper(
     sweep_interval: timedelta,
 ) -> None:
     interval_seconds = max(sweep_interval.total_seconds(), 0.1)
+    force_hot_repair_audit = True
     while True:
         try:
-            await asyncio.sleep(interval_seconds)
+            if force_hot_repair_audit:
+                await asyncio.sleep(0)
+            else:
+                await asyncio.sleep(interval_seconds)
             container = container_provider()
             if container is None:
                 continue
-            await asyncio.to_thread(_process_glacier_uploads, container)
+            current_force_hot_repair_audit = force_hot_repair_audit
+            force_hot_repair_audit = False
+            await asyncio.to_thread(
+                _process_glacier_uploads,
+                container,
+                force_hot_repair_audit=current_force_hot_repair_audit,
+            )
         except asyncio.CancelledError:
             raise
         except Exception:  # pragma: no cover - defensive background task logging

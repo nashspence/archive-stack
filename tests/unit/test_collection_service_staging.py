@@ -93,6 +93,16 @@ class _FakeHotStore:
             return None
         return HotFileStat(bytes=len(content), sha256=hashlib.sha256(content).hexdigest())
 
+    def delete_collection_file(self, collection_id: str, path: str) -> None:
+        self._files.pop((collection_id, path), None)
+
+    def list_collection_files(self, collection_id: str) -> list[tuple[str, int]]:
+        return [
+            (path, len(content))
+            for (stored_collection_id, path), content in sorted(self._files.items())
+            if stored_collection_id == collection_id
+        ]
+
 
 class _FailOnceRecoveryPayloadCodec:
     def __init__(self, *, fail_after_successes: int) -> None:
@@ -111,16 +121,6 @@ class _FailOnceRecoveryPayloadCodec:
 
     def decrypt(self, content: bytes) -> bytes:
         return FixtureRecoveryPayloadCodec().decrypt(content)
-
-    def delete_collection_file(self, collection_id: str, path: str) -> None:
-        self._files.pop((collection_id, path), None)
-
-    def list_collection_files(self, collection_id: str) -> list[tuple[str, int]]:
-        return [
-            (path, len(content))
-            for (stored_collection_id, path), content in sorted(self._files.items())
-            if stored_collection_id == collection_id
-        ]
 
 
 class _FailingHotStore(_FakeHotStore):
@@ -786,6 +786,98 @@ def test_protection_mirror_backfills_underprotected_and_cleans_after_verified_co
         mirror = session.get(CollectionProtectionMirrorRecord, collection_id)
         assert mirror is not None
         assert mirror.state == "deleted"
+
+
+def test_protection_mirror_hot_repair_restores_whole_existing_collection(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+
+    config = _config(
+        sqlite_path,
+        protection_mirror_enabled=True,
+        protection_mirror_s3_endpoint_url="https://s3.example.invalid",
+        protection_mirror_s3_bucket="mirror",
+        protection_mirror_s3_access_key_id="mirror-key",
+        protection_mirror_s3_secret_access_key="mirror-secret",
+    )
+    hot_store = _FakeHotStore()
+    mirror_store = _FakeProtectionMirrorStore()
+    collection_id = "20250712T213200Z__photos"
+    files = [
+        ("albums/day-01.txt", b"existing collection bytes\n"),
+        ("albums/day-02.txt", b"second file bytes\n"),
+    ]
+    archive_files = []
+    for relpath, content in files:
+        sha256 = hashlib.sha256(content).hexdigest()
+        hot_store.put_collection_file(collection_id, relpath, content)
+        archive_files.append(CollectionArchiveFile(path=relpath, content=content, sha256=sha256))
+    package = build_collection_archive_package(
+        collection_id=collection_id,
+        files=archive_files,
+        stamper=FixtureProofStamper(),
+    )
+    mirror_store.archives[collection_id] = package.archive_bytes
+    hot_store.delete_collection_file(collection_id, "albums/day-01.txt")
+    hot_store.put_collection_file(collection_id, "albums/day-02.txt", b"wrong bytes\n")
+
+    session_factory = make_session_factory(str(sqlite_path))
+    with session_scope(session_factory) as session:
+        collection = CollectionRecord(id=collection_id)
+        for relpath, content in files:
+            collection.files.append(
+                CollectionFileRecord(
+                    collection_id=collection_id,
+                    path=relpath,
+                    bytes=len(content),
+                    sha256=hashlib.sha256(content).hexdigest(),
+                    hot=True,
+                    archived=False,
+                )
+            )
+        session.add(collection)
+        session.add(
+            CollectionArchiveRecord(
+                collection_id=collection_id,
+                state="uploaded",
+                object_path=f"glacier/collections/{collection_id}/archive.tar",
+                stored_bytes=package.archive_size,
+                sha256=package.archive_sha256,
+            )
+        )
+        session.add(
+            CollectionProtectionMirrorRecord(
+                collection_id=collection_id,
+                state="complete",
+                object_path=mirror_store.object_path(collection_id),
+                archive_bytes=package.archive_size,
+                archive_sha256=package.archive_sha256,
+            )
+        )
+
+    upload_service = SqlAlchemyGlacierUploadService(
+        config,
+        _FakeArchiveStore(),
+        hot_store,
+        _FakeUploadStore(),
+        mirror_store,
+        proof_stamper=FixtureProofStamper(),
+        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
+    )
+
+    assert upload_service.repair_missing_hot_files_from_protection_mirror(
+        limit=10,
+        force=True,
+    ) == 1
+    for relpath, content in files:
+        assert hot_store.get_collection_file(collection_id, relpath) == content
+    with session_scope(session_factory) as session:
+        mirror = session.get(CollectionProtectionMirrorRecord, collection_id)
+        assert mirror is not None
+        assert mirror.state == "complete"
+        assert mirror.next_attempt_at is not None
 
 
 def test_protection_mirror_backfill_failure_notifies_once_per_interval(

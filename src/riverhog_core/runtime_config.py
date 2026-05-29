@@ -171,6 +171,9 @@ class RuntimeConfig:
     protection_mirror_s3_force_path_style: bool = True
     protection_mirror_prefix: str = "riverhog/protection-mirror"
     protection_mirror_multipart_part_bytes: int = DEFAULT_PROTECTION_MIRROR_MULTIPART_PART_BYTES
+    protection_mirror_hot_audit_interval: timedelta = field(
+        default_factory=lambda: timedelta(hours=24)
+    )
     operator_webhook_url: str | None = None
     operator_webhook_timeout: timedelta = field(default_factory=lambda: timedelta(seconds=5))
     operator_webhook_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=1))
@@ -284,6 +287,8 @@ class RuntimeConfig:
                 )
         if self.protection_mirror_multipart_part_bytes < 1:
             raise ValueError("RIVERHOG_PROTECTION_MIRROR_MULTIPART_PART_BYTES must be >= 1")
+        if self.protection_mirror_hot_audit_interval.total_seconds() <= 0:
+            raise ValueError("RIVERHOG_PROTECTION_MIRROR_HOT_AUDIT_INTERVAL must be > 0")
         object.__setattr__(
             self,
             "protection_mirror_prefix",
@@ -397,6 +402,9 @@ def load_runtime_config() -> RuntimeConfig:
         ),
         name="RIVERHOG_PROTECTION_MIRROR_MULTIPART_PART_BYTES",
         minimum=1,
+    )
+    protection_mirror_hot_audit_interval = _parse_duration(
+        os.getenv("RIVERHOG_PROTECTION_MIRROR_HOT_AUDIT_INTERVAL", "24h")
     )
     operator_webhook_url = os.getenv("RIVERHOG_OPERATOR_WEBHOOK_URL", "").strip() or None
     operator_webhook_timeout = _parse_duration(
@@ -691,6 +699,7 @@ def load_runtime_config() -> RuntimeConfig:
             "RIVERHOG_PROTECTION_MIRROR_PREFIX", "riverhog/protection-mirror"
         ),
         protection_mirror_multipart_part_bytes=protection_mirror_multipart_part_bytes,
+        protection_mirror_hot_audit_interval=protection_mirror_hot_audit_interval,
         operator_webhook_url=operator_webhook_url,
         operator_webhook_timeout=operator_webhook_timeout,
         operator_webhook_retry_delay=operator_webhook_retry_delay,
