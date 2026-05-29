@@ -133,15 +133,23 @@ class SqlAlchemyGlacierUploadService:
                             case(
                                 (CollectionUploadRecord.archive_receipt_json.is_not(None), 0),
                                 (
+                                    CollectionUploadRecord.archive_multipart_uploaded_parts > 0,
+                                    1,
+                                ),
+                                (
+                                    CollectionUploadRecord.archive_multipart_uploaded_bytes > 0,
+                                    1,
+                                ),
+                                (
                                     CollectionUploadRecord.archive_multipart_upload_id.is_not(
                                         None
                                     ),
-                                    1,
+                                    2,
                                 ),
-                                (CollectionUploadRecord.archive_phase == "uploading", 1),
-                                (CollectionUploadRecord.archive_phase == "packaged", 2),
-                                (CollectionUploadRecord.archive_phase == "packaging", 3),
-                                else_=4,
+                                (CollectionUploadRecord.archive_phase == "uploading", 2),
+                                (CollectionUploadRecord.archive_phase == "packaged", 3),
+                                (CollectionUploadRecord.archive_phase == "packaging", 4),
+                                else_=5,
                             ),
                             CollectionUploadRecord.archive_next_attempt_at,
                             CollectionUploadRecord.collection_id,

@@ -686,8 +686,10 @@ def test_glacier_archive_worker_prioritizes_resumable_multipart_upload(
                     else "2026-01-01T00:00:01Z"
                 ),
                 archive_multipart_upload_id=(
-                    "archive-upload-1" if collection_id == resumed_id else None
+                    "archive-upload-1" if collection_id == resumed_id else "archive-upload-2"
                 ),
+                archive_multipart_uploaded_bytes=4 if collection_id == resumed_id else 0,
+                archive_multipart_uploaded_parts=1 if collection_id == resumed_id else 0,
             )
             upload.files.append(
                 CollectionUploadFileRecord(
