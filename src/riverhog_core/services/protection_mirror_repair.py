@@ -89,26 +89,15 @@ def repair_collection_hot_files_from_protection_mirror(
         else {file.path for file in expected_files}
     )
     expected_by_path = {file.path: file for file in expected_files}
-    missing_or_mismatched: list[str] = []
-    for path in sorted(paths_to_check):
-        expected = expected_by_path.get(path)
-        if expected is None:
-            continue
-        if _hot_file_matches(
-            hot_store,
-            collection_id=collection_id,
-            path=path,
-            expected_bytes=expected.bytes,
-            expected_sha256=expected.sha256,
-        ):
-            _clear_verified_hot_file_multipart_state(
-                session_factory=session_factory,
-                hot_store=hot_store,
-                collection_id=collection_id,
-                path=path,
-            )
-            continue
-        missing_or_mismatched.append(path)
+    missing_or_mismatched = _find_missing_or_mismatched_hot_files(
+        session_factory=session_factory,
+        hot_store=hot_store,
+        collection_id=collection_id,
+        expected_files=expected_files,
+        expected_by_path=expected_by_path,
+        paths_to_check=paths_to_check,
+        full_collection_scan=trigger_paths is None,
+    )
     if not missing_or_mismatched:
         return ProtectionMirrorRepairResult(
             collection_id=collection_id,
@@ -201,6 +190,82 @@ def _load_expected_collection_files(
             )
             for row in rows
         ]
+
+
+def _find_missing_or_mismatched_hot_files(
+    *,
+    session_factory: sessionmaker[Session],
+    hot_store: HotStore,
+    collection_id: str,
+    expected_files: list[CollectionArchiveExpectedFile],
+    expected_by_path: dict[str, CollectionArchiveExpectedFile],
+    paths_to_check: set[str],
+    full_collection_scan: bool,
+) -> list[str]:
+    if full_collection_scan:
+        stored_sizes = dict(hot_store.list_collection_files(collection_id))
+        stale_upload_ids = _load_hot_multipart_upload_ids(
+            session_factory=session_factory,
+            collection_id=collection_id,
+        )
+        _LOG.info(
+            "protection mirror hot audit inventory scan: collection=%s expected_files=%s "
+            "stored_files=%s stale_multipart=%s",
+            collection_id,
+            len(expected_files),
+            len(stored_sizes),
+            len(stale_upload_ids),
+        )
+        missing_or_mismatched: list[str] = []
+        for expected in expected_files:
+            actual_bytes = stored_sizes.get(expected.path)
+            if actual_bytes != expected.bytes:
+                missing_or_mismatched.append(expected.path)
+                continue
+            if expected.path in stale_upload_ids:
+                _clear_verified_hot_file_multipart_state(
+                    session_factory=session_factory,
+                    hot_store=hot_store,
+                    collection_id=collection_id,
+                    path=expected.path,
+                )
+        return missing_or_mismatched
+
+    missing_or_mismatched = []
+    for path in sorted(paths_to_check):
+        expected_file = expected_by_path.get(path)
+        if expected_file is None:
+            continue
+        if _hot_file_matches(
+            hot_store,
+            collection_id=collection_id,
+            path=path,
+            expected_bytes=expected_file.bytes,
+            expected_sha256=expected_file.sha256,
+        ):
+            _clear_verified_hot_file_multipart_state(
+                session_factory=session_factory,
+                hot_store=hot_store,
+                collection_id=collection_id,
+                path=path,
+            )
+            continue
+        missing_or_mismatched.append(path)
+    return missing_or_mismatched
+
+
+def _load_hot_multipart_upload_ids(
+    *,
+    session_factory: sessionmaker[Session],
+    collection_id: str,
+) -> dict[str, str]:
+    with session_scope(session_factory) as session:
+        rows = session.execute(
+            select(CollectionFileRecord.path, CollectionFileRecord.hot_multipart_upload_id)
+            .where(CollectionFileRecord.collection_id == collection_id)
+            .where(CollectionFileRecord.hot_multipart_upload_id.is_not(None))
+        ).all()
+        return {str(path): str(upload_id) for path, upload_id in rows if upload_id}
 
 
 def _verify_mirror_receipt(
