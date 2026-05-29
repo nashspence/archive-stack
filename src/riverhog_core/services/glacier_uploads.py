@@ -772,6 +772,7 @@ class SqlAlchemyGlacierUploadService:
             mirror.next_attempt_at = None
             mirror.updated_at = current_text
             mirror.completed_at = current_text
+            mirror.last_failure_notification_at = None
 
     def _mark_protection_mirror_repairing(self, *, collection_id: str) -> None:
         current_text = _isoformat_z(utcnow())
@@ -801,6 +802,7 @@ class SqlAlchemyGlacierUploadService:
             mirror.failure = None
             mirror.next_attempt_at = next_audit_at
             mirror.updated_at = current_text
+            mirror.last_failure_notification_at = None
             if result.repaired:
                 mirror.last_attempt_at = current_text
 
@@ -815,6 +817,7 @@ class SqlAlchemyGlacierUploadService:
             mirror.next_attempt_at = None
             mirror.updated_at = current_text
             mirror.deleted_at = current_text
+            mirror.last_failure_notification_at = None
             mirror.multipart_upload_id = None
             mirror.multipart_part_size = None
             mirror.multipart_parts_json = None
