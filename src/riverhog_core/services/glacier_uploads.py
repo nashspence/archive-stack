@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import case, or_, select
@@ -71,6 +72,12 @@ from riverhog_core.webhooks import (
 )
 
 _LOG = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class _ProtectionMirrorRepairAttempt:
+    processed: bool
+    repaired: bool
 
 
 class SqlAlchemyGlacierUploadService:
@@ -184,17 +191,42 @@ class SqlAlchemyGlacierUploadService:
                 )
             collection_ids = list(session.scalars(query.limit(limit)).all())
 
+        if collection_ids:
+            _LOG.info(
+                "protection mirror hot audit started: collections=%s force=%s",
+                len(collection_ids),
+                force,
+            )
         processed = 0
+        repaired = 0
         for collection_id in collection_ids:
-            if self._repair_one_collection_from_protection_mirror(collection_id=collection_id):
+            result = self._repair_one_collection_from_protection_mirror(
+                collection_id=collection_id
+            )
+            if result.processed:
                 processed += 1
+            if result.repaired:
+                repaired += 1
+        if collection_ids:
+            _LOG.info(
+                "protection mirror hot audit completed: collections=%s processed=%s "
+                "repaired=%s force=%s",
+                len(collection_ids),
+                processed,
+                repaired,
+                force,
+            )
         return processed
 
-    def _repair_one_collection_from_protection_mirror(self, *, collection_id: str) -> bool:
+    def _repair_one_collection_from_protection_mirror(
+        self,
+        *,
+        collection_id: str,
+    ) -> _ProtectionMirrorRepairAttempt:
         mirror_store = self._protection_mirror_store
         hot_store = self._hot_store
         if mirror_store is None or hot_store is None:
-            return False
+            return _ProtectionMirrorRepairAttempt(processed=False, repaired=False)
         self._mark_protection_mirror_repairing(collection_id=collection_id)
         try:
             result = repair_collection_hot_files_from_protection_mirror(
@@ -214,14 +246,14 @@ class SqlAlchemyGlacierUploadService:
                     result.restored_files,
                     result.restored_bytes,
                 )
-            return result.repaired
+            return _ProtectionMirrorRepairAttempt(processed=True, repaired=result.repaired)
         except Exception as exc:
             self._record_protection_mirror_failure(
                 collection_id=collection_id,
                 error=_error_text(exc),
                 retry_state="repair_wait",
             )
-            return True
+            return _ProtectionMirrorRepairAttempt(processed=True, repaired=False)
 
     def _process_one_collection(self, *, collection_id: str) -> None:
         if self._hot_store is None or self._upload_store is None:
