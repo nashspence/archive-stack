@@ -16,6 +16,7 @@ from riverhog_core.stores.s3_hot_store import (
     _is_missing_upload_error,
     _iter_chunks_after_skipping,
     _multipart_part_size,
+    _should_log_multipart_progress,
     _validate_recorded_parts_exist_remotely,
 )
 from riverhog_core.stores.s3_support import create_protection_mirror_s3_client
@@ -129,6 +130,14 @@ class S3ProtectionMirrorStore:
         def ensure_upload() -> str:
             nonlocal upload_id, upload_state
             if upload_id is None:
+                _LOG.info(
+                    "starting protection mirror multipart upload for %s: "
+                    "size=%s part_size=%s parts=%s",
+                    object_key,
+                    content_length,
+                    part_size,
+                    expected_part_count,
+                )
                 response = cast(
                     dict[str, Any],
                     self._client.create_multipart_upload(
@@ -180,6 +189,17 @@ class S3ProtectionMirrorStore:
                     uploaded_bytes=uploaded_bytes,
                     uploaded_parts=current_part_number,
                     total_parts=expected_part_count,
+                )
+            if _should_log_multipart_progress(current_part_number, expected_part_count):
+                _LOG.info(
+                    "protection mirror multipart upload progress for %s: "
+                    "part=%s/%s bytes=%s/%s pct=%.2f",
+                    object_key,
+                    current_part_number,
+                    expected_part_count,
+                    uploaded_bytes,
+                    content_length,
+                    (uploaded_bytes / content_length * 100.0) if content_length else 100.0,
                 )
             part_number += 1
 
@@ -233,6 +253,12 @@ class S3ProtectionMirrorStore:
                     collection_id=collection_id,
                     upload_id=upload_id,
                 )
+            _LOG.info(
+                "completed protection mirror multipart upload for %s: parts=%s bytes=%s",
+                object_key,
+                expected_part_count,
+                content_length,
+            )
         except Exception as exc:
             if upload_id is not None and multipart_tracker is None:
                 try:

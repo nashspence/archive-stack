@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections.abc import Iterable
 from typing import Any, cast
 
@@ -222,7 +223,9 @@ def _config() -> RuntimeConfig:
 
 def test_protection_mirror_archive_upload_resumes_multipart(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    caplog.set_level(logging.INFO, logger="riverhog_core.stores.s3_protection_mirror_store")
     client = _FakeS3Client()
     monkeypatch.setattr(
         "riverhog_core.stores.s3_protection_mirror_store.create_protection_mirror_s3_client",
@@ -267,6 +270,16 @@ def test_protection_mirror_archive_upload_resumes_multipart(
     assert client.completed_uploads == ["upload-1"]
     assert tracker.cleared_upload_ids == ["upload-1"]
     assert tracker.state is None
+    assert (
+        "protection mirror multipart upload progress for "
+        "riverhog/protection-mirror/collections/20250712T213200Z__photos/archive.tar: "
+        "part=3/3 bytes=9/9 pct=100.00"
+    ) in caplog.text
+    assert (
+        "completed protection mirror multipart upload for "
+        "riverhog/protection-mirror/collections/20250712T213200Z__photos/archive.tar: "
+        "parts=3 bytes=9"
+    ) in caplog.text
 
 
 def test_protection_mirror_delete_removes_collection_prefix(
