@@ -80,6 +80,10 @@ def _collection_disc_count(
     return sum(any(piece.collection_id == collection_id for piece in group) for group in groups)
 
 
+def _group_estimated_bytes(groups: list[list[_PlanPiece]]) -> list[int]:
+    return [sum(piece.estimated_total_bytes for piece in group) for group in groups]
+
+
 def test_planner_uses_tight_file_count_aware_leaf_estimates() -> None:
     assert _estimated_encrypted_leaf_size(1) == encrypted_size_for_plaintext_size(1) + 2304
     assert _candidate_metadata_pad(50_000_000_000) == 4 * 1024 * 1024
@@ -439,7 +443,25 @@ def test_planner_does_not_optionally_split_required_split_collections_without_sa
     assert _collection_disc_count(groups, "2026/20260101T000000Z__alpha") == 2
 
 
-def test_planner_saturation_may_split_required_split_collections() -> None:
+def test_planner_saturation_uses_beneficial_split_to_get_below_threshold() -> None:
+    unsaturated_groups = _pack_collection_piece_groups(
+        [
+            _group("2026/20260101T000000Z__alpha", [450, 450]),
+            _group("2026/20260101T000000Z__alpha", [450, 450]),
+            _group("2026/20260102T000000Z__bravo", [500]),
+        ],
+        payload_capacity=1_000,
+        minimum_payload_fill=900,
+        collection_required_image_counts={
+            "2026/20260101T000000Z__alpha": 2,
+            "2026/20260102T000000Z__bravo": 1,
+        },
+        saturation_threshold_bytes=0,
+    )
+    unsaturated_waiting_bytes = sum(
+        bytes_ for bytes_ in _group_estimated_bytes(unsaturated_groups) if bytes_ < 900
+    )
+
     groups = _pack_collection_piece_groups(
         [
             _group("2026/20260101T000000Z__alpha", [450, 450]),
@@ -454,13 +476,15 @@ def test_planner_saturation_may_split_required_split_collections() -> None:
         },
         saturation_threshold_bytes=475,
     )
+    saturated_waiting_bytes = sum(
+        bytes_ for bytes_ in _group_estimated_bytes(groups) if bytes_ < 900
+    )
 
-    estimated_group_bytes = [
-        sum(piece.estimated_total_bytes for piece in group) for group in groups
-    ]
-
+    assert unsaturated_waiting_bytes == 500
     assert _collection_disc_count(groups, "2026/20260101T000000Z__alpha") == 3
-    assert sum(bytes_ for bytes_ in estimated_group_bytes if bytes_ < 900) <= 475
+    assert _group_estimated_bytes(groups) == [450, 900, 950]
+    assert saturated_waiting_bytes == 450
+    assert saturated_waiting_bytes <= 475
 
 
 def test_planner_saturation_splits_least_unnecessarily_split_collection_first() -> None:
