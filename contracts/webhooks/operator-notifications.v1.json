@@ -59,7 +59,7 @@
       "canonical_notification": {
         "actor": "riverhog",
         "title_template": "{emoji} {subject_40}",
-        "body_template": "Piggy has the upload safely staged on the server; Glacier archiving is underway."
+        "body_template": "Oink oink, this upload is safely staged; Glacier archiving is underway."
       },
       "required_payload_fields": [
         "event",
@@ -94,7 +94,7 @@
       "canonical_notification": {
         "actor": "riverhog",
         "title_template": "{emoji} {subject_40}",
-        "body_template": "Piggy finished archiving and promoting this collection. It is safe and available."
+        "body_template": "Oink, archive complete! This collection is safe, promoted, and ready."
       },
       "required_payload_fields": [
         "event",
@@ -132,7 +132,7 @@
       "canonical_notification": {
         "actor": "riverhog",
         "title_template": "{emoji} {subject_40}",
-        "body_template": "Piggy hit a recoverable archive snag and will keep retrying. No action needed yet."
+        "body_template": "Oink, a recoverable archive snag popped up. I'll keep rooting at it; no action needed yet."
       },
       "required_payload_fields": [
         "event",
@@ -167,7 +167,7 @@
       "canonical_notification": {
         "actor": "riverhog",
         "title_template": "{emoji} {subject_40}",
-        "body_template": "Piggy archived the collection, but planner refresh failed. Please inspect Riverhog."
+        "body_template": "Oink, the archive is safe, but planner refresh failed. Please inspect Riverhog!"
       },
       "required_payload_fields": [
         "event",
@@ -192,7 +192,7 @@
       "source": "riverhog_core.services.planning",
       "purpose": "One or more finalized image candidates are ready for operator burn workflow.",
       "operator_urgency": "time_sensitive",
-      "operator_action": "run djdan burn",
+      "operator_action": "run `djdan burn`",
       "delivery": {
         "mode": "durable",
         "retry": true,
@@ -203,7 +203,7 @@
       "canonical_notification": {
         "actor": "djdan",
         "title_template": "{emoji} {subject_40}",
-        "body_template": "The pigs got discs ready to burn, dawg. Run `djdan burn` so we can get spinnin'."
+        "body_template": "The pigs got some discs ready to burn, dawg! Run `djdan burn` so we can get spinnin'."
       },
       "required_payload_fields": [
         "event",
@@ -228,7 +228,7 @@
       "source": "riverhog_core.services.planning",
       "purpose": "Reminder that one or more burnable image candidates are still waiting for operator burn workflow.",
       "operator_urgency": "time_sensitive",
-      "operator_action": "run djdan burn",
+      "operator_action": "run `djdan burn`",
       "reminder_of": "images.ready",
       "delivery": {
         "mode": "durable",
@@ -240,7 +240,7 @@
       "canonical_notification": {
         "actor": "djdan",
         "title_template": "{emoji} {subject_40}",
-        "body_template": "Still holdin' that burn cue, dawg. Run `djdan burn` when you're ready."
+        "body_template": "Burn cue is still on deck. Run `djdan burn` when you're ready to spin it up."
       },
       "required_payload_fields": [
         "event",
@@ -274,7 +274,7 @@
       "canonical_notification": {
         "actor": "djdan",
         "title_template": "{emoji} {subject_40}",
-        "body_template": "That burn verified, dawg. Label the disc exactly, then tell me where it lives."
+        "body_template": "That burn verified clean! Label the disc exactly, then tell me where it lives."
       },
       "required_payload_fields": [
         "event",
@@ -296,7 +296,7 @@
       "source": "riverhog_core.services.fetches",
       "purpose": "A pinned target is missing hot bytes and Riverhog is waiting for djdan fetch to read registered optical media.",
       "operator_urgency": "time_sensitive",
-      "operator_action": "Run djdan fetch {fetch_id}",
+      "operator_action": "Run `djdan fetch {fetch_id}`",
       "delivery": {
         "mode": "durable",
         "retry": true,
@@ -307,7 +307,7 @@
       "canonical_notification": {
         "actor": "djdan",
         "title_template": "{emoji} {subject_40}",
-        "body_template": "Need that disc read, dawg. Run `djdan fetch` so I can get those files hot again."
+        "body_template": "Need that disc read, friend! Run `djdan fetch` so I can get those files hot again."
       },
       "required_payload_fields": [
         "event",
@@ -335,7 +335,7 @@
       "source": "riverhog_core.services.fetches",
       "purpose": "Reminder that a fetch manifest is still waiting for djdan fetch and registered optical media.",
       "operator_urgency": "time_sensitive",
-      "operator_action": "Run djdan fetch {fetch_id}",
+      "operator_action": "Run `djdan fetch {fetch_id}`",
       "reminder_of": "fetches.waiting_media",
       "delivery": {
         "mode": "durable",
@@ -347,7 +347,7 @@
       "canonical_notification": {
         "actor": "djdan",
         "title_template": "{emoji} {subject_40}",
-        "body_template": "Still need that fetch run, dawg. The pinned files are waiting on disc media."
+        "body_template": "Fetch cue is still waiting. Run `djdan fetch` when the disc is ready."
       },
       "required_payload_fields": [
         "event",
@@ -385,7 +385,7 @@
       "canonical_notification": {
         "actor": "riverhog",
         "title_template": "{emoji} {subject_40}",
-        "body_template": "Piggy requested Glacier recovery. This can take a long time; the archived data is safe."
+        "body_template": "Oink, Glacier recovery is underway. This may take a long while; the archived data is safe."
       },
       "required_payload_fields": [
         "event",
@@ -426,12 +426,12 @@
         "image_rebuild": {
           "actor": "djdan",
           "title_template": "{emoji} {subject_40}",
-          "body_template": "Glacier data is ready, dawg. Rebuild replacement media before the window closes."
+          "body_template": "Glacier data is cued up! Run `djdan burn` before the restore window closes."
         },
         "collection_restore": {
           "actor": "riverhog",
           "title_template": "{emoji} {subject_40}",
-          "body_template": "Piggy has Glacier data ready and is restoring missing pinned files now."
+          "body_template": "Oink, Glacier data is ready. I'm restoring the missing pinned files now."
         }
       },
       "required_payload_fields": [
@@ -475,12 +475,12 @@
         "image_rebuild": {
           "actor": "djdan",
           "title_template": "{emoji} {subject_40}",
-          "body_template": "That recovery data is still ready, dawg. Rebuild replacement media before it expires."
+          "body_template": "Recovery data is still on deck. Run `djdan burn` before it expires."
         },
         "collection_restore": {
           "actor": "riverhog",
           "title_template": "{emoji} {subject_40}",
-          "body_template": "Piggy is still working through recovered Glacier data for pinned files."
+          "body_template": "Oink, I'm still rooting through recovered Glacier data for pinned files."
         }
       },
       "required_payload_fields": [
@@ -522,12 +522,12 @@
         "image_rebuild": {
           "actor": "riverhog",
           "title_template": "{emoji} {subject_40}",
-          "body_template": "Piggy finished Glacier recovery and cleaned up the temporary restored data."
+          "body_template": "Oink, Glacier recovery is done, and the temporary restored data is cleaned up."
         },
         "collection_restore": {
           "actor": "riverhog",
           "title_template": "{emoji} {subject_40}",
-          "body_template": "Piggy finished Glacier recovery and the missing pinned files are hot again."
+          "body_template": "Oink, Glacier recovery is done, and the missing pinned files are hot again."
         }
       },
       "required_payload_fields": [

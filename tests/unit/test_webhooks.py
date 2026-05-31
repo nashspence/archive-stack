@@ -83,12 +83,15 @@ def test_build_images_ready_payload_supports_multiple_images() -> None:
     )
     assert payload["event"] == "images.ready"
     assert payload["operator_urgency"] == "time_sensitive"
-    assert payload["operator_action"] == "run djdan burn"
+    assert payload["operator_action"] == "run `djdan burn`"
     assert len(payload["images"]) == 2
     assert payload["images"][0]["download_url"].endswith("/v1/images/20260420T040001Z/iso")
     assert payload["notification"] == {
         "title": "👨🏻‍🎤 20260420T040001Z.iso +1",
-        "body": "The pigs got discs ready to burn, dawg. Run `djdan burn` so we can get spinnin'.",
+        "body": (
+            "The pigs got some discs ready to burn, dawg! Run `djdan burn` so we can "
+            "get spinnin'."
+        ),
     }
 
 
@@ -133,7 +136,7 @@ def test_build_recovery_ready_payload_includes_session_and_image_urls() -> None:
         "notification": {
             "title": "👨🏻‍🎤 20260420T040001Z.iso",
             "body": (
-                "Glacier data is ready, dawg. Rebuild replacement media before the window "
+                "Glacier data is cued up! Run `djdan burn` before the restore window "
                 "closes."
             ),
         },
@@ -167,7 +170,7 @@ def test_build_recovery_lifecycle_payloads_are_explicit_about_glacier_work() -> 
     assert started["notification"] == {
         "title": "🐷 docs",
         "body": (
-            "Piggy requested Glacier recovery. This can take a long time; the archived "
+            "Oink, Glacier recovery is underway. This may take a long while; the archived "
             "data is safe."
         ),
     }
@@ -181,7 +184,7 @@ def test_build_recovery_lifecycle_payloads_are_explicit_about_glacier_work() -> 
     assert completed["operator_action"] == "No operator action required"
     assert completed["notification"] == {
         "title": "🐷 docs",
-        "body": "Piggy finished Glacier recovery and the missing pinned files are hot again.",
+        "body": "Oink, Glacier recovery is done, and the missing pinned files are hot again.",
     }
 
 
@@ -205,12 +208,12 @@ def test_build_fetch_waiting_payload_names_operator_action() -> None:
     )
 
     assert payload["event"] == "fetches.waiting_media"
-    assert payload["operator_action"] == "Run djdan fetch fx-1"
+    assert payload["operator_action"] == "Run `djdan fetch fx-1`"
     assert payload["manifest_url"] == "https://api.test/v1/fetches/fx-1/manifest"
     assert payload["notification"] == {
         "title": "👨🏻‍🎤 invoice-123.pdf",
         "body": (
-            "Need that disc read, dawg. Run `djdan fetch` so I can get those files hot again."
+            "Need that disc read, friend! Run `djdan fetch` so I can get those files hot again."
         ),
     }
 
@@ -237,7 +240,7 @@ def test_build_collection_lifecycle_payload_includes_links_and_details() -> None
     assert payload["files_total"] == 572
     assert payload["notification"] == {
         "title": "🐷 home-videos",
-        "body": "Piggy has the upload safely staged on the server; Glacier archiving is underway.",
+        "body": "Oink oink, this upload is safely staged; Glacier archiving is underway.",
     }
 
 
@@ -263,7 +266,7 @@ def test_build_copy_label_needed_payload_includes_label_and_image_url() -> None:
         "notification": {
             "title": "👨🏻‍🎤 20260526T204059Z-1",
             "body": (
-                "That burn verified, dawg. Label the disc exactly, then tell me where it lives."
+                "That burn verified clean! Label the disc exactly, then tell me where it lives."
             ),
         },
     }

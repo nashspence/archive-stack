@@ -214,7 +214,7 @@ def test_waiting_fetch_notifications_are_delivered_and_reminded(
 
     assert service.deliver_due_waiting_notifications(limit=10) == 1
     assert payloads[-1]["event"] == "fetches.waiting_media"
-    assert payloads[-1]["operator_action"] == "Run djdan fetch fx-1"
+    assert payloads[-1]["operator_action"] == "Run `djdan fetch fx-1`"
 
     monkeypatch.setattr(
         "riverhog_core.services.fetches.utcnow",

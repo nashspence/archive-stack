@@ -297,7 +297,7 @@ def build_fetch_waiting_payload(
         "bytes": bytes,
         "copies": copies,
         "operator_urgency": "time_sensitive",
-        "operator_action": f"Run djdan fetch {fetch_id}",
+        "operator_action": f"Run `djdan fetch {fetch_id}`",
         "operator_message": (
             "Riverhog is waiting for optical-media recovery before this pinned target "
             "can be hot again."

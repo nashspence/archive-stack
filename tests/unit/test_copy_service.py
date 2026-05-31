@@ -394,7 +394,7 @@ def test_notify_label_needed_sends_best_effort_operator_webhook(
             "notification": {
                 "title": "👨🏻‍🎤 20260420T040001Z-1",
                 "body": (
-                    "That burn verified, dawg. Label the disc exactly, then tell me where "
+                    "That burn verified clean! Label the disc exactly, then tell me where "
                     "it lives."
                 ),
             },
