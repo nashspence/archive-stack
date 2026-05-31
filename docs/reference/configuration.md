@@ -411,6 +411,11 @@ milestones, ready disc-image candidates, persistent archival failures after
 retries, verified-copy labeling handoffs, fetch-required handoffs, and Glacier
 recovery lifecycle notifications.
 
+The canonical machine-readable event contract is
+[`contracts/webhooks/operator-notifications.v1.json`](../../contracts/webhooks/operator-notifications.v1.json).
+Exact receiver-side notification titles and message text are intentionally
+outside Riverhog's contract.
+
 Collection events are intentionally sparse so long-running retries do not spam
 operators. Success milestones include `collections.upload_staged`,
 when the full collection has reached server custody, and

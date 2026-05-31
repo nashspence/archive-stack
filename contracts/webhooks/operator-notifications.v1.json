@@ -1,0 +1,434 @@
+{
+  "schema_version": 1,
+  "surface": "riverhog.operator_webhook",
+  "description": "Machine-readable contract for Riverhog operator-facing webhook notifications.",
+  "endpoint_config": {
+    "url_env": "RIVERHOG_OPERATOR_WEBHOOK_URL",
+    "timeout_env": "RIVERHOG_OPERATOR_WEBHOOK_TIMEOUT",
+    "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
+    "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL",
+    "failure_notification_interval_env": "RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL",
+    "public_base_url_env": "RIVERHOG_PUBLIC_BASE_URL"
+  },
+  "receiver_rendering": {
+    "title": "out_of_scope",
+    "message": "out_of_scope",
+    "notes": "Receivers own exact notification titles and phone text. Riverhog payloads provide event, urgency, operator_action, and operator_message where the app has first-class guidance."
+  },
+  "common_payload_fields": {
+    "event": "string event id matching one event below",
+    "delivered_at": "UTC ISO-8601 timestamp with Z suffix"
+  },
+  "urgency_levels": {
+    "passive": "Informational and does not imply immediate operator action.",
+    "time_sensitive": "Useful to surface promptly; safe archived data is not implied lost.",
+    "critical": "Unrecoverable or operator-blocking error that should bypass normal quieting."
+  },
+  "events": [
+    {
+      "event": "collections.upload_staged",
+      "category": "collection_lifecycle",
+      "source": "riverhog_core.services.collections",
+      "purpose": "All source files for a collection reached server custody and verified; Glacier archival continues in the background.",
+      "operator_urgency": "time_sensitive",
+      "operator_action": "none",
+      "delivery": {
+        "mode": "best_effort",
+        "retry": false,
+        "reminder": false
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "collection_id",
+        "delivered_at",
+        "state",
+        "files_total",
+        "files_uploaded",
+        "bytes_total",
+        "uploaded_bytes"
+      ],
+      "optional_payload_fields": [
+        "collection_url",
+        "upload_url"
+      ]
+    },
+    {
+      "event": "collections.finalized",
+      "category": "collection_lifecycle",
+      "source": "riverhog_core.services.glacier_uploads",
+      "purpose": "Collection archive and proof data are stored, verified, promoted, and available to Riverhog/WebDAV.",
+      "operator_urgency": "time_sensitive",
+      "operator_action": "none",
+      "delivery": {
+        "mode": "best_effort",
+        "retry": false,
+        "reminder": false
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "collection_id",
+        "delivered_at",
+        "files_total",
+        "files_uploaded",
+        "bytes_total",
+        "uploaded_bytes",
+        "archive_object_path",
+        "archive_total_bytes",
+        "archive_sha256"
+      ],
+      "optional_payload_fields": [
+        "collection_url",
+        "upload_url"
+      ]
+    },
+    {
+      "event": "collections.archive_retrying",
+      "category": "collection_lifecycle",
+      "source": "riverhog_core.services.glacier_uploads",
+      "purpose": "Glacier archive upload encountered a recoverable failure and Riverhog will keep retrying.",
+      "operator_urgency": "time_sensitive",
+      "operator_action": "wait unless failures persist beyond normal connectivity trouble",
+      "delivery": {
+        "mode": "paced_best_effort",
+        "retry": false,
+        "reminder": true,
+        "reminder_interval_env": "RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL"
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "collection_id",
+        "delivered_at",
+        "attempts",
+        "failed_at",
+        "next_retry_at",
+        "retry_delay_seconds",
+        "error"
+      ],
+      "optional_payload_fields": [
+        "collection_url",
+        "upload_url"
+      ]
+    },
+    {
+      "event": "collections.planner_failed",
+      "category": "collection_lifecycle",
+      "source": "riverhog_core.services.glacier_uploads",
+      "purpose": "The collection finalized, but provisional planner refresh failed.",
+      "operator_urgency": "critical",
+      "operator_action": "inspect Riverhog planner logs and state",
+      "delivery": {
+        "mode": "best_effort",
+        "retry": false,
+        "reminder": false
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "collection_id",
+        "delivered_at",
+        "files_total",
+        "files_uploaded",
+        "bytes_total",
+        "uploaded_bytes"
+      ],
+      "optional_payload_fields": [
+        "collection_url",
+        "upload_url"
+      ]
+    },
+    {
+      "event": "images.ready",
+      "category": "disc_image",
+      "source": "riverhog_core.services.planning",
+      "purpose": "One or more finalized image candidates are ready for operator burn workflow.",
+      "operator_urgency": "time_sensitive",
+      "operator_action": "run djdan burn",
+      "delivery": {
+        "mode": "durable",
+        "retry": true,
+        "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
+        "reminder": true,
+        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
+      },
+      "required_payload_fields": [
+        "event",
+        "batch_id",
+        "delivered_at",
+        "reminder_count",
+        "reminder_interval_seconds",
+        "images"
+      ],
+      "image_fields": [
+        "image_id",
+        "filename",
+        "iso_available",
+        "download_url"
+      ]
+    },
+    {
+      "event": "images.ready.reminder",
+      "category": "disc_image",
+      "source": "riverhog_core.services.planning",
+      "purpose": "Reminder that one or more burnable image candidates are still waiting for operator burn workflow.",
+      "operator_urgency": "time_sensitive",
+      "operator_action": "run djdan burn",
+      "reminder_of": "images.ready",
+      "delivery": {
+        "mode": "durable",
+        "retry": true,
+        "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
+        "reminder": true,
+        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
+      },
+      "required_payload_fields": [
+        "event",
+        "batch_id",
+        "delivered_at",
+        "reminder_count",
+        "reminder_interval_seconds",
+        "images"
+      ],
+      "image_fields": [
+        "image_id",
+        "filename",
+        "iso_available",
+        "download_url"
+      ]
+    },
+    {
+      "event": "images.copy_label_needed",
+      "category": "disc_copy",
+      "source": "riverhog_core.services.copies",
+      "purpose": "A burned and verified disc needs its physical label applied before djdan registers the storage location.",
+      "operator_urgency": "time_sensitive",
+      "operator_action": "label the physical disc exactly as label_text",
+      "delivery": {
+        "mode": "best_effort",
+        "retry": false,
+        "reminder": false
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "image_id",
+        "copy_id",
+        "label_text",
+        "delivered_at"
+      ],
+      "optional_payload_fields": [
+        "image_url"
+      ]
+    },
+    {
+      "event": "fetches.waiting_media",
+      "category": "fetch",
+      "source": "riverhog_core.services.fetches",
+      "purpose": "A pinned target is missing hot bytes and Riverhog is waiting for djdan fetch to read registered optical media.",
+      "operator_urgency": "time_sensitive",
+      "operator_action": "Run djdan fetch {fetch_id}",
+      "delivery": {
+        "mode": "durable",
+        "retry": true,
+        "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
+        "reminder": true,
+        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "fetch_id",
+        "target",
+        "delivered_at",
+        "reminder_count",
+        "reminder_interval_seconds",
+        "files",
+        "bytes",
+        "copies",
+        "operator_urgency",
+        "operator_action",
+        "operator_message"
+      ],
+      "optional_payload_fields": [
+        "fetch_url",
+        "manifest_url"
+      ]
+    },
+    {
+      "event": "fetches.waiting_media.reminder",
+      "category": "fetch",
+      "source": "riverhog_core.services.fetches",
+      "purpose": "Reminder that a fetch manifest is still waiting for djdan fetch and registered optical media.",
+      "operator_urgency": "time_sensitive",
+      "operator_action": "Run djdan fetch {fetch_id}",
+      "reminder_of": "fetches.waiting_media",
+      "delivery": {
+        "mode": "durable",
+        "retry": true,
+        "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
+        "reminder": true,
+        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "fetch_id",
+        "target",
+        "delivered_at",
+        "reminder_count",
+        "reminder_interval_seconds",
+        "files",
+        "bytes",
+        "copies",
+        "operator_urgency",
+        "operator_action",
+        "operator_message"
+      ],
+      "optional_payload_fields": [
+        "fetch_url",
+        "manifest_url"
+      ]
+    },
+    {
+      "event": "glacier_recovery.started",
+      "category": "glacier_recovery",
+      "source": "riverhog_core.services.recovery_sessions",
+      "purpose": "Riverhog requested Glacier restore for image rebuild or missing pinned hot-file recovery.",
+      "operator_urgency": "time_sensitive",
+      "operator_action": "wait for recovery progress",
+      "delivery": {
+        "mode": "durable",
+        "retry": true,
+        "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
+        "reminder": false
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "session_id",
+        "delivered_at",
+        "images",
+        "collections",
+        "retrieval_tier",
+        "estimated_ready_at",
+        "operator_urgency",
+        "operator_action",
+        "operator_message"
+      ],
+      "optional_payload_fields": [
+        "session_url"
+      ],
+      "type_values": [
+        "image_rebuild",
+        "collection_restore"
+      ]
+    },
+    {
+      "event": "glacier_recovery.ready",
+      "category": "glacier_recovery",
+      "source": "riverhog_core.services.recovery_sessions",
+      "purpose": "Temporary restored Glacier data is available for image rebuild or automatic pinned-file materialization.",
+      "operator_urgency": "time_sensitive",
+      "operator_action": "depends on type: image_rebuild requires rebuild/burn; collection_restore is automatic",
+      "delivery": {
+        "mode": "durable",
+        "retry": true,
+        "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
+        "reminder": true,
+        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "session_id",
+        "delivered_at",
+        "images",
+        "collections",
+        "restore_expires_at",
+        "reminder_count",
+        "reminder_interval_seconds",
+        "operator_urgency",
+        "operator_action",
+        "operator_message"
+      ],
+      "optional_payload_fields": [
+        "session_url"
+      ],
+      "type_values": [
+        "image_rebuild",
+        "collection_restore"
+      ]
+    },
+    {
+      "event": "glacier_recovery.ready.reminder",
+      "category": "glacier_recovery",
+      "source": "riverhog_core.services.recovery_sessions",
+      "purpose": "Reminder that temporary restored Glacier data is still available and the recovery session is incomplete.",
+      "operator_urgency": "time_sensitive",
+      "operator_action": "depends on type: image_rebuild requires rebuild/burn; collection_restore is automatic",
+      "reminder_of": "glacier_recovery.ready",
+      "delivery": {
+        "mode": "durable",
+        "retry": true,
+        "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
+        "reminder": true,
+        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "session_id",
+        "delivered_at",
+        "images",
+        "collections",
+        "restore_expires_at",
+        "reminder_count",
+        "reminder_interval_seconds",
+        "operator_urgency",
+        "operator_action",
+        "operator_message"
+      ],
+      "optional_payload_fields": [
+        "session_url"
+      ],
+      "type_values": [
+        "image_rebuild",
+        "collection_restore"
+      ]
+    },
+    {
+      "event": "glacier_recovery.completed",
+      "category": "glacier_recovery",
+      "source": "riverhog_core.services.recovery_sessions",
+      "purpose": "Glacier recovery finished verification/materialization and cleanup.",
+      "operator_urgency": "time_sensitive",
+      "operator_action": "none",
+      "delivery": {
+        "mode": "durable",
+        "retry": true,
+        "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
+        "reminder": false
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "session_id",
+        "delivered_at",
+        "images",
+        "collections",
+        "operator_urgency",
+        "operator_action",
+        "operator_message"
+      ],
+      "optional_payload_fields": [
+        "session_url"
+      ],
+      "type_values": [
+        "image_rebuild",
+        "collection_restore"
+      ]
+    }
+  ]
+}

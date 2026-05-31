@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 from riverhog_core.webhooks import (
     ImagesReadyBatch,
@@ -14,6 +16,39 @@ from riverhog_core.webhooks import (
     build_recovery_ready_payload,
     build_recovery_started_payload,
 )
+
+_CONTRACT_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "contracts"
+    / "webhooks"
+    / "operator-notifications.v1.json"
+)
+
+
+def test_operator_webhook_contract_covers_current_events() -> None:
+    contract = json.loads(_CONTRACT_PATH.read_text(encoding="utf-8"))
+    events = {event["event"]: event for event in contract["events"]}
+
+    assert contract["surface"] == "riverhog.operator_webhook"
+    assert contract["receiver_rendering"]["title"] == "out_of_scope"
+    assert set(events) == {
+        "collections.upload_staged",
+        "collections.finalized",
+        "collections.archive_retrying",
+        "collections.planner_failed",
+        "images.ready",
+        "images.ready.reminder",
+        "images.copy_label_needed",
+        "fetches.waiting_media",
+        "fetches.waiting_media.reminder",
+        "glacier_recovery.started",
+        "glacier_recovery.ready",
+        "glacier_recovery.ready.reminder",
+        "glacier_recovery.completed",
+    }
+    assert events["collections.planner_failed"]["operator_urgency"] == "critical"
+    assert events["fetches.waiting_media"]["delivery"]["mode"] == "durable"
+    assert events["glacier_recovery.started"]["operator_urgency"] == "time_sensitive"
 
 
 def test_build_images_ready_payload_supports_multiple_images() -> None:

@@ -822,7 +822,9 @@ are rare and slow. `glacier_recovery.started` confirms Riverhog has requested a
 Glacier restore, `glacier_recovery.ready` confirms the temporary restored
 archive data is available, optional `glacier_recovery.ready.reminder` events
 repeat while action is still outstanding, and `glacier_recovery.completed`
-confirms Riverhog has finished verification/materialization and cleanup.
+confirms Riverhog has finished verification/materialization and cleanup. The
+complete machine-readable operator webhook contract lives at
+[`contracts/webhooks/operator-notifications.v1.json`](../../contracts/webhooks/operator-notifications.v1.json).
 
 `riverhog show COLLECTION --files` should provide a concise human-readable listing of the collection's logical files, including current hot or archived state and available copies when applicable.
 
