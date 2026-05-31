@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from functools import lru_cache
+from importlib import resources
+from pathlib import Path
+from typing import Any, Protocol
 
 import httpx
+
+_OPERATOR_CONTRACT_PATH = Path("contracts/webhooks/operator-notifications.v1.json")
+_FALLBACK_NOTIFICATION_TEMPLATE: dict[str, str] = {
+    "actor": "riverhog",
+    "title_template": "{emoji} {subject_40}",
+    "body_template": "Riverhog has an operator notification.",
+}
 
 
 @dataclass(frozen=True)
@@ -111,21 +123,24 @@ def build_images_ready_payload(
     *, config: WebhookConfig, batch: ImagesReadyBatch, delivered_at: datetime
 ) -> dict[str, object]:
     is_reminder = batch.initial_sent_at is not None
+    event = "images.ready.reminder" if is_reminder else "images.ready"
+    images = [
+        {
+            "image_id": image.image_id,
+            "filename": image.filename,
+            "iso_available": image.iso_available,
+            "download_url": image_iso_download_url(config.base_url, image.image_id),
+        }
+        for image in batch.images
+    ]
     return {
-        "event": "images.ready.reminder" if is_reminder else "images.ready",
+        "event": event,
         "batch_id": batch.batch_id,
         "delivered_at": isoformat_z(delivered_at),
         "reminder_count": batch.reminder_count + (1 if is_reminder else 0),
         "reminder_interval_seconds": config.reminder_interval_seconds,
-        "images": [
-            {
-                "image_id": image.image_id,
-                "filename": image.filename,
-                "iso_available": image.iso_available,
-                "download_url": image_iso_download_url(config.base_url, image.image_id),
-            }
-            for image in batch.images
-        ],
+        "images": images,
+        "notification": _images_ready_notification(event=event, images=images),
     }
 
 
@@ -164,6 +179,13 @@ def build_recovery_ready_payload(
             "operator_message": message,
         }
     )
+    payload["notification"] = _recovery_notification(
+        event=str(payload["event"]),
+        recovery_type=recovery_type,
+        session_id=session_id,
+        images=images,
+        collections=collections or [],
+    )
     return payload
 
 
@@ -200,6 +222,13 @@ def build_recovery_started_payload(
             "operator_message": message,
         }
     )
+    payload["notification"] = _recovery_notification(
+        event="glacier_recovery.started",
+        recovery_type=recovery_type,
+        session_id=session_id,
+        images=images,
+        collections=collections,
+    )
     return payload
 
 
@@ -232,6 +261,13 @@ def build_recovery_completed_payload(
             "operator_message": message,
         }
     )
+    payload["notification"] = _recovery_notification(
+        event="glacier_recovery.completed",
+        recovery_type=recovery_type,
+        session_id=session_id,
+        images=images,
+        collections=collections,
+    )
     return payload
 
 
@@ -263,6 +299,10 @@ def build_fetch_waiting_payload(
         "operator_message": (
             "Riverhog is waiting for optical-media recovery before this pinned target "
             "can be hot again."
+        ),
+        "notification": _fetch_waiting_notification(
+            reminder=reminder,
+            target=target,
         ),
     }
     if config.base_url:
@@ -367,6 +407,212 @@ def _recovery_operator_guidance(*, stage: str, recovery_type: str) -> tuple[str,
     )
 
 
+@lru_cache(maxsize=1)
+def _operator_notification_contract() -> dict[str, Any]:
+    for path in _operator_notification_contract_paths():
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        resource = resources.files("riverhog_core").joinpath(
+            "contracts",
+            "webhooks",
+            "operator-notifications.v1.json",
+        )
+        return json.loads(resource.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ModuleNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _operator_notification_contract_paths() -> list[Path]:
+    source_root = Path(__file__).resolve().parents[2]
+    return [
+        Path.cwd() / _OPERATOR_CONTRACT_PATH,
+        source_root / _OPERATOR_CONTRACT_PATH,
+    ]
+
+
+@lru_cache(maxsize=1)
+def _operator_notification_events() -> dict[str, Mapping[str, Any]]:
+    events = _operator_notification_contract().get("events", [])
+    if not isinstance(events, list):
+        return {}
+    return {
+        str(event["event"]): event
+        for event in events
+        if isinstance(event, dict) and isinstance(event.get("event"), str)
+    }
+
+
+def _canonical_notification_from_contract(
+    *,
+    event: str,
+    subject: str,
+    notification_type: str | None = None,
+) -> dict[str, str]:
+    template = _notification_template(event=event, notification_type=notification_type)
+    actor = str(template.get("actor", _FALLBACK_NOTIFICATION_TEMPLATE["actor"]))
+    emoji = _notification_emoji(actor)
+    subject_limit = _notification_int("subject_max_chars", default=40)
+    body_limit = _notification_int("body_max_chars", default=150)
+    normalized_subject = _normalize_space(subject)
+    values = {
+        "emoji": emoji,
+        "subject": normalized_subject,
+        "subject_40": _truncate(normalized_subject, subject_limit),
+    }
+    title = _render_template(
+        str(template.get("title_template", _FALLBACK_NOTIFICATION_TEMPLATE["title_template"])),
+        values,
+    ).strip()
+    body = _render_template(
+        str(template.get("body_template", _FALLBACK_NOTIFICATION_TEMPLATE["body_template"])),
+        values,
+    )
+    return {
+        "title": title or emoji,
+        "body": _truncate(body, body_limit),
+    }
+
+
+def _notification_template(*, event: str, notification_type: str | None) -> Mapping[str, Any]:
+    event_contract = _operator_notification_events().get(event, {})
+    type_templates = event_contract.get("canonical_notification_by_type")
+    if notification_type and isinstance(type_templates, dict):
+        template = type_templates.get(notification_type)
+        if isinstance(template, dict):
+            return template
+    template = event_contract.get("canonical_notification")
+    if isinstance(template, dict):
+        return template
+    return _FALLBACK_NOTIFICATION_TEMPLATE
+
+
+def _notification_emoji(actor: str) -> str:
+    rendering = _operator_notification_contract().get("receiver_rendering", {})
+    actors = rendering.get("actors") if isinstance(rendering, dict) else None
+    if isinstance(actors, dict) and isinstance(actors.get(actor), str):
+        return str(actors[actor])
+    return {"riverhog": "🐷", "djdan": "👨🏻‍🎤"}.get(actor, actor)
+
+
+def _notification_int(key: str, *, default: int) -> int:
+    rendering = _operator_notification_contract().get("receiver_rendering", {})
+    if isinstance(rendering, dict):
+        value = rendering.get(key)
+        if isinstance(value, int) and value > 0:
+            return value
+    return default
+
+
+def _render_template(template: str, values: Mapping[str, str]) -> str:
+    try:
+        return template.format(**values)
+    except (KeyError, ValueError):
+        return template
+
+
+def _normalize_space(value: str) -> str:
+    return " ".join(str(value).split())
+
+
+def _truncate(value: str, limit: int) -> str:
+    normalized = _normalize_space(value)
+    if len(normalized) <= limit:
+        return normalized
+    if limit <= 3:
+        return normalized[:limit]
+    return f"{normalized[: limit - 3].rstrip()}..."
+
+
+def _collection_subject(collection_id: str) -> str:
+    leaf = collection_id.rstrip("/").split("/")[-1] or collection_id
+    if "__" in leaf:
+        return leaf.split("__", 1)[1]
+    return leaf
+
+
+def _target_subject(target: str) -> str:
+    leaf = target.rstrip("/").split("/")[-1] or target
+    if "__" in leaf:
+        return leaf.split("__", 1)[1]
+    return leaf
+
+
+def _image_subject(images: list[dict[str, object]]) -> str:
+    if not images:
+        return "disc image"
+    first = images[0]
+    subject = str(first.get("filename") or first.get("image_id") or "disc image")
+    if len(images) > 1:
+        subject = f"{subject} +{len(images) - 1}"
+    return subject
+
+
+def _recovery_subject(
+    *,
+    session_id: str,
+    images: list[dict[str, str]],
+    collections: list[dict[str, str]],
+) -> str:
+    if collections:
+        return _collection_subject(collections[0]["collection_id"])
+    if images:
+        return _image_subject(list(images))
+    return session_id
+
+
+def _collection_notification(*, event: str, collection_id: str) -> dict[str, str]:
+    return _canonical_notification_from_contract(
+        event=event,
+        subject=_collection_subject(collection_id),
+    )
+
+
+def _images_ready_notification(
+    *,
+    event: str,
+    images: list[dict[str, object]],
+) -> dict[str, str]:
+    return _canonical_notification_from_contract(
+        event=event,
+        subject=_image_subject(images),
+    )
+
+
+def _copy_label_needed_notification(*, label_text: str) -> dict[str, str]:
+    return _canonical_notification_from_contract(
+        event="images.copy_label_needed",
+        subject=label_text,
+    )
+
+
+def _fetch_waiting_notification(*, reminder: bool, target: str) -> dict[str, str]:
+    return _canonical_notification_from_contract(
+        event="fetches.waiting_media.reminder" if reminder else "fetches.waiting_media",
+        subject=_target_subject(target),
+    )
+
+
+def _recovery_notification(
+    *,
+    event: str,
+    recovery_type: str,
+    session_id: str,
+    images: list[dict[str, str]],
+    collections: list[dict[str, str]],
+) -> dict[str, str]:
+    subject = _recovery_subject(
+        session_id=session_id,
+        images=images,
+        collections=collections,
+    )
+    return _canonical_notification_from_contract(
+        event=event,
+        subject=subject,
+        notification_type=recovery_type,
+    )
+
+
 def build_collection_lifecycle_payload(
     *,
     config: WebhookConfig,
@@ -380,6 +626,7 @@ def build_collection_lifecycle_payload(
         "type": "collection_lifecycle",
         "collection_id": collection_id,
         "delivered_at": isoformat_z(delivered_at),
+        "notification": _collection_notification(event=event, collection_id=collection_id),
     }
     if config.base_url:
         payload["collection_url"] = collection_url(config.base_url, collection_id)
@@ -404,6 +651,7 @@ def build_copy_label_needed_payload(
         "copy_id": copy_id,
         "label_text": label_text,
         "delivered_at": isoformat_z(delivered_at),
+        "notification": _copy_label_needed_notification(label_text=label_text),
     }
     if config.base_url:
         payload["image_url"] = image_summary_url(config.base_url, image_id)

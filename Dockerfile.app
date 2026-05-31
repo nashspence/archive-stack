@@ -31,6 +31,7 @@ WORKDIR /app
 COPY requirements-runtime.txt ./
 RUN pip install --no-cache-dir --require-hashes -r requirements-runtime.txt
 
+COPY contracts ./contracts
 COPY src ./src
 
 ENTRYPOINT ["uvicorn", "riverhog_api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]

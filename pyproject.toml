@@ -48,6 +48,9 @@ djdan = "djdan.main:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/riverhog_api", "src/riverhog_cli", "src/riverhog_core", "src/djdan"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"contracts/webhooks/operator-notifications.v1.json" = "riverhog_core/contracts/webhooks/operator-notifications.v1.json"
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

@@ -413,11 +413,12 @@ recovery lifecycle notifications.
 
 The canonical machine-readable event contract is
 [`contracts/webhooks/operator-notifications.v1.json`](../../contracts/webhooks/operator-notifications.v1.json).
-Exact receiver-side notification titles and message text are intentionally
-outside Riverhog's required protocol, but that contract also carries canonical
-rendering examples. The current quiet example style is title `🐷` and message
-`{subject} {event_label}`, such as `home-videos finalized`, `20260527T165916Z.iso
-disc ready`, or `docs/tax fetch needed`.
+Each operator webhook includes a `notification` object rendered from that
+contract, with canonical `title` and `body` strings intended to be usable
+directly by Home Assistant or another receiver. Receivers may still render their
+own presentation from the event fields, but the built-in style is quiet:
+Riverhog events use `🐷`, djdan/disc-action events use `👨🏻‍🎤`, titles include a
+40-character subject, and bodies are brief 150-character status messages.
 
 Collection events are intentionally sparse so long-running retries do not spam
 operators. Success milestones include `collections.upload_staged`,

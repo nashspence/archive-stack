@@ -389,5 +389,12 @@ def test_notify_label_needed_sends_best_effort_operator_webhook(
             "label_text": "20260420T040001Z-1",
             "delivered_at": sent[0]["delivered_at"],
             "image_url": "https://api.test/v1/images/20260420T040001Z",
+            "notification": {
+                "title": "👨🏻‍🎤 20260420T040001Z-1",
+                "body": (
+                    "That burn verified, dawg. Label the disc exactly, then tell me where "
+                    "it lives."
+                ),
+            },
         }
     ]

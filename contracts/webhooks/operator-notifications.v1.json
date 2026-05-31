@@ -11,39 +11,32 @@
     "public_base_url_env": "RIVERHOG_PUBLIC_BASE_URL"
   },
   "receiver_rendering": {
-    "title": "out_of_scope",
-    "message": "out_of_scope",
-    "notes": "Receivers own exact notification titles and phone text. Riverhog payloads provide event, urgency, operator_action, and operator_message where the app has first-class guidance.",
-    "canonical_examples": {
-      "default_title": "🐷",
-      "default_message_template": "{subject} {event_label}",
-      "subject_precedence": [
-        "collection slug when collection_id is present",
-        "first image filename or image_id when images are present",
-        "session_id when present",
-        "riverhog"
-      ],
-      "interruption_level_template": "critical when operator_urgency is critical; otherwise time-sensitive",
-      "event_labels": {
-        "collections.upload_staged": "upload staged",
-        "collections.finalized": "finalized",
-        "collections.archive_retrying": "retrying",
-        "collections.planner_failed": "planner failed",
-        "images.ready": "disc ready",
-        "images.ready.reminder": "disc reminder",
-        "images.copy_label_needed": "label needed",
-        "fetches.waiting_media": "fetch needed",
-        "fetches.waiting_media.reminder": "fetch reminder",
-        "glacier_recovery.started": "glacier recovery started",
-        "glacier_recovery.ready": "glacier recovery ready",
-        "glacier_recovery.ready.reminder": "glacier recovery reminder",
-        "glacier_recovery.completed": "glacier recovery completed"
-      }
-    }
+    "title": "payload.notification.title",
+    "message": "payload.notification.body",
+    "notes": "Riverhog renders the canonical_notification template for each event into payload.notification. Receivers may use those strings directly, or render their own presentation from the same machine-readable event data.",
+    "subject_max_chars": 40,
+    "body_max_chars": 150,
+    "title_template_tokens": [
+      "emoji",
+      "subject_40"
+    ],
+    "body_template_tokens": [
+      "subject",
+      "subject_40"
+    ],
+    "actors": {
+      "riverhog": "🐷",
+      "djdan": "👨🏻‍🎤"
+    },
+    "interruption_level_template": "critical when operator_urgency is critical; otherwise time-sensitive"
   },
   "common_payload_fields": {
     "event": "string event id matching one event below",
-    "delivered_at": "UTC ISO-8601 timestamp with Z suffix"
+    "delivered_at": "UTC ISO-8601 timestamp with Z suffix",
+    "notification": {
+      "title": "canonical title rendered from this contract",
+      "body": "canonical body rendered from this contract"
+    }
   },
   "urgency_levels": {
     "passive": "Informational and does not imply immediate operator action.",
@@ -62,6 +55,11 @@
         "mode": "best_effort",
         "retry": false,
         "reminder": false
+      },
+      "canonical_notification": {
+        "actor": "riverhog",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Piggy has the upload safely staged on the server; Glacier archiving is underway."
       },
       "required_payload_fields": [
         "event",
@@ -90,6 +88,11 @@
         "mode": "best_effort",
         "retry": false,
         "reminder": false
+      },
+      "canonical_notification": {
+        "actor": "riverhog",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Piggy finished archiving and promoting this collection. It is safe and available."
       },
       "required_payload_fields": [
         "event",
@@ -122,6 +125,11 @@
         "reminder": true,
         "reminder_interval_env": "RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL"
       },
+      "canonical_notification": {
+        "actor": "riverhog",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Piggy hit a recoverable archive snag and will keep retrying. No action needed yet."
+      },
       "required_payload_fields": [
         "event",
         "type",
@@ -149,6 +157,11 @@
         "mode": "best_effort",
         "retry": false,
         "reminder": false
+      },
+      "canonical_notification": {
+        "actor": "riverhog",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Piggy archived the collection, but planner refresh failed. Please inspect Riverhog."
       },
       "required_payload_fields": [
         "event",
@@ -178,6 +191,11 @@
         "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
         "reminder": true,
         "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
+      },
+      "canonical_notification": {
+        "actor": "djdan",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "The pigs got discs ready to burn, dawg. Run `djdan burn` so we can get spinnin'."
       },
       "required_payload_fields": [
         "event",
@@ -209,6 +227,11 @@
         "reminder": true,
         "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
       },
+      "canonical_notification": {
+        "actor": "djdan",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Still holdin' that burn cue, dawg. Run `djdan burn` when you're ready."
+      },
       "required_payload_fields": [
         "event",
         "batch_id",
@@ -236,6 +259,11 @@
         "retry": false,
         "reminder": false
       },
+      "canonical_notification": {
+        "actor": "djdan",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "That burn verified, dawg. Label the disc exactly, then tell me where it lives."
+      },
       "required_payload_fields": [
         "event",
         "type",
@@ -261,6 +289,11 @@
         "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
         "reminder": true,
         "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
+      },
+      "canonical_notification": {
+        "actor": "djdan",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Need that disc read, dawg. Run `djdan fetch` so I can get those files hot again."
       },
       "required_payload_fields": [
         "event",
@@ -297,6 +330,11 @@
         "reminder": true,
         "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
       },
+      "canonical_notification": {
+        "actor": "djdan",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Still need that fetch run, dawg. The pinned files are waiting on disc media."
+      },
       "required_payload_fields": [
         "event",
         "type",
@@ -329,6 +367,11 @@
         "retry": true,
         "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
         "reminder": false
+      },
+      "canonical_notification": {
+        "actor": "riverhog",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Piggy requested Glacier recovery. This can take a long time; the archived data is safe."
       },
       "required_payload_fields": [
         "event",
@@ -364,6 +407,18 @@
         "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
         "reminder": true,
         "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
+      },
+      "canonical_notification_by_type": {
+        "image_rebuild": {
+          "actor": "djdan",
+          "title_template": "{emoji} {subject_40}",
+          "body_template": "Glacier data is ready, dawg. Rebuild replacement media before the window closes."
+        },
+        "collection_restore": {
+          "actor": "riverhog",
+          "title_template": "{emoji} {subject_40}",
+          "body_template": "Piggy has Glacier data ready and is restoring missing pinned files now."
+        }
       },
       "required_payload_fields": [
         "event",
@@ -402,6 +457,18 @@
         "reminder": true,
         "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
       },
+      "canonical_notification_by_type": {
+        "image_rebuild": {
+          "actor": "djdan",
+          "title_template": "{emoji} {subject_40}",
+          "body_template": "That recovery data is still ready, dawg. Rebuild replacement media before it expires."
+        },
+        "collection_restore": {
+          "actor": "riverhog",
+          "title_template": "{emoji} {subject_40}",
+          "body_template": "Piggy is still working through recovered Glacier data for pinned files."
+        }
+      },
       "required_payload_fields": [
         "event",
         "type",
@@ -436,6 +503,18 @@
         "retry": true,
         "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
         "reminder": false
+      },
+      "canonical_notification_by_type": {
+        "image_rebuild": {
+          "actor": "riverhog",
+          "title_template": "{emoji} {subject_40}",
+          "body_template": "Piggy finished Glacier recovery and cleaned up the temporary restored data."
+        },
+        "collection_restore": {
+          "actor": "riverhog",
+          "title_template": "{emoji} {subject_40}",
+          "body_template": "Piggy finished Glacier recovery and the missing pinned files are hot again."
+        }
       },
       "required_payload_fields": [
         "event",

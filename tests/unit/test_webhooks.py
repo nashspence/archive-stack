@@ -30,14 +30,12 @@ def test_operator_webhook_contract_covers_current_events() -> None:
     events = {event["event"]: event for event in contract["events"]}
 
     assert contract["surface"] == "riverhog.operator_webhook"
-    assert contract["receiver_rendering"]["title"] == "out_of_scope"
-    assert contract["receiver_rendering"]["canonical_examples"]["default_title"] == "🐷"
-    assert (
-        contract["receiver_rendering"]["canonical_examples"]["event_labels"][
-            "fetches.waiting_media"
-        ]
-        == "fetch needed"
-    )
+    assert contract["receiver_rendering"]["title"] == "payload.notification.title"
+    assert contract["receiver_rendering"]["message"] == "payload.notification.body"
+    assert contract["receiver_rendering"]["actors"] == {
+        "riverhog": "🐷",
+        "djdan": "👨🏻‍🎤",
+    }
     assert set(events) == {
         "collections.upload_staged",
         "collections.finalized",
@@ -53,6 +51,15 @@ def test_operator_webhook_contract_covers_current_events() -> None:
         "glacier_recovery.ready.reminder",
         "glacier_recovery.completed",
     }
+    for event in events.values():
+        templates = event.get("canonical_notification_by_type") or {
+            "default": event.get("canonical_notification")
+        }
+        assert all(
+            template["title_template"] == "{emoji} {subject_40}"
+            for template in templates.values()
+        )
+        assert all(len(template["body_template"]) <= 150 for template in templates.values())
     assert events["collections.planner_failed"]["operator_urgency"] == "critical"
     assert events["fetches.waiting_media"]["delivery"]["mode"] == "durable"
     assert events["glacier_recovery.started"]["operator_urgency"] == "time_sensitive"
@@ -77,6 +84,10 @@ def test_build_images_ready_payload_supports_multiple_images() -> None:
     assert payload["event"] == "images.ready"
     assert len(payload["images"]) == 2
     assert payload["images"][0]["download_url"].endswith("/v1/images/20260420T040001Z/iso")
+    assert payload["notification"] == {
+        "title": "👨🏻‍🎤 20260420T040001Z.iso +1",
+        "body": "The pigs got discs ready to burn, dawg. Run `djdan burn` so we can get spinnin'.",
+    }
 
 
 def test_build_recovery_ready_payload_includes_session_and_image_urls() -> None:
@@ -117,6 +128,13 @@ def test_build_recovery_ready_payload_includes_session_and_image_urls() -> None:
             }
         ],
         "collections": [],
+        "notification": {
+            "title": "👨🏻‍🎤 20260420T040001Z.iso",
+            "body": (
+                "Glacier data is ready, dawg. Rebuild replacement media before the window "
+                "closes."
+            ),
+        },
     }
 
 
@@ -144,6 +162,13 @@ def test_build_recovery_lifecycle_payloads_are_explicit_about_glacier_work() -> 
     assert started["event"] == "glacier_recovery.started"
     assert started["operator_urgency"] == "time_sensitive"
     assert "long time" in str(started["operator_message"])
+    assert started["notification"] == {
+        "title": "🐷 docs",
+        "body": (
+            "Piggy requested Glacier recovery. This can take a long time; the archived "
+            "data is safe."
+        ),
+    }
     assert started["collections"] == [
         {
             "collection_id": "docs",
@@ -152,6 +177,10 @@ def test_build_recovery_lifecycle_payloads_are_explicit_about_glacier_work() -> 
     ]
     assert completed["event"] == "glacier_recovery.completed"
     assert completed["operator_action"] == "No operator action required"
+    assert completed["notification"] == {
+        "title": "🐷 docs",
+        "body": "Piggy finished Glacier recovery and the missing pinned files are hot again.",
+    }
 
 
 def test_build_fetch_waiting_payload_names_operator_action() -> None:
@@ -176,6 +205,12 @@ def test_build_fetch_waiting_payload_names_operator_action() -> None:
     assert payload["event"] == "fetches.waiting_media"
     assert payload["operator_action"] == "Run djdan fetch fx-1"
     assert payload["manifest_url"] == "https://api.test/v1/fetches/fx-1/manifest"
+    assert payload["notification"] == {
+        "title": "👨🏻‍🎤 invoice-123.pdf",
+        "body": (
+            "Need that disc read, dawg. Run `djdan fetch` so I can get those files hot again."
+        ),
+    }
 
 
 def test_build_collection_lifecycle_payload_includes_links_and_details() -> None:
@@ -196,6 +231,10 @@ def test_build_collection_lifecycle_payload_includes_links_and_details() -> None
     assert payload["collection_id"] == "2025/20250712T213200Z__home-videos"
     assert payload["collection_url"].endswith("/v1/collections/2025/20250712T213200Z__home-videos")
     assert payload["files_total"] == 572
+    assert payload["notification"] == {
+        "title": "🐷 home-videos",
+        "body": "Piggy has the upload safely staged on the server; Glacier archiving is underway.",
+    }
 
 
 def test_build_copy_label_needed_payload_includes_label_and_image_url() -> None:
@@ -215,4 +254,10 @@ def test_build_copy_label_needed_payload_includes_label_and_image_url() -> None:
         "label_text": "20260526T204059Z-1",
         "delivered_at": "2026-05-26T21:15:00Z",
         "image_url": "https://api.test/v1/images/20260526T204059Z",
+        "notification": {
+            "title": "👨🏻‍🎤 20260526T204059Z-1",
+            "body": (
+                "That burn verified, dawg. Label the disc exactly, then tell me where it lives."
+            ),
+        },
     }
