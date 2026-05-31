@@ -54,7 +54,6 @@ from riverhog_core.domain.models import (
     RecoverySessionProgress,
     RecoverySessionSummary,
 )
-from riverhog_core.domain.selectors import parse_target
 from riverhog_core.domain.types import CollectionId, ImageId
 from riverhog_core.finalized_image_coverage import build_disc_manifest_from_catalog
 from riverhog_core.fs_paths import normalize_relpath
@@ -80,6 +79,7 @@ from riverhog_core.recovery_payloads import (
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.compliance import file_has_registered_disc_coverage
 from riverhog_core.services.glacier_pricing import resolve_glacier_pricing
+from riverhog_core.services.target_selection import selected_collection_files
 from riverhog_core.webhooks import (
     WebhookConfig,
     build_recovery_ready_payload,
@@ -513,11 +513,17 @@ class SqlAlchemyRecoverySessionService:
                 if missing_count >= limit:
                     break
                 selected = _selected_pin_files(session, pin.target)
+                listed_hot_files: dict[str, dict[str, int]] = {}
                 missing_for_pin: list[CollectionFileRecord] = []
                 for file_record in selected:
                     if missing_count >= limit:
                         break
-                    if _hot_file_available(self._hot_store, file_record):
+                    if _hot_file_available_for_audit(
+                        self._hot_store,
+                        file_record,
+                        selected_count=len(selected),
+                        listed_hot_files=listed_hot_files,
+                    ):
                         if not file_record.hot:
                             file_record.hot = True
                         continue
@@ -789,17 +795,29 @@ def ensure_glacier_recovery_session_for_image(
 
 
 def _selected_pin_files(session: Session, raw_target: str) -> list[CollectionFileRecord]:
-    target = parse_target(raw_target)
-    records = session.scalars(select(CollectionFileRecord)).all()
-    return [
-        record
-        for record in records
-        if (
-            f"{record.collection_id}/{record.path}".startswith(target.canonical)
-            if target.is_dir
-            else f"{record.collection_id}/{record.path}" == target.canonical
-        )
-    ]
+    return selected_collection_files(session, raw_target, missing_ok=True)
+
+
+def _hot_file_available_for_audit(
+    hot_store: HotStore,
+    file_record: CollectionFileRecord,
+    *,
+    selected_count: int,
+    listed_hot_files: dict[str, dict[str, int]],
+) -> bool:
+    if selected_count <= 1:
+        return _hot_file_available(hot_store, file_record)
+    listing = listed_hot_files.get(file_record.collection_id)
+    if listing is None:
+        try:
+            listing = {
+                path: int(byte_count)
+                for path, byte_count in hot_store.list_collection_files(file_record.collection_id)
+            }
+        except Exception:
+            return _hot_file_available(hot_store, file_record)
+        listed_hot_files[file_record.collection_id] = listing
+    return listing.get(file_record.path) == int(file_record.bytes)
 
 
 def _hot_file_available(hot_store: HotStore, file_record: CollectionFileRecord) -> bool:

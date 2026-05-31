@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
@@ -12,7 +12,7 @@ from riverhog_core.catalog_models import (
     FetchEntryRecord,
 )
 from riverhog_core.domain.enums import FetchState
-from riverhog_core.domain.errors import Conflict, NotFound
+from riverhog_core.domain.errors import Conflict
 from riverhog_core.domain.models import FetchCopyHint, FetchSummary, PinSummary
 from riverhog_core.domain.selectors import parse_target
 from riverhog_core.domain.types import CopyId, FetchId, TargetStr
@@ -21,6 +21,7 @@ from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.compliance import file_is_fully_compliant
 from riverhog_core.services.fetches import delete_fetch_entries
+from riverhog_core.services.target_selection import selected_collection_files
 
 
 class SqlAlchemyPinService:
@@ -35,7 +36,7 @@ class SqlAlchemyPinService:
         target = parse_target(raw_target)
         canonical = TargetStr(target.canonical)
         with session_scope(self._session_factory) as session:
-            selected = _selected_files(session, target.canonical)
+            selected = selected_collection_files(session, target.canonical, load_copies=True)
             present_bytes = sum(record.bytes for record in selected if record.hot)
             missing_bytes = sum(record.bytes for record in selected if not record.hot)
 
@@ -77,7 +78,11 @@ class SqlAlchemyPinService:
                     "target": str(canonical),
                     "pin": False,
                 }
-            released_files = _selected_files(session, target.canonical, missing_ok=True)
+            released_files = selected_collection_files(
+                session,
+                target.canonical,
+                missing_ok=True,
+            )
             noncompliant = [
                 record
                 for record in released_files
@@ -118,7 +123,12 @@ class SqlAlchemyPinService:
             ).all()
             summaries: list[PinSummary] = []
             for pin_record in pin_records:
-                selected = _selected_files(session, pin_record.target)
+                selected = selected_collection_files(
+                    session,
+                    pin_record.target,
+                    load_copies=True,
+                    missing_ok=True,
+                )
                 summaries.append(
                     PinSummary(
                         target=TargetStr(pin_record.target),
@@ -131,30 +141,6 @@ class SqlAlchemyPinService:
 def _next_fetch_order(session: Session) -> int:
     max_fetch_order = session.scalar(select(func.max(ActivePinRecord.fetch_order)))
     return int(max_fetch_order or 0) + 1
-
-
-def _selected_files(
-    session: Session,
-    raw_target: str,
-    *,
-    missing_ok: bool = False,
-) -> list[CollectionFileRecord]:
-    target = parse_target(raw_target)
-    records = session.scalars(
-        select(CollectionFileRecord).options(selectinload(CollectionFileRecord.copies))
-    ).all()
-    selected = [
-        record
-        for record in records
-        if (
-            f"{record.collection_id}/{record.path}".startswith(target.canonical)
-            if target.is_dir
-            else f"{record.collection_id}/{record.path}" == target.canonical
-        )
-    ]
-    if not selected and not missing_ok:
-        raise NotFound(f"target not found: {raw_target}")
-    return selected
 
 
 def _fetch_summary(
