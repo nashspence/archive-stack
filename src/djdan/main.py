@@ -636,12 +636,18 @@ class TerminalBurnPrompts:
             f'Type "labeled" after writing "{label_text}" on disc {copy_id}.',
             err=True,
         )
-        try:
-            response = input().strip()
-        except EOFError as exc:  # pragma: no cover - exercised via subprocess acceptance tests
-            raise RuntimeError("stdin closed while waiting for label confirmation") from exc
-        if response.casefold() != "labeled":
-            raise RuntimeError(f"label confirmation required for {copy_id}")
+        while True:
+            try:
+                response = input().strip()
+            except EOFError as exc:  # pragma: no cover - exercised via subprocess acceptance tests
+                raise RuntimeError("stdin closed while waiting for label confirmation") from exc
+            normalized = response.strip("\"'`").casefold()
+            if normalized == "labeled":
+                return
+            typer.echo(
+                f'label confirmation for {copy_id} is still pending; type "labeled" to continue.',
+                err=True,
+            )
 
     def prompt_location(self, copy_id: str) -> str:
         typer.echo(f"Enter the storage location for {copy_id}.", err=True)

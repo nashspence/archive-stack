@@ -66,6 +66,24 @@ def test_default_djdan_io_builders_use_real_backends(monkeypatch) -> None:
     )
 
 
+def test_terminal_burn_prompts_reprompt_for_label_confirmation(monkeypatch, capsys) -> None:
+    responses = iter(["", "labeled"])
+    monkeypatch.setattr("builtins.input", lambda: next(responses))
+
+    djdan_main.TerminalBurnPrompts().confirm_label("20260531T030858Z-2", label_text="copy-label")
+
+    stderr = capsys.readouterr().err
+    assert 'Type "labeled" after writing "copy-label" on disc 20260531T030858Z-2.' in stderr
+    assert 'label confirmation for 20260531T030858Z-2 is still pending; type "labeled"' in stderr
+
+
+def test_terminal_burn_prompts_accept_quoted_label_confirmation(monkeypatch) -> None:
+    responses = iter(['"labeled"'])
+    monkeypatch.setattr("builtins.input", lambda: next(responses))
+
+    djdan_main.TerminalBurnPrompts().confirm_label("20260531T030858Z-2", label_text="copy-label")
+
+
 def test_xorriso_optical_reader_reads_from_mounted_media(tmp_path: Path) -> None:
     payload_path = tmp_path / "disc" / "000001.bin"
     payload_path.parent.mkdir()
