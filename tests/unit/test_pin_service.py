@@ -4,9 +4,17 @@ import hashlib
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
+import pytest
 from sqlalchemy import select
 
-from riverhog_core.catalog_models import CollectionFileRecord, CollectionRecord
+from riverhog_core.catalog_models import (
+    CollectionFileRecord,
+    CollectionRecord,
+    FinalizedImageCoveredPathRecord,
+    FinalizedImageRecord,
+    ImageCopyRecord,
+)
+from riverhog_core.domain.errors import Conflict
 from riverhog_core.ports.hot_store import HotFileStat
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.pins import SqlAlchemyPinService
@@ -145,6 +153,46 @@ def _seed_hot_docs(sqlite_path: Path, hot_store: _FakeHotStore) -> None:
             )
 
 
+def _mark_docs_fully_compliant(sqlite_path: Path) -> None:
+    session_factory = make_session_factory(str(sqlite_path))
+    with session_scope(session_factory) as session:
+        session.add(
+            FinalizedImageRecord(
+                image_id="20260530T000000Z",
+                candidate_id="candidate-docs",
+                filename="20260530T000000Z.iso",
+                bytes=1234,
+                image_root="/tmp/docs-image",
+                target_bytes=50_000_000_000,
+                required_copy_count=2,
+            )
+        )
+        for path in {
+            "tax/2022/invoice-123.pdf",
+            "tax/2022/receipt-456.pdf",
+            "letters/cover.txt",
+        }:
+            session.add(
+                FinalizedImageCoveredPathRecord(
+                    image_id="20260530T000000Z",
+                    collection_id="docs",
+                    path=path,
+                )
+            )
+        for ordinal in (1, 2):
+            session.add(
+                ImageCopyRecord(
+                    image_id="20260530T000000Z",
+                    copy_id=f"20260530T000000Z-{ordinal}",
+                    label_text=f"20260530T000000Z-{ordinal}",
+                    location="test shelf",
+                    created_at="2026-05-30T00:00:00Z",
+                    state="registered",
+                    verification_state="verified",
+                )
+            )
+
+
 def _hot_paths(sqlite_path: Path) -> set[str]:
     session_factory = make_session_factory(str(sqlite_path))
     with session_scope(session_factory) as session:
@@ -155,11 +203,12 @@ def _hot_paths(sqlite_path: Path) -> set[str]:
         }
 
 
-def test_releasing_one_file_evicts_only_that_file(tmp_path: Path) -> None:
+def test_releasing_one_file_removes_only_that_file(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     initialize_db(str(sqlite_path))
     hot_store = _FakeHotStore()
     _seed_hot_docs(sqlite_path, hot_store)
+    _mark_docs_fully_compliant(sqlite_path)
     service = SqlAlchemyPinService(_config(sqlite_path), hot_store, _FakeUploadStore())
 
     service.pin("docs/tax/2022/invoice-123.pdf")
@@ -177,6 +226,7 @@ def test_releasing_broad_pin_preserves_remaining_narrow_pin(tmp_path: Path) -> N
     initialize_db(str(sqlite_path))
     hot_store = _FakeHotStore()
     _seed_hot_docs(sqlite_path, hot_store)
+    _mark_docs_fully_compliant(sqlite_path)
     service = SqlAlchemyPinService(_config(sqlite_path), hot_store, _FakeUploadStore())
 
     service.pin("docs/tax/")
@@ -190,7 +240,7 @@ def test_releasing_broad_pin_preserves_remaining_narrow_pin(tmp_path: Path) -> N
     }
 
 
-def test_releasing_missing_pin_does_not_evict_unrelated_hot_files(tmp_path: Path) -> None:
+def test_releasing_missing_pin_does_not_remove_unrelated_hot_files(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     initialize_db(str(sqlite_path))
     hot_store = _FakeHotStore()
@@ -207,37 +257,18 @@ def test_releasing_missing_pin_does_not_evict_unrelated_hot_files(tmp_path: Path
     }
 
 
-def test_evict_removes_archived_hot_file_without_pin(tmp_path: Path) -> None:
+def test_releasing_noncompliant_pin_is_refused(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     initialize_db(str(sqlite_path))
     hot_store = _FakeHotStore()
     _seed_hot_docs(sqlite_path, hot_store)
     service = SqlAlchemyPinService(_config(sqlite_path), hot_store, _FakeUploadStore())
 
-    payload = service.evict("docs/tax/2022/invoice-123.pdf")
+    service.pin("docs/tax/2022/invoice-123.pdf")
 
-    assert payload["evicted_files"] == 1
-    assert payload["evicted_bytes"] == len(b"invoice")
-    assert payload["pinned_files"] == 0
-    assert hot_store.deleted == [("docs", "tax/2022/invoice-123.pdf")]
-    assert _hot_paths(sqlite_path) == {
-        "tax/2022/receipt-456.pdf",
-        "letters/cover.txt",
-    }
+    with pytest.raises(Conflict, match="non-compliant file"):
+        service.release("docs/tax/2022/invoice-123.pdf")
 
-
-def test_evict_skips_files_covered_by_active_pin(tmp_path: Path) -> None:
-    sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
-    hot_store = _FakeHotStore()
-    _seed_hot_docs(sqlite_path, hot_store)
-    service = SqlAlchemyPinService(_config(sqlite_path), hot_store, _FakeUploadStore())
-
-    service.pin("docs/tax/")
-    payload = service.evict("docs/tax/2022/invoice-123.pdf")
-
-    assert payload["evicted_files"] == 0
-    assert payload["pinned_files"] == 1
     assert hot_store.deleted == []
     assert _hot_paths(sqlite_path) == {
         "tax/2022/invoice-123.pdf",

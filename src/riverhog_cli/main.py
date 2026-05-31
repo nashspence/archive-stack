@@ -21,7 +21,6 @@ from riverhog_cli.output import (
     format_copies,
     format_copy,
     format_dashboard,
-    format_evict,
     format_fetch,
     format_files,
     format_glacier_report,
@@ -1159,15 +1158,6 @@ def release_cmd(
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     emit(client().release(target), json_mode=json_mode)
-
-
-@app.command("evict")
-def evict_cmd(
-    target: Annotated[str, typer.Argument(help="Target selector")],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    payload = client().evict(target)
-    emit(payload if json_mode else format_evict(payload), json_mode=json_mode)
 
 
 @app.command("pins")

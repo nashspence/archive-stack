@@ -170,15 +170,12 @@ Required behavior:
 - collection ids may span multiple path segments, for example `GET /v1/collections/photos/2024`
 - API and CLI collection lookup treat slash-bearing ids as first-class
 - collection summaries expose `glacier`, `collection_manifest`, `archive_format`,
-  `compression`, `protection_mirror`, `disc_coverage`, `protection_state`,
-  `protected_bytes`, and per-image physical coverage details
+  `compression`, `disc_coverage`, `protection_state`, `protected_bytes`, and
+  per-image physical coverage details
 - `glacier` is direct collection archive state, not a value derived from image
   coverage
 - `collection_manifest` exposes manifest object path, manifest SHA-256, OTS proof
   object path, and OTS proof state
-- `protection_mirror` exposes whether the temporary offsite mirror is enabled,
-  its current per-collection state, mirrored archive bytes, and the latest
-  retryable failure if any
 - per-image coverage details expose `covered_paths`, `physical_copies_registered`,
   `physical_copies_verified`, copy labels and locations
 
@@ -193,8 +190,7 @@ Supported query parameters:
 Required behavior:
 
 - returned rows include collection byte totals, hot/archive byte totals,
-  `protected_bytes`, `protection_state`, concise recovery coverage, and
-  `protection_mirror`
+  `protected_bytes`, `protection_state`, and concise recovery coverage
 - returned rows intentionally do not include full `image_coverage`; use
   `GET /v1/collections/{collection_id}` when the operator needs per-image path
   detail
@@ -621,21 +617,10 @@ Required behavior:
 - releasing a broader pin must not remove narrower remaining pins
 - releasing a narrower pin must not remove broader remaining pins
 - releasing the last exact pin for one selector abandons and removes that selector's fetch manifest
-- releasing one exact pin also removes selected hot files that are no longer covered by a remaining pin
-- releasing a missing pin must not evict unrelated hot files
-
-#### `POST /v1/evict`
-
-Evicts archived bytes from the committed hot cache without changing pin intent.
-
-Required behavior:
-
-- the `target` field carries one canonical selector over the projected hot namespace
-- evicting a file, directory, or collection selector affects only selected files
-- selected files covered by any active pin are skipped
-- selected files that are not yet archived are skipped so Riverhog does not discard the only known copy
-- selected files that are already cold are counted as already cold and left unchanged
-- successful eviction leaves archived files recoverable through a new pin/fetch workflow
+- releasing one exact fully compliant pin also removes selected hot files that are no longer covered by a remaining pin
+- releasing a non-compliant pinned file or collection fails; Riverhog keeps under-protected bytes pinned hot until enough
+  verified physical copies exist
+- releasing a missing pin must not remove unrelated hot files
 
 #### `GET /v1/pins`
 
@@ -772,7 +757,6 @@ The `riverhog` CLI is a thin API client and should provide at least:
 - `riverhog copy mark IMAGE_ID GENERATED_ID --state STATE [--verification-state STATE]`
 - `riverhog pin TARGET`
 - `riverhog release TARGET`
-- `riverhog evict TARGET`
 - `riverhog pins`
 - `riverhog fetch FETCH_ID`
 
@@ -909,9 +893,9 @@ Required behavior:
 - pinning the same exact selector twice reuses the same fetch manifest while that exact pin remains present
 - releasing a target not currently pinned is a successful no-op
 - a file is logically required in hot if and only if at least one active pin selects it
-- immediately after collection finalization, every file in the collection is hot
-- releasing a file pin evicts only that selected file unless another active pin still covers it
-- evicting a target removes archived hot-cache bytes without removing or creating pins
+- immediately after collection finalization, every file in a non-compliant collection is pinned hot by default
+- releasing a pinned file or subtree is allowed only after every selected file is fully compliant
+- releasing a file pin removes only that selected file unless another active pin still covers it
 - every active pin has exactly one associated fetch manifest, even when the selected bytes are already hot
 - a file restored by a completed fetch is hot
 - hot file content is directly downloadable when the target selects exactly one file

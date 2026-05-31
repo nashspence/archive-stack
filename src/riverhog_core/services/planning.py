@@ -31,7 +31,6 @@ from riverhog_core.catalog_models import (
     CandidateCoveredPathRecord,
     CollectionArchiveRecord,
     CollectionFileRecord,
-    CollectionProtectionMirrorRecord,
     CollectionRecord,
     CollectionUploadRecord,
     FinalizedImageCollectionArtifactRecord,
@@ -66,16 +65,12 @@ from riverhog_core.planner.manifest import (
 )
 from riverhog_core.ports.archive_store import ArchiveStore
 from riverhog_core.ports.hot_store import HotStore
-from riverhog_core.ports.protection_mirror import ProtectionMirrorStore
 from riverhog_core.recovery_payloads import (
     CommandAgeBatchpassRecoveryPayloadCodec,
     RecoveryPayloadCodec,
     RecoveryPayloadError,
 )
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.protection_mirror_repair import (
-    repair_collection_hot_files_from_protection_mirror,
-)
 from riverhog_core.webhooks import (
     ImagesReadyBatch,
     ReadyImage,
@@ -193,14 +188,12 @@ class SqlAlchemyPlanningService:
         config: RuntimeConfig,
         hot_store: HotStore | None = None,
         archive_store: ArchiveStore | None = None,
-        protection_mirror_store: ProtectionMirrorStore | None = None,
         recovery_payload_codec: RecoveryPayloadCodec | None = None,
     ) -> None:
         self._config = config
         self._session_factory = make_session_factory(config.database_url)
         self._hot_store = hot_store
         self._archive_store = archive_store
-        self._protection_mirror_store = protection_mirror_store
         self._recovery_payload_codec = (
             recovery_payload_codec
             or CommandAgeBatchpassRecoveryPayloadCodec(
@@ -232,7 +225,6 @@ class SqlAlchemyPlanningService:
                 config=self._config,
                 hot_store=self._hot_store,
                 archive_store=self._archive_store,
-                protection_mirror_store=self._protection_mirror_store,
                 recovery_payload_codec=self._recovery_payload_codec,
             )
             processed = 1
@@ -563,7 +555,6 @@ def refresh_provisional_plan(
     config: RuntimeConfig,
     hot_store: HotStore,
     archive_store: ArchiveStore | None = None,
-    protection_mirror_store: ProtectionMirrorStore | None = None,
     recovery_payload_codec: RecoveryPayloadCodec,
 ) -> None:
     if not _REFRESH_LOCK.acquire(blocking=False):
@@ -582,7 +573,6 @@ def refresh_provisional_plan(
                 config=config,
                 hot_store=hot_store,
                 archive_store=archive_store,
-                protection_mirror_store=protection_mirror_store,
                 recovery_payload_codec=recovery_payload_codec,
             )
             _LOG.info(
@@ -615,7 +605,6 @@ def _refresh_provisional_plan_locked(
     config: RuntimeConfig,
     hot_store: HotStore,
     archive_store: ArchiveStore | None,
-    protection_mirror_store: ProtectionMirrorStore | None,
     recovery_payload_codec: RecoveryPayloadCodec,
 ) -> None:
     session_factory = make_session_factory(config.database_url)
@@ -712,7 +701,6 @@ def _refresh_provisional_plan_locked(
             materialized = _materialize_candidate(
                 config=config,
                 hot_store=hot_store,
-                protection_mirror_store=protection_mirror_store,
                 recovery_payload_codec=recovery_payload_codec,
                 candidate_id=spec.candidate_id,
                 finalized_id=spec.finalized_id,
@@ -1115,16 +1103,6 @@ def _load_plan_files(
         ]
         if not unfinalized_hot_files:
             continue
-        if config.protection_mirror_enabled:
-            mirror = session.get(CollectionProtectionMirrorRecord, collection.id)
-            if mirror is None or mirror.state != "complete":
-                _LOG.debug(
-                    "skipping collection %s during planning because protection mirror "
-                    "is not complete: state=%s",
-                    collection.id,
-                    mirror.state if mirror is not None else "missing",
-                )
-                continue
         artifact = _read_collection_artifact_cache(config, collection.id)
         if artifact is None and archive_store is not None:
             artifact = _restore_collection_artifact_cache(
@@ -2041,7 +2019,6 @@ def _materialize_candidate(
     *,
     config: RuntimeConfig,
     hot_store: HotStore,
-    protection_mirror_store: ProtectionMirrorStore | None,
     recovery_payload_codec: RecoveryPayloadCodec,
     candidate_id: str,
     finalized_id: str,
@@ -2102,12 +2079,6 @@ def _materialize_candidate(
             "planner materialization artifacts written for %s: collections=%s",
             candidate_id,
             len(artifact_paths),
-        )
-        _hydrate_missing_piece_files_from_protection_mirror(
-            session_factory=make_session_factory(config.database_url),
-            hot_store=hot_store,
-            protection_mirror_store=protection_mirror_store,
-            pieces=pieces,
         )
 
         written = 0
@@ -2210,33 +2181,6 @@ def _candidate_iso_ready(
     config: RuntimeConfig,
 ) -> bool:
     return config.planner_min_fill_bytes <= actual_bytes <= config.planner_disc_target_bytes
-
-
-def _hydrate_missing_piece_files_from_protection_mirror(
-    *,
-    session_factory: sessionmaker[Session],
-    hot_store: HotStore,
-    protection_mirror_store: ProtectionMirrorStore | None,
-    pieces: Sequence[_PlanPiece],
-) -> None:
-    if protection_mirror_store is None:
-        return
-    pieces_by_collection: dict[str, list[_PlanPiece]] = {}
-    for piece in pieces:
-        pieces_by_collection.setdefault(piece.collection_id, []).append(piece)
-    for collection_id, collection_pieces in pieces_by_collection.items():
-        _LOG.info(
-            "planner checks protection mirror repair: collection=%s trigger_files=%s",
-            collection_id,
-            len({piece.path for piece in collection_pieces}),
-        )
-        repair_collection_hot_files_from_protection_mirror(
-            session_factory=session_factory,
-            hot_store=hot_store,
-            protection_mirror_store=protection_mirror_store,
-            collection_id=collection_id,
-            trigger_paths={piece.path for piece in collection_pieces},
-        )
 
 
 def _collections_layout(pieces: Sequence[_PlanPiece]) -> dict[str, list[LayoutFileMeta]]:

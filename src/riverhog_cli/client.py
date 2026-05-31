@@ -468,9 +468,6 @@ class ApiClient:
     def release(self, target: str) -> dict[str, Any]:
         return self._json("POST", "/v1/release", json={"target": target})
 
-    def evict(self, target: str) -> dict[str, Any]:
-        return self._json("POST", "/v1/evict", json={"target": target})
-
     def list_pins(self) -> dict[str, Any]:
         return self._json("GET", "/v1/pins")
 

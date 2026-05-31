@@ -17,7 +17,6 @@ DEFAULT_PLANNER_UNPLANNED_SATURATION_BYTES = 300_000_000_000
 DEFAULT_UNBURNED_COLLECTION_BYTES_LIMIT = 500_000_000_000
 DEFAULT_GLACIER_MULTIPART_PART_BYTES = 64 * 1024 * 1024
 DEFAULT_GLACIER_MULTIPART_CONCURRENCY = 4
-DEFAULT_PROTECTION_MIRROR_MULTIPART_PART_BYTES = 64 * 1024 * 1024
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_RECOVERY_PAYLOAD_WORK_FACTOR = 12
 DEFAULT_RECOVERY_PAYLOAD_MAX_WORK_FACTOR = 30
@@ -162,18 +161,6 @@ class RuntimeConfig:
     glacier_multipart_concurrency: int = DEFAULT_GLACIER_MULTIPART_CONCURRENCY
     glacier_upload_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=5))
     glacier_upload_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
-    protection_mirror_enabled: bool = False
-    protection_mirror_s3_endpoint_url: str | None = None
-    protection_mirror_s3_region: str = "us-east-1"
-    protection_mirror_s3_bucket: str | None = None
-    protection_mirror_s3_access_key_id: str | None = None
-    protection_mirror_s3_secret_access_key: str | None = None
-    protection_mirror_s3_force_path_style: bool = True
-    protection_mirror_prefix: str = "riverhog/protection-mirror"
-    protection_mirror_multipart_part_bytes: int = DEFAULT_PROTECTION_MIRROR_MULTIPART_PART_BYTES
-    protection_mirror_hot_audit_interval: timedelta = field(
-        default_factory=lambda: timedelta(hours=24)
-    )
     operator_webhook_url: str | None = None
     operator_webhook_timeout: timedelta = field(default_factory=lambda: timedelta(seconds=5))
     operator_webhook_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=1))
@@ -264,36 +251,6 @@ class RuntimeConfig:
             raise ValueError("RIVERHOG_GLACIER_MULTIPART_PART_BYTES must be >= 1")
         if self.glacier_multipart_concurrency < 1:
             raise ValueError("RIVERHOG_GLACIER_MULTIPART_CONCURRENCY must be >= 1")
-        if self.protection_mirror_enabled:
-            if not self.protection_mirror_s3_endpoint_url:
-                raise ValueError(
-                    "RIVERHOG_PROTECTION_MIRROR_S3_ENDPOINT_URL must be set when "
-                    "RIVERHOG_PROTECTION_MIRROR_ENABLED is true"
-                )
-            if not self.protection_mirror_s3_bucket:
-                raise ValueError(
-                    "RIVERHOG_PROTECTION_MIRROR_S3_BUCKET must be set when "
-                    "RIVERHOG_PROTECTION_MIRROR_ENABLED is true"
-                )
-            if not self.protection_mirror_s3_access_key_id:
-                raise ValueError(
-                    "RIVERHOG_PROTECTION_MIRROR_S3_ACCESS_KEY_ID must be set when "
-                    "RIVERHOG_PROTECTION_MIRROR_ENABLED is true"
-                )
-            if not self.protection_mirror_s3_secret_access_key:
-                raise ValueError(
-                    "RIVERHOG_PROTECTION_MIRROR_S3_SECRET_ACCESS_KEY must be set when "
-                    "RIVERHOG_PROTECTION_MIRROR_ENABLED is true"
-                )
-        if self.protection_mirror_multipart_part_bytes < 1:
-            raise ValueError("RIVERHOG_PROTECTION_MIRROR_MULTIPART_PART_BYTES must be >= 1")
-        if self.protection_mirror_hot_audit_interval.total_seconds() <= 0:
-            raise ValueError("RIVERHOG_PROTECTION_MIRROR_HOT_AUDIT_INTERVAL must be > 0")
-        object.__setattr__(
-            self,
-            "protection_mirror_prefix",
-            _normalize_prefix(self.protection_mirror_prefix),
-        )
         if self.operator_webhook_url:
             minimum_ready_ttl = self.operator_webhook_timeout + self.operator_webhook_retry_delay
             if self.glacier_recovery_ready_ttl < minimum_ready_ttl:
@@ -369,42 +326,6 @@ def load_runtime_config() -> RuntimeConfig:
     glacier_retry_delay = _parse_duration(os.getenv("RIVERHOG_GLACIER_UPLOAD_RETRY_DELAY", "5m"))
     glacier_upload_sweep_interval = _parse_duration(
         os.getenv("RIVERHOG_GLACIER_UPLOAD_SWEEP_INTERVAL", "30s")
-    )
-    protection_mirror_enabled = _parse_bool(
-        os.getenv("RIVERHOG_PROTECTION_MIRROR_ENABLED", "false")
-    )
-    protection_mirror_s3_endpoint_url = (
-        os.getenv("RIVERHOG_PROTECTION_MIRROR_S3_ENDPOINT_URL", "").strip().rstrip("/")
-        or None
-    )
-    protection_mirror_s3_region = os.getenv(
-        "RIVERHOG_PROTECTION_MIRROR_S3_REGION",
-        os.getenv("RIVERHOG_PROTECTION_MIRROR_S3_BUCKET_REGION", "us-east-1"),
-    )
-    protection_mirror_s3_access_key_id = (
-        os.getenv(
-            "RIVERHOG_PROTECTION_MIRROR_S3_ACCESS_KEY_ID",
-            os.getenv("RIVERHOG_PROTECTION_MIRROR_S3_BUCKET_KEY_ID", ""),
-        ).strip()
-        or None
-    )
-    protection_mirror_s3_secret_access_key = (
-        os.getenv(
-            "RIVERHOG_PROTECTION_MIRROR_S3_SECRET_ACCESS_KEY",
-            os.getenv("RIVERHOG_PROTECTION_MIRROR_S3_BUCKET_APPLICATION_KEY", ""),
-        ).strip()
-        or None
-    )
-    protection_mirror_multipart_part_bytes = _parse_bytes(
-        os.getenv(
-            "RIVERHOG_PROTECTION_MIRROR_MULTIPART_PART_BYTES",
-            str(DEFAULT_PROTECTION_MIRROR_MULTIPART_PART_BYTES),
-        ),
-        name="RIVERHOG_PROTECTION_MIRROR_MULTIPART_PART_BYTES",
-        minimum=1,
-    )
-    protection_mirror_hot_audit_interval = _parse_duration(
-        os.getenv("RIVERHOG_PROTECTION_MIRROR_HOT_AUDIT_INTERVAL", "24h")
     )
     operator_webhook_url = os.getenv("RIVERHOG_OPERATOR_WEBHOOK_URL", "").strip() or None
     operator_webhook_timeout = _parse_duration(
@@ -684,22 +605,6 @@ def load_runtime_config() -> RuntimeConfig:
         glacier_multipart_concurrency=glacier_multipart_concurrency,
         glacier_upload_retry_delay=glacier_retry_delay,
         glacier_upload_sweep_interval=glacier_upload_sweep_interval,
-        protection_mirror_enabled=protection_mirror_enabled,
-        protection_mirror_s3_endpoint_url=protection_mirror_s3_endpoint_url,
-        protection_mirror_s3_region=protection_mirror_s3_region,
-        protection_mirror_s3_bucket=(
-            os.getenv("RIVERHOG_PROTECTION_MIRROR_S3_BUCKET", "").strip() or None
-        ),
-        protection_mirror_s3_access_key_id=protection_mirror_s3_access_key_id,
-        protection_mirror_s3_secret_access_key=protection_mirror_s3_secret_access_key,
-        protection_mirror_s3_force_path_style=_parse_bool(
-            os.getenv("RIVERHOG_PROTECTION_MIRROR_S3_FORCE_PATH_STYLE", "true")
-        ),
-        protection_mirror_prefix=os.getenv(
-            "RIVERHOG_PROTECTION_MIRROR_PREFIX", "riverhog/protection-mirror"
-        ),
-        protection_mirror_multipart_part_bytes=protection_mirror_multipart_part_bytes,
-        protection_mirror_hot_audit_interval=protection_mirror_hot_audit_interval,
         operator_webhook_url=operator_webhook_url,
         operator_webhook_timeout=operator_webhook_timeout,
         operator_webhook_retry_delay=operator_webhook_retry_delay,

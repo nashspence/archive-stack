@@ -1035,6 +1035,29 @@ class AcceptanceState:
             ):
                 record.hot = False
 
+    def file_is_fully_compliant(self, record: StoredFile) -> bool:
+        covering_images = [
+            image
+            for image in self.finalized_images_by_id.values()
+            if (record.collection_id, record.path) in image.covered_paths
+        ]
+        if not covering_images:
+            return False
+        required = normalize_required_copy_count(None)
+        return all(
+            sum(
+                1
+                for (volume_id, _copy_id), summary in self.copy_summaries.items()
+                if volume_id == image.finalized_id
+                and copy_counts_as_verified(
+                    state=summary.state.value,
+                    verification_state=summary.verification_state.value,
+                )
+            )
+            >= required
+            for image in covering_images
+        )
+
     @staticmethod
     def _record_matches_target(record: StoredFile, raw_target: str) -> bool:
         target = parse_target(raw_target)
@@ -1043,40 +1066,6 @@ class AcceptanceState:
             if target.is_dir
             else record.projected_target == target.canonical
         )
-
-    def evict_hot_files(self, raw_target: str) -> dict[str, int]:
-        selected = self.selected_files(raw_target)
-        selected_bytes = sum(record.bytes for record in selected)
-        evicted_files = 0
-        evicted_bytes = 0
-        already_cold_files = 0
-        pinned_files = 0
-        unarchived_files = 0
-        for record in selected:
-            if any(
-                self._record_matches_target(record, str(target))
-                for target in self.exact_pins
-            ):
-                pinned_files += 1
-                continue
-            if not record.archived:
-                unarchived_files += 1
-                continue
-            if not record.hot:
-                already_cold_files += 1
-                continue
-            record.hot = False
-            evicted_files += 1
-            evicted_bytes += record.bytes
-        return {
-            "selected_files": len(selected),
-            "selected_bytes": selected_bytes,
-            "evicted_files": evicted_files,
-            "evicted_bytes": evicted_bytes,
-            "already_cold_files": already_cold_files,
-            "pinned_files": pinned_files,
-            "unarchived_files": unarchived_files,
-        }
 
     def reserve_fetch_id(self, fetch_id: str) -> None:
         if fetch_id.startswith("fx-"):
@@ -2077,20 +2066,19 @@ class AcceptanceGlacierUploadService:
             attempted += 1
         return attempted
 
-    @_with_state_lock
-    def repair_missing_hot_files_from_protection_mirror(
-        self,
-        *,
-        limit: int = 1,
-        force: bool = False,
-    ) -> int:
-        _ = limit, force
-        return 0
-
 
 class AcceptanceRecoverySessionService:
     def __init__(self, state: AcceptanceState) -> None:
         self.state = state
+
+    @_with_state_lock
+    def repair_missing_pinned_hot_files(
+        self,
+        *,
+        limit: int = 100,
+    ) -> int:
+        _ = limit
+        return 0
 
     @_with_state_lock
     def get(self, session_id: str) -> RecoverySessionSummary:
@@ -3875,23 +3863,27 @@ class AcceptancePinService:
     def release(self, raw_target: str) -> dict[str, object]:
         target = parse_target(raw_target)
         canonical = cast(TargetStr, target.canonical)
-        removed = canonical in self.state.exact_pins
+        if canonical not in self.state.exact_pins:
+            return {
+                "target": str(canonical),
+                "pin": False,
+            }
+        selected = self.state.selected_files(str(canonical), missing_ok=True)
+        noncompliant = [
+            record for record in selected if not self.state.file_is_fully_compliant(record)
+        ]
+        if noncompliant:
+            first = noncompliant[0]
+            raise Conflict(
+                "cannot release hot storage pin for non-compliant file: "
+                f"{first.collection_id}/{first.path}"
+            )
         self.state.exact_pins.discard(canonical)
-        if removed:
-            self.fetches.remove_for_target(canonical)
-            self.state.release_hot_files_no_longer_pinned(str(canonical))
+        self.fetches.remove_for_target(canonical)
+        self.state.release_hot_files_no_longer_pinned(str(canonical))
         return {
             "target": str(canonical),
             "pin": False,
-        }
-
-    @_with_state_lock
-    def evict(self, raw_target: str) -> dict[str, object]:
-        target = parse_target(raw_target)
-        canonical = cast(TargetStr, target.canonical)
-        return {
-            "target": str(canonical),
-            **self.state.evict_hot_files(str(canonical)),
         }
 
     @_with_state_lock

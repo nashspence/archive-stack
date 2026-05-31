@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import tempfile
 from collections.abc import Iterable, Iterator, Sequence
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import cast
 
 from sqlalchemy import or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from riverhog_core.archive_compliance import (
     copy_counts_toward_protection,
@@ -21,6 +22,7 @@ from riverhog_core.archive_compliance import (
 )
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
+    ActivePinRecord,
     CollectionArchiveRecord,
     CollectionFileRecord,
     CollectionRecord,
@@ -40,7 +42,7 @@ from riverhog_core.collection_archives import (
     verify_collection_manifest,
     verify_collection_manifest_proof,
 )
-from riverhog_core.domain.enums import CopyState, GlacierState, RecoverySessionState
+from riverhog_core.domain.enums import CopyState, FetchState, GlacierState, RecoverySessionState
 from riverhog_core.domain.errors import Conflict, InvalidState, NotFound
 from riverhog_core.domain.models import (
     CollectionManifestStatus,
@@ -52,6 +54,7 @@ from riverhog_core.domain.models import (
     RecoverySessionProgress,
     RecoverySessionSummary,
 )
+from riverhog_core.domain.selectors import parse_target
 from riverhog_core.domain.types import CollectionId, ImageId
 from riverhog_core.finalized_image_coverage import build_disc_manifest_from_catalog
 from riverhog_core.fs_paths import normalize_relpath
@@ -75,6 +78,7 @@ from riverhog_core.recovery_payloads import (
     encrypt_recovery_payload,
 )
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.compliance import file_has_registered_disc_coverage
 from riverhog_core.services.glacier_pricing import resolve_glacier_pricing
 from riverhog_core.webhooks import (
     WebhookConfig,
@@ -82,6 +86,8 @@ from riverhog_core.webhooks import (
     post_webhook,
     utcnow,
 )
+
+_LOG = logging.getLogger(__name__)
 
 _ACTIVE_RECOVERY_STATES = {
     RecoverySessionState.PENDING_APPROVAL.value,
@@ -492,6 +498,127 @@ class SqlAlchemyRecoverySessionService:
             processed += 1
         return processed
 
+    def repair_missing_pinned_hot_files(self, *, limit: int = 100) -> int:
+        if limit < 1 or self._hot_store is None:
+            return 0
+
+        glacier_restore_paths: dict[str, set[str]] = {}
+        operator_fetches = 0
+        missing_count = 0
+        with session_scope(self._session_factory) as session:
+            pins = session.scalars(
+                select(ActivePinRecord).order_by(ActivePinRecord.fetch_order)
+            ).all()
+            for pin in pins:
+                if missing_count >= limit:
+                    break
+                selected = _selected_pin_files(session, pin.target)
+                missing_for_pin: list[CollectionFileRecord] = []
+                for file_record in selected:
+                    if missing_count >= limit:
+                        break
+                    if _hot_file_available(self._hot_store, file_record):
+                        if not file_record.hot:
+                            file_record.hot = True
+                        continue
+                    file_record.hot = False
+                    missing_for_pin.append(file_record)
+                    missing_count += 1
+                    if file_has_registered_disc_coverage(
+                        session,
+                        collection_id=file_record.collection_id,
+                        path=file_record.path,
+                    ):
+                        operator_fetches += 1
+                    else:
+                        glacier_restore_paths.setdefault(
+                            file_record.collection_id,
+                            set(),
+                        ).add(file_record.path)
+                if missing_for_pin:
+                    pin.fetch_state = FetchState.WAITING_MEDIA.value
+                elif pin.fetch_state != FetchState.DONE.value:
+                    pin.fetch_state = FetchState.DONE.value
+
+        if missing_count:
+            _LOG.info(
+                "pinned hot-file audit found missing files: total=%s "
+                "operator_fetch_files=%s glacier_restore_collections=%s",
+                missing_count,
+                operator_fetches,
+                len(glacier_restore_paths),
+            )
+
+        restored_collections = 0
+        for collection_id, paths in sorted(glacier_restore_paths.items()):
+            if self._restore_missing_pinned_files_from_glacier(
+                collection_id=collection_id,
+                paths=sorted(paths),
+            ):
+                restored_collections += 1
+
+        if restored_collections:
+            with session_scope(self._session_factory) as session:
+                _sync_pin_states_after_hot_repair(session, hot_store=self._hot_store)
+        return missing_count
+
+    def _restore_missing_pinned_files_from_glacier(
+        self,
+        *,
+        collection_id: str,
+        paths: Sequence[str],
+    ) -> bool:
+        if not paths:
+            return False
+        try:
+            summary = self.create_or_resume_for_collection(collection_id)
+            if summary.state == RecoverySessionState.PENDING_APPROVAL:
+                _LOG.info(
+                    "requesting automatic Glacier restore for missing pinned files: "
+                    "collection=%s files=%s",
+                    collection_id,
+                    len(paths),
+                )
+                summary = self.approve(summary.id)
+            if summary.state == RecoverySessionState.RESTORE_REQUESTED:
+                self._process_one(session_id=summary.id)
+                summary = self.get(summary.id)
+            if summary.state == RecoverySessionState.READY:
+                missing_paths = _missing_hot_paths(
+                    self._session_factory,
+                    self._hot_store,
+                    collection_id=collection_id,
+                    paths=paths,
+                )
+                if not missing_paths:
+                    return False
+                _LOG.info(
+                    "materializing missing pinned files from restored Glacier archive: "
+                    "collection=%s files=%s",
+                    collection_id,
+                    len(missing_paths),
+                )
+                self.materialize_collection_files(
+                    summary.id,
+                    collection_id,
+                    paths=missing_paths,
+                )
+                return True
+            _LOG.info(
+                "automatic Glacier restore is pending for missing pinned files: "
+                "collection=%s session=%s state=%s",
+                collection_id,
+                summary.id,
+                summary.state.value,
+            )
+            return False
+        except Exception:
+            _LOG.exception(
+                "automatic Glacier restore for missing pinned files failed: collection=%s",
+                collection_id,
+            )
+            return False
+
     def _process_one(self, *, session_id: str) -> None:
         current = utcnow()
         current_text = _isoformat_z(current)
@@ -514,17 +641,24 @@ class SqlAlchemyRecoverySessionService:
                         current + self._config.glacier_recovery_ready_ttl
                     )
                     record.restore_next_poll_at = None
-                    record.latest_message = (
-                        "Restored ISO data is ready; reopen the session to complete download, "
-                        "verify the ISO, and burn replacement media before cleanup."
-                    )
-                    _notify_recovery_ready(
-                        session,
-                        record=record,
-                        config=self._config,
-                        current=current,
-                        reminder=False,
-                    )
+                    if (record.type or "image_rebuild") == "image_rebuild":
+                        record.latest_message = (
+                            "Restored ISO data is ready; reopen the session to complete "
+                            "download, verify the ISO, and burn replacement media before "
+                            "cleanup."
+                        )
+                        _notify_recovery_ready(
+                            session,
+                            record=record,
+                            config=self._config,
+                            current=current,
+                            reminder=False,
+                        )
+                    else:
+                        record.latest_message = (
+                            "Restored collection archive is ready; Riverhog can materialize "
+                            "missing pinned files."
+                        )
                     return
                 if status.state == "expired":
                     record.state = RecoverySessionState.EXPIRED.value
@@ -546,6 +680,7 @@ class SqlAlchemyRecoverySessionService:
 
             if (
                 record.state == RecoverySessionState.READY.value
+                and (record.type or "image_rebuild") == "image_rebuild"
                 and record.next_reminder_at is not None
                 and record.next_reminder_at <= current_text
             ):
@@ -651,6 +786,65 @@ def ensure_glacier_recovery_session_for_image(
         _attach_image_to_session(session, record=reusable, image=image, config=config)
         return
     _create_recovery_session(session, config=config, image=image)
+
+
+def _selected_pin_files(session: Session, raw_target: str) -> list[CollectionFileRecord]:
+    target = parse_target(raw_target)
+    records = session.scalars(select(CollectionFileRecord)).all()
+    return [
+        record
+        for record in records
+        if (
+            f"{record.collection_id}/{record.path}".startswith(target.canonical)
+            if target.is_dir
+            else f"{record.collection_id}/{record.path}" == target.canonical
+        )
+    ]
+
+
+def _hot_file_available(hot_store: HotStore, file_record: CollectionFileRecord) -> bool:
+    try:
+        stat = hot_store.stat_collection_file(file_record.collection_id, file_record.path)
+    except FileNotFoundError:
+        return False
+    if stat is None:
+        return False
+    if int(stat.bytes) != int(file_record.bytes):
+        return False
+    if stat.sha256 is not None and stat.sha256 != file_record.sha256:
+        return False
+    return True
+
+
+def _missing_hot_paths(
+    session_factory: sessionmaker[Session],
+    hot_store: HotStore,
+    *,
+    collection_id: str,
+    paths: Sequence[str],
+) -> list[str]:
+    missing: list[str] = []
+    with session_scope(session_factory) as session:
+        for path in paths:
+            file_record = session.get(
+                CollectionFileRecord,
+                {"collection_id": collection_id, "path": path},
+            )
+            if file_record is None:
+                continue
+            if not _hot_file_available(hot_store, file_record):
+                missing.append(path)
+    return missing
+
+
+def _sync_pin_states_after_hot_repair(session: Session, *, hot_store: HotStore) -> None:
+    pins = session.scalars(select(ActivePinRecord).order_by(ActivePinRecord.fetch_order)).all()
+    for pin in pins:
+        selected = _selected_pin_files(session, pin.target)
+        if selected and all(
+            _hot_file_available(hot_store, file_record) for file_record in selected
+        ):
+            pin.fetch_state = FetchState.DONE.value
 
 
 def _create_recovery_session(

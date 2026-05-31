@@ -192,6 +192,12 @@ _INDEX_MIGRATIONS: dict[int, list[tuple[str, str, tuple[str, ...]]]] = {
     ],
 }
 
+# Removed tables need explicit migrations because create_all never drops schema.
+_DROP_TABLE_MIGRATIONS: dict[int, list[str]] = {
+    # version 22
+    22: ["collection_protection_mirrors"],
+}
+
 
 def database_url_from_sqlite_path(sqlite_path: str | Path) -> str:
     path = Path(sqlite_path).expanduser().resolve()
@@ -281,6 +287,7 @@ def migrate_schema(engine: Engine) -> None:
             len(_COLUMN_MIGRATIONS),
             max(_TYPE_MIGRATIONS, default=0),
             max(_INDEX_MIGRATIONS, default=0),
+            max(_DROP_TABLE_MIGRATIONS, default=0),
         )
         for version in range(1, max_version + 1):
             if version in applied:
@@ -305,6 +312,9 @@ def migrate_schema(engine: Engine) -> None:
                     continue
                 column_sql = ", ".join(index_columns)
                 conn.execute(text(f"CREATE INDEX {index} ON {table} ({column_sql})"))
+            for table in _DROP_TABLE_MIGRATIONS.get(version, []):
+                if _table_exists(conn, table):
+                    conn.execute(text(f"DROP TABLE {table}"))
             conn.execute(
                 text("INSERT INTO schema_migrations (version) VALUES (:v)"), {"v": version}
             )
@@ -321,7 +331,6 @@ def initialize_db(database_url_or_path: str | Path) -> None:
         CandidateCoveredPathRecord,
         CollectionArchiveRecord,
         CollectionFileRecord,
-        CollectionProtectionMirrorRecord,
         CollectionRecord,
         CollectionUploadFileRecord,
         CollectionUploadRecord,
@@ -345,7 +354,6 @@ def initialize_db(database_url_or_path: str | Path) -> None:
         CandidateCoveredPathRecord,
         CollectionArchiveRecord,
         CollectionFileRecord,
-        CollectionProtectionMirrorRecord,
         CollectionRecord,
         FetchEntryRecord,
         FileCopyRecord,

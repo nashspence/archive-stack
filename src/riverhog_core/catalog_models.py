@@ -126,37 +126,6 @@ class CollectionArchiveRecord(Base):
     collection: Mapped[CollectionRecord] = relationship(back_populates="archive")
 
 
-class CollectionProtectionMirrorRecord(Base):
-    __tablename__ = "collection_protection_mirrors"
-
-    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
-    state: Mapped[str] = mapped_column(String, default="pending")
-    object_path: Mapped[str | None] = mapped_column(String, nullable=True)
-    archive_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    archive_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    failure: Mapped[str | None] = mapped_column(String, nullable=True)
-    next_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    last_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    updated_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    completed_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    deleted_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    last_failure_notification_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    multipart_upload_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    multipart_part_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    multipart_parts_json: Mapped[str | None] = mapped_column(String, nullable=True)
-    multipart_uploaded_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    multipart_uploaded_parts: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    multipart_total_parts: Mapped[int | None] = mapped_column(Integer, nullable=True)
-
-    __table_args__ = (
-        Index(
-            "ix_collection_protection_mirrors_state_next_attempt",
-            "state",
-            "next_attempt_at",
-        ),
-    )
-
-
 class PlannedCandidateRecord(Base):
     __tablename__ = "planned_candidates"
 

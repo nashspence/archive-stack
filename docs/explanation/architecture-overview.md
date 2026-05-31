@@ -60,34 +60,22 @@ staging objects. A retry after restart resumes the archive multipart upload, the
 completed archive receipt, or the hot-file promotion phase according to the last
 durable state.
 
-## Temporary protection mirror
+## Pinned Hot Storage
 
-Deployments may configure a separate S3-compatible temporary protection mirror
-for collections that are safely archived in Glacier but not yet protected by
-the required verified physical disc copies. Riverhog stores one deterministic
-`archive.tar` object per under-protected collection in that mirror. It does not
-mirror each logical file as a separate remote object, which keeps tiny-file
-collections from creating excessive remote object and request churn.
+New uploads enter planner jurisdiction after Glacier archival and verified
+promotion into hot storage. Until the required verified disc copies exist, the
+collection remains pinned. A pinned collection or file cannot be released while
+it is non-compliant, and releasing a compliant pin immediately removes matching
+hot files that are not covered by another active pin.
 
-New uploads enter planner jurisdiction only after Glacier archival and mirror
-upload have both completed. Existing under-protected collections are backfilled
-from committed hot files by the same resumable worker. Once the required
-verified disc copies exist, Riverhog deletes the temporary mirror archive as
-soon as possible.
-
-Mirror upload and cleanup are durable background stages. Multipart state is
-persisted in the catalog, retries continue indefinitely after failures or app
-restarts, and repeated operator notifications are paced by the configured
-failure-notification interval.
-
-The mirror is a disaster-recovery bridge for the window before physical
-protection exists. After a server loss, an operator can restore the catalog
-database backup and configure the Glacier and mirror stores. On startup,
-Riverhog audits completed mirror rows against hot storage. If any hot file for
-an under-protected mirrored collection is missing or mismatched, Riverhog
-restores the whole collection from the mirror archive, verifies the restored
-file hashes, and marks those files hot again. The planner uses the same repair
-path if it encounters a missing input before the next scheduled audit.
+Riverhog audits active pins at startup, during recovery sweeps, and before
+planner refreshes. If pinned files are missing from hot storage, registered disc
+coverage takes precedence: Riverhog leaves the pin waiting for the normal
+prompt-based `djdan fetch` flow. If no registered disc coverage exists for a
+missing file, Riverhog automatically creates or resumes a collection Glacier
+restore session, waits for S3 to make the archive package readable, verifies the
+manifest/proof/archive members, and writes the selected files back to hot
+storage.
 
 ## Read-only browsing
 
@@ -123,15 +111,7 @@ from storage mutations.
 ## Release flow
 
 1. The user releases an exact selector.
-2. The system removes that exact pin, if present.
-3. Hot files selected by that released pin are evicted when no remaining pin still covers them.
-4. Unrelated hot files are left alone, and a missing exact pin is a successful no-op.
-
-## Eviction flow
-
-1. The user evicts a file, directory, or collection selector from the hot cache.
-2. Riverhog skips any selected file still covered by an active pin.
-3. Riverhog skips any selected file that is not archived, because hot storage is
-   still the only authoritative copy for that file.
-4. Archived selected files are removed from committed hot storage and remain
-   recoverable through pin/fetch from optical media or Glacier.
+2. Riverhog refuses the release if any selected file is not yet fully compliant.
+3. The system removes that exact pin, if present.
+4. Hot files selected by that released pin are removed when no remaining pin still covers them.
+5. Unrelated hot files are left alone, and a missing exact pin is a successful no-op.

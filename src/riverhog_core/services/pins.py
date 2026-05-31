@@ -12,13 +12,14 @@ from riverhog_core.catalog_models import (
     FetchEntryRecord,
 )
 from riverhog_core.domain.enums import FetchState
-from riverhog_core.domain.errors import NotFound
+from riverhog_core.domain.errors import Conflict, NotFound
 from riverhog_core.domain.models import FetchCopyHint, FetchSummary, PinSummary
 from riverhog_core.domain.selectors import parse_target
 from riverhog_core.domain.types import CopyId, FetchId, TargetStr
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.compliance import file_is_fully_compliant
 from riverhog_core.services.fetches import delete_fetch_entries
 
 
@@ -71,62 +72,44 @@ class SqlAlchemyPinService:
         canonical = TargetStr(target.canonical)
         with session_scope(self._session_factory) as session:
             pin_record = session.get(ActivePinRecord, canonical)
-            if pin_record is not None:
-                released_files = _selected_files(session, pin_record.target)
-                fetch_id = pin_record.fetch_id
-                entries = session.scalars(
-                    select(FetchEntryRecord).where(FetchEntryRecord.fetch_id == fetch_id)
-                ).all()
-                for entry in entries:
-                    if entry.tus_url is not None:
-                        self._upload_store.cancel_upload(entry.tus_url)
-                    target_path = f"/.riverhog/uploads/recovery/{fetch_id}/{entry.entry_id}.enc"
-                    self._upload_store.delete_target(target_path)
-                delete_fetch_entries(session, fetch_id)
-                session.delete(pin_record)
-                session.flush()
-                _release_hot_files_no_longer_pinned(session, self._hot_store, released_files)
+            if pin_record is None:
+                return {
+                    "target": str(canonical),
+                    "pin": False,
+                }
+            released_files = _selected_files(session, target.canonical, missing_ok=True)
+            noncompliant = [
+                record
+                for record in released_files
+                if not file_is_fully_compliant(
+                    session,
+                    collection_id=record.collection_id,
+                    path=record.path,
+                )
+            ]
+            if noncompliant:
+                first = noncompliant[0]
+                raise Conflict(
+                    "cannot release hot storage pin for non-compliant file: "
+                    f"{first.collection_id}/{first.path}"
+                )
+            fetch_id = pin_record.fetch_id
+            entries = session.scalars(
+                select(FetchEntryRecord).where(FetchEntryRecord.fetch_id == fetch_id)
+            ).all()
+            for entry in entries:
+                if entry.tus_url is not None:
+                    self._upload_store.cancel_upload(entry.tus_url)
+                target_path = f"/.riverhog/uploads/recovery/{fetch_id}/{entry.entry_id}.enc"
+                self._upload_store.delete_target(target_path)
+            delete_fetch_entries(session, fetch_id)
+            session.delete(pin_record)
+            session.flush()
+            _release_hot_files_no_longer_pinned(session, self._hot_store, released_files)
         return {
             "target": str(canonical),
             "pin": False,
         }
-
-    def evict(self, raw_target: str) -> dict[str, object]:
-        target = parse_target(raw_target)
-        canonical = TargetStr(target.canonical)
-        with session_scope(self._session_factory) as session:
-            selected = _selected_files(session, target.canonical)
-            active_targets = session.scalars(select(ActivePinRecord.target)).all()
-            selected_bytes = sum(record.bytes for record in selected)
-            evicted_files = 0
-            evicted_bytes = 0
-            already_cold_files = 0
-            pinned_files = 0
-            unarchived_files = 0
-            for record in selected:
-                if _record_selected_by_any_target(record, active_targets):
-                    pinned_files += 1
-                    continue
-                if not record.archived:
-                    unarchived_files += 1
-                    continue
-                if not record.hot:
-                    already_cold_files += 1
-                    continue
-                self._hot_store.delete_collection_file(record.collection_id, record.path)
-                record.hot = False
-                evicted_files += 1
-                evicted_bytes += record.bytes
-            return {
-                "target": str(canonical),
-                "selected_files": len(selected),
-                "selected_bytes": selected_bytes,
-                "evicted_files": evicted_files,
-                "evicted_bytes": evicted_bytes,
-                "already_cold_files": already_cold_files,
-                "pinned_files": pinned_files,
-                "unarchived_files": unarchived_files,
-            }
 
     def list_pins(self) -> list[PinSummary]:
         with session_scope(self._session_factory) as session:
@@ -150,7 +133,12 @@ def _next_fetch_order(session: Session) -> int:
     return int(max_fetch_order or 0) + 1
 
 
-def _selected_files(session: Session, raw_target: str) -> list[CollectionFileRecord]:
+def _selected_files(
+    session: Session,
+    raw_target: str,
+    *,
+    missing_ok: bool = False,
+) -> list[CollectionFileRecord]:
     target = parse_target(raw_target)
     records = session.scalars(
         select(CollectionFileRecord).options(selectinload(CollectionFileRecord.copies))
@@ -164,7 +152,7 @@ def _selected_files(session: Session, raw_target: str) -> list[CollectionFileRec
             else f"{record.collection_id}/{record.path}" == target.canonical
         )
     ]
-    if not selected:
+    if not selected and not missing_ok:
         raise NotFound(f"target not found: {raw_target}")
     return selected
 

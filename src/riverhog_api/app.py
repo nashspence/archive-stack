@@ -301,21 +301,23 @@ def _sweep_expired_uploads(container: ServiceContainer) -> None:
 
 def _process_glacier_uploads(
     container: ServiceContainer,
-    *,
-    force_hot_repair_audit: bool = False,
 ) -> None:
-    container.glacier_uploads.repair_missing_hot_files_from_protection_mirror(
-        limit=10_000 if force_hot_repair_audit else 1,
-        force=force_hot_repair_audit,
-    )
     container.glacier_uploads.process_due_uploads(limit=1)
 
 
-def _process_glacier_recovery_sessions(container: ServiceContainer) -> None:
+def _process_glacier_recovery_sessions(
+    container: ServiceContainer,
+    *,
+    startup_hot_repair_audit: bool = False,
+) -> None:
+    container.recovery_sessions.repair_missing_pinned_hot_files(
+        limit=10_000 if startup_hot_repair_audit else 100
+    )
     container.recovery_sessions.process_due_sessions(limit=10)
 
 
 def _process_planner_refresh(container: ServiceContainer) -> None:
+    container.recovery_sessions.repair_missing_pinned_hot_files(limit=100)
     container.planning.process_due_refresh(limit=1)
 
 
@@ -325,9 +327,14 @@ async def _run_upload_expiry_reaper(
     sweep_interval: timedelta,
 ) -> None:
     interval_seconds = max(sweep_interval.total_seconds(), 0.1)
+    first_run = True
     while True:
         try:
-            await asyncio.sleep(interval_seconds)
+            if first_run:
+                await asyncio.sleep(0)
+            else:
+                await asyncio.sleep(interval_seconds)
+            first_run = False
             container = container_provider()
             if container is None:
                 continue
@@ -344,28 +351,18 @@ async def _run_glacier_upload_reaper(
     sweep_interval: timedelta,
 ) -> None:
     interval_seconds = max(sweep_interval.total_seconds(), 0.1)
-    force_hot_repair_audit = True
+    first_run = True
     while True:
         try:
-            if force_hot_repair_audit:
+            if first_run:
                 await asyncio.sleep(0)
             else:
                 await asyncio.sleep(interval_seconds)
+            first_run = False
             container = container_provider()
             if container is None:
                 continue
-            current_force_hot_repair_audit = force_hot_repair_audit
-            force_hot_repair_audit = False
-            if current_force_hot_repair_audit:
-                _LOG.info(
-                    "startup protection mirror hot audit queued in background; "
-                    "API startup is not blocked"
-                )
-            await asyncio.to_thread(
-                _process_glacier_uploads,
-                container,
-                force_hot_repair_audit=current_force_hot_repair_audit,
-            )
+            await asyncio.to_thread(_process_glacier_uploads, container)
         except asyncio.CancelledError:
             raise
         except Exception:  # pragma: no cover - defensive background task logging
@@ -378,13 +375,27 @@ async def _run_glacier_recovery_reaper(
     sweep_interval: timedelta,
 ) -> None:
     interval_seconds = max(sweep_interval.total_seconds(), 0.1)
+    startup_hot_repair_audit = True
     while True:
         try:
-            await asyncio.sleep(interval_seconds)
+            if startup_hot_repair_audit:
+                await asyncio.sleep(0)
+            else:
+                await asyncio.sleep(interval_seconds)
             container = container_provider()
             if container is None:
                 continue
-            await asyncio.to_thread(_process_glacier_recovery_sessions, container)
+            current_startup_hot_repair_audit = startup_hot_repair_audit
+            startup_hot_repair_audit = False
+            if current_startup_hot_repair_audit:
+                _LOG.info(
+                    "startup pinned hot-file audit queued in background; API startup is not blocked"
+                )
+            await asyncio.to_thread(
+                _process_glacier_recovery_sessions,
+                container,
+                startup_hot_repair_audit=current_startup_hot_repair_audit,
+            )
         except asyncio.CancelledError:
             raise
         except Exception:  # pragma: no cover - defensive background task logging

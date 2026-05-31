@@ -3,10 +3,10 @@
 ## Decision
 
 Riverhog makes pin and release operate only on exact canonical selectors.
-Eviction is modeled separately from release.
+Release is also the only operator-facing cache removal operation.
 
 ## Reason
 
 Overlapping broad and narrow pins must not affect each other accidentally.
-Releasing a narrower selector must not subtract it from a broader pin; archived
-hot-cache removal uses `evict` and skips any file still covered by a pin.
+Releasing a narrower selector must not subtract it from a broader pin. When a fully compliant exact pin is released,
+Riverhog removes only selected hot files that are no longer covered by any remaining pin.

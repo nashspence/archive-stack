@@ -18,14 +18,6 @@ class DashboardRecoveryOut(RiverhogModel):
     glacier: DashboardRecoveryCoverageOut
 
 
-class DashboardProtectionMirrorOut(RiverhogModel):
-    enabled: bool
-    required: bool = False
-    state: str
-    bytes: int = 0
-    failure: str | None = None
-
-
 class DashboardActiveUploadOut(RiverhogModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -65,7 +57,6 @@ class DashboardCollectionOut(RiverhogModel):
     protection_state: Literal["cloud_only", "under_protected", "fully_protected"]
     protected_bytes: int
     recovery: DashboardRecoveryOut
-    protection_mirror: DashboardProtectionMirrorOut | None = None
 
 
 class DashboardCollectionsResponse(RiverhogModel):

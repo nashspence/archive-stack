@@ -33,7 +33,6 @@ from riverhog_core.services.recovery_sessions import SqlAlchemyRecoverySessionSe
 from riverhog_core.services.search import SqlAlchemySearchService
 from riverhog_core.stores.s3_archive_store import S3ArchiveStore
 from riverhog_core.stores.s3_hot_store import S3HotStore
-from riverhog_core.stores.s3_protection_mirror_store import S3ProtectionMirrorStore
 from riverhog_core.stores.s3_support import ensure_bucket_exists
 from riverhog_core.stores.tusd_upload_store import TusdUploadStore
 
@@ -58,9 +57,6 @@ def default_container() -> ServiceContainer:
     ensure_bucket_exists(config)
     hot_store = S3HotStore(config)
     archive_store = S3ArchiveStore(config)
-    protection_mirror_store = (
-        S3ProtectionMirrorStore(config) if config.protection_mirror_enabled else None
-    )
     upload_store = TusdUploadStore(config)
     proof_stamper = CommandProofStamper(config.ots_stamp_command)
     proof_verifier = CommandProofVerifier(config.ots_verify_command)
@@ -77,7 +73,6 @@ def default_container() -> ServiceContainer:
             config,
             hot_store,
             archive_store,
-            protection_mirror_store,
             recovery_payload_codec,
         ),
         glacier_uploads=SqlAlchemyGlacierUploadService(
@@ -85,7 +80,6 @@ def default_container() -> ServiceContainer:
             archive_store,
             hot_store,
             upload_store,
-            protection_mirror_store,
             proof_stamper=proof_stamper,
             recovery_payload_codec=recovery_payload_codec,
         ),

@@ -11,21 +11,19 @@ import pytest
 from sqlalchemy import select
 
 from riverhog_core.catalog_models import (
+    ActivePinRecord,
     CollectionArchiveRecord,
     CollectionFileRecord,
-    CollectionProtectionMirrorRecord,
     CollectionRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
     FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
-    ImageCopyRecord,
     PlannedCandidateRecord,
 )
 from riverhog_core.collection_archives import (
     CollectionArchiveFile,
-    CollectionArchivePackage,
     build_collection_archive_package,
 )
 from riverhog_core.domain.errors import Conflict
@@ -36,7 +34,6 @@ from riverhog_core.finalized_image_coverage import (
 from riverhog_core.planner.manifest import MANIFEST_FILENAME
 from riverhog_core.ports.archive_store import ArchiveUploadReceipt, CollectionArchiveUploadReceipt
 from riverhog_core.ports.hot_store import HotFileStat
-from riverhog_core.ports.protection_mirror import ProtectionMirrorArchiveStat
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.glacier_uploads import SqlAlchemyGlacierUploadService
@@ -302,71 +299,6 @@ class _ReadableArchiveStore(_FakeArchiveStore):
     ) -> bytes:
         _ = collection_id
         return self._objects[object_path]
-
-
-class _FakeProtectionMirrorStore:
-    def __init__(self) -> None:
-        self.archives: dict[str, bytes] = {}
-        self.uploads = 0
-        self.uploaded_collections: list[str] = []
-        self.deleted: list[str] = []
-
-    def object_path(self, collection_id: str) -> str:
-        return f"mirror/collections/{collection_id}/archive.tar"
-
-    def put_collection_archive_stream_resumable(
-        self,
-        collection_id: str,
-        chunks: Iterable[bytes],
-        *,
-        content_length: int,
-        sha256: str,
-        multipart_tracker=None,
-    ) -> None:
-        _ = multipart_tracker
-        content = b"".join(chunks)
-        assert len(content) == content_length
-        assert hashlib.sha256(content).hexdigest() == sha256
-        self.archives[collection_id] = content
-        self.uploaded_collections.append(collection_id)
-        self.uploads += 1
-
-    def iter_collection_archive(
-        self,
-        collection_id: str,
-        *,
-        offset: int = 0,
-        size: int | None = None,
-    ) -> Iterator[bytes]:
-        content = self.archives[collection_id]
-        yield content[offset:] if size is None else content[offset : offset + size]
-
-    def stat_collection_archive(self, collection_id: str) -> ProtectionMirrorArchiveStat | None:
-        content = self.archives.get(collection_id)
-        if content is None:
-            return None
-        return ProtectionMirrorArchiveStat(
-            bytes=len(content),
-            sha256=hashlib.sha256(content).hexdigest(),
-        )
-
-    def delete_collection(self, collection_id: str) -> None:
-        self.deleted.append(collection_id)
-        self.archives.pop(collection_id, None)
-
-
-class _FailingProtectionMirrorStore(_FakeProtectionMirrorStore):
-    def put_collection_archive_stream_resumable(
-        self,
-        collection_id: str,
-        chunks: Iterable[bytes],
-        *,
-        content_length: int,
-        sha256: str,
-        multipart_tracker=None,
-    ) -> None:
-        _ = collection_id, chunks, content_length, sha256, multipart_tracker
-        raise RuntimeError("mirror bucket unavailable")
 
 
 class _CountingArchiveStore(_FakeArchiveStore):
@@ -647,6 +579,10 @@ def test_completed_collection_upload_promotes_from_staging_and_cleans_up(
     assert hot_store.get_collection_file(collection_id, relpath) == content
     assert staging_target in upload_store.deleted_targets
     assert [payload["event"] for payload in webhook_payloads] == ["collections.upload_staged"]
+    with session_scope(make_session_factory(str(sqlite_path))) as session:
+        pin = session.get(ActivePinRecord, f"{collection_id}/")
+        assert pin is not None
+        assert pin.fetch_state == "done"
 
 
 def test_glacier_archive_worker_prioritizes_resumable_multipart_upload(
@@ -730,570 +666,6 @@ def test_glacier_archive_worker_prioritizes_resumable_multipart_upload(
         assert session.get(CollectionUploadRecord, pending_id) is not None
 
 
-def test_completed_collection_upload_writes_protection_mirror_before_planning(
-    tmp_path: Path,
-) -> None:
-    sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
-
-    config = _config(
-        sqlite_path,
-        protection_mirror_enabled=True,
-        protection_mirror_s3_endpoint_url="https://s3.example.invalid",
-        protection_mirror_s3_bucket="mirror",
-        protection_mirror_s3_access_key_id="mirror-key",
-        protection_mirror_s3_secret_access_key="mirror-secret",
-    )
-    hot_store = _FakeHotStore()
-    upload_store = _StreamingOnlyUploadStore()
-    mirror_store = _FakeProtectionMirrorStore()
-    service = SqlAlchemyCollectionService(config, hot_store, upload_store)
-
-    content = b"hello mirrored world\n"
-    relpath = "albums/day-01.txt"
-    payload = service.create_or_resume_upload(
-        upload_slug="photos 2024",
-        files=[
-            {
-                "path": relpath,
-                "bytes": len(content),
-                "sha256": hashlib.sha256(content).hexdigest(),
-            }
-        ],
-    )
-    collection_id = str(payload["collection_id"])
-    session = service.create_or_resume_file_upload(collection_id, relpath)
-    service.append_upload_chunk(
-        collection_id,
-        relpath,
-        offset=int(session["offset"]),
-        checksum="sha256 " + base64.b64encode(hashlib.sha256(content).digest()).decode("ascii"),
-        content=content,
-    )
-
-    upload_service = SqlAlchemyGlacierUploadService(
-        config,
-        _FakeArchiveStore(),
-        hot_store,
-        upload_store,
-        mirror_store,
-        proof_stamper=FixtureProofStamper(),
-        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
-    )
-    assert upload_service.process_due_uploads() == 1
-
-    assert mirror_store.uploads == 1
-    assert collection_id in mirror_store.archives
-    session_factory = make_session_factory(str(sqlite_path))
-    with session_scope(session_factory) as session:
-        mirror = session.get(CollectionProtectionMirrorRecord, collection_id)
-        assert mirror is not None
-        assert mirror.state == "complete"
-        assert mirror.archive_bytes == len(mirror_store.archives[collection_id])
-        assert session.get(CollectionRecord, collection_id) is not None
-
-
-def test_protection_mirror_backfills_underprotected_and_cleans_after_verified_copies(
-    tmp_path: Path,
-) -> None:
-    sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
-
-    config = _config(
-        sqlite_path,
-        protection_mirror_enabled=True,
-        protection_mirror_s3_endpoint_url="https://s3.example.invalid",
-        protection_mirror_s3_bucket="mirror",
-        protection_mirror_s3_access_key_id="mirror-key",
-        protection_mirror_s3_secret_access_key="mirror-secret",
-    )
-    hot_store = _FakeHotStore()
-    upload_store = _FakeUploadStore()
-    mirror_store = _FakeProtectionMirrorStore()
-    collection_id = "20250712T213200Z__photos"
-    relpath = "albums/day-01.txt"
-    content = b"existing collection bytes\n"
-    sha256 = hashlib.sha256(content).hexdigest()
-    hot_store.put_collection_file(collection_id, relpath, content)
-    package = build_collection_archive_package(
-        collection_id=collection_id,
-        files=[CollectionArchiveFile(path=relpath, content=content, sha256=sha256)],
-        stamper=FixtureProofStamper(),
-    )
-
-    session_factory = make_session_factory(str(sqlite_path))
-    with session_scope(session_factory) as session:
-        collection = CollectionRecord(id=collection_id)
-        collection.files.append(
-            CollectionFileRecord(
-                collection_id=collection_id,
-                path=relpath,
-                bytes=len(content),
-                sha256=sha256,
-                hot=True,
-                archived=False,
-            )
-        )
-        session.add(collection)
-        session.add(
-            CollectionArchiveRecord(
-                collection_id=collection_id,
-                state="uploaded",
-                object_path=f"glacier/collections/{collection_id}/archive.tar",
-                stored_bytes=package.archive_size,
-                sha256=package.archive_sha256,
-            )
-        )
-
-    upload_service = SqlAlchemyGlacierUploadService(
-        config,
-        _FakeArchiveStore(),
-        hot_store,
-        upload_store,
-        mirror_store,
-        proof_stamper=FixtureProofStamper(),
-        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
-    )
-    assert upload_service.process_due_uploads() == 1
-    assert mirror_store.archives[collection_id] == package.archive_bytes
-    with session_scope(session_factory) as session:
-        mirror = session.get(CollectionProtectionMirrorRecord, collection_id)
-        assert mirror is not None
-        assert mirror.state == "complete"
-
-        session.add(
-            FinalizedImageRecord(
-                image_id="20260528T210000Z",
-                candidate_id="candidate-1",
-                filename="20260528T210000Z.iso",
-                bytes=10_000,
-                image_root=str(tmp_path / "image-root"),
-                target_bytes=50_000_000_000,
-                required_copy_count=2,
-            )
-        )
-        session.add(
-            FinalizedImageCoveredPathRecord(
-                image_id="20260528T210000Z",
-                collection_id=collection_id,
-                path=relpath,
-            )
-        )
-        for copy_id in ("20260528T210000Z-1", "20260528T210000Z-2"):
-            session.add(
-                ImageCopyRecord(
-                    image_id="20260528T210000Z",
-                    copy_id=copy_id,
-                    label_text=copy_id,
-                    location="test shelf",
-                    created_at="2026-05-28T21:00:00Z",
-                    state="registered",
-                    verification_state="verified",
-                )
-            )
-
-    assert upload_service.process_due_uploads() == 1
-    assert collection_id in mirror_store.deleted
-    assert collection_id not in mirror_store.archives
-    with session_scope(session_factory) as session:
-        mirror = session.get(CollectionProtectionMirrorRecord, collection_id)
-        assert mirror is not None
-        assert mirror.state == "deleted"
-
-    collection_service = SqlAlchemyCollectionService(config, hot_store, upload_store)
-    dashboard = collection_service.list_dashboard_collections(q="photos")
-    dashboard_collection = dashboard["collections"][0]
-    assert dashboard_collection["protection_state"] == "fully_protected"
-    assert dashboard_collection["protection_mirror"] == {
-        "enabled": True,
-        "required": False,
-        "state": "not_required",
-        "bytes": 0,
-        "failure": None,
-    }
-
-
-def test_protection_mirror_hot_repair_rewrites_only_missing_or_mismatched_files(
-    tmp_path: Path,
-) -> None:
-    sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
-
-    config = _config(
-        sqlite_path,
-        protection_mirror_enabled=True,
-        protection_mirror_s3_endpoint_url="https://s3.example.invalid",
-        protection_mirror_s3_bucket="mirror",
-        protection_mirror_s3_access_key_id="mirror-key",
-        protection_mirror_s3_secret_access_key="mirror-secret",
-    )
-    hot_store = _FakeHotStore()
-    mirror_store = _FakeProtectionMirrorStore()
-    collection_id = "20250712T213200Z__photos"
-    files = [
-        ("albums/day-01.txt", b"existing collection bytes\n"),
-        ("albums/day-02.txt", b"second file bytes\n"),
-        ("albums/day-03.txt", b"already valid bytes\n"),
-    ]
-    archive_files = []
-    for relpath, content in files:
-        sha256 = hashlib.sha256(content).hexdigest()
-        hot_store.put_collection_file(collection_id, relpath, content)
-        archive_files.append(CollectionArchiveFile(path=relpath, content=content, sha256=sha256))
-    package = build_collection_archive_package(
-        collection_id=collection_id,
-        files=archive_files,
-        stamper=FixtureProofStamper(),
-    )
-    mirror_store.archives[collection_id] = package.archive_bytes
-    hot_store.put_paths.clear()
-    hot_store.delete_collection_file(collection_id, "albums/day-01.txt")
-    hot_store.put_collection_file(collection_id, "albums/day-02.txt", b"wrong bytes\n")
-    hot_store.put_paths.clear()
-
-    session_factory = make_session_factory(str(sqlite_path))
-    with session_scope(session_factory) as session:
-        collection = CollectionRecord(id=collection_id)
-        for relpath, content in files:
-            collection.files.append(
-                CollectionFileRecord(
-                    collection_id=collection_id,
-                    path=relpath,
-                    bytes=len(content),
-                    sha256=hashlib.sha256(content).hexdigest(),
-                    hot=True,
-                    archived=False,
-                    hot_multipart_upload_id=(
-                        "stale-upload" if relpath == "albums/day-03.txt" else None
-                    ),
-                )
-            )
-        session.add(collection)
-        session.add(
-            CollectionArchiveRecord(
-                collection_id=collection_id,
-                state="uploaded",
-                object_path=f"glacier/collections/{collection_id}/archive.tar",
-                stored_bytes=package.archive_size,
-                sha256=package.archive_sha256,
-            )
-        )
-        session.add(
-            CollectionProtectionMirrorRecord(
-                collection_id=collection_id,
-                state="complete",
-                object_path=mirror_store.object_path(collection_id),
-                archive_bytes=package.archive_size,
-                archive_sha256=package.archive_sha256,
-            )
-        )
-
-    upload_service = SqlAlchemyGlacierUploadService(
-        config,
-        _FakeArchiveStore(),
-        hot_store,
-        _FakeUploadStore(),
-        mirror_store,
-        proof_stamper=FixtureProofStamper(),
-        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
-    )
-
-    assert upload_service.repair_missing_hot_files_from_protection_mirror(
-        limit=10,
-        force=True,
-    ) == 1
-    for relpath, content in files:
-        assert hot_store.get_collection_file(collection_id, relpath) == content
-    assert hot_store.put_paths == [
-        (collection_id, "albums/day-01.txt"),
-        (collection_id, "albums/day-02.txt"),
-    ]
-    with session_scope(session_factory) as session:
-        mirror = session.get(CollectionProtectionMirrorRecord, collection_id)
-        assert mirror is not None
-        assert mirror.state == "complete"
-        assert mirror.next_attempt_at is not None
-        valid_file = session.get(CollectionFileRecord, (collection_id, "albums/day-03.txt"))
-        assert valid_file is not None
-        assert valid_file.hot_multipart_upload_id is None
-
-
-def test_protection_mirror_backfill_failure_notifies_once_per_interval(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
-
-    webhook_payloads: list[dict[str, object]] = []
-    monkeypatch.setattr(
-        "riverhog_core.services.glacier_uploads.post_webhook",
-        lambda *, config, payload: webhook_payloads.append(payload),
-    )
-    config = _config(
-        sqlite_path,
-        operator_webhook_url="http://example.invalid/webhook",
-        protection_mirror_enabled=True,
-        protection_mirror_s3_endpoint_url="https://s3.example.invalid",
-        protection_mirror_s3_bucket="mirror",
-        protection_mirror_s3_access_key_id="mirror-key",
-        protection_mirror_s3_secret_access_key="mirror-secret",
-    )
-    hot_store = _FakeHotStore()
-    upload_store = _FakeUploadStore()
-    mirror_store = _FailingProtectionMirrorStore()
-    collection_id = "20250712T213200Z__photos"
-    relpath = "albums/day-01.txt"
-    content = b"existing collection bytes\n"
-    sha256 = hashlib.sha256(content).hexdigest()
-    hot_store.put_collection_file(collection_id, relpath, content)
-    package = build_collection_archive_package(
-        collection_id=collection_id,
-        files=[CollectionArchiveFile(path=relpath, content=content, sha256=sha256)],
-        stamper=FixtureProofStamper(),
-    )
-
-    session_factory = make_session_factory(str(sqlite_path))
-    with session_scope(session_factory) as session:
-        collection = CollectionRecord(id=collection_id)
-        collection.files.append(
-            CollectionFileRecord(
-                collection_id=collection_id,
-                path=relpath,
-                bytes=len(content),
-                sha256=sha256,
-                hot=True,
-                archived=False,
-            )
-        )
-        session.add(collection)
-        session.add(
-            CollectionArchiveRecord(
-                collection_id=collection_id,
-                state="uploaded",
-                object_path=f"glacier/collections/{collection_id}/archive.tar",
-                stored_bytes=package.archive_size,
-                sha256=package.archive_sha256,
-            )
-        )
-
-    upload_service = SqlAlchemyGlacierUploadService(
-        config,
-        _FakeArchiveStore(),
-        hot_store,
-        upload_store,
-        mirror_store,
-        proof_stamper=FixtureProofStamper(),
-        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
-    )
-
-    assert upload_service.process_due_uploads() == 1
-    assert [payload["event"] for payload in webhook_payloads] == [
-        "collections.protection_mirror_retrying"
-    ]
-    assert webhook_payloads[0]["collection_id"] == collection_id
-    assert "mirror bucket unavailable" in str(webhook_payloads[0]["error"])
-    with session_scope(session_factory) as session:
-        mirror = session.get(CollectionProtectionMirrorRecord, collection_id)
-        assert mirror is not None
-        mirror.next_attempt_at = "2026-01-01T00:00:00Z"
-
-    assert upload_service.process_due_uploads() == 1
-    assert [payload["event"] for payload in webhook_payloads] == [
-        "collections.protection_mirror_retrying"
-    ]
-
-
-def test_protection_mirror_resumes_mirroring_before_new_pending_work(
-    tmp_path: Path,
-) -> None:
-    sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
-
-    config = _config(
-        sqlite_path,
-        protection_mirror_enabled=True,
-        protection_mirror_s3_endpoint_url="https://s3.example.invalid",
-        protection_mirror_s3_bucket="mirror",
-        protection_mirror_s3_access_key_id="mirror-key",
-        protection_mirror_s3_secret_access_key="mirror-secret",
-    )
-    hot_store = _FakeHotStore()
-    mirror_store = _FakeProtectionMirrorStore()
-    session_factory = make_session_factory(str(sqlite_path))
-
-    packages: dict[str, CollectionArchivePackage] = {}
-    for index, collection_id in enumerate(
-        [
-            "20250712T213200Z__resume-first",
-            "20250712T213201Z__pending-second",
-        ],
-        start=1,
-    ):
-        relpath = "albums/day-01.txt"
-        content = f"collection {index}\n".encode()
-        sha256 = hashlib.sha256(content).hexdigest()
-        hot_store.put_collection_file(collection_id, relpath, content)
-        package = build_collection_archive_package(
-            collection_id=collection_id,
-            files=[CollectionArchiveFile(path=relpath, content=content, sha256=sha256)],
-            stamper=FixtureProofStamper(),
-        )
-        packages[collection_id] = package
-        with session_scope(session_factory) as session:
-            collection = CollectionRecord(id=collection_id)
-            collection.files.append(
-                CollectionFileRecord(
-                    collection_id=collection_id,
-                    path=relpath,
-                    bytes=len(content),
-                    sha256=sha256,
-                    hot=True,
-                    archived=False,
-                )
-            )
-            session.add(collection)
-            session.add(
-                CollectionArchiveRecord(
-                    collection_id=collection_id,
-                    state="uploaded",
-                    object_path=f"glacier/collections/{collection_id}/archive.tar",
-                    stored_bytes=package.archive_size,
-                    sha256=package.archive_sha256,
-                )
-            )
-
-    with session_scope(session_factory) as session:
-        resume_package = packages["20250712T213200Z__resume-first"]
-        session.add(
-            CollectionProtectionMirrorRecord(
-                collection_id="20250712T213200Z__resume-first",
-                state="mirroring",
-                object_path=mirror_store.object_path("20250712T213200Z__resume-first"),
-                archive_bytes=resume_package.archive_size,
-                archive_sha256=resume_package.archive_sha256,
-                next_attempt_at="2026-01-01T00:00:02Z",
-            )
-        )
-        session.add(
-            CollectionProtectionMirrorRecord(
-                collection_id="20250712T213201Z__pending-second",
-                state="pending",
-                next_attempt_at="2026-01-01T00:00:01Z",
-            )
-        )
-
-    upload_service = SqlAlchemyGlacierUploadService(
-        config,
-        _FakeArchiveStore(),
-        hot_store,
-        _FakeUploadStore(),
-        mirror_store,
-        proof_stamper=FixtureProofStamper(),
-        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
-    )
-
-    assert upload_service.process_due_uploads() == 1
-    assert mirror_store.uploaded_collections == ["20250712T213200Z__resume-first"]
-    with session_scope(session_factory) as session:
-        resumed = session.get(
-            CollectionProtectionMirrorRecord,
-            "20250712T213200Z__resume-first",
-        )
-        pending = session.get(
-            CollectionProtectionMirrorRecord,
-            "20250712T213201Z__pending-second",
-        )
-        assert resumed is not None
-        assert resumed.state == "complete"
-        assert pending is not None
-        assert pending.state == "pending"
-
-
-def test_planner_hydrates_missing_hot_files_from_protection_mirror(
-    tmp_path: Path,
-) -> None:
-    sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
-
-    config = _config(
-        sqlite_path,
-        planner_image_root=tmp_path / "images",
-        planner_disc_target_bytes=1_000_000,
-        planner_min_fill_bytes=1,
-        protection_mirror_enabled=True,
-        protection_mirror_s3_endpoint_url="https://s3.example.invalid",
-        protection_mirror_s3_bucket="mirror",
-        protection_mirror_s3_access_key_id="mirror-key",
-        protection_mirror_s3_secret_access_key="mirror-secret",
-    )
-    hot_store = _FakeHotStore()
-    mirror_store = _FakeProtectionMirrorStore()
-    collection_id = "20250712T213200Z__photos"
-    relpath = "albums/day-01.txt"
-    content = b"recover me from mirror\n"
-    sha256 = hashlib.sha256(content).hexdigest()
-    package = build_collection_archive_package(
-        collection_id=collection_id,
-        files=[CollectionArchiveFile(path=relpath, content=content, sha256=sha256)],
-        stamper=FixtureProofStamper(),
-    )
-    mirror_store.archives[collection_id] = package.archive_bytes
-    cache_collection_manifest_artifacts(
-        config,
-        collection_id=collection_id,
-        manifest_bytes=package.manifest_bytes,
-        proof_bytes=package.proof_bytes,
-    )
-
-    session_factory = make_session_factory(str(sqlite_path))
-    with session_scope(session_factory) as session:
-        collection = CollectionRecord(id=collection_id)
-        collection.files.append(
-            CollectionFileRecord(
-                collection_id=collection_id,
-                path=relpath,
-                bytes=len(content),
-                sha256=sha256,
-                hot=True,
-                archived=False,
-            )
-        )
-        session.add(collection)
-        session.add(
-            CollectionArchiveRecord(
-                collection_id=collection_id,
-                state="uploaded",
-                object_path=f"glacier/collections/{collection_id}/archive.tar",
-                stored_bytes=package.archive_size,
-                sha256=package.archive_sha256,
-            )
-        )
-        session.add(
-            CollectionProtectionMirrorRecord(
-                collection_id=collection_id,
-                state="complete",
-                object_path=mirror_store.object_path(collection_id),
-                archive_bytes=package.archive_size,
-                archive_sha256=package.archive_sha256,
-            )
-        )
-
-    assert not hot_store.has_collection_file(collection_id, relpath)
-    refresh_provisional_plan(
-        config=config,
-        hot_store=hot_store,
-        protection_mirror_store=mirror_store,
-        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
-    )
-
-    assert hot_store.get_collection_file(collection_id, relpath) == content
-    with session_scope(session_factory) as session:
-        candidates = session.scalars(select(PlannedCandidateRecord)).all()
-        assert len(candidates) == 1
-        assert candidates[0].state == "ready"
-
-
 def test_planner_worker_restores_missing_artifact_cache_from_archive_store(
     tmp_path: Path,
 ) -> None:
@@ -1305,15 +677,9 @@ def test_planner_worker_restores_missing_artifact_cache_from_archive_store(
         planner_image_root=tmp_path / "images",
         planner_disc_target_bytes=1_000_000,
         planner_min_fill_bytes=1,
-        protection_mirror_enabled=True,
-        protection_mirror_s3_endpoint_url="https://s3.example.invalid",
-        protection_mirror_s3_bucket="mirror",
-        protection_mirror_s3_access_key_id="mirror-key",
-        protection_mirror_s3_secret_access_key="mirror-secret",
     )
     hot_store = _FakeHotStore()
     archive_store = _ReadableArchiveStore()
-    mirror_store = _FakeProtectionMirrorStore()
     collection_id = "20250712T213200Z__photos"
     relpath = "albums/day-01.txt"
     content = b"recover artifact cache from archive store\n"
@@ -1360,21 +726,10 @@ def test_planner_worker_restores_missing_artifact_cache_from_archive_store(
                 ots_sha256=package.proof_sha256,
             )
         )
-        session.add(
-            CollectionProtectionMirrorRecord(
-                collection_id=collection_id,
-                state="complete",
-                object_path=mirror_store.object_path(collection_id),
-                archive_bytes=package.archive_size,
-                archive_sha256=package.archive_sha256,
-            )
-        )
-
     planning = SqlAlchemyPlanningService(
         config,
         hot_store,
         archive_store,
-        mirror_store,
         recovery_payload_codec=FixtureRecoveryPayloadCodec(),
     )
 
@@ -2422,20 +1777,13 @@ def test_planner_continues_after_partially_finalized_collection(tmp_path: Path) 
     assert plan["unplanned_bytes"] == len(tail_content)
 
 
-def test_planner_ignores_fully_finalized_collection_without_mirror(
+def test_planner_ignores_fully_finalized_collection(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     initialize_db(str(sqlite_path))
-    config = _config(
-        sqlite_path,
-        protection_mirror_enabled=True,
-        protection_mirror_s3_endpoint_url="https://s3.example.invalid",
-        protection_mirror_s3_bucket="mirror",
-        protection_mirror_s3_access_key_id="mirror-key",
-        protection_mirror_s3_secret_access_key="mirror-secret",
-    )
+    config = _config(sqlite_path)
     collection_id = "2026/20260529T000000Z__done"
     relpath = "done.txt"
     content = b"already planned\n"
@@ -2516,7 +1864,7 @@ def test_planner_ignores_fully_finalized_collection_without_mirror(
         caplog.set_level(logging.INFO, logger="riverhog_core.services.planning")
         assert _load_plan_files(session, config) == []
 
-    assert "protection mirror is not complete" not in caplog.text
+    assert "planner refresh loaded plan files" not in caplog.text
 
 
 def test_new_collection_uploads_are_blocked_over_unburned_limit(tmp_path: Path) -> None:

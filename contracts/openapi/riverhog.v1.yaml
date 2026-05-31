@@ -952,30 +952,6 @@ paths:
                     const: false
         default:
           $ref: "#/components/responses/Error"
-  /evict:
-    post:
-      summary: Evict archived bytes from hot cache
-      description: Removes selected archived hot-cache bytes without changing pin intent. Files covered by any active pin, files that are not archived, and files already cold are skipped and counted.
-      operationId: evictTarget
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [target]
-              properties:
-                target:
-                  $ref: "#/components/schemas/Target"
-      responses:
-        "200":
-          description: Eviction result
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/EvictResponse"
-        default:
-          $ref: "#/components/responses/Error"
   /pins:
     get:
       summary: List active pins
@@ -1812,7 +1788,6 @@ components:
           collection_manifest,
           archive_format,
           compression,
-          protection_mirror,
           disc_coverage,
           protection_state,
           protected_bytes,
@@ -1835,8 +1810,6 @@ components:
           type: string
         compression:
           type: string
-        protection_mirror:
-          $ref: "#/components/schemas/ProtectionMirror"
         disc_coverage:
           $ref: "#/components/schemas/CollectionDiscCoverage"
         protection_state:
@@ -1859,29 +1832,6 @@ components:
         verified_physical_bytes:
           type: integer
           minimum: 0
-    ProtectionMirror:
-      type: object
-      required: [enabled, required, state, bytes, failure]
-      properties:
-        enabled:
-          type: boolean
-          description: Whether the temporary offsite protection mirror is enabled for this Riverhog deployment.
-        required:
-          type: boolean
-          description: Whether this collection still needs temporary mirror protection. Fully protected collections do not require mirror storage.
-        state:
-          type: string
-          enum: [disabled, not_required, missing, pending, mirroring, retry_wait, complete, deleting, deleted]
-          description: Current temporary mirror state for the collection archive tar.
-        bytes:
-          type: integer
-          minimum: 0
-          description: Bytes represented by the mirrored collection archive tar, when known.
-        failure:
-          oneOf:
-            - type: string
-            - type: "null"
-          description: Latest mirror failure; Riverhog retries mirror work indefinitely with paced operator notifications.
     CollectionListResponse:
       type: object
       required: [page, per_page, total, pages, collections]
@@ -1928,7 +1878,6 @@ components:
           protection_state,
           protected_bytes,
           recovery,
-          protection_mirror,
         ]
       properties:
         id:
@@ -1950,8 +1899,6 @@ components:
           type: integer
         recovery:
           $ref: "#/components/schemas/DashboardRecovery"
-        protection_mirror:
-          $ref: "#/components/schemas/ProtectionMirror"
     DashboardActiveUpload:
       type: object
       required:
@@ -2786,27 +2733,6 @@ components:
                   type: array
                   items:
                     $ref: "#/components/schemas/FetchCopyHint"
-    EvictResponse:
-      type: object
-      required:
-        - target
-        - selected_files
-        - selected_bytes
-        - evicted_files
-        - evicted_bytes
-        - already_cold_files
-        - pinned_files
-        - unarchived_files
-      properties:
-        target:
-          $ref: "#/components/schemas/Target"
-        selected_files: { type: integer }
-        selected_bytes: { type: integer }
-        evicted_files: { type: integer }
-        evicted_bytes: { type: integer }
-        already_cold_files: { type: integer }
-        pinned_files: { type: integer }
-        unarchived_files: { type: integer }
     FetchUploadSession:
       type: object
       required: [entry, protocol, upload_url, offset, length, checksum_algorithm, expires_at]

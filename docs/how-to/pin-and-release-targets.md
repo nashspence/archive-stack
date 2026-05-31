@@ -53,19 +53,12 @@ collections.
 riverhog release 'docs/tax/2022/'
 ```
 
-## Evict archived bytes from hot cache
-
-```bash
-riverhog evict 'docs/tax/2022/invoice-123.pdf'
-```
-
 ## Notes
 
 - Pin requests are exact-selector idempotent.
 - Every exact pin creates or reuses one fetch manifest for that same selector.
 - Release removes only the exact canonical selector pin.
-- Releasing the last exact pin for a selector abandons that selector's fetch manifest.
-- Releasing a file pin evicts only that file unless another active pin still requires it.
+- Release is allowed only when every selected file is fully compliant with the required verified disc copies.
+- Releasing the last exact pin for a selector abandons that selector's fetch manifest and removes selected hot files that are no longer covered by another pin.
+- Releasing a file pin removes only that file unless another active pin still requires it.
 - Releasing a file that is covered only by a broader directory or collection pin does not subtract it from the broader pin.
-- Evict removes archived hot-cache bytes without changing pins.
-- Evict skips anything covered by an active pin or not yet archived.

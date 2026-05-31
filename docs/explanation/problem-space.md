@@ -4,7 +4,7 @@ The archival service manages content across a hot materialized cache and cold op
 and close it into a collection. Collections are the user-facing unit, but collections can be large and can span
 multiple images and physical copies.
 
-The main tension is this: users think in collections, while restore and eviction need to happen at file or subtree
+The main tension is this: users think in collections, while restore and release need to happen at file or subtree
 granularity. Requiring whole-collection restore is too coarse. Letting users mutate the hot directory tree directly
 introduces ambiguity and makes the UI and operational model harder to reason about.
 

@@ -78,6 +78,27 @@ def test_migrate_schema_adds_collection_coverage_indexes(tmp_path: Path) -> None
     assert "ix_finalized_image_coverage_parts_collection_path" in index_names
 
 
+def test_migrate_schema_drops_removed_protection_mirror_table(tmp_path: Path) -> None:
+    engine = create_catalog_engine(tmp_path / "catalog.sqlite3")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)"))
+        for version in range(1, 22):
+            conn.execute(
+                text("INSERT INTO schema_migrations (version) VALUES (:v)"),
+                {"v": version},
+            )
+        conn.execute(
+            text(
+                "CREATE TABLE collection_protection_mirrors ("
+                "collection_id TEXT PRIMARY KEY, state TEXT)"
+            )
+        )
+
+    migrate_schema(engine)
+
+    assert not inspect(engine).has_table("collection_protection_mirrors")
+
+
 def test_backfill_skips_images_with_persisted_manifest_topology(
     tmp_path: Path,
     monkeypatch,

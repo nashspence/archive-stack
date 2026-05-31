@@ -28,7 +28,6 @@ from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveRecord,
     CollectionFileRecord,
-    CollectionProtectionMirrorRecord,
     CollectionRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
@@ -47,7 +46,6 @@ from riverhog_core.domain.models import (
     CollectionSummary,
     CopySummary,
     GlacierArchiveStatus,
-    ProtectionMirrorSummary,
     RecoveryCoverage,
 )
 from riverhog_core.domain.types import CollectionId, CopyId, ImageId, Sha256Hex
@@ -435,8 +433,6 @@ class SqlAlchemyCollectionService:
                 normalized_collection_id,
                 collection.files,
                 archive=collection.archive,
-                mirror=session.get(CollectionProtectionMirrorRecord, normalized_collection_id),
-                mirror_enabled=self._config.protection_mirror_enabled,
                 image_coverage=image_coverage,
                 covered_paths=covered_paths,
                 recovery_parts_by_image_path=recovery_parts_by_image_path,
@@ -481,8 +477,6 @@ class SqlAlchemyCollectionService:
                     collection.id,
                     collection.files,
                     archive=collection.archive,
-                    mirror=session.get(CollectionProtectionMirrorRecord, collection.id),
-                    mirror_enabled=self._config.protection_mirror_enabled,
                     image_coverage=image_coverage,
                     covered_paths=covered_paths,
                     recovery_parts_by_image_path=recovery_parts_by_image_path,
@@ -555,15 +549,6 @@ class SqlAlchemyCollectionService:
                 )
                 for archive_row in archive_rows
             }
-            mirror_rows = session.scalars(
-                select(CollectionProtectionMirrorRecord).where(
-                    CollectionProtectionMirrorRecord.collection_id.in_(collection_ids)
-                )
-            ).all()
-            mirror_by_collection = {
-                mirror_row.collection_id: mirror_row for mirror_row in mirror_rows
-            }
-
             image_states = _finalized_image_protection_states(session)
             coverage_rows = session.execute(
                 select(
@@ -631,7 +616,6 @@ class SqlAlchemyCollectionService:
                     image_states=image_states_by_collection.get(collection_id, set()),
                 )
                 glacier_bytes = glacier_bytes_by_collection.get(collection_id, 0)
-                mirror_row = mirror_by_collection.get(collection_id)
                 collections.append(
                     {
                         **collection_stats,
@@ -663,11 +647,6 @@ class SqlAlchemyCollectionService:
                                 "bytes": glacier_bytes,
                             },
                         },
-                        "protection_mirror": _dashboard_protection_mirror_payload(
-                            mirror_row,
-                            enabled=self._config.protection_mirror_enabled,
-                            protection_state=protection_state,
-                        ),
                     }
                 )
 
@@ -762,37 +741,6 @@ def _dashboard_active_uploads(
             }
         )
     return payloads
-
-
-def _dashboard_protection_mirror_payload(
-    mirror: CollectionProtectionMirrorRecord | None,
-    *,
-    enabled: bool,
-    protection_state: ProtectionState,
-) -> dict[str, object]:
-    if not enabled:
-        return {
-            "enabled": False,
-            "required": False,
-            "state": "disabled",
-            "bytes": 0,
-            "failure": None,
-        }
-    if protection_state is ProtectionState.PROTECTED:
-        return {
-            "enabled": True,
-            "required": False,
-            "state": "not_required",
-            "bytes": 0,
-            "failure": None,
-        }
-    return {
-        "enabled": True,
-        "required": True,
-        "state": mirror.state if mirror is not None else "missing",
-        "bytes": int(mirror.archive_bytes or 0) if mirror is not None else 0,
-        "failure": mirror.failure if mirror is not None else None,
-    }
 
 
 def _api_collection_protection_state(state: ProtectionState) -> str:
@@ -1589,8 +1537,6 @@ def _summary_from_records(
     file_records: Sequence[CollectionFileRecord],
     *,
     archive: CollectionArchiveRecord | None = None,
-    mirror: CollectionProtectionMirrorRecord | None = None,
-    mirror_enabled: bool = False,
     image_coverage: Sequence[CollectionCoverageImage] = (),
     covered_paths: dict[str, set[str]] | None = None,
     recovery_parts_by_image_path: dict[tuple[str, str], _RecoveryParts] | None = None,
@@ -1629,11 +1575,6 @@ def _summary_from_records(
         collection_manifest=_collection_manifest_status(archive),
         archive_format=archive.archive_format if archive is not None else None,
         compression=archive.compression if archive is not None else None,
-        protection_mirror=_collection_protection_mirror_status(
-            mirror,
-            enabled=mirror_enabled,
-            protection_state=protection_state,
-        ),
     )
 
 
@@ -1649,27 +1590,6 @@ def _collection_glacier_status(archive: CollectionArchiveRecord | None) -> Glaci
         last_uploaded_at=archive.last_uploaded_at,
         last_verified_at=archive.last_verified_at,
         failure=archive.failure,
-    )
-
-
-def _collection_protection_mirror_status(
-    mirror: CollectionProtectionMirrorRecord | None,
-    *,
-    enabled: bool,
-    protection_state: ProtectionState,
-) -> ProtectionMirrorSummary:
-    if not enabled:
-        return ProtectionMirrorSummary(enabled=False, required=False, state="disabled")
-    if protection_state is ProtectionState.PROTECTED:
-        return ProtectionMirrorSummary(enabled=True, required=False, state="not_required")
-    if mirror is None:
-        return ProtectionMirrorSummary(enabled=True, required=True, state="missing")
-    return ProtectionMirrorSummary(
-        enabled=True,
-        required=True,
-        state=mirror.state,
-        bytes=int(mirror.archive_bytes or 0),
-        failure=mirror.failure,
     )
 
 

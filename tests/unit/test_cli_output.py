@@ -120,12 +120,6 @@ def test_format_dashboard_surfaces_ready_backlog_and_noncompliant_collections() 
                     "id": "receipts",
                     "bytes": 40,
                     "protected_bytes": 40,
-                    "protection_mirror": {
-                        "enabled": True,
-                        "required": False,
-                        "state": "not_required",
-                        "bytes": 0,
-                    },
                 }
             ]
         },
@@ -164,7 +158,6 @@ def test_format_dashboard_surfaces_ready_backlog_and_noncompliant_collections() 
     assert "verified_physical=partial 22/55" in rendered
     assert "fully_protected_collections:" in rendered
     assert "receipts protected_bytes=40/40" in rendered
-    assert "receipts protected_bytes=40/40 mirror=not required" in rendered
 
 
 def test_format_collection_summary_surfaces_recovery_paths_labels_and_glacier_costs() -> None:

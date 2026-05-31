@@ -85,21 +85,6 @@ def _recovery_text(recovery: object, *, total_bytes: int) -> str:
     )
 
 
-def _protection_mirror_text(mirror: object) -> str:
-    if not isinstance(mirror, Mapping):
-        return "unknown"
-    if not mirror.get("enabled", False):
-        return "disabled"
-    if mirror.get("required") is False or mirror.get("state") == "not_required":
-        return "not required"
-    state = mirror.get("state", "unknown")
-    byte_count = mirror.get("bytes", 0)
-    failure = mirror.get("failure")
-    if failure:
-        return f"{state} bytes={byte_count} failure={failure}"
-    return f"{state} bytes={byte_count}"
-
-
 def _active_upload_progress_text(upload: Mapping[str, object]) -> str:
     archive_uploaded = upload.get("archive_uploaded_bytes")
     archive_total = upload.get("archive_total_bytes")
@@ -183,28 +168,6 @@ def format_pin(payload: Mapping[str, Any]) -> str:
             else:
                 lines.append("- none")
 
-    return "\n".join(lines)
-
-
-def format_evict(payload: Mapping[str, Any]) -> str:
-    lines = [
-        f"target: {payload.get('target', 'unknown')}",
-        "selected: "
-        f"{payload.get('selected_files', 0)} files, "
-        f"{payload.get('selected_bytes', 0)} bytes",
-        "evicted: "
-        f"{payload.get('evicted_files', 0)} files, "
-        f"{payload.get('evicted_bytes', 0)} bytes",
-    ]
-    skipped = [
-        ("already cold", payload.get("already_cold_files", 0)),
-        ("pinned", payload.get("pinned_files", 0)),
-        ("not archived", payload.get("unarchived_files", 0)),
-    ]
-    skipped_lines = [f"{label}: {count}" for label, count in skipped if count]
-    if skipped_lines:
-        lines.append("skipped:")
-        lines.extend(f"- {line}" for line in skipped_lines)
     return "\n".join(lines)
 
 
@@ -423,8 +386,7 @@ def format_dashboard(
                 f"- {collection.get('id', 'unknown')} "
                 f"state={collection.get('protection_state', 'unknown')} "
                 f"protected_bytes={collection.get('protected_bytes', 0)}/{total_bytes} "
-                f"recovery={_recovery_text(collection.get('recovery'), total_bytes=total_bytes)} "
-                f"mirror={_protection_mirror_text(collection.get('protection_mirror'))}"
+                f"recovery={_recovery_text(collection.get('recovery'), total_bytes=total_bytes)}"
             )
 
     lines.append("fully_protected_collections:")
@@ -438,8 +400,7 @@ def format_dashboard(
             lines.append(
                 f"- {collection.get('id', 'unknown')} "
                 f"protected_bytes={collection.get('protected_bytes', 0)}/"
-                f"{collection.get('bytes', 0)} "
-                f"mirror={_protection_mirror_text(collection.get('protection_mirror'))}"
+                f"{collection.get('bytes', 0)}"
             )
     return "\n".join(lines)
 
@@ -467,8 +428,6 @@ def format_collection_summary(
             total_bytes=_int_value(payload.get("bytes", 0)),
         )
     )
-    lines.append(f"protection_mirror: {_protection_mirror_text(payload.get('protection_mirror'))}")
-
     collection_glacier = _find_collection_glacier_entry(collection_id, glacier_payload)
     direct_glacier = payload.get("glacier")
     if isinstance(direct_glacier, Mapping):

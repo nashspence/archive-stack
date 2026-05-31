@@ -10,9 +10,11 @@ from pathlib import Path
 import pytest
 
 from riverhog_core.catalog_models import (
+    ActivePinRecord,
     CollectionArchiveRecord,
     CollectionFileRecord,
     CollectionRecord,
+    FileCopyRecord,
     FinalizedImageCollectionArtifactRecord,
     FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
@@ -23,13 +25,14 @@ from riverhog_core.collection_archives import (
     CollectionArchivePackage,
     build_collection_archive_package,
 )
-from riverhog_core.domain.enums import RecoverySessionState
+from riverhog_core.domain.enums import FetchState, RecoverySessionState
 from riverhog_core.domain.errors import InvalidState
 from riverhog_core.finalized_image_coverage import (
     read_finalized_image_collection_artifacts,
     read_finalized_image_coverage_parts,
 )
 from riverhog_core.ports.archive_store import ArchiveRestoreStatus
+from riverhog_core.ports.hot_store import HotFileStat
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services import recovery_sessions as recovery_sessions_module
 from riverhog_core.services.copies import SqlAlchemyCopyService
@@ -69,6 +72,12 @@ class _FakeHotStore:
     def get_collection_file(self, collection_id: str, path: str) -> bytes:
         assert collection_id == "docs"
         return DOCS_FILES[path]
+
+    def stat_collection_file(self, collection_id: str, path: str) -> HotFileStat | None:
+        content = self.puts.get((collection_id, path))
+        if content is None:
+            return None
+        return HotFileStat(bytes=len(content), sha256=hashlib.sha256(content).hexdigest())
 
 
 class _FakeArchiveStore:
@@ -558,6 +567,121 @@ def test_collection_restore_materializes_selected_files_to_hot_storage(
         )
         assert row is not None
         assert row.hot is True
+
+
+def test_missing_pinned_hot_file_without_disc_coverage_restores_from_glacier(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+    _seed_collection_files(
+        sqlite_path,
+        collection_id="docs",
+        files=DOCS_FILES,
+        hot=True,
+        archived=True,
+    )
+    package = _docs_collection_archive_package()
+    _seed_collection_archive(sqlite_path, package)
+    with session_scope(make_session_factory(str(sqlite_path))) as session:
+        session.add(
+            ActivePinRecord(
+                target="docs/tax/2022/invoice-123.pdf",
+                fetch_id="fx-1",
+                fetch_order=1,
+                fetch_state=FetchState.DONE.value,
+            )
+        )
+
+    store = _FakeArchiveStore(collection_packages={"docs": package})
+    hot_store = _FakeHotStore()
+    config = _config(
+        sqlite_path,
+        glacier_recovery_restore_latency=timedelta(seconds=0),
+        glacier_recovery_sweep_interval=timedelta(seconds=0),
+    )
+    recovery_service = SqlAlchemyRecoverySessionService(config, store, hot_store)
+    monkeypatch.setattr(
+        "riverhog_core.services.recovery_sessions.utcnow",
+        lambda: datetime(2026, 4, 20, 4, 0, tzinfo=UTC),
+    )
+
+    assert recovery_service.repair_missing_pinned_hot_files(limit=10) == 1
+
+    restored_path = "tax/2022/invoice-123.pdf"
+    assert hot_store.puts == {("docs", restored_path): DOCS_FILES[restored_path]}
+    assert store.restore_requests == [
+        (
+            "glacier/collections/docs/archive.tar",
+            "glacier/collections/docs/manifest.yml",
+            "glacier/collections/docs/manifest.yml.ots",
+        )
+    ]
+    with session_scope(make_session_factory(str(sqlite_path))) as session:
+        row = session.get(CollectionFileRecord, {"collection_id": "docs", "path": restored_path})
+        pin = session.get(ActivePinRecord, "docs/tax/2022/invoice-123.pdf")
+        assert row is not None
+        assert row.hot is True
+        assert pin is not None
+        assert pin.fetch_state == FetchState.DONE.value
+
+
+def test_missing_pinned_hot_file_with_disc_coverage_waits_for_djdan_fetch(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+    _seed_collection_files(
+        sqlite_path,
+        collection_id="docs",
+        files=DOCS_FILES,
+        hot=True,
+        archived=True,
+    )
+    with session_scope(make_session_factory(str(sqlite_path))) as session:
+        session.add(
+            ActivePinRecord(
+                target="docs/tax/2022/invoice-123.pdf",
+                fetch_id="fx-1",
+                fetch_order=1,
+                fetch_state=FetchState.DONE.value,
+            )
+        )
+        session.add(
+            FileCopyRecord(
+                collection_id="docs",
+                path="tax/2022/invoice-123.pdf",
+                copy_id="20260530T000000Z-1",
+                volume_id="20260530T000000Z",
+                location="test shelf",
+                disc_path="files/000001.age",
+                enc_json="{}",
+            )
+        )
+
+    store = _FakeArchiveStore()
+    hot_store = _FakeHotStore()
+    recovery_service = SqlAlchemyRecoverySessionService(
+        _config(sqlite_path),
+        store,
+        hot_store,
+    )
+
+    assert recovery_service.repair_missing_pinned_hot_files(limit=10) == 1
+
+    assert store.restore_requests == []
+    assert hot_store.puts == {}
+    with session_scope(make_session_factory(str(sqlite_path))) as session:
+        row = session.get(
+            CollectionFileRecord,
+            {"collection_id": "docs", "path": "tax/2022/invoice-123.pdf"},
+        )
+        pin = session.get(ActivePinRecord, "docs/tax/2022/invoice-123.pdf")
+        assert row is not None
+        assert row.hot is False
+        assert pin is not None
+        assert pin.fetch_state == FetchState.WAITING_MEDIA.value
 
 
 def test_collection_restore_streams_large_selected_file_to_hot_storage(
