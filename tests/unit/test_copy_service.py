@@ -388,6 +388,8 @@ def test_notify_label_needed_sends_best_effort_operator_webhook(
             "copy_id": "20260420T040001Z-1",
             "label_text": "20260420T040001Z-1",
             "delivered_at": sent[0]["delivered_at"],
+            "operator_urgency": "time_sensitive",
+            "operator_action": "label the physical disc exactly as label_text",
             "image_url": "https://api.test/v1/images/20260420T040001Z",
             "notification": {
                 "title": "👨🏻‍🎤 20260420T040001Z-1",

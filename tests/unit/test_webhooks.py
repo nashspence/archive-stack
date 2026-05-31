@@ -82,6 +82,8 @@ def test_build_images_ready_payload_supports_multiple_images() -> None:
         delivered_at=datetime(2026, 4, 20, tzinfo=UTC),
     )
     assert payload["event"] == "images.ready"
+    assert payload["operator_urgency"] == "time_sensitive"
+    assert payload["operator_action"] == "run djdan burn"
     assert len(payload["images"]) == 2
     assert payload["images"][0]["download_url"].endswith("/v1/images/20260420T040001Z/iso")
     assert payload["notification"] == {
@@ -229,6 +231,8 @@ def test_build_collection_lifecycle_payload_includes_links_and_details() -> None
     assert payload["event"] == "collections.upload_staged"
     assert payload["type"] == "collection_lifecycle"
     assert payload["collection_id"] == "2025/20250712T213200Z__home-videos"
+    assert payload["operator_urgency"] == "time_sensitive"
+    assert payload["operator_action"] == "none"
     assert payload["collection_url"].endswith("/v1/collections/2025/20250712T213200Z__home-videos")
     assert payload["files_total"] == 572
     assert payload["notification"] == {
@@ -253,6 +257,8 @@ def test_build_copy_label_needed_payload_includes_label_and_image_url() -> None:
         "copy_id": "20260526T204059Z-1",
         "label_text": "20260526T204059Z-1",
         "delivered_at": "2026-05-26T21:15:00Z",
+        "operator_urgency": "time_sensitive",
+        "operator_action": "label the physical disc exactly as label_text",
         "image_url": "https://api.test/v1/images/20260526T204059Z",
         "notification": {
             "title": "👨🏻‍🎤 20260526T204059Z-1",

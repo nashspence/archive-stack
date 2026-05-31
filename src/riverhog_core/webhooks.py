@@ -137,6 +137,8 @@ def build_images_ready_payload(
         "event": event,
         "batch_id": batch.batch_id,
         "delivered_at": isoformat_z(delivered_at),
+        "operator_urgency": _operator_event_field(event=event, field="operator_urgency"),
+        "operator_action": _operator_event_field(event=event, field="operator_action"),
         "reminder_count": batch.reminder_count + (1 if is_reminder else 0),
         "reminder_interval_seconds": config.reminder_interval_seconds,
         "images": images,
@@ -487,6 +489,13 @@ def _notification_template(*, event: str, notification_type: str | None) -> Mapp
     return _FALLBACK_NOTIFICATION_TEMPLATE
 
 
+def _operator_event_field(*, event: str, field: str, default: str = "") -> str:
+    value = _operator_notification_events().get(event, {}).get(field)
+    if isinstance(value, str):
+        return value
+    return default
+
+
 def _notification_emoji(actor: str) -> str:
     rendering = _operator_notification_contract().get("receiver_rendering", {})
     actors = rendering.get("actors") if isinstance(rendering, dict) else None
@@ -626,6 +635,8 @@ def build_collection_lifecycle_payload(
         "type": "collection_lifecycle",
         "collection_id": collection_id,
         "delivered_at": isoformat_z(delivered_at),
+        "operator_urgency": _operator_event_field(event=event, field="operator_urgency"),
+        "operator_action": _operator_event_field(event=event, field="operator_action"),
         "notification": _collection_notification(event=event, collection_id=collection_id),
     }
     if config.base_url:
@@ -651,6 +662,14 @@ def build_copy_label_needed_payload(
         "copy_id": copy_id,
         "label_text": label_text,
         "delivered_at": isoformat_z(delivered_at),
+        "operator_urgency": _operator_event_field(
+            event="images.copy_label_needed",
+            field="operator_urgency",
+        ),
+        "operator_action": _operator_event_field(
+            event="images.copy_label_needed",
+            field="operator_action",
+        ),
         "notification": _copy_label_needed_notification(label_text=label_text),
     }
     if config.base_url:
