@@ -1566,6 +1566,12 @@ def _apply_saturation_whole_file_collection_splits(
             minimum_payload_fill=minimum_payload_fill,
         )
         if move is None:
+            _LOG.info(
+                "planner saturation found no beneficial whole-file split: "
+                "waiting_bytes=%s threshold=%s",
+                _waiting_candidate_bytes(candidate_bins, minimum_payload_fill),
+                saturation_threshold_bytes,
+            )
             return
         before = _waiting_candidate_bytes(candidate_bins, minimum_payload_fill)
         _apply_optional_split_move(candidate_bins, move)
