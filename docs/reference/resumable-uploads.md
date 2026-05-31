@@ -172,10 +172,10 @@ planned contents and planner sizing config. If the final candidate is below
 kept in `waiting` state and no image root is materialized; those files stay
 safe in Glacier and wait for future collections to fill a burnable disc.
 If waiting candidate bytes exceed `RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES`,
-Riverhog may add fair whole-file voluntary collection splits, including for
-collections that already required splitting, to create enough filled candidates
-to bring waiting bytes back under the saturation threshold. Underfilled
-candidates remain in `waiting` state.
+Riverhog may add fair beneficial whole-file voluntary collection splits,
+including for collections that already required splitting, to create enough
+filled candidates to bring waiting bytes back under the saturation threshold.
+Underfilled candidates remain in `waiting` state.
 
 A burnable candidate root is first written as
 `.candidate-*.tmp`; completed encrypted payloads, sidecars, manifests, and

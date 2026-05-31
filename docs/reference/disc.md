@@ -17,13 +17,14 @@ The machine-readable contract files live in `contracts/disc/`:
 - the disc planner may reorder collection pieces across candidate images to improve packing
 - files are never voluntarily split; file parts only exist when a single file cannot fit on one image
 - collections that require multiple images are split only as required unless saturation splitting is needed
-- collections that could fit on one image may be split once, by whole files, to improve packing even before saturation
+- collections that could fit on one image may be split once, by whole files, to make an underfilled candidate ready
+  without increasing total waiting candidate bytes even before saturation
 - whether a collection could fit on one image is evaluated against the complete collection, not only its currently
   unburned remainder
 - each image may contain at most one optionally split collection
 - when waiting candidate bytes exceed `RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES`, the planner may add fair
-  whole-file voluntary splits, including for collections that already required splitting, until enough candidates meet
-  the minimum fill threshold
+  beneficial whole-file voluntary splits, including for collections that already required splitting, until enough
+  candidates meet the minimum fill threshold
 - `README.md` is the only plaintext leaf file on the disc
 - every other leaf file is individually encrypted with `age-plugin-batchpass`
 - on-disc filenames are generic; canonical collection paths live only inside decrypted YAML

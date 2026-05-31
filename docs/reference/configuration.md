@@ -426,11 +426,11 @@ Planner-estimated waiting candidate bytes allowed to accumulate before Riverhog
 enters saturation splitting. Saturation splitting does not mark underfilled
 candidates as ISO-ready. Instead, Riverhog may add extra whole-file voluntary
 collection splits, including for collections that already required splitting,
-until enough candidate images meet `RIVERHOG_PLANNER_MIN_FILL_BYTES` to bring
-waiting bytes under this threshold. Required splits and voluntary splits are
-tracked separately by the planner; the next saturation split comes from a
-feasible collection with the lowest current voluntary split count. Set to `0` to
-disable saturation splitting.
+when those splits make an underfilled candidate ready and reduce total waiting
+candidate bytes. Required splits and voluntary splits are tracked separately by
+the planner; the next saturation split comes from a feasible collection with the
+lowest current voluntary split count. Set to `0` to disable saturation
+splitting.
 
 ## `RIVERHOG_PLANNER_IMAGE_ROOT`
 

@@ -1792,12 +1792,15 @@ def _find_optional_split_move(
     minimum_payload_fill: int,
 ) -> _OptionalSplitMove | None:
     best_move: _OptionalSplitMove | None = None
-    best_key: tuple[bool, int, int, int, int, tuple[tuple[str, str, int], ...]] | None = None
+    best_key: tuple[int, int, int, int, int, tuple[tuple[str, str, int], ...]] | None = None
+    waiting_before = _waiting_candidate_bytes(candidate_bins, minimum_payload_fill)
     for target_idx in sorted(
         range(len(candidate_bins)),
         key=lambda idx: (candidate_bins[idx].estimated_bytes, idx),
     ):
         target = candidate_bins[target_idx]
+        if target.estimated_bytes >= minimum_payload_fill:
+            continue
         if target.voluntary_split_collection_ids:
             continue
         remaining = payload_capacity - target.estimated_bytes
@@ -1820,15 +1823,27 @@ def _find_optional_split_move(
         piece_key = tuple(
             (piece.collection_id, piece.path, piece.part_index) for piece in move.moved_pieces
         )
+        if target_after < minimum_payload_fill:
+            continue
+        waiting_after = _waiting_bytes_after_move(
+            waiting_before=waiting_before,
+            target_before=target.estimated_bytes,
+            target_after=target_after,
+            donor_before=candidate_bins[move.donor_bin_index].estimated_bytes,
+            donor_after=donor_after,
+            minimum_payload_fill=minimum_payload_fill,
+        )
+        if waiting_after > waiting_before:
+            continue
         candidate_key = (
-            target_after >= minimum_payload_fill,
-            target_after,
-            donor_after,
-            -target_idx,
-            -move.donor_bin_index,
+            waiting_after,
+            -target_after,
+            -donor_after,
+            target_idx,
+            move.donor_bin_index,
             piece_key,
         )
-        if best_key is None or candidate_key > best_key:
+        if best_key is None or candidate_key < best_key:
             best_key = candidate_key
             best_move = move
     return best_move

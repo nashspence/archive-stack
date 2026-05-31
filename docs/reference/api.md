@@ -280,8 +280,8 @@ Required behavior:
 - allocation may reorder collection pieces across candidate images to improve packing
 - files are never voluntarily split; file parts only exist when a single file cannot fit on one candidate image
 - collections that require multiple candidate images are split only as required unless saturation splitting is needed
-- collections that could fit on one candidate image may be split once, by whole files, to improve packing even before
-  saturation
+- collections that could fit on one candidate image may be split once, by whole files, to make an underfilled candidate
+  ready without increasing total waiting candidate bytes even before saturation
 - whether a collection could fit on one candidate image is evaluated against the complete collection, not only its
   currently unburned remainder
 - each candidate image may contain at most one optionally split collection
@@ -289,9 +289,9 @@ Required behavior:
   OpenTimestamps proof
 - underfilled tail candidates are held out of the returned ready plan until future collections push them over the
   configured minimum fill threshold
-- if waiting candidate bytes exceed `RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES`, the planner may add fair whole-file
-  voluntary splits, including for collections that already required splitting, until enough candidate images meet the
-  minimum fill threshold to bring waiting bytes under the saturation threshold
+- if waiting candidate bytes exceed `RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES`, the planner may add fair beneficial
+  whole-file voluntary splits, including for collections that already required splitting, until enough candidate images
+  meet the minimum fill threshold to bring waiting bytes under the saturation threshold
 - required splits and voluntary splits are counted separately; saturation splitting chooses a feasible collection with
   the lowest existing voluntary split count, so required-split collections start as natural saturation targets
 - the response includes pagination metadata and a `candidates` array

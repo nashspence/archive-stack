@@ -38,7 +38,14 @@ def _runtime_config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
     )
 
 
-def _piece(collection_id: str, path: str, estimated_bytes: int) -> _PlanPiece:
+def _piece(
+    collection_id: str,
+    path: str,
+    estimated_bytes: int,
+    *,
+    part_index: int = 0,
+    part_count: int = 1,
+) -> _PlanPiece:
     sha256 = (collection_id + path).encode("utf-8").hex().rjust(64, "0")[-64:]
     return _PlanPiece(
         collection_id=collection_id,
@@ -48,8 +55,8 @@ def _piece(collection_id: str, path: str, estimated_bytes: int) -> _PlanPiece:
         sha256=sha256,
         offset=0,
         plaintext_bytes=estimated_bytes,
-        part_index=0,
-        part_count=1,
+        part_index=part_index,
+        part_count=part_count,
         estimated_payload_bytes=estimated_bytes,
         estimated_sidecar_bytes=0,
     )
@@ -362,11 +369,11 @@ def test_planner_reorders_collections_to_pack_candidates_better(tmp_path: Path) 
 def test_planner_may_split_one_single_disc_collection_by_whole_files() -> None:
     groups = _pack_collection_piece_groups(
         [
-            _group("2026/20260101T000000Z__alpha", [300, 300, 300], artifact_estimate=50),
-            _group("2026/20260102T000000Z__bravo", [100]),
+            _group("2026/20260101T000000Z__alpha", [450, 450]),
+            _group("2026/20260102T000000Z__bravo", [450]),
         ],
         payload_capacity=1_000,
-        minimum_payload_fill=1,
+        minimum_payload_fill=900,
     )
 
     alpha_groups = [
@@ -378,8 +385,23 @@ def test_planner_may_split_one_single_disc_collection_by_whole_files() -> None:
     assert sorted(
         sum(piece.collection_id.endswith("__alpha") for piece in group)
         for group in alpha_groups
-    ) == [1, 2]
+    ) == [1, 1]
+    assert _group_estimated_bytes(groups) == [450, 900]
     assert all(piece.part_count == 1 for group in groups for piece in group)
+
+
+def test_planner_does_not_split_when_it_would_increase_waiting_bytes() -> None:
+    groups = _pack_collection_piece_groups(
+        [
+            _group("2026/20260101T000000Z__alpha", [300, 300, 300]),
+            _group("2026/20260102T000000Z__bravo", [500]),
+        ],
+        payload_capacity=1_000,
+        minimum_payload_fill=900,
+    )
+
+    assert _group_estimated_bytes(groups) == [900, 500]
+    assert _collection_disc_count(groups, "2026/20260101T000000Z__alpha") == 1
 
 
 def test_planner_may_split_single_disc_collection_to_make_another_disc_ready() -> None:
@@ -487,6 +509,27 @@ def test_planner_saturation_uses_beneficial_split_to_get_below_threshold() -> No
     assert saturated_waiting_bytes <= 475
 
 
+def test_planner_saturation_leaves_tail_when_no_split_can_help() -> None:
+    groups = _pack_collection_piece_groups(
+        [
+            _group("2026/20260101T000000Z__alpha", [300, 300, 300]),
+            _group("2026/20260102T000000Z__bravo", [500]),
+        ],
+        payload_capacity=1_000,
+        minimum_payload_fill=900,
+        collection_required_image_counts={
+            "2026/20260101T000000Z__alpha": 1,
+            "2026/20260102T000000Z__bravo": 1,
+        },
+        saturation_threshold_bytes=475,
+    )
+    waiting_bytes = sum(bytes_ for bytes_ in _group_estimated_bytes(groups) if bytes_ < 900)
+
+    assert _group_estimated_bytes(groups) == [900, 500]
+    assert waiting_bytes == 500
+    assert _collection_disc_count(groups, "2026/20260101T000000Z__alpha") == 1
+
+
 def test_planner_saturation_splits_least_unnecessarily_split_collection_first() -> None:
     groups = _pack_collection_piece_groups(
         [
@@ -515,13 +558,14 @@ def test_planner_saturation_splits_least_unnecessarily_split_collection_first() 
 def test_planner_allows_only_one_optional_split_collection_per_disc() -> None:
     groups = _pack_collection_piece_groups(
         [
-            _group("2026/20260101T000000Z__alpha", [300, 300]),
-            _group("2026/20260102T000000Z__bravo", [290, 290]),
+            _group("2026/20260101T000000Z__alpha", [450, 450]),
+            _group("2026/20260102T000000Z__bravo", [440, 440]),
             _group("2026/20260103T000000Z__charlie", [450]),
         ],
         payload_capacity=1_000,
-        minimum_payload_fill=1,
+        minimum_payload_fill=900,
     )
+    group_collections = [{piece.collection_id for piece in group} for group in groups]
 
     split_collection_ids = {
         collection_id
@@ -532,6 +576,69 @@ def test_planner_allows_only_one_optional_split_collection_per_disc() -> None:
     }
 
     assert len(split_collection_ids) == 1
+    assert all(len(collections) <= 2 for collections in group_collections)
+
+
+def test_planner_saturation_allows_only_one_voluntary_split_collection_per_disc() -> None:
+    groups = _pack_collection_piece_groups(
+        [
+            _group("2026/20260101T000000Z__alpha", [400, 400]),
+            _group("2026/20260102T000000Z__bravo", [400, 400]),
+            _group("2026/20260103T000000Z__charlie", [500]),
+        ],
+        payload_capacity=1_000,
+        minimum_payload_fill=900,
+        optionally_splittable_collections=set(),
+        collection_required_image_counts={
+            "2026/20260101T000000Z__alpha": 1,
+            "2026/20260102T000000Z__bravo": 1,
+            "2026/20260103T000000Z__charlie": 1,
+        },
+        saturation_threshold_bytes=50,
+    )
+    group_collections = [{piece.collection_id for piece in group} for group in groups]
+
+    assert {
+        "2026/20260101T000000Z__alpha",
+        "2026/20260103T000000Z__charlie",
+    } in group_collections
+    assert all(len(collections) <= 2 for collections in group_collections)
+
+
+def test_planner_never_voluntarily_splits_multipart_files() -> None:
+    multipart_group = _CollectionPieceGroup(
+        collection_id="2026/20260101T000000Z__alpha",
+        pieces=(
+            _piece(
+                "2026/20260101T000000Z__alpha",
+                "huge.bin",
+                450,
+                part_index=0,
+                part_count=2,
+            ),
+            _piece(
+                "2026/20260101T000000Z__alpha",
+                "huge.bin",
+                450,
+                part_index=1,
+                part_count=2,
+            ),
+        ),
+        estimated_bytes=900,
+        artifact_estimate=0,
+    )
+    groups = _pack_collection_piece_groups(
+        [
+            multipart_group,
+            _group("2026/20260102T000000Z__bravo", [500]),
+        ],
+        payload_capacity=1_000,
+        minimum_payload_fill=900,
+        saturation_threshold_bytes=475,
+    )
+
+    assert _group_estimated_bytes(groups) == [900, 500]
+    assert _collection_disc_count(groups, "2026/20260101T000000Z__alpha") == 1
 
 
 def test_planner_saturation_can_be_disabled() -> None:
