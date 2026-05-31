@@ -480,12 +480,19 @@ def test_collection_restore_requests_and_verifies_manifest_and_proof(
         sqlite_path,
         glacier_recovery_restore_latency=timedelta(seconds=0),
         glacier_recovery_sweep_interval=timedelta(seconds=0),
+        operator_webhook_url="http://example.invalid/webhooks/operator",
     )
     recovery_service = SqlAlchemyRecoverySessionService(
         config,
         store,
         recovery_payload_codec=_RECOVERY_CODEC,
     )
+    payloads: list[dict[str, object]] = []
+
+    def _post_webhook(*, config, payload):
+        payloads.append(payload)
+
+    monkeypatch.setattr("riverhog_core.services.recovery_sessions.post_webhook", _post_webhook)
 
     session = recovery_service.create_or_resume_for_collection("docs")
     start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
@@ -508,6 +515,16 @@ def test_collection_restore_requests_and_verifies_manifest_and_proof(
     completed = recovery_service.complete(session.id)
 
     assert completed.state == RecoverySessionState.COMPLETED
+    assert [payload["event"] for payload in payloads] == [
+        "glacier_recovery.started",
+        "glacier_recovery.ready",
+        "glacier_recovery.completed",
+    ]
+    assert [payload["type"] for payload in payloads] == [
+        "collection_restore",
+        "collection_restore",
+        "collection_restore",
+    ]
     assert store.archive_reads == ["glacier/collections/docs/archive.tar"]
     assert store.manifest_reads == ["glacier/collections/docs/manifest.yml"]
     assert store.proof_reads == ["glacier/collections/docs/manifest.yml.ots"]
@@ -517,6 +534,121 @@ def test_collection_restore_requests_and_verifies_manifest_and_proof(
             "glacier/collections/docs/manifest.yml",
             "glacier/collections/docs/manifest.yml.ots",
         )
+    ]
+
+
+def test_recovery_completed_notification_retries_after_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    image_root = tmp_path / "image-root"
+    initialize_db(str(sqlite_path))
+    write_tree(image_root, IMAGE_ONE_FILES)
+    _seed_finalized_image(sqlite_path, image_root)
+    package = _docs_collection_archive_package()
+    _seed_collection_archive(sqlite_path, package)
+    store = _FakeArchiveStore(collection_packages={"docs": package})
+    config = _config(
+        sqlite_path,
+        glacier_recovery_restore_latency=timedelta(seconds=0),
+        glacier_recovery_sweep_interval=timedelta(seconds=0),
+        operator_webhook_url="http://example.invalid/webhooks/operator",
+        operator_webhook_retry_delay=timedelta(seconds=1),
+    )
+    recovery_service = SqlAlchemyRecoverySessionService(
+        config,
+        store,
+        recovery_payload_codec=_RECOVERY_CODEC,
+    )
+    events: list[str] = []
+    completed_failures = 0
+
+    def _post_webhook(*, config, payload):
+        nonlocal completed_failures
+        events.append(str(payload["event"]))
+        if payload["event"] == "glacier_recovery.completed" and completed_failures == 0:
+            completed_failures += 1
+            raise RuntimeError("HTTP 503")
+
+    start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
+    monkeypatch.setattr("riverhog_core.services.recovery_sessions.utcnow", lambda: start)
+    monkeypatch.setattr("riverhog_core.services.recovery_sessions.post_webhook", _post_webhook)
+
+    session = recovery_service.create_or_resume_for_collection("docs")
+    recovery_service.approve(session.id)
+    assert recovery_service.process_due_sessions() == 1
+    completed = recovery_service.complete(session.id)
+
+    assert completed.state == RecoverySessionState.COMPLETED
+    assert events == [
+        "glacier_recovery.started",
+        "glacier_recovery.ready",
+        "glacier_recovery.completed",
+    ]
+
+    monkeypatch.setattr(
+        "riverhog_core.services.recovery_sessions.utcnow",
+        lambda: start + timedelta(seconds=1),
+    )
+
+    assert recovery_service.process_due_sessions() == 1
+    assert events == [
+        "glacier_recovery.started",
+        "glacier_recovery.ready",
+        "glacier_recovery.completed",
+        "glacier_recovery.completed",
+    ]
+
+
+def test_recovery_started_notification_retries_while_restore_is_pending(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    image_root = tmp_path / "image-root"
+    initialize_db(str(sqlite_path))
+    write_tree(image_root, IMAGE_ONE_FILES)
+    _seed_finalized_image(sqlite_path, image_root)
+    package = _docs_collection_archive_package()
+    _seed_collection_archive(sqlite_path, package)
+    config = _config(
+        sqlite_path,
+        glacier_recovery_restore_latency=timedelta(seconds=10),
+        operator_webhook_url="http://example.invalid/webhooks/operator",
+        operator_webhook_retry_delay=timedelta(seconds=1),
+    )
+    recovery_service = SqlAlchemyRecoverySessionService(
+        config,
+        _FakeArchiveStore(collection_packages={"docs": package}),
+        recovery_payload_codec=_RECOVERY_CODEC,
+    )
+    events: list[str] = []
+    started_failures = 0
+
+    def _post_webhook(*, config, payload):
+        nonlocal started_failures
+        events.append(str(payload["event"]))
+        if payload["event"] == "glacier_recovery.started" and started_failures == 0:
+            started_failures += 1
+            raise RuntimeError("HTTP 503")
+
+    start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
+    monkeypatch.setattr("riverhog_core.services.recovery_sessions.utcnow", lambda: start)
+    monkeypatch.setattr("riverhog_core.services.recovery_sessions.post_webhook", _post_webhook)
+
+    session = recovery_service.create_or_resume_for_collection("docs")
+    recovery_service.approve(session.id)
+
+    monkeypatch.setattr(
+        "riverhog_core.services.recovery_sessions.utcnow",
+        lambda: start + timedelta(seconds=1),
+    )
+
+    assert recovery_service.process_due_sessions() == 1
+    assert events[:2] == [
+        "glacier_recovery.started",
+        "glacier_recovery.started",
     ]
 
 
@@ -1048,10 +1180,13 @@ def test_recovery_session_retries_initial_ready_notification_before_reminders(
     copy_service.update("20260420T040001Z", "20260420T040001Z-2", state="lost")
 
     attempts: list[str] = []
+    ready_failures = 0
 
     def _post_webhook(*, config, payload):
+        nonlocal ready_failures
         attempts.append(str(payload["event"]))
-        if len(attempts) == 1:
+        if payload["event"] == "glacier_recovery.ready" and ready_failures == 0:
+            ready_failures += 1
             raise RuntimeError("HTTP 503")
 
     start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
@@ -1069,7 +1204,7 @@ def test_recovery_session_retries_initial_ready_notification_before_reminders(
     assert failed_delivery.state == RecoverySessionState.READY
     assert failed_delivery.notification.last_notified_at is None
     assert failed_delivery.notification.reminder_count == 0
-    assert attempts == ["images.rebuild_ready"]
+    assert attempts == ["glacier_recovery.started", "glacier_recovery.ready"]
 
     monkeypatch.setattr(
         "riverhog_core.services.recovery_sessions.utcnow",
@@ -1080,7 +1215,11 @@ def test_recovery_session_retries_initial_ready_notification_before_reminders(
     retried_delivery = recovery_service.get("rs-20260420T040001Z-rebuild-1")
     assert retried_delivery.notification.last_notified_at == "2026-04-20T04:00:12Z"
     assert retried_delivery.notification.reminder_count == 0
-    assert attempts == ["images.rebuild_ready", "images.rebuild_ready"]
+    assert attempts == [
+        "glacier_recovery.started",
+        "glacier_recovery.ready",
+        "glacier_recovery.ready",
+    ]
 
 
 def test_recovery_session_retries_initial_ready_notification_before_expiring(
@@ -1114,10 +1253,13 @@ def test_recovery_session_retries_initial_ready_notification_before_expiring(
     copy_service.update("20260420T040001Z", "20260420T040001Z-2", state="lost")
 
     attempts: list[str] = []
+    ready_failures = 0
 
     def _post_webhook(*, config, payload):
+        nonlocal ready_failures
         attempts.append(str(payload["event"]))
-        if len(attempts) == 1:
+        if payload["event"] == "glacier_recovery.ready" and ready_failures == 0:
+            ready_failures += 1
             raise RuntimeError("HTTP 503")
 
     start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
@@ -1147,7 +1289,11 @@ def test_recovery_session_retries_initial_ready_notification_before_expiring(
     assert retried_delivery.state == RecoverySessionState.READY
     assert retried_delivery.notification.last_notified_at == "2026-04-20T04:00:22Z"
     assert retried_delivery.notification.reminder_count == 0
-    assert attempts == ["images.rebuild_ready", "images.rebuild_ready"]
+    assert attempts == [
+        "glacier_recovery.started",
+        "glacier_recovery.ready",
+        "glacier_recovery.ready",
+    ]
 
 
 def test_pending_recovery_session_can_group_multiple_images_before_approval(

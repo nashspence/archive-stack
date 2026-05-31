@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session, object_session, selectinload
 
 from riverhog_core.catalog_db import make_session_factory, session_scope
@@ -41,6 +42,12 @@ from riverhog_core.services.resumable_uploads import (
     expire_upload_state,
     sync_upload_state,
     upload_expiry_timestamp,
+)
+from riverhog_core.webhooks import (
+    WebhookConfig,
+    build_fetch_waiting_payload,
+    post_webhook,
+    utcnow,
 )
 
 
@@ -280,6 +287,54 @@ class SqlAlchemyFetchService:
                 _sync_upload_progress(pin_record, entries, self._upload_store)
                 _expire_incomplete_uploads(pin_record, entries, self._upload_store)
 
+    def deliver_due_waiting_notifications(self, *, limit: int = 100) -> int:
+        if limit < 1 or not self._config.operator_webhook_url:
+            return 0
+
+        current = utcnow()
+        current_text = _isoformat_z(current)
+        delivered = 0
+        with session_scope(self._session_factory) as session:
+            pins = session.scalars(
+                select(ActivePinRecord)
+                .where(ActivePinRecord.fetch_state == FetchState.WAITING_MEDIA.value)
+                .where(
+                    or_(
+                        ActivePinRecord.fetch_notification_sent_at.is_(None),
+                        (
+                            ActivePinRecord.fetch_notification_next_attempt_at.is_not(
+                                None
+                            )
+                            & (
+                                ActivePinRecord.fetch_notification_next_attempt_at
+                                <= current_text
+                            )
+                        ),
+                    )
+                )
+                .order_by(ActivePinRecord.fetch_order)
+                .limit(limit)
+            ).all()
+            for pin_record in pins:
+                entries = _ensure_fetch_entries(
+                    session,
+                    pin_record,
+                    self._hot_store,
+                    self._recovery_payload_codec,
+                )
+                _sync_upload_progress(pin_record, entries, self._upload_store)
+                _expire_incomplete_uploads(pin_record, entries, self._upload_store)
+                if pin_record.fetch_state != FetchState.WAITING_MEDIA.value:
+                    continue
+                if _notify_fetch_waiting(
+                    config=self._config,
+                    pin_record=pin_record,
+                    entries=entries,
+                    current=current,
+                ):
+                    delivered += 1
+        return delivered
+
     def complete(self, fetch_id: str) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
             pin_record = _get_pin_record(session, fetch_id)
@@ -379,6 +434,88 @@ def _get_pin_record(session: Session, fetch_id: str) -> ActivePinRecord:
     if pin_record is None:
         raise NotFound(f"fetch not found: {fetch_id}")
     return pin_record
+
+
+def _notify_fetch_waiting(
+    *,
+    config: RuntimeConfig,
+    pin_record: ActivePinRecord,
+    entries: list[FetchEntryRecord],
+    current: datetime,
+) -> bool:
+    if not config.operator_webhook_url:
+        pin_record.fetch_notification_next_attempt_at = None
+        pin_record.fetch_notification_failure = None
+        return False
+    reminder = pin_record.fetch_notification_sent_at is not None
+    current_count = int(pin_record.fetch_notification_count or 0)
+    webhook_config = _webhook_config(config)
+    try:
+        post_webhook(
+            config=webhook_config,
+            payload=build_fetch_waiting_payload(
+                config=webhook_config,
+                fetch_id=pin_record.fetch_id,
+                target=pin_record.target,
+                files=len(entries),
+                bytes=sum(int(entry.bytes) for entry in entries),
+                copies=_fetch_copy_payload(entries),
+                delivered_at=current,
+                reminder_count=current_count,
+                reminder=reminder,
+            ),
+        )
+    except Exception as exc:
+        pin_record.fetch_notification_failure = str(exc).strip() or exc.__class__.__name__
+        pin_record.fetch_notification_next_attempt_at = _isoformat_z(
+            current + config.operator_webhook_retry_delay
+        )
+        return False
+
+    if pin_record.fetch_notification_sent_at is None:
+        pin_record.fetch_notification_sent_at = _isoformat_z(current)
+    if reminder:
+        current_count += 1
+    pin_record.fetch_notification_count = current_count
+    pin_record.fetch_notification_failure = None
+    interval = config.operator_webhook_reminder_interval
+    if interval.total_seconds() > 0:
+        pin_record.fetch_notification_next_attempt_at = _isoformat_z(current + interval)
+    else:
+        pin_record.fetch_notification_next_attempt_at = None
+    return True
+
+
+def _fetch_copy_payload(entries: list[FetchEntryRecord]) -> list[dict[str, str]]:
+    copies: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for hint in _summary_copies(entries):
+        key = (hint.volume_id, str(hint.id))
+        if key in seen:
+            continue
+        seen.add(key)
+        copies.append(
+            {
+                "copy_id": str(hint.id),
+                "volume_id": hint.volume_id,
+                "location": hint.location,
+            }
+        )
+    return copies
+
+
+def _webhook_config(config: RuntimeConfig) -> WebhookConfig:
+    return WebhookConfig(
+        url=config.operator_webhook_url or "",
+        base_url=config.public_base_url or "",
+        timeout_seconds=config.operator_webhook_timeout.total_seconds(),
+        retry_seconds=config.operator_webhook_retry_delay.total_seconds(),
+        reminder_interval_seconds=config.operator_webhook_reminder_interval.total_seconds(),
+    )
+
+
+def _isoformat_z(value: datetime) -> str:
+    return value.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _selected_files(session: Session, raw_target: str) -> list[CollectionFileRecord]:

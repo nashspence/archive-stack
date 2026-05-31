@@ -75,6 +75,22 @@ def recovery_session_url(base_url: str, session_id: str) -> str:
     return f"{base_url.rstrip('/')}{recovery_session_path(session_id)}"
 
 
+def fetch_summary_path(fetch_id: str) -> str:
+    return f"/v1/fetches/{fetch_id}"
+
+
+def fetch_manifest_path(fetch_id: str) -> str:
+    return f"/v1/fetches/{fetch_id}/manifest"
+
+
+def fetch_summary_url(base_url: str, fetch_id: str) -> str:
+    return f"{base_url.rstrip('/')}{fetch_summary_path(fetch_id)}"
+
+
+def fetch_manifest_url(base_url: str, fetch_id: str) -> str:
+    return f"{base_url.rstrip('/')}{fetch_manifest_path(fetch_id)}"
+
+
 def collection_path(collection_id: str) -> str:
     return f"/v1/collections/{collection_id}"
 
@@ -122,15 +138,154 @@ def build_recovery_ready_payload(
     delivered_at: datetime,
     reminder_count: int,
     reminder: bool,
+    recovery_type: str = "image_rebuild",
+    collections: list[dict[str, str]] | None = None,
+) -> dict[str, object]:
+    action, message = _recovery_operator_guidance(
+        stage="ready",
+        recovery_type=recovery_type,
+    )
+    payload = _base_recovery_payload(
+        config=config,
+        event="glacier_recovery.ready.reminder" if reminder else "glacier_recovery.ready",
+        session_id=session_id,
+        recovery_type=recovery_type,
+        delivered_at=delivered_at,
+        images=images,
+        collections=collections or [],
+    )
+    payload.update(
+        {
+            "restore_expires_at": restore_expires_at,
+            "reminder_count": reminder_count + (1 if reminder else 0),
+            "reminder_interval_seconds": config.reminder_interval_seconds,
+            "operator_urgency": "time_sensitive",
+            "operator_action": action,
+            "operator_message": message,
+        }
+    )
+    return payload
+
+
+def build_recovery_started_payload(
+    *,
+    config: WebhookConfig,
+    session_id: str,
+    recovery_type: str,
+    retrieval_tier: str,
+    estimated_ready_at: str | None,
+    images: list[dict[str, str]],
+    collections: list[dict[str, str]],
+    delivered_at: datetime,
+) -> dict[str, object]:
+    action, message = _recovery_operator_guidance(
+        stage="started",
+        recovery_type=recovery_type,
+    )
+    payload = _base_recovery_payload(
+        config=config,
+        event="glacier_recovery.started",
+        session_id=session_id,
+        recovery_type=recovery_type,
+        delivered_at=delivered_at,
+        images=images,
+        collections=collections,
+    )
+    payload.update(
+        {
+            "retrieval_tier": retrieval_tier,
+            "estimated_ready_at": estimated_ready_at,
+            "operator_urgency": "time_sensitive",
+            "operator_action": action,
+            "operator_message": message,
+        }
+    )
+    return payload
+
+
+def build_recovery_completed_payload(
+    *,
+    config: WebhookConfig,
+    session_id: str,
+    recovery_type: str,
+    images: list[dict[str, str]],
+    collections: list[dict[str, str]],
+    delivered_at: datetime,
+) -> dict[str, object]:
+    action, message = _recovery_operator_guidance(
+        stage="completed",
+        recovery_type=recovery_type,
+    )
+    payload = _base_recovery_payload(
+        config=config,
+        event="glacier_recovery.completed",
+        session_id=session_id,
+        recovery_type=recovery_type,
+        delivered_at=delivered_at,
+        images=images,
+        collections=collections,
+    )
+    payload.update(
+        {
+            "operator_urgency": "time_sensitive",
+            "operator_action": action,
+            "operator_message": message,
+        }
+    )
+    return payload
+
+
+def build_fetch_waiting_payload(
+    *,
+    config: WebhookConfig,
+    fetch_id: str,
+    target: str,
+    files: int,
+    bytes: int,
+    copies: list[dict[str, str]],
+    delivered_at: datetime,
+    reminder_count: int,
+    reminder: bool,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
-        "event": "images.rebuild_ready.reminder" if reminder else "images.rebuild_ready",
-        "type": "image_rebuild",
-        "session_id": session_id,
+        "event": "fetches.waiting_media.reminder" if reminder else "fetches.waiting_media",
+        "type": "fetch_waiting_media",
+        "fetch_id": fetch_id,
+        "target": target,
         "delivered_at": isoformat_z(delivered_at),
-        "restore_expires_at": restore_expires_at,
         "reminder_count": reminder_count + (1 if reminder else 0),
         "reminder_interval_seconds": config.reminder_interval_seconds,
+        "files": files,
+        "bytes": bytes,
+        "copies": copies,
+        "operator_urgency": "time_sensitive",
+        "operator_action": f"Run djdan fetch {fetch_id}",
+        "operator_message": (
+            "Riverhog is waiting for optical-media recovery before this pinned target "
+            "can be hot again."
+        ),
+    }
+    if config.base_url:
+        payload["fetch_url"] = fetch_summary_url(config.base_url, fetch_id)
+        payload["manifest_url"] = fetch_manifest_url(config.base_url, fetch_id)
+    return payload
+
+
+def _base_recovery_payload(
+    *,
+    config: WebhookConfig,
+    event: str,
+    session_id: str,
+    recovery_type: str,
+    delivered_at: datetime,
+    images: list[dict[str, str]],
+    collections: list[dict[str, str]],
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "event": event,
+        "type": recovery_type,
+        "session_id": session_id,
+        "delivered_at": isoformat_z(delivered_at),
         "images": [
             {
                 "image_id": image["image_id"],
@@ -143,10 +298,73 @@ def build_recovery_ready_payload(
             }
             for image in images
         ],
+        "collections": [
+            {
+                "collection_id": collection["collection_id"],
+                **(
+                    {
+                        "collection_url": collection_url(
+                            config.base_url,
+                            collection["collection_id"],
+                        )
+                    }
+                    if config.base_url
+                    else {}
+                ),
+            }
+            for collection in collections
+        ],
     }
     if config.base_url:
         payload["session_url"] = recovery_session_url(config.base_url, session_id)
     return payload
+
+
+def _recovery_operator_guidance(*, stage: str, recovery_type: str) -> tuple[str, str]:
+    if stage == "started":
+        if recovery_type == "collection_restore":
+            return (
+                "Wait for Riverhog to restore missing pinned files automatically",
+                (
+                    "Glacier recovery has started for missing pinned hot files. "
+                    "This is rare, expected to take a long time, and means Riverhog "
+                    "is recovering the safely archived collection data."
+                ),
+            )
+        return (
+            "Wait for the recovery-ready notification",
+            (
+                "Glacier recovery has started for lost or damaged disc media. "
+                "This is rare, expected to take a long time, and means Riverhog "
+                "is recovering safely archived collection data so replacement media "
+                "can be rebuilt."
+            ),
+        )
+    if stage == "completed":
+        if recovery_type == "collection_restore":
+            return (
+                "No operator action required",
+                "Glacier recovery completed and the missing pinned files are hot again.",
+            )
+        return (
+            "No operator action required",
+            "Glacier recovery completed and temporary restored archive data was cleaned up.",
+        )
+    if recovery_type == "collection_restore":
+        return (
+            "Wait for Riverhog to finish materializing files",
+            (
+                "Glacier recovery data is ready. Riverhog will materialize missing "
+                "pinned files automatically before cleanup."
+            ),
+        )
+    return (
+        "Rebuild and burn replacement media before the restore expires",
+        (
+            "Glacier recovery data is ready for replacement media. Complete the "
+            "rebuild and burn workflow before the temporary restore window expires."
+        ),
+    )
 
 
 def build_collection_lifecycle_payload(

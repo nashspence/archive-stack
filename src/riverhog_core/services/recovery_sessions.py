@@ -82,7 +82,9 @@ from riverhog_core.services.glacier_pricing import resolve_glacier_pricing
 from riverhog_core.services.target_selection import selected_collection_files
 from riverhog_core.webhooks import (
     WebhookConfig,
+    build_recovery_completed_payload,
     build_recovery_ready_payload,
+    build_recovery_started_payload,
     post_webhook,
     utcnow,
 )
@@ -248,10 +250,17 @@ class SqlAlchemyRecoverySessionService:
                 "Archive restore requested; wait for the ready notification before downloading or "
                 "burning replacement media."
             )
+            _notify_recovery_started(
+                session,
+                record=record,
+                config=self._config,
+                current=current,
+            )
             return _session_summary(session, record, config=self._config)
 
     def complete(self, session_id: str) -> RecoverySessionSummary:
-        now = _isoformat_z(utcnow())
+        current = utcnow()
+        now = _isoformat_z(current)
         with session_scope(self._session_factory) as session:
             record = session.get(GlacierRecoverySessionRecord, session_id)
             if record is None:
@@ -288,6 +297,12 @@ class SqlAlchemyRecoverySessionService:
             record.restore_expires_at = now
             record.latest_message = (
                 "Recovery session completed and restored ISO cleanup was recorded."
+            )
+            _notify_recovery_completed(
+                session,
+                record=record,
+                config=self._config,
+                current=current,
             )
             return _session_summary(session, record, config=self._config)
 
@@ -445,6 +460,8 @@ class SqlAlchemyRecoverySessionService:
         current = utcnow()
         current_text = _isoformat_z(current)
         processed = 0
+        started_next = GlacierRecoverySessionRecord.started_notification_next_attempt_at
+        completed_next = GlacierRecoverySessionRecord.completed_notification_next_attempt_at
         with session_scope(self._session_factory) as session:
             due_ids = session.scalars(
                 select(GlacierRecoverySessionRecord.session_id)
@@ -467,6 +484,14 @@ class SqlAlchemyRecoverySessionService:
                             )
                         ),
                         (
+                            (
+                                GlacierRecoverySessionRecord.state
+                                == RecoverySessionState.RESTORE_REQUESTED.value
+                            )
+                            & started_next.is_not(None)
+                            & (started_next <= current_text)
+                        ),
+                        (
                             (GlacierRecoverySessionRecord.state == RecoverySessionState.READY.value)
                             & (
                                 (
@@ -483,6 +508,14 @@ class SqlAlchemyRecoverySessionService:
                                 )
                                 & (GlacierRecoverySessionRecord.next_reminder_at <= current_text)
                             )
+                        ),
+                        (
+                            (
+                                GlacierRecoverySessionRecord.state
+                                == RecoverySessionState.COMPLETED.value
+                            )
+                            & (completed_next.is_not(None))
+                            & (completed_next <= current_text)
                         ),
                     )
                 )
@@ -609,6 +642,7 @@ class SqlAlchemyRecoverySessionService:
                     collection_id,
                     paths=missing_paths,
                 )
+                self.complete(summary.id)
                 return True
             _LOG.info(
                 "automatic Glacier restore is pending for missing pinned files: "
@@ -636,9 +670,22 @@ class SqlAlchemyRecoverySessionService:
                 _sync_session_collections_for_images(session, record)
                 session.flush()
 
-            if (
-                record.state == RecoverySessionState.RESTORE_REQUESTED.value
-            ):
+            if record.state == RecoverySessionState.COMPLETED.value:
+                _notify_recovery_completed(
+                    session,
+                    record=record,
+                    config=self._config,
+                    current=current,
+                )
+                return
+
+            if record.state == RecoverySessionState.RESTORE_REQUESTED.value:
+                _notify_recovery_started(
+                    session,
+                    record=record,
+                    config=self._config,
+                    current=current,
+                )
                 status = self._session_restore_status(session, record=record, current=current)
                 if status.state == "ready":
                     record.state = RecoverySessionState.READY.value
@@ -653,18 +700,18 @@ class SqlAlchemyRecoverySessionService:
                             "download, verify the ISO, and burn replacement media before "
                             "cleanup."
                         )
-                        _notify_recovery_ready(
-                            session,
-                            record=record,
-                            config=self._config,
-                            current=current,
-                            reminder=False,
-                        )
                     else:
                         record.latest_message = (
                             "Restored collection archive is ready; Riverhog can materialize "
                             "missing pinned files."
                         )
+                    _notify_recovery_ready(
+                        session,
+                        record=record,
+                        config=self._config,
+                        current=current,
+                        reminder=False,
+                    )
                     return
                 if status.state == "expired":
                     record.state = RecoverySessionState.EXPIRED.value
@@ -686,7 +733,6 @@ class SqlAlchemyRecoverySessionService:
 
             if (
                 record.state == RecoverySessionState.READY.value
-                and (record.type or "image_rebuild") == "image_rebuild"
                 and record.next_reminder_at is not None
                 and record.next_reminder_at <= current_text
             ):
@@ -1855,7 +1901,7 @@ def _build_warnings(config: RuntimeConfig) -> tuple[str, ...]:
     cleanup_window = _format_timedelta(config.glacier_recovery_ready_ttl)
     reminder = (
         "Riverhog will notify and remind the operator through the configured operator webhook "
-        "while restored ISO data is ready."
+        "as Glacier recovery starts, becomes ready, and completes."
         if config.operator_webhook_url
         else "No operator webhook URL is configured; operators must poll the recovery session "
         "manually for readiness."
@@ -1881,27 +1927,20 @@ def _notify_recovery_ready(
         record.next_reminder_at = None
         return
     try:
+        webhook_config = _webhook_config(config)
         payload = build_recovery_ready_payload(
-            config=_webhook_config(config),
+            config=webhook_config,
             session_id=record.session_id,
+            recovery_type=_recovery_type(record),
             restore_expires_at=record.restore_expires_at,
-            images=[
-                {
-                    "image_id": image.image_id,
-                    "filename": _require_image(session, image.image_id).filename,
-                }
-                for image in session.scalars(
-                    select(GlacierRecoverySessionImageRecord).where(
-                        GlacierRecoverySessionImageRecord.session_id == record.session_id
-                    )
-                ).all()
-            ],
+            images=_recovery_image_payload(session, record),
+            collections=_recovery_collection_payload(session, record),
             delivered_at=current,
             reminder_count=record.reminder_count,
             reminder=reminder,
         )
         post_webhook(
-            config=_webhook_config(config),
+            config=webhook_config,
             payload=payload,
         )
     except Exception as exc:
@@ -1922,6 +1961,138 @@ def _notify_recovery_ready(
         record.next_reminder_at = _isoformat_z(current + interval)
     else:
         record.next_reminder_at = None
+
+
+def _notify_recovery_started(
+    session: Session,
+    *,
+    record: GlacierRecoverySessionRecord,
+    config: RuntimeConfig,
+    current: datetime,
+) -> None:
+    current_text = _isoformat_z(current)
+    if not config.operator_webhook_url:
+        record.started_notification_next_attempt_at = None
+        record.started_notification_failure = None
+        return
+    if (
+        record.started_notification_sent_at is not None
+        and record.started_notification_next_attempt_at is None
+    ):
+        return
+    if (
+        record.started_notification_next_attempt_at is not None
+        and record.started_notification_next_attempt_at > current_text
+    ):
+        return
+
+    webhook_config = _webhook_config(config)
+    try:
+        post_webhook(
+            config=webhook_config,
+            payload=build_recovery_started_payload(
+                config=webhook_config,
+                session_id=record.session_id,
+                recovery_type=_recovery_type(record),
+                retrieval_tier=record.retrieval_tier,
+                estimated_ready_at=record.restore_ready_at,
+                images=_recovery_image_payload(session, record),
+                collections=_recovery_collection_payload(session, record),
+                delivered_at=current,
+            ),
+        )
+    except Exception as exc:
+        record.started_notification_failure = str(exc).strip() or exc.__class__.__name__
+        record.started_notification_next_attempt_at = _isoformat_z(
+            current + config.operator_webhook_retry_delay
+        )
+        return
+
+    record.started_notification_sent_at = current_text
+    record.started_notification_next_attempt_at = None
+    record.started_notification_failure = None
+
+
+def _notify_recovery_completed(
+    session: Session,
+    *,
+    record: GlacierRecoverySessionRecord,
+    config: RuntimeConfig,
+    current: datetime,
+) -> None:
+    current_text = _isoformat_z(current)
+    if not config.operator_webhook_url:
+        record.completed_notification_next_attempt_at = None
+        record.completed_notification_failure = None
+        return
+    if (
+        record.completed_notification_sent_at is not None
+        and record.completed_notification_next_attempt_at is None
+    ):
+        return
+    if (
+        record.completed_notification_next_attempt_at is not None
+        and record.completed_notification_next_attempt_at > current_text
+    ):
+        return
+
+    webhook_config = _webhook_config(config)
+    try:
+        post_webhook(
+            config=webhook_config,
+            payload=build_recovery_completed_payload(
+                config=webhook_config,
+                session_id=record.session_id,
+                recovery_type=_recovery_type(record),
+                images=_recovery_image_payload(session, record),
+                collections=_recovery_collection_payload(session, record),
+                delivered_at=current,
+            ),
+        )
+    except Exception as exc:
+        record.completed_notification_failure = str(exc).strip() or exc.__class__.__name__
+        record.completed_notification_next_attempt_at = _isoformat_z(
+            current + config.operator_webhook_retry_delay
+        )
+        return
+
+    record.completed_notification_sent_at = current_text
+    record.completed_notification_next_attempt_at = None
+    record.completed_notification_failure = None
+
+
+def _recovery_type(record: GlacierRecoverySessionRecord) -> str:
+    return record.type or "image_rebuild"
+
+
+def _recovery_image_payload(
+    session: Session,
+    record: GlacierRecoverySessionRecord,
+) -> list[dict[str, str]]:
+    rows = session.scalars(
+        select(GlacierRecoverySessionImageRecord).where(
+            GlacierRecoverySessionImageRecord.session_id == record.session_id
+        )
+    ).all()
+    return [
+        {
+            "image_id": row.image_id,
+            "filename": _require_image(session, row.image_id).filename,
+        }
+        for row in rows
+    ]
+
+
+def _recovery_collection_payload(
+    session: Session,
+    record: GlacierRecoverySessionRecord,
+) -> list[dict[str, str]]:
+    rows = session.scalars(
+        select(GlacierRecoverySessionCollectionRecord).where(
+            GlacierRecoverySessionCollectionRecord.session_id == record.session_id
+        )
+    ).all()
+    return [{"collection_id": row.collection_id} for row in rows]
 
 
 def _webhook_config(config: RuntimeConfig) -> WebhookConfig:

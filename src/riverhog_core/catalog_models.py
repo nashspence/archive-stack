@@ -312,6 +312,18 @@ class GlacierRecoverySessionRecord(Base):
     reminder_count: Mapped[int] = mapped_column(Integer, default=0)
     next_reminder_at: Mapped[str | None] = mapped_column(String, nullable=True)
     last_notified_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    started_notification_sent_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    started_notification_next_attempt_at: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+    )
+    started_notification_failure: Mapped[str | None] = mapped_column(String, nullable=True)
+    completed_notification_sent_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    completed_notification_next_attempt_at: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+    )
+    completed_notification_failure: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_verification_state: Mapped[str | None] = mapped_column(
         String,
         default="pending",
@@ -434,6 +446,13 @@ class ActivePinRecord(Base):
     fetch_id: Mapped[str] = mapped_column(String, unique=True)
     fetch_order: Mapped[int] = mapped_column(Integer, unique=True)
     fetch_state: Mapped[str] = mapped_column(String)
+    fetch_notification_sent_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    fetch_notification_next_attempt_at: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+    )
+    fetch_notification_failure: Mapped[str | None] = mapped_column(String, nullable=True)
+    fetch_notification_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class FetchEntryRecord(Base):

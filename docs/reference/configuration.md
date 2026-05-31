@@ -408,7 +408,8 @@ encrypted files and finish the same candidate id.
 Single optional operator notification endpoint. Riverhog posts quiet,
 operator-facing notifications to this endpoint, including collection ingest
 milestones, ready disc-image candidates, persistent archival failures after
-retries, verified-copy labeling handoffs, and recovery-ready notifications.
+retries, verified-copy labeling handoffs, fetch-required handoffs, and Glacier
+recovery lifecycle notifications.
 
 Collection events are intentionally sparse so long-running retries do not spam
 operators. Success milestones include `collections.upload_staged`,
@@ -421,9 +422,16 @@ through Riverhog/WebDAV. Failure/attention events include
 `collections.planner_failed`. Ready burn candidates use `images.ready`; if
 operator reminders are explicitly enabled, repeats use `images.ready.reminder`.
 After `djdan` verifies a burned disc but before the operator confirms the
-physical label, it triggers `images.copy_label_needed`. Recovery events use
-`images.rebuild_ready`; if reminders are explicitly enabled, repeats use
-`images.rebuild_ready.reminder`.
+physical label, it triggers `images.copy_label_needed`. If pinned hot files are
+missing but registered physical media can recover them, Riverhog emits
+`fetches.waiting_media` and then `fetches.waiting_media.reminder` once per
+`RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL` while it is still waiting for the
+operator to run `djdan fetch`. Glacier recovery is rare and intentionally more
+explicit: `glacier_recovery.started` means Riverhog has asked Glacier to
+restore archived collection data, `glacier_recovery.ready` means the temporary
+restored data is available, `glacier_recovery.ready.reminder` repeats while
+operator action or automatic materialization is still incomplete, and
+`glacier_recovery.completed` means Riverhog has finished the recovery cleanup.
 
 Webhook delivery is best-effort; Riverhog catalog state remains authoritative.
 Notification receivers should keep these operator messages concise and calm:
@@ -436,8 +444,11 @@ file counts, staged bytes, archive bytes, object path, or failure details. Ready
 image payloads include affected image ids, filenames, download URLs when
 `RIVERHOG_PUBLIC_BASE_URL` is configured, and reminder count. Copy-label
 payloads include `image_id`, `copy_id`, the exact `label_text`, and an image
-link when `RIVERHOG_PUBLIC_BASE_URL` is configured. Recovery payloads include
-the recovery session id, affected images, ready-data expiry, and reminder count.
+link when `RIVERHOG_PUBLIC_BASE_URL` is configured. Fetch-wait payloads include
+the fetch id, target, file/byte counts, candidate copy hints, and links to the
+fetch summary and manifest. Glacier recovery payloads include the recovery
+session id, recovery type, affected images and collections, restore timing, and
+precise operator guidance so long bulk restores do not read as data loss.
 
 ## `RIVERHOG_OPERATOR_WEBHOOK_TIMEOUT`
 
@@ -445,16 +456,17 @@ the recovery session id, affected images, ready-data expiry, and reminder count.
 - default: `5s`
 
 Outbound timeout for one operator webhook delivery. Collection lifecycle webhook
-failures are logged but never block archival finalization. Ready disc-image and
-recovery-ready delivery failures are retried by their background workers.
+failures are logged but never block archival finalization. Ready disc-image,
+fetch-wait, and Glacier recovery delivery failures are retried by background
+workers.
 
 ## `RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY`
 
 - type: duration
 - default: `60s`
 
-Delay before Riverhog retries a failed ready disc-image or recovery-ready
-webhook delivery.
+Delay before Riverhog retries a failed ready disc-image, fetch-wait, or Glacier
+recovery webhook delivery.
 
 With `RIVERHOG_OPERATOR_WEBHOOK_URL` configured, Riverhog rejects startup if
 `RIVERHOG_GLACIER_RECOVERY_READY_TTL` is shorter than
@@ -466,10 +478,11 @@ With `RIVERHOG_OPERATOR_WEBHOOK_URL` configured, Riverhog rejects startup if
 - default: `24h`
 
 Interval between repeated ready reminders while a burnable disc-image candidate
-is still unfinalized, restored collection archive data remains available, or
-image rebuild staging data remains available and the recovery session is still
-incomplete. The default provides one daily reminder while disc images remain
-ready to burn; set this to `0s` to disable ready reminders entirely.
+is still unfinalized, a fetch manifest is still waiting for `djdan fetch`,
+restored collection archive data remains available, or image rebuild staging
+data remains available and the recovery session is still incomplete. The
+default provides one daily reminder while operator action is still needed; set
+this to `0s` to disable ready reminders entirely.
 
 ## `RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL`
 
@@ -1002,8 +1015,8 @@ checked-in Compose stack sets this to the Postgres sidecar at `postgres:5432`.
 - default: unset
 
 Optional public API base URL used when Riverhog builds webhook links back to
-collection uploads, collection restore sessions, image rebuild sessions, and
-finalized-image ISO downloads.
+collection uploads, fetch manifests, collection restore sessions, image rebuild
+sessions, and finalized-image ISO downloads.
 
 ## `INCOMPLETE_UPLOAD_TTL`
 

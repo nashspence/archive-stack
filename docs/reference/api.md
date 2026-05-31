@@ -604,6 +604,10 @@ Required behavior:
 - if all targeted bytes are already hot, the returned fetch manifest is already in state `done`
 - if some targeted bytes are archived but not hot, the returned fetch manifest is created or reused in a non-`done`
   state
+- if a fetch manifest is waiting for optical media and
+  `RIVERHOG_OPERATOR_WEBHOOK_URL` is configured, Riverhog emits
+  `fetches.waiting_media` and daily `fetches.waiting_media.reminder` events
+  until the manifest leaves `waiting_media` or reminders are disabled
 - repeated pin of the same canonical selector is idempotent
 - a successful pin remains active across service restart until explicitly released
 
@@ -812,6 +816,13 @@ should track those longer phases with the configured operator webhook or
 terminal sessions that should keep polling until the collection is fully
 finalized. `RIVERHOG_UPLOAD_WAIT` may be set to `staged` or `finalized` to
 change the default.
+
+Glacier recovery notifications are deliberately explicit because bulk restores
+are rare and slow. `glacier_recovery.started` confirms Riverhog has requested a
+Glacier restore, `glacier_recovery.ready` confirms the temporary restored
+archive data is available, optional `glacier_recovery.ready.reminder` events
+repeat while action is still outstanding, and `glacier_recovery.completed`
+confirms Riverhog has finished verification/materialization and cleanup.
 
 `riverhog show COLLECTION --files` should provide a concise human-readable listing of the collection's logical files, including current hot or archived state and available copies when applicable.
 

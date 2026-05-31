@@ -358,6 +358,10 @@ class _StubFetchUploads:
     def expire_stale_uploads(self) -> None:
         return None
 
+    def deliver_due_waiting_notifications(self, *, limit: int = 100) -> int:
+        assert limit >= 0
+        return 0
+
     def create_or_resume_upload(self, *, fetch_id: str, entry_id: str) -> dict[str, object]:
         return {
             "entry": entry_id,

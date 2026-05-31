@@ -143,6 +143,21 @@ _COLUMN_MIGRATIONS: list[list[tuple[str, str, str]]] = [
         ("collection_files", "hot_multipart_uploaded_parts", "INTEGER"),
         ("collection_files", "hot_multipart_total_parts", "INTEGER"),
     ],
+    # version 22 is reserved by _DROP_TABLE_MIGRATIONS.
+    [],
+    # version 23
+    [
+        ("active_pins", "fetch_notification_sent_at", "TEXT"),
+        ("active_pins", "fetch_notification_next_attempt_at", "TEXT"),
+        ("active_pins", "fetch_notification_failure", "TEXT"),
+        ("active_pins", "fetch_notification_count", "INTEGER"),
+        ("glacier_recovery_sessions", "started_notification_sent_at", "TEXT"),
+        ("glacier_recovery_sessions", "started_notification_next_attempt_at", "TEXT"),
+        ("glacier_recovery_sessions", "started_notification_failure", "TEXT"),
+        ("glacier_recovery_sessions", "completed_notification_sent_at", "TEXT"),
+        ("glacier_recovery_sessions", "completed_notification_next_attempt_at", "TEXT"),
+        ("glacier_recovery_sessions", "completed_notification_failure", "TEXT"),
+    ],
 ]
 _TYPE_MIGRATIONS: dict[int, list[tuple[str, str, str]]] = {
     # version 10

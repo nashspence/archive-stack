@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable, Iterator
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import select
@@ -123,6 +125,104 @@ def _config(sqlite_path: Path) -> RuntimeConfig:
         tusd_hook_secret="hook-secret",
         sqlite_path=sqlite_path,
     )
+
+
+def test_waiting_fetch_notifications_are_delivered_and_reminded(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+
+    collection_id = "docs"
+    path = "file.txt"
+    target = f"{collection_id}/{path}"
+    content = b"needs optical recovery\n"
+    encrypted = encrypt_recovery_payload(content, _RECOVERY_CODEC)
+    sha256 = hashlib.sha256(content).hexdigest()
+
+    with session_scope(make_session_factory(str(sqlite_path))) as session:
+        session.add(CollectionRecord(id=collection_id))
+        session.add(
+            CollectionFileRecord(
+                collection_id=collection_id,
+                path=path,
+                bytes=len(content),
+                sha256=sha256,
+                hot=False,
+                archived=True,
+            )
+        )
+        session.add(
+            FileCopyRecord(
+                collection_id=collection_id,
+                path=path,
+                copy_id="20260530T000000Z-1",
+                volume_id="20260530T000000Z",
+                location="red binder",
+                disc_path="files/000001.age",
+                enc_json="{}",
+                recovery_bytes=len(encrypted),
+                recovery_sha256=hashlib.sha256(encrypted).hexdigest(),
+            )
+        )
+        session.add(
+            ActivePinRecord(
+                target=target,
+                fetch_id="fx-1",
+                fetch_order=1,
+                fetch_state=FetchState.WAITING_MEDIA.value,
+            )
+        )
+        session.add(
+            FetchEntryRecord(
+                fetch_id="fx-1",
+                entry_id="e1",
+                entry_order=1,
+                collection_id=collection_id,
+                path=path,
+                bytes=len(content),
+                sha256=sha256,
+                recovery_bytes=len(encrypted),
+                uploaded_bytes=0,
+                upload_expires_at=None,
+                tus_url=None,
+            )
+        )
+
+    config = replace(
+        _config(sqlite_path),
+        operator_webhook_url="http://example.invalid/webhooks/operator",
+        public_base_url="https://riverhog.example.test",
+        operator_webhook_retry_delay=timedelta(seconds=1),
+        operator_webhook_reminder_interval=timedelta(seconds=5),
+    )
+    service = SqlAlchemyFetchService(
+        config,
+        _FakeHotStore({}),
+        _RaceyUploadStore({}),
+        _RECOVERY_CODEC,
+    )
+    payloads: list[dict[str, object]] = []
+
+    def _post_webhook(*, config, payload):
+        payloads.append(payload)
+
+    start = datetime(2026, 5, 31, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr("riverhog_core.services.fetches.utcnow", lambda: start)
+    monkeypatch.setattr("riverhog_core.services.fetches.post_webhook", _post_webhook)
+
+    assert service.deliver_due_waiting_notifications(limit=10) == 1
+    assert payloads[-1]["event"] == "fetches.waiting_media"
+    assert payloads[-1]["operator_action"] == "Run djdan fetch fx-1"
+
+    monkeypatch.setattr(
+        "riverhog_core.services.fetches.utcnow",
+        lambda: start + timedelta(seconds=6),
+    )
+    assert service.deliver_due_waiting_notifications(limit=10) == 1
+    assert payloads[-1]["event"] == "fetches.waiting_media.reminder"
+    assert payloads[-1]["reminder_count"] == 1
 
 
 def test_stale_sync_does_not_rollback_completed_fetch_state(tmp_path: Path) -> None:

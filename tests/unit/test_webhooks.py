@@ -8,8 +8,11 @@ from riverhog_core.webhooks import (
     WebhookConfig,
     build_collection_lifecycle_payload,
     build_copy_label_needed_payload,
+    build_fetch_waiting_payload,
     build_images_ready_payload,
+    build_recovery_completed_payload,
     build_recovery_ready_payload,
+    build_recovery_started_payload,
 )
 
 
@@ -50,7 +53,7 @@ def test_build_recovery_ready_payload_includes_session_and_image_urls() -> None:
         reminder=False,
     )
     assert payload == {
-        "event": "images.rebuild_ready",
+        "event": "glacier_recovery.ready",
         "type": "image_rebuild",
         "session_id": "rs-20260420T040001Z-1",
         "session_url": "https://api.test/v1/recovery-sessions/rs-20260420T040001Z-1",
@@ -58,6 +61,12 @@ def test_build_recovery_ready_payload_includes_session_and_image_urls() -> None:
         "restore_expires_at": "2026-04-20T06:00:00Z",
         "reminder_count": 0,
         "reminder_interval_seconds": 3600.0,
+        "operator_urgency": "time_sensitive",
+        "operator_action": "Rebuild and burn replacement media before the restore expires",
+        "operator_message": (
+            "Glacier recovery data is ready for replacement media. Complete the "
+            "rebuild and burn workflow before the temporary restore window expires."
+        ),
         "images": [
             {
                 "image_id": "20260420T040001Z",
@@ -65,7 +74,66 @@ def test_build_recovery_ready_payload_includes_session_and_image_urls() -> None:
                 "image_url": "https://api.test/v1/images/20260420T040001Z",
             }
         ],
+        "collections": [],
     }
+
+
+def test_build_recovery_lifecycle_payloads_are_explicit_about_glacier_work() -> None:
+    config = WebhookConfig(url="https://example.test/hook", base_url="https://api.test")
+    started = build_recovery_started_payload(
+        config=config,
+        session_id="rs-docs-restore-1",
+        recovery_type="collection_restore",
+        retrieval_tier="bulk",
+        estimated_ready_at="2026-04-22T05:00:00Z",
+        images=[],
+        collections=[{"collection_id": "docs"}],
+        delivered_at=datetime(2026, 4, 20, 5, 0, tzinfo=UTC),
+    )
+    completed = build_recovery_completed_payload(
+        config=config,
+        session_id="rs-docs-restore-1",
+        recovery_type="collection_restore",
+        images=[],
+        collections=[{"collection_id": "docs"}],
+        delivered_at=datetime(2026, 4, 22, 5, 0, tzinfo=UTC),
+    )
+
+    assert started["event"] == "glacier_recovery.started"
+    assert started["operator_urgency"] == "time_sensitive"
+    assert "long time" in str(started["operator_message"])
+    assert started["collections"] == [
+        {
+            "collection_id": "docs",
+            "collection_url": "https://api.test/v1/collections/docs",
+        }
+    ]
+    assert completed["event"] == "glacier_recovery.completed"
+    assert completed["operator_action"] == "No operator action required"
+
+
+def test_build_fetch_waiting_payload_names_operator_action() -> None:
+    payload = build_fetch_waiting_payload(
+        config=WebhookConfig(url="https://example.test/hook", base_url="https://api.test"),
+        fetch_id="fx-1",
+        target="docs/tax/2022/invoice-123.pdf",
+        files=1,
+        bytes=1234,
+        copies=[
+            {
+                "copy_id": "20260530T000000Z-1",
+                "volume_id": "20260530T000000Z",
+                "location": "red binder",
+            }
+        ],
+        delivered_at=datetime(2026, 5, 31, 12, 0, tzinfo=UTC),
+        reminder_count=0,
+        reminder=False,
+    )
+
+    assert payload["event"] == "fetches.waiting_media"
+    assert payload["operator_action"] == "Run djdan fetch fx-1"
+    assert payload["manifest_url"] == "https://api.test/v1/fetches/fx-1/manifest"
 
 
 def test_build_collection_lifecycle_payload_includes_links_and_details() -> None:

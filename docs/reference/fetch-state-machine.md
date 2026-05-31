@@ -24,6 +24,9 @@ verifying -> failed
 ### waiting_media
 
 The pin-scoped fetch manifest exists, is still selected by an exact pin, and requires optical recovery input.
+When an operator webhook is configured, Riverhog emits `fetches.waiting_media`
+when it first detects this state and repeats `fetches.waiting_media.reminder`
+on the configured reminder interval while the manifest is still waiting.
 
 ### uploading
 

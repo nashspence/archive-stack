@@ -313,11 +313,13 @@ def _process_glacier_recovery_sessions(
     container.recovery_sessions.repair_missing_pinned_hot_files(
         limit=10_000 if startup_hot_repair_audit else 100
     )
+    container.fetches.deliver_due_waiting_notifications(limit=100)
     container.recovery_sessions.process_due_sessions(limit=10)
 
 
 def _process_planner_refresh(container: ServiceContainer) -> None:
     container.recovery_sessions.repair_missing_pinned_hot_files(limit=100)
+    container.fetches.deliver_due_waiting_notifications(limit=100)
     container.planning.process_due_refresh(limit=1)
 
 
