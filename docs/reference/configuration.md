@@ -414,7 +414,10 @@ recovery lifecycle notifications.
 The canonical machine-readable event contract is
 [`contracts/webhooks/operator-notifications.v1.json`](../../contracts/webhooks/operator-notifications.v1.json).
 Exact receiver-side notification titles and message text are intentionally
-outside Riverhog's contract.
+outside Riverhog's required protocol, but that contract also carries canonical
+rendering examples. The current quiet example style is title `🐷` and message
+`{subject} {event_label}`, such as `home-videos finalized`, `20260527T165916Z.iso
+disc ready`, or `docs/tax fetch needed`.
 
 Collection events are intentionally sparse so long-running retries do not spam
 operators. Success milestones include `collections.upload_staged`,

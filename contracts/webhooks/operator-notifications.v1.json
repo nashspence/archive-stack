@@ -13,7 +13,33 @@
   "receiver_rendering": {
     "title": "out_of_scope",
     "message": "out_of_scope",
-    "notes": "Receivers own exact notification titles and phone text. Riverhog payloads provide event, urgency, operator_action, and operator_message where the app has first-class guidance."
+    "notes": "Receivers own exact notification titles and phone text. Riverhog payloads provide event, urgency, operator_action, and operator_message where the app has first-class guidance.",
+    "canonical_examples": {
+      "default_title": "🐷",
+      "default_message_template": "{subject} {event_label}",
+      "subject_precedence": [
+        "collection slug when collection_id is present",
+        "first image filename or image_id when images are present",
+        "session_id when present",
+        "riverhog"
+      ],
+      "interruption_level_template": "critical when operator_urgency is critical; otherwise time-sensitive",
+      "event_labels": {
+        "collections.upload_staged": "upload staged",
+        "collections.finalized": "finalized",
+        "collections.archive_retrying": "retrying",
+        "collections.planner_failed": "planner failed",
+        "images.ready": "disc ready",
+        "images.ready.reminder": "disc reminder",
+        "images.copy_label_needed": "label needed",
+        "fetches.waiting_media": "fetch needed",
+        "fetches.waiting_media.reminder": "fetch reminder",
+        "glacier_recovery.started": "glacier recovery started",
+        "glacier_recovery.ready": "glacier recovery ready",
+        "glacier_recovery.ready.reminder": "glacier recovery reminder",
+        "glacier_recovery.completed": "glacier recovery completed"
+      }
+    }
   },
   "common_payload_fields": {
     "event": "string event id matching one event below",

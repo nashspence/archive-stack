@@ -31,6 +31,13 @@ def test_operator_webhook_contract_covers_current_events() -> None:
 
     assert contract["surface"] == "riverhog.operator_webhook"
     assert contract["receiver_rendering"]["title"] == "out_of_scope"
+    assert contract["receiver_rendering"]["canonical_examples"]["default_title"] == "🐷"
+    assert (
+        contract["receiver_rendering"]["canonical_examples"]["event_labels"][
+            "fetches.waiting_media"
+        ]
+        == "fetch needed"
+    )
     assert set(events) == {
         "collections.upload_staged",
         "collections.finalized",
