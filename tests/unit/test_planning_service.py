@@ -13,14 +13,12 @@ from riverhog_core.services.planning import (
     ImageRootRecord,
     _build_plan_piece_groups,
     _candidate_metadata_pad,
-    _CandidateSpec,
     _CollectionPieceGroup,
     _estimated_encrypted_leaf_size,
     _pack_collection_piece_groups,
     _PlanFile,
     _planner_refresh_file_lock,
     _PlanPiece,
-    _saturation_release_candidate_id,
 )
 
 
@@ -80,16 +78,6 @@ def _collection_disc_count(
     collection_id: str,
 ) -> int:
     return sum(any(piece.collection_id == collection_id for piece in group) for group in groups)
-
-
-def _spec(candidate_id: str, estimated_bytes: int) -> _CandidateSpec:
-    return _CandidateSpec(
-        candidate_id=candidate_id,
-        plan_fingerprint=f"fingerprint-{candidate_id}",
-        finalized_id=f"image-{candidate_id}",
-        estimated_bytes=estimated_bytes,
-        pieces=(),
-    )
 
 
 def test_planner_uses_tight_file_count_aware_leaf_estimates() -> None:
@@ -436,7 +424,7 @@ def test_planner_counts_artifacts_when_optionally_splitting_collection() -> None
     assert _collection_disc_count(groups, "2026/20260101T000000Z__alpha") == 1
 
 
-def test_planner_does_not_optionally_split_required_split_collections() -> None:
+def test_planner_does_not_optionally_split_required_split_collections_without_saturation() -> None:
     groups = _pack_collection_piece_groups(
         [
             _group("2026/20260101T000000Z__alpha", [900], artifact_estimate=50),
@@ -449,6 +437,55 @@ def test_planner_does_not_optionally_split_required_split_collections() -> None:
 
     assert len(groups) == 3
     assert _collection_disc_count(groups, "2026/20260101T000000Z__alpha") == 2
+
+
+def test_planner_saturation_may_split_required_split_collections() -> None:
+    groups = _pack_collection_piece_groups(
+        [
+            _group("2026/20260101T000000Z__alpha", [450, 450]),
+            _group("2026/20260101T000000Z__alpha", [450, 450]),
+            _group("2026/20260102T000000Z__bravo", [500]),
+        ],
+        payload_capacity=1_000,
+        minimum_payload_fill=900,
+        collection_required_image_counts={
+            "2026/20260101T000000Z__alpha": 2,
+            "2026/20260102T000000Z__bravo": 1,
+        },
+        saturation_threshold_bytes=475,
+    )
+
+    estimated_group_bytes = [
+        sum(piece.estimated_total_bytes for piece in group) for group in groups
+    ]
+
+    assert _collection_disc_count(groups, "2026/20260101T000000Z__alpha") == 3
+    assert sum(bytes_ for bytes_ in estimated_group_bytes if bytes_ < 900) <= 475
+
+
+def test_planner_saturation_splits_least_unnecessarily_split_collection_first() -> None:
+    groups = _pack_collection_piece_groups(
+        [
+            _group("2026/20260101T000000Z__alpha", [450, 450]),
+            _group("2026/20260101T000000Z__alpha", [450, 450]),
+            _group("2026/20260102T000000Z__bravo", [490, 490]),
+            _group("2026/20260103T000000Z__charlie", [500]),
+        ],
+        payload_capacity=1_000,
+        minimum_payload_fill=900,
+        collection_required_image_counts={
+            "2026/20260101T000000Z__alpha": 2,
+            "2026/20260102T000000Z__bravo": 1,
+            "2026/20260103T000000Z__charlie": 1,
+        },
+        collection_finalized_image_counts={
+            "2026/20260102T000000Z__bravo": 1,
+        },
+        saturation_threshold_bytes=475,
+    )
+
+    assert _collection_disc_count(groups, "2026/20260101T000000Z__alpha") == 3
+    assert _collection_disc_count(groups, "2026/20260102T000000Z__bravo") == 1
 
 
 def test_planner_allows_only_one_optional_split_collection_per_disc() -> None:
@@ -473,31 +510,20 @@ def test_planner_allows_only_one_optional_split_collection_per_disc() -> None:
     assert len(split_collection_ids) == 1
 
 
-def test_planner_saturation_releases_best_filled_waiting_candidate(tmp_path: Path) -> None:
-    config = _runtime_config(
-        tmp_path,
-        planner_min_fill_bytes=900,
-        planner_unplanned_saturation_bytes=1_000,
+def test_planner_saturation_can_be_disabled() -> None:
+    groups = _pack_collection_piece_groups(
+        [
+            _group("2026/20260101T000000Z__alpha", [450, 450]),
+            _group("2026/20260101T000000Z__alpha", [450, 450]),
+            _group("2026/20260102T000000Z__bravo", [500]),
+        ],
+        payload_capacity=1_000,
+        minimum_payload_fill=900,
+        collection_required_image_counts={
+            "2026/20260101T000000Z__alpha": 2,
+            "2026/20260102T000000Z__bravo": 1,
+        },
+        saturation_threshold_bytes=0,
     )
 
-    candidate_id = _saturation_release_candidate_id(
-        specs=(_spec("small", 400), _spec("large", 700), _spec("ready", 950)),
-        config=config,
-    )
-
-    assert candidate_id == "large"
-
-
-def test_planner_saturation_can_be_disabled(tmp_path: Path) -> None:
-    config = _runtime_config(
-        tmp_path,
-        planner_min_fill_bytes=900,
-        planner_unplanned_saturation_bytes=0,
-    )
-
-    candidate_id = _saturation_release_candidate_id(
-        specs=(_spec("small", 400), _spec("large", 700)),
-        config=config,
-    )
-
-    assert candidate_id is None
+    assert _collection_disc_count(groups, "2026/20260101T000000Z__alpha") == 2

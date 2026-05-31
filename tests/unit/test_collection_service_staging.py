@@ -2199,7 +2199,7 @@ def test_underfilled_tail_candidate_waits_without_materializing(tmp_path: Path) 
         assert candidate.plan_fingerprint != "stale"
 
 
-def test_saturated_underfilled_candidate_is_iso_ready(tmp_path: Path) -> None:
+def test_saturated_underfilled_candidate_still_waits_without_split_path(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     initialize_db(str(sqlite_path))
     config = _config(
@@ -2279,17 +2279,13 @@ def test_saturated_underfilled_candidate_is_iso_ready(tmp_path: Path) -> None:
 
     with session_scope(session_factory) as session:
         candidate = session.scalars(select(PlannedCandidateRecord)).one()
-        candidate_id = candidate.candidate_id
-        assert candidate.state == "ready"
+        assert candidate.state == "waiting"
         assert candidate.bytes < candidate.min_fill_bytes
-        assert candidate.iso_ready is True
+        assert candidate.iso_ready is False
         assert [(cp.collection_id, cp.path) for cp in candidate.covered_paths] == [
             (collection_id, path)
         ]
-        assert Path(candidate.image_root).exists()
-
-    finalized = planning.finalize_image(candidate_id)
-    assert finalized["id"]
+        assert not Path(candidate.image_root).exists()
 
 
 def test_planner_continues_after_partially_finalized_collection(tmp_path: Path) -> None:

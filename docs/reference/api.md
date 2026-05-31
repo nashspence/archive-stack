@@ -279,18 +279,21 @@ Required behavior:
 - finalized images are not returned by `GET /v1/plan`
 - allocation may reorder collection pieces across candidate images to improve packing
 - files are never voluntarily split; file parts only exist when a single file cannot fit on one candidate image
-- collections that require multiple candidate images are split only as required and are not split further for packing
-- collections that could fit on one candidate image may be split once, by whole files, to improve packing
+- collections that require multiple candidate images are split only as required unless saturation splitting is needed
+- collections that could fit on one candidate image may be split once, by whole files, to improve packing even before
+  saturation
 - whether a collection could fit on one candidate image is evaluated against the complete collection, not only its
   currently unburned remainder
-- each such optionally split collection may appear on at most two candidate images, and each candidate image may contain
-  at most one optionally split collection
+- each candidate image may contain at most one optionally split collection
 - every candidate image that contains any part of a collection budgets that collection's encrypted manifest and encrypted
   OpenTimestamps proof
 - underfilled tail candidates are held out of the returned ready plan until future collections push them over the
   configured minimum fill threshold
-- if waiting candidate bytes exceed `RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES`, the planner may release the fullest
-  waiting candidate as ISO-ready even when it remains below the configured minimum fill threshold
+- if waiting candidate bytes exceed `RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES`, the planner may add fair whole-file
+  voluntary splits, including for collections that already required splitting, until enough candidate images meet the
+  minimum fill threshold to bring waiting bytes under the saturation threshold
+- required splits and voluntary splits are counted separately; saturation splitting chooses a feasible collection with
+  the lowest existing voluntary split count, so required-split collections start as natural saturation targets
 - the response includes pagination metadata and a `candidates` array
 - the default ordering is fullest candidates first using `sort=fill&order=desc`
 - explicit sort and filter controls only change how the current provisional plan is listed; they do not change planner

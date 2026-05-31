@@ -423,12 +423,14 @@ finalized. This must be less than or equal to
 - default: `300GB`
 
 Planner-estimated waiting candidate bytes allowed to accumulate before Riverhog
-releases the fullest waiting candidate even when it is below
-`RIVERHOG_PLANNER_MIN_FILL_BYTES`. A saturation-released candidate is still
-reported as ISO-ready if it fits under `RIVERHOG_PLANNER_DISC_TARGET_BYTES`.
-This keeps normal discs tightly packed while preventing too much
-archived-but-unburned data from sitting behind a high fill target. Set to `0` to
-disable the saturation override.
+enters saturation splitting. Saturation splitting does not mark underfilled
+candidates as ISO-ready. Instead, Riverhog may add extra whole-file voluntary
+collection splits, including for collections that already required splitting,
+until enough candidate images meet `RIVERHOG_PLANNER_MIN_FILL_BYTES` to bring
+waiting bytes under this threshold. Required splits and voluntary splits are
+tracked separately by the planner; the next saturation split comes from a
+feasible collection with the lowest current voluntary split count. Set to `0` to
+disable saturation splitting.
 
 ## `RIVERHOG_PLANNER_IMAGE_ROOT`
 
