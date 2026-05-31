@@ -555,6 +555,42 @@ def test_planner_saturation_splits_least_unnecessarily_split_collection_first() 
     assert _collection_disc_count(groups, "2026/20260102T000000Z__bravo") == 1
 
 
+def test_planner_saturation_spreads_splits_before_repeating_a_collection() -> None:
+    groups = _pack_collection_piece_groups(
+        [
+            _group("2026/20260101T000000Z__alpha", [450, 450, 100]),
+            _group("2026/20260101T000000Z__alpha", [450, 450, 100]),
+            _group("2026/20260102T000000Z__bravo", [450, 450, 100]),
+            _group("2026/20260102T000000Z__bravo", [450, 450, 100]),
+            _group("2026/20260103T000000Z__charlie", [800]),
+            _group("2026/20260104T000000Z__delta", [800]),
+        ],
+        payload_capacity=1_000,
+        minimum_payload_fill=900,
+        optionally_splittable_collections=set(),
+        collection_required_image_counts={
+            "2026/20260101T000000Z__alpha": 2,
+            "2026/20260102T000000Z__bravo": 2,
+            "2026/20260103T000000Z__charlie": 1,
+            "2026/20260104T000000Z__delta": 1,
+        },
+        saturation_threshold_bytes=1,
+    )
+    group_collections = [{piece.collection_id for piece in group} for group in groups]
+
+    assert _group_estimated_bytes(groups) == [900, 1000, 900, 1000, 900, 900]
+    assert _collection_disc_count(groups, "2026/20260101T000000Z__alpha") == 3
+    assert _collection_disc_count(groups, "2026/20260102T000000Z__bravo") == 3
+    assert {
+        "2026/20260101T000000Z__alpha",
+        "2026/20260103T000000Z__charlie",
+    } in group_collections
+    assert {
+        "2026/20260102T000000Z__bravo",
+        "2026/20260104T000000Z__delta",
+    } in group_collections
+
+
 def test_planner_allows_only_one_optional_split_collection_per_disc() -> None:
     groups = _pack_collection_piece_groups(
         [
