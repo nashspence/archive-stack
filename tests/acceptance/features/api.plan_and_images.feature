@@ -10,7 +10,7 @@ Feature: Plan and images API
     When the client gets "/v1/plan"
     Then the response status is 200
     And the response contains "page", "per_page", "total", "pages", "sort", "order", "ready", "target_bytes", "min_fill_bytes", "candidates", and "unplanned_bytes"
-    And each plan candidate contains "candidate_id", "bytes", "fill", "files", "collections", "collection_ids", and "iso_ready"
+    And each plan candidate contains "candidate_id", "bytes", "target_bytes", "fill", "files", "collections", "collection_ids", and "iso_ready"
     And plan candidates do not contain field "volume_id"
     And each candidate fill equals candidate bytes divided by target bytes
     And candidates are returned fullest-first
@@ -71,7 +71,7 @@ Feature: Plan and images API
     When the client gets "/v1/images"
     Then the response status is 200
     And the response contains "page", "per_page", "total", "pages", "sort", "order", and "images"
-    And each finalized image contains "id", "filename", "finalized_at", "bytes", "fill", "files", "collections", "collection_ids", "iso_ready", "physical_protection_state", "physical_copies_required", "physical_copies_registered", "physical_copies_verified", and "physical_copies_missing"
+    And each finalized image contains "id", "filename", "finalized_at", "bytes", "target_bytes", "fill", "files", "collections", "collection_ids", "iso_ready", "physical_protection_state", "physical_copies_required", "physical_copies_registered", "physical_copies_verified", and "physical_copies_missing"
     And finalized images are returned newest-first
     And each finalized image is iso-ready
 

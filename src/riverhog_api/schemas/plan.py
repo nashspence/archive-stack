@@ -8,6 +8,7 @@ from riverhog_api.schemas.common import RiverhogModel
 class PlanCandidateResponse(RiverhogModel):
     candidate_id: str
     bytes: int
+    target_bytes: int
     fill: float
     collections: int
     collection_ids: list[str]

@@ -221,6 +221,8 @@ Expected multipart flow:
 - historical `lost` or `damaged` copy records are not burned again in place; replacement work uses fresh generated
   `copy_id` values in state `needed` or `burning`
 - the session selects the fullest ready backlog item first
+- selected backlog items and blank-media prompts include the stored target media capacity, so a finalized image planned
+  for older media settings still tells the operator which blank disc size is required
 - if that item is still provisional, `djdan burn` finalizes it before continuing
 - for copies that still need a physical burn, the session asks for blank media before ISO staging/download so an
   already-inserted disc can start burning as soon as the download and staged-ISO verification complete

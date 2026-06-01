@@ -11,8 +11,10 @@ that handoff and does not treat it as ordinary replacement backlog.
   tool.
 - Run the command as a user that can write to and read from the optical device. When `--device` is omitted,
   `djdan burn` uses `/dev/sr0` on Linux-style hosts and lets `hdiutil burn` select the system burner on macOS.
-- Insert blank writable media when prompted. The default backend burns the staged ISO image with `hdiutil burn` on
-  macOS and `xorriso -as cdrecord` elsewhere.
+- Insert blank writable media of at least the capacity named by the prompt. `djdan burn` uses the target media size
+  stored on that planned or finalized image, so leftover backlog from earlier planner settings still asks for the
+  correct disc size. The default backend burns the staged ISO image with `hdiutil burn` on macOS and
+  `xorriso -as cdrecord` elsewhere.
 - For hardware smoke tests before spending media, use `--simulate` to run the native non-writing burn mode with the
   drive's laser off.
 - After burning, keep the same disc available in the drive. `djdan` verifies the burned media by reading the first

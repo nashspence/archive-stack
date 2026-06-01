@@ -12,6 +12,7 @@ class FinalizedImageSummaryResponse(RiverhogModel):
     filename: str
     finalized_at: str
     bytes: int
+    target_bytes: int
     fill: float
     files: int
     collections: int

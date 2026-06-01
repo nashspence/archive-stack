@@ -238,6 +238,9 @@ def format_images(payload: Mapping[str, Any]) -> str:
             [
                 f"- {image.get('id', 'unknown')} ({image.get('filename', 'unknown')})",
                 f"  finalized_at: {image.get('finalized_at', 'unknown')}",
+                f"  bytes: {image.get('bytes', 0)} "
+                f"target_bytes={image.get('target_bytes', 0)} "
+                f"fill={image.get('fill', 0)}",
                 "  protection: "
                 f"{image.get('physical_protection_state', 'unknown')} "
                 f"registered={image.get('physical_copies_registered', 0)}/"
@@ -258,6 +261,7 @@ def format_image(image: Mapping[str, Any]) -> str:
             f"image: {image.get('id', 'unknown')} ({image.get('filename', 'unknown')})",
             f"finalized_at: {image.get('finalized_at', 'unknown')}",
             f"bytes: {image.get('bytes', 0)} "
+            f"target_bytes={image.get('target_bytes', 0)} "
             f"fill={image.get('fill', 0)} "
             f"files={image.get('files', 0)}",
             "protection: "
@@ -805,7 +809,9 @@ def format_plan(payload: Mapping[str, Any]) -> str:
         lines.extend(
             [
                 f"- {candidate.get('candidate_id', 'unknown')}",
-                f"  fill: {candidate.get('fill', 0)}",
+                f"  fill: {candidate.get('fill', 0)} "
+                f"bytes={candidate.get('bytes', 0)} "
+                f"target_bytes={candidate.get('target_bytes', payload.get('target_bytes', 0))}",
                 f"  iso_ready: {candidate.get('iso_ready', False)}",
                 f"  collections: {candidate.get('collections', 0)} [{collection_text}]",
             ]

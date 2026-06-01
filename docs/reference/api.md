@@ -295,6 +295,8 @@ Required behavior:
 - explicit sort and filter controls only change how the current provisional plan is listed; they do not change planner
   allocation behavior
 - plan candidate objects expose `candidate_id`
+- plan candidate objects expose their own `target_bytes`, preserving the media capacity that the candidate was planned
+  for even if current planner settings later change
 - plan candidate objects expose `collection_ids`
 - plan candidate objects do not expose finalized-image fields such as finalized `id`, `filename`, `finalized_at`, or
   physical-copy protection metadata
@@ -323,8 +325,8 @@ Required behavior:
 - provisional plan candidates are never returned by `GET /v1/images`
 - default ordering is latest finalized image first using `sort=finalized_at&order=desc`
 - the response includes pagination metadata and finalized-image summaries
-- finalized-image summaries expose `filename`, `finalized_at`, `collection_ids`, `physical_protection_state`,
-  `physical_copies_required`, `physical_copies_registered`, `physical_copies_verified`,
+- finalized-image summaries expose `filename`, `finalized_at`, `target_bytes`, `collection_ids`,
+  `physical_protection_state`, `physical_copies_required`, `physical_copies_registered`, `physical_copies_verified`,
   and `physical_copies_missing`
 - finalized-image summaries always report `iso_ready = true`
 - finalized-image summaries report physical-copy state

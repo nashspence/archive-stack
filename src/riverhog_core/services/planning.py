@@ -2340,6 +2340,7 @@ def _next_candidate_id(finalized_id: str, reserved_ids: set[str]) -> str:
 class CandidatePlanView(TypedDict):
     candidate_id: str
     bytes: int
+    target_bytes: int
     fill: float
     files: int
     collections: int
@@ -2355,6 +2356,7 @@ class FinalizedImageView(TypedDict):
     filename: str
     finalized_at: str
     bytes: int
+    target_bytes: int
     fill: float
     files: int
     collections: int
@@ -2376,6 +2378,7 @@ def _candidate_plan_view(candidate: PlannedCandidateRecord) -> CandidatePlanView
     return {
         "candidate_id": candidate.candidate_id,
         "bytes": candidate.bytes,
+        "target_bytes": candidate.target_bytes,
         "fill": fill,
         "files": len(candidate.covered_paths),
         "collections": len(collection_ids),
@@ -2429,6 +2432,7 @@ def _finalized_image_view(image: FinalizedImageRecord, session: Session) -> Fina
         "filename": image.filename,
         "finalized_at": finalized_at,
         "bytes": image.bytes,
+        "target_bytes": image.target_bytes,
         "fill": fill,
         "files": files,
         "collections": len(collection_ids),

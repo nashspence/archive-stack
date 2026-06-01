@@ -77,6 +77,21 @@ def test_terminal_burn_prompts_reprompt_for_label_confirmation(monkeypatch, caps
     assert 'label confirmation for 20260531T030858Z-2 is still pending; type "labeled"' in stderr
 
 
+def test_terminal_burn_prompt_names_required_media_capacity(monkeypatch, capsys) -> None:
+    monkeypatch.setattr("builtins.input", lambda: "")
+
+    djdan_main.TerminalBurnPrompts().wait_for_blank_disc(
+        "20260527T165916Z-1",
+        device="default",
+        target_bytes=50_000_000_000,
+    )
+
+    assert (
+        "Insert blank media with at least 50.0 GB capacity for 20260527T165916Z-1"
+        in capsys.readouterr().err
+    )
+
+
 def test_terminal_burn_prompts_accept_quoted_label_confirmation(monkeypatch) -> None:
     responses = iter(['"labeled"'])
     monkeypatch.setattr("builtins.input", lambda: next(responses))
@@ -1135,9 +1150,12 @@ def test_discover_burn_backlog_prefers_fullest_ready_candidate() -> None:
             return {
                 "page": 1,
                 "pages": 1,
+                "target_bytes": 50_000_000_000,
                 "candidates": [
                     {
                         "candidate_id": "img_2026-04-20_01",
+                        "bytes": 45_000_000_000,
+                        "target_bytes": 50_000_000_000,
                         "fill": 0.9,
                         "iso_ready": True,
                     }
@@ -1153,6 +1171,8 @@ def test_discover_burn_backlog_prefers_fullest_ready_candidate() -> None:
                     {
                         "id": "20260420T040003Z",
                         "filename": "20260420T040003Z.iso",
+                        "bytes": 25_000_000_000,
+                        "target_bytes": 50_000_000_000,
                         "fill": 0.5,
                         "physical_copies_registered": 1,
                         "physical_copies_required": 2,
@@ -1174,6 +1194,10 @@ def test_discover_burn_backlog_prefers_fullest_ready_candidate() -> None:
     assert [(item.candidate_id, item.image_id) for item in backlog] == [
         ("img_2026-04-20_01", None),
         (None, "20260420T040003Z"),
+    ]
+    assert [(item.expected_bytes, item.target_bytes) for item in backlog] == [
+        (45_000_000_000, 50_000_000_000),
+        (25_000_000_000, 50_000_000_000),
     ]
 
 
@@ -1584,7 +1608,9 @@ def test_djdan_recover_ready_session_burns_replacements_and_cleans_staging(
                 f"{image_id}-4": "vault-b/shelf-02",
             }
 
-        def wait_for_blank_disc(self, copy_id: str, *, device: str) -> None:
+        def wait_for_blank_disc(
+            self, copy_id: str, *, device: str, target_bytes: int | None = None
+        ) -> None:
             assert device == "/dev/fake-sr0"
 
         def confirm_label(self, copy_id: str, *, label_text: str) -> None:
@@ -1735,7 +1761,9 @@ def test_djdan_recover_can_finish_expired_session_from_local_staging(
             assert copy_id == f"{image_id}-3"
 
     class FakePrompts:
-        def wait_for_blank_disc(self, copy_id: str, *, device: str) -> None:
+        def wait_for_blank_disc(
+            self, copy_id: str, *, device: str, target_bytes: int | None = None
+        ) -> None:
             assert (copy_id, device) == (f"{image_id}-3", "/dev/fake-sr0")
 
         def confirm_label(self, copy_id: str, *, label_text: str) -> None:
@@ -1875,7 +1903,9 @@ def test_djdan_recover_stages_all_pending_session_images_before_first_burn(
             raise RuntimeError(f"fixture burned-media verification failed for {copy_id}")
 
     class FakePrompts:
-        def wait_for_blank_disc(self, copy_id: str, *, device: str) -> None:
+        def wait_for_blank_disc(
+            self, copy_id: str, *, device: str, target_bytes: int | None = None
+        ) -> None:
             assert copy_id == f"{image_one}-3"
 
         def confirm_label(self, copy_id: str, *, label_text: str) -> None:
@@ -2504,7 +2534,9 @@ def test_djdan_burn_waits_for_label_confirmation_before_registration_and_resumes
                 copy_two: "vault-b/shelf-01",
             }
 
-        def wait_for_blank_disc(self, copy_id: str, *, device: str) -> None:
+        def wait_for_blank_disc(
+            self, copy_id: str, *, device: str, target_bytes: int | None = None
+        ) -> None:
             assert device == "/dev/fake-sr0"
 
         def confirm_label(self, copy_id: str, *, label_text: str) -> None:
@@ -2716,7 +2748,9 @@ def test_djdan_burn_resumes_from_media_verification_when_unfinished_disc_is_avai
                 copy_two: "vault-b/shelf-01",
             }
 
-        def wait_for_blank_disc(self, copy_id: str, *, device: str) -> None:
+        def wait_for_blank_disc(
+            self, copy_id: str, *, device: str, target_bytes: int | None = None
+        ) -> None:
             assert device == "/dev/fake-sr0"
 
         def confirm_label(self, copy_id: str, *, label_text: str) -> None:
@@ -2923,7 +2957,9 @@ def test_djdan_burn_redownloads_invalid_staged_iso(monkeypatch, tmp_path: Path) 
                 copy_two: "vault-b/shelf-01",
             }
 
-        def wait_for_blank_disc(self, copy_id: str, *, device: str) -> None:
+        def wait_for_blank_disc(
+            self, copy_id: str, *, device: str, target_bytes: int | None = None
+        ) -> None:
             assert device == "/dev/fake-sr0"
             events.append(f"blank:{copy_id}")
 
@@ -3125,7 +3161,9 @@ def test_djdan_burn_reburns_when_unlabeled_disc_is_unavailable_on_resume(
                 copy_two: "vault-b/shelf-01",
             }
 
-        def wait_for_blank_disc(self, copy_id: str, *, device: str) -> None:
+        def wait_for_blank_disc(
+            self, copy_id: str, *, device: str, target_bytes: int | None = None
+        ) -> None:
             return None
 
         def confirm_label(self, copy_id: str, *, label_text: str) -> None:

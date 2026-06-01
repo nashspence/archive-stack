@@ -233,6 +233,7 @@ class BurnBacklogItem:
     filename: str
     fill: float
     expected_bytes: int | None = None
+    target_bytes: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -622,9 +623,23 @@ class RawBurnedMediaVerifier:
 
 
 class TerminalBurnPrompts:
-    def wait_for_blank_disc(self, copy_id: str, *, device: str) -> None:
+    def wait_for_blank_disc(
+        self,
+        copy_id: str,
+        *,
+        device: str,
+        target_bytes: int | None = None,
+    ) -> None:
+        media_text = (
+            f" with at least {_format_media_capacity(target_bytes)} capacity"
+            if target_bytes is not None
+            else ""
+        )
         typer.echo(
-            (f"Insert blank media for {copy_id} into {device}, then press Enter to continue."),
+            (
+                f"Insert blank media{media_text} for {copy_id} into {device}, "
+                "then press Enter to continue."
+            ),
             err=True,
         )
         try:
@@ -820,6 +835,31 @@ def _format_bytes(value: int) -> str:
             return f"{size:.1f} {unit}"
         size /= 1024
     return f"{value} B"
+
+
+def _format_media_capacity(value: int) -> str:
+    units = ("B", "KB", "MB", "GB", "TB")
+    size = float(value)
+    for unit in units:
+        if size < 1000 or unit == units[-1]:
+            return f"{size:.1f} {unit}"
+        size /= 1000
+    return f"{value} B"
+
+
+def _burn_size_summary(
+    *,
+    expected_bytes: int | None,
+    target_bytes: int | None,
+    fill: float,
+) -> str:
+    parts: list[str] = []
+    if expected_bytes is not None:
+        parts.append(_format_bytes(expected_bytes))
+    if target_bytes is not None:
+        parts.append(f"{_format_media_capacity(target_bytes)} target media")
+    parts.append(f"fill={fill:.3f}")
+    return ", ".join(parts)
 
 
 def _print_progress(
@@ -1021,6 +1061,10 @@ def _discover_burn_backlog(
                     filename=f"{candidate['candidate_id']}.iso",
                     fill=float(candidate.get("fill", 0)),
                     expected_bytes=_optional_int(candidate.get("bytes")),
+                    target_bytes=(
+                        _optional_int(candidate.get("target_bytes"))
+                        or _optional_int(payload.get("target_bytes"))
+                    ),
                 )
             )
 
@@ -1039,6 +1083,7 @@ def _discover_burn_backlog(
                 filename=str(image["filename"]),
                 fill=float(image.get("fill", 0)),
                 expected_bytes=_optional_int(image.get("bytes")),
+                target_bytes=_optional_int(image.get("target_bytes")),
             )
         )
 
@@ -1225,6 +1270,13 @@ def _image_file_count(client: ApiClient, image_id: str) -> int | None:
         return None
 
 
+def _image_target_bytes(client: ApiClient, image_id: str) -> int | None:
+    try:
+        return _optional_int(client.get_image(image_id).get("target_bytes"))
+    except Exception:
+        return None
+
+
 def _can_resume_expired_recovery_session(
     recovery_session: RecoverySessionHint,
     *,
@@ -1259,6 +1311,7 @@ def _recover_session_image(
 ) -> list[str]:
     typer.echo(f"recovering image {image.image_id}", err=True)
     file_count = _image_file_count(client, image.image_id)
+    target_bytes = _image_target_bytes(client, image.image_id)
     completed: list[str] = []
     while True:
         copies_payload = client.list_copies(image.image_id)
@@ -1285,6 +1338,7 @@ def _recover_session_image(
                 prompts=prompts,
                 device=device,
                 recovery_session_id=recovery_session_id,
+                target_bytes=target_bytes,
             )
         )
 
@@ -1552,6 +1606,7 @@ def _burn_pending_copy(
     device: str,
     recovery_session_id: str | None = None,
     expected_total_bytes: int | None = None,
+    target_bytes: int | None = None,
 ) -> str:
     copy_id = str(copy_payload["id"])
     progress = session_state.copy_progress(image_id, copy_id)
@@ -1571,7 +1626,7 @@ def _burn_pending_copy(
             session_state.save()
 
     if not progress.burned:
-        prompts.wait_for_blank_disc(copy_id, device=device)
+        prompts.wait_for_blank_disc(copy_id, device=device, target_bytes=target_bytes)
         preflight = getattr(burner, "preflight", None)
         if callable(preflight):
             preflight(device=device)
@@ -1678,9 +1733,10 @@ def _simulate_pending_copy(
     prompts: Any,
     device: str,
     expected_total_bytes: int | None = None,
+    target_bytes: int | None = None,
 ) -> str:
     copy_id = str(copy_payload["id"])
-    prompts.wait_for_blank_disc(copy_id, device=device)
+    prompts.wait_for_blank_disc(copy_id, device=device, target_bytes=target_bytes)
     preflight = getattr(burner, "preflight", None)
     if callable(preflight):
         preflight(device=device)
@@ -1720,8 +1776,13 @@ def _process_burn_backlog_item(
 ) -> list[str]:
     if item.image_id is None:
         assert item.candidate_id is not None
+        summary = _burn_size_summary(
+            expected_bytes=item.expected_bytes,
+            target_bytes=item.target_bytes,
+            fill=item.fill,
+        )
         typer.echo(
-            f"selected candidate {item.candidate_id} for finalization (fill={item.fill:.3f})",
+            f"selected candidate {item.candidate_id} for finalization ({summary})",
             err=True,
         )
         image_payload = client.finalize_image(item.candidate_id)
@@ -1729,12 +1790,22 @@ def _process_burn_backlog_item(
         filename = str(image_payload["filename"])
         file_count = _optional_int(image_payload.get("files"))
         expected_total_bytes = _optional_int(image_payload.get("bytes")) or item.expected_bytes
+        target_bytes = _optional_int(image_payload.get("target_bytes")) or item.target_bytes
     else:
         image_id = item.image_id
         filename = item.filename
         file_count = _image_file_count(client, image_id)
         expected_total_bytes = item.expected_bytes
-        typer.echo(f"selected image {image_id} (fill={item.fill:.3f})", err=True)
+        target_bytes = item.target_bytes or _image_target_bytes(client, image_id)
+        summary = _burn_size_summary(
+            expected_bytes=expected_total_bytes,
+            target_bytes=target_bytes,
+            fill=item.fill,
+        )
+        typer.echo(
+            f"selected image {image_id} ({summary})",
+            err=True,
+        )
 
     payload = client.list_copies(image_id)
     completed: list[str] = []
@@ -1767,6 +1838,7 @@ def _process_burn_backlog_item(
                     prompts=prompts,
                     device=device,
                     expected_total_bytes=expected_total_bytes,
+                    target_bytes=target_bytes,
                 )
             ]
         completed.append(
@@ -1784,6 +1856,7 @@ def _process_burn_backlog_item(
                 prompts=prompts,
                 device=device,
                 expected_total_bytes=expected_total_bytes,
+                target_bytes=target_bytes,
             )
         )
     if not simulate:

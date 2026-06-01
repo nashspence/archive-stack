@@ -329,12 +329,21 @@ def _coerce_query_value(value: str) -> object:
     return int(value) if value.isdigit() else value
 
 
-def _query_params(url: str) -> dict[str, object]:
+def _query_params(
+    url: str,
+    acceptance_context: AcceptanceScenarioContext | None = None,
+) -> dict[str, object]:
     parts = urlsplit(url)
-    return {
+    params = {
         key: _coerce_query_value(value)
         for key, value in parse_qsl(parts.query, keep_blank_values=True)
     }
+    if acceptance_context is not None and isinstance(params.get("collection"), str):
+        params["collection"] = _collection_upload_id_for(
+            acceptance_context,
+            str(params["collection"]),
+        )
+    return params
 
 
 def _riverhog_option_value(
@@ -1310,7 +1319,11 @@ def when_client_gets_url(
 ) -> None:
     parts = urlsplit(url)
     path = _resolve_collection_alias_path(acceptance_context, parts.path)
-    response = acceptance_system.request("GET", path, params=_query_params(url))
+    response = acceptance_system.request(
+        "GET",
+        path,
+        params=_query_params(url, acceptance_context),
+    )
     _set_response(acceptance_context, response)
 
 
@@ -1322,7 +1335,11 @@ def when_client_heads_url(
 ) -> None:
     parts = urlsplit(url)
     path = _resolve_collection_alias_path(acceptance_context, parts.path)
-    response = acceptance_system.request("HEAD", path, params=_query_params(url))
+    response = acceptance_system.request(
+        "HEAD",
+        path,
+        params=_query_params(url, acceptance_context),
+    )
     _set_response(acceptance_context, response)
 
 
@@ -1334,7 +1351,11 @@ def when_client_deletes_url(
 ) -> None:
     parts = urlsplit(url)
     path = _resolve_collection_alias_path(acceptance_context, parts.path)
-    response = acceptance_system.request("DELETE", path, params=_query_params(url))
+    response = acceptance_system.request(
+        "DELETE",
+        path,
+        params=_query_params(url, acceptance_context),
+    )
     _set_response(acceptance_context, response)
 
 
@@ -1346,7 +1367,11 @@ def when_client_gets_url_again(
 ) -> None:
     parts = urlsplit(url)
     path = _resolve_collection_alias_path(acceptance_context, parts.path)
-    response = acceptance_system.request("GET", path, params=_query_params(url))
+    response = acceptance_system.request(
+        "GET",
+        path,
+        params=_query_params(url, acceptance_context),
+    )
     _set_response(acceptance_context, response, append=True)
 
 
@@ -3032,7 +3057,7 @@ def then_error_message_contains(
 
 
 @then(
-    'each plan candidate contains "candidate_id", "bytes", "fill", "files", '
+    'each plan candidate contains "candidate_id", "bytes", "target_bytes", "fill", "files", '
     '"collections", "collection_ids", and "iso_ready"'
 )
 def then_each_plan_candidate_contains_expected_fields(
@@ -3042,6 +3067,7 @@ def then_each_plan_candidate_contains_expected_fields(
     expected = {
         "candidate_id",
         "bytes",
+        "target_bytes",
         "fill",
         "files",
         "collections",
@@ -3067,9 +3093,8 @@ def then_each_candidate_fill_matches_target_bytes(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    target_bytes = payload["target_bytes"]
     for candidate in payload["candidates"]:
-        assert candidate["fill"] == candidate["bytes"] / target_bytes
+        assert candidate["fill"] == candidate["bytes"] / candidate["target_bytes"]
 
 
 @then("candidates are returned fullest-first")
@@ -3140,7 +3165,7 @@ def then_response_plan_candidates_contain_only(
 
 @then(
     'each finalized image contains "id", "filename", "finalized_at", "bytes", '
-    '"fill", "files", "collections", "collection_ids", "iso_ready", '
+    '"target_bytes", "fill", "files", "collections", "collection_ids", "iso_ready", '
     '"physical_protection_state", "physical_copies_required", '
     '"physical_copies_registered", "physical_copies_verified", and '
     '"physical_copies_missing"'
@@ -3154,6 +3179,7 @@ def then_each_finalized_image_contains_expected_fields(
         "filename",
         "finalized_at",
         "bytes",
+        "target_bytes",
         "fill",
         "files",
         "collections",

@@ -57,7 +57,9 @@ class FixtureBurnedMediaVerifier:
 
 
 class FixtureBurnPrompts:
-    def wait_for_blank_disc(self, copy_id: str, *, device: str) -> None:
+    def wait_for_blank_disc(
+        self, copy_id: str, *, device: str, target_bytes: int | None = None
+    ) -> None:
         fixture = _fixture()
         burn = fixture.get("burn", {})
         if copy_id in burn.get("blank_media_blocked_copy_ids", []):

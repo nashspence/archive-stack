@@ -2169,6 +2169,7 @@ components:
           filename,
           finalized_at,
           bytes,
+          target_bytes,
           fill,
           files,
           collections,
@@ -2193,6 +2194,9 @@ components:
           format: date-time
           description: Expanded UTC timestamp encoded by the finalized image id.
         bytes: { type: integer }
+        target_bytes:
+          type: integer
+          description: Target media capacity used when this image was finalized.
         fill: { type: number }
         files: { type: integer }
         collections:
@@ -2761,10 +2765,13 @@ components:
             - type: "null"
     PlanCandidate:
       type: object
-      required: [candidate_id, bytes, fill, collections, collection_ids, files, iso_ready]
+      required: [candidate_id, bytes, target_bytes, fill, collections, collection_ids, files, iso_ready]
       properties:
         candidate_id: { type: string }
         bytes: { type: integer }
+        target_bytes:
+          type: integer
+          description: Target media capacity used when this candidate was planned.
         fill: { type: number }
         collections: { type: integer }
         collection_ids:

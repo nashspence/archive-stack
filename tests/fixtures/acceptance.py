@@ -291,6 +291,7 @@ class CandidateRecord:
         return {
             "candidate_id": str(self.candidate_id),
             "bytes": self.bytes,
+            "target_bytes": TARGET_BYTES,
             "fill": self.fill,
             "files": self.files,
             "collections": len(self.collections),
@@ -314,6 +315,7 @@ class CandidateRecord:
             "filename": self.filename,
             "finalized_at": self.finalized_at,
             "bytes": self.bytes,
+            "target_bytes": TARGET_BYTES,
             "fill": self.fill,
             "files": self.files,
             "collections": len(self.collections),
@@ -4867,10 +4869,13 @@ class AcceptanceSystem:
     def seed_planner_fixtures(self) -> None:
         self.seed_docs_hot()
         self.seed_photos_hot()
+        self.state.mark_collection_archive_uploaded(DOCS_COLLECTION_ID)
+        self.state.mark_collection_archive_uploaded(PHOTOS_COLLECTION_ID)
         self.seed_image_fixtures(IMAGE_FIXTURES)
 
     def seed_split_planner_fixtures(self) -> None:
         self.seed_docs_hot()
+        self.state.mark_collection_archive_uploaded(DOCS_COLLECTION_ID)
         self.seed_image_fixtures(SPLIT_IMAGE_FIXTURES)
 
     def constrain_collection_to_paths(
