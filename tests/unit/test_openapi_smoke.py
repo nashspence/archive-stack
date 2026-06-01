@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -485,12 +486,15 @@ class _StubRecoverySessions:
     def process_due_sessions(self, *, limit: int) -> None:
         assert limit >= 0
 
+    def repair_missing_pinned_hot_files(self, *, limit: int) -> None:
+        assert limit >= 0
 
-def _contract_runtime_client() -> TestClient:
-    container = ServiceContainer(
+
+def _contract_runtime_container(*, planning: object | None = None) -> ServiceContainer:
+    return ServiceContainer(
         collections=_StubCollectionUploads(),  # type: ignore[arg-type]
         search=SimpleNamespace(),
-        planning=_StubPlanning(),  # type: ignore[arg-type]
+        planning=planning or _StubPlanning(),  # type: ignore[arg-type]
         glacier_uploads=_StubGlacierUploads(),  # type: ignore[arg-type]
         glacier_reporting=_StubGlacierReporting(),  # type: ignore[arg-type]
         recovery_sessions=_StubRecoverySessions(),  # type: ignore[arg-type]
@@ -499,6 +503,10 @@ def _contract_runtime_client() -> TestClient:
         fetches=_StubFetchUploads(),  # type: ignore[arg-type]
         files=_StubFiles(),  # type: ignore[arg-type]
     )
+
+
+def _contract_runtime_client() -> TestClient:
+    container = _contract_runtime_container()
     app = create_app(
         container=container,
         upload_expiry_reaper_interval=3600,
@@ -773,6 +781,26 @@ def test_binary_download_runtime_matches_contract_content_types() -> None:
             method="get",
             status_code="200",
         )
+
+
+def test_planner_refresh_runs_immediately_on_startup() -> None:
+    refresh_ran = threading.Event()
+
+    class RecordingPlanning(_StubPlanning):
+        def process_due_refresh(self, *, limit: int = 1) -> int:
+            refresh_ran.set()
+            return super().process_due_refresh(limit=limit)
+
+    app = create_app(
+        container=_contract_runtime_container(planning=RecordingPlanning()),
+        upload_expiry_reaper_interval=3600,
+        glacier_upload_reaper_interval=3600,
+        glacier_recovery_reaper_interval=3600,
+        planner_refresh_reaper_interval=3600,
+    )
+
+    with TestClient(app):
+        assert refresh_ran.wait(timeout=2.0)
 
 
 def test_healthz_is_available_and_hidden_from_openapi() -> None:

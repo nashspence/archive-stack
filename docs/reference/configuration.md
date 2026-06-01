@@ -392,12 +392,13 @@ completed Glacier objects.
 
 How often Riverhog checks for uploaded collections whose provisional optical
 disc candidates are missing, waiting for enough data, failed, or still
-materializing after an app restart. Planner candidate rows are inserted before
-materialization begins. Underfilled tail candidates stay in `waiting` state and
-do not build an image root until future collections push them over the minimum
-fill threshold. Burnable candidates retain partial encrypted candidate roots
-under `.candidate-*.tmp` so the next refresh can skip already completed
-encrypted files and finish the same candidate id.
+materializing after an app restart. Riverhog also queues one planner refresh
+immediately on API startup, then continues at this interval. Planner candidate
+rows are inserted before materialization begins. Underfilled tail candidates stay
+in `waiting` state and do not build an image root until future collections push
+them over the minimum fill threshold. Burnable candidates retain partial
+encrypted candidate roots under `.candidate-*.tmp` so the next refresh can skip
+already completed encrypted files and finish the same candidate id.
 
 ## `RIVERHOG_OPERATOR_WEBHOOK_URL`
 

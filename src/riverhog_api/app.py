@@ -167,12 +167,22 @@ async def _run_planner_refresh_reaper(
     sweep_interval: timedelta,
 ) -> None:
     interval_seconds = max(sweep_interval.total_seconds(), 0.1)
+    first_run = True
     while True:
         try:
-            await asyncio.sleep(interval_seconds)
+            if first_run:
+                await asyncio.sleep(0)
+            else:
+                await asyncio.sleep(interval_seconds)
+            current_first_run = first_run
+            first_run = False
             container = container_provider()
             if container is None:
                 continue
+            if current_first_run:
+                _LOG.info(
+                    "startup planner refresh queued in background; API startup is not blocked"
+                )
             await asyncio.to_thread(_process_planner_refresh, container)
         except asyncio.CancelledError:
             raise

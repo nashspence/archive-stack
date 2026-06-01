@@ -182,7 +182,8 @@ already completed encrypted files, finishes the missing files, then atomically
 renames the temp root to the final candidate root and marks the candidate
 `ready`. A background planner refresh worker checks for missing, failed,
 waiting, or still-materializing provisional candidates every
-`RIVERHOG_PLANNER_REFRESH_SWEEP_INTERVAL`.
+`RIVERHOG_PLANNER_REFRESH_SWEEP_INTERVAL`, with one refresh queued immediately
+on API startup.
 
 ## Fetch Entry Upload Session
 
