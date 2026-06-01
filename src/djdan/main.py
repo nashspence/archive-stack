@@ -232,6 +232,7 @@ class BurnBacklogItem:
     candidate_id: str | None
     filename: str
     fill: float
+    expected_bytes: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -840,24 +841,29 @@ def _print_progress(
     )
 
 
-def _download_progress_logger(label: str) -> Callable[[int, int | None], None]:
+def _download_progress_logger(
+    label: str,
+    *,
+    estimated_total: int | None = None,
+) -> Callable[[int, int | None], None]:
     last_reported_at = 0.0
 
     def progress(downloaded: int, total: int | None) -> None:
         nonlocal last_reported_at
         now = time.monotonic()
-        complete = total is not None and downloaded >= total
+        display_total = total if total is not None else estimated_total
+        complete = display_total is not None and downloaded >= display_total
         if not complete and now - last_reported_at < _DOWNLOAD_PROGRESS_INTERVAL_SECONDS:
             return
         last_reported_at = now
-        if total is None or total <= 0:
+        if display_total is None or display_total <= 0:
             typer.echo(f"{label}: downloaded {_format_bytes(downloaded)}", err=True)
             return
-        percent = (downloaded / total) * 100
+        percent = (downloaded / display_total) * 100
         typer.echo(
             (
                 f"{label}: downloaded {_format_bytes(downloaded)} of "
-                f"{_format_bytes(total)} ({percent:.1f}%)"
+                f"{_format_bytes(display_total)} ({percent:.1f}%)"
             ),
             err=True,
         )
@@ -1014,6 +1020,7 @@ def _discover_burn_backlog(
                     candidate_id=str(candidate["candidate_id"]),
                     filename=f"{candidate['candidate_id']}.iso",
                     fill=float(candidate.get("fill", 0)),
+                    expected_bytes=_optional_int(candidate.get("bytes")),
                 )
             )
 
@@ -1031,6 +1038,7 @@ def _discover_burn_backlog(
                 candidate_id=None,
                 filename=str(image["filename"]),
                 fill=float(image.get("fill", 0)),
+                expected_bytes=_optional_int(image.get("bytes")),
             )
         )
 
@@ -1402,6 +1410,7 @@ def _ensure_staged_iso(
     verifier: Any,
     session_state: BurnSessionState,
     recovery_session_id: str | None = None,
+    expected_total_bytes: int | None = None,
 ) -> Path:
     image_progress = session_state.image_progress(image_id)
     iso_path = _staged_iso_path(staging_dir, image_id=image_id, filename=filename)
@@ -1431,7 +1440,10 @@ def _ensure_staged_iso(
             client.download_iso,
             image_id,
             iso_path,
-            progress=_download_progress_logger(f"download ISO {image_id}"),
+            progress=_download_progress_logger(
+                f"download ISO {image_id}",
+                estimated_total=expected_total_bytes,
+            ),
         )
     else:
         typer.echo(f"downloading restored ISO {image_id} to {iso_path}", err=True)
@@ -1444,7 +1456,10 @@ def _ensure_staged_iso(
             recovery_session_id,
             image_id,
             iso_path,
-            progress=_download_progress_logger(f"download restored ISO {image_id}"),
+            progress=_download_progress_logger(
+                f"download restored ISO {image_id}",
+                estimated_total=expected_total_bytes,
+            ),
         )
     typer.echo(f"verifying staged ISO {iso_path}", err=True)
     verifier.verify(iso_path)
@@ -1536,6 +1551,7 @@ def _burn_pending_copy(
     prompts: Any,
     device: str,
     recovery_session_id: str | None = None,
+    expected_total_bytes: int | None = None,
 ) -> str:
     copy_id = str(copy_payload["id"])
     progress = session_state.copy_progress(image_id, copy_id)
@@ -1568,6 +1584,7 @@ def _burn_pending_copy(
         verifier=iso_verifier,
         session_state=session_state,
         recovery_session_id=recovery_session_id,
+        expected_total_bytes=expected_total_bytes,
     )
 
     if not progress.burned:
@@ -1660,6 +1677,7 @@ def _simulate_pending_copy(
     burner: Any,
     prompts: Any,
     device: str,
+    expected_total_bytes: int | None = None,
 ) -> str:
     copy_id = str(copy_payload["id"])
     prompts.wait_for_blank_disc(copy_id, device=device)
@@ -1673,6 +1691,7 @@ def _simulate_pending_copy(
         staging_dir=staging_dir,
         verifier=iso_verifier,
         session_state=session_state,
+        expected_total_bytes=expected_total_bytes,
     )
     typer.echo(f"simulating burn copy {copy_id} from {iso_path}", err=True)
     burner.burn(iso_path, device=device, copy_id=copy_id)
@@ -1709,10 +1728,12 @@ def _process_burn_backlog_item(
         image_id = str(image_payload["id"])
         filename = str(image_payload["filename"])
         file_count = _optional_int(image_payload.get("files"))
+        expected_total_bytes = _optional_int(image_payload.get("bytes")) or item.expected_bytes
     else:
         image_id = item.image_id
         filename = item.filename
         file_count = _image_file_count(client, image_id)
+        expected_total_bytes = item.expected_bytes
         typer.echo(f"selected image {image_id} (fill={item.fill:.3f})", err=True)
 
     payload = client.list_copies(image_id)
@@ -1745,6 +1766,7 @@ def _process_burn_backlog_item(
                     burner=burner,
                     prompts=prompts,
                     device=device,
+                    expected_total_bytes=expected_total_bytes,
                 )
             ]
         completed.append(
@@ -1761,6 +1783,7 @@ def _process_burn_backlog_item(
                 media_verifier=media_verifier,
                 prompts=prompts,
                 device=device,
+                expected_total_bytes=expected_total_bytes,
             )
         )
     if not simulate:

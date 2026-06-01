@@ -270,8 +270,8 @@ async def _stream_process(
         "Cache-Control": "no-store",
         "X-Accel-Buffering": "no",
     }
-    if content_length is not None:
-        headers["Content-Length"] = str(content_length)
+    # xorriso streams can differ slightly from planning estimates, so generated
+    # ISO responses must not declare Content-Length.
 
     return IsoStream(
         body=body(),

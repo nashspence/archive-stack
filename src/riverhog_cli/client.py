@@ -377,7 +377,7 @@ class ApiClient:
                     raise ServiceUnavailable(
                         "download stream was interrupted before completion; "
                         "discarded the partial file because generated ISO streams "
-                        "cannot be resumed without server-side ISO caching"
+                        "are intentionally uncached and cannot be resumed"
                     ) from exc
                 tmp_output.replace(output)
                 return downloaded

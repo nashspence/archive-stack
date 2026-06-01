@@ -49,7 +49,7 @@ def test_build_iso_cmd_from_root_maps_root(tmp_path: Path) -> None:
     assert cmd[-3:] == [str(root), "/", "-commit"]
 
 
-def test_stream_iso_from_root_with_known_length_sends_headers_before_body(
+def test_stream_iso_from_root_with_known_length_does_not_advertise_content_length(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -88,7 +88,7 @@ def test_stream_iso_from_root_with_known_length_sends_headers_before_body(
             content_length=123,
         )
         assert stream.headers is not None
-        assert stream.headers["Content-Length"] == "123"
+        assert "Content-Length" not in stream.headers
         assert stream.headers["X-Accel-Buffering"] == "no"
         assert reads == 0
         assert [chunk async for chunk in stream.body] == []

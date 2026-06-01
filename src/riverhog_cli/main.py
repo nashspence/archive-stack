@@ -66,6 +66,15 @@ def client() -> ApiClient:
     return ApiClient()
 
 
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _iter_file_chunks(
     path: Path,
     *,
@@ -201,7 +210,9 @@ def _log_upload(message: str) -> None:
         typer.echo(message, err=True)
 
 
-def _download_progress_logger() -> Callable[[int, int | None], None]:
+def _download_progress_logger(
+    estimated_total_bytes: int | None = None,
+) -> Callable[[int, int | None], None]:
     started_at = time.monotonic()
     last_logged_at = started_at
 
@@ -212,12 +223,13 @@ def _download_progress_logger() -> Callable[[int, int | None], None]:
             return
         elapsed = max(now - started_at, 0.001)
         rate = downloaded_bytes / elapsed
-        if total_bytes is None or total_bytes <= 0:
+        display_total = total_bytes if total_bytes is not None else estimated_total_bytes
+        if display_total is None or display_total <= 0:
             total_text = "unknown"
             percent_text = ""
         else:
-            total_text = _format_bytes(total_bytes)
-            percent_text = f" ({downloaded_bytes / total_bytes * 100.0:.1f}%)"
+            total_text = _format_bytes(display_total)
+            percent_text = f" ({downloaded_bytes / display_total * 100.0:.1f}%)"
         _log_upload(
             "Download progress: "
             f"{_format_bytes(downloaded_bytes)} / {total_text}{percent_text} "
@@ -1078,8 +1090,15 @@ def iso_get_cmd(
         sys.stdout.buffer.write(content)
         raise typer.Exit(code=0)
 
+    api = client()
+    image_payload = api.get_image(image_id)
+    estimated_total_bytes = _optional_int(image_payload.get("bytes"))
     typer.echo(f"downloading ISO {image_id} to {output}", err=True)
-    content = client().download_iso(image_id, output, progress=_download_progress_logger())
+    content = api.download_iso(
+        image_id,
+        output,
+        progress=_download_progress_logger(estimated_total_bytes),
+    )
     downloaded_bytes = len(content) if isinstance(content, bytes) else content
     typer.echo(f"wrote {downloaded_bytes} bytes to {output}")
 
