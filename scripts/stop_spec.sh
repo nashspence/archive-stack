@@ -4,14 +4,13 @@ set -euo pipefail
 PATTERN="tests/harness/test_spec_harness.py"
 STOP_GRACE_SECONDS="${STOP_GRACE_SECONDS:-5}"
 
-mapfile -t candidate_pids < <(pgrep -f "${PATTERN}" || true)
 pids=()
-for pid in "${candidate_pids[@]}"; do
-  if [[ -z "${pid}" || "${pid}" == "$$" || "${pid}" == "${PPID}" ]]; then
-    continue
-  fi
-  pids+=("${pid}")
-done
+while IFS= read -r pid; do
+    if [[ -z "${pid}" || "${pid}" == "$$" || "${pid}" == "${PPID}" ]]; then
+      continue
+    fi
+    pids+=("${pid}")
+done < <(pgrep -f "${PATTERN}" || true)
 
 if [[ "${#pids[@]}" -eq 0 ]]; then
   printf 'No in-flight spec harness process found.\n'

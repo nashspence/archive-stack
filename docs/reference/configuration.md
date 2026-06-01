@@ -218,8 +218,7 @@ invokes this command as:
 {RIVERHOG_OTS_STAMP_COMMAND} stamp <manifest-path>
 ```
 
-The command must create `<manifest-path>.ots`. Live external anchoring coverage is
-outside default deterministic CI and runs through `make ci-opt-in-opentimestamps`.
+The command must create `<manifest-path>.ots`.
 
 ## `RIVERHOG_OTS_VERIFY_COMMAND`
 
@@ -236,7 +235,7 @@ invokes this command as:
 Collection archive restore and recovery verification first checks the stored
 proof object's SHA-256, then runs OpenTimestamps verification against the
 expected manifest bytes. Live calendar access remains outside default
-deterministic CI and is covered by `make ci-opt-in-opentimestamps`.
+deterministic CI.
 
 ## `RIVERHOG_RECOVERY_PAYLOAD_COMMAND`
 

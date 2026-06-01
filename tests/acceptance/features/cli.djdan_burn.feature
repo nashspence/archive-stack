@@ -2,7 +2,6 @@
 Feature: djdan burn CLI
   The optical CLI clears a burn backlog only after each generated copy id is explicitly confirmed as labeled.
 
-  @ci_opt_in @requires_optical_disc_drive @requires_human_operator @issue_186 @issue_187
   Scenario: djdan burn finalizes one ready image and clears its two-copy backlog
     Given an archive with planned images
     And the operator confirms labeled copy id "20260420T040001Z-1" at location "vault-a/shelf-01"
@@ -16,7 +15,6 @@ Feature: djdan burn CLI
     And copy "20260420T040001Z-1" for image "20260420T040001Z" state is "verified"
     And copy "20260420T040001Z-2" for image "20260420T040001Z" verification_state is "verified"
 
-  @ci_opt_in @requires_optical_disc_drive @requires_human_operator @issue_186 @issue_187
   Scenario: djdan burn uses a fresh replacement id after one confirmed copy is reported lost
     Given an archive with planned images
     And copy "20260420T040001Z-1" already exists
@@ -48,7 +46,6 @@ Feature: djdan burn CLI
     And stdout does not mention "20260420T040001Z-3"
     And copy "20260420T040001Z-3" for image "20260420T040001Z" state is "needed"
 
-  @ci_opt_in @requires_optical_disc_drive @requires_human_operator @issue_186 @issue_187
   Scenario: djdan burn does not register a copy before labeled confirmation and resumes there
     Given an archive with planned images
     When the operator runs djdan burn
@@ -64,7 +61,6 @@ Feature: djdan burn CLI
     And stderr does not mention "burning copy 20260420T040001Z-1"
     And image "20260420T040001Z" has physical_copies_registered 2
 
-  @ci_opt_in @requires_optical_disc_drive @requires_human_operator @issue_186 @issue_187
   Scenario: djdan burn resumes from burned-media verification for an available unfinished disc
     Given an archive with planned images
     And burned-media verification fails for copy id "20260420T040001Z-1"
@@ -81,7 +77,6 @@ Feature: djdan burn CLI
     And stderr does not mention "burning copy 20260420T040001Z-1"
     And image "20260420T040001Z" has physical_copies_registered 2
 
-  @ci_opt_in @requires_optical_disc_drive @requires_human_operator @issue_186 @issue_187
   Scenario: djdan burn re-burns an unfinished unlabeled copy if that disc is unavailable
     Given an archive with planned images
     When the operator runs djdan burn
@@ -95,7 +90,6 @@ Feature: djdan burn CLI
     And stderr mentions "burning copy 20260420T040001Z-1"
     And image "20260420T040001Z" has physical_copies_registered 2
 
-  @ci_opt_in @requires_optical_disc_drive @requires_human_operator @issue_186 @issue_187
   Scenario: djdan burn re-downloads an invalid staged ISO before finishing the backlog
     Given an archive with planned images
     And the operator confirms labeled copy id "20260420T040001Z-1" at location "vault-a/shelf-01"

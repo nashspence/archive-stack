@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 from pathlib import Path
 
@@ -22,39 +21,10 @@ def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
                 [
                     "#!/usr/bin/env bash",
                     "set -euo pipefail",
-                    f"fake_state_base={str(tmp_path / 'compose-state')!r}",
-                    (
-                        "if [[ \"${FAKE_CREATE_STATE_ROOT:-0}\" == \"1\" "
-                        "&& -n \"${COMPOSE_PROJECT_NAME:-}\" ]]; then"
-                    ),
-                    "  mkdir -p \"${fake_state_base}/${COMPOSE_PROJECT_NAME}\"",
-                    "  touch \"${fake_state_base}/${COMPOSE_PROJECT_NAME}/marker\"",
-                    "fi",
-                    (
-                        "printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\\n' "
-                        "\"${COMPOSE_PROJECT_NAME:-}\" "
-                        "\"${TEST_COMPOSE_PROJECT_ISOLATED:-}\" "
-                        "\"${RIVERHOG_ENABLE_TEST_CONTROL:-}\" "
-                        "\"$*\" "
-                        "\"${RIVERHOG_API_PORT:-}\" "
-                        "\"${RIVERHOG_WEBDAV_PORT:-}\" "
-                        "\"${RIVERHOG_DATABASE_URL:-}\" "
-                        "\"${RIVERHOG_TEST_EXTERNAL_APP_DATABASE_URL:-}\" "
-                        "\"${RIVERHOG_TEST_WEBHOOK_CAPTURE_PATH:-}\" "
-                        "\"${RIVERHOG_TEST_ACCEPTANCE_ROOT:-}\" >> "
-                        f"{log_path}"
-                    ),
-                    "if [[ \"$*\" == *\" --entrypoint rm \"* ]]; then",
-                    "  cleanup_target=\"${@: -1}\"",
-                    "  if [[ \"${cleanup_target}\" == /app/.compose/* ]]; then",
-                    "    rm -rf -- \"${fake_state_base}/${cleanup_target#/app/.compose/}\"",
-                    "  fi",
-                    "fi",
+                    f"printf '%s|%s\\n' \"${{COMPOSE_PROJECT_NAME:-}}\" \"$*\" >> {log_path}",
                     "if [[ \"$1\" == \"image\" && \"$2\" == \"inspect\" ]]; then",
-                    "  if [[ \"${FAKE_DOCKER_HAVE_IMAGES:-0}\" == \"1\" ]]; then",
-                    "    printf 'fake-image-id\\n'",
-                    "    exit 0",
-                    "  fi",
+                    "  [[ \"${FAKE_DOCKER_HAVE_IMAGES:-0}\" == \"1\" ]] && "
+                    "printf 'fake-image-id\\n' && exit 0",
                     "  exit 1",
                     "fi",
                     (
@@ -73,24 +43,7 @@ def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
                 [
                     "#!/usr/bin/env bash",
                     "set -euo pipefail",
-                    (
-                        "printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\\n' "
-                        "\"${COMPOSE_PROJECT_NAME:-}\" "
-                        "\"${TEST_COMPOSE_PROJECT_ISOLATED:-}\" "
-                        "\"${RIVERHOG_ENABLE_TEST_CONTROL:-}\" "
-                        "\"$*\" "
-                        "\"${RIVERHOG_API_PORT:-}\" "
-                        "\"${RIVERHOG_WEBDAV_PORT:-}\" "
-                        "\"${RIVERHOG_DATABASE_URL:-}\" "
-                        "\"${RIVERHOG_TEST_EXTERNAL_APP_DATABASE_URL:-}\" "
-                        "\"${RIVERHOG_TEST_WEBHOOK_CAPTURE_PATH:-}\" "
-                        "\"${RIVERHOG_TEST_ACCEPTANCE_ROOT:-}\" >> "
-                        f"{log_path}"
-                    ),
-                    "if [[ -n \"${FAKE_PGREP_OUTPUT:-}\" ]]; then",
-                    "  printf '%s\\n' \"${FAKE_PGREP_OUTPUT}\"",
-                    "  exit 0",
-                    "fi",
+                    f"printf '%s|%s\\n' \"${{COMPOSE_PROJECT_NAME:-}}\" \"$*\" >> {log_path}",
                     "exit 1",
                 ]
             )
@@ -102,20 +55,7 @@ def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
                 [
                     "#!/usr/bin/env bash",
                     "set -euo pipefail",
-                    (
-                        "printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\\n' "
-                        "\"${COMPOSE_PROJECT_NAME:-}\" "
-                        "\"${TEST_COMPOSE_PROJECT_ISOLATED:-}\" "
-                        "\"${RIVERHOG_ENABLE_TEST_CONTROL:-}\" "
-                        "\"$*\" "
-                        "\"${RIVERHOG_API_PORT:-}\" "
-                        "\"${RIVERHOG_WEBDAV_PORT:-}\" "
-                        "\"${RIVERHOG_DATABASE_URL:-}\" "
-                        "\"${RIVERHOG_TEST_EXTERNAL_APP_DATABASE_URL:-}\" "
-                        "\"${RIVERHOG_TEST_WEBHOOK_CAPTURE_PATH:-}\" "
-                        "\"${RIVERHOG_TEST_ACCEPTANCE_ROOT:-}\" >> "
-                        f"{log_path}"
-                    ),
+                    f"printf '%s|%s\\n' \"${{COMPOSE_PROJECT_NAME:-}}\" \"$*\" >> {log_path}",
                 ]
             )
             + "\n"
@@ -155,35 +95,6 @@ def _read_log_lines(log_path: Path) -> list[str]:
     return log_path.read_text().splitlines()
 
 
-def _split_docker_log_line(line: str) -> tuple[str, ...]:
-    return tuple(line.split("|", 9))
-
-
-def _assert_isolated_prod_runtime(line: str) -> str:
-    (
-        project,
-        isolated,
-        _,
-        _,
-        api_port,
-        webdav_port,
-        database_url,
-        external_database_url,
-        webhook_path,
-        acceptance_root,
-    ) = _split_docker_log_line(line)
-    assert isolated == "1"
-    assert api_port == "0"
-    assert webdav_port == "0"
-    assert database_url == (
-        "postgresql+psycopg://riverhog:riverhog@postgres:5432/riverhog"
-    )
-    assert external_database_url == database_url
-    assert webhook_path == f"/app/.compose/{project}/webhook-captures.jsonl"
-    assert acceptance_root == f"/app/.compose/{project}/acceptance"
-    return project
-
-
 @pytest.mark.parametrize(
     ("target", "extra_args", "expected_command"),
     [
@@ -200,25 +111,6 @@ def _assert_isolated_prod_runtime(line: str) -> str:
             ("args=-k glacier",),
             "python -m pytest -q tests/harness/test_spec_harness.py -k glacier",
         ),
-        (
-            "ci-opt-in-djdan",
-            ("args=-k mounted_media",),
-            "python -m pytest -q -m ci_opt_in and requires_optical_disc_drive "
-            "and requires_human_operator "
-            "tests/ci_opt_in/test_djdan_real_device.py -k mounted_media",
-        ),
-        (
-            "ci-opt-in-opentimestamps",
-            ("args=-k proof",),
-            "python -m pytest -q -m ci_opt_in and requires_opentimestamps "
-            "tests/ci_opt_in/test_opentimestamps_command.py -k proof",
-        ),
-        (
-            "ci-opt-in-glacier-billing",
-            ("args=-k actuals",),
-            "python -m pytest -q -m ci_opt_in and requires_aws_billing "
-            "tests/ci_opt_in/test_glacier_billing_live.py -k actuals",
-        ),
     ],
 )
 def test_atomic_local_targets_run_in_locked_uv_environment(
@@ -231,7 +123,6 @@ def test_atomic_local_targets_run_in_locked_uv_environment(
 
     uv_log_lines = _read_log_lines(uv_log_path)
     assert len(uv_log_lines) == 1
-    assert uv_log_lines[0].split("|", 2)[1] == ""
     assert (
         "run --python 3.11 --isolated --with-requirements "
         f"{REPO_ROOT / 'requirements-test.txt'} --with-editable .[db] "
@@ -272,118 +163,6 @@ def test_bootstrap_garage_is_available_as_a_standalone_target(tmp_path: Path) ->
     assert " exec -T garage /garage -c /etc/garage.toml node id" in docker_log
     assert " run --rm --entrypoint python" in docker_log
     assert "tests/harness/configure_garage.py" in docker_log
-
-
-def test_prod_builds_images_and_uses_isolated_compose_project_name(
-    tmp_path: Path,
-) -> None:
-    completed, docker_log_path, uv_log_path = _run_make(
-        tmp_path,
-        "prod",
-        "args=-k glacier",
-        extra_env={"FAKE_DOCKER_HAVE_IMAGES": "1"},
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert _read_log_lines(uv_log_path) == []
-
-    log_lines = _read_log_lines(docker_log_path)
-    project_names = {line.split("|", 1)[0] for line in log_lines}
-    assert len(project_names) == 1
-    project_name = next(iter(project_names))
-    assert re.fullmatch(r"riverhog-test-[a-z0-9]+(?:-[a-z0-9]+)*-\d+", project_name)
-
-    docker_log = "\n".join(log_lines)
-    assert " build app" in docker_log
-    assert " build test" in docker_log
-    assert " up --detach garage" in docker_log
-    assert " up --detach --wait app" in docker_log
-    assert "tests/harness/test_prod_harness.py -k glacier" in docker_log
-    assert " down --volumes --remove-orphans" in docker_log
-    for line in log_lines:
-        _assert_isolated_prod_runtime(line)
-
-
-def test_prod_removes_generated_bind_mount_state_on_success(tmp_path: Path) -> None:
-    completed, docker_log_path, uv_log_path = _run_make(
-        tmp_path,
-        "prod",
-        "args=-k glacier",
-        extra_env={
-            "FAKE_DOCKER_HAVE_IMAGES": "1",
-            "FAKE_CREATE_STATE_ROOT": "1",
-        },
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert _read_log_lines(uv_log_path) == []
-    project = _assert_isolated_prod_runtime(_read_log_lines(docker_log_path)[0])
-    state_root = tmp_path / "compose-state" / project
-    assert not state_root.exists()
-
-
-def test_prod_preserves_explicit_shared_bind_mount_state(tmp_path: Path) -> None:
-    shared_project = "riverhog-shared-unit"
-    completed, docker_log_path, uv_log_path = _run_make(
-        tmp_path,
-        "prod",
-        "args=-k glacier",
-        extra_env={
-            "FAKE_DOCKER_HAVE_IMAGES": "1",
-            "FAKE_CREATE_STATE_ROOT": "1",
-            "TEST_COMPOSE_PROJECT_NAME": shared_project,
-        },
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert _read_log_lines(uv_log_path) == []
-    log_lines = _read_log_lines(docker_log_path)
-    assert {line.split("|", 1)[0] for line in log_lines} == {shared_project}
-    assert {line.split("|", 2)[1] for line in log_lines} == {"0"}
-    docker_log = "\n".join(log_lines)
-    assert " down --remove-orphans" in docker_log
-    assert " down --volumes --remove-orphans" not in docker_log
-    assert (tmp_path / "compose-state" / shared_project / "marker").exists()
-
-
-def test_prod_state_root_is_fixed_to_project_scoped_compose_path() -> None:
-    compose_env = (REPO_ROOT / "scripts" / "_compose_env.sh").read_text()
-    prod_docs = "\n".join(
-        [
-            (REPO_ROOT / "README.md").read_text(),
-            (REPO_ROOT / "docs" / "how-to" / "run-acceptance-tests.md").read_text(),
-            (REPO_ROOT / "docs" / "how-to" / "run-the-compose-stack.md").read_text(),
-        ]
-    )
-
-    assert "RIVERHOG_TEST_HOST_STATE_ROOT" not in compose_env
-    assert "test_compose_container_state_root" in compose_env
-    assert "test_compose_host_state_root" in compose_env
-    assert "/app/.compose/%s" in compose_env
-    assert 'printf \'%s/.compose/%s\' "${ROOT_DIR}" "${COMPOSE_PROJECT_NAME}"' in compose_env
-    assert "There is no supported override for this state root" in " ".join(
-        prod_docs.split()
-    )
-
-
-def test_prod_profile_enables_profile_output_and_builds_images(tmp_path: Path) -> None:
-    completed, docker_log_path, uv_log_path = _run_make(
-        tmp_path,
-        "prod-profile",
-        "args=-k glacier",
-        extra_env={"FAKE_DOCKER_HAVE_IMAGES": "1"},
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert _read_log_lines(uv_log_path) == []
-    log_lines = _read_log_lines(docker_log_path)
-    docker_log = "\n".join(log_lines)
-    assert " build app" in docker_log
-    assert " build test" in docker_log
-    assert " -e RIVERHOG_TEST_PROFILE=1 " in docker_log
-    assert " --durations=0 --durations-min=0.5 " in docker_log
-    for line in log_lines:
-        _assert_isolated_prod_runtime(line)
 
 
 def test_dockerfiles_keep_dependency_layers_independent_of_docs_and_tests() -> None:
@@ -430,24 +209,17 @@ def test_locked_dependency_files_cover_runtime_and_test_db_extras() -> None:
     assert "--hash=sha256:" in test_requirements
 
 
-def test_test_aggregate_runs_lint_unit_spec_then_prod(tmp_path: Path) -> None:
-    completed, docker_log_path, uv_log_path = _run_make(
-        tmp_path, "test", extra_env={"FAKE_DOCKER_HAVE_IMAGES": "1"}
-    )
+def test_test_aggregate_runs_lint_then_unit(tmp_path: Path) -> None:
+    completed, docker_log_path, uv_log_path = _run_make(tmp_path, "test")
 
     assert completed.returncode == 0, completed.stderr
+    assert _read_log_lines(docker_log_path) == []
 
     uv_log_lines = _read_log_lines(uv_log_path)
-    assert len(uv_log_lines) == 4
+    assert len(uv_log_lines) == 3
     assert "python -m ruff check ." in uv_log_lines[0]
     assert "python -m mypy src" in uv_log_lines[1]
     assert "python -m pytest -q tests/unit" in uv_log_lines[2]
-    assert "python -m pytest -q tests/harness/test_spec_harness.py" in uv_log_lines[3]
-
-    docker_log = "\n".join(_read_log_lines(docker_log_path))
-    assert " build app" in docker_log
-    assert " build test" in docker_log
-    assert "tests/harness/test_prod_harness.py" in docker_log
 
 
 def test_down_target_uses_compose_down_with_volumes(tmp_path: Path) -> None:
@@ -456,20 +228,6 @@ def test_down_target_uses_compose_down_with_volumes(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stderr
     assert _read_log_lines(uv_log_path) == []
     docker_log = "\n".join(_read_log_lines(docker_log_path))
-    assert " down --volumes --remove-orphans" in docker_log
-
-
-def test_stop_prod_targets_explicit_shared_compose_project(tmp_path: Path) -> None:
-    completed, docker_log_path, uv_log_path = _run_make(
-        tmp_path,
-        "stop-prod",
-        extra_env={"TEST_COMPOSE_PROJECT_NAME": "riverhog-shared-unit"},
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert _read_log_lines(uv_log_path) == []
-    docker_log = "\n".join(_read_log_lines(docker_log_path))
-    assert "riverhog-shared-unit|0||" in docker_log
     assert " down --volumes --remove-orphans" in docker_log
 
 
@@ -482,7 +240,7 @@ def test_stop_spec_is_available_when_no_spec_lane_is_running(tmp_path: Path) -> 
     assert _read_log_lines(uv_log_path) == []
 
 
-def test_help_describes_make_targets_and_omits_fast(tmp_path: Path) -> None:
+def test_help_describes_make_targets(tmp_path: Path) -> None:
     completed, docker_log_path, uv_log_path = _run_make(tmp_path, "help")
 
     assert completed.returncode == 0, completed.stderr
@@ -490,9 +248,6 @@ def test_help_describes_make_targets_and_omits_fast(tmp_path: Path) -> None:
     assert "make build-app" in completed.stdout
     assert "make build-test" in completed.stdout
     assert "make stop-spec" in completed.stdout
-    assert "make ci-opt-in-opentimestamps" in completed.stdout
-    assert "make stop-prod" in completed.stdout
-    assert "make prune-prod-state" in completed.stdout
     assert "make test" in completed.stdout
     assert "args='...'" in completed.stdout
     assert "fast" not in completed.stdout

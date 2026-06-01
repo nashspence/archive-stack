@@ -9,7 +9,6 @@ Feature: djdan CLI
     And fetch "fx-1" has a stable manifest
     And a configured optical reader can recover every required entry
 
-  @ci_opt_in @requires_optical_disc_drive @requires_human_operator @issue_186 @issue_187
   Scenario: djdan fetch completes a recoverable fetch
     When the operator runs djdan fetch "fx-1" with JSON output
     Then the command exits with code 0
@@ -19,7 +18,6 @@ Feature: djdan CLI
     And stderr mentions copy id "20260420T040004Z-1"
     And target for fetch "fx-1" is hot
 
-  @ci_opt_in @requires_optical_disc_drive @requires_human_operator @issue_186 @issue_187
   Scenario: djdan fetch reports precise progress while streaming uploads
     When the operator runs djdan fetch "fx-1" with JSON output
     Then the command exits with code 0
@@ -28,14 +26,12 @@ Feature: djdan CLI
     And stderr mentions "%"
     And stderr mentions "/s"
 
-  @ci_opt_in @requires_optical_disc_drive @requires_human_operator @issue_186 @issue_187
   Scenario: djdan fetch fails if optical recovery fails
     Given the configured optical reader cannot recover one required entry
     When the operator runs djdan fetch "fx-1"
     Then the command exits non-zero
     And fetch "fx-1" is not "done"
 
-  @ci_opt_in @requires_optical_disc_drive @requires_human_operator @issue_186 @issue_187
   Scenario: djdan fetch resumes split recovery across repeated runs via server-side upload state
     Given the configured optical reader cannot recover copy id "20260420T040004Z-1"
     When the operator runs djdan fetch "fx-1"
@@ -50,7 +46,6 @@ Feature: djdan CLI
     And stderr mentions copy id "20260420T040004Z-1"
     And target for fetch "fx-1" is hot
 
-  @ci_opt_in @requires_optical_disc_drive @requires_human_operator @issue_186 @issue_187
   Scenario: djdan fetch fails if the server rejects incorrect recovered bytes
     Given the configured optical reader returns bytes the server rejects for one required entry
     When the operator runs djdan fetch "fx-1"

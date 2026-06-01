@@ -106,6 +106,7 @@ from riverhog_core.planner.manifest import MANIFEST_FILENAME
 from riverhog_core.runtime_config import load_runtime_config
 from riverhog_core.webhooks import (
     WebhookConfig,
+    build_fetch_waiting_payload,
     build_recovery_ready_payload,
 )
 from tests.fixtures.data import (
@@ -354,6 +355,10 @@ class FetchEntryRecord:
 class FetchRecord:
     summary: FetchSummary
     entries: dict[EntryId, FetchEntryRecord]
+    notification_sent_at: str | None = None
+    notification_next_attempt_at: str | None = None
+    notification_count: int = 0
+    notification_failure: str | None = None
 
 
 @dataclass(slots=True)
@@ -527,9 +532,8 @@ class AcceptanceState:
             self.record_webhook_delivery(payload)
 
     def webhook_config(self) -> WebhookConfig:
-        url = f"{self.public_base_url.rstrip('/')}/_test/webhooks" if self.public_base_url else ""
         return WebhookConfig(
-            url=url,
+            url="",
             base_url=self.public_base_url,
             retry_seconds=_OPERATOR_WEBHOOK_RETRY_DELAY_SECONDS,
             reminder_interval_seconds=_OPERATOR_WEBHOOK_REMINDER_INTERVAL_SECONDS,
@@ -3549,6 +3553,66 @@ class AcceptanceFetchService:
             self._expire_stale_upload_record(record)
 
     @_with_state_lock
+    def deliver_due_waiting_notifications(self, *, limit: int = 100) -> int:
+        if limit < 1:
+            return 0
+        current = datetime.now(UTC)
+        delivered = 0
+        for record in sorted(self.state.fetches.values(), key=lambda item: str(item.summary.id)):
+            if delivered >= limit:
+                return delivered
+            self._expire_stale_upload_record(record)
+            record.summary = self._replace_summary(record)
+            if record.summary.state != FetchState.WAITING_MEDIA:
+                continue
+            if (
+                record.notification_sent_at is not None
+                and record.notification_next_attempt_at is not None
+                and record.notification_next_attempt_at > _acceptance_isoformat(current)
+            ):
+                continue
+            reminder = record.notification_sent_at is not None
+            try:
+                self.state.deliver_webhook_payload(
+                    build_fetch_waiting_payload(
+                        config=self.state.webhook_config(),
+                        fetch_id=str(record.summary.id),
+                        target=str(record.summary.target),
+                        files=record.summary.files,
+                        bytes=record.summary.bytes,
+                        copies=[
+                            {
+                                "id": str(copy.id),
+                                "volume_id": copy.volume_id,
+                                "location": copy.location,
+                            }
+                            for copy in record.summary.copies
+                        ],
+                        delivered_at=current,
+                        reminder_count=record.notification_count,
+                        reminder=reminder,
+                    ),
+                    delivered_at=current,
+                    timeout_seconds=self.state.webhook_config().timeout_seconds,
+                )
+            except Exception as exc:
+                record.notification_failure = str(exc).strip() or exc.__class__.__name__
+                record.notification_next_attempt_at = _acceptance_isoformat(
+                    current + timedelta(seconds=_OPERATOR_WEBHOOK_RETRY_DELAY_SECONDS)
+                )
+                continue
+            if record.notification_sent_at is None:
+                record.notification_sent_at = _acceptance_isoformat(current)
+            if reminder:
+                record.notification_count += 1
+            record.notification_failure = None
+            record.notification_next_attempt_at = _acceptance_isoformat(
+                current + timedelta(seconds=_OPERATOR_WEBHOOK_REMINDER_INTERVAL_SECONDS)
+            )
+            delivered += 1
+        return delivered
+
+    @_with_state_lock
     def complete(self, fetch_id: str) -> dict[str, object]:
         record = self._record(fetch_id)
         if record.summary.state == FetchState.DONE:
@@ -4420,6 +4484,12 @@ class AcceptanceSystem:
                 CollectionId(normalize_collection_id(collection_id))
                 in self.state.glacier_upload_failures_by_collection
             )
+
+    def collection_glacier_failure(self, collection_id: str) -> str:
+        with self.state.lock:
+            return self.state.glacier_upload_failures_by_collection[
+                CollectionId(normalize_collection_id(collection_id))
+            ]
 
     def start_collection_glacier_archiving(self, collection_id: str) -> None:
         normalized_collection_id = normalize_collection_id(collection_id)

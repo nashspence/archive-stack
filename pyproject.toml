@@ -67,20 +67,6 @@ markers = [
   "cli: CLI-focused contract coverage",
   "integration: non-contract regression coverage",
   "mvp: MVP contract coverage",
-  "ci_opt_in: scenario or test is excluded from default CI and runs only when explicitly selected",
-  "requires_optical_disc_drive: requires access to an optical disc drive",
-  "requires_human_operator: requires an operator to provide or handle physical media",
-  "requires_aws_s3: requires live AWS S3 access",
-  "requires_aws_billing: requires live AWS Billing and Cost Explorer access",
-  "requires_controlled_glacier_billing: requires fixture-controlled Glacier billing metadata",
-  "requires_controlled_glacier_failure: requires fixture-controlled Glacier archive failure",
-  "requires_glacier_restore: requires live S3 Glacier restore behavior",
-  "requires_opentimestamps: requires the OpenTimestamps CLI and external anchoring access",
-  "requires_webhook_capture: requires harness-controlled webhook capture or failure behavior",
-  "todo: scenario is specified but not automated yet",
-  "contract_gap: scenario is automated, but prod is not implemented to the contract yet",
-  "issue_186: tracks issue #186 for opt-in prod testing conventions",
-  "issue_187: tracks issue #187 for removing fake terminology from acceptance optical scenarios",
 ]
 
 [tool.mypy]

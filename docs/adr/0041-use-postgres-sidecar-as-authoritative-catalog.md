@@ -6,6 +6,6 @@ Riverhog uses a Compose-managed Postgres sidecar as the durable authoritative ca
 
 ## Reason
 
-The catalog is now shared by the app and prod-backed harness through a normal
-database service, avoiding SQLite file sharing as the runtime stack grows more
-concurrent and sidecar-oriented.
+The app and workers share catalog state through a normal database service,
+avoiding SQLite file sharing as the runtime stack grows more concurrent and
+sidecar-oriented.

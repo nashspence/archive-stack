@@ -63,7 +63,6 @@ Feature: Collections API
       When the API process restarts
       And the client gets "/v1/collections/photos-2024"
       Then the response status is 200
-    @ci_opt_in @requires_controlled_glacier_failure @issue_186
     Scenario: Failed Glacier archiving leaves the upload retryable and the collection invisible
       Given a local collection source "photos-2024" with deterministic fixture contents
       And collection Glacier archiving fails for "photos-2024" with error "archive bucket unavailable"

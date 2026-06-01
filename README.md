@@ -10,38 +10,22 @@ Runtime container dependencies are locked separately in `requirements-runtime.tx
 
 ## Testing
 
-For the fastest full check, first run `make lint` and `make unit` (1m) in separate terminals.
-Once you've cleared those shorter lanes, only then run `make spec` (5m) and
-`make prod` (7m) in separate terminals. The lint, unit, and spec lanes run
-locally in the same locked `uv` environment, and the prod-backed lane stays on
-the checked-in Compose surface with per-run project names and ephemeral host
-ports, plus a project-scoped Postgres sidecar, harness state, and workspaces.
-Successful isolated prod-backed runs remove their generated `.compose/` state;
-explicit shared project runs keep it. There is no supported override for this
-state root; use `TEST_COMPOSE_PROJECT_NAME` when you need deliberate reuse.
-Use `make prune-prod-state` to list older generated prod-harness state roots
-under `.compose/`, and `make prune-prod-state args='--force'` to delete only
-those generated roots with Docker-backed cleanup.
+For the fastest supported check, first run `make lint` and `make unit` in
+separate terminals. The lint, unit, and spec lanes run locally in the same
+locked `uv` environment.
 
-If source, contract, or fixture edits are needed while a canonical spec or prod
-lane is still running, stop that lane first, make the edit, then restart the
-lane. Continuing to edit code during an in-flight canonical lane makes that run
+If source, contract, or fixture edits are needed while the canonical spec lane
+is still running, stop that lane first, make the edit, then restart it.
+Continuing to edit code during an in-flight canonical lane makes that run
 invalid. Use `make stop-spec` to send a clean interrupt to the local spec
-harness, and use `make stop-prod` to tear down in-flight prod-backed Compose
-projects. Set `TEST_COMPOSE_PROJECT_NAME` before `make stop-prod` when stopping a
-deliberately shared prod project.
+harness.
 
 Run the serial aggregate flow with `make test` when one command is more
-convenient. That target runs lint first, then the unit, spec, and prod-backed
-acceptance lanes.
+convenient. That target runs lint first, then unit.
 
 Run `make ruff` or `make mypy` to execute those atomic quality gates directly.
 Run `make build-app`, `make build-test`, or `make build` to refresh the local Docker images.
 Run `make bootstrap-garage` to apply the checked-in Garage bucket and key bootstrap.
-Run the production-backed harness against the executable acceptance contract with `make prod`.
-Profile the production-backed harness with `make prod-profile`.
-Stop in-flight acceptance lanes with `make stop-spec` or `make stop-prod`.
-List or prune stale generated prod-harness state with `make prune-prod-state`.
 Run the fixture-backed spec harness lane with `make spec`.
 Run the unit lane with `make unit`.
 Pass mypy or pytest selectors with `args='...'`.

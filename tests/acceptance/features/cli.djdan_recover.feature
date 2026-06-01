@@ -22,7 +22,6 @@ Feature: djdan recover CLI
     And stdout mentions "pending_approval"
     And stdout mentions "20260420T040001Z"
     And stdout mentions "20260420T040003Z"
-  @ci_opt_in @requires_optical_disc_drive @requires_human_operator @issue_186 @issue_187
   Scenario: djdan recover resumes one ready multi-image rebuild session and cleans up staged ISOs
     Given an archive with planned images
     And an archive with split planned images

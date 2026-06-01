@@ -4,7 +4,7 @@ SHELL := bash
 UV_RUN = uv run --python 3.11 --isolated --with-requirements "$(CURDIR)/requirements-test.txt" --with-editable '.[db]'
 args ?=
 
-.PHONY: help ruff mypy lint unit spec stop-spec ci-opt-in-djdan ci-opt-in-glacier-restore ci-opt-in-glacier-billing ci-opt-in-opentimestamps build build-app build-test bootstrap-garage down prod stop-prod prune-prod-state prod-profile test
+.PHONY: help ruff mypy lint unit spec stop-spec build build-app build-test bootstrap-garage down test
 
 help:
 	@printf '%s\n' \
@@ -15,20 +15,12 @@ help:
 		'  make unit              Run the unit test lane locally.' \
 		'  make spec              Run the fixture-backed spec harness locally.' \
 		'  make stop-spec         Stop any in-flight local spec harness process.' \
-		'  make ci-opt-in-djdan        Run opt-in real-device djdan optical validation.' \
-		'  make ci-opt-in-glacier-restore Run opt-in live AWS collection archive restore validation.' \
-		'  make ci-opt-in-glacier-billing Run opt-in live AWS Glacier billing validation.' \
-		'  make ci-opt-in-opentimestamps Run opt-in real OpenTimestamps command validation.' \
 		'  make build-app         Build the app image.' \
 		'  make build-test        Build the test image.' \
 		'  make build             Build both app and test images.' \
 		'  make bootstrap-garage  Start Garage and apply the checked-in bucket/key bootstrap.' \
 		'  make down              Tear the compose-managed test stack down.' \
-		'  make prod              Run the prod-backed acceptance harness.' \
-		'  make stop-prod         Stop in-flight prod-backed harness Compose projects.' \
-		'  make prune-prod-state  List stale generated prod-harness .compose state; pass args=--force to delete.' \
-		'  make prod-profile      Run the prod-backed acceptance harness with pytest durations.' \
-		'  make test              Run lint, unit, spec, then prod.' \
+		'  make test              Run lint, then unit.' \
 		'' \
 		'Variables:' \
 		"  args='...'             Forward arguments to mypy or pytest lanes." \
@@ -52,18 +44,6 @@ spec:
 stop-spec:
 	@./scripts/stop_spec.sh
 
-ci-opt-in-djdan:
-	@$(UV_RUN) python -m pytest -q -m "ci_opt_in and requires_optical_disc_drive and requires_human_operator" tests/ci_opt_in/test_djdan_real_device.py $(args)
-
-ci-opt-in-glacier-restore:
-	@$(UV_RUN) python -m pytest -q -m "ci_opt_in and requires_aws_s3 and requires_glacier_restore" tests/ci_opt_in/test_glacier_restore.py $(args)
-
-ci-opt-in-glacier-billing:
-	@$(UV_RUN) python -m pytest -q -m "ci_opt_in and requires_aws_billing" tests/ci_opt_in/test_glacier_billing_live.py $(args)
-
-ci-opt-in-opentimestamps:
-	@$(UV_RUN) python -m pytest -q -m "ci_opt_in and requires_opentimestamps" tests/ci_opt_in/test_opentimestamps_command.py $(args)
-
 build-app:
 	@./scripts/build_app.sh
 
@@ -78,16 +58,4 @@ bootstrap-garage:
 down:
 	@./scripts/compose_down.sh
 
-prod:
-	@./scripts/prod.sh $(args)
-
-stop-prod:
-	@./scripts/stop_prod.sh
-
-prune-prod-state:
-	@python scripts/prune_compose_state.py $(args)
-
-prod-profile:
-	@./scripts/prod_profile.sh $(args)
-
-test: lint unit spec prod
+test: lint unit

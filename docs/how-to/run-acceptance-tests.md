@@ -3,335 +3,83 @@
 The executable acceptance contract lives in the Gherkin feature files under
 `tests/acceptance/features`.
 
-## Preferred commands
+## Preferred Commands
 
-Run the last full check in separate terminals:
+Run the normal local verification flow:
 
 ```bash
 make lint
 make unit
-make spec
-make prod
 ```
 
-That keeps the local lanes and the prod-backed lane visible in parallel output
-windows without changing the checked-in test surfaces.
+`make lint` runs `ruff check .` and strict `mypy` in the locked local `uv`
+environment. `make unit` runs the supported unit test lane.
 
-If a canonical spec or prod lane is already running and you need to change
-source, contracts, features, fixtures, or harness code, stop the lane first,
-make the edit, then restart it. A canonical run is only valid for the checkout
-that existed when the lane started.
+Run the fixture-backed executable spec harness separately when you are working
+on acceptance contracts:
+
+```bash
+make spec
+```
+
+If the spec harness is running and you need to change source, contracts,
+features, fixtures, or harness code, stop it first, make the edit, then restart
+it. A canonical run is only valid for the checkout that existed when the lane
+started.
 
 ```bash
 make stop-spec
-make stop-prod
 ```
 
-`make stop-spec` sends a clean interrupt to any local spec harness process.
-`make stop-prod` tears down in-flight prod-backed Compose projects. When you
-started prod with an explicit shared project, export the same
-`TEST_COMPOSE_PROJECT_NAME` before stopping it.
-
-Run the same acceptance contract inside the deterministic test container:
+Run the serial aggregate target when one command is more convenient:
 
 ```bash
-make prod
+make test
 ```
 
-That path keeps the prod-backed `pytest` run in the canonical test container
-while `docker compose` manages the checked-in `app` service and its storage
-sidecars outside the container.
+That target runs lint, then unit.
 
-Do not run the production-backed harness with direct `pytest`. The supported
-entrypoints are `make prod`, `make prod-profile`, or `make test`, which prepare
-the compose-managed app and sidecars the harness expects.
-
-Run the production-backed harness lane with built-in timing output for scenario and fixture hotspots:
+Forward pytest selectors or other pytest arguments with `args`:
 
 ```bash
-make prod-profile
-```
-
-Run the fixture-backed spec harness lane against the same contract from a local
-locked `uv` environment:
-
-```bash
-make spec
-```
-
-Run the unit lane by itself:
-
-```bash
-make unit
-```
-
-Forward pytest selectors or other pytest arguments with `args`.
-
-```bash
-make prod args='-k server_rejects_incorrect_recovered_bytes'
 make spec args='-k server_rejects_incorrect_recovered_bytes'
+make unit args='tests/unit/test_planning_service.py'
 ```
 
-Run the atomic image build targets when you need a fresh local app or test
-image before the prod-backed lane:
+Run the atomic image build targets when you need fresh local app or test images:
 
 ```bash
 make build-app
 make build-test
+make build
 ```
 
-Run the Garage bootstrap on its own when you want the checked-in buckets and
-keys prepared without running the prod harness yet:
+Run the Garage bootstrap on its own when you want the checked-in buckets and keys
+prepared for a local Compose stack:
 
 ```bash
 make bootstrap-garage
 ```
 
-The non-production lanes resolve against the checked-in `requirements-test.txt`
-set plus the editable project, so they do not require Docker or BuildKit. That
-lock includes the `db` extra used by the prod-backed harness.
+The local lanes resolve against `requirements-test.txt` plus the editable
+project.
 
-Run the serial aggregate target with `make test` when you want one supported
-command to run lint, then unit, spec, and prod in order.
-
-## CI opt-in optical-device validation
-
-`make ci-opt-in-djdan` is an opt-in lane for real `djdan` optical I/O. It is
-selected with `ci_opt_in and requires_optical_disc_drive and requires_human_operator` and is not part of `make test`,
-`make spec`, or `make prod`, because it can require
-operator-provided media, device permissions, and destructive writes to optical
-media.
-
-This lane validates the optical service boundary. The full workflow checks stand
-up fixture-backed API, storage, session, and restore state inside the test
-process; the real opt-in capability is the optical device. The lane fails if
-any `DJDAN_*_FACTORY` override is configured.
-
-Read-only mounted-media validation requires a mounted disc or mounted ISO
-filesystem containing one known recovery payload object:
-
-```bash
-export DJDAN_CI_OPT_IN_MOUNT_PATH=/media/archive-disc
-export DJDAN_CI_OPT_IN_PAYLOAD_PATH=disc/000001.bin
-export DJDAN_CI_OPT_IN_EXPECTED_SHA256=<sha256-of-disc/000001.bin>
-make ci-opt-in-djdan
-```
-
-Read-only raw-device validation uses `xorriso` to extract the same object from
-an inserted optical disc. It can share the payload path and expected digest from
-the mounted-media variables, or use raw-device-specific overrides:
-
-```bash
-export DJDAN_CI_OPT_IN_RAW_DEVICE=/dev/sr0
-export DJDAN_CI_OPT_IN_RAW_PAYLOAD_PATH=disc/000001.bin
-export DJDAN_CI_OPT_IN_RAW_EXPECTED_SHA256=<sha256-of-disc/000001.bin>
-make ci-opt-in-djdan
-```
-
-Destructive burn validation is skipped unless the confirmation variable is set
-exactly. Use blank writable media. The test generates a disposable ISO, verifies
-it, burns it, then reads the ISO-sized byte range back from the same device and
-compares it to the staged ISO.
-
-```bash
-export DJDAN_CI_OPT_IN_BURN_DEVICE=/dev/sr0
-export DJDAN_CI_OPT_IN_BURN_COPY_ID=ci-opt-in-djdan-copy
-export DJDAN_CI_OPT_IN_BURN_CONFIRM=write-optical-media
-make ci-opt-in-djdan
-```
-
-Full CLI/API workflow validation is also part of `make ci-opt-in-djdan`. These
-tests create the API state themselves, generate real ISO bytes from fixture image
-roots, run `djdan` as a subprocess, burn one real disc, verify it by reading
-the device, and then read that disc back through `djdan fetch`. The recovery
-workflow similarly uses a fixture-backed rebuilt ISO endpoint and burns one real
-replacement disc.
-
-The full workflows use `DJDAN_CI_OPT_IN_BURN_DEVICE` for both writing and
-reading and skip until the destructive confirmation is set. No `RIVERHOG_BASE_URL`,
-fetch id, session id, staging directory, prompt input, or factory override is
-needed.
-
-```bash
-export DJDAN_CI_OPT_IN_BURN_DEVICE=/dev/sr0
-export DJDAN_CI_OPT_IN_BURN_CONFIRM=write-optical-media
-make ci-opt-in-djdan args='-k full'
-```
-
-When a capability is not configured, the corresponding opt-in test skips with
-the missing env var or device requirement. Once a capability is explicitly
-configured, command failures are treated as validation failures so drive,
-permission, media, and product regressions stay visible.
-
-## CI opt-in Glacier-restore validation
-
-`make ci-opt-in-glacier-restore` is an opt-in lane for live AWS S3 Glacier restore
-behavior. It is selected with
-`ci_opt_in and requires_aws_s3 and requires_glacier_restore`. The lane validates
-the collection archive package path: one archive tar object in the configured
-AWS archive bucket/storage class plus sibling Standard S3 manifest and OTS proof
-objects, restore request, restored-object polling, and package verification when
-AWS reports the archive object is readable. It is not part of `make test`,
-`make spec`,
-or `make prod`, because it can issue real restore requests, depends on account
-permissions and object storage class, and may take hours before restored objects
-are readable.
-
-Restore validation requires the normal `RIVERHOG_GLACIER_*` archive backend
-configuration and explicit restore confirmation:
-
-```bash
-export RIVERHOG_GLACIER_BACKEND=aws
-export RIVERHOG_GLACIER_CI_OPT_IN_RESTORE_CONFIRM=request-glacier-restore
-make ci-opt-in-glacier-restore
-```
-
-If AWS reports the uploaded archive package is not readable yet, the restore
-request test still passes and the package verification test skips with a rerun
-message. Rerun the same command after AWS completes the restore; no object path
-or SHA override is required. If an older object at the stable opt-in key has the
-wrong real S3 storage class, the lane fails with a remediation message instead
-of treating an immediately readable object as a valid Glacier restore. Delete
-the stale object or run with a fresh `RIVERHOG_GLACIER_PREFIX`, then rerun the same
-command.
-
-## CI opt-in Glacier-billing validation
-
-`make ci-opt-in-glacier-billing` is an opt-in lane for live AWS Billing and Cost
-Explorer behavior. It is selected with `ci_opt_in and requires_aws_billing` and
-is not part of `make test`, `make spec`, or `make prod`, because it uses real AWS
-account billing APIs, account-specific Cost Explorer state, optional billing
-views, and optional CUR or Data Exports locations.
-
-The lane requires AWS credentials with the billing permissions needed by the
-configured account. It skips with explicit reasons when credentials or billing
-capabilities are unavailable, and treats unexpected API errors as regressions.
-
-```bash
-export RIVERHOG_GLACIER_BILLING_CI_OPT_IN_CONFIRM=live-aws-billing
-export RIVERHOG_GLACIER_BILLING_MODE=aws
-make ci-opt-in-glacier-billing
-```
-
-To validate live CUR or Data Exports discovery and aggregation, also configure
-the export location:
-
-```bash
-export RIVERHOG_GLACIER_BILLING_EXPORT_BUCKET=<billing-export-bucket>
-export RIVERHOG_GLACIER_BILLING_EXPORT_PREFIX=<billing-export-prefix>
-make ci-opt-in-glacier-billing args='-k export'
-```
-
-## CI opt-in OpenTimestamps validation
-
-`make ci-opt-in-opentimestamps` is an opt-in lane for live OpenTimestamps
-anchoring. It is selected with `ci_opt_in and requires_opentimestamps`. The lane
-checks that `ots stamp` creates a non-fixture `.ots` proof and that the
-configured verification command can verify the proof against the stamped
-manifest.
-
-```bash
-make ci-opt-in-opentimestamps
-```
-
-The OpenTimestamps command must be able to reach its configured calendar service.
-Missing commands skip the opt-in test; command failures after configuration are
-validation failures. Age batchpass recovery payload encryption is deterministic
-local command behavior and is covered by the normal prod-backed harness instead
-of this opt-in lane.
-
-## Compose-backed sidecars
-
-The checked-in test scripts read `./.env.compose` when present, otherwise they fall
-back to `./.env.compose.example`.
-
-For prod-backed lanes, `make prod`, `make prod-profile`, and `make test` also
-load the short recovery timing overrides
-from `tests/harness/prod-harness.env`. That keeps the checked-in compose env
-product-facing while still giving the acceptance harness the smaller timing
-window it needs.
-
-Each prod-backed `make ...` invocation uses its own Compose project name by
-default so independent prod-backed runs do not tear down each other's one-off
-containers, networks, or sidecars. The prod-backed entrypoints also publish the
-API and WebDAV services on Docker-assigned ephemeral host ports because the
-harness reaches them through the Compose network at `http://app:8000` and
-`http://webdav:8080`. That keeps overlapping prod-backed runs independent of
-whether host ports `8000` and `8080` are already occupied. Catalog state lives
-in the Compose-managed Postgres sidecar, while webhook captures and acceptance
-workspaces live under `/app/.compose/<compose-project>/` so the shared source
-bind mount does not make concurrent prod-backed runs share fixture trees.
-Successful isolated prod-backed runs remove that generated project directory
-after Compose teardown. Runs that explicitly set `TEST_COMPOSE_PROJECT_NAME`
-preserve the directory because they are intentionally reusing one stack. There
-is no supported override for this state root; choose the Compose project name to
-control isolation or reuse.
-
-Older failed or pre-cleanup generated runs can leave stale
-`.compose/riverhog-test-*` roots behind. List the generated roots that the
-maintenance command would delete with:
-
-```bash
-make prune-prod-state
-```
-
-Delete the listed generated roots with Docker-backed cleanup, which handles
-root-owned files created through the source bind mount:
-
-```bash
-make prune-prod-state args='--force'
-```
-
-The command only selects generated `riverhog-test-...-<pid>` roots.
-Shared/manual state such as `.compose/acceptance` or explicit project names is
-preserved by default.
-
-If you need to reuse one Compose project explicitly, export
-`TEST_COMPOSE_PROJECT_NAME` before running `make`.
-Do that before `make bootstrap-garage` or `make down` as well when you want
-those standalone targets to act on the same compose-managed stack.
-
-The prod-backed app image installs hashed runtime dependencies from
-`requirements-runtime.txt` before source files are copied. The test image
-installs hashed test dependencies from `requirements-test.txt`, then copies
-`pyproject.toml`, `src/`, `contracts/`, and `tests/`. README edits,
-documentation edits, source edits, and prod-harness state under `.compose/` do
-not invalidate the dependency-install layers.
-
-Regenerate the runtime lock with:
-
-```bash
-uv pip compile pyproject.toml --extra db --python-version 3.11 --generate-hashes -o requirements-runtime.txt
-```
-
-Regenerate the test lock with:
-
-```bash
-uv pip compile pyproject.toml --extra dev --extra planner --extra db --python-version 3.11 --generate-hashes -o requirements-test.txt
-```
-
-When dependency constraints change, regenerate both lockfiles in the same
-change. Unit coverage verifies every locked package has `--hash=sha256:` entries
-and that runtime packages shared with the test lock remain pinned to identical
-versions.
-
-
-## What lives where
+## What Lives Where
 
 - `tests/acceptance/features/` contains the normative external scenarios.
-- `tests/harness/test_prod_harness.py` loads those features against the real production app and CLIs.
-- `tests/harness/test_spec_harness.py` loads the same feature files against the fixture-backed spec harness.
-- `contracts/disc/` holds the machine-readable ISO layout and YAML schema contracts that the acceptance scenarios verify directly.
-- `tests/fixtures/bdd_steps.py` holds the shared step definitions used by both lanes.
+- `tests/harness/test_spec_harness.py` loads those feature files against the
+  fixture-backed spec harness.
+- `contracts/disc/` holds the machine-readable ISO layout and YAML schema
+  contracts that acceptance scenarios verify directly.
+- `tests/fixtures/bdd_steps.py` holds the shared step definitions used by the
+  spec harness.
 
-## Readiness markers
+## Feature Conventions
 
-- `@ci_opt_in` marks scenarios and tests that are excluded from the default
-  prod-backed harness. Pair it with the appropriate `@requires_<capability>`
-  marker for the real opt-in boundary and with a tracker marker such as
-  `@issue_186` when it implies remaining work.
-- `@todo` skips scenarios whose accepted contract exists before executable
-  backing exists.
-- `@contract_gap` means the fixture-backed spec harness executes the scenario,
-  but the prod harness is still behind the contract. It is strict in the prod
-  harness and ignored in the spec harness.
+- Feature files describe externally visible behavior only.
+- Scenario titles should remain stable even if implementation details change.
+- Step wording is intentionally repetitive where it protects exact semantics.
+- `riverhog` and `djdan` acceptance cases are contract tests for CLI behavior,
+  not internal command structure.
+- Disc-media scenarios should validate against the machine-readable contracts in
+  `contracts/disc/`, not duplicate ad hoc path and schema rules in steps.

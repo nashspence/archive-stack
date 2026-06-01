@@ -216,6 +216,35 @@ def _collection_upload_id_for(
     )
 
 
+def _collection_id_for_context(
+    acceptance_context: AcceptanceScenarioContext,
+    collection_id: str,
+) -> str:
+    return _collection_upload_id_for(acceptance_context, collection_id)
+
+
+def _resolve_collection_alias_path(
+    acceptance_context: AcceptanceScenarioContext,
+    path: str,
+) -> str:
+    prefixes = (
+        "/v1/collection-uploads/",
+        "/v1/collections/",
+        "/v1/collection-files/",
+    )
+    aliases = sorted(
+        acceptance_context.collection_upload_ids_by_slug.items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+    for slug, collection_id in aliases:
+        for prefix in prefixes:
+            needle = f"{prefix}{quote(slug, safe='/')}"
+            if path == needle or path.startswith(f"{needle}/"):
+                return f"{prefix}{quote(collection_id, safe='/')}{path[len(needle):]}"
+    return path
+
+
 def _refresh_collection_upload(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
@@ -1280,7 +1309,8 @@ def when_client_gets_url(
     url: str,
 ) -> None:
     parts = urlsplit(url)
-    response = acceptance_system.request("GET", parts.path, params=_query_params(url))
+    path = _resolve_collection_alias_path(acceptance_context, parts.path)
+    response = acceptance_system.request("GET", path, params=_query_params(url))
     _set_response(acceptance_context, response)
 
 
@@ -1291,7 +1321,8 @@ def when_client_heads_url(
     url: str,
 ) -> None:
     parts = urlsplit(url)
-    response = acceptance_system.request("HEAD", parts.path, params=_query_params(url))
+    path = _resolve_collection_alias_path(acceptance_context, parts.path)
+    response = acceptance_system.request("HEAD", path, params=_query_params(url))
     _set_response(acceptance_context, response)
 
 
@@ -1302,7 +1333,8 @@ def when_client_deletes_url(
     url: str,
 ) -> None:
     parts = urlsplit(url)
-    response = acceptance_system.request("DELETE", parts.path, params=_query_params(url))
+    path = _resolve_collection_alias_path(acceptance_context, parts.path)
+    response = acceptance_system.request("DELETE", path, params=_query_params(url))
     _set_response(acceptance_context, response)
 
 
@@ -1313,7 +1345,8 @@ def when_client_gets_url_again(
     url: str,
 ) -> None:
     parts = urlsplit(url)
-    response = acceptance_system.request("GET", parts.path, params=_query_params(url))
+    path = _resolve_collection_alias_path(acceptance_context, parts.path)
+    response = acceptance_system.request("GET", path, params=_query_params(url))
     _set_response(acceptance_context, response, append=True)
 
 
@@ -1340,6 +1373,7 @@ def when_client_posts(
     acceptance_context: AcceptanceScenarioContext,
     path: str,
 ) -> None:
+    path = _resolve_collection_alias_path(acceptance_context, path)
     response = acceptance_system.request("POST", path)
     _set_response(acceptance_context, response)
 
@@ -1369,6 +1403,7 @@ def when_client_posts_again(
     acceptance_context: AcceptanceScenarioContext,
     path: str,
 ) -> None:
+    path = _resolve_collection_alias_path(acceptance_context, path)
     response = acceptance_system.request("POST", path)
     _set_response(acceptance_context, response, append=True)
 
@@ -1385,6 +1420,7 @@ def when_client_patches_upload_path_with_chunk_content_type(
     content_type: str,
 ) -> None:
     chunk = b"chunk-bytes"
+    path = _resolve_collection_alias_path(acceptance_context, path)
     response = acceptance_system.request(
         "PATCH",
         path,
@@ -1447,6 +1483,17 @@ def when_client_uploads_every_required_collection_file(
     _remember_collection_upload(acceptance_context, collection_id, response)
     payload = response.json()
     upload_collection_id = str(payload["collection_id"])
+    normalized_collection_id = normalize_collection_id(collection_id)
+    failure_configured = acceptance_system.collection_glacier_failure_configured(
+        normalized_collection_id
+    )
+    if failure_configured:
+        acceptance_system.fail_collection_glacier_upload(
+            upload_collection_id,
+            error=acceptance_system.collection_glacier_failure(
+                normalized_collection_id
+            ),
+        )
     for file_payload in payload["files"]:
         _upload_collection_file(
             acceptance_system,
@@ -1454,10 +1501,6 @@ def when_client_uploads_every_required_collection_file(
             source_collection_id=collection_id,
             path=str(file_payload["path"]),
         )
-    normalized_collection_id = normalize_collection_id(collection_id)
-    failure_configured = acceptance_system.collection_glacier_failure_configured(
-        normalized_collection_id
-    )
     if failure_configured:
         payload = acceptance_system.wait_for_collection_upload_state(upload_collection_id, "failed")
     elif "/" in normalized_collection_id:
@@ -1964,7 +2007,9 @@ def then_response_contains_collection_id(
     collection_id: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert payload["collection"]["id"] == collection_id
+    assert payload["collection"]["id"] == _collection_id_for_context(
+        acceptance_context, collection_id
+    )
 
 
 @then("the response contains the correct file count")
@@ -1990,7 +2035,9 @@ def then_collection_upload_state_is(
     state: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert payload["collection_id"] == collection_id
+    assert payload["collection_id"] == _collection_id_for_context(
+        acceptance_context, collection_id
+    )
     assert payload["state"] == state
 
 
@@ -2002,7 +2049,9 @@ def then_collection_upload_file_state_is(
     state: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert payload["collection_id"] == collection_id
+    assert payload["collection_id"] == _collection_id_for_context(
+        acceptance_context, collection_id
+    )
     file_payload = next(item for item in payload["files"] if item["path"] == path)
     assert file_payload["upload_state"] == state
 
@@ -2013,7 +2062,9 @@ def then_collection_upload_reports_zero_uploaded_bytes(
     collection_id: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert payload["collection_id"] == collection_id
+    assert payload["collection_id"] == _collection_id_for_context(
+        acceptance_context, collection_id
+    )
     assert all(int(item["uploaded_bytes"]) == 0 for item in payload["files"])
 
 
@@ -2024,7 +2075,9 @@ def then_collection_upload_latest_failure_contains(
     text: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert payload["collection_id"] == collection_id
+    assert payload["collection_id"] == _collection_id_for_context(
+        acceptance_context, collection_id
+    )
     assert text in str(payload.get("latest_failure"))
 
 
@@ -2056,7 +2109,10 @@ def then_collection_is_not_yet_visible(
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
 ) -> None:
-    response = acceptance_system.request("GET", f"/v1/collections/{quote(collection_id, safe='/')}")
+    expected_collection_id = _collection_id_for_context(acceptance_context, collection_id)
+    response = acceptance_system.request(
+        "GET", f"/v1/collections/{quote(expected_collection_id, safe='/')}"
+    )
     if response.status_code == 200:
         payload = (
             _json_payload(acceptance_context.response)
@@ -2064,7 +2120,7 @@ def then_collection_is_not_yet_visible(
             else {}
         )
         if (
-            payload.get("collection_id") == collection_id
+            payload.get("collection_id") == expected_collection_id
             and payload.get("state") == "archiving"
         ):
             return
@@ -2074,9 +2130,13 @@ def then_collection_is_not_yet_visible(
 @then(parsers.parse('collection "{collection_id}" is not eligible for planning'))
 def then_collection_is_not_eligible_for_planning(
     acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
 ) -> None:
-    response = acceptance_system.request("GET", "/v1/plan", params={"collection": collection_id})
+    expected_collection_id = _collection_id_for_context(acceptance_context, collection_id)
+    response = acceptance_system.request(
+        "GET", "/v1/plan", params={"collection": expected_collection_id}
+    )
     assert response.status_code == 200, response.text
     assert response.json()["total"] == 0
 
@@ -2084,48 +2144,62 @@ def then_collection_is_not_eligible_for_planning(
 @then(parsers.parse('collection "{collection_id}" has hot_bytes equal to bytes'))
 def then_collection_hot_bytes_equal_bytes(
     acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
 ) -> None:
-    payload = acceptance_system.collections.get(collection_id)
+    payload = acceptance_system.collections.get(
+        _collection_id_for_context(acceptance_context, collection_id)
+    )
     assert payload.hot_bytes == payload.bytes
 
 
 @then(parsers.parse('collection "{collection_id}" has archived_bytes equal to 0'))
 def then_collection_archived_bytes_equal_zero(
     acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
 ) -> None:
-    payload = acceptance_system.collections.get(collection_id)
+    payload = acceptance_system.collections.get(
+        _collection_id_for_context(acceptance_context, collection_id)
+    )
     assert payload.archived_bytes == 0
 
 
 @then(parsers.parse('collection "{collection_id}" has pending_bytes equal to bytes'))
 def then_collection_pending_bytes_equal_bytes(
     acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
 ) -> None:
-    payload = acceptance_system.collections.get(collection_id)
+    payload = acceptance_system.collections.get(
+        _collection_id_for_context(acceptance_context, collection_id)
+    )
     assert payload.pending_bytes == payload.bytes
 
 
 @then(parsers.parse('collection "{collection_id}" is eligible for planning'))
 def then_collection_is_eligible_for_planning(
     acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
 ) -> None:
-    payload = acceptance_system.collections.get(collection_id)
+    payload = acceptance_system.collections.get(
+        _collection_id_for_context(acceptance_context, collection_id)
+    )
     assert payload.pending_bytes > 0
 
 
 @then(parsers.parse('collection "{collection_id}" glacier state is "{state}"'))
 def then_collection_glacier_state_is(
     acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
     state: str,
 ) -> None:
+    expected_collection_id = _collection_id_for_context(acceptance_context, collection_id)
     response = acceptance_system.request(
         "GET",
-        f"/v1/collections/{quote(collection_id, safe='/')}",
+        f"/v1/collections/{quote(expected_collection_id, safe='/')}",
     )
     assert response.status_code == 200, response.text
     assert response.json()["glacier"]["state"] == state
@@ -2134,12 +2208,14 @@ def then_collection_glacier_state_is(
 @then(parsers.parse('collection "{collection_id}" manifest state is "{state}"'))
 def then_named_collection_manifest_state_is(
     acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
     state: str,
 ) -> None:
+    expected_collection_id = _collection_id_for_context(acceptance_context, collection_id)
     response = acceptance_system.request(
         "GET",
-        f"/v1/collections/{quote(collection_id, safe='/')}",
+        f"/v1/collections/{quote(expected_collection_id, safe='/')}",
     )
     assert response.status_code == 200, response.text
     manifest = response.json()["collection_manifest"]
@@ -2150,12 +2226,14 @@ def then_named_collection_manifest_state_is(
 @then(parsers.parse('collection "{collection_id}" OTS proof state is "{state}"'))
 def then_named_collection_ots_proof_state_is(
     acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
     state: str,
 ) -> None:
+    expected_collection_id = _collection_id_for_context(acceptance_context, collection_id)
     response = acceptance_system.request(
         "GET",
-        f"/v1/collections/{quote(collection_id, safe='/')}",
+        f"/v1/collections/{quote(expected_collection_id, safe='/')}",
     )
     assert response.status_code == 200, response.text
     manifest = response.json()["collection_manifest"]
@@ -3910,13 +3988,6 @@ def then_fetch_manifest_part_hashes_match_fixture(
     assert [part["sha256"] for part in entry["parts"]] == [
         hashlib.sha256(part).hexdigest() for part in SPLIT_FILE_PARTS
     ]
-    if os.environ.get("RIVERHOG_TEST_CANONICAL_ENTRYPOINT") == "1":
-        assert all(part["recovery_bytes"] > part["bytes"] for part in entry["parts"])
-        assert all(
-            re.fullmatch(r"[0-9a-f]{64}", part["copies"][0]["recovery_sha256"])
-            for part in entry["parts"]
-        )
-        return
     assert [part["recovery_bytes"] for part in entry["parts"]] == [
         len(fixture_encrypt_bytes(part)) for part in SPLIT_FILE_PARTS
     ]
