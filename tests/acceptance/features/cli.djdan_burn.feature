@@ -61,20 +61,17 @@ Feature: djdan burn CLI
     And stderr does not mention "burning copy 20260420T040001Z-1"
     And image "20260420T040001Z" has physical_copies_registered 2
 
-  Scenario: djdan burn resumes from burned-media verification for an available unfinished disc
+  Scenario: djdan burn re-burns a copy after burned-media verification fails
     Given an archive with planned images
-    And burned-media verification fails for copy id "20260420T040001Z-1"
-    When the operator runs djdan burn
-    Then the command exits non-zero
-    And stderr mentions "verifying burned media for 20260420T040001Z-1"
-    And image "20260420T040001Z" has physical_copies_registered 0
-    When unlabeled copy id "20260420T040001Z-1" is still available
-    And the optical burn boundary is healthy again
+    And burned-media verification fails once for copy id "20260420T040001Z-1"
     And the operator confirms labeled copy id "20260420T040001Z-1" at location "vault-a/shelf-01"
     And the operator confirms labeled copy id "20260420T040001Z-2" at location "vault-b/shelf-01"
-    And the operator runs djdan burn
+    When the operator runs djdan burn
     Then the command exits with code 0
-    And stderr does not mention "burning copy 20260420T040001Z-1"
+    And stderr mentions "verifying burned media for 20260420T040001Z-1"
+    And stderr mentions "discard or destroy this disc"
+    And stderr mentions "Insert a new blank disc to retry burn copy 20260420T040001Z-1"
+    And stderr mentions "burning copy 20260420T040001Z-1"
     And image "20260420T040001Z" has physical_copies_registered 2
 
   Scenario: djdan burn re-burns an unfinished unlabeled copy if that disc is unavailable

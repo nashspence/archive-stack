@@ -39,6 +39,10 @@ unfinished checkpoint for that copy: burned-media verification if the burn was n
 confirmation. If it is not, `djdan burn` discards that local checkpoint and burns a replacement copy instead.
 Riverhog does not register or count the copy toward coverage until the operator confirms that the disc is labeled.
 
+If burned-media verification fails, treat that physical disc as bad even if the drive might read it later. `djdan`
+tells you to discard or destroy it, clears the local checkpoint for that copy, asks for a new blank disc, and burns
+the same generated copy id again.
+
 If the staged ISO is missing or no longer matches the last verified staged copy, `djdan burn` downloads the ISO
 again before continuing.
 

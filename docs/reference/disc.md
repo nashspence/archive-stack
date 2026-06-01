@@ -248,6 +248,9 @@ Expected multipart flow:
   exposing native test-burn support through DiscRecording
 - if the staged ISO is missing or no longer matches the last verified staged copy, `djdan burn` downloads it again
 - one physical copy is burned and burned-media-verified at a time
+- burned-media verification failure is treated as a failed physical disc, not as a retryable verification result:
+  `djdan` tells the operator to discard or destroy that disc, clears the local checkpoint for that copy, asks for a
+  new blank disc, and burns the same generated copy id again
 - after burned-media verification, `djdan burn` asks Riverhog to send the best-effort `images.copy_label_needed`
   operator notification, then prints the exact label text plus storage guidance before copy registration
 - Riverhog does not register the copy, associate that generated `copy_id` with that physical disc, or count the copy

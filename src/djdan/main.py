@@ -226,6 +226,10 @@ class UploadSession:
     expires_at: str | None
 
 
+class BurnedMediaVerificationError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class BurnBacklogItem:
     image_id: str | None
@@ -562,10 +566,17 @@ class HdiutilDiscBurner:
         else:
             command.extend(["-verifyburn", "-eject"])
         command.append(str(iso_path))
-        _run_passthrough_checked(
-            command,
-            action=f"burning {copy_id} to {device}",
-        )
+        try:
+            _run_passthrough_checked(
+                command,
+                action=f"burning {copy_id} to {device}",
+            )
+        except RuntimeError as exc:
+            if self._dummy:
+                raise
+            raise BurnedMediaVerificationError(
+                f"hdiutil did not complete a verified burn for {copy_id}"
+            ) from exc
 
 
 class RawBurnedMediaVerifier:
@@ -1590,6 +1601,24 @@ def _notify_label_needed(
     session_state.save()
 
 
+def _reset_failed_burn_checkpoint(
+    session_state: BurnSessionState,
+    image_id: str,
+    copy_id: str,
+) -> BurnCopyProgress:
+    progress = BurnCopyProgress()
+    session_state.image_progress(image_id).copies[copy_id] = progress
+    session_state.save()
+    return progress
+
+
+def _verification_failed_message(copy_id: str) -> str:
+    return (
+        f"burned media verification failed for {copy_id}; discard or destroy this disc. "
+        "Do not label it, keep it, or count it as protected."
+    )
+
+
 def _burn_pending_copy(
     copy_payload: dict[str, Any],
     *,
@@ -1625,8 +1654,10 @@ def _burn_pending_copy(
             session_state.image_progress(image_id).copies[copy_id] = progress
             session_state.save()
 
+    blank_media_ready = False
     if not progress.burned:
         prompts.wait_for_blank_disc(copy_id, device=device, target_bytes=target_bytes)
+        blank_media_ready = True
         preflight = getattr(burner, "preflight", None)
         if callable(preflight):
             preflight(device=device)
@@ -1642,17 +1673,47 @@ def _burn_pending_copy(
         expected_total_bytes=expected_total_bytes,
     )
 
-    if not progress.burned:
-        typer.echo(f"burning copy {copy_id} from {iso_path}", err=True)
-        burner.burn(iso_path, device=device, copy_id=copy_id)
-        progress.burned = True
-        if bool(getattr(burner, "verifies_media", False)):
-            progress.media_verified = True
-        session_state.save()
+    while not progress.media_verified:
+        if not progress.burned:
+            if not blank_media_ready:
+                typer.echo(
+                    f"Insert a new blank disc to retry burn copy {copy_id}.",
+                    err=True,
+                )
+                prompts.wait_for_blank_disc(copy_id, device=device, target_bytes=target_bytes)
+                preflight = getattr(burner, "preflight", None)
+                if callable(preflight):
+                    preflight(device=device)
+                blank_media_ready = True
+            typer.echo(f"burning copy {copy_id} from {iso_path}", err=True)
+            try:
+                burner.burn(iso_path, device=device, copy_id=copy_id)
+            except BurnedMediaVerificationError as exc:
+                typer.echo(
+                    f"{exc}; treating this disc as suspect and rejecting it",
+                    err=True,
+                )
+                typer.echo(_verification_failed_message(copy_id), err=True)
+                progress = _reset_failed_burn_checkpoint(session_state, image_id, copy_id)
+                blank_media_ready = False
+                continue
+            else:
+                progress.burned = True
+                if bool(getattr(burner, "verifies_media", False)):
+                    progress.media_verified = True
+                session_state.save()
 
-    if not progress.media_verified:
+        if progress.media_verified:
+            break
+
         typer.echo(f"verifying burned media for {copy_id}", err=True)
-        media_verifier.verify(iso_path, device=device, copy_id=copy_id)
+        try:
+            media_verifier.verify(iso_path, device=device, copy_id=copy_id)
+        except Exception:
+            typer.echo(_verification_failed_message(copy_id), err=True)
+            progress = _reset_failed_burn_checkpoint(session_state, image_id, copy_id)
+            blank_media_ready = False
+            continue
         progress.media_verified = True
         session_state.save()
 

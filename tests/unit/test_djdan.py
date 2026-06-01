@@ -371,6 +371,41 @@ def test_hdiutil_disc_burner_uses_native_verify_and_eject_for_real_burn(
     ]
 
 
+def test_hdiutil_disc_burner_reports_failed_real_verify_as_suspect_media(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    iso_path = tmp_path / "image.iso"
+    iso_path.write_bytes(b"iso-bytes")
+    diskutil_output = """
+   Device Identifier:         disk4
+   Device Node:               /dev/disk4
+   Device / Media Name:       PIONEER BD-RW BDR-UD03
+   Optical Drive Type:        CD-ROM, CD-R, CD-RW, DVD-ROM, DVD-R, BD-ROM, BD-R, BD-RE
+"""
+
+    def fake_run(command, **kwargs):
+        assert kwargs.get("check") is False
+        if command == ["/usr/bin/diskutil", "info", "/dev/disk4"]:
+            assert kwargs == {"capture_output": True, "text": True, "check": False}
+            return djdan_main.subprocess.CompletedProcess(command, 0, diskutil_output, "")
+        assert kwargs == {"check": False}
+        return djdan_main.subprocess.CompletedProcess(command, 1, "", "")
+
+    monkeypatch.setattr(djdan_main.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(djdan_main.subprocess, "run", fake_run)
+
+    with pytest.raises(
+        djdan_main.BurnedMediaVerificationError,
+        match="hdiutil did not complete a verified burn",
+    ):
+        djdan_main.HdiutilDiscBurner().burn(
+            iso_path,
+            device="/dev/disk4",
+            copy_id="20260420T040001Z-1",
+        )
+
+
 def test_hdiutil_disc_burner_rejects_native_bd_testburn(
     monkeypatch,
     tmp_path: Path,
@@ -1897,16 +1932,27 @@ def test_djdan_recover_stages_all_pending_session_images_before_first_burn(
             assert copy_id == f"{image_one}-3"
 
     class FakeMediaVerifier:
+        def __init__(self) -> None:
+            self.failed_once = False
+
         def verify(self, iso_path: Path, *, device: str, copy_id: str) -> None:
             assert device == "/dev/fake-sr0"
             assert iso_path.is_file()
-            raise RuntimeError(f"fixture burned-media verification failed for {copy_id}")
+            if not self.failed_once:
+                self.failed_once = True
+                raise RuntimeError(f"fixture burned-media verification failed for {copy_id}")
 
     class FakePrompts:
+        def __init__(self) -> None:
+            self.blank_waits = 0
+
         def wait_for_blank_disc(
             self, copy_id: str, *, device: str, target_bytes: int | None = None
         ) -> None:
             assert copy_id == f"{image_one}-3"
+            self.blank_waits += 1
+            if self.blank_waits > 1:
+                raise RuntimeError("fresh blank media required after failed verification")
 
         def confirm_label(self, copy_id: str, *, label_text: str) -> None:
             raise AssertionError("label confirmation should not run after verification failure")
@@ -1940,6 +1986,8 @@ def test_djdan_recover_stages_all_pending_session_images_before_first_burn(
     assert client.iso_downloads == [image_one, image_two]
     assert (tmp_path / image_one / f"{image_one}.iso").is_file()
     assert (tmp_path / image_two / f"{image_two}.iso").is_file()
+    assert "discard or destroy this disc" in result.stderr
+    assert "fresh blank media required after failed verification" in result.stderr
 
 
 def test_djdan_burn_reports_recovery_handoffs_when_no_standard_backlog_exists(
@@ -2590,7 +2638,7 @@ def test_djdan_burn_waits_for_label_confirmation_before_registration_and_resumes
     assert not (tmp_path / "burn-session.json").exists()
 
 
-def test_djdan_burn_resumes_from_media_verification_when_unfinished_disc_is_available(
+def test_djdan_burn_retries_same_run_after_failed_native_media_verification(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -2719,30 +2767,36 @@ def test_djdan_burn_resumes_from_media_verification_when_unfinished_disc_is_avai
             assert iso_path.read_bytes() == b"fixture-iso\n"
 
     class FakeBurner:
+        verifies_media = True
+
         def __init__(self) -> None:
+            self.fail_once_copy_ids = {copy_one}
             self.calls: list[str] = []
 
         def burn(self, iso_path: Path, *, device: str, copy_id: str) -> None:
             assert device == "/dev/fake-sr0"
             assert iso_path.read_bytes() == b"fixture-iso\n"
             self.calls.append(copy_id)
+            if copy_id in self.fail_once_copy_ids:
+                self.fail_once_copy_ids.remove(copy_id)
+                raise djdan_main.BurnedMediaVerificationError(
+                    f"fixture native verification failed for {copy_id}"
+                )
 
     class FakeMediaVerifier:
         def __init__(self) -> None:
-            self.fail_copy_ids = {copy_one}
             self.calls: list[str] = []
 
         def verify(self, iso_path: Path, *, device: str, copy_id: str) -> None:
             assert device == "/dev/fake-sr0"
             assert iso_path.read_bytes() == b"fixture-iso\n"
             self.calls.append(copy_id)
-            if copy_id in self.fail_copy_ids:
-                raise RuntimeError(f"fixture burned-media verification failed for {copy_id}")
 
     class FakePrompts:
         def __init__(self) -> None:
             self.confirmed: set[str] = set()
             self.available: set[str] = set()
+            self.blank_waits: list[str] = []
             self.locations = {
                 copy_one: "vault-a/shelf-01",
                 copy_two: "vault-b/shelf-01",
@@ -2752,6 +2806,7 @@ def test_djdan_burn_resumes_from_media_verification_when_unfinished_disc_is_avai
             self, copy_id: str, *, device: str, target_bytes: int | None = None
         ) -> None:
             assert device == "/dev/fake-sr0"
+            self.blank_waits.append(copy_id)
 
         def confirm_label(self, copy_id: str, *, label_text: str) -> None:
             assert label_text == copy_id
@@ -2779,30 +2834,20 @@ def test_djdan_burn_resumes_from_media_verification_when_unfinished_disc_is_avai
     )
     monkeypatch.setattr(djdan_main, "build_burn_prompts", lambda: prompts)
 
-    first = runner.invoke(
-        djdan_main.app,
-        ["burn", "--device", "/dev/fake-sr0", "--staging-dir", str(tmp_path)],
-    )
-
-    assert first.exit_code == 1
-    assert f"error: fixture burned-media verification failed for {copy_one}" in first.stderr
-    assert burner.calls == [copy_one]
-    assert media_verifier.calls == [copy_one]
-    assert client.register_calls == []
-
-    media_verifier.fail_copy_ids.clear()
-    prompts.available.update({copy_one, copy_two})
     prompts.confirmed.update({copy_one, copy_two})
-    second = runner.invoke(
+    result = runner.invoke(
         djdan_main.app,
         ["burn", "--device", "/dev/fake-sr0", "--staging-dir", str(tmp_path)],
     )
 
-    assert second.exit_code == 0
-    assert "verifying burned media for 20260420T040001Z-1" in second.stderr
-    assert "burning copy 20260420T040001Z-1" not in second.stderr
-    assert burner.calls == [copy_one, copy_two]
-    assert media_verifier.calls == [copy_one, copy_one, copy_two]
+    assert result.exit_code == 0
+    assert f"burned media verification failed for {copy_one}" in result.stderr
+    assert "discard or destroy this disc" in result.stderr
+    assert f"Insert a new blank disc to retry burn copy {copy_one}" in result.stderr
+    assert result.stderr.count("burning copy 20260420T040001Z-1") == 2
+    assert prompts.blank_waits == [copy_one, copy_one, copy_two]
+    assert burner.calls == [copy_one, copy_one, copy_two]
+    assert media_verifier.calls == []
     assert client.register_calls == [copy_one, copy_two]
     assert client.copy_states[copy_one]["state"] == "verified"
     assert client.copy_states[copy_two]["verification_state"] == "verified"

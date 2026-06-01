@@ -1091,6 +1091,16 @@ def given_burn_fixture_fails_while_verifying_burned_media(
     acceptance_system.fail_djdan_burn_copy_verification(copy_id)
 
 
+@given(parsers.parse('burned-media verification fails once for copy id "{copy_id}"'))
+@when(parsers.parse('burned-media verification fails once for copy id "{copy_id}"'))
+@then(parsers.parse('burned-media verification fails once for copy id "{copy_id}"'))
+def given_burn_fixture_fails_once_while_verifying_burned_media(
+    acceptance_system: AcceptanceSystem,
+    copy_id: str,
+) -> None:
+    acceptance_system.fail_djdan_burn_copy_verification_once(copy_id)
+
+
 @when("the burn fixture clears all burn failures")
 @when("the optical burn boundary is healthy again")
 def when_burn_fixture_clears_failures(acceptance_system: AcceptanceSystem) -> None:

@@ -13,6 +13,11 @@ def _fixture() -> dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def _write_fixture(payload: dict[str, Any]) -> None:
+    path = os.environ["DJDAN_FIXTURE_PATH"]
+    Path(path).write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
 class FixtureOpticalReader:
     def read_iter(self, disc_path: str, *, device: str) -> Iterator[bytes]:
         fixture = _fixture()
@@ -48,6 +53,14 @@ class FixtureBurnedMediaVerifier:
     def verify(self, iso_path: Path, *, device: str, copy_id: str) -> None:
         fixture = _fixture()
         burn = fixture.get("burn", {})
+        fail_once_copy_ids = set(burn.get("verify_fail_once_copy_ids", []))
+        if copy_id in fail_once_copy_ids:
+            fail_once_copy_ids.remove(copy_id)
+            burn["verify_fail_once_copy_ids"] = sorted(fail_once_copy_ids)
+            _write_fixture(fixture)
+            raise RuntimeError(
+                f"fixture burned-media verification failed for {copy_id} on {device}"
+            )
         if copy_id in burn.get("verify_fail_copy_ids", []):
             raise RuntimeError(
                 f"fixture burned-media verification failed for {copy_id} on {device}"

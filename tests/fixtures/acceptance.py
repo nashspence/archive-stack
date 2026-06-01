@@ -5137,6 +5137,7 @@ class AcceptanceSystem:
                 "label_text_by_copy_id": {},
                 "fail_copy_ids": [],
                 "verify_fail_copy_ids": [],
+                "verify_fail_once_copy_ids": [],
                 "blank_media_blocked_copy_ids": [],
             },
         }
@@ -5242,11 +5243,20 @@ class AcceptanceSystem:
         burn["verify_fail_copy_ids"] = sorted(failures)
         self._write_djdan_fixture(payload)
 
+    def fail_djdan_burn_copy_verification_once(self, copy_id: str) -> None:
+        payload = self._load_djdan_fixture()
+        burn = cast(dict[str, Any], payload["burn"])
+        failures = set(cast(list[str], burn.get("verify_fail_once_copy_ids", [])))
+        failures.add(copy_id)
+        burn["verify_fail_once_copy_ids"] = sorted(failures)
+        self._write_djdan_fixture(payload)
+
     def clear_djdan_burn_failures(self) -> None:
         payload = self._load_djdan_fixture()
         burn = cast(dict[str, Any], payload["burn"])
         burn["fail_copy_ids"] = []
         burn["verify_fail_copy_ids"] = []
+        burn["verify_fail_once_copy_ids"] = []
         burn["blank_media_blocked_copy_ids"] = []
         self._write_djdan_fixture(payload)
 

@@ -39,20 +39,22 @@ Feature: djdan recover CLI
     When the operator runs djdan recover "rs-20260420T040001Z-rebuild-1"
     Then the command exits with code 0
     And stdout mentions "rebuild session rs-20260420T040001Z-rebuild-1 is restore_requested"
-    And burned-media verification fails for copy id "20260420T040001Z-3"
+    And burned-media verification fails once for copy id "20260420T040001Z-3"
     And the operator confirms labeled copy id "20260420T040001Z-4" at location "vault-b/shelf-02"
     And the operator confirms labeled copy id "20260420T040003Z-3" at location "vault-c/shelf-02"
     And the operator confirms labeled copy id "20260420T040003Z-4" at location "vault-d/shelf-02"
     When the client waits for recovery session "rs-20260420T040001Z-rebuild-1" state "ready"
     And the operator runs djdan recover "rs-20260420T040001Z-rebuild-1"
     Then the command exits non-zero
+    And stderr mentions "discard or destroy this disc"
+    And stderr mentions "Insert a new blank disc to retry burn copy 20260420T040001Z-3"
     When unlabeled copy id "20260420T040001Z-3" is still available
     And the optical burn boundary is healthy again
     And the operator confirms labeled copy id "20260420T040001Z-3" at location "vault-a/shelf-02"
     And the operator runs djdan recover "rs-20260420T040001Z-rebuild-1"
     Then the command exits with code 0
     And stdout mentions "rebuild session rs-20260420T040001Z-rebuild-1 completed"
-    And stderr mentions "verifying burned media for 20260420T040001Z-3"
+    And stderr does not mention "verifying burned media for 20260420T040001Z-3"
     And stderr does not mention "burning copy 20260420T040001Z-3"
     And the client gets "/v1/recovery-sessions/rs-20260420T040001Z-rebuild-1"
     And the response status is 200
