@@ -16,7 +16,9 @@ staging.
 
 Minimum Riverhog application log level. Supported values are `CRITICAL`,
 `ERROR`, `WARNING`, `INFO`, and `DEBUG`. Planner refreshes and materialization
-emit operator-useful phase/progress logs at `INFO`.
+emit operator-useful phase/progress logs at `INFO`. Successful per-chunk upload
+forwarding logs are suppressed at the app boundary so normal `INFO` logs stay
+useful during large migrations; failed chunk requests still log.
 
 ## `RIVERHOG_S3_ENDPOINT_URL`
 
@@ -428,7 +430,15 @@ Glacier, hot-file promotion has finished, and the collection is available
 through Riverhog/WebDAV. Failure/attention events include
 `collections.archive_retrying`, paced by
 `RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL`, and
-`collections.planner_failed`. Ready burn candidates use `images.ready`; if
+`collections.archive_failed` for non-retryable archive validation/data failures,
+and `collections.planner_failed`. Archive retry notifications include the
+retryable error and next retry time while making clear that Riverhog is still
+handling the stage; archive-failed notifications are critical and mean Riverhog
+has stopped the automatic retry loop until the problem is inspected. Complete
+failed archive uploads are requeued once during app startup so a fixed deployment
+can make progress; if that startup retry still hits the same deterministic
+failure, Riverhog sends a fresh critical notification so the collection does not
+get forgotten. Ready burn candidates use `images.ready`; if
 operator reminders are explicitly enabled, repeats use `images.ready.reminder`.
 After `djdan` verifies a burned disc but before the operator confirms the
 physical label, it triggers `images.copy_label_needed`. If pinned hot files are

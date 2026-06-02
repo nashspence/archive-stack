@@ -40,6 +40,7 @@ def test_operator_webhook_contract_covers_current_events() -> None:
         "collections.upload_staged",
         "collections.finalized",
         "collections.archive_retrying",
+        "collections.archive_failed",
         "collections.planner_failed",
         "images.ready",
         "images.ready.reminder",
@@ -61,6 +62,7 @@ def test_operator_webhook_contract_covers_current_events() -> None:
         )
         assert all(len(template["body_template"]) <= 150 for template in templates.values())
     assert events["collections.planner_failed"]["operator_urgency"] == "critical"
+    assert events["collections.archive_failed"]["operator_urgency"] == "critical"
     assert events["fetches.waiting_media"]["delivery"]["mode"] == "durable"
     assert events["glacier_recovery.started"]["operator_urgency"] == "time_sensitive"
 
@@ -241,6 +243,57 @@ def test_build_collection_lifecycle_payload_includes_links_and_details() -> None
     assert payload["notification"] == {
         "title": "🐷 home-videos",
         "body": "Oink oink, this upload is safely staged; Glacier archiving is underway.",
+    }
+
+
+def test_build_archive_retrying_payload_names_error_and_next_retry() -> None:
+    payload = build_collection_lifecycle_payload(
+        config=WebhookConfig(url="https://example.test/hook", base_url="https://api.test"),
+        event="collections.archive_retrying",
+        collection_id="2025/20250722T012216Z__gopro-10-5-2023-to-5-12-2024",
+        delivered_at=datetime(2026, 6, 2, 9, 0, tzinfo=UTC),
+        details={
+            "attempts": 3,
+            "failed_at": "2026-06-02T09:00:00Z",
+            "next_retry_at": "2026-06-02T09:05:00Z",
+            "retry_delay_seconds": 300.0,
+            "error": "S3 upload timed out while sending part 12",
+        },
+    )
+
+    assert payload["event"] == "collections.archive_retrying"
+    assert payload["error"] == "S3 upload timed out while sending part 12"
+    assert payload["notification"] == {
+        "title": "🐷 gopro-10-5-2023-to-5-12-2024",
+        "body": (
+            "Oink, archive finalizing hit a retryable issue: S3 upload timed out "
+            "while sending part 12. Next retry: 2026-06-02T09:05:00Z; no action yet."
+        ),
+    }
+
+
+def test_build_archive_failed_payload_is_critical_and_nonretrying() -> None:
+    payload = build_collection_lifecycle_payload(
+        config=WebhookConfig(url="https://example.test/hook", base_url="https://api.test"),
+        event="collections.archive_failed",
+        collection_id="2025/20250722T012216Z__gopro-10-5-2023-to-5-12-2024",
+        delivered_at=datetime(2026, 6, 2, 9, 0, tzinfo=UTC),
+        details={
+            "attempts": 25,
+            "failed_at": "2026-06-02T09:00:00Z",
+            "error": "collection archive member sha256 mismatch: 20240512T093848Z.MP4",
+        },
+    )
+
+    assert payload["event"] == "collections.archive_failed"
+    assert payload["operator_urgency"] == "critical"
+    assert payload["operator_action"] == "inspect Riverhog archive logs and collection upload state"
+    assert payload["notification"] == {
+        "title": "🐷 gopro-10-5-2023-to-5-12-2024",
+        "body": (
+            "Oink! Archive finalizing stopped: collection archive member sha256 "
+            "mismatch: 20240512T093848Z.MP4. Please inspect Riverhog; I will not retry this."
+        ),
     }
 
 

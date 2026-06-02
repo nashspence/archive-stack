@@ -124,6 +124,7 @@ class PlanningService(Protocol):
 
 
 class GlacierUploadService(Protocol):
+    def requeue_failed_uploads_for_startup(self, *, limit: int = 100) -> int: ...
     def process_due_uploads(self, *, limit: int = 1) -> int: ...
 
 

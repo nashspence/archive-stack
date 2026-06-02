@@ -22,7 +22,11 @@
     ],
     "body_template_tokens": [
       "subject",
-      "subject_40"
+      "subject_40",
+      "any required_payload_fields or optional_payload_fields rendered as strings",
+      "field_40",
+      "field_80",
+      "field_120"
     ],
     "actors": {
       "riverhog": "🐷",
@@ -132,7 +136,7 @@
       "canonical_notification": {
         "actor": "riverhog",
         "title_template": "{emoji} {subject_40}",
-        "body_template": "Oink, a recoverable archive snag popped up. I'll keep rooting at it; no action needed yet."
+        "body_template": "Oink, archive finalizing hit a retryable issue: {error_80}. Next retry: {next_retry_at}; no action yet."
       },
       "required_payload_fields": [
         "event",
@@ -180,6 +184,39 @@
         "files_uploaded",
         "bytes_total",
         "uploaded_bytes"
+      ],
+      "optional_payload_fields": [
+        "collection_url",
+        "upload_url"
+      ]
+    },
+    {
+      "event": "collections.archive_failed",
+      "category": "collection_lifecycle",
+      "source": "riverhog_core.services.glacier_uploads",
+      "purpose": "Collection archive finalization encountered a non-retryable packaging, validation, or data-integrity failure.",
+      "operator_urgency": "critical",
+      "operator_action": "inspect Riverhog archive logs and collection upload state",
+      "delivery": {
+        "mode": "best_effort",
+        "retry": false,
+        "reminder": false
+      },
+      "canonical_notification": {
+        "actor": "riverhog",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Oink! Archive finalizing stopped: {error_80}. Please inspect Riverhog; I will not retry this."
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "collection_id",
+        "delivered_at",
+        "operator_urgency",
+        "operator_action",
+        "attempts",
+        "failed_at",
+        "error"
       ],
       "optional_payload_fields": [
         "collection_url",

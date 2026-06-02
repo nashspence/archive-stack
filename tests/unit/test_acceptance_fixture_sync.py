@@ -91,6 +91,8 @@ DELEGATED_HELPER_STATE_ACCESS = {
     "configure_webhook_failure": "delegates to locked AcceptanceState webhook behavior mutation",
     "seed_collection_source": "delegates collection source registration to locked AcceptanceState",
     "seed_image_fixtures": "delegates candidate image registration to locked AcceptanceState",
+    "seed_planner_fixtures": "delegates planner setup to locked fixture seed helpers",
+    "seed_split_planner_fixtures": "delegates split planner setup to locked fixture seed helpers",
 }
 
 LIFECYCLE_HELPER_STATE_ACCESS = {

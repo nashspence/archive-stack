@@ -437,6 +437,10 @@ class _StubPlanning:
 
 
 class _StubGlacierUploads:
+    def requeue_failed_uploads_for_startup(self, *, limit: int) -> int:
+        assert limit >= 0
+        return 0
+
     def process_due_uploads(self, *, limit: int) -> None:
         assert limit >= 0
 
@@ -490,12 +494,16 @@ class _StubRecoverySessions:
         assert limit >= 0
 
 
-def _contract_runtime_container(*, planning: object | None = None) -> ServiceContainer:
+def _contract_runtime_container(
+    *,
+    planning: object | None = None,
+    glacier_uploads: object | None = None,
+) -> ServiceContainer:
     return ServiceContainer(
         collections=_StubCollectionUploads(),  # type: ignore[arg-type]
         search=SimpleNamespace(),
         planning=planning or _StubPlanning(),  # type: ignore[arg-type]
-        glacier_uploads=_StubGlacierUploads(),  # type: ignore[arg-type]
+        glacier_uploads=glacier_uploads or _StubGlacierUploads(),  # type: ignore[arg-type]
         glacier_reporting=_StubGlacierReporting(),  # type: ignore[arg-type]
         recovery_sessions=_StubRecoverySessions(),  # type: ignore[arg-type]
         copies=SimpleNamespace(),
@@ -803,6 +811,34 @@ def test_planner_refresh_runs_immediately_on_startup() -> None:
         assert refresh_ran.wait(timeout=2.0)
 
 
+def test_failed_archive_retry_audit_runs_immediately_on_startup() -> None:
+    retry_audit_ran = threading.Event()
+
+    class RecordingGlacierUploads(_StubGlacierUploads):
+        def __init__(self) -> None:
+            self.retry_audit_calls = 0
+
+        def requeue_failed_uploads_for_startup(self, *, limit: int) -> int:
+            assert limit == 100
+            self.retry_audit_calls += 1
+            retry_audit_ran.set()
+            return 0
+
+    glacier_uploads = RecordingGlacierUploads()
+    app = create_app(
+        container=_contract_runtime_container(glacier_uploads=glacier_uploads),
+        upload_expiry_reaper_interval=3600,
+        glacier_upload_reaper_interval=3600,
+        glacier_recovery_reaper_interval=3600,
+        planner_refresh_reaper_interval=3600,
+    )
+
+    with TestClient(app):
+        assert retry_audit_ran.wait(timeout=2.0)
+
+    assert glacier_uploads.retry_audit_calls == 1
+
+
 def test_healthz_is_available_and_hidden_from_openapi() -> None:
     app = create_app()
     client = TestClient(app)
@@ -815,8 +851,8 @@ def test_healthz_is_available_and_hidden_from_openapi() -> None:
     assert "/healthz" not in data["paths"]
 
 
-def test_healthz_access_log_filter_suppresses_only_healthz() -> None:
-    access_filter = riverhog_app._HealthzAccessLogFilter()
+def test_access_log_filter_suppresses_noisy_successes_only() -> None:
+    access_filter = riverhog_app._RiverhogAccessLogFilter()
     health_record = logging.LogRecord(
         "uvicorn.access",
         logging.INFO,
@@ -824,6 +860,60 @@ def test_healthz_access_log_filter_suppresses_only_healthz() -> None:
         1,
         '%s - "%s %s HTTP/%s" %s',
         ("127.0.0.1:12345", "GET", "/healthz", "1.1", 200),
+        None,
+    )
+    upload_record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %s',
+        (
+            "127.0.0.1:12345",
+            "PATCH",
+            "/v1/collection-uploads/docs/files/video.mp4/upload",
+            "1.1",
+            204,
+        ),
+        None,
+    )
+    upload_start_record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %s',
+        (
+            "127.0.0.1:12345",
+            "POST",
+            "/v1/collection-uploads/docs/files/video.mp4/upload",
+            "1.1",
+            200,
+        ),
+        None,
+    )
+    hook_record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %s',
+        ("127.0.0.1:12345", "POST", "/internal/tusd/hooks", "1.1", 200),
+        None,
+    )
+    upload_error_record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %s',
+        (
+            "127.0.0.1:12345",
+            "PATCH",
+            "/v1/collection-uploads/docs/files/video.mp4/upload",
+            "1.1",
+            500,
+        ),
         None,
     )
     api_record = logging.LogRecord(
@@ -837,4 +927,52 @@ def test_healthz_access_log_filter_suppresses_only_healthz() -> None:
     )
 
     assert not access_filter.filter(health_record)
+    assert not access_filter.filter(upload_record)
+    assert access_filter.filter(upload_start_record)
+    assert not access_filter.filter(hook_record)
+    assert access_filter.filter(upload_error_record)
     assert access_filter.filter(api_record)
+
+
+def test_httpx_log_filter_suppresses_only_successful_tusd_chunk_forwarding() -> None:
+    httpx_filter = riverhog_app._RiverhogHttpxLogFilter()
+    chunk_record = logging.LogRecord(
+        "httpx",
+        logging.INFO,
+        __file__,
+        1,
+        '%s',
+        (
+            'HTTP Request: PATCH http://riverhog-tusd:1080/files/.riverhog%2Fuploads '
+            '"HTTP/1.1 204 No Content"',
+        ),
+        None,
+    )
+    webhook_record = logging.LogRecord(
+        "httpx",
+        logging.INFO,
+        __file__,
+        1,
+        '%s',
+        (
+            'HTTP Request: POST http://host.docker.internal:8123/api/webhook/example '
+            '"HTTP/1.1 200 OK"',
+        ),
+        None,
+    )
+    chunk_error_record = logging.LogRecord(
+        "httpx",
+        logging.INFO,
+        __file__,
+        1,
+        '%s',
+        (
+            'HTTP Request: PATCH http://riverhog-tusd:1080/files/.riverhog%2Fuploads '
+            '"HTTP/1.1 500 Internal Server Error"',
+        ),
+        None,
+    )
+
+    assert not httpx_filter.filter(chunk_record)
+    assert httpx_filter.filter(webhook_record)
+    assert httpx_filter.filter(chunk_error_record)

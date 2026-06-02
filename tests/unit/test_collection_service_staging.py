@@ -982,6 +982,234 @@ def test_archive_failures_retry_indefinitely_with_throttled_operator_notificatio
         assert session.get(CollectionRecord, collection_id) is None
 
 
+def test_archive_validation_failure_stops_without_retrying(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+
+    webhook_payloads: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "riverhog_core.services.glacier_uploads.post_webhook",
+        lambda *, config, payload: webhook_payloads.append(payload),
+    )
+
+    hot_store = _FakeHotStore()
+    upload_store = _StreamingOnlyUploadStore()
+    archive_store = _CountingArchiveStore()
+    config = _config(
+        sqlite_path,
+        glacier_upload_retry_delay=timedelta(seconds=0),
+        operator_webhook_url="http://example.invalid/webhook",
+    )
+    service = SqlAlchemyCollectionService(_config(sqlite_path), hot_store, upload_store)
+
+    content = b"hello world\n"
+    relpath = "albums/day-01.txt"
+    payload = service.create_or_resume_upload(
+        upload_slug="photos 2024",
+        files=[
+            {
+                "path": relpath,
+                "bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        ],
+        ingest_source="/tmp/source",
+    )
+    collection_id = str(payload["collection_id"])
+    upload_session = service.create_or_resume_file_upload(collection_id, relpath)
+    service.append_upload_chunk(
+        collection_id,
+        relpath,
+        offset=int(upload_session["offset"]),
+        checksum="sha256 " + base64.b64encode(hashlib.sha256(content).digest()).decode("ascii"),
+        content=content,
+    )
+    for target_path in list(upload_store._content_by_target):
+        upload_store._content_by_target[target_path] = b"hello world?"
+
+    upload_service = SqlAlchemyGlacierUploadService(
+        config,
+        archive_store,
+        hot_store,
+        upload_store,
+        proof_stamper=FixtureProofStamper(),
+        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
+    )
+
+    assert upload_service.process_due_uploads() == 1
+    assert archive_store.uploads == 0
+    assert [payload["event"] for payload in webhook_payloads] == [
+        "collections.archive_failed",
+    ]
+    assert webhook_payloads[0]["operator_urgency"] == "critical"
+    assert "sha256 mismatch" in str(webhook_payloads[0]["error"])
+
+    assert upload_service.process_due_uploads() == 0
+
+    session_factory = make_session_factory(str(sqlite_path))
+    with session_scope(session_factory) as session:
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is not None
+        assert upload.state == "failed"
+        assert upload.archive_phase == "failed"
+        assert upload.archive_next_attempt_at is None
+        assert "sha256 mismatch" in str(upload.archive_failure)
+        assert session.get(CollectionRecord, collection_id) is None
+
+
+def test_startup_requeue_resumes_failed_archive_after_fix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+
+    webhook_payloads: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "riverhog_core.services.glacier_uploads.post_webhook",
+        lambda *, config, payload: webhook_payloads.append(payload),
+    )
+
+    hot_store = _FakeHotStore()
+    upload_store = _StreamingOnlyUploadStore()
+    archive_store = _CountingArchiveStore()
+    config = _config(
+        sqlite_path,
+        glacier_upload_retry_delay=timedelta(seconds=0),
+        operator_webhook_url="http://example.invalid/webhook",
+    )
+    service = SqlAlchemyCollectionService(_config(sqlite_path), hot_store, upload_store)
+
+    content = b"hello world\n"
+    relpath = "albums/day-01.txt"
+    payload = service.create_or_resume_upload(
+        upload_slug="photos 2024",
+        files=[
+            {
+                "path": relpath,
+                "bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        ],
+        ingest_source="/tmp/source",
+    )
+    collection_id = str(payload["collection_id"])
+    upload_session = service.create_or_resume_file_upload(collection_id, relpath)
+    service.append_upload_chunk(
+        collection_id,
+        relpath,
+        offset=int(upload_session["offset"]),
+        checksum="sha256 " + base64.b64encode(hashlib.sha256(content).digest()).decode("ascii"),
+        content=content,
+    )
+    for target_path in list(upload_store._content_by_target):
+        upload_store._content_by_target[target_path] = b"hello world?"
+
+    upload_service = SqlAlchemyGlacierUploadService(
+        config,
+        archive_store,
+        hot_store,
+        upload_store,
+        proof_stamper=FixtureProofStamper(),
+        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
+    )
+
+    assert upload_service.process_due_uploads() == 1
+    assert archive_store.uploads == 0
+    assert [payload["event"] for payload in webhook_payloads] == [
+        "collections.archive_failed",
+    ]
+
+    for target_path in list(upload_store._content_by_target):
+        upload_store._content_by_target[target_path] = content
+
+    assert upload_service.requeue_failed_uploads_for_startup() == 1
+    assert upload_service.process_due_uploads() == 1
+    assert archive_store.uploads == 1
+    assert [payload["event"] for payload in webhook_payloads] == [
+        "collections.archive_failed",
+        "collections.finalized",
+    ]
+
+    session_factory = make_session_factory(str(sqlite_path))
+    with session_scope(session_factory) as session:
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is None
+        assert session.get(CollectionRecord, collection_id) is not None
+
+
+def test_startup_requeue_renotifies_when_deterministic_archive_failure_remains(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(str(sqlite_path))
+
+    webhook_payloads: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "riverhog_core.services.glacier_uploads.post_webhook",
+        lambda *, config, payload: webhook_payloads.append(payload),
+    )
+
+    hot_store = _FakeHotStore()
+    upload_store = _StreamingOnlyUploadStore()
+    archive_store = _CountingArchiveStore()
+    config = _config(
+        sqlite_path,
+        glacier_upload_retry_delay=timedelta(seconds=0),
+        operator_webhook_url="http://example.invalid/webhook",
+    )
+    service = SqlAlchemyCollectionService(_config(sqlite_path), hot_store, upload_store)
+
+    content = b"hello world\n"
+    relpath = "albums/day-01.txt"
+    payload = service.create_or_resume_upload(
+        upload_slug="photos 2024",
+        files=[
+            {
+                "path": relpath,
+                "bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        ],
+        ingest_source="/tmp/source",
+    )
+    collection_id = str(payload["collection_id"])
+    upload_session = service.create_or_resume_file_upload(collection_id, relpath)
+    service.append_upload_chunk(
+        collection_id,
+        relpath,
+        offset=int(upload_session["offset"]),
+        checksum="sha256 " + base64.b64encode(hashlib.sha256(content).digest()).decode("ascii"),
+        content=content,
+    )
+    for target_path in list(upload_store._content_by_target):
+        upload_store._content_by_target[target_path] = b"hello world?"
+
+    upload_service = SqlAlchemyGlacierUploadService(
+        config,
+        archive_store,
+        hot_store,
+        upload_store,
+        proof_stamper=FixtureProofStamper(),
+        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
+    )
+
+    assert upload_service.process_due_uploads() == 1
+    assert upload_service.requeue_failed_uploads_for_startup() == 1
+    assert upload_service.process_due_uploads() == 1
+
+    assert archive_store.uploads == 0
+    assert [payload["event"] for payload in webhook_payloads] == [
+        "collections.archive_failed",
+        "collections.archive_failed",
+    ]
+    assert all(payload["operator_urgency"] == "critical" for payload in webhook_payloads)
+
+
 def test_successful_archive_emits_only_finalized_operator_webhook(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

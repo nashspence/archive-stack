@@ -2029,6 +2029,22 @@ class AcceptanceGlacierUploadService:
         self.state = state
 
     @_with_state_lock
+    def requeue_failed_uploads_for_startup(self, *, limit: int = 100) -> int:
+        if limit < 1:
+            return 0
+        requeued = 0
+        collections = AcceptanceCollectionService(self.state)
+        for _collection_id, upload in sorted(self.state.collection_uploads.items()):
+            if requeued >= limit:
+                return requeued
+            if upload.state != "failed" or not collections._is_complete(upload):
+                continue
+            upload.state = "archiving"
+            upload.latest_failure = None
+            requeued += 1
+        return requeued
+
+    @_with_state_lock
     def process_due_uploads(self, *, limit: int = 1) -> int:
         attempted = 0
         for collection_id, upload in sorted(self.state.collection_uploads.items()):

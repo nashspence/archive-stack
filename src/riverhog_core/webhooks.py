@@ -450,6 +450,7 @@ def _canonical_notification_from_contract(
     event: str,
     subject: str,
     notification_type: str | None = None,
+    values: Mapping[str, object] | None = None,
 ) -> dict[str, str]:
     template = _notification_template(event=event, notification_type=notification_type)
     actor = str(template.get("actor", _FALLBACK_NOTIFICATION_TEMPLATE["actor"]))
@@ -457,18 +458,25 @@ def _canonical_notification_from_contract(
     subject_limit = _notification_int("subject_max_chars", default=40)
     body_limit = _notification_int("body_max_chars", default=150)
     normalized_subject = _normalize_space(subject)
-    values = {
+    render_values = {
         "emoji": emoji,
         "subject": normalized_subject,
         "subject_40": _truncate(normalized_subject, subject_limit),
     }
+    if values:
+        for key, value in values.items():
+            text = _normalize_space(str(value))
+            render_values[str(key)] = text
+            render_values[f"{key}_40"] = _truncate(text, 40)
+            render_values[f"{key}_80"] = _truncate(text, 80)
+            render_values[f"{key}_120"] = _truncate(text, 120)
     title = _render_template(
         str(template.get("title_template", _FALLBACK_NOTIFICATION_TEMPLATE["title_template"])),
-        values,
+        render_values,
     ).strip()
     body = _render_template(
         str(template.get("body_template", _FALLBACK_NOTIFICATION_TEMPLATE["body_template"])),
-        values,
+        render_values,
     )
     return {
         "title": title or emoji,
@@ -570,10 +578,16 @@ def _recovery_subject(
     return session_id
 
 
-def _collection_notification(*, event: str, collection_id: str) -> dict[str, str]:
+def _collection_notification(
+    *,
+    event: str,
+    collection_id: str,
+    values: Mapping[str, object] | None = None,
+) -> dict[str, str]:
     return _canonical_notification_from_contract(
         event=event,
         subject=_collection_subject(collection_id),
+        values=values,
     )
 
 
@@ -630,6 +644,7 @@ def build_collection_lifecycle_payload(
     delivered_at: datetime,
     details: dict[str, object] | None = None,
 ) -> dict[str, object]:
+    detail_values = details or {}
     payload: dict[str, object] = {
         "event": event,
         "type": "collection_lifecycle",
@@ -637,7 +652,11 @@ def build_collection_lifecycle_payload(
         "delivered_at": isoformat_z(delivered_at),
         "operator_urgency": _operator_event_field(event=event, field="operator_urgency"),
         "operator_action": _operator_event_field(event=event, field="operator_action"),
-        "notification": _collection_notification(event=event, collection_id=collection_id),
+        "notification": _collection_notification(
+            event=event,
+            collection_id=collection_id,
+            values=detail_values,
+        ),
     }
     if config.base_url:
         payload["collection_url"] = collection_url(config.base_url, collection_id)

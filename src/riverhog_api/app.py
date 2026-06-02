@@ -33,9 +33,54 @@ from riverhog_core.runtime_config import load_runtime_config
 _LOG = logging.getLogger(__name__)
 
 
-class _HealthzAccessLogFilter(logging.Filter):
+class _RiverhogAccessLogFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        return " /healthz " not in record.getMessage()
+        method: str | None = None
+        path: str | None = None
+        status_code: int | None = None
+        if len(record.args) >= 5:
+            method = str(record.args[1])
+            path = str(record.args[2]).split("?", 1)[0]
+            try:
+                status_code = int(record.args[4])
+            except (TypeError, ValueError):
+                status_code = None
+        else:
+            message = record.getMessage()
+            if " /healthz " in message:
+                path = "/healthz"
+            elif " /internal/tusd/hooks " in message:
+                path = "/internal/tusd/hooks"
+            elif " /v1/collection-uploads/" in message and "/upload " in message:
+                path = "/v1/collection-uploads/.../upload"
+            if '" 2' in message or '" 3' in message:
+                status_code = 200
+
+        if path == "/healthz":
+            return False
+        successful = status_code is not None and status_code < 400
+        if successful and path == "/internal/tusd/hooks":
+            return False
+        if (
+            successful
+            and method == "PATCH"
+            and path is not None
+            and path.startswith("/v1/collection-uploads/")
+            and path.endswith("/upload")
+        ):
+            return False
+        return True
+
+
+class _RiverhogHttpxLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        if (
+            message.startswith("HTTP Request: PATCH http://riverhog-tusd:1080/files/")
+            and '"HTTP/1.1 204 No Content"' in message
+        ):
+            return False
+        return True
 
 
 def _configure_logging(level_name: str) -> None:
@@ -46,9 +91,12 @@ def _configure_logging(level_name: str) -> None:
     )
     for logger_name in ("riverhog_api", "riverhog_core"):
         logging.getLogger(logger_name).setLevel(level)
+    httpx_logger = logging.getLogger("httpx")
+    if not any(isinstance(current, _RiverhogHttpxLogFilter) for current in httpx_logger.filters):
+        httpx_logger.addFilter(_RiverhogHttpxLogFilter())
     access_logger = logging.getLogger("uvicorn.access")
-    if not any(isinstance(current, _HealthzAccessLogFilter) for current in access_logger.filters):
-        access_logger.addFilter(_HealthzAccessLogFilter())
+    if not any(isinstance(current, _RiverhogAccessLogFilter) for current in access_logger.filters):
+        access_logger.addFilter(_RiverhogAccessLogFilter())
 
 
 def _sweep_expired_uploads(container: ServiceContainer) -> None:
@@ -58,7 +106,13 @@ def _sweep_expired_uploads(container: ServiceContainer) -> None:
 
 def _process_glacier_uploads(
     container: ServiceContainer,
+    *,
+    startup_failed_retry_audit: bool = False,
 ) -> None:
+    if startup_failed_retry_audit:
+        retried = container.glacier_uploads.requeue_failed_uploads_for_startup(limit=100)
+        if retried:
+            _LOG.info("startup requeued failed collection archive uploads: count=%s", retried)
     container.glacier_uploads.process_due_uploads(limit=1)
 
 
@@ -110,18 +164,28 @@ async def _run_glacier_upload_reaper(
     sweep_interval: timedelta,
 ) -> None:
     interval_seconds = max(sweep_interval.total_seconds(), 0.1)
-    first_run = True
+    startup_failed_retry_audit = True
     while True:
         try:
-            if first_run:
+            if startup_failed_retry_audit:
                 await asyncio.sleep(0)
             else:
                 await asyncio.sleep(interval_seconds)
-            first_run = False
             container = container_provider()
             if container is None:
                 continue
-            await asyncio.to_thread(_process_glacier_uploads, container)
+            current_startup_failed_retry_audit = startup_failed_retry_audit
+            startup_failed_retry_audit = False
+            if current_startup_failed_retry_audit:
+                _LOG.info(
+                    "startup failed archive-upload retry audit queued in background; "
+                    "API startup is not blocked"
+                )
+            await asyncio.to_thread(
+                _process_glacier_uploads,
+                container,
+                startup_failed_retry_audit=current_startup_failed_retry_audit,
+            )
         except asyncio.CancelledError:
             raise
         except Exception:  # pragma: no cover - defensive background task logging

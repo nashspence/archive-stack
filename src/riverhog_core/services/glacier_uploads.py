@@ -86,6 +86,41 @@ class SqlAlchemyGlacierUploadService:
         )
         self._session_factory = make_session_factory(config.database_url)
 
+    def requeue_failed_uploads_for_startup(self, *, limit: int = 100) -> int:
+        if limit < 1 or self._hot_store is None or self._upload_store is None:
+            return 0
+
+        current_text = _isoformat_z(utcnow())
+        requeued = 0
+        with session_scope(self._session_factory) as session:
+            uploads = list(
+                session.scalars(
+                    select(CollectionUploadRecord)
+                    .where(CollectionUploadRecord.state == "failed")
+                    .order_by(
+                        CollectionUploadRecord.archive_phase_updated_at,
+                        CollectionUploadRecord.collection_id,
+                    )
+                    .limit(limit)
+                )
+            )
+            for upload in uploads:
+                if not _upload_files_complete(upload.files):
+                    continue
+                previous_error = upload.archive_failure
+                upload.state = "archiving"
+                upload.archive_phase = "retry_wait"
+                upload.archive_phase_updated_at = current_text
+                upload.archive_next_attempt_at = current_text
+                requeued += 1
+                _LOG.info(
+                    "startup requeued failed collection archive upload: collection_id=%s "
+                    "previous_error=%s",
+                    upload.collection_id,
+                    previous_error,
+                )
+        return requeued
+
     def process_due_uploads(self, *, limit: int = 1) -> int:
         if limit < 1:
             return 0
@@ -305,7 +340,29 @@ class SqlAlchemyGlacierUploadService:
                 proof_bytes=proof_bytes,
             )
         except Exception as exc:
-            self._record_collection_failure(collection_id=collection_id, error=_error_text(exc))
+            error = _error_text(exc)
+            if _archive_failure_is_retryable(exc):
+                _LOG.exception(
+                    "collection archive packaging/upload failed for %s; scheduling retry: %s",
+                    collection_id,
+                    error,
+                )
+                self._record_collection_failure(
+                    collection_id=collection_id,
+                    error=error,
+                    retryable=True,
+                )
+            else:
+                _LOG.exception(
+                    "collection archive packaging/upload failed permanently for %s: %s",
+                    collection_id,
+                    error,
+                )
+                self._record_collection_failure(
+                    collection_id=collection_id,
+                    error=error,
+                    retryable=False,
+                )
             return
 
         cleanup_targets: list[str] = []
@@ -337,7 +394,29 @@ class SqlAlchemyGlacierUploadService:
                 },
             )
         except Exception as exc:
-            self._record_collection_failure(collection_id=collection_id, error=_error_text(exc))
+            error = _error_text(exc)
+            if _archive_failure_is_retryable(exc):
+                _LOG.exception(
+                    "collection archive promotion/finalization failed for %s; scheduling retry: %s",
+                    collection_id,
+                    error,
+                )
+                self._record_collection_failure(
+                    collection_id=collection_id,
+                    error=error,
+                    retryable=True,
+                )
+            else:
+                _LOG.exception(
+                    "collection archive promotion/finalization failed permanently for %s: %s",
+                    collection_id,
+                    error,
+                )
+                self._record_collection_failure(
+                    collection_id=collection_id,
+                    error=error,
+                    retryable=False,
+                )
             return
 
         for target_path in cleanup_targets:
@@ -571,38 +650,84 @@ class SqlAlchemyGlacierUploadService:
         except Exception:
             _LOG.warning("failed to deliver %s webhook for %s", event, collection_id, exc_info=True)
 
-    def _record_collection_failure(self, *, collection_id: str, error: str) -> None:
+    def _record_collection_failure(
+        self,
+        *,
+        collection_id: str,
+        error: str,
+        retryable: bool,
+    ) -> None:
         current = utcnow()
         current_text = _isoformat_z(current)
-        notify_retrying = False
+        notify_operator = False
         attempt_count = 0
-        next_retry_at = _isoformat_z(current + self._config.glacier_upload_retry_delay)
+        next_retry_at = (
+            _isoformat_z(current + self._config.glacier_upload_retry_delay)
+            if retryable
+            else None
+        )
 
         with session_scope(self._session_factory) as session:
             upload = session.get(CollectionUploadRecord, collection_id)
             if upload is None:
                 return
             attempt_count = int(upload.archive_attempt_count or 0)
+            previous_state = upload.state
+            previous_phase = upload.archive_phase
+            previous_failure = upload.archive_failure
             upload.archive_failure = error
             upload.archive_next_attempt_at = next_retry_at
-            upload.archive_phase = "retry_wait"
+            upload.archive_phase = "retry_wait" if retryable else "failed"
             upload.archive_phase_updated_at = current_text
-            upload.state = "archiving"
-            if _operator_failure_notification_due(
+            upload.state = "archiving" if retryable else "failed"
+            if retryable and _operator_failure_notification_due(
                 upload.archive_last_failure_notification_at,
                 current=current,
                 interval=self._config.operator_failure_notification_interval,
             ):
                 upload.archive_last_failure_notification_at = current_text
-                notify_retrying = True
+                notify_operator = True
+            if (
+                not retryable
+                and (
+                    previous_state != "failed"
+                    or previous_phase != "failed"
+                    or previous_failure != error
+                )
+            ):
+                upload.archive_last_failure_notification_at = current_text
+                notify_operator = True
 
-        if notify_retrying:
+        if retryable:
+            _LOG.warning(
+                "collection archive retry scheduled for %s: attempts=%s next_retry_at=%s error=%s",
+                collection_id,
+                attempt_count,
+                next_retry_at,
+                error,
+            )
+        else:
+            _LOG.error(
+                "collection archive marked failed for %s: attempts=%s error=%s",
+                collection_id,
+                attempt_count,
+                error,
+            )
+
+        if retryable and notify_operator:
             self._notify_collection_archive_retrying(
                 collection_id=collection_id,
                 attempt_count=attempt_count,
                 error=error,
                 failed_at=current_text,
-                next_retry_at=next_retry_at,
+                next_retry_at=next_retry_at or "",
+            )
+        if not retryable and notify_operator:
+            self._notify_collection_archive_failed(
+                collection_id=collection_id,
+                attempt_count=attempt_count,
+                error=error,
+                failed_at=current_text,
             )
 
     def _notify_collection_archive_retrying(
@@ -622,6 +747,24 @@ class SqlAlchemyGlacierUploadService:
                 "failed_at": failed_at,
                 "next_retry_at": next_retry_at,
                 "retry_delay_seconds": self._config.glacier_upload_retry_delay.total_seconds(),
+                "error": error,
+            },
+        )
+
+    def _notify_collection_archive_failed(
+        self,
+        *,
+        collection_id: str,
+        attempt_count: int,
+        error: str,
+        failed_at: str,
+    ) -> None:
+        self._post_collection_operator_webhook(
+            event="collections.archive_failed",
+            collection_id=collection_id,
+            details={
+                "attempts": attempt_count,
+                "failed_at": failed_at,
                 "error": error,
             },
         )
@@ -1052,6 +1195,12 @@ def _upload_files_complete(file_records: list[CollectionUploadFileRecord]) -> bo
 def _error_text(exc: Exception) -> str:
     detail = str(exc).strip()
     return detail or exc.__class__.__name__
+
+
+def _archive_failure_is_retryable(exc: Exception) -> bool:
+    if isinstance(exc, ValueError):
+        return False
+    return True
 
 
 def _operator_failure_notification_due(
