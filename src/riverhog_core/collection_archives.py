@@ -18,6 +18,8 @@ COLLECTION_MANIFEST_SCHEMA = "collection-manifest/v1"
 COLLECTION_ARCHIVE_FORMAT = "tar"
 COLLECTION_ARCHIVE_COMPRESSION = "none"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_TAR_BLOCK_SIZE = 512
+_TAR_USTAR_SIZE_MAX = int("7" * 11, 8)
 
 
 @dataclass(frozen=True, slots=True)
@@ -646,7 +648,8 @@ def _archive_chunks_from_ranged_reader(
     for file in files:
         header = _tar_header(file.path, file.bytes)
         padding = (-file.bytes) % 512
-        member_size = _tar_member_size(file.bytes)
+        header_size = len(header)
+        member_size = _tar_member_size(file.path, file.bytes)
         member_end = stream_offset + member_size
         if requested_offset >= member_end:
             stream_offset = member_end
@@ -658,13 +661,13 @@ def _archive_chunks_from_ranged_reader(
             yield header
         else:
             member_offset = requested_offset - stream_offset
-            if member_offset < 512:
+            if member_offset < header_size:
                 yield header[member_offset:]
-            elif member_offset < 512 + file.bytes:
-                content_offset = member_offset - 512
+            elif member_offset < header_size + file.bytes:
+                content_offset = member_offset - header_size
             elif member_offset < member_size:
                 content_offset = file.bytes
-                padding_offset = member_offset - 512 - file.bytes
+                padding_offset = member_offset - header_size - file.bytes
 
         if content_offset < file.bytes:
             expected_bytes = file.bytes - content_offset
@@ -713,15 +716,53 @@ def _iter_chunks_after_skipping(chunks: Iterable[bytes], skip_bytes: int) -> Ite
 def _archive_stream_size(files: Sequence[CollectionArchiveExpectedFile]) -> int:
     size = 0
     for file in files:
-        size += _tar_member_size(file.bytes)
-    return size + 1024
+        size += _tar_member_size(file.path, file.bytes)
+    return size + (_TAR_BLOCK_SIZE * 2)
 
 
-def _tar_member_size(content_length: int) -> int:
-    return 512 + content_length + ((-content_length) % 512)
+def _tar_member_size(path: str, content_length: int) -> int:
+    return _tar_header_size(path, content_length) + content_length + _tar_padding(content_length)
 
 
 def _tar_header(path: str, size: int) -> bytes:
+    pax_attrs, file_header_path, file_header_size = _tar_file_header_values(path, size)
+    file_header = _tar_ustar_header(file_header_path, file_header_size, typeflag=b"0")
+    if not pax_attrs:
+        return file_header
+    pax_payload = _pax_payload(pax_attrs)
+    return (
+        _tar_ustar_header(_pax_header_path(path), len(pax_payload), typeflag=b"x")
+        + pax_payload
+        + (b"\0" * _tar_padding(len(pax_payload)))
+        + file_header
+    )
+
+
+def _tar_header_size(path: str, size: int) -> int:
+    pax_attrs, _file_header_path, _file_header_size = _tar_file_header_values(path, size)
+    if not pax_attrs:
+        return _TAR_BLOCK_SIZE
+    pax_payload_length = len(_pax_payload(pax_attrs))
+    return _TAR_BLOCK_SIZE + pax_payload_length + _tar_padding(pax_payload_length) + _TAR_BLOCK_SIZE
+
+
+def _tar_file_header_values(path: str, size: int) -> tuple[dict[str, str], str, int]:
+    pax_attrs: dict[str, str] = {}
+    try:
+        _ustar_name(path)
+        file_header_path = path
+    except ValueError:
+        pax_attrs["path"] = path
+        file_header_path = _pax_placeholder_path(path)
+    if size > _TAR_USTAR_SIZE_MAX:
+        pax_attrs["size"] = str(size)
+        file_header_size = 0
+    else:
+        file_header_size = size
+    return pax_attrs, file_header_path, file_header_size
+
+
+def _tar_ustar_header(path: str, size: int, *, typeflag: bytes) -> bytes:
     name, prefix = _ustar_name(path)
     header = bytearray(512)
     _write_tar_field(header, 0, 100, name)
@@ -731,7 +772,9 @@ def _tar_header(path: str, size: int) -> bytes:
     _write_tar_octal(header, 124, 12, size)
     _write_tar_octal(header, 136, 12, 0)
     header[148:156] = b"        "
-    header[156:157] = b"0"
+    if len(typeflag) != 1:
+        raise ValueError("tar header typeflag must be one byte")
+    header[156:157] = typeflag
     _write_tar_field(header, 257, 6, b"ustar\0")
     _write_tar_field(header, 263, 2, b"00")
     _write_tar_field(header, 345, 155, prefix)
@@ -764,6 +807,34 @@ def _write_tar_octal(header: bytearray, offset: int, length: int, value: int) ->
     if len(encoded) > length:
         raise ValueError("tar header numeric field is too large")
     header[offset : offset + length] = encoded.rjust(length, b"0")
+
+
+def _tar_padding(size: int) -> int:
+    return (-size) % _TAR_BLOCK_SIZE
+
+
+def _pax_header_path(path: str) -> str:
+    digest = hashlib.sha256(path.encode("utf-8")).hexdigest()[:32]
+    return f"PaxHeaders/{digest}"
+
+
+def _pax_placeholder_path(path: str) -> str:
+    digest = hashlib.sha256(path.encode("utf-8")).hexdigest()[:32]
+    return f"riverhog-pax/{digest}"
+
+
+def _pax_payload(attrs: dict[str, str]) -> bytes:
+    return b"".join(_pax_record(key, value) for key, value in attrs.items())
+
+
+def _pax_record(key: str, value: str) -> bytes:
+    suffix = f" {key}={value}\n".encode()
+    size = len(suffix) + len(str(len(suffix)))
+    while True:
+        next_size = len(suffix) + len(str(size))
+        if next_size == size:
+            return f"{size}".encode("ascii") + suffix
+        size = next_size
 
 
 def _read_chunks(handle: Any, chunk_size: int = 1024 * 1024) -> Iterator[bytes]:

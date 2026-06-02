@@ -8,6 +8,7 @@ from io import BytesIO
 import pytest
 import yaml
 
+from riverhog_core import collection_archives as archive_module
 from riverhog_core.collection_archives import (
     COLLECTION_ARCHIVE_COMPRESSION,
     COLLECTION_ARCHIVE_FORMAT,
@@ -49,6 +50,65 @@ def test_collection_archive_package_uses_plain_tar_contract() -> None:
 
     with tarfile.open(fileobj=BytesIO(package.archive_bytes), mode="r:") as archive:
         assert archive.getnames() == ["tax/2022/invoice.pdf"]
+
+
+def test_collection_archive_reader_still_accepts_existing_ustar_archives() -> None:
+    buffer = BytesIO()
+    content = b"previous archive bytes"
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+        info = tarfile.TarInfo("tax/2022/previous.pdf")
+        info.size = len(content)
+        archive.addfile(info, BytesIO(content))
+    digest = hashlib.sha256(content).hexdigest()
+
+    assert list(iter_collection_archive_files((buffer.getvalue(),))) == [
+        ("tax/2022/previous.pdf", content),
+    ]
+    verify_collection_archive_files(
+        chunks=(buffer.getvalue(),),
+        files=(
+            CollectionArchiveExpectedFile(
+                path="tax/2022/previous.pdf",
+                bytes=len(content),
+                sha256=digest,
+            ),
+        ),
+    )
+
+
+def test_collection_archive_tar_header_uses_pax_for_oversized_member() -> None:
+    size = archive_module._TAR_USTAR_SIZE_MAX + 1
+    header = archive_module._tar_header("large.bin", size)
+
+    assert f" size={size}\n".encode("ascii") in header
+
+    with tarfile.open(fileobj=BytesIO(header + (b"\0" * 1024)), mode="r:") as archive:
+        member = archive.next()
+
+    assert member is not None
+    assert member.name == "large.bin"
+    assert member.size == size
+
+
+def test_collection_archive_package_uses_pax_for_long_paths() -> None:
+    content = b"photo bytes"
+    long_path = f"{'a' * 101}.mp4"
+    package = build_collection_archive_package(
+        collection_id="docs",
+        files=(
+            CollectionArchiveFile(
+                path=long_path,
+                content=content,
+                sha256=hashlib.sha256(content).hexdigest(),
+            ),
+        ),
+        stamper=_PROOF_STAMPER,
+    )
+
+    assert f" path={long_path}\n".encode() in package.archive_bytes
+    assert list(iter_collection_archive_files(package.iter_archive())) == [
+        (long_path, content),
+    ]
 
 
 def test_manifest_and_proof_verification_use_catalog_and_manifest_digest() -> None:
