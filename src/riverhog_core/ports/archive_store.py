@@ -99,6 +99,7 @@ class ArchiveStore(Protocol):
         *,
         collection_id: str,
         package: CollectionArchivePackage,
+        archive_storage_prefix: str | None = None,
         multipart_tracker: ArchiveMultipartUploadTracker | None = None,
     ) -> CollectionArchiveUploadReceipt: ...
 

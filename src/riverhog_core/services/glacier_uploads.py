@@ -4,12 +4,14 @@ import base64
 import hashlib
 import json
 import logging
+import secrets
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from riverhog_core.archive_object_paths import archive_storage_prefix_from_object_path
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ActivePinRecord,
@@ -205,6 +207,11 @@ class SqlAlchemyGlacierUploadService:
                 upload.archive_multipart_content_length
             )
             packaged_archive_sha256 = upload.archive_multipart_sha256
+            archive_storage_prefix = _ensure_archive_storage_prefix(
+                session,
+                upload=upload,
+                config=self._config,
+            )
             upload.archive_attempt_count = int(upload.archive_attempt_count or 0) + 1
             upload.archive_last_attempt_at = current_text
             upload.archive_next_attempt_at = current_text
@@ -321,6 +328,7 @@ class SqlAlchemyGlacierUploadService:
                     receipt = self._archive_store.upload_collection_archive_package(
                         collection_id=collection_id,
                         package=package,
+                        archive_storage_prefix=archive_storage_prefix,
                         multipart_tracker=_SqlAlchemyArchiveMultipartUploadTracker(
                             self._session_factory
                         ),
@@ -383,6 +391,7 @@ class SqlAlchemyGlacierUploadService:
                 receipt=receipt,
                 upload_files=upload_files,
             )
+            self._publish_recovery_catalog()
             self._post_collection_operator_webhook(
                 event="collections.finalized",
                 collection_id=collection_id,
@@ -592,6 +601,9 @@ class SqlAlchemyGlacierUploadService:
             upload.collection_manifest_bytes_b64 = _encode_b64(manifest_bytes)
             upload.collection_manifest_proof_bytes_b64 = _encode_b64(proof_bytes)
             upload.archive_object_path = receipt.archive.object_path
+            upload.archive_storage_prefix = archive_storage_prefix_from_object_path(
+                receipt.archive.object_path
+            )
             upload.archive_multipart_content_length = receipt.archive.stored_bytes
             upload.archive_multipart_sha256 = receipt.archive_sha256
             upload.archive_multipart_uploaded_bytes = receipt.archive.stored_bytes
@@ -599,6 +611,46 @@ class SqlAlchemyGlacierUploadService:
             upload.archive_phase = "promoting"
             upload.archive_phase_updated_at = current_text
             upload.archive_failure = None
+
+    def _publish_recovery_catalog(self) -> None:
+        publish = getattr(self._archive_store, "publish_recovery_catalog", None)
+        if not callable(publish):
+            return
+        generated_at = _isoformat_z(utcnow())
+        with session_scope(self._session_factory) as session:
+            archives = list(
+                session.scalars(
+                    select(CollectionArchiveRecord)
+                    .where(CollectionArchiveRecord.state == "uploaded")
+                    .where(CollectionArchiveRecord.object_path.is_not(None))
+                    .order_by(CollectionArchiveRecord.collection_id)
+                )
+            )
+            entries = [
+                {
+                    "collection_id": archive.collection_id,
+                    "archive_storage_prefix": archive.archive_storage_prefix
+                    or archive_storage_prefix_from_object_path(archive.object_path),
+                    "archive_key": archive.object_path,
+                    "manifest_key": archive.manifest_object_path,
+                    "proof_key": archive.ots_object_path,
+                    "archive_stored_bytes": archive.stored_bytes,
+                    "archive_plaintext_sha256": archive.sha256,
+                    "manifest_sha256": archive.manifest_sha256,
+                    "proof_sha256": archive.ots_sha256,
+                    "backend": archive.backend,
+                    "archive_storage_class": archive.storage_class,
+                    "archive_format": archive.archive_format,
+                    "compression": archive.compression,
+                    "uploaded_at": archive.last_uploaded_at,
+                    "verified_at": archive.last_verified_at,
+                }
+                for archive in archives
+            ]
+        try:
+            publish(entries=entries, generated_at=generated_at)
+        except Exception:
+            _LOG.warning("failed to publish encrypted archive recovery catalog", exc_info=True)
 
     def _record_packaged_archive(
         self,
@@ -1062,6 +1114,9 @@ def _apply_archive_receipt(
     receipt: CollectionArchiveUploadReceipt,
 ) -> None:
     archive.state = "uploaded"
+    archive.archive_storage_prefix = archive_storage_prefix_from_object_path(
+        receipt.archive.object_path
+    )
     archive.object_path = receipt.archive.object_path
     archive.stored_bytes = receipt.archive.stored_bytes
     archive.sha256 = receipt.archive_sha256
@@ -1080,6 +1135,39 @@ def _apply_archive_receipt(
     archive.ots_sha256 = receipt.proof_sha256
     archive.ots_stored_bytes = receipt.proof.stored_bytes
     archive.ots_uploaded_at = receipt.proof.uploaded_at
+
+
+def _ensure_archive_storage_prefix(
+    session: Session,
+    *,
+    upload: CollectionUploadRecord,
+    config: RuntimeConfig,
+) -> str:
+    if upload.archive_storage_prefix:
+        return upload.archive_storage_prefix.strip("/")
+    prefix = archive_storage_prefix_from_object_path(upload.archive_object_path)
+    if prefix is None:
+        prefix = _mint_archive_storage_prefix(session, config=config)
+    upload.archive_storage_prefix = prefix
+    return prefix
+
+
+def _mint_archive_storage_prefix(session: Session, *, config: RuntimeConfig) -> str:
+    for _ in range(16):
+        prefix = f"{config.glacier_prefix}/archives/{secrets.token_hex(16)}"
+        upload_exists = session.scalar(
+            select(CollectionUploadRecord.collection_id).where(
+                CollectionUploadRecord.archive_storage_prefix == prefix
+            )
+        )
+        archive_exists = session.scalar(
+            select(CollectionArchiveRecord.collection_id).where(
+                CollectionArchiveRecord.archive_storage_prefix == prefix
+            )
+        )
+        if upload_exists is None and archive_exists is None:
+            return prefix
+    raise RuntimeError("failed to mint a unique archive storage prefix")
 
 
 def _archive_receipt_to_json(receipt: CollectionArchiveUploadReceipt) -> str:

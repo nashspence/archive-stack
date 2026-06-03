@@ -23,7 +23,7 @@ Feature: Read-only hot storage browsing
       And collection "docs" has uploaded Glacier archive package
       When the client gets "/v1/collections/docs"
       Then the response status is 200
-      And the response collection glacier object_path is under "glacier/collections/"
+      And the response collection glacier object_path is under "glacier/archives/"
       When the client inspects the canonical archive-storage lifecycle configuration
       Then the storage lifecycle aborts incomplete multipart uploads after 3 days
       And the hot bucket contains object "collections/docs/tax/2022/invoice-123.pdf"
@@ -35,7 +35,7 @@ Feature: Read-only hot storage browsing
       And the hot bucket does not contain collection Glacier archive package for collection "docs"
 
     Scenario: The canonical harness enforces least-privilege bucket credentials
-      Then the hot credentials cannot write object "glacier/collections/forbidden/archive.tar" to the archive bucket
+      Then the hot credentials cannot write object "glacier/archives/forbidden/archive.tar" to the archive bucket
       And the archive credentials cannot write object "collections/forbidden-archive-write.txt" to the hot bucket
       And the archive credentials cannot write object ".riverhog/uploads/forbidden-archive-write" to the hot bucket
     Scenario: The canonical harness enforces least-privilege bucket reads and lists
@@ -45,7 +45,7 @@ Feature: Read-only hot storage browsing
       When the client gets "/v1/collections/docs"
       Then the response status is 200
       And the hot credentials cannot read collection Glacier archive package for collection "docs" from the archive bucket
-      And the hot credentials cannot list prefix "glacier/collections/" in the archive bucket
+      And the hot credentials cannot list prefix "glacier/archives/" in the archive bucket
       And the archive credentials cannot read object "collections/docs/tax/2022/invoice-123.pdf" from the hot bucket
       And the archive credentials cannot list prefix "collections/" in the hot bucket
       And the archive credentials cannot list prefix ".riverhog/uploads/" in the hot bucket

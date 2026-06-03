@@ -84,28 +84,47 @@ are staged. Riverhog creates one deterministic tar archive for the collection
 and stores it with sibling manifest/proof objects at:
 
 ```text
-{RIVERHOG_GLACIER_PREFIX}/collections/{collection_id}/archive.tar
-{RIVERHOG_GLACIER_PREFIX}/collections/{collection_id}/manifest.yml
-{RIVERHOG_GLACIER_PREFIX}/collections/{collection_id}/manifest.yml.ots
+{RIVERHOG_GLACIER_PREFIX}/archives/{opaque-archive-id}/archive.tar
+{RIVERHOG_GLACIER_PREFIX}/archives/{opaque-archive-id}/manifest.yml
+{RIVERHOG_GLACIER_PREFIX}/archives/{opaque-archive-id}/manifest.yml.ots
 ```
 
 The tar contains only the logical files and uses the configured Glacier storage
 class. The collection manifest and OTS proof are separate Standard S3 objects
-under the same collection prefix.
+under the same opaque archive prefix.
 
 When `RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION=age_scrypt`, those object names gain a
 `.age` suffix and the stored objects are standard binary age v1 scrypt files:
 
 ```text
-{RIVERHOG_GLACIER_PREFIX}/collections/{collection_id}/archive.tar.age
-{RIVERHOG_GLACIER_PREFIX}/collections/{collection_id}/manifest.yml.age
-{RIVERHOG_GLACIER_PREFIX}/collections/{collection_id}/manifest.yml.ots.age
+{RIVERHOG_GLACIER_PREFIX}/archives/{opaque-archive-id}/archive.tar.age
+{RIVERHOG_GLACIER_PREFIX}/archives/{opaque-archive-id}/manifest.yml.age
+{RIVERHOG_GLACIER_PREFIX}/archives/{opaque-archive-id}/manifest.yml.ots.age
 ```
+
+The opaque archive id is random, not a hash of the collection id. Riverhog
+persists the full archive storage prefix on the collection upload row before
+archive upload begins. Retries and restarts therefore resume against the same S3
+multipart upload and object keys without leaking collection slugs through object
+names. Previously recorded collection-id-based object paths remain readable.
 
 Riverhog still records and verifies the logical plaintext archive, manifest, and
 proof byte counts and SHA-256 hashes. S3 object metadata also records the
 encryption mode and plaintext size/hash so an encrypted object can be validated
 without confusing stored ciphertext bytes with collection bytes.
+
+After successful finalization, Riverhog refreshes two recovery aids under
+`{RIVERHOG_GLACIER_PREFIX}`:
+
+```text
+README.md
+catalog/collections.yml.age
+```
+
+The README is plaintext and explains generic standard-tool recovery using S3
+credentials, the archive passphrase, `age`, `tar`, and optional `ots`
+verification. The catalog is encrypted with the archive passphrase and maps
+private collection ids to the opaque archive object paths.
 
 For archives that use S3 multipart upload, Riverhog persists the multipart
 `UploadId`, object key, part size, archive length, archive SHA-256, and progress

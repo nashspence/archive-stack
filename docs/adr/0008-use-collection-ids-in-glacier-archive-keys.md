@@ -1,5 +1,7 @@
 # ADR-0008: Use Collection IDs in Glacier Archive Keys
 
+Status: Superseded by ADR-0025.
+
 ## Decision
 
 Riverhog stores each collection archive package under the canonical collection

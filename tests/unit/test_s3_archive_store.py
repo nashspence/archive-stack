@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+import yaml
 
 from riverhog_age import decrypt_age_scrypt
 from riverhog_core.collection_archives import (
@@ -32,6 +33,9 @@ from riverhog_core.stores.s3_archive_store import (
 )
 from tests.fixtures.crypto import FixtureProofStamper
 from tests.fixtures.data import DOCS_FILES
+
+DOCS_ARCHIVE_PREFIX = "glacier/archives/opaque-docs"
+LARGE_DOCS_ARCHIVE_PREFIX = "glacier/archives/opaque-large-docs"
 
 
 class _MissingObjectError(Exception):
@@ -324,12 +328,17 @@ def test_upload_collection_archive_package_uploads_collection_manifest_and_proof
     )
     package = _package()
 
-    receipt = store.upload_collection_archive_package(collection_id="docs", package=package)
+    receipt = store.upload_collection_archive_package(
+        collection_id="docs",
+        package=package,
+        archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
+    )
 
     assert receipt.archive.object_path.endswith("/archive.tar")
-    assert receipt.archive.object_path == "glacier/collections/docs/archive.tar"
-    assert receipt.manifest.object_path == "glacier/collections/docs/manifest.yml"
-    assert receipt.proof.object_path == "glacier/collections/docs/manifest.yml.ots"
+    assert receipt.archive.object_path == f"{DOCS_ARCHIVE_PREFIX}/archive.tar"
+    assert receipt.manifest.object_path == f"{DOCS_ARCHIVE_PREFIX}/manifest.yml"
+    assert receipt.proof.object_path == f"{DOCS_ARCHIVE_PREFIX}/manifest.yml.ots"
+    assert "collections/docs" not in receipt.archive.object_path
     assert receipt.manifest.stored_bytes == len(package.manifest_bytes)
     assert receipt.proof.stored_bytes == len(package.proof_bytes)
     assert receipt.archive.storage_class == "DEEP_ARCHIVE"
@@ -376,11 +385,16 @@ def test_encrypted_collection_archive_package_uploads_age_objects_and_restores_p
     )
     package = _package()
 
-    receipt = store.upload_collection_archive_package(collection_id="docs", package=package)
+    receipt = store.upload_collection_archive_package(
+        collection_id="docs",
+        package=package,
+        archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
+    )
 
-    assert receipt.archive.object_path == "glacier/collections/docs/archive.tar.age"
-    assert receipt.manifest.object_path == "glacier/collections/docs/manifest.yml.age"
-    assert receipt.proof.object_path == "glacier/collections/docs/manifest.yml.ots.age"
+    assert receipt.archive.object_path == f"{DOCS_ARCHIVE_PREFIX}/archive.tar.age"
+    assert receipt.manifest.object_path == f"{DOCS_ARCHIVE_PREFIX}/manifest.yml.age"
+    assert receipt.proof.object_path == f"{DOCS_ARCHIVE_PREFIX}/manifest.yml.ots.age"
+    assert "collections/docs" not in receipt.archive.object_path
     archive_head = client.objects[receipt.archive.object_path]
     manifest_head = client.objects[receipt.manifest.object_path]
     proof_head = client.objects[receipt.proof.object_path]
@@ -431,6 +445,7 @@ def test_encrypted_store_still_reads_legacy_unencrypted_archive_objects(
     receipt = plaintext_store.upload_collection_archive_package(
         collection_id="docs",
         package=package,
+        archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
     )
     encrypted_store = _store_with_client(
         monkeypatch,
@@ -453,6 +468,69 @@ def test_encrypted_store_still_reads_legacy_unencrypted_archive_objects(
     ) == package.manifest_bytes
 
 
+def test_publish_recovery_catalog_writes_generic_readme_and_encrypted_catalog(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    passphrase = "catalog archive passphrase"
+    store = _store_with_client(
+        monkeypatch,
+        tmp_path,
+        client,
+        glacier_archive_passphrase=passphrase,
+        glacier_archive_work_factor=12,
+    )
+
+    store.publish_recovery_catalog(
+        generated_at="2026-06-03T06:00:00Z",
+        entries=[
+            {
+                "collection_id": "2026/20260603T060000Z__private-family-photos",
+                "archive_storage_prefix": DOCS_ARCHIVE_PREFIX,
+                "archive_key": f"{DOCS_ARCHIVE_PREFIX}/archive.tar.age",
+                "manifest_key": f"{DOCS_ARCHIVE_PREFIX}/manifest.yml.age",
+                "proof_key": f"{DOCS_ARCHIVE_PREFIX}/manifest.yml.ots.age",
+                "archive_stored_bytes": 123,
+                "archive_plaintext_sha256": "a" * 64,
+                "backend": "s3",
+                "archive_storage_class": "DEEP_ARCHIVE",
+            }
+        ],
+    )
+
+    readme = client.objects["glacier/README.md"]["Body"].decode("utf-8")
+    assert "Riverhog" not in readme
+    assert "S3 credentials, token, or S3 login/session" in readme
+    assert "will fail until the CLI is authenticated" in readme
+    assert "AWS_SESSION_TOKEN" in readme
+    assert "archive passphrase" in readme
+    assert "age --decrypt -o collections.yml collections.yml.age" in readme
+    assert "Enter the archive passphrase when age prompts." in readme
+    catalog_object = client.objects["glacier/catalog/collections.yml.age"]
+    assert b"private-family-photos" not in catalog_object["Body"]
+    assert catalog_object["Metadata"][ENCRYPTION_METADATA] == AGE_SCRYPT_ENCRYPTION
+    catalog = yaml.safe_load(decrypt_age_scrypt(catalog_object["Body"], passphrase))
+    assert catalog == {
+        "format": "encrypted-archive-catalog-v1",
+        "generated_at": "2026-06-03T06:00:00Z",
+        "archives": [
+            {
+                "collection_id": "2026/20260603T060000Z__private-family-photos",
+                "archive_storage_prefix": DOCS_ARCHIVE_PREFIX,
+                "archive_key": f"{DOCS_ARCHIVE_PREFIX}/archive.tar.age",
+                "manifest_key": f"{DOCS_ARCHIVE_PREFIX}/manifest.yml.age",
+                "proof_key": f"{DOCS_ARCHIVE_PREFIX}/manifest.yml.ots.age",
+                "archive_stored_bytes": 123,
+                "archive_plaintext_sha256": "a" * 64,
+                "backend": "s3",
+                "archive_storage_class": "DEEP_ARCHIVE",
+                "archive_id": "opaque-docs",
+            }
+        ],
+    }
+
+
 def test_upload_collection_archive_package_streams_archive_with_multipart(
     monkeypatch,
     tmp_path: Path,
@@ -468,7 +546,11 @@ def test_upload_collection_archive_package_streams_archive_with_multipart(
     monkeypatch.setattr("riverhog_core.stores.s3_archive_store._MIN_MULTIPART_PART_SIZE", 4)
     package = _package()
 
-    receipt = store.upload_collection_archive_package(collection_id="docs", package=package)
+    receipt = store.upload_collection_archive_package(
+        collection_id="docs",
+        package=package,
+        archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
+    )
 
     archive_head = client.objects[receipt.archive.object_path]
     assert archive_head["Body"] == package.archive_bytes
@@ -505,6 +587,7 @@ def test_encrypted_collection_archive_package_resumes_existing_multipart_upload(
         store.upload_collection_archive_package(
             collection_id="large-docs",
             package=package,
+            archive_storage_prefix=LARGE_DOCS_ARCHIVE_PREFIX,
             multipart_tracker=tracker,
         )
 
@@ -519,10 +602,11 @@ def test_encrypted_collection_archive_package_resumes_existing_multipart_upload(
     receipt = store.upload_collection_archive_package(
         collection_id="large-docs",
         package=package,
+        archive_storage_prefix=LARGE_DOCS_ARCHIVE_PREFIX,
         multipart_tracker=tracker,
     )
 
-    assert receipt.archive.object_path == "glacier/collections/large-docs/archive.tar.age"
+    assert receipt.archive.object_path == f"{LARGE_DOCS_ARCHIVE_PREFIX}/archive.tar.age"
     assert client.completed_uploads == [first_upload_id]
     assert client.aborted_uploads == []
     assert tracker.state is None
@@ -557,6 +641,7 @@ def test_upload_collection_archive_package_tracks_parallel_multipart_progress(
     receipt = store.upload_collection_archive_package(
         collection_id="docs",
         package=package,
+        archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
         multipart_tracker=tracker,
     )
 
@@ -588,6 +673,7 @@ def test_upload_collection_archive_package_resumes_existing_multipart_upload(
         store.upload_collection_archive_package(
             collection_id="docs",
             package=package,
+            archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
             multipart_tracker=tracker,
         )
 
@@ -610,10 +696,11 @@ def test_upload_collection_archive_package_resumes_existing_multipart_upload(
     receipt = store.upload_collection_archive_package(
         collection_id="docs",
         package=seekable_package,
+        archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
         multipart_tracker=tracker,
     )
 
-    assert receipt.archive.object_path == "glacier/collections/docs/archive.tar"
+    assert receipt.archive.object_path == f"{DOCS_ARCHIVE_PREFIX}/archive.tar"
     assert client.completed_uploads == [first_upload_id]
     assert client.aborted_uploads == []
     assert tracker.state is None
@@ -639,7 +726,11 @@ def test_request_collection_archive_restore_requests_collection_manifest_and_pro
         glacier_storage_class="DEEP_ARCHIVE",
     )
     package = _package()
-    receipt = store.upload_collection_archive_package(collection_id="docs", package=package)
+    receipt = store.upload_collection_archive_package(
+        collection_id="docs",
+        package=package,
+        archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
+    )
 
     status = store.request_collection_archive_restore(
         collection_id="docs",
@@ -670,7 +761,11 @@ def test_intelligent_tiering_archive_access_is_not_treated_as_ready(
         glacier_storage_class="INTELLIGENT_TIERING",
     )
     package = _package()
-    receipt = store.upload_collection_archive_package(collection_id="docs", package=package)
+    receipt = store.upload_collection_archive_package(
+        collection_id="docs",
+        package=package,
+        archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
+    )
     client.objects[receipt.archive.object_path]["ArchiveStatus"] = "ARCHIVE_ACCESS"
 
     status = store.get_collection_archive_restore_status(
@@ -691,7 +786,11 @@ def test_iter_restored_collection_archive_streams_when_ready(
     client = _FakeS3Client()
     store = _store_with_client(monkeypatch, tmp_path, client)
     package = _package()
-    receipt = store.upload_collection_archive_package(collection_id="docs", package=package)
+    receipt = store.upload_collection_archive_package(
+        collection_id="docs",
+        package=package,
+        archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
+    )
 
     chunks = list(
         store.iter_restored_collection_archive(

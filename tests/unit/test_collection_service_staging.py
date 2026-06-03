@@ -229,11 +229,19 @@ class _StreamingOnlyUploadStore(_FakeUploadStore):
 
 
 class _FakeArchiveStore:
-    def upload_collection_archive_package(self, *, collection_id, package, multipart_tracker=None):
+    def upload_collection_archive_package(
+        self,
+        *,
+        collection_id,
+        package,
+        archive_storage_prefix=None,
+        multipart_tracker=None,
+    ):
         _ = multipart_tracker
-        object_path = f"glacier/collections/{collection_id}/archive.tar"
-        manifest_object_path = f"glacier/collections/{collection_id}/manifest.yml"
-        proof_object_path = f"glacier/collections/{collection_id}/manifest.yml.ots"
+        prefix = archive_storage_prefix or f"glacier/archives/fake-{collection_id}"
+        object_path = f"{prefix}/archive.tar"
+        manifest_object_path = f"{prefix}/manifest.yml"
+        proof_object_path = f"{prefix}/manifest.yml.ots"
         return CollectionArchiveUploadReceipt(
             archive=ArchiveUploadReceipt(
                 object_path=object_path,
@@ -305,11 +313,19 @@ class _CountingArchiveStore(_FakeArchiveStore):
     def __init__(self) -> None:
         self.uploads = 0
 
-    def upload_collection_archive_package(self, *, collection_id, package, multipart_tracker=None):
+    def upload_collection_archive_package(
+        self,
+        *,
+        collection_id,
+        package,
+        archive_storage_prefix=None,
+        multipart_tracker=None,
+    ):
         self.uploads += 1
         return super().upload_collection_archive_package(
             collection_id=collection_id,
             package=package,
+            archive_storage_prefix=archive_storage_prefix,
             multipart_tracker=multipart_tracker,
         )
 
@@ -318,11 +334,19 @@ class _RecordingArchiveStore(_FakeArchiveStore):
     def __init__(self) -> None:
         self.collection_ids: list[str] = []
 
-    def upload_collection_archive_package(self, *, collection_id, package, multipart_tracker=None):
+    def upload_collection_archive_package(
+        self,
+        *,
+        collection_id,
+        package,
+        archive_storage_prefix=None,
+        multipart_tracker=None,
+    ):
         self.collection_ids.append(collection_id)
         return super().upload_collection_archive_package(
             collection_id=collection_id,
             package=package,
+            archive_storage_prefix=archive_storage_prefix,
             multipart_tracker=multipart_tracker,
         )
 
@@ -331,8 +355,15 @@ class _AlwaysFailingArchiveStore(_FakeArchiveStore):
     def __init__(self) -> None:
         self.uploads = 0
 
-    def upload_collection_archive_package(self, *, collection_id, package, multipart_tracker=None):
-        _ = collection_id, package, multipart_tracker
+    def upload_collection_archive_package(
+        self,
+        *,
+        collection_id,
+        package,
+        archive_storage_prefix=None,
+        multipart_tracker=None,
+    ):
+        _ = collection_id, package, archive_storage_prefix, multipart_tracker
         self.uploads += 1
         raise RuntimeError("archive bucket unavailable")
 
@@ -341,13 +372,21 @@ class _FailOnceArchiveStore(_FakeArchiveStore):
     def __init__(self) -> None:
         self.uploads = 0
 
-    def upload_collection_archive_package(self, *, collection_id, package, multipart_tracker=None):
+    def upload_collection_archive_package(
+        self,
+        *,
+        collection_id,
+        package,
+        archive_storage_prefix=None,
+        multipart_tracker=None,
+    ):
         self.uploads += 1
         if self.uploads == 1:
             raise RuntimeError("archive bucket unavailable")
         return super().upload_collection_archive_package(
             collection_id=collection_id,
             package=package,
+            archive_storage_prefix=archive_storage_prefix,
             multipart_tracker=multipart_tracker,
         )
 

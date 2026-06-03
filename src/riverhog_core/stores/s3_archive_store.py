@@ -3,11 +3,14 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from collections.abc import Iterable, Iterator
+import secrets
+from collections.abc import Iterable, Iterator, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, TypedDict, cast
+
+import yaml
 
 from riverhog_age import (
     AEAD_TAG_SIZE,
@@ -18,8 +21,8 @@ from riverhog_age import (
     encrypt_age_scrypt,
     iter_decrypt_age_scrypt,
 )
+from riverhog_core.archive_object_paths import archive_id_from_storage_prefix
 from riverhog_core.collection_archives import CollectionArchivePackage
-from riverhog_core.fs_paths import normalize_collection_id
 from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadedPart,
     ArchiveMultipartUploadState,
@@ -42,6 +45,7 @@ _MIN_MULTIPART_PART_SIZE = 5 * 1024 * 1024
 _MAX_MULTIPART_PART_SIZE = 5 * 1024 * 1024 * 1024
 _MAX_MULTIPART_PARTS = 10_000
 _MAX_SINGLE_PUT_OBJECT_SIZE = 5 * 1024 * 1024 * 1024
+_OPAQUE_ARCHIVE_ID_BYTES = 16
 _LOG = logging.getLogger(__name__)
 
 
@@ -218,10 +222,22 @@ class S3ArchiveStore:
         self._bucket = config.glacier_bucket
         self._client = create_glacier_s3_client(config)
 
-    def _collection_object_keys(self, *, collection_id: str) -> dict[str, str]:
-        prefix = self._config.glacier_prefix
-        normalized_collection_id = normalize_collection_id(collection_id)
-        collection_prefix = f"{prefix}/collections/{normalized_collection_id}"
+    def new_collection_archive_storage_prefix(self) -> str:
+        archive_id = secrets.token_hex(_OPAQUE_ARCHIVE_ID_BYTES)
+        return f"{self._config.glacier_prefix}/archives/{archive_id}"
+
+    def _collection_object_keys(
+        self,
+        *,
+        collection_id: str,
+        archive_storage_prefix: str | None,
+    ) -> dict[str, str]:
+        _ = collection_id
+        collection_prefix = (
+            archive_storage_prefix.strip("/")
+            if archive_storage_prefix
+            else self.new_collection_archive_storage_prefix()
+        )
         suffix = ".age" if self._archive_encryption_enabled() else ""
         archive_key = f"{collection_prefix}/archive.tar{suffix}"
         return {
@@ -282,9 +298,13 @@ class S3ArchiveStore:
         *,
         collection_id: str,
         package: CollectionArchivePackage,
+        archive_storage_prefix: str | None = None,
         multipart_tracker: ArchiveMultipartUploadTracker | None = None,
     ) -> CollectionArchiveUploadReceipt:
-        keys = self._collection_object_keys(collection_id=collection_id)
+        keys = self._collection_object_keys(
+            collection_id=collection_id,
+            archive_storage_prefix=archive_storage_prefix,
+        )
         archive = self._put_collection_package_object(
             collection_id=collection_id,
             object_key=keys["archive"],
@@ -324,6 +344,67 @@ class S3ArchiveStore:
             proof_sha256=package.proof_sha256,
             archive_format=package.archive_format,
             compression=package.compression,
+        )
+
+    def publish_recovery_catalog(
+        self,
+        *,
+        entries: Sequence[dict[str, object]],
+        generated_at: str,
+    ) -> None:
+        self._put_bucket_readme()
+        catalog_key = f"{self._config.glacier_prefix}/catalog/collections.yml.age"
+        catalog_bytes = yaml.safe_dump(
+            {
+                "format": "encrypted-archive-catalog-v1",
+                "generated_at": generated_at,
+                "archives": [
+                    {
+                        key: value
+                        for key, value in {
+                            **entry,
+                            "archive_id": archive_id_from_storage_prefix(
+                                glacier_prefix=self._config.glacier_prefix,
+                                storage_prefix=cast(
+                                    str | None,
+                                    entry.get("archive_storage_prefix"),
+                                ),
+                            ),
+                        }.items()
+                        if value is not None
+                    }
+                    for entry in entries
+                ],
+            },
+            sort_keys=False,
+            allow_unicode=True,
+        ).encode("utf-8")
+        ciphertext = encrypt_age_scrypt(
+            catalog_bytes,
+            self._config.glacier_archive_passphrase,
+            log_n=self._config.glacier_archive_work_factor,
+        )
+        self._client.put_object(
+            Bucket=self._bucket,
+            Key=catalog_key,
+            Body=ciphertext,
+            ContentLength=len(ciphertext),
+            Metadata={
+                "archive-catalog-format": "encrypted-archive-catalog-v1",
+                ENCRYPTION_METADATA: AGE_SCRYPT_ENCRYPTION,
+                PLAINTEXT_BYTES_METADATA: str(len(catalog_bytes)),
+                PLAINTEXT_SHA256_METADATA: hashlib.sha256(catalog_bytes).hexdigest(),
+            },
+        )
+
+    def _put_bucket_readme(self) -> None:
+        content = _bucket_recovery_readme().encode("utf-8")
+        self._client.put_object(
+            Bucket=self._bucket,
+            Key=f"{self._config.glacier_prefix}/README.md",
+            Body=content,
+            ContentLength=len(content),
+            Metadata={"archive-readme-format": "encrypted-archive-readme-v1"},
         )
 
     def _put_collection_package_object(
@@ -1323,6 +1404,93 @@ def _combine_collection_restore_statuses(
         expires_at=_min_timestamp(status.expires_at for status in statuses),
         message="Collection archive package restore is still in progress.",
     )
+
+
+def _bucket_recovery_readme() -> str:
+    return """# Encrypted Archive Recovery
+
+This bucket or prefix stores encrypted archive packages. Object paths are opaque
+on purpose so that bucket listings, access logs, billing exports, and screenshots
+do not reveal private collection names.
+
+## What You Need
+
+- S3 credentials, token, or S3 login/session that can list and read this bucket or prefix.
+- The archive passphrase.
+- Standard recovery tools: an S3 CLI such as `aws`, `age`, `tar`, and optionally `ots`.
+
+S3 credentials and the archive passphrase are different secrets. The `aws`
+commands below will fail until the CLI is authenticated with S3 access. Common
+options include `aws configure`, `aws sso login --profile PROFILE`, environment
+variables such as `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and
+`AWS_SESSION_TOKEN`, or equivalent credentials for an S3-compatible provider.
+
+Do not put the archive passphrase directly in shell commands. The `age`
+commands below will prompt for it.
+
+## Find an Archive
+
+If `catalog/collections.yml.age` is present, download and decrypt it to map
+private collection labels to opaque archive IDs:
+
+```sh
+aws s3 cp s3://BUCKET/PREFIX/catalog/collections.yml.age .
+age --decrypt -o collections.yml collections.yml.age
+# Enter the archive passphrase when age prompts.
+```
+
+If there is no catalog, list the opaque archive directories:
+
+```sh
+aws s3 ls s3://BUCKET/PREFIX/archives/
+```
+
+Replace `BUCKET`, `PREFIX`, and `ARCHIVE_ID` in the examples below.
+
+## Inspect the Manifest
+
+Manifests and timestamp proofs are normally stored in regular S3 storage, so
+they can usually be downloaded immediately:
+
+```sh
+aws s3 cp s3://BUCKET/PREFIX/archives/ARCHIVE_ID/manifest.yml.age .
+age --decrypt -o manifest.yml manifest.yml.age
+# Enter the archive passphrase when age prompts.
+
+aws s3 cp s3://BUCKET/PREFIX/archives/ARCHIVE_ID/manifest.yml.ots.age .
+age --decrypt -o manifest.yml.ots manifest.yml.ots.age
+# Enter the same archive passphrase when age prompts.
+```
+
+Optional timestamp proof verification:
+
+```sh
+ots verify manifest.yml.ots -f manifest.yml
+```
+
+## Restore and Extract the Archive
+
+`archive.tar.age` may be in Glacier Deep Archive or another cold S3 storage
+class. If the object is not immediately readable, request a restore first:
+
+```sh
+aws s3api restore-object \\
+  --bucket BUCKET \\
+  --key PREFIX/archives/ARCHIVE_ID/archive.tar.age \\
+  --restore-request '{"Days":7,"GlacierJobParameters":{"Tier":"Bulk"}}'
+```
+
+After the restore is complete, download, decrypt, and extract:
+
+```sh
+aws s3 cp s3://BUCKET/PREFIX/archives/ARCHIVE_ID/archive.tar.age .
+age --decrypt -o archive.tar archive.tar.age
+# Enter the same archive passphrase when age prompts.
+
+mkdir restored
+tar -xf archive.tar -C restored
+```
+"""
 
 
 def _max_timestamp(values: Iterable[str | None]) -> str | None:

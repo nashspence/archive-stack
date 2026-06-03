@@ -166,7 +166,7 @@ Feature: riverhog CLI
       And stdout mentions "coverage:"
       And stdout mentions "paths: tax/2022/invoice-123.pdf"
       And stdout mentions "label=20260420T040001Z-1"
-      And stdout mentions "glacier_path: glacier/collections/"
+      And stdout mentions "glacier_path: glacier/archives/"
       And stdout mentions "measured_storage_bytes="
     Scenario: riverhog show does not overstate split physical coverage from one image part
       Given an archive with split planner fixtures

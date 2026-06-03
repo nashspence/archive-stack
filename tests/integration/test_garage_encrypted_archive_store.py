@@ -167,6 +167,7 @@ def test_encrypted_archive_multipart_resume_and_restore_against_garage(tmp_path:
         pytest.skip("set RIVERHOG_GARAGE_ARCHIVE_ENCRYPTION_TEST=1 to run against Garage")
 
     prefix = f"garage-encrypted-test/{uuid.uuid4().hex}"
+    archive_storage_prefix = f"{prefix}/archives/opaque"
     passphrase = os.environ.get(
         "RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE",
         "garage encrypted archive integration passphrase",
@@ -193,6 +194,7 @@ def test_encrypted_archive_multipart_resume_and_restore_against_garage(tmp_path:
             store.upload_collection_archive_package(
                 collection_id="garage-encrypted",
                 package=package,
+                archive_storage_prefix=archive_storage_prefix,
                 multipart_tracker=tracker,
             )
 
@@ -205,6 +207,7 @@ def test_encrypted_archive_multipart_resume_and_restore_against_garage(tmp_path:
         receipt = store.upload_collection_archive_package(
             collection_id="garage-encrypted",
             package=package,
+            archive_storage_prefix=archive_storage_prefix,
             multipart_tracker=tracker,
         )
 

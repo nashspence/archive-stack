@@ -96,6 +96,7 @@ class CollectionArchiveRecord(Base):
 
     collection_id: Mapped[str] = mapped_column(String, primary_key=True)
     state: Mapped[str] = mapped_column(String, default="pending")
+    archive_storage_prefix: Mapped[str | None] = mapped_column(String, nullable=True)
     object_path: Mapped[str | None] = mapped_column(String, nullable=True)
     stored_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -494,6 +495,7 @@ class CollectionUploadRecord(Base):
     archive_last_failure_notification_at: Mapped[str | None] = mapped_column(
         String, nullable=True
     )
+    archive_storage_prefix: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_object_path: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_multipart_upload_id: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_multipart_part_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

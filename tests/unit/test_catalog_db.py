@@ -99,6 +99,30 @@ def test_migrate_schema_drops_removed_protection_mirror_table(tmp_path: Path) ->
     assert not inspect(engine).has_table("collection_protection_mirrors")
 
 
+def test_migrate_schema_adds_archive_storage_prefix_columns(tmp_path: Path) -> None:
+    engine = create_catalog_engine(tmp_path / "catalog.sqlite3")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)"))
+        for version in range(1, 25):
+            conn.execute(
+                text("INSERT INTO schema_migrations (version) VALUES (:v)"),
+                {"v": version},
+            )
+        conn.execute(text("CREATE TABLE collection_uploads (collection_id TEXT PRIMARY KEY)"))
+        conn.execute(text("CREATE TABLE collection_archives (collection_id TEXT PRIMARY KEY)"))
+
+    migrate_schema(engine)
+
+    upload_columns = {
+        column["name"] for column in inspect(engine).get_columns("collection_uploads")
+    }
+    archive_columns = {
+        column["name"] for column in inspect(engine).get_columns("collection_archives")
+    }
+    assert "archive_storage_prefix" in upload_columns
+    assert "archive_storage_prefix" in archive_columns
+
+
 def test_backfill_skips_images_with_persisted_manifest_topology(
     tmp_path: Path,
     monkeypatch,

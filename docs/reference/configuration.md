@@ -125,27 +125,45 @@ Enables path-style requests for Glacier-upload backends that require them.
 - type: normalized path prefix
 - default: `glacier`
 
-Collection Glacier archive packages use canonical collection ids below the configured prefix:
+New collection Glacier archive packages use opaque archive ids below the
+configured prefix:
 
 ```text
-glacier/collections/{year}/{timestamp}__{slug}/archive.tar
-glacier/collections/{year}/{timestamp}__{slug}/manifest.yml
-glacier/collections/{year}/{timestamp}__{slug}/manifest.yml.ots
+glacier/archives/{opaque-archive-id}/archive.tar
+glacier/archives/{opaque-archive-id}/manifest.yml
+glacier/archives/{opaque-archive-id}/manifest.yml.ots
 ```
 
 When `RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION=age_scrypt`, Riverhog appends
 `.age` to each object name and stores standard binary age v1 scrypt files:
 
 ```text
-glacier/collections/{year}/{timestamp}__{slug}/archive.tar.age
-glacier/collections/{year}/{timestamp}__{slug}/manifest.yml.age
-glacier/collections/{year}/{timestamp}__{slug}/manifest.yml.ots.age
+glacier/archives/{opaque-archive-id}/archive.tar.age
+glacier/archives/{opaque-archive-id}/manifest.yml.age
+glacier/archives/{opaque-archive-id}/manifest.yml.ots.age
 ```
+
+The opaque archive id is randomly minted and persisted before upload starts, so
+archive multipart retries and app restarts keep using the same object keys
+without exposing collection slugs in S3 listings. Existing collection-id-based
+archive keys remain readable when they are already recorded in the catalog.
 
 The archive tar contains only the logical collection files and uses the configured
 Glacier storage class. Riverhog stores the collection manifest and its matching
 OpenTimestamps proof as sibling Standard S3 objects so operators can inspect and
 verify them without restoring Deep Archive data.
+
+Riverhog also publishes recovery aids under the configured prefix:
+
+```text
+glacier/README.md
+glacier/catalog/collections.yml.age
+```
+
+`README.md` is plaintext, collection-agnostic guidance for recovering data with
+standard S3, `age`, and `tar` tools. It contains no collection names. The catalog
+is encrypted with the archive passphrase and maps private collection ids to their
+opaque archive object paths.
 
 ## `RIVERHOG_GLACIER_BACKEND`
 
