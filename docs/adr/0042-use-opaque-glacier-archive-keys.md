@@ -1,4 +1,4 @@
-# ADR-0025: Use Opaque Glacier Archive Keys
+# ADR-0042: Use Opaque Glacier Archive Keys
 
 ## Decision
 
