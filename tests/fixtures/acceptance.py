@@ -2050,6 +2050,14 @@ class AcceptanceGlacierUploadService:
         return requeued
 
     @_with_state_lock
+    def publish_recovery_catalog(self) -> int:
+        return sum(
+            1
+            for archive in self.state.collection_archives.values()
+            if archive.state == "uploaded"
+        )
+
+    @_with_state_lock
     def process_due_uploads(self, *, limit: int = 1) -> int:
         attempted = 0
         for collection_id, upload in sorted(self.state.collection_uploads.items()):

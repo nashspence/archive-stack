@@ -441,6 +441,9 @@ class _StubGlacierUploads:
         assert limit >= 0
         return 0
 
+    def publish_recovery_catalog(self) -> int:
+        return 0
+
     def process_due_uploads(self, *, limit: int) -> None:
         assert limit >= 0
 
@@ -813,15 +816,22 @@ def test_planner_refresh_runs_immediately_on_startup() -> None:
 
 def test_failed_archive_retry_audit_runs_immediately_on_startup() -> None:
     retry_audit_ran = threading.Event()
+    catalog_refresh_ran = threading.Event()
 
     class RecordingGlacierUploads(_StubGlacierUploads):
         def __init__(self) -> None:
             self.retry_audit_calls = 0
+            self.catalog_refresh_calls = 0
 
         def requeue_failed_uploads_for_startup(self, *, limit: int) -> int:
             assert limit == 100
             self.retry_audit_calls += 1
             retry_audit_ran.set()
+            return 0
+
+        def publish_recovery_catalog(self) -> int:
+            self.catalog_refresh_calls += 1
+            catalog_refresh_ran.set()
             return 0
 
     glacier_uploads = RecordingGlacierUploads()
@@ -835,8 +845,10 @@ def test_failed_archive_retry_audit_runs_immediately_on_startup() -> None:
 
     with TestClient(app):
         assert retry_audit_ran.wait(timeout=2.0)
+        assert catalog_refresh_ran.wait(timeout=2.0)
 
     assert glacier_uploads.retry_audit_calls == 1
+    assert glacier_uploads.catalog_refresh_calls == 1
 
 
 def test_healthz_is_available_and_hidden_from_openapi() -> None:

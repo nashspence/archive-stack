@@ -38,11 +38,12 @@ class _RiverhogAccessLogFilter(logging.Filter):
         method: str | None = None
         path: str | None = None
         status_code: int | None = None
-        if len(record.args) >= 5:
-            method = str(record.args[1])
-            path = str(record.args[2]).split("?", 1)[0]
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 5:
+            method = str(args[1])
+            path = str(args[2]).split("?", 1)[0]
             try:
-                status_code = int(record.args[4])
+                status_code = int(str(args[4]))
             except (TypeError, ValueError):
                 status_code = None
         else:
@@ -108,11 +109,18 @@ def _process_glacier_uploads(
     container: ServiceContainer,
     *,
     startup_failed_retry_audit: bool = False,
+    startup_recovery_catalog_refresh: bool = False,
 ) -> None:
     if startup_failed_retry_audit:
         retried = container.glacier_uploads.requeue_failed_uploads_for_startup(limit=100)
         if retried:
             _LOG.info("startup requeued failed collection archive uploads: count=%s", retried)
+    if startup_recovery_catalog_refresh:
+        archive_count = container.glacier_uploads.publish_recovery_catalog()
+        _LOG.info(
+            "startup refreshed encrypted archive recovery catalog: archives=%s",
+            archive_count,
+        )
     container.glacier_uploads.process_due_uploads(limit=1)
 
 
@@ -178,13 +186,15 @@ async def _run_glacier_upload_reaper(
             startup_failed_retry_audit = False
             if current_startup_failed_retry_audit:
                 _LOG.info(
-                    "startup failed archive-upload retry audit queued in background; "
+                    "startup failed archive-upload retry audit and recovery catalog refresh "
+                    "queued in background; "
                     "API startup is not blocked"
                 )
             await asyncio.to_thread(
                 _process_glacier_uploads,
                 container,
                 startup_failed_retry_audit=current_startup_failed_retry_audit,
+                startup_recovery_catalog_refresh=current_startup_failed_retry_audit,
             )
         except asyncio.CancelledError:
             raise

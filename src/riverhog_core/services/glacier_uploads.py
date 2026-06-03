@@ -123,6 +123,9 @@ class SqlAlchemyGlacierUploadService:
                 )
         return requeued
 
+    def publish_recovery_catalog(self) -> int:
+        return self._publish_recovery_catalog()
+
     def process_due_uploads(self, *, limit: int = 1) -> int:
         if limit < 1:
             return 0
@@ -612,10 +615,10 @@ class SqlAlchemyGlacierUploadService:
             upload.archive_phase_updated_at = current_text
             upload.archive_failure = None
 
-    def _publish_recovery_catalog(self) -> None:
+    def _publish_recovery_catalog(self) -> int:
         publish = getattr(self._archive_store, "publish_recovery_catalog", None)
         if not callable(publish):
-            return
+            return 0
         generated_at = _isoformat_z(utcnow())
         with session_scope(self._session_factory) as session:
             archives = list(
@@ -651,6 +654,8 @@ class SqlAlchemyGlacierUploadService:
             publish(entries=entries, generated_at=generated_at)
         except Exception:
             _LOG.warning("failed to publish encrypted archive recovery catalog", exc_info=True)
+            return 0
+        return len(entries)
 
     def _record_packaged_archive(
         self,
