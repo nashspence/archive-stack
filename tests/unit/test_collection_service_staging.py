@@ -239,9 +239,9 @@ class _FakeArchiveStore:
     ):
         _ = multipart_tracker
         prefix = archive_storage_prefix or f"glacier/archives/fake-{collection_id}"
-        object_path = f"{prefix}/archive.tar"
-        manifest_object_path = f"{prefix}/manifest.yml"
-        proof_object_path = f"{prefix}/manifest.yml.ots"
+        object_path = f"{prefix}/archive.tar.age"
+        manifest_object_path = f"{prefix}/manifest.yml.age"
+        proof_object_path = f"{prefix}/manifest.yml.ots.age"
         return CollectionArchiveUploadReceipt(
             archive=ArchiveUploadReceipt(
                 object_path=object_path,
@@ -729,8 +729,8 @@ def test_planner_worker_restores_missing_artifact_cache_from_archive_store(
         files=[CollectionArchiveFile(path=relpath, content=content, sha256=sha256)],
         stamper=FixtureProofStamper(),
     )
-    manifest_object_path = f"glacier/collections/{collection_id}/manifest.yml"
-    proof_object_path = f"glacier/collections/{collection_id}/manifest.yml.ots"
+    manifest_object_path = f"glacier/archives/opaque-{collection_id}/manifest.yml.age"
+    proof_object_path = f"glacier/archives/opaque-{collection_id}/manifest.yml.ots.age"
     archive_store.store_collection_artifacts(
         manifest_object_path=manifest_object_path,
         manifest_bytes=package.manifest_bytes,
@@ -756,7 +756,7 @@ def test_planner_worker_restores_missing_artifact_cache_from_archive_store(
             CollectionArchiveRecord(
                 collection_id=collection_id,
                 state="uploaded",
-                object_path=f"glacier/collections/{collection_id}/archive.tar",
+                object_path=f"glacier/archives/opaque-{collection_id}/archive.tar.age",
                 stored_bytes=package.archive_size,
                 sha256=package.archive_sha256,
                 manifest_object_path=manifest_object_path,
@@ -1308,7 +1308,7 @@ def test_successful_archive_emits_only_finalized_operator_webhook(
     assert archive_store.uploads == 1
     assert [payload["event"] for payload in webhook_payloads] == ["collections.finalized"]
     assert webhook_payloads[0]["collection_id"] == collection_id
-    assert webhook_payloads[0]["archive_object_path"].endswith("/archive.tar")
+    assert webhook_payloads[0]["archive_object_path"].endswith("/archive.tar.age")
     assert webhook_payloads[0]["files_uploaded"] == 1
 
 

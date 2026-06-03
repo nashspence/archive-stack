@@ -265,8 +265,8 @@ def test_format_glacier_report_surfaces_pricing_basis_and_collection_storage() -
                     "bytes": 33,
                     "glacier": {"state": "uploaded"},
                     "collection_manifest": {
-                        "object_path": "glacier/collections/abc/manifest.yml",
-                        "ots_object_path": "glacier/collections/abc/manifest.yml.ots",
+                        "object_path": "glacier/archives/opaque-abc/manifest.yml.age",
+                        "ots_object_path": "glacier/archives/opaque-abc/manifest.yml.ots.age",
                     },
                     "archive_format": "tar",
                     "compression": "none",

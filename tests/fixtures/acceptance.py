@@ -598,7 +598,7 @@ class AcceptanceState:
         self.collection_glacier_status_by_collection[CollectionId(normalized_collection_id)] = (
             GlacierArchiveStatus(
                 state=GlacierState.UPLOADED,
-                object_path=f"{_fixture_archive_prefix(normalized_collection_id)}/archive.tar",
+                object_path=f"{_fixture_archive_prefix(normalized_collection_id)}/archive.tar.age",
                 stored_bytes=sum(record.bytes for record in records),
                 backend="s3",
                 storage_class="DEEP_ARCHIVE",
@@ -864,9 +864,9 @@ class AcceptanceState:
         if status.state != GlacierState.UPLOADED:
             return None
         return CollectionManifestStatus(
-            object_path=f"{_fixture_archive_prefix(collection_id)}/manifest.yml",
+            object_path=f"{_fixture_archive_prefix(collection_id)}/manifest.yml.age",
             sha256="0" * 64,
-            ots_object_path=f"{_fixture_archive_prefix(collection_id)}/manifest.yml.ots",
+            ots_object_path=f"{_fixture_archive_prefix(collection_id)}/manifest.yml.ots.age",
             ots_state="uploaded",
             ots_sha256="1" * 64,
         )
@@ -2568,10 +2568,12 @@ class AcceptanceRecoverySessionService:
                     id=collection_id,
                     glacier=self.state.collection_glacier_status(str(collection_id)),
                     collection_manifest=CollectionManifestStatus(
-                        object_path=f"{_fixture_archive_prefix(str(collection_id))}/manifest.yml",
+                        object_path=(
+                            f"{_fixture_archive_prefix(str(collection_id))}/manifest.yml.age"
+                        ),
                         sha256="0" * 64,
                         ots_object_path=(
-                            f"{_fixture_archive_prefix(str(collection_id))}/manifest.yml.ots"
+                            f"{_fixture_archive_prefix(str(collection_id))}/manifest.yml.ots.age"
                         ),
                         ots_state="uploaded",
                         ots_sha256="1" * 64,
@@ -2937,11 +2939,11 @@ def _acceptance_glacier_collections(
                 collection_manifest=(
                     CollectionManifestStatus(
                         object_path=(
-                            f"{_fixture_archive_prefix(normalized_collection_id)}/manifest.yml"
+                            f"{_fixture_archive_prefix(normalized_collection_id)}/manifest.yml.age"
                         ),
                         sha256="0" * 64,
                         ots_object_path=(
-                            f"{_fixture_archive_prefix(normalized_collection_id)}/manifest.yml.ots"
+                            f"{_fixture_archive_prefix(normalized_collection_id)}/manifest.yml.ots.age"
                         ),
                         ots_state="uploaded",
                         ots_sha256="1" * 64,

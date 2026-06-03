@@ -238,12 +238,11 @@ class S3ArchiveStore:
             if archive_storage_prefix
             else self.new_collection_archive_storage_prefix()
         )
-        suffix = ".age" if self._archive_encryption_enabled() else ""
-        archive_key = f"{collection_prefix}/archive.tar{suffix}"
+        archive_key = f"{collection_prefix}/archive.tar.age"
         return {
             "archive": archive_key,
-            "manifest": f"{collection_prefix}/manifest.yml{suffix}",
-            "proof": f"{collection_prefix}/manifest.yml.ots{suffix}",
+            "manifest": f"{collection_prefix}/manifest.yml.age",
+            "proof": f"{collection_prefix}/manifest.yml.ots.age",
         }
 
     def _head_object(self, *, object_key: str) -> dict[str, Any] | None:
@@ -421,7 +420,7 @@ class S3ArchiveStore:
     ) -> ArchiveUploadReceipt:
         logical_content_length = content_length
         logical_sha256 = sha256
-        encryption = AGE_SCRYPT_ENCRYPTION if self._archive_encryption_enabled() else "none"
+        encryption = AGE_SCRYPT_ENCRYPTION
         storage_class = _collection_object_storage_class(
             archive_storage_class=self._config.glacier_storage_class,
             kind=kind,
@@ -437,29 +436,26 @@ class S3ArchiveStore:
             )
 
         age_session: ResumableAgeScryptSession | None = None
-        if encryption == AGE_SCRYPT_ENCRYPTION:
-            if kind == "archive":
-                age_session = ResumableAgeScryptSession.create(
-                    self._config.glacier_archive_passphrase,
-                    log_n=self._config.glacier_archive_work_factor,
-                    plaintext_size=package.archive_size,
-                )
-                content_length = age_ciphertext_len_for_plaintext_len(
-                    package.archive_size,
-                    age_prefix_len=len(age_session.age_prefix),
-                )
-                content = _iter_encrypted_archive(package=package, session=age_session)
-            else:
-                plaintext = _single_put_body(content)
-                content = encrypt_age_scrypt(
-                    plaintext,
-                    self._config.glacier_archive_passphrase,
-                    log_n=self._config.glacier_archive_work_factor,
-                )
-                content_length = len(content)
-                sha256 = hashlib.sha256(content).hexdigest()
+        if kind == "archive":
+            age_session = ResumableAgeScryptSession.create(
+                self._config.glacier_archive_passphrase,
+                log_n=self._config.glacier_archive_work_factor,
+                plaintext_size=package.archive_size,
+            )
+            content_length = age_ciphertext_len_for_plaintext_len(
+                package.archive_size,
+                age_prefix_len=len(age_session.age_prefix),
+            )
+            content = _iter_encrypted_archive(package=package, session=age_session)
         else:
-            sha256 = logical_sha256
+            plaintext = _single_put_body(content)
+            content = encrypt_age_scrypt(
+                plaintext,
+                self._config.glacier_archive_passphrase,
+                log_n=self._config.glacier_archive_work_factor,
+            )
+            content_length = len(content)
+            sha256 = hashlib.sha256(content).hexdigest()
 
         uploaded_at = _utc_now()
         extra_args: dict[str, Any] = {
@@ -488,7 +484,7 @@ class S3ArchiveStore:
         ) != "STANDARD":
             extra_args["StorageClass"] = storage_class
         if _should_use_multipart(content=content, content_length=content_length):
-            if encryption == AGE_SCRYPT_ENCRYPTION and kind == "archive":
+            if kind == "archive":
                 if age_session is None:
                     raise RuntimeError("encrypted archive upload session was not initialized")
                 self._put_encrypted_archive_object_multipart(
@@ -1283,13 +1279,10 @@ class S3ArchiveStore:
         body = response["Body"]
         try:
             chunks = body.iter_chunks(chunk_size=1024 * 1024)
-            if _head_encryption(head) == AGE_SCRYPT_ENCRYPTION:
-                yield from iter_decrypt_age_scrypt(
-                    chunks,
-                    self._config.glacier_archive_passphrase,
-                )
-            else:
-                yield from chunks
+            yield from iter_decrypt_age_scrypt(
+                chunks,
+                self._config.glacier_archive_passphrase,
+            )
         finally:
             close = getattr(body, "close", None)
             if callable(close):
@@ -1344,9 +1337,7 @@ class S3ArchiveStore:
             close = getattr(body, "close", None)
             if callable(close):
                 close()
-        if _head_encryption(head) == AGE_SCRYPT_ENCRYPTION:
-            return decrypt_age_scrypt(content, self._config.glacier_archive_passphrase)
-        return content
+        return decrypt_age_scrypt(content, self._config.glacier_archive_passphrase)
 
     def cleanup_collection_archive_restore(
         self,
@@ -1367,10 +1358,6 @@ class S3ArchiveStore:
     def _is_aws_restore_backend(self) -> bool:
         endpoint = self._config.glacier_endpoint_url.casefold()
         return self._config.glacier_backend.casefold() == "aws" or "amazonaws.com" in endpoint
-
-    def _archive_encryption_enabled(self) -> bool:
-        return self._config.glacier_archive_encryption == "age_scrypt"
-
 
 def _collection_restore_paths(
     *,
@@ -1514,10 +1501,6 @@ def _head_metadata(head: dict[str, Any]) -> dict[str, str]:
     return {str(key).lower(): str(value) for key, value in metadata.items()}
 
 
-def _head_encryption(head: dict[str, Any]) -> str:
-    return _head_metadata(head).get(ENCRYPTION_METADATA, "none")
-
-
 def _validate_uploaded_collection_metadata(
     *,
     object_key: str,
@@ -1526,7 +1509,6 @@ def _validate_uploaded_collection_metadata(
     expected_sha256: str | None = None,
 ) -> None:
     metadata = _head_metadata(head)
-    stored_bytes = int(head.get("ContentLength", 0))
     metadata_bytes = metadata.get(COLLECTION_BYTES_METADATA)
     metadata_sha256 = metadata.get(COLLECTION_SHA256_METADATA)
     if metadata_bytes is None or metadata_sha256 is None:
@@ -1539,14 +1521,6 @@ def _validate_uploaded_collection_metadata(
         raise RuntimeError(
             f"Glacier object has invalid collection byte metadata: {object_key}"
         ) from exc
-    if (
-        expected_bytes is None
-        and _head_encryption(head) == "none"
-        and collection_bytes != stored_bytes
-    ):
-        raise RuntimeError(
-            f"Glacier object collection byte metadata does not match size: {object_key}"
-        )
     if expected_bytes is not None and collection_bytes != expected_bytes:
         raise RuntimeError(
             f"Glacier object size does not match collection package member: {object_key}"

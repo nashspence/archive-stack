@@ -84,29 +84,21 @@ are staged. Riverhog creates one deterministic tar archive for the collection
 and stores it with sibling manifest/proof objects at:
 
 ```text
-{RIVERHOG_GLACIER_PREFIX}/archives/{opaque-archive-id}/archive.tar
-{RIVERHOG_GLACIER_PREFIX}/archives/{opaque-archive-id}/manifest.yml
-{RIVERHOG_GLACIER_PREFIX}/archives/{opaque-archive-id}/manifest.yml.ots
-```
-
-The tar contains only the logical files and uses the configured Glacier storage
-class. The collection manifest and OTS proof are separate Standard S3 objects
-under the same opaque archive prefix.
-
-When `RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION=age_scrypt`, those object names gain a
-`.age` suffix and the stored objects are standard binary age v1 scrypt files:
-
-```text
 {RIVERHOG_GLACIER_PREFIX}/archives/{opaque-archive-id}/archive.tar.age
 {RIVERHOG_GLACIER_PREFIX}/archives/{opaque-archive-id}/manifest.yml.age
 {RIVERHOG_GLACIER_PREFIX}/archives/{opaque-archive-id}/manifest.yml.ots.age
 ```
 
+The stored objects are standard binary age v1 scrypt files. The encrypted tar
+contains only the logical files and uses the configured Glacier storage class.
+The encrypted collection manifest and OTS proof are separate Standard S3 objects
+under the same opaque archive prefix.
+
 The opaque archive id is random, not a hash of the collection id. Riverhog
 persists the full archive storage prefix on the collection upload row before
 archive upload begins. Retries and restarts therefore resume against the same S3
 multipart upload and object keys without leaking collection slugs through object
-names. Previously recorded collection-id-based object paths remain readable.
+names.
 
 Riverhog still records and verifies the logical plaintext archive, manifest, and
 proof byte counts and SHA-256 hashes. S3 object metadata also records the

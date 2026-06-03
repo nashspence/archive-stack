@@ -95,7 +95,7 @@ def _seed_finalized_image(sqlite_path: Path, image_root: Path) -> None:
             CollectionArchiveRecord(
                 collection_id="docs",
                 state="uploaded",
-                object_path="glacier/collections/docs/archive.tar",
+                object_path="glacier/archives/opaque-docs/archive.tar.age",
                 stored_bytes=123,
                 backend="s3",
                 storage_class="DEEP_ARCHIVE",

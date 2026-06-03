@@ -313,11 +313,12 @@ def _store_with_client(
     return S3ArchiveStore(_config(tmp_path, **config_overrides))
 
 
-def test_upload_collection_archive_package_uploads_collection_manifest_and_proof_objects(
+def test_upload_collection_archive_package_uploads_encrypted_manifest_and_proof_objects(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     client = _FakeS3Client()
+    passphrase = "aws encrypted archive test passphrase"
     store = _store_with_client(
         monkeypatch,
         tmp_path,
@@ -325,6 +326,8 @@ def test_upload_collection_archive_package_uploads_collection_manifest_and_proof
         glacier_backend="aws",
         glacier_endpoint_url="https://s3.us-west-2.amazonaws.com",
         glacier_storage_class="DEEP_ARCHIVE",
+        glacier_archive_passphrase=passphrase,
+        glacier_archive_work_factor=12,
     )
     package = _package()
 
@@ -334,13 +337,10 @@ def test_upload_collection_archive_package_uploads_collection_manifest_and_proof
         archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
     )
 
-    assert receipt.archive.object_path.endswith("/archive.tar")
-    assert receipt.archive.object_path == f"{DOCS_ARCHIVE_PREFIX}/archive.tar"
-    assert receipt.manifest.object_path == f"{DOCS_ARCHIVE_PREFIX}/manifest.yml"
-    assert receipt.proof.object_path == f"{DOCS_ARCHIVE_PREFIX}/manifest.yml.ots"
+    assert receipt.archive.object_path == f"{DOCS_ARCHIVE_PREFIX}/archive.tar.age"
+    assert receipt.manifest.object_path == f"{DOCS_ARCHIVE_PREFIX}/manifest.yml.age"
+    assert receipt.proof.object_path == f"{DOCS_ARCHIVE_PREFIX}/manifest.yml.ots.age"
     assert "collections/docs" not in receipt.archive.object_path
-    assert receipt.manifest.stored_bytes == len(package.manifest_bytes)
-    assert receipt.proof.stored_bytes == len(package.proof_bytes)
     assert receipt.archive.storage_class == "DEEP_ARCHIVE"
     assert receipt.manifest.storage_class == "STANDARD"
     assert receipt.proof.storage_class == "STANDARD"
@@ -354,12 +354,15 @@ def test_upload_collection_archive_package_uploads_collection_manifest_and_proof
         receipt.manifest.object_path,
         receipt.proof.object_path,
     }
-    assert manifest_head["Body"] == package.manifest_bytes
-    assert proof_head["Body"] == package.proof_bytes
+    assert manifest_head["Body"] != package.manifest_bytes
+    assert proof_head["Body"] != package.proof_bytes
+    assert decrypt_age_scrypt(manifest_head["Body"], passphrase) == package.manifest_bytes
+    assert decrypt_age_scrypt(proof_head["Body"], passphrase) == package.proof_bytes
     assert archive_head["StorageClass"] == "DEEP_ARCHIVE"
     assert "StorageClass" not in manifest_head
     assert "StorageClass" not in proof_head
     archive_metadata = archive_head["Metadata"]
+    assert archive_metadata[ENCRYPTION_METADATA] == AGE_SCRYPT_ENCRYPTION
     assert archive_metadata[COLLECTION_BYTES_METADATA] == str(len(package.archive_bytes))
     assert archive_metadata[COLLECTION_SHA256_METADATA] == package.archive_sha256
     assert archive_metadata["riverhog-archive-format"] == "tar"
@@ -435,39 +438,6 @@ def test_encrypted_collection_archive_package_uploads_age_objects_and_restores_p
     )
 
 
-def test_encrypted_store_still_reads_legacy_unencrypted_archive_objects(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    client = _FakeS3Client()
-    plaintext_store = _store_with_client(monkeypatch, tmp_path, client)
-    package = _package()
-    receipt = plaintext_store.upload_collection_archive_package(
-        collection_id="docs",
-        package=package,
-        archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
-    )
-    encrypted_store = _store_with_client(
-        monkeypatch,
-        tmp_path,
-        client,
-        glacier_archive_encryption="age_scrypt",
-        glacier_archive_passphrase="legacy-read-passphrase",
-        glacier_archive_work_factor=12,
-    )
-
-    assert b"".join(
-        encrypted_store.iter_restored_collection_archive(
-            collection_id="docs",
-            object_path=receipt.archive.object_path,
-        )
-    ) == package.archive_bytes
-    assert encrypted_store.read_restored_collection_manifest(
-        collection_id="docs",
-        object_path=receipt.manifest.object_path,
-    ) == package.manifest_bytes
-
-
 def test_publish_recovery_catalog_writes_generic_readme_and_encrypted_catalog(
     monkeypatch,
     tmp_path: Path,
@@ -531,38 +501,6 @@ def test_publish_recovery_catalog_writes_generic_readme_and_encrypted_catalog(
     }
 
 
-def test_upload_collection_archive_package_streams_archive_with_multipart(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    client = _FakeS3Client()
-    store = _store_with_client(
-        monkeypatch,
-        tmp_path,
-        client,
-        glacier_multipart_part_bytes=4,
-        glacier_multipart_concurrency=1,
-    )
-    monkeypatch.setattr("riverhog_core.stores.s3_archive_store._MIN_MULTIPART_PART_SIZE", 4)
-    package = _package()
-
-    receipt = store.upload_collection_archive_package(
-        collection_id="docs",
-        package=package,
-        archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
-    )
-
-    archive_head = client.objects[receipt.archive.object_path]
-    assert archive_head["Body"] == package.archive_bytes
-    assert receipt.archive.object_path not in client.put_object_keys
-    assert client.completed_uploads == ["upload-1"]
-    assert client.aborted_uploads == []
-    assert client.uploads == {}
-    assert client.uploaded_part_sizes[:-1]
-    assert all(size == 4 for size in client.uploaded_part_sizes[:-1])
-    assert archive_head["Metadata"][COLLECTION_SHA256_METADATA] == package.archive_sha256
-
-
 def test_encrypted_collection_archive_package_resumes_existing_multipart_upload(
     monkeypatch,
     tmp_path: Path,
@@ -620,96 +558,6 @@ def test_encrypted_collection_archive_package_resumes_existing_multipart_upload(
         )
     )
     assert restored_archive == package.archive_bytes
-
-
-def test_upload_collection_archive_package_tracks_parallel_multipart_progress(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    client = _FakeS3Client()
-    store = _store_with_client(
-        monkeypatch,
-        tmp_path,
-        client,
-        glacier_multipart_part_bytes=4,
-        glacier_multipart_concurrency=2,
-    )
-    tracker = _FakeMultipartTracker()
-    monkeypatch.setattr("riverhog_core.stores.s3_archive_store._MIN_MULTIPART_PART_SIZE", 4)
-    package = _package()
-
-    receipt = store.upload_collection_archive_package(
-        collection_id="docs",
-        package=package,
-        archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
-        multipart_tracker=tracker,
-    )
-
-    expected_parts = (len(package.archive_bytes) + 3) // 4
-    assert client.objects[receipt.archive.object_path]["Body"] == package.archive_bytes
-    assert client.completed_uploads == ["upload-1"]
-    assert tracker.progress[-1] == (len(package.archive_bytes), expected_parts, expected_parts)
-    assert tracker.cleared == ["upload-1"]
-
-
-def test_upload_collection_archive_package_resumes_existing_multipart_upload(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    client = _FakeS3Client()
-    store = _store_with_client(
-        monkeypatch,
-        tmp_path,
-        client,
-        glacier_multipart_part_bytes=4,
-        glacier_multipart_concurrency=1,
-    )
-    tracker = _FakeMultipartTracker()
-    monkeypatch.setattr("riverhog_core.stores.s3_archive_store._MIN_MULTIPART_PART_SIZE", 4)
-    package = _package()
-    client.fail_next_upload_part_after_successes = 1
-
-    with pytest.raises(RuntimeError, match="synthetic upload_part failure"):
-        store.upload_collection_archive_package(
-            collection_id="docs",
-            package=package,
-            archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
-            multipart_tracker=tracker,
-        )
-
-    assert tracker.state is not None
-    assert tracker.progress == [(4, 1, (len(package.archive_bytes) + 3) // 4)]
-    assert [(part.part_number, part.etag, part.size) for part in tracker.parts] == [
-        (1, "etag-upload-1-1", 4)
-    ]
-    assert client.aborted_uploads == []
-    first_upload_id = tracker.state.upload_id
-    stored_first_part = client.uploads[first_upload_id]["Parts"][1]
-
-    resumed_offsets: list[int] = []
-
-    def resume_archive(offset: int) -> Iterator[bytes]:
-        resumed_offsets.append(offset)
-        yield package.archive_bytes[offset:]
-
-    seekable_package = replace(package, _archive_chunks_from_offset=resume_archive)
-    receipt = store.upload_collection_archive_package(
-        collection_id="docs",
-        package=seekable_package,
-        archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
-        multipart_tracker=tracker,
-    )
-
-    assert receipt.archive.object_path == f"{DOCS_ARCHIVE_PREFIX}/archive.tar"
-    assert client.completed_uploads == [first_upload_id]
-    assert client.aborted_uploads == []
-    assert tracker.state is None
-    assert tracker.cleared == [first_upload_id]
-    assert resumed_offsets == [4]
-    assert client.uploads == {}
-    assert client.objects[receipt.archive.object_path]["Body"] == package.archive_bytes
-    assert client.uploaded_part_sizes[0] == 4
-    assert stored_first_part == package.archive_bytes[:4]
 
 
 def test_request_collection_archive_restore_requests_collection_manifest_and_proof(

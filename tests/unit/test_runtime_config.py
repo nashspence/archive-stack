@@ -103,19 +103,15 @@ def test_load_runtime_config_parses_glacier_archive_encryption(
     assert config.glacier_archive_work_factor == 12
 
 
-def test_load_runtime_config_ignores_archive_explicit_secret_requirement_when_disabled(
+def test_load_runtime_config_rejects_disabled_glacier_archive_encryption(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("RIVERHOG_DB_PATH", str(tmp_path / "state.sqlite3"))
     monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION", "none")
-    monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE", "true")
-    monkeypatch.delenv("RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE", raising=False)
 
-    config = load_runtime_config()
-
-    assert config.glacier_archive_encryption == "none"
-    assert config.glacier_archive_require_explicit_passphrase is True
+    with pytest.raises(ValueError, match="RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION"):
+        load_runtime_config()
 
 
 def test_load_runtime_config_rejects_required_missing_archive_passphrase_when_enabled(

@@ -129,15 +129,6 @@ New collection Glacier archive packages use opaque archive ids below the
 configured prefix:
 
 ```text
-glacier/archives/{opaque-archive-id}/archive.tar
-glacier/archives/{opaque-archive-id}/manifest.yml
-glacier/archives/{opaque-archive-id}/manifest.yml.ots
-```
-
-When `RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION=age_scrypt`, Riverhog appends
-`.age` to each object name and stores standard binary age v1 scrypt files:
-
-```text
 glacier/archives/{opaque-archive-id}/archive.tar.age
 glacier/archives/{opaque-archive-id}/manifest.yml.age
 glacier/archives/{opaque-archive-id}/manifest.yml.ots.age
@@ -145,13 +136,13 @@ glacier/archives/{opaque-archive-id}/manifest.yml.ots.age
 
 The opaque archive id is randomly minted and persisted before upload starts, so
 archive multipart retries and app restarts keep using the same object keys
-without exposing collection slugs in S3 listings. Existing collection-id-based
-archive keys remain readable when they are already recorded in the catalog.
+without exposing collection slugs in S3 listings.
 
-The archive tar contains only the logical collection files and uses the configured
-Glacier storage class. Riverhog stores the collection manifest and its matching
-OpenTimestamps proof as sibling Standard S3 objects so operators can inspect and
-verify them without restoring Deep Archive data.
+The encrypted archive tar contains only the logical collection files and uses the
+configured Glacier storage class. Riverhog stores the encrypted collection
+manifest and its matching encrypted OpenTimestamps proof as sibling Standard S3
+objects so operators can inspect and verify them without restoring Deep Archive
+data.
 
 Riverhog also publishes recovery aids under the configured prefix:
 
@@ -218,19 +209,15 @@ remaining parts.
 
 ## `RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION`
 
-- type: enum, `none` or `age_scrypt`
-- default: `none`
+- type: enum, `age_scrypt`
+- default: `age_scrypt`
 
-Controls encryption for collection archive packages stored in the archive
-bucket. The default is deliberately non-disruptive and keeps existing
-unencrypted `archive.tar`, `manifest.yml`, and `manifest.yml.ots` objects
-unchanged.
-
-When set to `age_scrypt`, Riverhog writes standard binary age v1 scrypt files
-using the configured archive passphrase. The archive object uses the configured
+Collection archive packages stored in the archive bucket are always encrypted
+with standard binary age v1 scrypt files. The archive object uses the configured
 Glacier storage class; the encrypted manifest and proof remain Standard S3
 objects. Object metadata records both the stored encrypted object size and the
-logical plaintext byte count/SHA-256 used by Riverhog verification.
+logical plaintext byte count/SHA-256 used by Riverhog verification. Any value
+other than `age_scrypt` is rejected at startup.
 
 Encrypted archive multipart uploads remain resumable. Riverhog persists the age
 header/payload nonce as encrypted-upload state with the S3 `UploadId`, then
@@ -242,19 +229,18 @@ retry. The plaintext age file key is not stored in the catalog.
 - type: secret string
 - default: `RIVERHOG_RECOVERY_PAYLOAD_PASSPHRASE`
 
-Passphrase used when `RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION=age_scrypt`.
-Deployments may share the same passphrase used for disc recovery payloads or
-configure a separate archive-only secret.
+Passphrase used for archive package, manifest, proof, and recovery-catalog
+encryption. Deployments may share the same passphrase used for disc recovery
+payloads or configure a separate archive-only secret.
 
 ## `RIVERHOG_GLACIER_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE`
 
 - type: boolean
 - default: `false`
 
-When `true`, startup rejects archive encryption if
+When `true`, startup rejects configuration if
 `RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE` is missing or still set to the checked-in
-development passphrase. Production deployments that enable archive encryption
-should set this to `true`.
+development passphrase. Production deployments should set this to `true`.
 
 ## `RIVERHOG_GLACIER_ARCHIVE_WORK_FACTOR`
 

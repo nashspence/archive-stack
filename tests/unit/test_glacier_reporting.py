@@ -185,17 +185,21 @@ def test_get_report_counts_manifest_and_proof_as_standard_s3_storage(
             CollectionArchiveRecord(
                 collection_id=DOCS_COLLECTION_ID,
                 state="uploaded",
-                object_path=f"glacier/collections/{DOCS_COLLECTION_ID}/archive.tar",
+                object_path=f"glacier/archives/opaque-{DOCS_COLLECTION_ID}/archive.tar.age",
                 stored_bytes=1000,
                 sha256="a" * 64,
                 backend="aws",
                 storage_class="DEEP_ARCHIVE",
                 archive_format="tar",
                 compression="none",
-                manifest_object_path=f"glacier/collections/{DOCS_COLLECTION_ID}/manifest.yml",
+                manifest_object_path=(
+                    f"glacier/archives/opaque-{DOCS_COLLECTION_ID}/manifest.yml.age"
+                ),
                 manifest_sha256="b" * 64,
                 manifest_stored_bytes=200,
-                ots_object_path=f"glacier/collections/{DOCS_COLLECTION_ID}/manifest.yml.ots",
+                ots_object_path=(
+                    f"glacier/archives/opaque-{DOCS_COLLECTION_ID}/manifest.yml.ots.age"
+                ),
                 ots_sha256="c" * 64,
                 ots_stored_bytes=20,
             )
@@ -212,8 +216,8 @@ def test_get_report_counts_manifest_and_proof_as_standard_s3_storage(
         + pricing.standard_metadata_bytes_per_object
     )
     assert collection.collection_manifest is not None
-    assert collection.collection_manifest.object_path.endswith("/manifest.yml")
-    assert collection.collection_manifest.ots_object_path.endswith("/manifest.yml.ots")
+    assert collection.collection_manifest.object_path.endswith("/manifest.yml.age")
+    assert collection.collection_manifest.ots_object_path.endswith("/manifest.yml.ots.age")
 
 
 def test_initialize_db_backfills_coverage_parts_for_existing_finalized_images(

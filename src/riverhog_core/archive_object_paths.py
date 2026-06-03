@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 _ARCHIVE_FILENAMES = {
-    "archive.tar",
     "archive.tar.age",
-    "manifest.yml",
     "manifest.yml.age",
-    "manifest.yml.ots",
     "manifest.yml.ots.age",
 }
 

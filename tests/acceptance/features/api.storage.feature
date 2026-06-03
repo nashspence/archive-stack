@@ -35,7 +35,7 @@ Feature: Read-only hot storage browsing
       And the hot bucket does not contain collection Glacier archive package for collection "docs"
 
     Scenario: The canonical harness enforces least-privilege bucket credentials
-      Then the hot credentials cannot write object "glacier/archives/forbidden/archive.tar" to the archive bucket
+      Then the hot credentials cannot write object "glacier/archives/forbidden/archive.tar.age" to the archive bucket
       And the archive credentials cannot write object "collections/forbidden-archive-write.txt" to the hot bucket
       And the archive credentials cannot write object ".riverhog/uploads/forbidden-archive-write" to the hot bucket
     Scenario: The canonical harness enforces least-privilege bucket reads and lists

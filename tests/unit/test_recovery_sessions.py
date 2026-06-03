@@ -282,9 +282,10 @@ def _docs_collection_archive_package() -> CollectionArchivePackage:
 
 
 def _seed_collection_archive(sqlite_path: Path, package: CollectionArchivePackage) -> None:
-    object_path = f"glacier/collections/{package.collection_id}/archive.tar"
-    manifest_object_path = f"glacier/collections/{package.collection_id}/manifest.yml"
-    proof_object_path = f"glacier/collections/{package.collection_id}/manifest.yml.ots"
+    archive_prefix = f"glacier/archives/opaque-{package.collection_id}"
+    object_path = f"{archive_prefix}/archive.tar.age"
+    manifest_object_path = f"{archive_prefix}/manifest.yml.age"
+    proof_object_path = f"{archive_prefix}/manifest.yml.ots.age"
     session_factory = make_session_factory(str(sqlite_path))
     with session_scope(session_factory) as session:
         session.add(
@@ -502,9 +503,9 @@ def test_collection_restore_requests_and_verifies_manifest_and_proof(
     assert approved.state == RecoverySessionState.RESTORE_REQUESTED
     assert store.restore_requests == [
         (
-            "glacier/collections/docs/archive.tar",
-            "glacier/collections/docs/manifest.yml",
-            "glacier/collections/docs/manifest.yml.ots",
+            "glacier/archives/opaque-docs/archive.tar.age",
+            "glacier/archives/opaque-docs/manifest.yml.age",
+            "glacier/archives/opaque-docs/manifest.yml.ots.age",
         )
     ]
 
@@ -525,14 +526,14 @@ def test_collection_restore_requests_and_verifies_manifest_and_proof(
         "collection_restore",
         "collection_restore",
     ]
-    assert store.archive_reads == ["glacier/collections/docs/archive.tar"]
-    assert store.manifest_reads == ["glacier/collections/docs/manifest.yml"]
-    assert store.proof_reads == ["glacier/collections/docs/manifest.yml.ots"]
+    assert store.archive_reads == ["glacier/archives/opaque-docs/archive.tar.age"]
+    assert store.manifest_reads == ["glacier/archives/opaque-docs/manifest.yml.age"]
+    assert store.proof_reads == ["glacier/archives/opaque-docs/manifest.yml.ots.age"]
     assert store.cleanup_requests == [
         (
-            "glacier/collections/docs/archive.tar",
-            "glacier/collections/docs/manifest.yml",
-            "glacier/collections/docs/manifest.yml.ots",
+            "glacier/archives/opaque-docs/archive.tar.age",
+            "glacier/archives/opaque-docs/manifest.yml.age",
+            "glacier/archives/opaque-docs/manifest.yml.ots.age",
         )
     ]
 
@@ -745,9 +746,9 @@ def test_missing_pinned_hot_file_without_disc_coverage_restores_from_glacier(
     assert hot_store.puts == {("docs", restored_path): DOCS_FILES[restored_path]}
     assert store.restore_requests == [
         (
-            "glacier/collections/docs/archive.tar",
-            "glacier/collections/docs/manifest.yml",
-            "glacier/collections/docs/manifest.yml.ots",
+            "glacier/archives/opaque-docs/archive.tar.age",
+            "glacier/archives/opaque-docs/manifest.yml.age",
+            "glacier/archives/opaque-docs/manifest.yml.ots.age",
         )
     ]
     with session_scope(make_session_factory(str(sqlite_path))) as session:
@@ -1004,7 +1005,7 @@ def test_collection_restore_rejects_corrupt_archive_before_completion(
 
     with pytest.raises(ValueError, match="member sha256 mismatch"):
         recovery_service.complete(session.id)
-    assert store.archive_reads == ["glacier/collections/docs/archive.tar"]
+    assert store.archive_reads == ["glacier/archives/opaque-docs/archive.tar.age"]
     assert store.cleanup_requests == []
 
 
@@ -1053,9 +1054,9 @@ def test_image_rebuild_verifies_manifest_and_proof_before_streaming_archive(
     )
 
     assert chunks == [b"rebuilt-iso"]
-    assert store.manifest_reads == ["glacier/collections/docs/manifest.yml"]
-    assert store.proof_reads == ["glacier/collections/docs/manifest.yml.ots"]
-    assert store.archive_reads == ["glacier/collections/docs/archive.tar"]
+    assert store.manifest_reads == ["glacier/archives/opaque-docs/manifest.yml.age"]
+    assert store.proof_reads == ["glacier/archives/opaque-docs/manifest.yml.ots.age"]
+    assert store.archive_reads == ["glacier/archives/opaque-docs/archive.tar.age"]
 
 
 def test_run_iso_from_root_streams_process_stdout(

@@ -13,8 +13,7 @@ ids instead of canonical collection ids:
 
 The archive id is random and persisted on the collection upload row before the
 archive upload begins. Multipart retries, worker retries, and app restarts reuse
-the same object keys. Existing archive object paths already recorded in the
-catalog remain readable, including older collection-id-based keys.
+the same object keys.
 
 Riverhog also publishes two recovery aids under the configured archive prefix:
 
