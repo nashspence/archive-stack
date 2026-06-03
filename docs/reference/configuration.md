@@ -133,6 +133,15 @@ glacier/collections/{year}/{timestamp}__{slug}/manifest.yml
 glacier/collections/{year}/{timestamp}__{slug}/manifest.yml.ots
 ```
 
+When `RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION=age_scrypt`, Riverhog appends
+`.age` to each object name and stores standard binary age v1 scrypt files:
+
+```text
+glacier/collections/{year}/{timestamp}__{slug}/archive.tar.age
+glacier/collections/{year}/{timestamp}__{slug}/manifest.yml.age
+glacier/collections/{year}/{timestamp}__{slug}/manifest.yml.ots.age
+```
+
 The archive tar contains only the logical collection files and uses the configured
 Glacier storage class. Riverhog stores the collection manifest and its matching
 OpenTimestamps proof as sibling Standard S3 objects so operators can inspect and
@@ -188,6 +197,56 @@ above. If an app restart or transient S3 failure interrupts a collection,
 Riverhog resumes against the same `UploadId`, verifies the recorded parts that
 S3 still has, skips the deterministic contiguous prefix, and uploads any
 remaining parts.
+
+## `RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION`
+
+- type: enum, `none` or `age_scrypt`
+- default: `none`
+
+Controls encryption for collection archive packages stored in the archive
+bucket. The default is deliberately non-disruptive and keeps existing
+unencrypted `archive.tar`, `manifest.yml`, and `manifest.yml.ots` objects
+unchanged.
+
+When set to `age_scrypt`, Riverhog writes standard binary age v1 scrypt files
+using the configured archive passphrase. The archive object uses the configured
+Glacier storage class; the encrypted manifest and proof remain Standard S3
+objects. Object metadata records both the stored encrypted object size and the
+logical plaintext byte count/SHA-256 used by Riverhog verification.
+
+Encrypted archive multipart uploads remain resumable. Riverhog persists the age
+header/payload nonce as encrypted-upload state with the S3 `UploadId`, then
+regenerates exact ciphertext parts from the deterministic archive stream on
+retry. The plaintext age file key is not stored in the catalog.
+
+## `RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE`
+
+- type: secret string
+- default: `RIVERHOG_RECOVERY_PAYLOAD_PASSPHRASE`
+
+Passphrase used when `RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION=age_scrypt`.
+Deployments may share the same passphrase used for disc recovery payloads or
+configure a separate archive-only secret.
+
+## `RIVERHOG_GLACIER_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE`
+
+- type: boolean
+- default: `false`
+
+When `true`, startup rejects archive encryption if
+`RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE` is missing or still set to the checked-in
+development passphrase. Production deployments that enable archive encryption
+should set this to `true`.
+
+## `RIVERHOG_GLACIER_ARCHIVE_WORK_FACTOR`
+
+- type: integer, `1..22`
+- default: `18`
+
+Scrypt work factor for age scrypt archive-package encryption. This cost is paid
+once per collection archive package and once per encrypted manifest/proof. Lower
+values are useful for deterministic local integration tests; deployed archives
+should use the default unless operational testing shows a clear need to tune it.
 
 ## Pinned Hot-File Repair
 

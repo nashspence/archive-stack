@@ -17,6 +17,7 @@ DEFAULT_PLANNER_UNPLANNED_SATURATION_BYTES = 300_000_000_000
 DEFAULT_UNBURNED_COLLECTION_BYTES_LIMIT = 500_000_000_000
 DEFAULT_GLACIER_MULTIPART_PART_BYTES = 64 * 1024 * 1024
 DEFAULT_GLACIER_MULTIPART_CONCURRENCY = 4
+DEFAULT_GLACIER_ARCHIVE_WORK_FACTOR = 18
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_RECOVERY_PAYLOAD_WORK_FACTOR = 12
 DEFAULT_RECOVERY_PAYLOAD_MAX_WORK_FACTOR = 30
@@ -159,6 +160,10 @@ class RuntimeConfig:
     glacier_storage_class: str = "DEEP_ARCHIVE"
     glacier_multipart_part_bytes: int = DEFAULT_GLACIER_MULTIPART_PART_BYTES
     glacier_multipart_concurrency: int = DEFAULT_GLACIER_MULTIPART_CONCURRENCY
+    glacier_archive_encryption: str = "none"
+    glacier_archive_passphrase: str = DEV_RECOVERY_PAYLOAD_PASSPHRASE
+    glacier_archive_require_explicit_passphrase: bool = False
+    glacier_archive_work_factor: int = DEFAULT_GLACIER_ARCHIVE_WORK_FACTOR
     glacier_upload_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=5))
     glacier_upload_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
     operator_webhook_url: str | None = None
@@ -251,6 +256,27 @@ class RuntimeConfig:
             raise ValueError("RIVERHOG_GLACIER_MULTIPART_PART_BYTES must be >= 1")
         if self.glacier_multipart_concurrency < 1:
             raise ValueError("RIVERHOG_GLACIER_MULTIPART_CONCURRENCY must be >= 1")
+        if self.glacier_archive_encryption not in {"none", "age_scrypt"}:
+            raise ValueError(
+                "RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION must be one of none, age_scrypt"
+            )
+        if self.glacier_archive_work_factor < 1 or self.glacier_archive_work_factor > 22:
+            raise ValueError("RIVERHOG_GLACIER_ARCHIVE_WORK_FACTOR must be in 1..22")
+        if self.glacier_archive_encryption == "age_scrypt":
+            if not self.glacier_archive_passphrase:
+                raise ValueError(
+                    "RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE must be set when archive "
+                    "encryption is enabled"
+                )
+            if (
+                self.glacier_archive_require_explicit_passphrase
+                and self.glacier_archive_passphrase == DEV_RECOVERY_PAYLOAD_PASSPHRASE
+            ):
+                raise ValueError(
+                    "RIVERHOG_GLACIER_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE requires "
+                    "RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE to be explicitly set to a "
+                    "non-development secret"
+                )
         if self.operator_webhook_url:
             minimum_ready_ttl = self.operator_webhook_timeout + self.operator_webhook_retry_delay
             if self.glacier_recovery_ready_ttl < minimum_ready_ttl:
@@ -322,6 +348,11 @@ def load_runtime_config() -> RuntimeConfig:
         ),
         name="RIVERHOG_GLACIER_MULTIPART_CONCURRENCY",
         minimum=1,
+    )
+    glacier_archive_encryption = _parse_choice(
+        os.getenv("RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION", "none"),
+        name="RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION",
+        allowed={"none", "age_scrypt"},
     )
     glacier_retry_delay = _parse_duration(os.getenv("RIVERHOG_GLACIER_UPLOAD_RETRY_DELAY", "5m"))
     glacier_upload_sweep_interval = _parse_duration(
@@ -491,6 +522,36 @@ def load_runtime_config() -> RuntimeConfig:
         ).strip()
         or DEV_RECOVERY_PAYLOAD_PASSPHRASE
     )
+    glacier_archive_passphrase_supplied = "RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE" in os.environ
+    glacier_archive_passphrase = (
+        os.getenv("RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE", recovery_payload_passphrase).strip()
+        or recovery_payload_passphrase
+    )
+    glacier_archive_require_explicit_passphrase = _parse_bool(
+        os.getenv("RIVERHOG_GLACIER_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE", "false")
+    )
+    glacier_archive_work_factor = _parse_int(
+        os.getenv(
+            "RIVERHOG_GLACIER_ARCHIVE_WORK_FACTOR",
+            str(DEFAULT_GLACIER_ARCHIVE_WORK_FACTOR),
+        ),
+        name="RIVERHOG_GLACIER_ARCHIVE_WORK_FACTOR",
+        minimum=1,
+    )
+    if glacier_archive_work_factor > 22:
+        raise ValueError("RIVERHOG_GLACIER_ARCHIVE_WORK_FACTOR must be <= 22")
+    if (
+        glacier_archive_encryption == "age_scrypt"
+        and glacier_archive_require_explicit_passphrase
+        and (
+            not glacier_archive_passphrase_supplied
+            or glacier_archive_passphrase == DEV_RECOVERY_PAYLOAD_PASSPHRASE
+        )
+    ):
+        raise ValueError(
+            "RIVERHOG_GLACIER_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE requires "
+            "RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE to be explicitly set to a non-development secret"
+        )
     if recovery_payload_require_explicit_passphrase and (
         not recovery_payload_passphrase_supplied
         or recovery_payload_passphrase == DEV_RECOVERY_PAYLOAD_PASSPHRASE
@@ -603,6 +664,10 @@ def load_runtime_config() -> RuntimeConfig:
         or "DEEP_ARCHIVE",
         glacier_multipart_part_bytes=glacier_multipart_part_bytes,
         glacier_multipart_concurrency=glacier_multipart_concurrency,
+        glacier_archive_encryption=glacier_archive_encryption,
+        glacier_archive_passphrase=glacier_archive_passphrase,
+        glacier_archive_require_explicit_passphrase=glacier_archive_require_explicit_passphrase,
+        glacier_archive_work_factor=glacier_archive_work_factor,
         glacier_upload_retry_delay=glacier_retry_delay,
         glacier_upload_sweep_interval=glacier_upload_sweep_interval,
         operator_webhook_url=operator_webhook_url,

@@ -85,6 +85,52 @@ def test_load_runtime_config_accepts_explicit_test_recovery_passphrase(
     assert config.database_url == f"sqlite:///{tmp_path / 'state.sqlite3'}"
 
 
+def test_load_runtime_config_parses_glacier_archive_encryption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_DB_PATH", str(tmp_path / "state.sqlite3"))
+    monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION", "age-scrypt")
+    monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE", "true")
+    monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE", "archive-secret")
+    monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_WORK_FACTOR", "12")
+
+    config = load_runtime_config()
+
+    assert config.glacier_archive_encryption == "age_scrypt"
+    assert config.glacier_archive_require_explicit_passphrase is True
+    assert config.glacier_archive_passphrase == "archive-secret"
+    assert config.glacier_archive_work_factor == 12
+
+
+def test_load_runtime_config_ignores_archive_explicit_secret_requirement_when_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_DB_PATH", str(tmp_path / "state.sqlite3"))
+    monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION", "none")
+    monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE", "true")
+    monkeypatch.delenv("RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE", raising=False)
+
+    config = load_runtime_config()
+
+    assert config.glacier_archive_encryption == "none"
+    assert config.glacier_archive_require_explicit_passphrase is True
+
+
+def test_load_runtime_config_rejects_required_missing_archive_passphrase_when_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_DB_PATH", str(tmp_path / "state.sqlite3"))
+    monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION", "age_scrypt")
+    monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE", "true")
+    monkeypatch.delenv("RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE", raising=False)
+
+    with pytest.raises(ValueError, match="RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE"):
+        load_runtime_config()
+
+
 def test_load_runtime_config_prefers_database_url_over_legacy_db_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -93,6 +93,20 @@ The tar contains only the logical files and uses the configured Glacier storage
 class. The collection manifest and OTS proof are separate Standard S3 objects
 under the same collection prefix.
 
+When `RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION=age_scrypt`, those object names gain a
+`.age` suffix and the stored objects are standard binary age v1 scrypt files:
+
+```text
+{RIVERHOG_GLACIER_PREFIX}/collections/{collection_id}/archive.tar.age
+{RIVERHOG_GLACIER_PREFIX}/collections/{collection_id}/manifest.yml.age
+{RIVERHOG_GLACIER_PREFIX}/collections/{collection_id}/manifest.yml.ots.age
+```
+
+Riverhog still records and verifies the logical plaintext archive, manifest, and
+proof byte counts and SHA-256 hashes. S3 object metadata also records the
+encryption mode and plaintext size/hash so an encrypted object can be validated
+without confusing stored ciphertext bytes with collection bytes.
+
 For archives that use S3 multipart upload, Riverhog persists the multipart
 `UploadId`, object key, part size, archive length, archive SHA-256, and progress
 on the collection upload row. It also records each uploaded part number, ETag,
@@ -101,6 +115,13 @@ uploaded parts for that `UploadId`, verifies them against the recorded part
 metadata, skips the already uploaded contiguous prefix of the deterministic
 archive stream, uploads the remaining parts, and completes the same multipart
 upload using the recorded part numbers and ETags.
+
+Encrypted archive multipart uploads additionally persist the age header and
+payload nonce as resumable encryption state. On retry, Riverhog derives the file
+key from the configured passphrase, regenerates the exact same age ciphertext
+parts at age chunk boundaries, verifies the already accepted S3 parts, and then
+continues the same multipart upload. The plaintext age file key is not stored in
+the database.
 
 Multipart archive parts are uploaded with bounded per-collection concurrency,
 configured by `RIVERHOG_GLACIER_MULTIPART_CONCURRENCY`. This is a throughput

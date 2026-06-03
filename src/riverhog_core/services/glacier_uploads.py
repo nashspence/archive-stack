@@ -817,6 +817,8 @@ class _SqlAlchemyArchiveMultipartUploadTracker(ArchiveMultipartUploadTracker):
                 part_size=part_size,
                 content_length=content_length,
                 sha256=sha256,
+                total_parts=upload.archive_multipart_total_parts,
+                encryption_state_json=upload.archive_encryption_state_json,
                 parts=_multipart_parts_from_json(upload.archive_multipart_parts_json),
             )
 
@@ -835,10 +837,11 @@ class _SqlAlchemyArchiveMultipartUploadTracker(ArchiveMultipartUploadTracker):
             upload.archive_multipart_part_size = state.part_size
             upload.archive_multipart_content_length = state.content_length
             upload.archive_multipart_sha256 = state.sha256
+            upload.archive_encryption_state_json = state.encryption_state_json
             upload.archive_multipart_parts_json = _multipart_parts_to_json(())
             upload.archive_multipart_uploaded_bytes = 0
             upload.archive_multipart_uploaded_parts = 0
-            upload.archive_multipart_total_parts = max(
+            upload.archive_multipart_total_parts = state.total_parts or max(
                 1,
                 (state.content_length + state.part_size - 1) // state.part_size,
             )
@@ -888,6 +891,7 @@ class _SqlAlchemyArchiveMultipartUploadTracker(ArchiveMultipartUploadTracker):
             upload.archive_multipart_upload_id = None
             upload.archive_multipart_part_size = None
             upload.archive_multipart_parts_json = None
+            upload.archive_encryption_state_json = None
 
 
 class _SqlAlchemyHotMultipartUploadTracker(ArchiveMultipartUploadTracker):

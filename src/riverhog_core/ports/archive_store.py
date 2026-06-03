@@ -43,6 +43,8 @@ class ArchiveMultipartUploadState:
     part_size: int
     content_length: int
     sha256: str
+    total_parts: int | None = None
+    encryption_state_json: str | None = None
     parts: tuple[ArchiveMultipartUploadedPart, ...] = ()
 
 

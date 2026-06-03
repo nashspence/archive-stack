@@ -20,6 +20,7 @@ dependencies = [
   "PyYAML>=6.0,<7.0",
   "boto3>=1.35,<2.0",
   "opentimestamps-client>=0.7,<1.0",
+  "cryptography>=41,<47",
 ]
 
 
@@ -46,7 +47,13 @@ riverhog = "riverhog_cli.main:main"
 djdan = "djdan.main:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/riverhog_api", "src/riverhog_cli", "src/riverhog_core", "src/djdan"]
+packages = [
+  "src/riverhog_age",
+  "src/riverhog_api",
+  "src/riverhog_cli",
+  "src/riverhog_core",
+  "src/djdan",
+]
 
 [tool.hatch.build.targets.wheel.force-include]
 "contracts/webhooks/operator-notifications.v1.json" = "riverhog_core/contracts/webhooks/operator-notifications.v1.json"
@@ -72,4 +79,4 @@ markers = [
 [tool.mypy]
 python_version = "3.11"
 strict = true
-packages = ["riverhog_api", "riverhog_cli", "riverhog_core", "djdan"]
+packages = ["riverhog_age", "riverhog_api", "riverhog_cli", "riverhog_core", "djdan"]

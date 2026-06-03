@@ -500,6 +500,7 @@ class CollectionUploadRecord(Base):
     archive_multipart_content_length: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     archive_multipart_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     archive_multipart_parts_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    archive_encryption_state_json: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_multipart_uploaded_bytes: Mapped[int | None] = mapped_column(
         BigInteger, default=0, nullable=True
     )

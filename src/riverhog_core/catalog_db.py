@@ -158,6 +158,10 @@ _COLUMN_MIGRATIONS: list[list[tuple[str, str, str]]] = [
         ("glacier_recovery_sessions", "completed_notification_next_attempt_at", "TEXT"),
         ("glacier_recovery_sessions", "completed_notification_failure", "TEXT"),
     ],
+    # version 24
+    [
+        ("collection_uploads", "archive_encryption_state_json", "TEXT"),
+    ],
 ]
 _TYPE_MIGRATIONS: dict[int, list[tuple[str, str, str]]] = {
     # version 10

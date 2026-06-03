@@ -9,6 +9,15 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, TypedDict, cast
 
+from riverhog_age import (
+    AEAD_TAG_SIZE,
+    CHUNK_SIZE,
+    ResumableAgeScryptSession,
+    age_ciphertext_len_for_plaintext_len,
+    decrypt_age_scrypt,
+    encrypt_age_scrypt,
+    iter_decrypt_age_scrypt,
+)
 from riverhog_core.collection_archives import CollectionArchivePackage
 from riverhog_core.fs_paths import normalize_collection_id
 from riverhog_core.ports.archive_store import (
@@ -24,6 +33,10 @@ from riverhog_core.stores.s3_support import create_glacier_s3_client
 
 COLLECTION_BYTES_METADATA = "riverhog-collection-bytes"
 COLLECTION_SHA256_METADATA = "riverhog-collection-sha256"
+ENCRYPTION_METADATA = "riverhog-encryption"
+PLAINTEXT_BYTES_METADATA = "riverhog-plaintext-bytes"
+PLAINTEXT_SHA256_METADATA = "riverhog-plaintext-sha256"
+AGE_SCRYPT_ENCRYPTION = "age-v1-scrypt"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _MIN_MULTIPART_PART_SIZE = 5 * 1024 * 1024
 _MAX_MULTIPART_PART_SIZE = 5 * 1024 * 1024 * 1024
@@ -123,6 +136,69 @@ def _iter_chunks_after_skipping(chunks: Iterable[bytes], skip_bytes: int) -> Ite
         raise ValueError("collection archive stream ended before resumable upload offset")
 
 
+def _iter_encrypted_archive(
+    *,
+    package: CollectionArchivePackage,
+    session: ResumableAgeScryptSession,
+) -> Iterator[bytes]:
+    yield session.age_prefix
+    for chunk_index, start, end, final in _plaintext_chunks(package.archive_size):
+        plaintext = _read_archive_range(package, start, end - start)
+        yield session.encrypt_chunk(chunk_index, plaintext, final=final)
+
+
+def _encrypted_archive_part_body(
+    *,
+    package: CollectionArchivePackage,
+    session: ResumableAgeScryptSession,
+    plan: Any,
+) -> bytes:
+    plaintext = _read_archive_range(package, plan.plaintext_start, plan.plaintext_len)
+
+    def provider(_chunk_index: int, start: int, end: int) -> bytes:
+        relative_start = start - plan.plaintext_start
+        relative_end = end - plan.plaintext_start
+        return plaintext[relative_start:relative_end]
+
+    return session.encrypt_part(plan, provider, plaintext_size=package.archive_size)
+
+
+def _read_archive_range(
+    package: CollectionArchivePackage,
+    offset: int,
+    size: int,
+) -> bytes:
+    out = bytearray()
+    for chunk in package.iter_archive_from_offset(offset):
+        if len(out) >= size:
+            break
+        needed = size - len(out)
+        out.extend(chunk[:needed])
+    if len(out) != size:
+        raise ValueError("collection archive stream ended before encrypted part range")
+    return bytes(out)
+
+
+def _plaintext_chunks(plaintext_size: int) -> Iterator[tuple[int, int, int, bool]]:
+    if plaintext_size == 0:
+        yield 0, 0, 0, True
+        return
+    chunk_count = (plaintext_size + CHUNK_SIZE - 1) // CHUNK_SIZE
+    for chunk_index in range(chunk_count):
+        start = chunk_index * CHUNK_SIZE
+        end = min(start + CHUNK_SIZE, plaintext_size)
+        yield chunk_index, start, end, chunk_index == chunk_count - 1
+
+
+def _age_chunks_per_s3_part(target_part_size: int) -> int:
+    chunk_ciphertext_size = CHUNK_SIZE + AEAD_TAG_SIZE
+    minimum_chunks = (_MIN_MULTIPART_PART_SIZE + chunk_ciphertext_size - 1) // (
+        chunk_ciphertext_size
+    )
+    target_chunks = max(1, target_part_size // chunk_ciphertext_size)
+    return max(minimum_chunks, target_chunks)
+
+
 def _validate_recorded_parts_exist_remotely(
     recorded_parts: list[ArchiveMultipartUploadedPart],
     remote_parts: list[dict[str, object]],
@@ -146,11 +222,12 @@ class S3ArchiveStore:
         prefix = self._config.glacier_prefix
         normalized_collection_id = normalize_collection_id(collection_id)
         collection_prefix = f"{prefix}/collections/{normalized_collection_id}"
-        archive_key = f"{collection_prefix}/archive.tar"
+        suffix = ".age" if self._archive_encryption_enabled() else ""
+        archive_key = f"{collection_prefix}/archive.tar{suffix}"
         return {
             "archive": archive_key,
-            "manifest": f"{collection_prefix}/manifest.yml",
-            "proof": f"{collection_prefix}/manifest.yml.ots",
+            "manifest": f"{collection_prefix}/manifest.yml{suffix}",
+            "proof": f"{collection_prefix}/manifest.yml.ots{suffix}",
         }
 
     def _head_object(self, *, object_key: str) -> dict[str, Any] | None:
@@ -261,6 +338,9 @@ class S3ArchiveStore:
         package: CollectionArchivePackage,
         multipart_tracker: ArchiveMultipartUploadTracker | None,
     ) -> ArchiveUploadReceipt:
+        logical_content_length = content_length
+        logical_sha256 = sha256
+        encryption = AGE_SCRYPT_ENCRYPTION if self._archive_encryption_enabled() else "none"
         storage_class = _collection_object_storage_class(
             archive_storage_class=self._config.glacier_storage_class,
             kind=kind,
@@ -270,10 +350,35 @@ class S3ArchiveStore:
             return self._collection_receipt_from_head(
                 object_key=object_key,
                 head=existing,
-                expected_bytes=content_length,
-                expected_sha256=sha256,
+                expected_bytes=logical_content_length,
+                expected_sha256=logical_sha256,
                 expected_storage_class=storage_class,
             )
+
+        age_session: ResumableAgeScryptSession | None = None
+        if encryption == AGE_SCRYPT_ENCRYPTION:
+            if kind == "archive":
+                age_session = ResumableAgeScryptSession.create(
+                    self._config.glacier_archive_passphrase,
+                    log_n=self._config.glacier_archive_work_factor,
+                    plaintext_size=package.archive_size,
+                )
+                content_length = age_ciphertext_len_for_plaintext_len(
+                    package.archive_size,
+                    age_prefix_len=len(age_session.age_prefix),
+                )
+                content = _iter_encrypted_archive(package=package, session=age_session)
+            else:
+                plaintext = _single_put_body(content)
+                content = encrypt_age_scrypt(
+                    plaintext,
+                    self._config.glacier_archive_passphrase,
+                    log_n=self._config.glacier_archive_work_factor,
+                )
+                content_length = len(content)
+                sha256 = hashlib.sha256(content).hexdigest()
+        else:
+            sha256 = logical_sha256
 
         uploaded_at = _utc_now()
         extra_args: dict[str, Any] = {
@@ -290,8 +395,11 @@ class S3ArchiveStore:
                 "riverhog-archive-sha256": package.archive_sha256,
                 "riverhog-manifest-sha256": package.manifest_sha256,
                 "riverhog-ots-sha256": package.proof_sha256,
-                COLLECTION_BYTES_METADATA: str(content_length),
-                COLLECTION_SHA256_METADATA: sha256,
+                ENCRYPTION_METADATA: encryption,
+                PLAINTEXT_BYTES_METADATA: str(logical_content_length),
+                PLAINTEXT_SHA256_METADATA: logical_sha256,
+                COLLECTION_BYTES_METADATA: str(logical_content_length),
+                COLLECTION_SHA256_METADATA: logical_sha256,
             }
         }
         if self._is_aws_restore_backend() and _configured_s3_storage_class(
@@ -299,17 +407,31 @@ class S3ArchiveStore:
         ) != "STANDARD":
             extra_args["StorageClass"] = storage_class
         if _should_use_multipart(content=content, content_length=content_length):
-            self._put_collection_package_object_multipart(
-                collection_id=collection_id,
-                object_key=object_key,
-                content=content,
-                content_length=content_length,
-                sha256=sha256,
-                kind=kind,
-                package=package,
-                extra_args=extra_args,
-                multipart_tracker=multipart_tracker,
-            )
+            if encryption == AGE_SCRYPT_ENCRYPTION and kind == "archive":
+                if age_session is None:
+                    raise RuntimeError("encrypted archive upload session was not initialized")
+                self._put_encrypted_archive_object_multipart(
+                    collection_id=collection_id,
+                    object_key=object_key,
+                    package=package,
+                    content_length=content_length,
+                    logical_sha256=logical_sha256,
+                    initial_session=age_session,
+                    extra_args=extra_args,
+                    multipart_tracker=multipart_tracker,
+                )
+            else:
+                self._put_collection_package_object_multipart(
+                    collection_id=collection_id,
+                    object_key=object_key,
+                    content=content,
+                    content_length=content_length,
+                    sha256=sha256,
+                    kind=kind,
+                    package=package,
+                    extra_args=extra_args,
+                    multipart_tracker=multipart_tracker,
+                )
         else:
             self._client.put_object(
                 Bucket=self._bucket,
@@ -325,8 +447,8 @@ class S3ArchiveStore:
         return self._collection_receipt_from_head(
             object_key=object_key,
             head=head,
-            expected_bytes=content_length,
-            expected_sha256=sha256,
+            expected_bytes=logical_content_length,
+            expected_sha256=logical_sha256,
             expected_storage_class=storage_class,
             uploaded_at=uploaded_at,
         )
@@ -610,6 +732,231 @@ class S3ArchiveStore:
                     content_length,
                     resumed_part_count,
                     exc_info=True,
+            )
+            raise
+
+    def _put_encrypted_archive_object_multipart(
+        self,
+        *,
+        collection_id: str,
+        object_key: str,
+        package: CollectionArchivePackage,
+        content_length: int,
+        logical_sha256: str,
+        initial_session: ResumableAgeScryptSession,
+        extra_args: dict[str, Any],
+        multipart_tracker: ArchiveMultipartUploadTracker | None,
+    ) -> None:
+        upload_state: ArchiveMultipartUploadState | None = None
+        part_size = _multipart_part_size(
+            content_length,
+            self._config.glacier_multipart_part_bytes,
+        )
+        chunks_per_part = _age_chunks_per_s3_part(part_size)
+        session = initial_session
+        plans = session.s3_part_plans(package.archive_size, chunks_per_part=chunks_per_part)
+        expected_part_count = len(plans)
+        uploaded_bytes = 0
+        resumed_part_count = 0
+        completed_parts_by_number: dict[int, ArchiveMultipartUploadedPart] = {}
+
+        if plans[-1].ciphertext_end != content_length:
+            raise RuntimeError("encrypted archive content length plan mismatch")
+
+        if multipart_tracker is not None:
+            upload_state = multipart_tracker.load_multipart_upload(
+                collection_id=collection_id,
+                object_path=object_key,
+                part_size=part_size,
+                content_length=content_length,
+                sha256=logical_sha256,
+            )
+            if upload_state is not None:
+                if not upload_state.encryption_state_json:
+                    multipart_tracker.clear_multipart_upload(
+                        collection_id=collection_id,
+                        upload_id=upload_state.upload_id,
+                    )
+                    upload_state = None
+                else:
+                    session = ResumableAgeScryptSession.from_state(
+                        self._config.glacier_archive_passphrase,
+                        upload_state.encryption_state_json,
+                    )
+                    plans = session.s3_part_plans(
+                        package.archive_size,
+                        chunks_per_part=chunks_per_part,
+                    )
+                    try:
+                        resumed_parts = self._contiguous_uploaded_parts(
+                            object_key=object_key,
+                            upload_id=upload_state.upload_id,
+                            recorded_parts=upload_state.parts,
+                            part_size=part_size,
+                            content_length=content_length,
+                            expected_part_sizes=tuple(plan.ciphertext_len for plan in plans),
+                        )
+                    except Exception as exc:
+                        if not _is_missing_upload_error(exc):
+                            raise
+                        multipart_tracker.clear_multipart_upload(
+                            collection_id=collection_id,
+                            upload_id=upload_state.upload_id,
+                        )
+                        upload_state = None
+                        resumed_parts = []
+                    if upload_state is not None:
+                        resumed_part_count = len(resumed_parts)
+                        uploaded_bytes = sum(part.size for part in resumed_parts)
+                        completed_parts_by_number.update(
+                            (part.part_number, part) for part in resumed_parts
+                        )
+                        _LOG.info(
+                            "resuming encrypted S3 multipart upload for %s: "
+                            "upload_id=%s parts=%s/%s bytes=%s/%s",
+                            object_key,
+                            upload_state.upload_id,
+                            resumed_part_count,
+                            expected_part_count,
+                            uploaded_bytes,
+                            content_length,
+                        )
+
+        def ensure_upload() -> str:
+            nonlocal upload_state
+            if upload_state is None:
+                _LOG.info(
+                    "starting encrypted S3 multipart upload for %s: size=%s "
+                    "target_part_size=%s parts=%s chunks_per_part=%s",
+                    object_key,
+                    content_length,
+                    part_size,
+                    expected_part_count,
+                    chunks_per_part,
+                )
+                response = cast(
+                    dict[str, Any],
+                    self._client.create_multipart_upload(
+                        Bucket=self._bucket,
+                        Key=object_key,
+                        **extra_args,
+                    ),
+                )
+                upload_state = ArchiveMultipartUploadState(
+                    upload_id=str(response["UploadId"]),
+                    object_path=object_key,
+                    part_size=part_size,
+                    content_length=content_length,
+                    sha256=logical_sha256,
+                    total_parts=expected_part_count,
+                    encryption_state_json=session.export_state(
+                        plaintext_size=package.archive_size
+                    ).to_json_bytes().decode("utf-8"),
+                )
+                if multipart_tracker is not None:
+                    multipart_tracker.save_multipart_upload(
+                        collection_id=collection_id,
+                        state=upload_state,
+                    )
+            return upload_state.upload_id
+
+        def record_completed_part(part: ArchiveMultipartUploadedPart) -> None:
+            nonlocal uploaded_bytes
+            completed_parts_by_number[part.part_number] = part
+            uploaded_bytes = sum(current.size for current in completed_parts_by_number.values())
+            uploaded_parts = len(completed_parts_by_number)
+            if multipart_tracker is not None and upload_state is not None:
+                multipart_tracker.record_multipart_upload_progress(
+                    collection_id=collection_id,
+                    state=upload_state,
+                    part=part,
+                    uploaded_bytes=uploaded_bytes,
+                    uploaded_parts=uploaded_parts,
+                    total_parts=expected_part_count,
+                )
+            if _should_log_multipart_progress(uploaded_parts, expected_part_count):
+                _LOG.info(
+                    "encrypted S3 multipart upload progress for %s: "
+                    "part=%s/%s bytes=%s/%s pct=%.2f",
+                    object_key,
+                    uploaded_parts,
+                    expected_part_count,
+                    uploaded_bytes,
+                    content_length,
+                    (uploaded_bytes / content_length * 100.0) if content_length else 100.0,
+                )
+
+        try:
+            upload_id = ensure_upload()
+            for plan in plans[resumed_part_count:]:
+                body = _encrypted_archive_part_body(
+                    package=package,
+                    session=session,
+                    plan=plan,
+                )
+                response = cast(
+                    dict[str, Any],
+                    self._client.upload_part(
+                        Bucket=self._bucket,
+                        Key=object_key,
+                        UploadId=upload_id,
+                        PartNumber=plan.part_number,
+                        Body=body,
+                    ),
+                )
+                record_completed_part(
+                    ArchiveMultipartUploadedPart(
+                        part_number=plan.part_number,
+                        etag=str(response["ETag"]),
+                        size=len(body),
+                    )
+                )
+
+            remote_parts = self._list_uploaded_parts(object_key=object_key, upload_id=upload_id)
+            completed_parts = [
+                completed_parts_by_number[part_number]
+                for part_number in range(1, expected_part_count + 1)
+                if part_number in completed_parts_by_number
+            ]
+            if len(completed_parts) != expected_part_count:
+                raise ValueError(
+                    "encrypted collection archive multipart upload is missing parts "
+                    "before completion"
+                )
+            _validate_recorded_parts_exist_remotely(completed_parts, remote_parts)
+            self._client.complete_multipart_upload(
+                Bucket=self._bucket,
+                Key=object_key,
+                UploadId=upload_id,
+                MultipartUpload={
+                    "Parts": [
+                        {"PartNumber": part.part_number, "ETag": part.etag}
+                        for part in completed_parts
+                    ]
+                },
+            )
+            if multipart_tracker is not None:
+                multipart_tracker.clear_multipart_upload(
+                    collection_id=collection_id,
+                    upload_id=upload_id,
+                )
+            _LOG.info(
+                "completed encrypted S3 multipart upload for %s: parts=%s bytes=%s",
+                object_key,
+                len(completed_parts),
+                uploaded_bytes,
+            )
+        except Exception:
+            if upload_state is not None:
+                _LOG.warning(
+                    "leaving incomplete encrypted S3 multipart upload for %s resumable: "
+                    "upload_id=%s uploaded_bytes=%s/%s resumed_parts=%s",
+                    object_key,
+                    upload_state.upload_id,
+                    uploaded_bytes,
+                    content_length,
+                    resumed_part_count,
+                    exc_info=True,
                 )
             raise
 
@@ -657,8 +1004,11 @@ class S3ArchiveStore:
         recorded_parts: tuple[ArchiveMultipartUploadedPart, ...],
         part_size: int,
         content_length: int,
+        expected_part_sizes: tuple[int, ...] | None = None,
     ) -> list[ArchiveMultipartUploadedPart]:
         expected_part_count = (content_length + part_size - 1) // part_size
+        if expected_part_sizes is not None:
+            expected_part_count = len(expected_part_sizes)
         remote_parts_by_number = {
             int(str(part["PartNumber"])): part
             for part in self._list_uploaded_parts(object_key=object_key, upload_id=upload_id)
@@ -670,11 +1020,14 @@ class S3ArchiveStore:
             remote = remote_parts_by_number.get(part_number)
             if recorded is None or remote is None:
                 break
-            expected_size = (
-                content_length - part_size * (expected_part_count - 1)
-                if part_number == expected_part_count
-                else part_size
-            )
+            if expected_part_sizes is not None:
+                expected_size = expected_part_sizes[part_number - 1]
+            else:
+                expected_size = (
+                    content_length - part_size * (expected_part_count - 1)
+                    if part_number == expected_part_count
+                    else part_size
+                )
             if recorded.size != expected_size:
                 break
             if str(remote["ETag"]) != recorded.etag or int(str(remote["Size"])) != recorded.size:
@@ -848,7 +1201,14 @@ class S3ArchiveStore:
         response = self._client.get_object(Bucket=self._bucket, Key=object_path)
         body = response["Body"]
         try:
-            yield from body.iter_chunks(chunk_size=1024 * 1024)
+            chunks = body.iter_chunks(chunk_size=1024 * 1024)
+            if _head_encryption(head) == AGE_SCRYPT_ENCRYPTION:
+                yield from iter_decrypt_age_scrypt(
+                    chunks,
+                    self._config.glacier_archive_passphrase,
+                )
+            else:
+                yield from chunks
         finally:
             close = getattr(body, "close", None)
             if callable(close):
@@ -898,11 +1258,14 @@ class S3ArchiveStore:
         response = self._client.get_object(Bucket=self._bucket, Key=object_path)
         body = response["Body"]
         try:
-            return cast(bytes, body.read())
+            content = cast(bytes, body.read())
         finally:
             close = getattr(body, "close", None)
             if callable(close):
                 close()
+        if _head_encryption(head) == AGE_SCRYPT_ENCRYPTION:
+            return decrypt_age_scrypt(content, self._config.glacier_archive_passphrase)
+        return content
 
     def cleanup_collection_archive_restore(
         self,
@@ -923,6 +1286,9 @@ class S3ArchiveStore:
     def _is_aws_restore_backend(self) -> bool:
         endpoint = self._config.glacier_endpoint_url.casefold()
         return self._config.glacier_backend.casefold() == "aws" or "amazonaws.com" in endpoint
+
+    def _archive_encryption_enabled(self) -> bool:
+        return self._config.glacier_archive_encryption == "age_scrypt"
 
 
 def _collection_restore_paths(
@@ -980,6 +1346,10 @@ def _head_metadata(head: dict[str, Any]) -> dict[str, str]:
     return {str(key).lower(): str(value) for key, value in metadata.items()}
 
 
+def _head_encryption(head: dict[str, Any]) -> str:
+    return _head_metadata(head).get(ENCRYPTION_METADATA, "none")
+
+
 def _validate_uploaded_collection_metadata(
     *,
     object_key: str,
@@ -1001,7 +1371,11 @@ def _validate_uploaded_collection_metadata(
         raise RuntimeError(
             f"Glacier object has invalid collection byte metadata: {object_key}"
         ) from exc
-    if collection_bytes != stored_bytes:
+    if (
+        expected_bytes is None
+        and _head_encryption(head) == "none"
+        and collection_bytes != stored_bytes
+    ):
         raise RuntimeError(
             f"Glacier object collection byte metadata does not match size: {object_key}"
         )

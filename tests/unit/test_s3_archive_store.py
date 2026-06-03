@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 
+from riverhog_age import decrypt_age_scrypt
 from riverhog_core.collection_archives import (
     CollectionArchiveFile,
     CollectionArchivePackage,
@@ -21,8 +22,12 @@ from riverhog_core.ports.archive_store import (
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.stores.s3_archive_store import (
+    AGE_SCRYPT_ENCRYPTION,
     COLLECTION_BYTES_METADATA,
     COLLECTION_SHA256_METADATA,
+    ENCRYPTION_METADATA,
+    PLAINTEXT_BYTES_METADATA,
+    PLAINTEXT_SHA256_METADATA,
     S3ArchiveStore,
 )
 from tests.fixtures.crypto import FixtureProofStamper
@@ -276,6 +281,21 @@ def _package() -> CollectionArchivePackage:
     )
 
 
+def _large_package(size: int = 6 * 1024 * 1024) -> CollectionArchivePackage:
+    content = bytes((i * 17 + 3) % 256 for i in range(size))
+    return build_collection_archive_package(
+        collection_id="large-docs",
+        files=(
+            CollectionArchiveFile(
+                path="video.bin",
+                content=content,
+                sha256=hashlib.sha256(content).hexdigest(),
+            ),
+        ),
+        stamper=FixtureProofStamper(),
+    )
+
+
 def _store_with_client(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -340,6 +360,99 @@ def test_upload_collection_archive_package_uploads_collection_manifest_and_proof
     assert proof_head["Metadata"]["riverhog-storage-class"] == "STANDARD"
 
 
+def test_encrypted_collection_archive_package_uploads_age_objects_and_restores_plaintext(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    passphrase = "garage encrypted archive test passphrase"
+    store = _store_with_client(
+        monkeypatch,
+        tmp_path,
+        client,
+        glacier_archive_encryption="age_scrypt",
+        glacier_archive_passphrase=passphrase,
+        glacier_archive_work_factor=12,
+    )
+    package = _package()
+
+    receipt = store.upload_collection_archive_package(collection_id="docs", package=package)
+
+    assert receipt.archive.object_path == "glacier/collections/docs/archive.tar.age"
+    assert receipt.manifest.object_path == "glacier/collections/docs/manifest.yml.age"
+    assert receipt.proof.object_path == "glacier/collections/docs/manifest.yml.ots.age"
+    archive_head = client.objects[receipt.archive.object_path]
+    manifest_head = client.objects[receipt.manifest.object_path]
+    proof_head = client.objects[receipt.proof.object_path]
+    assert archive_head["Body"] != package.archive_bytes
+    assert manifest_head["Body"] != package.manifest_bytes
+    assert proof_head["Body"] != package.proof_bytes
+    assert decrypt_age_scrypt(manifest_head["Body"], passphrase) == package.manifest_bytes
+    assert decrypt_age_scrypt(proof_head["Body"], passphrase) == package.proof_bytes
+    assert archive_head["Metadata"][ENCRYPTION_METADATA] == AGE_SCRYPT_ENCRYPTION
+    assert archive_head["Metadata"][COLLECTION_BYTES_METADATA] == str(package.archive_size)
+    assert archive_head["Metadata"][COLLECTION_SHA256_METADATA] == package.archive_sha256
+    assert archive_head["Metadata"][PLAINTEXT_BYTES_METADATA] == str(package.archive_size)
+    assert archive_head["Metadata"][PLAINTEXT_SHA256_METADATA] == package.archive_sha256
+    assert receipt.archive.stored_bytes == len(archive_head["Body"])
+    assert receipt.archive_sha256 == package.archive_sha256
+    assert receipt.manifest_sha256 == package.manifest_sha256
+
+    restored_archive = b"".join(
+        store.iter_restored_collection_archive(
+            collection_id="docs",
+            object_path=receipt.archive.object_path,
+        )
+    )
+    assert restored_archive == package.archive_bytes
+    assert (
+        store.read_restored_collection_manifest(
+            collection_id="docs",
+            object_path=receipt.manifest.object_path,
+        )
+        == package.manifest_bytes
+    )
+    assert (
+        store.read_restored_collection_manifest_proof(
+            collection_id="docs",
+            object_path=receipt.proof.object_path,
+        )
+        == package.proof_bytes
+    )
+
+
+def test_encrypted_store_still_reads_legacy_unencrypted_archive_objects(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    plaintext_store = _store_with_client(monkeypatch, tmp_path, client)
+    package = _package()
+    receipt = plaintext_store.upload_collection_archive_package(
+        collection_id="docs",
+        package=package,
+    )
+    encrypted_store = _store_with_client(
+        monkeypatch,
+        tmp_path,
+        client,
+        glacier_archive_encryption="age_scrypt",
+        glacier_archive_passphrase="legacy-read-passphrase",
+        glacier_archive_work_factor=12,
+    )
+
+    assert b"".join(
+        encrypted_store.iter_restored_collection_archive(
+            collection_id="docs",
+            object_path=receipt.archive.object_path,
+        )
+    ) == package.archive_bytes
+    assert encrypted_store.read_restored_collection_manifest(
+        collection_id="docs",
+        object_path=receipt.manifest.object_path,
+    ) == package.manifest_bytes
+
+
 def test_upload_collection_archive_package_streams_archive_with_multipart(
     monkeypatch,
     tmp_path: Path,
@@ -366,6 +479,63 @@ def test_upload_collection_archive_package_streams_archive_with_multipart(
     assert client.uploaded_part_sizes[:-1]
     assert all(size == 4 for size in client.uploaded_part_sizes[:-1])
     assert archive_head["Metadata"][COLLECTION_SHA256_METADATA] == package.archive_sha256
+
+
+def test_encrypted_collection_archive_package_resumes_existing_multipart_upload(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    passphrase = "encrypted multipart resume passphrase"
+    store = _store_with_client(
+        monkeypatch,
+        tmp_path,
+        client,
+        glacier_archive_encryption="age_scrypt",
+        glacier_archive_passphrase=passphrase,
+        glacier_archive_work_factor=12,
+        glacier_multipart_part_bytes=5 * 1024 * 1024,
+        glacier_multipart_concurrency=1,
+    )
+    tracker = _FakeMultipartTracker()
+    package = _large_package()
+    client.fail_next_upload_part_after_successes = 1
+
+    with pytest.raises(RuntimeError, match="synthetic upload_part failure"):
+        store.upload_collection_archive_package(
+            collection_id="large-docs",
+            package=package,
+            multipart_tracker=tracker,
+        )
+
+    assert tracker.state is not None
+    assert tracker.state.encryption_state_json is not None
+    assert tracker.state.total_parts == 2
+    assert tracker.parts[0].part_number == 1
+    assert client.aborted_uploads == []
+    first_upload_id = tracker.state.upload_id
+    first_part = client.uploads[first_upload_id]["Parts"][1]
+
+    receipt = store.upload_collection_archive_package(
+        collection_id="large-docs",
+        package=package,
+        multipart_tracker=tracker,
+    )
+
+    assert receipt.archive.object_path == "glacier/collections/large-docs/archive.tar.age"
+    assert client.completed_uploads == [first_upload_id]
+    assert client.aborted_uploads == []
+    assert tracker.state is None
+    assert tracker.cleared == [first_upload_id]
+    assert client.uploads == {}
+    assert client.objects[receipt.archive.object_path]["Body"].startswith(first_part)
+    restored_archive = b"".join(
+        store.iter_restored_collection_archive(
+            collection_id="large-docs",
+            object_path=receipt.archive.object_path,
+        )
+    )
+    assert restored_archive == package.archive_bytes
 
 
 def test_upload_collection_archive_package_tracks_parallel_multipart_progress(
