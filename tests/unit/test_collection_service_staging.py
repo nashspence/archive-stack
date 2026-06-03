@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
+from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ActivePinRecord,
     CollectionArchiveRecord,
@@ -43,9 +44,9 @@ from riverhog_core.services.planning import (
     cache_collection_manifest_artifacts,
     refresh_provisional_plan,
 )
-from riverhog_core.sqlite_db import initialize_db, make_session_factory, session_scope
 from tests.fixtures.crypto import FixtureProofStamper, FixtureRecoveryPayloadCodec
 from tests.fixtures.data import DOCS_FILES
+from tests.unit.db_helpers import sqlite_url
 
 
 class _FakeHotStore:
@@ -412,13 +413,13 @@ def _config(sqlite_path: Path, **overrides: object) -> RuntimeConfig:
         s3_force_path_style=True,
         tusd_base_url="http://example.invalid:1080/files",
         tusd_hook_secret="hook-secret",
-        sqlite_path=sqlite_path,
+        database_url=sqlite_url(sqlite_path),
         **overrides,
     )
 
 
 def _seed_docs_collection_with_finalized_image(sqlite_path: Path, image_root: Path) -> None:
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         session.add(CollectionRecord(id="docs"))
         invoice = DOCS_FILES["tax/2022/invoice-123.pdf"]
@@ -490,7 +491,7 @@ def _seed_docs_collection_with_finalized_image(sqlite_path: Path, image_root: Pa
 
 def test_partial_collection_upload_does_not_publish_committed_hot_file(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     hot_store = _FakeHotStore()
     upload_store = _StreamingOnlyUploadStore()
@@ -521,7 +522,7 @@ def test_partial_collection_upload_does_not_publish_committed_hot_file(tmp_path:
 
 def test_file_upload_resume_does_not_sync_unrelated_upload_files(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     upload_store = _FakeUploadStore()
     service = SqlAlchemyCollectionService(_config(sqlite_path), _FakeHotStore(), upload_store)
@@ -566,7 +567,7 @@ def test_completed_collection_upload_promotes_from_staging_and_cleans_up(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     webhook_payloads: list[dict[str, object]] = []
     monkeypatch.setattr(
@@ -618,7 +619,7 @@ def test_completed_collection_upload_promotes_from_staging_and_cleans_up(
     assert hot_store.get_collection_file(collection_id, relpath) == content
     assert staging_target in upload_store.deleted_targets
     assert [payload["event"] for payload in webhook_payloads] == ["collections.upload_staged"]
-    with session_scope(make_session_factory(str(sqlite_path))) as session:
+    with session_scope(make_session_factory(sqlite_url(sqlite_path))) as session:
         pin = session.get(ActivePinRecord, f"{collection_id}/")
         assert pin is not None
         assert pin.fetch_state == "done"
@@ -628,11 +629,11 @@ def test_glacier_archive_worker_prioritizes_resumable_multipart_upload(
     tmp_path: Path,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     config = _config(sqlite_path)
     upload_store = _FakeUploadStore()
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     resumed_id = "20250712T213200Z__resume-first"
     pending_id = "20250712T213201Z__pending-second"
 
@@ -709,7 +710,7 @@ def test_planner_worker_restores_missing_artifact_cache_from_archive_store(
     tmp_path: Path,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     config = _config(
         sqlite_path,
@@ -738,7 +739,7 @@ def test_planner_worker_restores_missing_artifact_cache_from_archive_store(
         proof_bytes=package.proof_bytes,
     )
 
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         collection = CollectionRecord(id=collection_id)
         collection.files.append(
@@ -782,7 +783,7 @@ def test_planner_worker_restores_missing_artifact_cache_from_archive_store(
 
 def test_failed_hot_promotion_keeps_staging_for_retry(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     hot_store = _FailingHotStore(fail_path="albums/day-02.txt")
     upload_store = _StreamingOnlyUploadStore()
@@ -828,7 +829,7 @@ def test_failed_hot_promotion_keeps_staging_for_retry(tmp_path: Path) -> None:
     assert upload_store.deleted_targets == []
     assert hot_store.get_collection_file(collection_id, "albums/day-01.txt") == files[0][1]
     assert archive_store.uploads == 1
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         upload = session.get(CollectionUploadRecord, collection_id)
         assert upload is not None
@@ -858,7 +859,7 @@ def test_failed_hot_promotion_keeps_staging_for_retry(tmp_path: Path) -> None:
 
 def test_packaged_archive_artifacts_are_reused_after_upload_failure(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     hot_store = _FakeHotStore()
     upload_store = _StreamingOnlyUploadStore()
@@ -903,7 +904,7 @@ def test_packaged_archive_artifacts_are_reused_after_upload_failure(tmp_path: Pa
     assert archive_store.uploads == 1
     assert proof_stamper.stamps == 1
 
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         upload = session.get(CollectionUploadRecord, collection_id)
         assert upload is not None
@@ -930,7 +931,7 @@ def test_archive_failures_retry_indefinitely_with_throttled_operator_notificatio
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     webhook_payloads: list[dict[str, object]] = []
     monkeypatch.setattr(
@@ -1010,7 +1011,7 @@ def test_archive_failures_retry_indefinitely_with_throttled_operator_notificatio
     ]
     assert webhook_payloads[-1]["attempts"] == 3
 
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         upload = session.get(CollectionUploadRecord, collection_id)
         assert upload is not None
@@ -1026,7 +1027,7 @@ def test_archive_validation_failure_stops_without_retrying(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     webhook_payloads: list[dict[str, object]] = []
     monkeypatch.setattr(
@@ -1088,7 +1089,7 @@ def test_archive_validation_failure_stops_without_retrying(
 
     assert upload_service.process_due_uploads() == 0
 
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         upload = session.get(CollectionUploadRecord, collection_id)
         assert upload is not None
@@ -1104,7 +1105,7 @@ def test_startup_requeue_resumes_failed_archive_after_fix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     webhook_payloads: list[dict[str, object]] = []
     monkeypatch.setattr(
@@ -1173,7 +1174,7 @@ def test_startup_requeue_resumes_failed_archive_after_fix(
         "collections.finalized",
     ]
 
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         upload = session.get(CollectionUploadRecord, collection_id)
         assert upload is None
@@ -1185,7 +1186,7 @@ def test_startup_requeue_renotifies_when_deterministic_archive_failure_remains(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     webhook_payloads: list[dict[str, object]] = []
     monkeypatch.setattr(
@@ -1254,7 +1255,7 @@ def test_successful_archive_emits_only_finalized_operator_webhook(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     webhook_payloads: list[dict[str, object]] = []
     monkeypatch.setattr(
@@ -1316,7 +1317,7 @@ def test_finalized_collection_upload_is_idempotent_for_same_slug_and_manifest(
     tmp_path: Path,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     hot_store = _FakeHotStore()
     upload_store = _FakeUploadStore()
@@ -1365,7 +1366,7 @@ def test_same_upload_slug_with_different_manifest_mints_distinct_collection_id(
     tmp_path: Path,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     service = SqlAlchemyCollectionService(
         _config(sqlite_path),
@@ -1403,7 +1404,7 @@ def test_same_upload_slug_with_different_manifest_mints_distinct_collection_id(
 
 def test_collection_upload_can_use_explicit_migration_timestamp(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     service = SqlAlchemyCollectionService(
         _config(sqlite_path),
@@ -1429,7 +1430,7 @@ def test_collection_upload_can_use_explicit_migration_timestamp(tmp_path: Path) 
 
 def test_matching_upload_with_different_explicit_timestamp_is_rejected(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     service = SqlAlchemyCollectionService(
         _config(sqlite_path),
@@ -1461,7 +1462,7 @@ def test_matching_upload_with_different_explicit_timestamp_is_rejected(tmp_path:
 
 def test_completed_glacier_upload_refreshes_provisional_disc_plan(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     config = _config(
         sqlite_path,
@@ -1503,7 +1504,7 @@ def test_completed_glacier_upload_refreshes_provisional_disc_plan(tmp_path: Path
     )
     assert upload_service.process_due_uploads() == 1
 
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         candidate = session.scalars(select(PlannedCandidateRecord)).one()
         image_root = Path(candidate.image_root)
@@ -1536,7 +1537,7 @@ def test_ready_disc_candidate_sends_operator_webhook(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     config = _config(
         sqlite_path,
@@ -1597,7 +1598,7 @@ def test_ready_disc_candidate_sends_operator_webhook(
     image = webhook_payloads[0]["images"][0]
     assert image["filename"].endswith(".iso")
     assert image["download_url"].endswith(f"/v1/images/{image['image_id']}/iso")
-    with session_scope(make_session_factory(str(sqlite_path))) as session:
+    with session_scope(make_session_factory(sqlite_url(sqlite_path))) as session:
         candidate = session.scalars(select(PlannedCandidateRecord)).one()
         assert candidate.ready_notification_sent_at is not None
         assert candidate.ready_notification_next_attempt_at is not None
@@ -1608,7 +1609,7 @@ def test_provisional_disc_plan_materialization_resumes_partial_candidate(
     tmp_path: Path,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     config = _config(
         sqlite_path,
         planner_disc_target_bytes=10_000_000,
@@ -1643,7 +1644,7 @@ def test_provisional_disc_plan_materialization_resumes_partial_candidate(
         manifest_bytes=archive_package.manifest_bytes,
         proof_bytes=archive_package.proof_bytes,
     )
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         collection = CollectionRecord(id=collection_id)
         collection.files.append(
@@ -1706,7 +1707,7 @@ def test_provisional_disc_plan_materialization_resumes_partial_candidate(
 
 def test_underfilled_tail_candidate_waits_without_materializing(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     config = _config(
         sqlite_path,
         planner_disc_target_bytes=10_000_000,
@@ -1741,7 +1742,7 @@ def test_underfilled_tail_candidate_waits_without_materializing(tmp_path: Path) 
         manifest_bytes=archive_package.manifest_bytes,
         proof_bytes=archive_package.proof_bytes,
     )
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         collection = CollectionRecord(id=collection_id)
         collection.files.append(
@@ -1823,7 +1824,7 @@ def test_underfilled_tail_candidate_waits_without_materializing(tmp_path: Path) 
 
 def test_saturated_underfilled_candidate_still_waits_without_split_path(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     config = _config(
         sqlite_path,
         planner_disc_target_bytes=10_000_000,
@@ -1859,7 +1860,7 @@ def test_saturated_underfilled_candidate_still_waits_without_split_path(tmp_path
         manifest_bytes=archive_package.manifest_bytes,
         proof_bytes=archive_package.proof_bytes,
     )
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         collection = CollectionRecord(id=collection_id)
         collection.files.append(
@@ -1912,7 +1913,7 @@ def test_saturated_underfilled_candidate_still_waits_without_split_path(tmp_path
 
 def test_planner_continues_after_partially_finalized_collection(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     config = _config(
         sqlite_path,
         planner_disc_target_bytes=10_000_000,
@@ -1954,7 +1955,7 @@ def test_planner_continues_after_partially_finalized_collection(tmp_path: Path) 
         manifest_bytes=archive_package.manifest_bytes,
         proof_bytes=archive_package.proof_bytes,
     )
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         collection = CollectionRecord(id=collection_id)
         for path, content in (
@@ -2049,7 +2050,7 @@ def test_planner_ignores_fully_finalized_collection(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     config = _config(sqlite_path)
     collection_id = "2026/20260529T000000Z__done"
     relpath = "done.txt"
@@ -2077,7 +2078,7 @@ def test_planner_ignores_fully_finalized_collection(
         proof_bytes=archive_package.proof_bytes,
     )
 
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         collection = CollectionRecord(id=collection_id)
         collection.files.append(
@@ -2136,7 +2137,7 @@ def test_planner_ignores_fully_finalized_collection(
 
 def test_new_collection_uploads_are_blocked_over_unburned_limit(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     hot_store = _FakeHotStore()
     upload_store = _FakeUploadStore()
@@ -2174,7 +2175,7 @@ def test_new_collection_uploads_are_blocked_over_unburned_limit(tmp_path: Path) 
 
 def test_existing_collection_upload_can_resume_when_over_unburned_limit(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     hot_store = _FakeHotStore()
     upload_store = _FakeUploadStore()
@@ -2209,7 +2210,7 @@ def test_collection_summary_does_not_count_finalized_image_parts_as_glacier_reco
     tmp_path: Path,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     hot_store = _FakeHotStore()
     upload_store = _FakeUploadStore()

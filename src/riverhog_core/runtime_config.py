@@ -117,19 +117,8 @@ def _parse_command(value: str, *, name: str) -> tuple[str, ...]:
     return command
 
 
-def _database_url_from_sqlite_path(sqlite_path: Path) -> str:
-    sqlite_path = sqlite_path.expanduser().resolve()
-    sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-    return f"sqlite:///{sqlite_path}"
-
-
-def _sqlite_path_from_database_url(database_url: str) -> Path | None:
-    if not database_url.startswith("sqlite:///"):
-        return None
-    raw_path = database_url.removeprefix("sqlite:///")
-    if raw_path in {"", ":memory:"}:
-        return None
-    return Path(raw_path).expanduser().resolve()
+def _database_url_driver(database_url: str) -> str:
+    return database_url.strip().split(":", 1)[0].split("+", 1)[0]
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,7 +133,6 @@ class RuntimeConfig:
     tusd_base_url: str
     tusd_hook_secret: str
     tusd_append_timeout_seconds: float = 60.0
-    sqlite_path: Path | None = None
     database_url: str = ""
     incomplete_upload_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
     upload_expiry_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
@@ -232,18 +220,7 @@ class RuntimeConfig:
 
     def __post_init__(self) -> None:
         if not self.database_url:
-            database_url = (
-                _database_url_from_sqlite_path(self.sqlite_path)
-                if self.sqlite_path is not None
-                else DEFAULT_DATABASE_URL
-            )
-            object.__setattr__(self, "database_url", database_url)
-        elif self.sqlite_path is None:
-            object.__setattr__(
-                self,
-                "sqlite_path",
-                _sqlite_path_from_database_url(self.database_url),
-            )
+            object.__setattr__(self, "database_url", DEFAULT_DATABASE_URL)
         log_level = self.log_level.strip().upper()
         if log_level not in {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}:
             raise ValueError(
@@ -310,17 +287,15 @@ def load_runtime_config() -> RuntimeConfig:
 
     database_url_raw = os.getenv("RIVERHOG_DATABASE_URL", "").strip()
     sqlite_path_raw = os.getenv("RIVERHOG_DB_PATH", "").strip()
+    if sqlite_path_raw:
+        raise ValueError("RIVERHOG_DB_PATH has been removed; set RIVERHOG_DATABASE_URL")
     ttl_raw = os.getenv("INCOMPLETE_UPLOAD_TTL", "24h")
     sweep_raw = os.getenv("UPLOAD_EXPIRY_SWEEP_INTERVAL", "30s")
     log_level = os.getenv("RIVERHOG_LOG_LEVEL", DEFAULT_LOG_LEVEL).strip() or DEFAULT_LOG_LEVEL
 
-    sqlite_path = Path(sqlite_path_raw).expanduser().resolve() if sqlite_path_raw else None
-    if database_url_raw:
-        database_url = database_url_raw
-    elif sqlite_path is not None:
-        database_url = _database_url_from_sqlite_path(sqlite_path)
-    else:
-        database_url = DEFAULT_DATABASE_URL
+    database_url = database_url_raw or DEFAULT_DATABASE_URL
+    if _database_url_driver(database_url) != "postgresql":
+        raise ValueError("RIVERHOG_DATABASE_URL must use postgresql")
     incomplete_upload_ttl = _parse_duration(ttl_raw)
     upload_expiry_sweep_interval = _parse_duration(sweep_raw)
     s3_endpoint_url = os.getenv("RIVERHOG_S3_ENDPOINT_URL", "http://127.0.0.1:9000").rstrip("/")
@@ -630,7 +605,6 @@ def load_runtime_config() -> RuntimeConfig:
             name="RIVERHOG_TUSD_APPEND_TIMEOUT_SECONDS",
             minimum=0.0,
         ),
-        sqlite_path=sqlite_path,
         database_url=database_url,
         incomplete_upload_ttl=incomplete_upload_ttl,
         upload_expiry_sweep_interval=upload_expiry_sweep_interval,

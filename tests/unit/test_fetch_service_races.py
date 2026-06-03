@@ -8,6 +8,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ActivePinRecord,
     CollectionFileRecord,
@@ -20,8 +21,8 @@ from riverhog_core.domain.enums import FetchState
 from riverhog_core.recovery_payloads import encrypt_recovery_payload
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.fetches import SqlAlchemyFetchService, _sync_upload_progress
-from riverhog_core.sqlite_db import initialize_db, make_session_factory, session_scope
 from tests.fixtures.crypto import FixtureRecoveryPayloadCodec
+from tests.unit.db_helpers import sqlite_url
 
 _RECOVERY_CODEC = FixtureRecoveryPayloadCodec()
 
@@ -123,7 +124,7 @@ def _config(sqlite_path: Path) -> RuntimeConfig:
         s3_force_path_style=True,
         tusd_base_url="http://example.invalid:1080/files",
         tusd_hook_secret="hook-secret",
-        sqlite_path=sqlite_path,
+        database_url=sqlite_url(sqlite_path),
     )
 
 
@@ -132,7 +133,7 @@ def test_waiting_fetch_notifications_are_delivered_and_reminded(
     monkeypatch,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     collection_id = "docs"
     path = "file.txt"
@@ -141,7 +142,7 @@ def test_waiting_fetch_notifications_are_delivered_and_reminded(
     encrypted = encrypt_recovery_payload(content, _RECOVERY_CODEC)
     sha256 = hashlib.sha256(content).hexdigest()
 
-    with session_scope(make_session_factory(str(sqlite_path))) as session:
+    with session_scope(make_session_factory(sqlite_url(sqlite_path))) as session:
         session.add(CollectionRecord(id=collection_id))
         session.add(
             CollectionFileRecord(
@@ -227,7 +228,7 @@ def test_waiting_fetch_notifications_are_delivered_and_reminded(
 
 def test_stale_sync_does_not_rollback_completed_fetch_state(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     collection_id = "docs"
     path = "file.txt"
@@ -250,10 +251,10 @@ def test_stale_sync_does_not_rollback_completed_fetch_state(tmp_path: Path) -> N
         s3_force_path_style=True,
         tusd_base_url="http://example.invalid:1080/files",
         tusd_hook_secret="hook-secret",
-        sqlite_path=sqlite_path,
+        database_url=sqlite_url(sqlite_path),
     )
     service = SqlAlchemyFetchService(config, hot_store, upload_store, _RECOVERY_CODEC)
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
 
     with session_scope(session_factory) as session:
         session.add(CollectionRecord(id=collection_id))
@@ -353,7 +354,7 @@ def test_stale_sync_does_not_rollback_completed_fetch_state(tmp_path: Path) -> N
 def test_cold_fetch_manifest_uses_registered_disc_payload_metadata(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     collection_id = "docs"
     path = "file.txt"
@@ -372,7 +373,7 @@ def test_cold_fetch_manifest_uses_registered_disc_payload_metadata(tmp_path: Pat
         _RaceyUploadStore({}),
         _RECOVERY_CODEC,
     )
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
 
     with session_scope(session_factory) as session:
         session.add(CollectionRecord(id=collection_id))
@@ -433,7 +434,7 @@ def test_cold_fetch_manifest_uses_registered_disc_payload_metadata(tmp_path: Pat
 def test_cold_split_fetch_complete_uses_registered_part_sizes(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     collection_id = "docs"
     path = "file.txt"
@@ -452,7 +453,7 @@ def test_cold_split_fetch_complete_uses_registered_part_sizes(tmp_path: Path) ->
     hot_store = _FakeHotStore({})
     upload_store = _RaceyUploadStore({target_path: upload_payload})
     service = SqlAlchemyFetchService(_config(sqlite_path), hot_store, upload_store, _RECOVERY_CODEC)
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
 
     with session_scope(session_factory) as session:
         session.add(CollectionRecord(id=collection_id))
@@ -528,7 +529,7 @@ def test_cold_fetch_manifest_can_select_multiple_collections_by_prefix(
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     path = "shared/name.txt"
     collections = [
@@ -550,7 +551,7 @@ def test_cold_fetch_manifest_can_select_multiple_collections_by_prefix(
         _RaceyUploadStore({}),
         _RECOVERY_CODEC,
     )
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
 
     with session_scope(session_factory) as session:
         for index, (collection_id, content) in enumerate(collections, start=1):
@@ -617,7 +618,7 @@ def test_cold_fetch_complete_restores_matching_paths_across_collections(
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
 
     path = "shared/name.txt"
     collections = [
@@ -643,7 +644,7 @@ def test_cold_fetch_complete_restores_matching_paths_across_collections(
     )
     hot_store = _FakeHotStore({})
     service = SqlAlchemyFetchService(_config(sqlite_path), hot_store, upload_store, _RECOVERY_CODEC)
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
 
     with session_scope(session_factory) as session:
         for index, (collection_id, content) in enumerate(collections, start=1):

@@ -11,6 +11,7 @@ from riverhog_core.runtime_config import (
     RuntimeConfig,
     load_runtime_config,
 )
+from tests.unit.db_helpers import sqlite_url
 
 
 def _base_runtime_config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
@@ -24,7 +25,7 @@ def _base_runtime_config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
         s3_force_path_style=True,
         tusd_base_url="http://example.invalid:1080/files",
         tusd_hook_secret="hook-secret",
-        sqlite_path=tmp_path / "state.sqlite3",
+        database_url=sqlite_url(tmp_path / "state.sqlite3"),
         **overrides,
     )
 
@@ -71,10 +72,8 @@ def test_runtime_config_does_not_enforce_recovery_timing_without_webhook_url(
 
 
 def test_load_runtime_config_accepts_explicit_test_recovery_passphrase(
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_DB_PATH", str(tmp_path / "state.sqlite3"))
     monkeypatch.setenv("RIVERHOG_RECOVERY_PAYLOAD_REQUIRE_EXPLICIT_PASSPHRASE", "true")
     monkeypatch.setenv("RIVERHOG_RECOVERY_PAYLOAD_PASSPHRASE", "unit-test-secret")
 
@@ -82,14 +81,12 @@ def test_load_runtime_config_accepts_explicit_test_recovery_passphrase(
 
     assert config.recovery_payload_require_explicit_passphrase is True
     assert config.recovery_payload_passphrase == "unit-test-secret"
-    assert config.database_url == f"sqlite:///{tmp_path / 'state.sqlite3'}"
+    assert config.database_url == DEFAULT_DATABASE_URL
 
 
 def test_load_runtime_config_parses_glacier_archive_encryption(
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_DB_PATH", str(tmp_path / "state.sqlite3"))
     monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION", "age-scrypt")
     monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE", "true")
     monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE", "archive-secret")
@@ -104,10 +101,8 @@ def test_load_runtime_config_parses_glacier_archive_encryption(
 
 
 def test_load_runtime_config_rejects_disabled_glacier_archive_encryption(
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_DB_PATH", str(tmp_path / "state.sqlite3"))
     monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION", "none")
 
     with pytest.raises(ValueError, match="RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION"):
@@ -115,10 +110,8 @@ def test_load_runtime_config_rejects_disabled_glacier_archive_encryption(
 
 
 def test_load_runtime_config_rejects_required_missing_archive_passphrase_when_enabled(
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_DB_PATH", str(tmp_path / "state.sqlite3"))
     monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION", "age_scrypt")
     monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE", "true")
     monkeypatch.delenv("RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE", raising=False)
@@ -127,17 +120,25 @@ def test_load_runtime_config_rejects_required_missing_archive_passphrase_when_en
         load_runtime_config()
 
 
-def test_load_runtime_config_prefers_database_url_over_legacy_db_path(
+def test_load_runtime_config_rejects_removed_legacy_db_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("RIVERHOG_DB_PATH", str(tmp_path / "state.sqlite3"))
-    monkeypatch.setenv("RIVERHOG_DATABASE_URL", "postgresql+psycopg://unit:unit@postgres/unit")
 
-    config = load_runtime_config()
+    with pytest.raises(ValueError, match="RIVERHOG_DB_PATH has been removed"):
+        load_runtime_config()
 
-    assert config.database_url == "postgresql+psycopg://unit:unit@postgres/unit"
-    assert config.sqlite_path == tmp_path / "state.sqlite3"
+
+def test_load_runtime_config_rejects_non_postgres_database_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RIVERHOG_DB_PATH", raising=False)
+    monkeypatch.setenv("RIVERHOG_DATABASE_URL", sqlite_url(tmp_path / "state.sqlite3"))
+
+    with pytest.raises(ValueError, match="RIVERHOG_DATABASE_URL must use postgresql"):
+        load_runtime_config()
 
 
 def test_load_runtime_config_defaults_to_postgres_database_url(
@@ -154,7 +155,6 @@ def test_load_runtime_config_defaults_to_postgres_database_url(
     config = load_runtime_config()
 
     assert config.database_url == DEFAULT_DATABASE_URL
-    assert config.sqlite_path is None
     assert config.planner_min_fill_ratio == 0.99
     assert config.planner_min_fill_bytes == 49_500_000_000
     assert config.planner_unplanned_saturation_bytes == 300_000_000_000
@@ -168,7 +168,6 @@ def test_load_runtime_config_parses_planner_runtime_settings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_DB_PATH", str(tmp_path / "state.sqlite3"))
     monkeypatch.setenv("RIVERHOG_PLANNER_DISC_TARGET_BYTES", "50GB")
     monkeypatch.setenv("RIVERHOG_PLANNER_MIN_FILL_RATIO", "96%")
     monkeypatch.setenv("RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES", "300GB")
@@ -204,10 +203,8 @@ def test_load_runtime_config_parses_planner_runtime_settings(
 
 
 def test_load_runtime_config_accepts_explicit_planner_min_fill_bytes(
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_DB_PATH", str(tmp_path / "state.sqlite3"))
     monkeypatch.setenv("RIVERHOG_PLANNER_DISC_TARGET_BYTES", "1GiB")
     monkeypatch.setenv("RIVERHOG_PLANNER_MIN_FILL_BYTES", "900MiB")
 
@@ -227,10 +224,8 @@ def test_runtime_config_rejects_planner_min_fill_larger_than_target(tmp_path: Pa
 
 
 def test_load_runtime_config_rejects_required_default_recovery_passphrase(
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_DB_PATH", str(tmp_path / "state.sqlite3"))
     monkeypatch.setenv("RIVERHOG_RECOVERY_PAYLOAD_REQUIRE_EXPLICIT_PASSPHRASE", "true")
     monkeypatch.setenv("RIVERHOG_RECOVERY_PAYLOAD_PASSPHRASE", DEV_RECOVERY_PAYLOAD_PASSPHRASE)
 
@@ -239,10 +234,8 @@ def test_load_runtime_config_rejects_required_default_recovery_passphrase(
 
 
 def test_load_runtime_config_rejects_required_missing_recovery_passphrase(
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_DB_PATH", str(tmp_path / "state.sqlite3"))
     monkeypatch.setenv("RIVERHOG_RECOVERY_PAYLOAD_REQUIRE_EXPLICIT_PASSPHRASE", "true")
     monkeypatch.delenv("RIVERHOG_RECOVERY_PAYLOAD_PASSPHRASE", raising=False)
 

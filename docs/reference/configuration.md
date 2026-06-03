@@ -1085,11 +1085,13 @@ expose `.riverhog/` staging paths.
 
 ## `RIVERHOG_DATABASE_URL`
 
-- type: SQLAlchemy database URL
+- type: PostgreSQL SQLAlchemy database URL
 - default: `postgresql+psycopg://riverhog:riverhog@127.0.0.1:5432/riverhog`
 
 This is the catalog database URL used for durable authoritative API state. The
 checked-in Compose stack sets this to the Postgres sidecar at `postgres:5432`.
+SQLite/local path catalogs are no longer supported; `RIVERHOG_DB_PATH` is
+rejected at startup so stale local-development env files fail loudly.
 
 ## `RIVERHOG_PUBLIC_BASE_URL`
 

@@ -14,6 +14,7 @@ from riverhog_core.ports.archive_store import (
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.stores.s3_hot_store import S3HotStore, _multipart_part_size
+from tests.unit.db_helpers import sqlite_url
 
 
 class _FakeBody:
@@ -150,7 +151,7 @@ def _config(tmp_path: Path) -> RuntimeConfig:
         s3_force_path_style=True,
         tusd_base_url="http://example.invalid:1080/files",
         tusd_hook_secret="hook-secret",
-        sqlite_path=tmp_path / "state.sqlite3",
+        database_url=sqlite_url(tmp_path / "state.sqlite3"),
     )
     return config
 

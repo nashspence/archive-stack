@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveRecord,
     CollectionFileRecord,
@@ -26,9 +27,9 @@ from riverhog_core.finalized_image_coverage import (
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.copies import SqlAlchemyCopyService
-from riverhog_core.sqlite_db import initialize_db, make_session_factory, session_scope
 from tests.fixtures.crypto import FixtureRecoveryPayloadCodec
 from tests.fixtures.data import DOCS_FILES, IMAGE_ONE_FILES, write_tree
+from tests.unit.db_helpers import sqlite_url
 
 _RECOVERY_CODEC = FixtureRecoveryPayloadCodec()
 
@@ -72,12 +73,12 @@ def _config(sqlite_path: Path) -> RuntimeConfig:
         s3_force_path_style=True,
         tusd_base_url="http://example.invalid:1080/files",
         tusd_hook_secret="hook-secret",
-        sqlite_path=sqlite_path,
+        database_url=sqlite_url(sqlite_path),
     )
 
 
 def _seed_finalized_image(sqlite_path: Path, image_root: Path) -> None:
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         session.add(CollectionRecord(id="docs"))
         for relative_path, content in DOCS_FILES.items():
@@ -150,7 +151,7 @@ def _seed_finalized_image(sqlite_path: Path, image_root: Path) -> None:
 def test_marking_one_confirmed_copy_lost_creates_a_fresh_replacement_slot(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
 
@@ -185,7 +186,7 @@ def test_recovery_session_seeds_and_tops_up_replacement_slots_for_unprotected_im
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
 
@@ -195,7 +196,7 @@ def test_recovery_session_seeds_and_tops_up_replacement_slots_for_unprotected_im
     service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
     service.update("20260420T040001Z", "20260420T040001Z-2", state="damaged")
 
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         record = session.get(GlacierRecoverySessionRecord, "rs-20260420T040001Z-rebuild-1")
         assert record is not None
@@ -247,7 +248,7 @@ def test_recovery_session_seeds_and_tops_up_replacement_slots_for_unprotected_im
 def test_register_uses_db_artifact_mapping_after_disc_manifest_is_removed(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
     (image_root / "DISC.yml.age").unlink()
@@ -255,7 +256,7 @@ def test_register_uses_db_artifact_mapping_after_disc_manifest_is_removed(tmp_pa
     service = SqlAlchemyCopyService(_config(sqlite_path), _FakeHotStore())
     service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
 
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         rows = session.query(FileCopyRecord).order_by(FileCopyRecord.disc_path).all()
 
@@ -272,7 +273,7 @@ def test_register_uses_db_artifact_mapping_after_disc_manifest_is_removed(tmp_pa
 def test_verified_update_after_registration_does_not_resync_copy_rows(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
 
@@ -289,7 +290,7 @@ def test_verified_update_after_registration_does_not_resync_copy_rows(tmp_path: 
 
     assert updated.state == CopyState.VERIFIED
     assert updated.verification_state == VerificationState.VERIFIED
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         rows = session.query(FileCopyRecord).order_by(FileCopyRecord.disc_path).all()
 
@@ -302,7 +303,7 @@ def test_verified_update_after_registration_does_not_resync_copy_rows(tmp_path: 
 def test_register_synchronously_writes_recovery_index(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
 
@@ -310,7 +311,7 @@ def test_register_synchronously_writes_recovery_index(tmp_path: Path) -> None:
     summary = service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
 
     assert summary.state == CopyState.REGISTERED
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         rows = session.query(FileCopyRecord).order_by(FileCopyRecord.disc_path).all()
 
@@ -323,7 +324,7 @@ def test_register_synchronously_writes_recovery_index(tmp_path: Path) -> None:
 def test_recovery_index_sync_rolls_back_and_can_be_retried(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
 
@@ -337,7 +338,7 @@ def test_recovery_index_sync_rolls_back_and_can_be_retried(tmp_path: Path) -> No
     with pytest.raises(InvalidState):
         service.update("20260420T040001Z", "20260420T040001Z-1", location="Shelf B1")
 
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         rows = session.query(FileCopyRecord).order_by(FileCopyRecord.disc_path).all()
     assert [(row.disc_path, row.location) for row in rows] == [
@@ -361,7 +362,7 @@ def test_notify_label_needed_sends_best_effort_operator_webhook(
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
     config = replace(

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ActivePinRecord,
     CollectionArchiveRecord,
@@ -37,9 +38,9 @@ from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services import recovery_sessions as recovery_sessions_module
 from riverhog_core.services.copies import SqlAlchemyCopyService
 from riverhog_core.services.recovery_sessions import SqlAlchemyRecoverySessionService
-from riverhog_core.sqlite_db import initialize_db, make_session_factory, session_scope
 from tests.fixtures.crypto import FixtureProofStamper, FixtureRecoveryPayloadCodec
 from tests.fixtures.data import DOCS_FILES, IMAGE_ONE_FILES, write_tree
+from tests.unit.db_helpers import sqlite_url
 
 _PROOF_STAMPER = FixtureProofStamper()
 _RECOVERY_CODEC = FixtureRecoveryPayloadCodec()
@@ -184,7 +185,7 @@ def _config(sqlite_path: Path, **overrides: object) -> RuntimeConfig:
         s3_force_path_style=True,
         tusd_base_url="http://example.invalid:1080/files",
         tusd_hook_secret="hook-secret",
-        sqlite_path=sqlite_path,
+        database_url=sqlite_url(sqlite_path),
         ots_verify_command=(sys.executable, "-m", "tests.fixtures.ots_stamp_command"),
     )
     return replace(config, **overrides)
@@ -198,7 +199,7 @@ def _seed_finalized_image(
     candidate_id: str = "img_2026-04-20_01",
     filename: str = "20260420T040001Z.iso",
 ) -> None:
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         if session.get(CollectionRecord, "docs") is None:
             session.add(CollectionRecord(id="docs"))
@@ -286,7 +287,7 @@ def _seed_collection_archive(sqlite_path: Path, package: CollectionArchivePackag
     object_path = f"{archive_prefix}/archive.tar.age"
     manifest_object_path = f"{archive_prefix}/manifest.yml.age"
     proof_object_path = f"{archive_prefix}/manifest.yml.ots.age"
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         session.add(
             CollectionArchiveRecord(
@@ -321,7 +322,7 @@ def _seed_collection_files(
     hot: bool,
     archived: bool,
 ) -> None:
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         session.add(CollectionRecord(id=collection_id))
         for path, content in sorted(files.items()):
@@ -346,7 +347,7 @@ def _seed_docs_collection_archive(sqlite_path: Path) -> CollectionArchivePackage
 def test_double_copy_loss_creates_pending_recovery_session(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
     package = _seed_docs_collection_archive(sqlite_path)
@@ -375,7 +376,7 @@ def test_double_copy_loss_creates_pending_recovery_session(tmp_path: Path) -> No
 def test_recovery_ready_ttl_rounds_up_to_restore_hold_days(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
     package = _seed_docs_collection_archive(sqlite_path)
@@ -400,7 +401,7 @@ def test_recovery_ready_ttl_rounds_up_to_restore_hold_days(tmp_path: Path) -> No
 def test_image_recovery_requires_uploaded_collection_archive(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
 
@@ -417,7 +418,7 @@ def test_recovery_session_processes_ready_and_expired_states(
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
     package = _seed_docs_collection_archive(sqlite_path)
@@ -471,7 +472,7 @@ def test_collection_restore_requests_and_verifies_manifest_and_proof(
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
     package = _docs_collection_archive_package()
@@ -544,7 +545,7 @@ def test_recovery_completed_notification_retries_after_failure(
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
     package = _docs_collection_archive_package()
@@ -608,7 +609,7 @@ def test_recovery_started_notification_retries_while_restore_is_pending(
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
     package = _docs_collection_archive_package()
@@ -659,7 +660,7 @@ def test_collection_restore_materializes_selected_files_to_hot_storage(
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
     package = _docs_collection_archive_package()
@@ -693,7 +694,7 @@ def test_collection_restore_materializes_selected_files_to_hot_storage(
     assert hot_store.puts == {
         ("docs", "tax/2022/invoice-123.pdf"): DOCS_FILES["tax/2022/invoice-123.pdf"]
     }
-    with session_scope(make_session_factory(str(sqlite_path))) as db_session:
+    with session_scope(make_session_factory(sqlite_url(sqlite_path))) as db_session:
         row = db_session.get(
             CollectionFileRecord,
             {"collection_id": "docs", "path": "tax/2022/invoice-123.pdf"},
@@ -707,7 +708,7 @@ def test_missing_pinned_hot_file_without_disc_coverage_restores_from_glacier(
     monkeypatch,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     _seed_collection_files(
         sqlite_path,
         collection_id="docs",
@@ -717,7 +718,7 @@ def test_missing_pinned_hot_file_without_disc_coverage_restores_from_glacier(
     )
     package = _docs_collection_archive_package()
     _seed_collection_archive(sqlite_path, package)
-    with session_scope(make_session_factory(str(sqlite_path))) as session:
+    with session_scope(make_session_factory(sqlite_url(sqlite_path))) as session:
         session.add(
             ActivePinRecord(
                 target="docs/tax/2022/invoice-123.pdf",
@@ -751,7 +752,7 @@ def test_missing_pinned_hot_file_without_disc_coverage_restores_from_glacier(
             "glacier/archives/opaque-docs/manifest.yml.ots.age",
         )
     ]
-    with session_scope(make_session_factory(str(sqlite_path))) as session:
+    with session_scope(make_session_factory(sqlite_url(sqlite_path))) as session:
         row = session.get(CollectionFileRecord, {"collection_id": "docs", "path": restored_path})
         pin = session.get(ActivePinRecord, "docs/tax/2022/invoice-123.pdf")
         assert row is not None
@@ -764,7 +765,7 @@ def test_missing_pinned_hot_file_with_disc_coverage_waits_for_djdan_fetch(
     tmp_path: Path,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     _seed_collection_files(
         sqlite_path,
         collection_id="docs",
@@ -772,7 +773,7 @@ def test_missing_pinned_hot_file_with_disc_coverage_waits_for_djdan_fetch(
         hot=True,
         archived=True,
     )
-    with session_scope(make_session_factory(str(sqlite_path))) as session:
+    with session_scope(make_session_factory(sqlite_url(sqlite_path))) as session:
         session.add(
             ActivePinRecord(
                 target="docs/tax/2022/invoice-123.pdf",
@@ -805,7 +806,7 @@ def test_missing_pinned_hot_file_with_disc_coverage_waits_for_djdan_fetch(
 
     assert store.restore_requests == []
     assert hot_store.puts == {}
-    with session_scope(make_session_factory(str(sqlite_path))) as session:
+    with session_scope(make_session_factory(sqlite_url(sqlite_path))) as session:
         row = session.get(
             CollectionFileRecord,
             {"collection_id": "docs", "path": "tax/2022/invoice-123.pdf"},
@@ -822,7 +823,7 @@ def test_collection_restore_streams_large_selected_file_to_hot_storage(
     monkeypatch,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     content = (b"0123456789abcdef" * 70_000) + b"tail"
     files = {"large.bin": content}
     _seed_collection_files(
@@ -880,7 +881,7 @@ def test_collection_restore_does_not_materialize_selected_file_with_bad_sha256(
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
     package = _docs_collection_archive_package()
@@ -929,7 +930,7 @@ def test_collection_restore_rejects_empty_proof_before_completion(
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
     package = _docs_collection_archive_package()
@@ -971,7 +972,7 @@ def test_collection_restore_rejects_corrupt_archive_before_completion(
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
     package = _docs_collection_archive_package()
@@ -1015,7 +1016,7 @@ def test_image_rebuild_verifies_manifest_and_proof_before_streaming_archive(
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
     package = _docs_collection_archive_package()
@@ -1157,7 +1158,7 @@ def test_recovery_session_retries_initial_ready_notification_before_reminders(
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
     package = _seed_docs_collection_archive(sqlite_path)
@@ -1229,7 +1230,7 @@ def test_recovery_session_retries_initial_ready_notification_before_expiring(
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
     package = _seed_docs_collection_archive(sqlite_path)
@@ -1303,7 +1304,7 @@ def test_pending_recovery_session_can_group_multiple_images_before_approval(
     sqlite_path = tmp_path / "state.sqlite3"
     image_root_one = tmp_path / "image-root-one"
     image_root_two = tmp_path / "image-root-two"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root_one, IMAGE_ONE_FILES)
     write_tree(image_root_two, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root_one)

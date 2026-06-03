@@ -33,6 +33,7 @@ from riverhog_core.stores.s3_archive_store import (
 )
 from tests.fixtures.crypto import FixtureProofStamper
 from tests.fixtures.data import DOCS_FILES
+from tests.unit.db_helpers import sqlite_url
 
 DOCS_ARCHIVE_PREFIX = "glacier/archives/opaque-docs"
 LARGE_DOCS_ARCHIVE_PREFIX = "glacier/archives/opaque-large-docs"
@@ -265,7 +266,7 @@ def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
         s3_force_path_style=True,
         tusd_base_url="http://example.invalid:1080/files",
         tusd_hook_secret="hook-secret",
-        sqlite_path=tmp_path / "state.sqlite3",
+        database_url=sqlite_url(tmp_path / "state.sqlite3"),
     )
     return replace(config, **overrides)
 

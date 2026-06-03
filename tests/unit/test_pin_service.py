@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
+from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionFileRecord,
     CollectionRecord,
@@ -18,7 +19,7 @@ from riverhog_core.domain.errors import Conflict
 from riverhog_core.ports.hot_store import HotFileStat
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.pins import SqlAlchemyPinService
-from riverhog_core.sqlite_db import initialize_db, make_session_factory, session_scope
+from tests.unit.db_helpers import sqlite_url
 
 
 class _FakeHotStore:
@@ -126,7 +127,7 @@ def _config(sqlite_path: Path) -> RuntimeConfig:
         s3_force_path_style=True,
         tusd_base_url="http://example.invalid:1080/files",
         tusd_hook_secret="hook-secret",
-        sqlite_path=sqlite_path,
+        database_url=sqlite_url(sqlite_path),
     )
 
 
@@ -136,7 +137,7 @@ def _seed_hot_docs(sqlite_path: Path, hot_store: _FakeHotStore) -> None:
         "tax/2022/receipt-456.pdf": b"receipt",
         "letters/cover.txt": b"cover",
     }
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         session.add(CollectionRecord(id="docs"))
         for path, content in files.items():
@@ -154,7 +155,7 @@ def _seed_hot_docs(sqlite_path: Path, hot_store: _FakeHotStore) -> None:
 
 
 def _mark_docs_fully_compliant(sqlite_path: Path) -> None:
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         session.add(
             FinalizedImageRecord(
@@ -194,7 +195,7 @@ def _mark_docs_fully_compliant(sqlite_path: Path) -> None:
 
 
 def _hot_paths(sqlite_path: Path) -> set[str]:
-    session_factory = make_session_factory(str(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         return {
             record.path
@@ -205,7 +206,7 @@ def _hot_paths(sqlite_path: Path) -> set[str]:
 
 def test_releasing_one_file_removes_only_that_file(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     hot_store = _FakeHotStore()
     _seed_hot_docs(sqlite_path, hot_store)
     _mark_docs_fully_compliant(sqlite_path)
@@ -223,7 +224,7 @@ def test_releasing_one_file_removes_only_that_file(tmp_path: Path) -> None:
 
 def test_releasing_broad_pin_preserves_remaining_narrow_pin(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     hot_store = _FakeHotStore()
     _seed_hot_docs(sqlite_path, hot_store)
     _mark_docs_fully_compliant(sqlite_path)
@@ -242,7 +243,7 @@ def test_releasing_broad_pin_preserves_remaining_narrow_pin(tmp_path: Path) -> N
 
 def test_releasing_missing_pin_does_not_remove_unrelated_hot_files(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     hot_store = _FakeHotStore()
     _seed_hot_docs(sqlite_path, hot_store)
     service = SqlAlchemyPinService(_config(sqlite_path), hot_store, _FakeUploadStore())
@@ -259,7 +260,7 @@ def test_releasing_missing_pin_does_not_remove_unrelated_hot_files(tmp_path: Pat
 
 def test_releasing_noncompliant_pin_is_refused(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(str(sqlite_path))
+    initialize_db(sqlite_url(sqlite_path))
     hot_store = _FakeHotStore()
     _seed_hot_docs(sqlite_path, hot_store)
     service = SqlAlchemyPinService(_config(sqlite_path), hot_store, _FakeUploadStore())

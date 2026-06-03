@@ -20,6 +20,7 @@ from riverhog_core.services.planning import (
     _planner_refresh_file_lock,
     _PlanPiece,
 )
+from tests.unit.db_helpers import sqlite_url
 
 
 def _runtime_config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
@@ -33,7 +34,7 @@ def _runtime_config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
         s3_force_path_style=True,
         tusd_base_url="http://example.invalid:1080/files",
         tusd_hook_secret="hook-secret",
-        sqlite_path=tmp_path / "state.sqlite3",
+        database_url=sqlite_url(tmp_path / "state.sqlite3"),
         **overrides,
     )
 

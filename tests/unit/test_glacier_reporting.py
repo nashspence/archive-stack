@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveRecord,
     CollectionFileRecord,
@@ -18,7 +19,6 @@ from riverhog_core.finalized_image_coverage import (
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.glacier_reporting import SqlAlchemyGlacierReportingService
-from riverhog_core.sqlite_db import initialize_db, make_session_factory, session_scope
 from tests.fixtures.crypto import FixtureRecoveryPayloadCodec
 from tests.fixtures.data import (
     DOCS_COLLECTION_ID,
@@ -27,6 +27,7 @@ from tests.fixtures.data import (
     SPLIT_IMAGE_FIXTURES,
     write_tree,
 )
+from tests.unit.db_helpers import sqlite_url
 
 _RECOVERY_CODEC = FixtureRecoveryPayloadCodec()
 
@@ -42,14 +43,14 @@ def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
         s3_force_path_style=True,
         tusd_base_url="http://example.invalid:1080/files",
         tusd_hook_secret="hook-secret",
-        sqlite_path=tmp_path / "state.sqlite3",
+        database_url=sqlite_url(tmp_path / "state.sqlite3"),
     )
     return replace(config, **overrides)
 
 
 def _seed_docs_collection(config: RuntimeConfig) -> None:
-    initialize_db(str(config.sqlite_path))
-    session_factory = make_session_factory(str(config.sqlite_path))
+    initialize_db(config.database_url)
+    session_factory = make_session_factory(config.database_url)
     with session_scope(session_factory) as session:
         session.add(CollectionRecord(id=DOCS_COLLECTION_ID))
         for path, content in sorted(DOCS_FILES.items()):
@@ -75,7 +76,7 @@ def _seed_uploaded_image(
     bytes_total: int,
     covered_paths: tuple[tuple[str, str], ...],
 ) -> None:
-    session_factory = make_session_factory(str(config.sqlite_path))
+    session_factory = make_session_factory(config.database_url)
     with session_scope(session_factory) as session:
         session.add(
             FinalizedImageRecord(
@@ -179,7 +180,7 @@ def test_get_report_counts_manifest_and_proof_as_standard_s3_storage(
 ) -> None:
     config = _config(tmp_path)
     _seed_docs_collection(config)
-    session_factory = make_session_factory(str(config.sqlite_path))
+    session_factory = make_session_factory(config.database_url)
     with session_scope(session_factory) as session:
         session.add(
             CollectionArchiveRecord(
@@ -227,7 +228,7 @@ def test_initialize_db_backfills_coverage_parts_for_existing_finalized_images(
     _seed_docs_collection(config)
     image_root = write_tree(tmp_path / "image-split-backfill", SPLIT_IMAGE_FIXTURES[0].files)
 
-    session_factory = make_session_factory(str(config.sqlite_path))
+    session_factory = make_session_factory(config.database_url)
     with session_scope(session_factory) as session:
         session.add(
             FinalizedImageRecord(
@@ -249,7 +250,7 @@ def test_initialize_db_backfills_coverage_parts_for_existing_finalized_images(
                 )
             )
 
-    initialize_db(str(config.sqlite_path))
+    initialize_db(config.database_url)
     (image_root / "DISC.yml.age").unlink()
 
     report = SqlAlchemyGlacierReportingService(config).get_report(collection=DOCS_COLLECTION_ID)
