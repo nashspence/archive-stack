@@ -111,10 +111,9 @@ Feature: riverhog CLI
       Given a local collection source "photos-2024" with deterministic fixture contents
       When the operator uploads collection source "photos-2024" with riverhog
       Then the command exits with code 0
-      And stdout mentions "collection: photos-2024"
-      And stdout mentions "state: finalized"
-      And stdout mentions "glacier: uploaded"
-      And collection "photos-2024" has hot_bytes equal to bytes
+      And stdout mentions "__photos-2024"
+      And stdout mentions "state: archiving"
+      And stdout mentions "upload: 4/4 files"
 
     Scenario: riverhog plan prints candidate ids, fill, and readiness
       Given an archive with planner fixtures

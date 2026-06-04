@@ -114,6 +114,7 @@ from tests.fixtures.data import (
     DOCS_COLLECTION_ID,
     DOCS_FILES,
     IMAGE_FIXTURES,
+    IMAGE_ID,
     MIN_FILL_BYTES,
     PHOTOS_2024_FILES,
     PHOTOS_COLLECTION_ID,
@@ -2053,8 +2054,8 @@ class AcceptanceGlacierUploadService:
     def publish_recovery_catalog(self) -> int:
         return sum(
             1
-            for archive in self.state.collection_archives.values()
-            if archive.state == "uploaded"
+            for archive in self.state.collection_glacier_status_by_collection.values()
+            if archive.state == GlacierState.UPLOADED
         )
 
     @_with_state_lock
@@ -4863,6 +4864,25 @@ class AcceptanceSystem:
         assert resp.status_code == 200, resp.text
         with self.state.lock:
             self.state.files_by_collection[docs_key]["tax/2022/invoice-123.pdf"].hot = False
+
+    def seed_docs_tax_fully_compliant(self) -> None:
+        self.seed_planner_fixtures()
+        self.planning.finalize_image(IMAGE_ID)
+        for copy_id, location in (
+            ("20260420T040001Z-1", "vault-a/shelf-01"),
+            ("20260420T040001Z-2", "vault-b/shelf-01"),
+        ):
+            with self.state.lock:
+                existing = self.state.copy_summaries.get(("20260420T040001Z", CopyId(copy_id)))
+            if existing is None or existing.state == CopyState.NEEDED:
+                self.copies.register("20260420T040001Z", location, copy_id=copy_id)
+            self.copies.update(
+                "20260420T040001Z",
+                copy_id,
+                location=location,
+                state="verified",
+                verification_state="verified",
+            )
 
     def seed_docs_archive_with_split_invoice(self) -> None:
         docs_key = CollectionId(normalize_collection_id(DOCS_COLLECTION_ID))

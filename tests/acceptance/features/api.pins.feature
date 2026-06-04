@@ -32,6 +32,7 @@ Feature: Pins API
 
   Rule: Releasing removes only the exact matching pin
     Background:
+      Given target "docs/tax/" is fully compliant
       Given target "docs/tax/" is pinned
       And target "docs/tax/2022/invoice-123.pdf" is pinned
 
@@ -69,6 +70,7 @@ Feature: Pins API
   Rule: Releasing the last exact pin reconciles hot storage and fetch state
     Scenario: Releasing the last covering pin removes the file from hot storage
       Given collection "docs" exists and is fully hot
+      And target "docs/tax/2022/invoice-123.pdf" is fully compliant
       And target "docs/tax/2022/invoice-123.pdf" is pinned
       When the client posts to "/v1/release" with target "docs/tax/2022/invoice-123.pdf"
       Then the response status is 200
@@ -76,6 +78,7 @@ Feature: Pins API
 
     Scenario: Releasing the last exact pin removes the associated fetch manifest
       Given archived target "docs/tax/2022/invoice-123.pdf" is pinned with fetch "fx-1"
+      And target "docs/tax/2022/invoice-123.pdf" is fully compliant
       When the client posts to "/v1/release" with target "docs/tax/2022/invoice-123.pdf"
       Then the response status is 200
       And fetch "fx-1" no longer exists
@@ -83,6 +86,7 @@ Feature: Pins API
   Rule: Release cleans up partial recovery uploads
     Scenario: Releasing a pin with a partial upload deletes the recovery upload object
       Given fetch "fx-1" has entry "e1" with a partial upload in progress
+      And target "docs/tax/2022/invoice-123.pdf" is fully compliant
       When the client posts to "/v1/release" with target "docs/tax/2022/invoice-123.pdf"
       Then the response status is 200
       And the recovery upload for fetch "fx-1" is absent

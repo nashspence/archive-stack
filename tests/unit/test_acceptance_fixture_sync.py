@@ -61,6 +61,9 @@ LOCKED_HELPER_STATE_ACCESS = {
     "upload_collection_source": "reads collection source root directly before HTTP upload flow",
     "_seed_hot_fixture_collection": "checks and seeds canned hot collection fixture state directly",
     "seed_docs_archive": "checks and adjusts docs archive state around HTTP setup",
+    "seed_docs_tax_fully_compliant": (
+        "checks and adjusts docs tax compliance state around HTTP setup"
+    ),
     "seed_docs_archive_with_split_invoice": (
         "checks and adjusts split archive state around HTTP setup"
     ),

@@ -405,18 +405,29 @@ def _listed_copy_payload(
 def _ensure_collection_fixture(acceptance_system: AcceptanceSystem, collection_id: str) -> None:
     if collection_id == DOCS_COLLECTION_ID:
         acceptance_system.seed_docs_hot()
+        acceptance_system.mark_collection_archive_uploaded(collection_id)
         return
     if collection_id == "tax/files":
-        acceptance_system.upload_collection_source(collection_id, DOCS_FILES)
+        acceptance_system.seed_collection_source(collection_id, DOCS_FILES)
+        acceptance_system.state.seed_collection(
+            collection_id,
+            DOCS_FILES,
+            hot_paths={path.lstrip("/") for path in DOCS_FILES},
+            archived_paths=set(),
+        )
+        acceptance_system.mark_collection_archive_uploaded(collection_id)
         return
     if collection_id == PHOTOS_COLLECTION_ID:
         acceptance_system.seed_photos_hot()
+        acceptance_system.mark_collection_archive_uploaded(collection_id)
         return
     if collection_id == PHOTOS_NESTED_COLLECTION_ID:
         acceptance_system.seed_nested_photos_hot()
+        acceptance_system.mark_collection_archive_uploaded(collection_id)
         return
     if collection_id == PHOTOS_PARENT_COLLECTION_ID:
         acceptance_system.seed_parent_photos_hot()
+        acceptance_system.mark_collection_archive_uploaded(collection_id)
         return
     raise AssertionError(f"unsupported collection fixture: {collection_id}")
 
@@ -537,6 +548,32 @@ def _prepare_riverhog_expectation(
             "/v1/images",
             params=params,
         ).json()
+        return
+
+    if argv[1] == "dashboard":
+        context.expected_api_endpoint = ("GET", "/v1/dashboard")
+        params: dict[str, object] = {
+            "page": _riverhog_option_value(argv, "--page", 1),
+            "per_page": _riverhog_option_value(argv, "--per-page", 25),
+            "sort": _riverhog_option_value(argv, "--sort", "finalized_at"),
+            "order": _riverhog_option_value(argv, "--order", "desc"),
+        }
+        query = _riverhog_option_value(argv, "--query")
+        collection = _riverhog_option_value(argv, "--collection")
+        has_copies = _riverhog_bool_flag(argv, "--has-copies", "--no-copies")
+        if query is not None:
+            params["q"] = query
+        if collection is not None:
+            params["collection"] = collection
+        if has_copies is not None:
+            params["has_copies"] = has_copies
+        context.expected_api_payload = {
+            "images": acceptance_system.request(
+                "GET",
+                "/v1/images",
+                params=params,
+            ).json(),
+        }
         return
 
     if argv[1] == "glacier":
@@ -861,6 +898,12 @@ def given_target_is_pinned(acceptance_system: AcceptanceSystem, target: str) -> 
     _ensure_target_fixture(acceptance_system, target)
     resp = acceptance_system.request("POST", "/v1/pin", json_body={"target": target})
     assert resp.status_code == 200, resp.text
+
+
+@given(parsers.parse('target "{target}" is fully compliant'))
+def given_target_is_fully_compliant(acceptance_system: AcceptanceSystem, target: str) -> None:
+    _ensure_target_fixture(acceptance_system, target)
+    acceptance_system.seed_docs_tax_fully_compliant()
 
 
 @given(parsers.parse('target "{target}" is not pinned'))
@@ -1537,7 +1580,10 @@ def when_client_uploads_every_required_collection_file(
             path=str(file_payload["path"]),
         )
     if failure_configured:
-        payload = acceptance_system.wait_for_collection_upload_state(upload_collection_id, "failed")
+        acceptance_system.wait_for_collection_glacier_state(upload_collection_id, "retrying")
+        payload = acceptance_system.wait_for_collection_upload_state(
+            upload_collection_id, "archiving"
+        )
     elif "/" in normalized_collection_id:
         payload = acceptance_system.wait_for_collection_upload_state(
             upload_collection_id, "finalized"
@@ -1572,7 +1618,9 @@ def when_client_retries_collection_glacier_archiving(
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
 ) -> None:
-    acceptance_system.clear_collection_glacier_upload_failure(collection_id)
+    acceptance_system.clear_collection_glacier_upload_failure(
+        _collection_id_for_context(acceptance_context, collection_id)
+    )
     response = _start_collection_upload(acceptance_system, collection_id)
     assert response.status_code == 200, response.text
     _remember_collection_upload(acceptance_context, collection_id, response)
@@ -1590,7 +1638,8 @@ def when_collection_starts_glacier_archiving(
     collection_id: str,
 ) -> None:
     acceptance_system.start_collection_glacier_archiving(collection_id)
-    payload = acceptance_system.wait_for_collection_upload_state(collection_id, "failed")
+    acceptance_system.wait_for_collection_glacier_state(collection_id, "retrying")
+    payload = acceptance_system.wait_for_collection_upload_state(collection_id, "archiving")
     _set_response(acceptance_context, httpx.Response(200, json=payload))
 
 
@@ -1787,12 +1836,17 @@ def given_captured_webhook_sink_times_out_event(
 
 @given(parsers.parse('the client waits for collection "{collection_id}" glacier state "{state}"'))
 @when(parsers.parse('the client waits for collection "{collection_id}" glacier state "{state}"'))
+@then(parsers.parse('the client waits for collection "{collection_id}" glacier state "{state}"'))
 def when_the_client_waits_for_collection_glacier_state(
     acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
     state: str,
 ) -> None:
-    acceptance_system.wait_for_collection_glacier_state(collection_id, state)
+    acceptance_system.wait_for_collection_glacier_state(
+        _collection_id_for_context(acceptance_context, collection_id),
+        state,
+    )
 
 
 @given(parsers.parse('the client waits for recovery session "{session_id}" state "{state}"'))
@@ -2540,12 +2594,10 @@ def then_every_returned_target_is_valid_input_for_release(
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     for target in [item["target"] for item in payload["results"]]:
-        assert (
-            acceptance_system.request(
-                "POST", "/v1/release", json_body={"target": target}
-            ).status_code
-            == 200
-        )
+        response = acceptance_system.request("POST", "/v1/release", json_body={"target": target})
+        assert response.status_code in {200, 409}, response.text
+        if response.status_code == 409:
+            assert response.json()["error"]["code"] == "conflict"
 
 
 @then(parsers.parse("the response contains at most {limit:d} result"))

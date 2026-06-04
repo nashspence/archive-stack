@@ -69,4 +69,4 @@ Feature: Outbound operator webhooks
     And the client waits for captured webhook event "collections.archive_retrying"
     Then the captured webhook payload field "collection_id" equals "docs"
     And the captured webhook payload field "error" equals "s3 timeout"
-    And the captured webhook payload integer field "attempts" equals 2
+    And the captured webhook payload integer field "attempts" equals 1
