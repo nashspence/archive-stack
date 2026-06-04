@@ -32,7 +32,7 @@ class CollectionProtectionFilter(StrEnum):
     FULLY_PROTECTED = "fully_protected"
 
 
-_LEGACY_PROTECTION_FILTERS = {
+_CORE_PROTECTION_FILTERS = {
     "under_protected": "partially_protected",
     "cloud_only": "unprotected",
     "physical_only": "partially_protected",
@@ -49,7 +49,7 @@ def list_collections(
     protection_state: Annotated[CollectionProtectionFilter | None, Query()] = None,
 ) -> ListCollectionsResponse:
     service_protection_state = (
-        _LEGACY_PROTECTION_FILTERS[protection_state.value]
+        _CORE_PROTECTION_FILTERS[protection_state.value]
         if protection_state is not None
         else None
     )

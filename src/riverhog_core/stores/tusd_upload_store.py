@@ -35,10 +35,6 @@ class TusdUploadStore:
     def _object_key(target_path: str) -> str:
         return tusd_upload_id_for_target_path(target_path)
 
-    @staticmethod
-    def _legacy_object_key(target_path: str) -> str:
-        return target_path.lstrip("/")
-
     def _metadata_header(self, target_path: str) -> str:
         target_path_b64 = base64.b64encode(target_path.encode("utf-8")).decode("ascii")
         encoded = base64.b64encode(target_path_b64.encode("ascii")).decode("ascii")
@@ -136,7 +132,7 @@ class TusdUploadStore:
         if size == 0:
             return
 
-        keys = [self._object_key(target_path), self._legacy_object_key(target_path)]
+        key = self._object_key(target_path)
         deadline = time.monotonic() + _READ_TARGET_RETRY_SECONDS
         range_header: str | None = None
         if offset > 0 or size is not None:
@@ -145,26 +141,21 @@ class TusdUploadStore:
         while True:
             missing_error: Exception | None = None
             try:
-                for key in keys:
-                    try:
-                        kwargs: dict[str, object] = {"Bucket": self._bucket, "Key": key}
-                        if range_header is not None:
-                            kwargs["Range"] = range_header
-                        response = self._client.get_object(**kwargs)
-                    except self._client.exceptions.ClientError as exc:
-                        if exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode") != 404:
-                            raise
-                        missing_error = exc
-                        continue
-                    body = response["Body"]
-                    try:
-                        yield from body.iter_chunks(chunk_size=1024 * 1024)
-                    finally:
-                        close = getattr(body, "close", None)
-                        if callable(close):
-                            close()
-                    return
+                kwargs: dict[str, object] = {"Bucket": self._bucket, "Key": key}
+                if range_header is not None:
+                    kwargs["Range"] = range_header
+                response = self._client.get_object(**kwargs)
+                body = response["Body"]
+                try:
+                    yield from body.iter_chunks(chunk_size=1024 * 1024)
+                finally:
+                    close = getattr(body, "close", None)
+                    if callable(close):
+                        close()
+                return
             except self._client.exceptions.ClientError as exc:
+                if exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode") != 404:
+                    raise
                 missing_error = exc
             if missing_error is not None:
                 if time.monotonic() >= deadline:
@@ -172,18 +163,14 @@ class TusdUploadStore:
                 time.sleep(_READ_TARGET_RETRY_INTERVAL_SECONDS)
 
     def delete_target(self, target_path: str) -> None:
-        keys = [self._object_key(target_path), self._legacy_object_key(target_path)]
+        key = self._object_key(target_path)
         self._client.delete_objects(
             Bucket=self._bucket,
             Delete={
                 "Objects": [
-                    item
-                    for key in keys
-                    for item in (
-                        {"Key": key},
-                        {"Key": f"{key}.info"},
-                        {"Key": f"{key}.part"},
-                    )
+                    {"Key": key},
+                    {"Key": f"{key}.info"},
+                    {"Key": f"{key}.part"},
                 ],
             },
         )

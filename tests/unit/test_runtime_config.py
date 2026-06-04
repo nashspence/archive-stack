@@ -120,7 +120,7 @@ def test_load_runtime_config_rejects_required_missing_archive_passphrase_when_en
         load_runtime_config()
 
 
-def test_load_runtime_config_rejects_removed_legacy_db_path(
+def test_load_runtime_config_rejects_removed_db_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
