@@ -1,0 +1,1591 @@
+from __future__ import annotations
+
+import bisect
+import hashlib
+import json
+import logging
+import logging.config
+import os
+import random
+import re
+import shlex
+import shutil
+import subprocess
+import threading
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Literal
+
+from fastapi import BackgroundTasks, FastAPI, HTTPException
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from munchy.profiles import (
+    MUNCHY_PROFILE_TARGET,
+    normalize_artifact_drop_selector,
+)
+from munchy.source_artifact_bridge import build_strict_source_artifacts
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "std": {
+            "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
+            "datefmt": "%Y-%m-%dT%H:%M:%S%z",
+        }
+    },
+    "handlers": {
+        "stdout": {
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stdout",
+            "formatter": "std",
+        }
+    },
+    "root": {"level": os.getenv("MUNCHY_LOG_LEVEL", "INFO"), "handlers": ["stdout"]},
+}
+logging.config.dictConfig(LOGGING)
+log = logging.getLogger("munchy_av1")
+
+
+TaskName = Literal["archive_video", "qcut_video", "audio_review"]
+ArchiveContainer = Literal["mkv", "webm"]
+
+DATA_DIR = Path(os.getenv("MUNCHY_DATA_DIR", "/data")).resolve()
+SOURCE_ARTIFACTS_SUFFIX = ".source-artifacts.tar.zst"
+MAX_PARALLEL_ENCODES = max(1, int(os.getenv("MUNCHY_MAX_PARALLEL_ENCODES", "4")))
+FFMPEG_TIMEOUT_SECONDS = float(os.getenv("MUNCHY_FFMPEG_TIMEOUT_SECONDS", "0"))
+VIDEO_DECODE_MODE = os.getenv("MUNCHY_VIDEO_DECODE_MODE", "cuvid").strip().lower()
+ARCHIVE_CQ = os.getenv("MUNCHY_AV1_CQ", "23")
+ARCHIVE_PRESET = os.getenv("MUNCHY_AV1_PRESET", "p7")
+ARCHIVE_TUNE = os.getenv("MUNCHY_AV1_TUNE", "uhq")
+ARCHIVE_LOOKAHEAD_LEVEL = os.getenv("MUNCHY_AV1_LOOKAHEAD_LEVEL", "3")
+ARCHIVE_SPLIT_ENCODE_MODE = os.getenv("MUNCHY_AV1_SPLIT_ENCODE_MODE", "disabled")
+ARCHIVE_PIX_FMT = os.getenv("MUNCHY_AV1_PIX_FMT", "p010le")
+ARCHIVE_AUDIO_BITRATE = os.getenv("MUNCHY_AUDIO_BITRATE", "128k")
+QCUT_TARGET_SECONDS = int(os.getenv("MUNCHY_QCUT_TARGET_SECONDS", "600"))
+QCUT_MIN_SECONDS = int(os.getenv("MUNCHY_QCUT_MIN_SECONDS", "6"))
+QCUT_MAX_SECONDS = int(os.getenv("MUNCHY_QCUT_MAX_SECONDS", "9"))
+QCUT_CQ = os.getenv("MUNCHY_QCUT_CQ", "30")
+QCUT_TUNE = os.getenv("MUNCHY_QCUT_TUNE", ARCHIVE_TUNE)
+QCUT_LOOKAHEAD_LEVEL = os.getenv("MUNCHY_QCUT_LOOKAHEAD_LEVEL", ARCHIVE_LOOKAHEAD_LEVEL)
+QCUT_SPLIT_ENCODE_MODE = os.getenv("MUNCHY_QCUT_SPLIT_ENCODE_MODE", ARCHIVE_SPLIT_ENCODE_MODE)
+QCUT_TRUE_PEAK = os.getenv("MUNCHY_QCUT_TRUE_PEAK", "").strip()
+REVIEW_FONT = os.getenv("MUNCHY_REVIEW_FONT", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf")
+REVIEW_AUDIO_BITRATE = os.getenv("MUNCHY_REVIEW_AUDIO_BITRATE", "96k")
+RIVERHOG_UPLOAD_ENABLED = os.getenv("MUNCHY_RIVERHOG_UPLOAD_ENABLED", "0").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+RIVERHOG_COMMAND = os.getenv("MUNCHY_RIVERHOG_COMMAND", "riverhog")
+REVIEW_UPLOAD_ENABLED = os.getenv("MUNCHY_REVIEW_UPLOAD_ENABLED", "0").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+REVIEW_UPLOAD_COMMAND = os.getenv("MUNCHY_REVIEW_UPLOAD_COMMAND", "").strip()
+
+VIDEO_EXTENSIONS = {
+    ".3g2",
+    ".3gp",
+    ".avi",
+    ".m2ts",
+    ".m4v",
+    ".mkv",
+    ".mov",
+    ".mp4",
+    ".mts",
+    ".webm",
+}
+AUDIO_EXTENSIONS = {
+    ".aac",
+    ".aif",
+    ".aiff",
+    ".flac",
+    ".m4a",
+    ".mp3",
+    ".ogg",
+    ".opus",
+    ".wav",
+    ".wma",
+}
+CUVID_DECODERS = {
+    "av1": "av1_cuvid",
+    "h264": "h264_cuvid",
+    "hevc": "hevc_cuvid",
+    "mjpeg": "mjpeg_cuvid",
+    "mpeg1video": "mpeg1_cuvid",
+    "mpeg2video": "mpeg2_cuvid",
+    "mpeg4": "mpeg4_cuvid",
+    "vc1": "vc1_cuvid",
+    "vp8": "vp8_cuvid",
+    "vp9": "vp9_cuvid",
+}
+
+app = FastAPI(title="munchy-av1-nvenc", version="0.1.0")
+jobs_lock = threading.Lock()
+jobs: dict[str, dict[str, Any]] = {}
+encode_semaphore = threading.Semaphore(MAX_PARALLEL_ENCODES)
+
+
+class RiverhogConfig(BaseModel):
+    enabled: bool = False
+    wait: Literal["staged", "finalized"] = "staged"
+
+
+class ReviewUploadConfig(BaseModel):
+    enabled: bool = False
+
+
+class ArchiveAudioProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    codec: Literal["opus"] = "opus"
+    bitrate: str | None = Field(default=None, min_length=2, max_length=16)
+    sample_rate: int | None = Field(default=None, ge=8000, le=192000)
+    channels: int | None = Field(default=None, ge=1, le=8)
+    application: Literal["audio", "voip", "lowdelay"] | None = None
+    frame_duration: float | None = None
+    cutoff: int | None = Field(default=None, ge=0, le=24000)
+    compression_level: int | None = Field(default=None, ge=0, le=10)
+    vbr: Literal["on", "off", "constrained"] | bool | None = None
+
+    @field_validator("bitrate")
+    @classmethod
+    def validate_bitrate(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        lowered = value.strip().lower()
+        number = lowered[:-1] if lowered.endswith(("k", "m")) else lowered
+        try:
+            parsed = float(number)
+        except ValueError as exc:
+            raise ValueError("bitrate must look like 28k, 128k, or 1m") from exc
+        if parsed <= 0:
+            raise ValueError("bitrate must look like 28k, 128k, or 1m")
+        return lowered
+
+    @field_validator("frame_duration")
+    @classmethod
+    def validate_frame_duration(cls, value: float | None) -> float | None:
+        if value is None:
+            return None
+        allowed = {2.5, 5.0, 10.0, 20.0, 40.0, 60.0}
+        if float(value) not in allowed:
+            raise ValueError("frame_duration must be one of 2.5, 5, 10, 20, 40, or 60")
+        return float(value)
+
+
+class ArchiveEncodeProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    codec: Literal["av1_nvenc"] = "av1_nvenc"
+    container: ArchiveContainer = "mkv"
+    quality: int | None = Field(default=None, ge=0, le=63)
+    max_height: int | None = Field(default=None, ge=2, le=4320)
+    fps_mode: Literal["passthrough", "halve_60_to_30"] = "passthrough"
+    output_fps: float | None = Field(default=None, gt=0, le=240)
+    scale_flags: Literal["fast_bilinear", "bilinear", "bicubic", "lanczos", "spline"] = "lanczos"
+    pix_fmt: Literal["p010le", "yuv420p"] | None = None
+    preset: str | None = Field(default=None, min_length=2, max_length=8)
+    tune: Literal["hq", "ll", "ull", "lossless", "uhq"] | None = None
+    audio: ArchiveAudioProfile = Field(default_factory=ArchiveAudioProfile)
+
+    @field_validator("preset")
+    @classmethod
+    def validate_preset(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        lowered = value.strip().lower()
+        if lowered not in {"p1", "p2", "p3", "p4", "p5", "p6", "p7"}:
+            raise ValueError("preset must be p1 through p7")
+        return lowered
+
+
+class SourceArtifactDropProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    selector: str = Field(min_length=1, max_length=120)
+    reason: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("selector")
+    @classmethod
+    def validate_selector(cls, value: str) -> str:
+        return normalize_artifact_drop_selector(value)
+
+    @field_validator("reason")
+    @classmethod
+    def validate_reason(cls, value: str) -> str:
+        reason = value.strip()
+        if not reason:
+            raise ValueError("artifact drop reason must not be blank")
+        return reason
+
+
+class SourcePreservationProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_drops: list[SourceArtifactDropProfile] = Field(default_factory=list)
+
+    @field_validator("artifact_drops")
+    @classmethod
+    def validate_unique_selectors(
+        cls,
+        value: list[SourceArtifactDropProfile],
+    ) -> list[SourceArtifactDropProfile]:
+        selectors = [item.selector for item in value]
+        if len(selectors) != len(set(selectors)):
+            raise ValueError("source artifact drop selectors must be unique")
+        return value
+
+
+class EncodeProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    target: Literal["munchy-av1-nvenc"] = MUNCHY_PROFILE_TARGET
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    source: SourcePreservationProfile | None = None
+    archive: ArchiveEncodeProfile = Field(default_factory=ArchiveEncodeProfile)
+
+
+class JobRequest(BaseModel):
+    job_id: str | None = Field(default=None, min_length=1, max_length=180)
+    input_dir: Path
+    archive_dir: Path
+    review_dir: Path | None = None
+    profile: str = "av1-nvenc-high"
+    encode_profile: EncodeProfile | None = None
+    tasks: list[TaskName] = Field(default_factory=lambda: ["archive_video"])
+    collection_slug: str | None = None
+    collection_timestamp: str | None = None
+    riverhog: RiverhogConfig = Field(default_factory=RiverhogConfig)
+    review_upload: ReviewUploadConfig = Field(default_factory=ReviewUploadConfig)
+    dry_run: bool = False
+
+    @field_validator("tasks")
+    @classmethod
+    def require_tasks(cls, value: list[TaskName]) -> list[TaskName]:
+        if not value:
+            raise ValueError("at least one task is required")
+        return value
+
+
+def now_iso() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def ensure_under_data_dir(path: Path, *, name: str) -> Path:
+    resolved = path.expanduser().resolve()
+    if resolved != DATA_DIR and DATA_DIR not in resolved.parents:
+        raise HTTPException(status_code=400, detail=f"{name} must be under {DATA_DIR}")
+    return resolved
+
+
+def status_path(job_id: str) -> Path:
+    return DATA_DIR / "jobs" / job_id / "status.json"
+
+
+def write_status(job_id: str, payload: dict[str, Any]) -> None:
+    payload = dict(payload)
+    payload["updated_at"] = now_iso()
+    path = status_path(job_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    with jobs_lock:
+        jobs[job_id] = payload
+
+
+def load_status(job_id: str) -> dict[str, Any]:
+    with jobs_lock:
+        if job_id in jobs:
+            return jobs[job_id]
+    path = status_path(job_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"unknown job: {job_id}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def mark_interrupted_jobs_on_startup() -> None:
+    jobs_dir = DATA_DIR / "jobs"
+    if not jobs_dir.exists():
+        return
+    for path in jobs_dir.glob("*/status.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            log.exception("failed to read job status during startup recovery: %s", path)
+            continue
+        if payload.get("state") not in {"queued", "running"}:
+            continue
+        job_id = str(payload.get("job_id") or path.parent.name)
+        payload["job_id"] = job_id
+        payload["state"] = "failed"
+        payload["error_code"] = "target_restarted"
+        payload["error"] = "gpu target restarted before job completed"
+        payload["finished_at"] = now_iso()
+        log.warning("marking interrupted gpu job as failed after startup: %s", job_id)
+        write_status(job_id, payload)
+
+
+@app.on_event("startup")
+def recover_interrupted_jobs() -> None:
+    mark_interrupted_jobs_on_startup()
+
+
+def run_command(cmd: list[str], *, action: str, dry_run: bool = False) -> dict[str, Any]:
+    rendered = shlex.join(cmd)
+    log.info("%s: %s", action, rendered)
+    started = time.monotonic()
+    if dry_run:
+        return {
+            "command": cmd,
+            "returncode": 0,
+            "duration_s": 0.0,
+            "stdout": "",
+            "stderr": "",
+            "dry_run": True,
+        }
+    timeout = None if FFMPEG_TIMEOUT_SECONDS <= 0 else FFMPEG_TIMEOUT_SECONDS
+    try:
+        proc = subprocess.run(
+            cmd,
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"{action} timed out after {timeout}s: {rendered}") from exc
+    result = {
+        "command": cmd,
+        "returncode": proc.returncode,
+        "duration_s": round(time.monotonic() - started, 3),
+        "stdout": proc.stdout[-4000:],
+        "stderr": proc.stderr[-4000:],
+    }
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or rendered)[-2000:]
+        raise RuntimeError(f"{action} failed with {proc.returncode}: {detail}")
+    return result
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def ffprobe_duration(path: Path, *, timeout_s: int = 30) -> float:
+    proc = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        text=True,
+        capture_output=True,
+        timeout=timeout_s,
+        check=False,
+    )
+    try:
+        return max(0.0, float(proc.stdout.strip()))
+    except ValueError:
+        return 0.0
+
+
+def has_audio_stream(path: Path, *, timeout_s: int = 15) -> bool:
+    proc = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=index",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        text=True,
+        capture_output=True,
+        timeout=timeout_s,
+        check=False,
+    )
+    return bool(proc.stdout.strip())
+
+
+def ffprobe_json(cmd: list[str], *, timeout_s: int = 30) -> dict[str, Any]:
+    proc = subprocess.run(
+        cmd,
+        text=True,
+        capture_output=True,
+        timeout=timeout_s,
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "ffprobe failed").strip()
+        raise RuntimeError(detail)
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("ffprobe returned invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("ffprobe did not return a JSON object")
+    return payload
+
+
+def ffprobe_video_stream(path: Path, *, timeout_s: int = 30) -> dict[str, Any] | None:
+    proc = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_streams",
+            "-of",
+            "json",
+            str(path),
+        ],
+        text=True,
+        capture_output=True,
+        timeout=timeout_s,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+    streams = payload.get("streams") or []
+    return streams[0] if streams else None
+
+
+def frame_crop(stream: dict[str, Any]) -> tuple[int, int, int, int]:
+    for side_data in stream.get("side_data_list") or []:
+        if side_data.get("side_data_type") == "Frame Cropping":
+            return (
+                int(side_data.get("crop_top") or 0),
+                int(side_data.get("crop_bottom") or 0),
+                int(side_data.get("crop_left") or 0),
+                int(side_data.get("crop_right") or 0),
+            )
+    return 0, 0, 0, 0
+
+
+def display_rotation(stream: dict[str, Any]) -> int:
+    for side_data in stream.get("side_data_list") or []:
+        if side_data.get("side_data_type") == "Display Matrix":
+            try:
+                return int(round(float(side_data.get("rotation") or 0))) % 360
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
+def expected_archive_geometry(source: Path) -> tuple[int, int] | None:
+    stream = ffprobe_video_stream(source)
+    if not stream:
+        return None
+    try:
+        width = int(stream.get("width") or 0)
+        height = int(stream.get("height") or 0)
+    except (TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    crop_top, crop_bottom, crop_left, crop_right = frame_crop(stream)
+    width = max(1, width - crop_left - crop_right)
+    height = max(1, height - crop_top - crop_bottom)
+    if display_rotation(stream) in {90, 270}:
+        width, height = height, width
+    return width, height
+
+
+def source_frame_rate(source: Path) -> float | None:
+    stream = ffprobe_video_stream(source)
+    if not stream:
+        return None
+    for key in ("avg_frame_rate", "r_frame_rate"):
+        value = str(stream.get(key) or "")
+        if "/" in value:
+            numerator, denominator = value.split("/", 1)
+            try:
+                numerator_f = float(numerator)
+                denominator_f = float(denominator)
+            except ValueError:
+                continue
+            if denominator_f > 0 and numerator_f > 0:
+                return numerator_f / denominator_f
+        else:
+            try:
+                parsed = float(value)
+            except ValueError:
+                continue
+            if parsed > 0:
+                return parsed
+    return None
+
+
+def ffmpeg_number(value: float) -> str:
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{value:.6f}".rstrip("0").rstrip(".")
+
+
+def scale_geometry(width: int, height: int, max_height: int | None) -> tuple[int, int]:
+    if max_height is None or height <= max_height:
+        return width, height
+    scaled_width = max(2, int(round((width * max_height / height) / 2.0)) * 2)
+    return scaled_width, max_height
+
+
+def archive_video_filters(source: Path, archive: ArchiveEncodeProfile) -> list[str]:
+    filters: list[str] = []
+    if archive.fps_mode == "halve_60_to_30":
+        fps = source_frame_rate(source)
+        if fps is not None and fps >= 45.0:
+            output_fps = archive.output_fps or 30.0
+            filters.append(f"framestep=2,setpts=N/({ffmpeg_number(output_fps)}*TB)")
+        else:
+            log.info("not halving frame rate for %s because source fps is %s", source, fps)
+    if archive.max_height is not None:
+        expected = expected_archive_geometry(source)
+        if expected is None or expected[1] > archive.max_height:
+            filters.append(f"scale=-2:{archive.max_height}:flags={archive.scale_flags}")
+    return filters
+
+
+def archive_decoder_args(source: Path) -> list[str]:
+    if VIDEO_DECODE_MODE in {"", "cpu", "software", "none"}:
+        return []
+    stream = ffprobe_video_stream(source)
+    codec = str((stream or {}).get("codec_name") or "")
+    decoder = CUVID_DECODERS.get(codec)
+    if decoder:
+        return ["-c:v", decoder]
+    if VIDEO_DECODE_MODE in {"cuvid-required", "required"}:
+        raise RuntimeError(
+            f"no CUVID decoder configured for video codec {codec or 'unknown'} in {source}"
+        )
+    if VIDEO_DECODE_MODE not in {"auto", "cuvid"}:
+        raise RuntimeError(f"unsupported MUNCHY_VIDEO_DECODE_MODE={VIDEO_DECODE_MODE!r}")
+    log.info("falling back to software decode for %s codec=%s", source, codec or "unknown")
+    return []
+
+
+def validate_archive_geometry(source: Path, output: Path, archive: ArchiveEncodeProfile) -> None:
+    expected = expected_archive_geometry(source)
+    actual_stream = ffprobe_video_stream(output)
+    if expected is None or not actual_stream:
+        return
+    expected = scale_geometry(expected[0], expected[1], archive.max_height)
+    try:
+        actual = (int(actual_stream.get("width") or 0), int(actual_stream.get("height") or 0))
+    except (TypeError, ValueError):
+        return
+    if actual != expected:
+        raise RuntimeError(
+            f"archive geometry mismatch for {source}: expected {expected[0]}x{expected[1]}, "
+            f"got {actual[0]}x{actual[1]} in {output}"
+        )
+
+
+def archive_container_suffix(archive: ArchiveEncodeProfile) -> str:
+    return ".webm" if archive.container == "webm" else ".mkv"
+
+
+def archive_container_muxer(archive: ArchiveEncodeProfile) -> str:
+    return "webm" if archive.container == "webm" else "matroska"
+
+
+def validate_archive_container_source(source: Path, archive: ArchiveEncodeProfile) -> None:
+    if archive.container != "webm":
+        return
+    metadata = ffprobe_json(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_streams",
+            "-show_chapters",
+            "-show_format",
+            "-show_programs",
+            str(source),
+        ]
+    )
+    source_format = metadata.get("format")
+    format_name = (
+        str(source_format.get("format_name") or "").lower()
+        if isinstance(source_format, dict)
+        else ""
+    )
+    is_iso_bmff = any(token in format_name for token in ("mov", "mp4", "m4a", "3gp", "3g2", "mj2"))
+    is_matroska = "matroska" in format_name or "webm" in format_name
+    unsupported_streams: list[str] = []
+    for stream in metadata.get("streams") or []:
+        if not isinstance(stream, dict):
+            continue
+        codec_type = str(stream.get("codec_type") or "unknown")
+        try:
+            stream_index = int(stream.get("index"))
+        except (TypeError, ValueError):
+            stream_index = -1
+        disposition = stream.get("disposition")
+        attached_pic = isinstance(disposition, dict) and str(
+            disposition.get("attached_pic", "0")
+        ) not in {"0", "false", "False"}
+        stream_needs_mkv = codec_type in {"subtitle", "attachment"} or attached_pic
+        stream_unknown_to_source_artifacts = codec_type not in {
+            "video",
+            "audio",
+            "data",
+            "subtitle",
+            "attachment",
+        }
+        data_stream_better_in_mkv = codec_type == "data" and (is_matroska or not is_iso_bmff)
+        if stream_needs_mkv or stream_unknown_to_source_artifacts or data_stream_better_in_mkv:
+            label = f"stream:{stream_index}" if stream_index >= 0 else "unknown stream"
+            unsupported_streams.append(f"{label} ({codec_type})")
+    if unsupported_streams:
+        raise RuntimeError(
+            f'archive.container = "webm" is only supported when MKV would not preserve '
+            f"additional source streams directly; {source} has streams that need MKV: "
+            f"{', '.join(unsupported_streams)}. "
+            'Use archive.container = "mkv" when the source has side streams that MKV can '
+            "preserve directly; MP4/MOV data streams may use WebM only when the source-artifacts "
+            "audit can account for them."
+        )
+    if metadata.get("chapters"):
+        raise RuntimeError(
+            f'archive.container = "webm" is not supported for sources with chapters: {source}. '
+            'Use archive.container = "mkv" for sources with chapter structure.'
+        )
+    if metadata.get("programs"):
+        raise RuntimeError(
+            f'archive.container = "webm" is not supported for sources with programs: {source}. '
+            'Use archive.container = "mkv" for sources with program structure.'
+        )
+
+
+def iter_files(root: Path, extensions: set[str]) -> list[Path]:
+    return [
+        path
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path.suffix.lower() in extensions
+    ]
+
+
+def output_for(source: Path, input_root: Path, output_root: Path, suffix: str) -> Path:
+    rel = source.relative_to(input_root)
+    return (output_root / rel).with_suffix(suffix)
+
+
+TIMESTAMP_PATTERNS = [
+    re.compile(
+        r"(?<!\d)(\d{4})[._-]?([01]\d)[._-]?([0-3]\d)[ T_-]?"
+        r"([0-2]\d)[.:_-]?([0-5]\d)[.:_-]?([0-5]\d)(?!\d)"
+    ),
+    re.compile(
+        r"(?<!\d)(\d{2})[._-]?([01]\d)[._-]?([0-3]\d)[ T_-]?"
+        r"([0-2]\d)[.:_-]?([0-5]\d)[.:_-]?([0-5]\d)(?!\d)"
+    ),
+    re.compile(r"(\d{4})[-_]?([01]\d)[-_]?([0-3]\d)T([0-2]\d)([0-5]\d)([0-5]\d)"),
+    re.compile(
+        r"(\d{4})-(\d{2})-(\d{2})\s+at\s+([0-2]\d)\.([0-5]\d)\.([0-5]\d)",
+        re.I,
+    ),
+]
+
+
+def epoch_from_filename(path: Path) -> int | None:
+    name = path.name
+    for pattern in TIMESTAMP_PATTERNS:
+        match = pattern.search(name)
+        if match is None:
+            continue
+        year, month, day, hour, minute, second = [int(value) for value in match.groups()]
+        if len(match.group(1)) == 2:
+            year = 2000 + year if year < 70 else 1900 + year
+        try:
+            return int(datetime(year, month, day, hour, minute, second).timestamp())
+        except ValueError:
+            continue
+    return None
+
+
+def base_epoch_for_file(path: Path) -> int:
+    return epoch_from_filename(path) or int(path.stat().st_mtime)
+
+
+def build_len_slots(target_sec: int, min_slot_sec: int, max_slot_sec: int) -> list[int]:
+    remain = max(0, int(target_sec))
+    slots: list[int] = []
+    while remain >= min_slot_sec:
+        length = random.randint(min_slot_sec, max_slot_sec)
+        if length > remain:
+            length = remain
+        slots.append(length)
+        remain -= length
+    index = 0
+    while remain > 0 and slots:
+        slots[index] += 1
+        index = (index + 1) % len(slots)
+        remain -= 1
+    if not slots and target_sec > 0:
+        slots.append(target_sec)
+    return slots
+
+
+def quotas_by_duration(durations: list[float], slot_count: int, min_seconds: int) -> list[int]:
+    if not durations or slot_count <= 0:
+        return [0] * len(durations)
+    quotas = [0] * len(durations)
+    eligible = [
+        index
+        for index, duration in enumerate(durations)
+        if duration > 0 and int(duration) >= min_seconds
+    ]
+    if not eligible:
+        eligible = [index for index, duration in enumerate(durations) if duration > 0]
+    if not eligible:
+        return quotas
+
+    total = sum(max(0.0, durations[index]) for index in eligible)
+    if total <= 0:
+        return quotas
+
+    if len(eligible) <= slot_count:
+        for index in eligible:
+            quotas[index] = 1
+        while sum(quotas) < slot_count:
+            best_index = max(
+                eligible,
+                key=lambda index: (
+                    (durations[index] / total * slot_count) - quotas[index],
+                    durations[index],
+                    -index,
+                ),
+            )
+            quotas[best_index] += 1
+        return quotas
+
+    cumulative: list[float] = []
+    cumulative_indexes: list[int] = []
+    running = 0.0
+    for index in eligible:
+        running += max(0.0, durations[index])
+        cumulative.append(running)
+        cumulative_indexes.append(index)
+
+    def source_at(position: float) -> int:
+        selected = bisect.bisect_left(cumulative, min(position, cumulative[-1]))
+        selected = min(selected, len(cumulative_indexes) - 1)
+        return cumulative_indexes[selected]
+
+    if slot_count == 1:
+        quotas[source_at(total / 2.0)] = 1
+        return quotas
+
+    # Keep the chronological endpoints visible, then sample the interior by duration.
+    quotas[eligible[0]] += 1
+    quotas[eligible[-1]] += 1
+    interior_slots = slot_count - 2
+    for slot in range(interior_slots):
+        position = (slot + 1) * total / (interior_slots + 1)
+        quotas[source_at(position)] += 1
+    return quotas
+
+
+def plan_review_clips(
+    sources: list[Path], *, target_sec: int, min_sec: int, max_sec: int
+) -> dict[str, Any]:
+    durations = [ffprobe_duration(path) for path in sources]
+    if not any(duration > 0 for duration in durations):
+        raise RuntimeError("cannot read durations for review sources")
+    combined = sum(durations)
+    target = min(target_sec, int(combined)) if combined > 0 else 0
+    slots = build_len_slots(target, min_sec, max_sec)
+    quotas = quotas_by_duration(durations, len(slots), min_sec)
+    files: list[dict[str, Any]] = []
+    clips: list[dict[str, Any]] = []
+    clip_index = 1
+    for source_index, source in enumerate(sources):
+        duration = durations[source_index]
+        quota = quotas[source_index]
+        base_epoch = base_epoch_for_file(source)
+        files.append(
+            {
+                "path": str(source),
+                "duration": duration,
+                "quota": quota,
+                "base_epoch": base_epoch,
+            }
+        )
+        if quota <= 0:
+            continue
+        part = duration / quota
+        for slot in range(1, quota + 1):
+            length = float(slots[clip_index - 1] if clip_index - 1 < len(slots) else min_sec)
+            slot_start = (slot - 1) * part
+            max_offset = max(0.0, part - length)
+            start = slot_start + (random.random() * max_offset if max_offset > 0 else 0.0)
+            start = min(start, max(0.0, duration - length))
+            clips.append(
+                {
+                    "index": clip_index,
+                    "source": str(source),
+                    "start": round(start, 6),
+                    "length": round(length, 6),
+                    "epoch": int(base_epoch + int(start)),
+                }
+            )
+            clip_index += 1
+    return {
+        "target_sec": target,
+        "min_sec": min_sec,
+        "max_sec": max_sec,
+        "slots": slots,
+        "files": files,
+        "clips": clips,
+    }
+
+
+def drawtext_filter(epoch_int: int) -> str:
+    # Modern pts/localtime expansion avoids ffmpeg's deprecated expansion=strftime path.
+    return (
+        f"drawtext=fontfile={REVIEW_FONT}"
+        f":fontcolor=white:fontsize=h/40:box=1:boxcolor=black@1:boxborderw=6"
+        f":text='%{{pts\\:localtime\\:{int(epoch_int)}\\:%m/%d/%Y %H\\\\\\:%M\\\\\\:%S}}'"
+        f":x=24:y=24"
+    )
+
+
+def archive_video_encode_args(archive: ArchiveEncodeProfile) -> list[str]:
+    return [
+        "-c:v",
+        "av1_nvenc",
+        "-preset",
+        archive.preset or ARCHIVE_PRESET,
+        "-tune",
+        archive.tune or ARCHIVE_TUNE,
+        "-rc",
+        "vbr",
+        "-cq",
+        str(archive.quality if archive.quality is not None else ARCHIVE_CQ),
+        "-b:v",
+        "0",
+        "-multipass",
+        "fullres",
+        "-spatial-aq",
+        "1",
+        "-temporal-aq",
+        "1",
+        "-rc-lookahead",
+        "32",
+        "-lookahead_level",
+        ARCHIVE_LOOKAHEAD_LEVEL,
+        "-b_ref_mode",
+        "middle",
+        "-split_encode_mode",
+        ARCHIVE_SPLIT_ENCODE_MODE,
+        "-pix_fmt",
+        archive.pix_fmt or ARCHIVE_PIX_FMT,
+        "-fps_mode",
+        "passthrough",
+    ]
+
+
+def archive_audio_encode_args(audio: ArchiveAudioProfile) -> list[str]:
+    args: list[str] = []
+    if audio.sample_rate is not None:
+        args.extend(["-ar", str(audio.sample_rate)])
+    else:
+        args.extend(["-ar", "48000"])
+    if audio.channels is not None:
+        args.extend(["-ac", str(audio.channels)])
+    args.extend(["-b:a", audio.bitrate or ARCHIVE_AUDIO_BITRATE])
+    if audio.vbr is not None:
+        vbr = "on" if audio.vbr is True else "off" if audio.vbr is False else str(audio.vbr)
+        args.extend(["-vbr", vbr])
+    if audio.compression_level is not None:
+        args.extend(["-compression_level", str(audio.compression_level)])
+    if audio.application is not None:
+        args.extend(["-application", audio.application])
+    if audio.frame_duration is not None:
+        args.extend(["-frame_duration", ffmpeg_number(audio.frame_duration)])
+    if audio.cutoff is not None:
+        args.extend(["-cutoff", str(audio.cutoff)])
+    return args
+
+
+def av1_archive_command(source: Path, dest: Path, archive: ArchiveEncodeProfile) -> list[str]:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    validate_archive_container_source(source, archive)
+    filters = archive_video_filters(source, archive)
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-y",
+        "-ignore_unknown",
+        *archive_decoder_args(source),
+        "-i",
+        str(source),
+        "-map",
+        "0:v?",
+        "-map",
+        "0:a?",
+        "-map_metadata",
+        "0",
+        *archive_video_encode_args(archive),
+        "-c:a",
+        "libopus",
+        *archive_audio_encode_args(archive.audio),
+        "-f",
+        archive_container_muxer(archive),
+        str(dest),
+    ]
+    if archive.container == "mkv":
+        metadata_index = cmd.index("-map_metadata")
+        cmd[metadata_index:metadata_index] = ["-map", "0:s?", "-map", "0:t?"]
+        muxer_index = cmd.index("-f")
+        cmd[muxer_index:muxer_index] = ["-c:s", "copy", "-c:t", "copy"]
+    if filters:
+        filter_index = cmd.index("-map_metadata") + 2
+        cmd[filter_index:filter_index] = ["-vf", ",".join(filters)]
+    return cmd
+
+
+def qcut_video_command(
+    source: Path,
+    dest: Path,
+    *,
+    start: float,
+    length: float,
+    epoch: int,
+    archive: ArchiveEncodeProfile,
+) -> list[str]:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    filters = [*archive_video_filters(source, archive), drawtext_filter(epoch)]
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-ss",
+        f"{start:.6f}",
+        "-t",
+        f"{length:.6f}",
+        *archive_decoder_args(source),
+        "-i",
+        str(source),
+        "-map",
+        "0:v?",
+        "-map",
+        "0:a?",
+        "-map_metadata",
+        "0",
+        *archive_video_encode_args(archive),
+        "-c:a",
+        "libopus",
+        *archive_audio_encode_args(archive.audio),
+        "-f",
+        archive_container_muxer(archive),
+        str(dest),
+    ]
+    if filters:
+        filter_index = cmd.index("-map_metadata") + 2
+        cmd[filter_index:filter_index] = ["-vf", ",".join(filters)]
+    return cmd
+
+
+def audio_review_clip_command(
+    source: Path,
+    dest: Path,
+    *,
+    start: float,
+    length: float,
+    archive: ArchiveEncodeProfile,
+) -> list[str]:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    return [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-ss",
+        f"{start:.6f}",
+        "-t",
+        f"{length:.6f}",
+        "-i",
+        str(source),
+        "-vn",
+        "-c:a",
+        "libopus",
+        *archive_audio_encode_args(archive.audio),
+        "-f",
+        "opus",
+        str(dest),
+    ]
+
+
+def run_encode_item(
+    cmd: list[str],
+    *,
+    output_path: Path,
+    action: str,
+    dry_run: bool,
+    source_artifacts_source: Path | None = None,
+    source_artifacts_profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    with encode_semaphore:
+        result = run_command(cmd, action=action, dry_run=dry_run)
+    payload: dict[str, Any] = {
+        "output": str(output_path),
+        "command": result["command"],
+        "duration_s": result["duration_s"],
+    }
+    if result.get("dry_run"):
+        payload["dry_run"] = True
+    elif source_artifacts_source is not None:
+        payload["source_artifacts"] = build_strict_source_artifacts(
+            source=source_artifacts_source,
+            archive_mkv=output_path,
+            encode_command=result["command"],
+            encode_profile=source_artifacts_profile,
+        )
+    payload["bytes"] = output_path.stat().st_size if output_path.exists() else 0
+    if output_path.exists():
+        payload["sha256"] = file_sha256(output_path)
+    return payload
+
+
+def run_batch(
+    *,
+    sources: list[Path],
+    input_root: Path,
+    output_root: Path,
+    suffix: str,
+    command_builder: Any,
+    label: str,
+    dry_run: bool,
+    validate_archive: ArchiveEncodeProfile | None = None,
+    source_artifacts: bool = False,
+    source_artifacts_profile: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_ENCODES) as pool:
+        futures = {}
+        for source in sources:
+            dest = output_for(source, input_root, output_root, suffix)
+            cmd = command_builder(source, dest)
+            futures[
+                pool.submit(
+                    run_encode_item,
+                    cmd,
+                    output_path=dest,
+                    action=label,
+                    dry_run=dry_run,
+                    source_artifacts_source=source if source_artifacts else None,
+                    source_artifacts_profile=source_artifacts_profile,
+                )
+            ] = source
+        for future in as_completed(futures):
+            source = futures[future]
+            item = future.result()
+            if validate_archive and not dry_run:
+                validate_archive_geometry(source, Path(str(item["output"])), validate_archive)
+            item["source"] = str(source)
+            results.append(item)
+    return sorted(results, key=lambda item: item["source"])
+
+
+def concat_with_mkvmerge(
+    clips: list[Path],
+    output_path: Path,
+    *,
+    container: ArchiveContainer,
+    dry_run: bool,
+) -> dict[str, Any]:
+    if not clips:
+        raise RuntimeError("no clips produced for concat")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "mkvmerge",
+        "--quiet",
+    ]
+    if container == "webm":
+        cmd.append("--webm")
+    cmd += [
+        "--no-track-tags",
+        "--no-global-tags",
+        "--no-chapters",
+        "--append-mode",
+        "track",
+        "-o",
+        str(output_path),
+        str(clips[0]),
+    ]
+    cmd.extend("+" + str(path) for path in clips[1:])
+    return run_command(cmd, action="qcut concat", dry_run=dry_run)
+
+
+def concat_opus(clips: list[Path], output_path: Path, *, dry_run: bool) -> dict[str, Any]:
+    if not clips:
+        raise RuntimeError("no audio clips produced for concat")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    list_path = output_path.with_suffix(output_path.suffix + ".concat.txt")
+    list_text = "\n".join(f"file {shlex.quote(str(path))}" for path in clips) + "\n"
+    list_path.write_text(list_text, encoding="utf-8")
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(list_path),
+        "-c",
+        "copy",
+        str(output_path),
+    ]
+    result = run_command(cmd, action="audio review concat", dry_run=dry_run)
+    if not dry_run:
+        list_path.unlink(missing_ok=True)
+    return result
+
+
+def run_qcut_video(
+    input_dir: Path,
+    review_dir: Path,
+    *,
+    archive: ArchiveEncodeProfile,
+    dry_run: bool,
+) -> dict[str, Any]:
+    sources = iter_files(input_dir, VIDEO_EXTENSIONS)
+    if not sources:
+        return {"status": "skipped", "reason": "no video sources"}
+    work_dir = review_dir / ".qcut_work" / "video"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    plan = plan_review_clips(
+        sources,
+        target_sec=QCUT_TARGET_SECONDS,
+        min_sec=QCUT_MIN_SECONDS,
+        max_sec=QCUT_MAX_SECONDS,
+    )
+    clip_outputs: list[Path] = []
+    clip_results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_ENCODES) as pool:
+        futures = {}
+        for clip in plan["clips"]:
+            output = work_dir / f"clip{int(clip['index']):03d}{archive_container_suffix(archive)}"
+            clip_outputs.append(output)
+            source = Path(str(clip["source"]))
+            cmd = qcut_video_command(
+                source,
+                output,
+                start=float(clip["start"]),
+                length=float(clip["length"]),
+                epoch=int(clip["epoch"]),
+                archive=archive,
+            )
+            futures[
+                pool.submit(
+                    run_encode_item,
+                    cmd,
+                    output_path=output,
+                    action="qcut video clip",
+                    dry_run=dry_run,
+                )
+            ] = clip
+        for future in as_completed(futures):
+            item = future.result()
+            item["clip"] = futures[future]
+            clip_results.append(item)
+
+    files_span = plan["files"]
+    start_epoch = min(int(file["base_epoch"]) for file in files_span)
+    last_file = max(files_span, key=lambda file: int(file["base_epoch"]))
+    end_epoch = int(int(last_file["base_epoch"]) + float(last_file["duration"]))
+    start_dt = datetime.fromtimestamp(start_epoch)
+    end_dt = datetime.fromtimestamp(end_epoch)
+    output_path = review_dir / (
+        f"{start_dt:%Y%m%dT%H%M%S}--{end_dt:%Y%m%dT%H%M%S} "
+        f"auto-edit{archive_container_suffix(archive)}"
+    )
+    concat_result = concat_with_mkvmerge(
+        clip_outputs,
+        output_path,
+        container=archive.container,
+        dry_run=dry_run,
+    )
+    if not dry_run:
+        shutil.rmtree(work_dir.parent, ignore_errors=True)
+    result: dict[str, Any] = {
+        "status": "done",
+        "output": str(output_path),
+        "plan": plan,
+        "clips": sorted(clip_results, key=lambda item: int(item["clip"]["index"])),
+        "concat": concat_result,
+    }
+    if output_path.exists():
+        result["bytes"] = output_path.stat().st_size
+        result["sha256"] = file_sha256(output_path)
+    return result
+
+
+def run_audio_review(
+    input_dir: Path,
+    review_dir: Path,
+    *,
+    archive: ArchiveEncodeProfile,
+    dry_run: bool,
+) -> dict[str, Any]:
+    sources = iter_files(input_dir, AUDIO_EXTENSIONS)
+    if not sources:
+        sources = [
+            path for path in iter_files(input_dir, VIDEO_EXTENSIONS) if has_audio_stream(path)
+        ]
+    if not sources:
+        return {"status": "skipped", "reason": "no audio sources"}
+    work_dir = review_dir / ".qcut_work" / "audio"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    plan = plan_review_clips(
+        sources,
+        target_sec=QCUT_TARGET_SECONDS,
+        min_sec=QCUT_MIN_SECONDS,
+        max_sec=QCUT_MAX_SECONDS,
+    )
+    clip_outputs: list[Path] = []
+    clip_results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_ENCODES) as pool:
+        futures = {}
+        for clip in plan["clips"]:
+            output = work_dir / f"clip{int(clip['index']):03d}.opus"
+            clip_outputs.append(output)
+            source = Path(str(clip["source"]))
+            cmd = audio_review_clip_command(
+                source,
+                output,
+                start=float(clip["start"]),
+                length=float(clip["length"]),
+                archive=archive,
+            )
+            futures[
+                pool.submit(
+                    run_encode_item,
+                    cmd,
+                    output_path=output,
+                    action="audio review clip",
+                    dry_run=dry_run,
+                )
+            ] = clip
+        for future in as_completed(futures):
+            item = future.result()
+            item["clip"] = futures[future]
+            clip_results.append(item)
+
+    files_span = plan["files"]
+    start_epoch = min(int(file["base_epoch"]) for file in files_span)
+    last_file = max(files_span, key=lambda file: int(file["base_epoch"]))
+    end_epoch = int(int(last_file["base_epoch"]) + float(last_file["duration"]))
+    start_dt = datetime.fromtimestamp(start_epoch)
+    end_dt = datetime.fromtimestamp(end_epoch)
+    output_path = review_dir / f"{start_dt:%Y%m%dT%H%M%S}--{end_dt:%Y%m%dT%H%M%S} audio-review.opus"
+    concat_result = concat_opus(clip_outputs, output_path, dry_run=dry_run)
+    if not dry_run:
+        shutil.rmtree(work_dir.parent, ignore_errors=True)
+    result = {
+        "status": "done",
+        "output": str(output_path),
+        "plan": plan,
+        "clips": sorted(clip_results, key=lambda item: int(item["clip"]["index"])),
+        "concat": concat_result,
+    }
+    if output_path.exists():
+        result["bytes"] = output_path.stat().st_size
+        result["sha256"] = file_sha256(output_path)
+    return result
+
+
+def maybe_upload_riverhog(req: JobRequest) -> dict[str, Any] | None:
+    if not req.riverhog.enabled:
+        return None
+    if not RIVERHOG_UPLOAD_ENABLED:
+        raise RuntimeError(
+            "riverhog upload requested, but MUNCHY_RIVERHOG_UPLOAD_ENABLED is not enabled"
+        )
+    if not req.collection_slug or not req.collection_timestamp:
+        raise RuntimeError("riverhog upload requires collection_slug and collection_timestamp")
+    cmd = [
+        RIVERHOG_COMMAND,
+        "upload",
+        req.collection_slug,
+        str(req.archive_dir),
+        "--timestamp",
+        req.collection_timestamp,
+        "--wait",
+        req.riverhog.wait,
+    ]
+    return run_command(cmd, action="riverhog upload", dry_run=req.dry_run)
+
+
+def maybe_upload_review(req: JobRequest) -> dict[str, Any] | None:
+    if not req.review_upload.enabled:
+        return None
+    if not REVIEW_UPLOAD_ENABLED:
+        raise RuntimeError(
+            "review upload requested, but MUNCHY_REVIEW_UPLOAD_ENABLED is not enabled"
+        )
+    if not REVIEW_UPLOAD_COMMAND:
+        raise RuntimeError("review upload requested, but MUNCHY_REVIEW_UPLOAD_COMMAND is empty")
+    if req.review_dir is None:
+        raise RuntimeError("review upload requires review_dir")
+    env = os.environ.copy()
+    env["MUNCHY_REVIEW_SOURCE"] = str(req.review_dir)
+    env["MUNCHY_JOB_ID"] = req.job_id or ""
+    env["MUNCHY_COLLECTION_SLUG"] = req.collection_slug or ""
+    env["MUNCHY_COLLECTION_TIMESTAMP"] = req.collection_timestamp or ""
+    cmd = ["/bin/sh", "-lc", REVIEW_UPLOAD_COMMAND]
+    log.info("review upload: %s", REVIEW_UPLOAD_COMMAND)
+    if req.dry_run:
+        return {"command": REVIEW_UPLOAD_COMMAND, "dry_run": True}
+    proc = subprocess.run(cmd, text=True, capture_output=True, env=env)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or REVIEW_UPLOAD_COMMAND)[-2000:]
+        raise RuntimeError(f"review upload failed with {proc.returncode}: {detail}")
+    return {
+        "command": REVIEW_UPLOAD_COMMAND,
+        "stdout": proc.stdout[-4000:],
+        "stderr": proc.stderr[-4000:],
+    }
+
+
+def run_job(job_id: str, req: JobRequest) -> None:
+    archive_profile = (
+        req.encode_profile.archive if req.encode_profile is not None else ArchiveEncodeProfile()
+    )
+    encode_profile_dump = (
+        req.encode_profile.model_dump(exclude_none=True) if req.encode_profile is not None else None
+    )
+    status: dict[str, Any] = {
+        "job_id": job_id,
+        "state": "running",
+        "profile": req.profile,
+        "encode_profile": encode_profile_dump,
+        "tasks": req.tasks,
+        "started_at": now_iso(),
+        "input_dir": str(req.input_dir),
+        "archive_dir": str(req.archive_dir),
+        "review_dir": str(req.review_dir) if req.review_dir is not None else None,
+        "items": {},
+    }
+    write_status(job_id, status)
+    try:
+        video_sources = iter_files(req.input_dir, VIDEO_EXTENSIONS)
+        if "archive_video" in req.tasks:
+            status["items"]["archive_video"] = run_batch(
+                sources=video_sources,
+                input_root=req.input_dir,
+                output_root=req.archive_dir,
+                suffix=archive_container_suffix(archive_profile),
+                command_builder=lambda source, dest: av1_archive_command(
+                    source,
+                    dest,
+                    archive_profile,
+                ),
+                label="archive video encode",
+                dry_run=req.dry_run,
+                validate_archive=archive_profile,
+                source_artifacts=True,
+                source_artifacts_profile=encode_profile_dump,
+            )
+            write_status(job_id, status)
+        if "qcut_video" in req.tasks:
+            if req.review_dir is None:
+                raise RuntimeError("qcut_video requires review_dir")
+            status["items"]["qcut_video"] = run_qcut_video(
+                req.input_dir,
+                req.review_dir / "video",
+                archive=archive_profile,
+                dry_run=req.dry_run,
+            )
+            write_status(job_id, status)
+        if "audio_review" in req.tasks:
+            if req.review_dir is None:
+                raise RuntimeError("audio_review requires review_dir")
+            status["items"]["audio_review"] = run_audio_review(
+                req.input_dir,
+                req.review_dir / "audio",
+                archive=archive_profile,
+                dry_run=req.dry_run,
+            )
+            write_status(job_id, status)
+        status["riverhog_upload"] = maybe_upload_riverhog(req)
+        status["review_upload"] = maybe_upload_review(req)
+        status["state"] = "succeeded"
+        status["finished_at"] = now_iso()
+        write_status(job_id, status)
+    except Exception as exc:
+        log.exception("job %s failed", job_id)
+        status["state"] = "failed"
+        status["error"] = str(exc)
+        status["finished_at"] = now_iso()
+        write_status(job_id, status)
+
+
+@app.get("/health/live")
+def health_live() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/health/ready")
+def health_ready() -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "data_dir": str(DATA_DIR),
+        "max_parallel_encodes": MAX_PARALLEL_ENCODES,
+        "video_decode_mode": VIDEO_DECODE_MODE,
+        "riverhog_upload_enabled": RIVERHOG_UPLOAD_ENABLED,
+        "review_upload_enabled": REVIEW_UPLOAD_ENABLED,
+    }
+
+
+@app.get("/v1/capabilities")
+def capabilities() -> dict[str, Any]:
+    encoders = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-encoders"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    ).stdout
+    filters = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-filters"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    ).stdout
+    av1_help = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-h", "encoder=av1_nvenc"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    ).stdout
+    return {
+        "profiles": ["av1-nvenc-high"],
+        "encode_profile": {
+            "schema_versions": [1],
+            "targets": [MUNCHY_PROFILE_TARGET],
+            "archive_codecs": ["av1_nvenc"],
+            "containers": ["mkv", "webm"],
+            "source_artifact_drops": [
+                "stream:N",
+                "atom:TYPE",
+                "top-level-atom:TYPE",
+                "atom-offset:OFFSET",
+            ],
+            "fps_modes": ["passthrough", "halve_60_to_30"],
+            "audio_codecs": ["opus"],
+            "scale_flags": ["fast_bilinear", "bilinear", "bicubic", "lanczos", "spline"],
+        },
+        "tasks": ["archive_video", "qcut_video", "audio_review"],
+        "ffmpeg": {
+            "av1_nvenc": "av1_nvenc" in encoders,
+            "libopus": "libopus" in encoders,
+            "drawtext": "drawtext" in filters,
+            "av1_nvenc_uhq": "uhq" in av1_help,
+        },
+        "archive": {
+            "decode_mode": VIDEO_DECODE_MODE,
+            "preset": ARCHIVE_PRESET,
+            "tune": ARCHIVE_TUNE,
+            "cq": ARCHIVE_CQ,
+            "lookahead_level": ARCHIVE_LOOKAHEAD_LEVEL,
+            "split_encode_mode": ARCHIVE_SPLIT_ENCODE_MODE,
+            "pix_fmt": ARCHIVE_PIX_FMT,
+            "max_parallel_encodes": MAX_PARALLEL_ENCODES,
+            "cuvid_decoders": sorted(CUVID_DECODERS.values()),
+            "source_artifacts": {
+                "enabled": True,
+                "bundle_suffix": SOURCE_ARTIFACTS_SUFFIX,
+                "kind": "munchy.source-artifacts",
+                "strict_accounting": True,
+                "includes": [
+                    "manifest.json",
+                    "inventory/source-ffprobe.json",
+                    "inventory/source-inventory.json",
+                    "stream transforms",
+                    "rebuild plan",
+                    "source container atoms",
+                    "source stream artifacts",
+                ],
+            },
+        },
+        "qcut": {
+            "decode_mode": VIDEO_DECODE_MODE,
+            "encode_profile_source": "archive",
+            "target_seconds": QCUT_TARGET_SECONDS,
+            "min_seconds": QCUT_MIN_SECONDS,
+            "max_seconds": QCUT_MAX_SECONDS,
+        },
+    }
+
+
+@app.post("/v1/jobs", status_code=202)
+def create_job(req: JobRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    req.input_dir = ensure_under_data_dir(req.input_dir, name="input_dir")
+    req.archive_dir = ensure_under_data_dir(req.archive_dir, name="archive_dir")
+    if req.review_dir is not None:
+        req.review_dir = ensure_under_data_dir(req.review_dir, name="review_dir")
+    if not req.input_dir.is_dir():
+        raise HTTPException(status_code=400, detail=f"input_dir is missing: {req.input_dir}")
+    job_id = req.job_id or uuid.uuid4().hex
+    with jobs_lock:
+        existing = jobs.get(job_id)
+    if existing and existing.get("state") in {"queued", "running"}:
+        raise HTTPException(status_code=409, detail=f"job already active: {job_id}")
+    initial = {
+        "job_id": job_id,
+        "state": "queued",
+        "queued_at": now_iso(),
+        "profile": req.profile,
+        "encode_profile": req.encode_profile.model_dump(exclude_none=True)
+        if req.encode_profile is not None
+        else None,
+        "tasks": req.tasks,
+    }
+    write_status(job_id, initial)
+    req.job_id = job_id
+    background_tasks.add_task(run_job, job_id, req)
+    return initial
+
+
+@app.get("/v1/jobs/{job_id}")
+def get_job(job_id: str) -> dict[str, Any]:
+    return load_status(job_id)
