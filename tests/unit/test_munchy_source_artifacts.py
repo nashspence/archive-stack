@@ -6,6 +6,7 @@ import tarfile
 from pathlib import Path
 
 from munchy import source_artifacts
+from munchy.source_artifact_bridge import _artifact_drop_reason_map
 
 
 def test_source_artifact_bundle_uses_munchy_manifest_kind(tmp_path: Path) -> None:
@@ -87,3 +88,42 @@ def test_source_artifact_default_path_is_zstd_tar() -> None:
         source_artifacts._source_artifacts_path("clip.webm")
         == "clip.webm.source-artifacts.tar.zst"
     )
+
+
+def test_source_artifact_bridge_accepts_service_encode_profile_shape() -> None:
+    profile = {
+        "schema_version": 1,
+        "target": "munchy-av1-nvenc",
+        "name": "reolink-preview",
+        "archive": {
+            "codec": "av1_nvenc",
+            "container": "webm",
+            "quality": 49,
+            "max_height": 720,
+            "fps_mode": "passthrough",
+            "scale_flags": "lanczos",
+            "pix_fmt": "p010le",
+            "preset": "p7",
+            "tune": "uhq",
+            "audio": {
+                "codec": "opus",
+                "bitrate": "28k",
+                "sample_rate": 24000,
+                "channels": 1,
+                "application": "audio",
+                "frame_duration": 40.0,
+                "cutoff": 12000,
+                "compression_level": 10,
+                "vbr": "on",
+            },
+        },
+        "source": {
+            "artifact_drops": [
+                {"selector": " Stream:7 ", "reason": "not useful after stabilization"}
+            ]
+        },
+    }
+
+    assert _artifact_drop_reason_map(profile) == {
+        "stream:7": "not useful after stabilization"
+    }

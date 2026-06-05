@@ -243,6 +243,15 @@ def poll_job(job_id: str) -> dict:
     raise TimeoutError(f"job did not finish: {job_id}")
 
 
+def poll_job_state(job_id: str, states: set[str]) -> dict:
+    for _ in range(60):
+        job = api("GET", f"/v1/jobs/{job_id}")
+        if job.get("state") in states:
+            return job
+        time.sleep(1)
+    raise TimeoutError(f"job did not reach {sorted(states)}: {job_id}")
+
+
 def main() -> int:
     if not STATE_DIR.exists():
         raise SystemExit(f"state dir does not exist: {STATE_DIR}")
@@ -289,6 +298,8 @@ def main() -> int:
         raise AssertionError(
             f"runner capabilities did not advertise required storage hints: {capabilities}"
         )
+    if not storage.get("eager_archive_only_encoding"):
+        raise AssertionError(f"runner capabilities did not advertise eager archive encoding: {capabilities}")
 
     root_upload = request(
         "POST",
@@ -319,6 +330,45 @@ def main() -> int:
     if abandoned.get("state") != "deleted":
         raise AssertionError(f"input upload abandon did not report deleted: {abandoned}")
     assert_upload_missing(abandon_id)
+
+    preupload_id = f"{prefix}-preupload"
+    preupload_job_id = f"{prefix}-preupload-job"
+    create_upload(preupload_id, rel_path, content)
+    created_preupload_job = api(
+        "POST",
+        "/v1/jobs",
+        expect=202,
+        payload={
+            "job_id": preupload_job_id,
+            "input_upload_id": preupload_id,
+            "collection_slug": "runner-smoke-preupload",
+            "collection_timestamp": stamp,
+            "archive_mode": "originals",
+            "gpu_tasks": [],
+            "groups": {
+                group_name: {
+                    "archive_mode": "originals",
+                    "gpu_tasks": [],
+                },
+            },
+            "riverhog": {"enabled": False},
+            "review_upload": {"enabled": False},
+            "notify": {"enabled": False},
+        },
+    )
+    if created_preupload_job.get("input_upload_id") != preupload_id:
+        raise AssertionError(f"pre-upload job did not reference upload: {created_preupload_job}")
+    referenced_preupload_delete = request("DELETE", f"{RUNNER_URL}/v1/input-uploads/{preupload_id}")
+    if referenced_preupload_delete.status != 409:
+        raise AssertionError(
+            "active referenced input upload delete should be rejected with 409, "
+            f"got HTTP {referenced_preupload_delete.status}: "
+            f"{referenced_preupload_delete.body.decode('utf-8', 'replace')}"
+        )
+    api("POST", f"/v1/jobs/{preupload_job_id}/cancel", expect=202)
+    cancelled_preupload_job = poll_job_state(preupload_job_id, {"cancelled"})
+    if cancelled_preupload_job.get("state") != "cancelled":
+        raise AssertionError(f"pre-upload job did not cancel: {cancelled_preupload_job}")
 
     job_id = f"{prefix}-job"
     api(
@@ -438,14 +488,6 @@ def main() -> int:
         if preview_job.get("riverhog_upload_result") is not None:
             raise AssertionError(f"collection preview should not upload to Riverhog: {preview_job}")
 
-    referenced_delete = request("DELETE", f"{RUNNER_URL}/v1/input-uploads/{upload_id}")
-    if referenced_delete.status != 409:
-        body = referenced_delete.body.decode("utf-8", "replace")
-        raise AssertionError(
-            "referenced input upload delete should be rejected with 409, "
-            f"got HTTP {referenced_delete.status}: {body}"
-        )
-
     invalid_review = request(
         "POST",
         f"{RUNNER_URL}/v1/jobs",
@@ -563,6 +605,8 @@ def main() -> int:
         remove_job(preview_job_id)
     if preview_upload_id:
         remove_upload(preview_upload_id)
+    remove_job(preupload_job_id)
+    remove_upload(preupload_id)
     remove_job(job_id)
     remove_upload(upload_id)
     return 0

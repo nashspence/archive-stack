@@ -30,6 +30,7 @@ def test_capabilities_advertise_munchy_profile_target(tmp_path: Path, monkeypatc
 
     assert capabilities["encode_profile"]["targets"] == ["munchy-av1-nvenc"]
     assert capabilities["profile_groups"]["input_path_shape"] == "<profile-group>/<file>"
+    assert capabilities["storage"]["eager_archive_only_encoding"] is True
     assert "MUNCHY_RUNNER_NOTIFY_WEBHOOKS" in capabilities["notify"]["webhook_config"]
 
 

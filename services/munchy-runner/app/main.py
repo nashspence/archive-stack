@@ -125,8 +125,13 @@ ORPHAN_INPUT_UPLOAD_TTL_HOURS = float(
     os.getenv("MUNCHY_RUNNER_ORPHAN_INPUT_UPLOAD_TTL_HOURS", str(INPUT_UPLOAD_TTL_HOURS))
 )
 CLEANUP_INTERVAL_SECONDS = int(os.getenv("MUNCHY_RUNNER_CLEANUP_INTERVAL_SECONDS", "3600"))
+EAGER_ARCHIVE_BATCH_FILES = max(1, int(os.getenv("MUNCHY_RUNNER_EAGER_ARCHIVE_BATCH_FILES", "32")))
+EAGER_ARCHIVE_WAIT_SECONDS = max(
+    1.0,
+    float(os.getenv("MUNCHY_RUNNER_EAGER_ARCHIVE_WAIT_SECONDS", "5")),
+)
 
-UploadState = Literal["pending", "partial", "uploaded"]
+UploadState = Literal["pending", "partial", "uploaded", "consumed"]
 ArchiveMode = Literal["av1_nvenc", "originals"]
 WorkflowMode = Literal["archive", "review_only", "collection_preview"]
 TaskName = Literal["archive_video", "qcut_video", "audio_review"]
@@ -908,17 +913,21 @@ def upload_file_status(file_state: dict[str, Any]) -> dict[str, Any]:
     upload_id = str(file_state["upload_id"])
     data_path = tusd_data_path(upload_id)
     expected = int(file_state["bytes"])
-    uploaded = data_path.stat().st_size if data_path.exists() else 0
-    if uploaded >= expected:
-        state: UploadState = "uploaded"
-    elif uploaded > 0:
-        state = "partial"
+    if file_state.get("consumed_at"):
+        uploaded = expected
+        state: UploadState = "consumed"
     else:
-        state = "pending"
+        uploaded = data_path.stat().st_size if data_path.exists() else 0
+        if uploaded >= expected:
+            state = "uploaded"
+        elif uploaded > 0:
+            state = "partial"
+        else:
+            state = "pending"
     out = dict(file_state)
     out["uploaded_bytes"] = min(uploaded, expected)
     out["upload_state"] = state
-    out["complete"] = state == "uploaded"
+    out["complete"] = state in {"uploaded", "consumed"}
     return out
 
 
@@ -941,10 +950,14 @@ def save_input_upload(upload: dict[str, Any]) -> dict[str, Any]:
 
 def remove_input_upload_data(upload: dict[str, Any]) -> None:
     for file_state in upload.get("files", []):
-        tus_path = tusd_data_path(str(file_state["upload_id"]))
-        tus_path.unlink(missing_ok=True)
-        tus_path.with_suffix(tus_path.suffix + ".info").unlink(missing_ok=True)
-        tus_path.with_suffix(tus_path.suffix + ".lock").unlink(missing_ok=True)
+        remove_input_file_data(file_state)
+
+
+def remove_input_file_data(file_state: dict[str, Any]) -> None:
+    tus_path = tusd_data_path(str(file_state["upload_id"]))
+    tus_path.unlink(missing_ok=True)
+    tus_path.with_suffix(tus_path.suffix + ".info").unlink(missing_ok=True)
+    tus_path.with_suffix(tus_path.suffix + ".lock").unlink(missing_ok=True)
 
 
 def input_upload_last_activity(upload: dict[str, Any]) -> datetime:
@@ -966,14 +979,31 @@ def input_upload_last_activity(upload: dict[str, Any]) -> datetime:
 
 
 def load_input_upload(upload_id: str) -> dict[str, Any]:
-    upload = read_state("input-upload", upload_id)
-    if upload is None:
-        raise HTTPException(status_code=404, detail=f"unknown input upload: {upload_id}")
-    return save_input_upload(upload)
+    with state_lock:
+        upload = read_state("input-upload", upload_id)
+        if upload is None:
+            raise HTTPException(status_code=404, detail=f"unknown input upload: {upload_id}")
+        return save_input_upload(upload)
 
 
 def save_job(job: dict[str, Any]) -> dict[str, Any]:
-    return write_state("job", str(job["job_id"]), job)
+    payload = dict(job)
+    allow_clear_cancel = bool(payload.pop("_allow_clear_cancel", False))
+    job_id = str(payload["job_id"])
+    with state_lock:
+        current = read_state("job", job_id)
+        if (
+            not allow_clear_cancel
+            and isinstance(current, dict)
+            and current.get("cancel_requested")
+            and not payload.get("cancel_requested")
+            and payload.get("state") not in TERMINAL_JOB_STATES
+        ):
+            payload["cancel_requested"] = True
+            payload["cancel_requested_at"] = current.get("cancel_requested_at") or now_iso()
+            if current.get("phase") == "cancel_requested":
+                payload["phase"] = "cancel_requested"
+        return write_state("job", job_id, payload)
 
 
 def load_job(job_id: str) -> dict[str, Any]:
@@ -1084,24 +1114,112 @@ def copy_tree_files(source_root: Path, dest_root: Path) -> None:
         link_or_copy(source, dest)
 
 
+def upload_file_group(rel_path: str) -> str:
+    return input_path_group(rel_path)
+
+
+def upload_file_group_rel(rel_path: str, group_name: str) -> Path:
+    prefix = f"{group_name}/"
+    if not rel_path.startswith(prefix):
+        raise RuntimeError(f"input file {rel_path!r} is not in group {group_name!r}")
+    group_rel = rel_path[len(prefix) :]
+    if not group_rel:
+        raise RuntimeError(f"input file {rel_path!r} does not include a file name")
+    return Path(group_rel)
+
+
+def upload_files_for_groups(
+    upload: dict[str, Any],
+    group_names: set[str],
+) -> list[dict[str, Any]]:
+    return [
+        file_state
+        for file_state in upload.get("files", [])
+        if upload_file_group(str(file_state["path"])) in group_names
+    ]
+
+
+def upload_bytes_for_groups(upload: dict[str, Any], group_names: set[str]) -> int:
+    return sum(int(file_state["bytes"]) for file_state in upload_files_for_groups(upload, group_names))
+
+
+def upload_groups_complete(upload: dict[str, Any], group_names: set[str]) -> bool:
+    files = upload_files_for_groups(upload, group_names)
+    return bool(files) and all(upload_file_status(file_state)["complete"] for file_state in files)
+
+
+def upload_group_progress(upload: dict[str, Any], group_names: set[str]) -> dict[str, Any]:
+    files = [upload_file_status(file_state) for file_state in upload_files_for_groups(upload, group_names)]
+    bytes_total = sum(int(item["bytes"]) for item in files)
+    uploaded_bytes = sum(int(item["uploaded_bytes"]) for item in files)
+    return {
+        "files_total": len(files),
+        "files_uploaded": sum(1 for item in files if item["complete"]),
+        "bytes_total": bytes_total,
+        "uploaded_bytes": uploaded_bytes,
+    }
+
+
+def wait_for_upload_groups(
+    job: dict[str, Any],
+    upload_id: str,
+    group_names: set[str],
+) -> dict[str, Any]:
+    job_id = str(job["job_id"])
+    while True:
+        raise_if_job_cancelled(job_id)
+        upload = load_input_upload(upload_id)
+        progress = upload_group_progress(upload, group_names)
+        job["input_upload_progress"] = progress
+        if upload_groups_complete(upload, group_names):
+            save_job(job)
+            return upload
+        job["phase"] = (
+            f"waiting_for_upload:{progress['files_uploaded']}/{progress['files_total']}"
+        )
+        save_job(job)
+        retry_sleep(EAGER_ARCHIVE_WAIT_SECONDS, job_id=job_id)
+
+
+def materialize_upload_file(file_state: dict[str, Any], dest_root: Path) -> None:
+    rel_path = str(file_state["path"])
+    status = upload_file_status(file_state)
+    if status["upload_state"] == "consumed":
+        raise RuntimeError(f"input file has already been consumed: {rel_path}")
+    if not status["complete"]:
+        raise RuntimeError(f"input file is incomplete: {rel_path}")
+    source = tusd_data_path(str(file_state["upload_id"]))
+    expected_bytes = int(file_state["bytes"])
+    expected_sha256 = file_state.get("sha256")
+    if not source.exists() or source.stat().st_size < expected_bytes:
+        raise RuntimeError(f"input file is incomplete: {rel_path}")
+    if expected_sha256 and file_sha256(source) != expected_sha256:
+        raise RuntimeError(f"input file sha256 mismatch: {rel_path}")
+    dest = dest_root / rel_path
+    if dest.exists() and dest.stat().st_size == expected_bytes:
+        if not expected_sha256 or file_sha256(dest) == expected_sha256:
+            return
+    link_or_copy(source, dest)
+
+
+def materialize_upload_groups(
+    upload: dict[str, Any],
+    dest_root: Path,
+    group_names: set[str],
+) -> None:
+    upload = refresh_input_upload(upload)
+    if not upload_groups_complete(upload, group_names):
+        raise RuntimeError("input upload groups are not complete")
+    for file_state in upload_files_for_groups(upload, group_names):
+        materialize_upload_file(file_state, dest_root)
+
+
 def materialize_upload(upload: dict[str, Any], dest_root: Path) -> None:
     upload = refresh_input_upload(upload)
     if upload["state"] != "uploaded":
         raise RuntimeError("input upload is not complete")
     for file_state in upload["files"]:
-        rel_path = str(file_state["path"])
-        source = tusd_data_path(str(file_state["upload_id"]))
-        expected_bytes = int(file_state["bytes"])
-        expected_sha256 = file_state.get("sha256")
-        if not source.exists() or source.stat().st_size < expected_bytes:
-            raise RuntimeError(f"input file is incomplete: {rel_path}")
-        if expected_sha256 and file_sha256(source) != expected_sha256:
-            raise RuntimeError(f"input file sha256 mismatch: {rel_path}")
-        dest = dest_root / rel_path
-        if dest.exists() and dest.stat().st_size == expected_bytes:
-            if not expected_sha256 or file_sha256(dest) == expected_sha256:
-                continue
-        link_or_copy(source, dest)
+        materialize_upload_file(file_state, dest_root)
 
 
 def input_upload_groups(upload: dict[str, Any]) -> list[str]:
@@ -1226,6 +1344,13 @@ def gpu_group_job_id(job_id: str, group_name: str) -> str:
     return f"{job_id[: max(1, 180 - len(suffix))]}{suffix}"
 
 
+def gpu_eager_batch_job_id(job_id: str, batch_id: str) -> str:
+    digest = hashlib.sha256(f"{job_id}/eager/{batch_id}".encode()).hexdigest()[:10]
+    safe_batch = batch_id[:48]
+    suffix = f"__eager__{safe_batch}__{digest}"
+    return f"{job_id[: max(1, 180 - len(suffix))]}{suffix}"
+
+
 def gpu_job_work_roots(job: dict[str, Any]) -> list[Path]:
     job_id = str(job["job_id"])
     roots = [GPU_RUNTIME_DIR / "jobs" / job_id]
@@ -1234,6 +1359,47 @@ def gpu_job_work_roots(job: dict[str, Any]) -> list[Path]:
         for group_name in groups:
             roots.append(GPU_RUNTIME_DIR / "jobs" / gpu_group_job_id(job_id, str(group_name)))
     return roots
+
+
+def group_archive_container(group_config: dict[str, Any]) -> ArchiveContainer:
+    profile = group_config.get("encode_profile")
+    archive: dict[str, Any] = {}
+    if isinstance(profile, dict) and isinstance(profile.get("archive"), dict):
+        archive = profile["archive"]
+    container = str(archive.get("container") or "mkv")
+    if container not in {"mkv", "webm"}:
+        raise RuntimeError(f"unsupported archive container: {container}")
+    return container  # type: ignore[return-value]
+
+
+def archive_container_suffix(group_config: dict[str, Any]) -> str:
+    return f".{group_archive_container(group_config)}"
+
+
+def archive_output_for_upload_file(
+    file_state: dict[str, Any],
+    *,
+    group_name: str,
+    group_config: dict[str, Any],
+    archive_dir: Path,
+) -> Path:
+    group_rel = upload_file_group_rel(str(file_state["path"]), group_name)
+    return (archive_dir / group_name / group_rel).with_suffix(archive_container_suffix(group_config))
+
+
+def group_is_eager_archive_only(group_config: dict[str, Any]) -> bool:
+    if str(group_config.get("archive_mode") or "av1_nvenc") != "av1_nvenc":
+        return False
+    tasks = set(str(task) for task in group_config.get("gpu_tasks") or [])
+    return tasks == {"archive_video"}
+
+
+def eager_archive_group_names(groups: dict[str, dict[str, Any]]) -> set[str]:
+    return {
+        str(group_name)
+        for group_name, group_config in groups.items()
+        if group_is_eager_archive_only(group_config)
+    }
 
 
 def remove_job_local_work(job: dict[str, Any]) -> list[str]:
@@ -1849,6 +2015,379 @@ def ensure_job_groups(job: dict[str, Any], input_upload: dict[str, Any]) -> dict
     return groups
 
 
+def eager_archive_state(job: dict[str, Any]) -> dict[str, Any]:
+    return job.setdefault("eager_archive", {"files": {}, "batches": {}, "next_batch_number": 1})
+
+
+def eager_file_encoded(job: dict[str, Any], rel_path: str) -> bool:
+    files = eager_archive_state(job).setdefault("files", {})
+    item = files.get(rel_path)
+    return isinstance(item, dict) and item.get("state") == "encoded"
+
+
+def mark_eager_file_encoded(
+    job: dict[str, Any],
+    file_state: dict[str, Any],
+    *,
+    group_name: str,
+    group_config: dict[str, Any],
+    archive_dir: Path,
+    batch_id: str | None,
+    detected_existing: bool = False,
+) -> None:
+    output = archive_output_for_upload_file(
+        file_state,
+        group_name=group_name,
+        group_config=group_config,
+        archive_dir=archive_dir,
+    )
+    files = eager_archive_state(job).setdefault("files", {})
+    files[str(file_state["path"])] = {
+        "state": "encoded",
+        "encoded_at": now_iso(),
+        "batch_id": batch_id,
+        "output": str(output),
+        "detected_existing": detected_existing,
+    }
+
+
+def consume_input_upload_file(upload: dict[str, Any], file_state: dict[str, Any]) -> bool:
+    if file_state.get("consumed_at"):
+        return False
+    file_state["consumed_at"] = now_iso()
+    file_state["consumed_bytes"] = int(file_state["bytes"])
+    if file_state.get("sha256"):
+        file_state["consumed_sha256"] = file_state["sha256"]
+    remove_input_file_data(file_state)
+    return True
+
+
+def consume_input_upload_files(upload_id: str, rel_paths: set[str]) -> dict[str, Any]:
+    with state_lock:
+        upload = load_input_upload(upload_id)
+        changed = False
+        by_path = {str(file_state["path"]): file_state for file_state in upload.get("files", [])}
+        for rel_path in sorted(rel_paths):
+            file_state = by_path.get(rel_path)
+            if file_state is None:
+                raise RuntimeError(f"unknown input file while consuming source: {rel_path}")
+            changed = consume_input_upload_file(upload, file_state) or changed
+        if changed:
+            return save_input_upload(upload)
+        return upload
+
+
+def mark_existing_eager_outputs(
+    job: dict[str, Any],
+    upload: dict[str, Any],
+    groups: dict[str, dict[str, Any]],
+    eager_groups: set[str],
+    archive_dir: Path,
+) -> tuple[dict[str, Any], bool]:
+    changed = False
+    consume_paths: set[str] = set()
+    for group_name in sorted(eager_groups):
+        group_config = groups[group_name]
+        for file_state in upload_files_for_groups(upload, {group_name}):
+            rel_path = str(file_state["path"])
+            if eager_file_encoded(job, rel_path):
+                continue
+            output = archive_output_for_upload_file(
+                file_state,
+                group_name=group_name,
+                group_config=group_config,
+                archive_dir=archive_dir,
+            )
+            if not output.exists():
+                continue
+            mark_eager_file_encoded(
+                job,
+                file_state,
+                group_name=group_name,
+                group_config=group_config,
+                archive_dir=archive_dir,
+                batch_id=None,
+                detected_existing=True,
+            )
+            changed = True
+            status = upload_file_status(file_state)
+            if status["upload_state"] == "uploaded":
+                consume_paths.add(rel_path)
+    if changed:
+        save_job(job)
+    if consume_paths:
+        upload = consume_input_upload_files(str(upload["upload_id"]), consume_paths)
+    return upload, changed or bool(consume_paths)
+
+
+def eager_groups_complete(
+    job: dict[str, Any],
+    upload: dict[str, Any],
+    eager_groups: set[str],
+) -> bool:
+    files = upload_files_for_groups(upload, eager_groups)
+    return bool(files) and all(eager_file_encoded(job, str(file_state["path"])) for file_state in files)
+
+
+def ready_eager_files(
+    job: dict[str, Any],
+    upload: dict[str, Any],
+    groups: dict[str, dict[str, Any]],
+    eager_groups: set[str],
+    archive_dir: Path,
+    *,
+    limit: int,
+) -> tuple[str, list[dict[str, Any]]] | None:
+    for group_name in sorted(eager_groups):
+        group_config = groups[group_name]
+        ready: list[dict[str, Any]] = []
+        for file_state in upload_files_for_groups(upload, {group_name}):
+            rel_path = str(file_state["path"])
+            if eager_file_encoded(job, rel_path):
+                continue
+            output = archive_output_for_upload_file(
+                file_state,
+                group_name=group_name,
+                group_config=group_config,
+                archive_dir=archive_dir,
+            )
+            if output.exists():
+                mark_eager_file_encoded(
+                    job,
+                    file_state,
+                    group_name=group_name,
+                    group_config=group_config,
+                    archive_dir=archive_dir,
+                    batch_id=None,
+                    detected_existing=True,
+                )
+                continue
+            status = upload_file_status(file_state)
+            if status["upload_state"] == "consumed":
+                raise RuntimeError(f"eager source was consumed before output existed: {rel_path}")
+            if status["upload_state"] != "uploaded":
+                continue
+            ready.append(file_state)
+            if len(ready) >= limit:
+                break
+        if ready:
+            save_job(job)
+            return group_name, ready
+    return None
+
+
+def running_eager_batch(job: dict[str, Any]) -> dict[str, Any] | None:
+    batches = eager_archive_state(job).setdefault("batches", {})
+    for batch in batches.values():
+        if isinstance(batch, dict) and batch.get("state") == "running":
+            return batch
+    return None
+
+
+def next_eager_batch_id(job: dict[str, Any], group_name: str, paths: list[str]) -> str:
+    eager = eager_archive_state(job)
+    batch_number = int(eager.get("next_batch_number") or 1)
+    eager["next_batch_number"] = batch_number + 1
+    digest = hashlib.sha256("\n".join(paths).encode()).hexdigest()[:10]
+    safe_group = group_name[:36]
+    return f"{safe_group}-{batch_number:06d}-{digest}"
+
+
+def eager_batch_input_root(job_id: str, batch_id: str) -> Path:
+    return GPU_RUNTIME_DIR / "jobs" / job_id / "eager-input" / batch_id
+
+
+def build_eager_gpu_payload(
+    job: dict[str, Any],
+    *,
+    batch_id: str,
+    group_name: str,
+    group_config: dict[str, Any],
+    gpu_tasks: list[TaskName],
+) -> dict[str, Any]:
+    job_id = str(job["job_id"])
+    gpu_job_id = gpu_eager_batch_job_id(job_id, batch_id)
+    payload = {
+        "job_id": gpu_job_id,
+        "input_dir": f"/data/jobs/{job_id}/eager-input/{batch_id}/{group_name}",
+        "archive_dir": f"/data/jobs/{job_id}/archive/{group_name}",
+        "review_dir": f"/data/jobs/{job_id}/review/{group_name}",
+        "profile": group_config.get("profile", "av1-nvenc-high"),
+        "tasks": gpu_tasks,
+        "collection_slug": job["collection_slug"],
+        "collection_timestamp": job.get("collection_timestamp"),
+        "riverhog": {"enabled": False},
+        "review_upload": {"enabled": False},
+    }
+    if group_config.get("encode_profile") is not None:
+        payload["encode_profile"] = group_config["encode_profile"]
+    return payload
+
+
+def finish_eager_batch(
+    job: dict[str, Any],
+    upload: dict[str, Any],
+    batch: dict[str, Any],
+    groups: dict[str, dict[str, Any]],
+    archive_dir: Path,
+    gpu_result: dict[str, Any],
+) -> dict[str, Any]:
+    group_name = str(batch["group"])
+    group_config = groups[group_name]
+    paths = set(str(path) for path in batch.get("paths") or [])
+    for file_state in upload_files_for_groups(upload, {group_name}):
+        rel_path = str(file_state["path"])
+        if rel_path not in paths:
+            continue
+        mark_eager_file_encoded(
+            job,
+            file_state,
+            group_name=group_name,
+            group_config=group_config,
+            archive_dir=archive_dir,
+            batch_id=str(batch["batch_id"]),
+        )
+    batch["state"] = "succeeded"
+    batch["finished_at"] = now_iso()
+    batch["gpu_result"] = gpu_result
+    eager_archive_state(job).setdefault("gpu_results", {})[str(batch["batch_id"])] = gpu_result
+    shutil.rmtree(eager_batch_input_root(str(job["job_id"]), str(batch["batch_id"])), ignore_errors=True)
+    upload = consume_input_upload_files(str(job["input_upload_id"]), paths)
+    save_job(job)
+    return upload
+
+
+def run_eager_batch(
+    job: dict[str, Any],
+    upload: dict[str, Any],
+    *,
+    group_name: str,
+    group_config: dict[str, Any],
+    file_states: list[dict[str, Any]],
+    archive_dir: Path,
+) -> dict[str, Any]:
+    job_id = str(job["job_id"])
+    paths = [str(file_state["path"]) for file_state in file_states]
+    batch_id = next_eager_batch_id(job, group_name, paths)
+    batch_root = eager_batch_input_root(job_id, batch_id)
+    if batch_root.exists():
+        shutil.rmtree(batch_root, ignore_errors=True)
+    batch_root.mkdir(parents=True, exist_ok=True)
+    for file_state in file_states:
+        materialize_upload_file(file_state, batch_root)
+    gpu_tasks: list[TaskName] = ["archive_video"]
+    payload = build_eager_gpu_payload(
+        job,
+        batch_id=batch_id,
+        group_name=group_name,
+        group_config=group_config,
+        gpu_tasks=gpu_tasks,
+    )
+    batch = {
+        "batch_id": batch_id,
+        "state": "running",
+        "group": group_name,
+        "paths": paths,
+        "gpu_job_id": payload["job_id"],
+        "payload": payload,
+        "started_at": now_iso(),
+    }
+    eager_archive_state(job).setdefault("batches", {})[batch_id] = batch
+    job["phase"] = f"gpu-eager:{group_name}:{len(paths)}"
+    save_job(job)
+
+    batch_bytes = sum(int(file_state["bytes"]) for file_state in file_states)
+    storage_hint = input_upload_storage_hint(upload)
+    required_gpu_free = gpu_scratch_required_bytes(batch_bytes, storage_hint) + MIN_FREE_BYTES
+    require_free_space(GPU_RUNTIME_DIR, required_gpu_free, label="gpu eager scratch")
+
+    token = acquire_gpu(job_id)
+    try:
+        start_gpu_job(payload)
+        gpu_result = wait_gpu_job(str(payload["job_id"]), gpu_payload=payload, job=job)
+    finally:
+        release_gpu(token)
+    return finish_eager_batch(
+        job,
+        upload,
+        batch,
+        groups=dict(job["groups"]),
+        archive_dir=archive_dir,
+        gpu_result=gpu_result,
+    )
+
+
+def resume_running_eager_batch(
+    job: dict[str, Any],
+    upload: dict[str, Any],
+    batch: dict[str, Any],
+    groups: dict[str, dict[str, Any]],
+    archive_dir: Path,
+) -> dict[str, Any]:
+    payload = batch.get("payload")
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"eager batch is missing payload: {batch.get('batch_id')}")
+    job_id = str(job["job_id"])
+    job["phase"] = f"gpu-eager-resume:{batch.get('group')}"
+    save_job(job)
+    token = acquire_gpu(job_id)
+    try:
+        start_gpu_job(payload)
+        gpu_result = wait_gpu_job(str(payload["job_id"]), gpu_payload=payload, job=job)
+    finally:
+        release_gpu(token)
+    return finish_eager_batch(job, upload, batch, groups, archive_dir, gpu_result)
+
+
+def run_eager_archive_groups(
+    job: dict[str, Any],
+    upload: dict[str, Any],
+    groups: dict[str, dict[str, Any]],
+    eager_groups: set[str],
+    archive_dir: Path,
+) -> dict[str, Any]:
+    job_id = str(job["job_id"])
+    while True:
+        raise_if_job_cancelled(job_id)
+        upload = load_input_upload(str(job["input_upload_id"]))
+        upload, _ = mark_existing_eager_outputs(job, upload, groups, eager_groups, archive_dir)
+        running = running_eager_batch(job)
+        if running is not None:
+            upload = resume_running_eager_batch(job, upload, running, groups, archive_dir)
+            continue
+        if eager_groups_complete(job, upload, eager_groups):
+            eager = eager_archive_state(job)
+            eager["completed_at"] = eager.get("completed_at") or now_iso()
+            save_job(job)
+            return upload
+        ready = ready_eager_files(
+            job,
+            upload,
+            groups,
+            eager_groups,
+            archive_dir,
+            limit=EAGER_ARCHIVE_BATCH_FILES,
+        )
+        if ready is None:
+            progress = upload_group_progress(upload, eager_groups)
+            job["input_upload_progress"] = progress
+            job["phase"] = (
+                f"waiting_for_eager_files:{progress['files_uploaded']}/{progress['files_total']}"
+            )
+            save_job(job)
+            retry_sleep(EAGER_ARCHIVE_WAIT_SECONDS, job_id=job_id)
+            continue
+        group_name, file_states = ready
+        upload = run_eager_batch(
+            job,
+            upload,
+            group_name=group_name,
+            group_config=groups[group_name],
+            file_states=file_states,
+            archive_dir=archive_dir,
+        )
+
+
 def run_job(job_id: str) -> None:
     with state_lock:
         if job_id in active_jobs:
@@ -1871,19 +2410,42 @@ def run_job(job_id: str) -> None:
 
         groups = ensure_job_groups(job, input_upload)
 
-        required_gpu_free = gpu_scratch_required_bytes(input_bytes, storage_hint) + MIN_FREE_BYTES
-        require_free_space(GPU_RUNTIME_DIR, required_gpu_free, label="gpu scratch")
-        job["phase"] = "materializing"
-        save_job(job)
-        materialize_upload(input_upload, input_dir)
-        raise_if_job_cancelled(job_id)
-
         group_results = job.setdefault("group_results", {})
         gpu_payloads = job.setdefault("gpu_payloads", {})
         gpu_results = job.setdefault("gpu_results", {})
 
+        eager_groups = eager_archive_group_names(groups)
+        if eager_groups:
+            input_upload = run_eager_archive_groups(
+                job,
+                input_upload,
+                groups,
+                eager_groups,
+                archive_dir,
+            )
+            raise_if_job_cancelled(job_id)
+
+        non_eager_groups = set(str(group_name) for group_name in groups) - eager_groups
+        if non_eager_groups:
+            input_upload = wait_for_upload_groups(
+                job,
+                str(job["input_upload_id"]),
+                non_eager_groups,
+            )
+            non_eager_bytes = upload_bytes_for_groups(input_upload, non_eager_groups)
+            required_gpu_free = (
+                gpu_scratch_required_bytes(non_eager_bytes, storage_hint) + MIN_FREE_BYTES
+            )
+            require_free_space(GPU_RUNTIME_DIR, required_gpu_free, label="gpu scratch")
+            job["phase"] = "materializing"
+            save_job(job)
+            materialize_upload_groups(input_upload, input_dir, non_eager_groups)
+            raise_if_job_cancelled(job_id)
+
         gpu_work: list[tuple[str, dict[str, Any], list[TaskName]]] = []
         for group_name, group_config in groups.items():
+            if str(group_name) in eager_groups:
+                continue
             validate_profile_group_name(str(group_name))
             group_archive_mode = str(group_config.get("archive_mode") or "av1_nvenc")
             if group_archive_mode not in {"av1_nvenc", "originals"}:
@@ -2116,6 +2678,8 @@ def capabilities() -> dict[str, Any]:
             "input_upload_storage_hint_required": True,
             "same_filesystem_hardlink_discount": path_device(TUSD_DIR)
             == path_device(GPU_RUNTIME_DIR),
+            "eager_archive_only_encoding": True,
+            "eager_archive_batch_files": EAGER_ARCHIVE_BATCH_FILES,
             "scratch_extra_multipliers": {
                 "review_only": REVIEW_SCRATCH_EXTRA_MULTIPLIER,
                 "collection_preview": COLLECTION_PREVIEW_SCRATCH_EXTRA_MULTIPLIER,
@@ -2254,6 +2818,17 @@ def create_or_resume_input_file_upload(upload_id: str, rel_path: str) -> dict[st
     with state_lock:
         upload = load_input_upload(upload_id)
         file_state = find_upload_file(upload, rel_path)
+        if file_state.get("consumed_at"):
+            status = upload_file_status(file_state)
+            return {
+                "protocol": "tus",
+                "upload_url": file_state.get("upload_url"),
+                "offset": file_state["bytes"],
+                "length": file_state["bytes"],
+                "checksum_algorithm": "sha256",
+                "headers": {"Tus-Resumable": "1.0.0"},
+                "file": status,
+            }
         upload_url = file_state.get("upload_url")
         offset = -1
         if upload_url:
@@ -2282,8 +2857,6 @@ def create_job(req: CreateJobRequest, background_tasks: BackgroundTasks) -> dict
         raise HTTPException(status_code=400, detail="input_upload_id is required")
     with state_lock:
         input_upload = load_input_upload(req.input_upload_id)
-        if input_upload["state"] != "uploaded":
-            raise HTTPException(status_code=409, detail="input upload is not complete")
         validate_job_storage_hint(input_upload, req)
         require_job_capacity()
         groups = resolve_job_groups(input_upload, req)
@@ -2338,6 +2911,8 @@ def resume_job(job_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]
         job.pop("cancel_requested_at", None)
         job.pop("cancelled_at", None)
         job.pop("error", None)
+        job.pop("finished_at", None)
+        job["_allow_clear_cancel"] = True
         save_job(job)
     schedule_job(job_id, background_tasks)
     return job
