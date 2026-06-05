@@ -13,6 +13,7 @@ RUN pip install --upgrade pip setuptools wheel \
  && pip install -r requirements.txt
 
 COPY pyproject.toml README.md /riverhog/
+COPY contracts /riverhog/contracts
 COPY src /riverhog/src
 RUN pip install /riverhog
 

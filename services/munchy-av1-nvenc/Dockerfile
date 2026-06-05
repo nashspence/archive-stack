@@ -62,6 +62,7 @@ COPY services/munchy-av1-nvenc/requirements.txt .
 RUN python3 -m pip install --break-system-packages --no-cache-dir -r requirements.txt
 
 COPY pyproject.toml README.md /riverhog/
+COPY contracts /riverhog/contracts
 COPY src /riverhog/src
 RUN python3 -m pip install --break-system-packages --no-cache-dir /riverhog
 
