@@ -1,0 +1,23 @@
+target = "munchy-av1-nvenc"
+description = "Example AV1/Opus constant-quality profile for generic media ingest."
+
+[archive]
+container = "mkv"
+
+[archive.video]
+codec = "av1"
+quality = 49
+preset = "p6"
+pix_fmt = "yuv420p10le"
+gop = 240
+
+[archive.audio]
+codec = "opus"
+bitrate = "28k"
+vbr = true
+compression_level = 10
+application = "audio"
+frame_duration_ms = 40
+sample_rate = 24000
+channels = 1
+cutoff_hz = 12000

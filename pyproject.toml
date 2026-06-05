@@ -44,10 +44,13 @@ db = ["psycopg[binary]>=3.2,<4.0", "sqlalchemy>=2.0,<3.0"]
 [project.scripts]
 riverhog-api = "riverhog_api.app:main"
 riverhog = "riverhog_cli.main:main"
+munchy = "munchy_cli.main:main"
 djdan = "djdan.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = [
+  "src/munchy",
+  "src/munchy_cli",
   "src/riverhog_age",
   "src/riverhog_api",
   "src/riverhog_cli",
@@ -79,4 +82,12 @@ markers = [
 [tool.mypy]
 python_version = "3.11"
 strict = true
-packages = ["riverhog_age", "riverhog_api", "riverhog_cli", "riverhog_core", "djdan"]
+packages = [
+  "munchy",
+  "munchy_cli",
+  "riverhog_age",
+  "riverhog_api",
+  "riverhog_cli",
+  "riverhog_core",
+  "djdan",
+]
