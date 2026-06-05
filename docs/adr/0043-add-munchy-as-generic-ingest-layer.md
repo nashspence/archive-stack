@@ -29,12 +29,15 @@ The public Riverhog repository may contain:
 - `services/munchy-watchdir-collector` when the generic watch-directory collector is added.
 - fake examples under `config/examples/munchy`.
 
-The public repository must not contain real family devices, real hostnames, real rclone remotes,
+The public repository must not contain real personal devices, real hostnames, real rclone remotes,
 Home Assistant recipients, SMB paths, or deployment overlays for a specific machine.
 
 Munchy jobs require uploaded paths to be shaped as `<profile-group>/<file>`. Profile-group names
 are the stable boundary between device-specific private configuration and generic public encode
 behavior.
+
+Munchy operator webhook payloads identify themselves with `source = "munchy"` and the canonical
+emoji `🤤`.
 
 ## Consequences
 
@@ -43,5 +46,4 @@ after it has produced a finished collection, but Riverhog does not orchestrate p
 offload or GPU transcodes.
 
 Private deployments can install or wrap `munchy` with their own convenience commands without
-publishing private topology. The existing private family configuration can move gradually while the
-legacy local workflow remains isolated.
+publishing private topology.

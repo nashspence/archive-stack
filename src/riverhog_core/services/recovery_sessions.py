@@ -534,6 +534,7 @@ class SqlAlchemyRecoverySessionService:
     def repair_missing_pinned_hot_files(self, *, limit: int = 100) -> int:
         if limit < 1 or self._hot_store is None:
             return 0
+        hot_store = self._hot_store
 
         glacier_restore_paths: dict[str, set[str]] = {}
         operator_fetches = 0
@@ -552,7 +553,7 @@ class SqlAlchemyRecoverySessionService:
                     if missing_count >= limit:
                         break
                     if _hot_file_available_for_audit(
-                        self._hot_store,
+                        hot_store,
                         file_record,
                         selected_count=len(selected),
                         listed_hot_files=listed_hot_files,
@@ -598,7 +599,7 @@ class SqlAlchemyRecoverySessionService:
 
         if restored_collections:
             with session_scope(self._session_factory) as session:
-                _sync_pin_states_after_hot_repair(session, hot_store=self._hot_store)
+                _sync_pin_states_after_hot_repair(session, hot_store=hot_store)
         return missing_count
 
     def _restore_missing_pinned_files_from_glacier(
@@ -607,6 +608,9 @@ class SqlAlchemyRecoverySessionService:
         collection_id: str,
         paths: Sequence[str],
     ) -> bool:
+        if self._hot_store is None:
+            return False
+        hot_store = self._hot_store
         if not paths:
             return False
         try:
@@ -625,7 +629,7 @@ class SqlAlchemyRecoverySessionService:
             if summary.state == RecoverySessionState.READY:
                 missing_paths = _missing_hot_paths(
                     self._session_factory,
-                    self._hot_store,
+                    hot_store,
                     collection_id=collection_id,
                     paths=paths,
                 )

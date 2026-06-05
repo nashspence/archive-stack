@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
@@ -413,14 +413,16 @@ def _recovery_operator_guidance(*, stage: str, recovery_type: str) -> tuple[str,
 def _operator_notification_contract() -> dict[str, Any]:
     for path in _operator_notification_contract_paths():
         if path.exists():
-            return json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            return payload if isinstance(payload, dict) else {}
     try:
         resource = resources.files("riverhog_core").joinpath(
             "contracts",
             "webhooks",
             "operator-notifications.v1.json",
         )
-        return json.loads(resource.read_text(encoding="utf-8"))
+        payload = json.loads(resource.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
     except (FileNotFoundError, ModuleNotFoundError, json.JSONDecodeError):
         return {}
 
@@ -555,7 +557,7 @@ def _target_subject(target: str) -> str:
     return leaf
 
 
-def _image_subject(images: list[dict[str, object]]) -> str:
+def _image_subject(images: Sequence[Mapping[str, object]]) -> str:
     if not images:
         return "disc image"
     first = images[0]
@@ -568,7 +570,7 @@ def _image_subject(images: list[dict[str, object]]) -> str:
 def _recovery_subject(
     *,
     session_id: str,
-    images: list[dict[str, str]],
+    images: Sequence[Mapping[str, object]],
     collections: list[dict[str, str]],
 ) -> str:
     if collections:
@@ -594,7 +596,7 @@ def _collection_notification(
 def _images_ready_notification(
     *,
     event: str,
-    images: list[dict[str, object]],
+    images: Sequence[Mapping[str, object]],
 ) -> dict[str, str]:
     return _canonical_notification_from_contract(
         event=event,
@@ -621,7 +623,7 @@ def _recovery_notification(
     event: str,
     recovery_type: str,
     session_id: str,
-    images: list[dict[str, str]],
+    images: Sequence[Mapping[str, object]],
     collections: list[dict[str, str]],
 ) -> dict[str, str]:
     subject = _recovery_subject(
