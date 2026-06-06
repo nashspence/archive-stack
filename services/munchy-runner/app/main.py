@@ -126,6 +126,10 @@ ORPHAN_INPUT_UPLOAD_TTL_HOURS = float(
 )
 CLEANUP_INTERVAL_SECONDS = int(os.getenv("MUNCHY_RUNNER_CLEANUP_INTERVAL_SECONDS", "3600"))
 EAGER_ARCHIVE_BATCH_FILES = max(1, int(os.getenv("MUNCHY_RUNNER_EAGER_ARCHIVE_BATCH_FILES", "32")))
+EAGER_ARCHIVE_PIPELINE_BATCHES = max(
+    1,
+    int(os.getenv("MUNCHY_RUNNER_EAGER_ARCHIVE_PIPELINE_BATCHES", "2")),
+)
 EAGER_ARCHIVE_WAIT_SECONDS = max(
     1.0,
     float(os.getenv("MUNCHY_RUNNER_EAGER_ARCHIVE_WAIT_SECONDS", "5")),
@@ -1711,8 +1715,8 @@ def manager_request(
     return data
 
 
-def acquire_gpu(job_id: str) -> str:
-    token = ""
+def acquire_gpu(job_id: str, lease_token: str = "") -> str:
+    token = lease_token
     deadline = time.monotonic() + GPU_LEASE_TTL_S
     while time.monotonic() < deadline:
         raise_if_job_cancelled(job_id)
@@ -1739,13 +1743,31 @@ def acquire_gpu(job_id: str) -> str:
     raise RuntimeError("timed out waiting for gpu lease")
 
 
-def release_gpu(token: str) -> None:
+def release_gpu(token: str) -> bool:
     if not token:
-        return
+        return True
     try:
         manager_request("POST", "/release", {"lease_token": token, "stop": False})
+        return True
     except Exception:
         log.exception("failed to release gpu lease")
+        return False
+
+
+def acquire_job_gpu(job: dict[str, Any]) -> str:
+    token = acquire_gpu(str(job["job_id"]), str(job.get("gpu_lease_token") or ""))
+    job["gpu_lease_token"] = token
+    job["gpu_lease_acquired_at"] = now_iso()
+    save_job(job)
+    return token
+
+
+def release_job_gpu(job: dict[str, Any], token: str) -> None:
+    if release_gpu(token):
+        if job.get("gpu_lease_token") == token:
+            job.pop("gpu_lease_token", None)
+            job["gpu_lease_released_at"] = now_iso()
+            save_job(job)
 
 
 def gpu_target_request(
@@ -2025,6 +2047,36 @@ def eager_file_encoded(job: dict[str, Any], rel_path: str) -> bool:
     return isinstance(item, dict) and item.get("state") == "encoded"
 
 
+def eager_file_claimed(job: dict[str, Any], rel_path: str) -> bool:
+    files = eager_archive_state(job).setdefault("files", {})
+    item = files.get(rel_path)
+    return isinstance(item, dict) and item.get("state") in {"encoding", "encoded"}
+
+
+def mark_eager_file_encoding(
+    job: dict[str, Any],
+    file_state: dict[str, Any],
+    *,
+    group_name: str,
+    group_config: dict[str, Any],
+    archive_dir: Path,
+    batch_id: str,
+) -> None:
+    output = archive_output_for_upload_file(
+        file_state,
+        group_name=group_name,
+        group_config=group_config,
+        archive_dir=archive_dir,
+    )
+    files = eager_archive_state(job).setdefault("files", {})
+    files[str(file_state["path"])] = {
+        "state": "encoding",
+        "started_at": now_iso(),
+        "batch_id": batch_id,
+        "output": str(output),
+    }
+
+
 def mark_eager_file_encoded(
     job: dict[str, Any],
     file_state: dict[str, Any],
@@ -2120,6 +2172,42 @@ def mark_existing_eager_outputs(
     return upload, changed or bool(consume_paths)
 
 
+def claim_running_eager_batch_files(
+    job: dict[str, Any],
+    upload: dict[str, Any],
+    groups: dict[str, dict[str, Any]],
+    archive_dir: Path,
+) -> bool:
+    by_path = {str(file_state["path"]): file_state for file_state in upload.get("files", [])}
+    changed = False
+    for batch in running_eager_batches(job):
+        group_name = str(batch.get("group") or "")
+        group_config = groups.get(group_name)
+        if group_config is None:
+            continue
+        batch_id = str(batch.get("batch_id") or "")
+        if not batch_id:
+            continue
+        for rel_path in [str(path) for path in batch.get("paths") or []]:
+            if eager_file_claimed(job, rel_path):
+                continue
+            file_state = by_path.get(rel_path)
+            if file_state is None:
+                continue
+            mark_eager_file_encoding(
+                job,
+                file_state,
+                group_name=group_name,
+                group_config=group_config,
+                archive_dir=archive_dir,
+                batch_id=batch_id,
+            )
+            changed = True
+    if changed:
+        save_job(job)
+    return changed
+
+
 def eager_groups_complete(
     job: dict[str, Any],
     upload: dict[str, Any],
@@ -2143,7 +2231,7 @@ def ready_eager_files(
         ready: list[dict[str, Any]] = []
         for file_state in upload_files_for_groups(upload, {group_name}):
             rel_path = str(file_state["path"])
-            if eager_file_encoded(job, rel_path):
+            if eager_file_claimed(job, rel_path):
                 continue
             output = archive_output_for_upload_file(
                 file_state,
@@ -2177,11 +2265,18 @@ def ready_eager_files(
 
 
 def running_eager_batch(job: dict[str, Any]) -> dict[str, Any] | None:
+    batches = running_eager_batches(job)
+    return batches[0] if batches else None
+
+
+def running_eager_batches(job: dict[str, Any]) -> list[dict[str, Any]]:
     batches = eager_archive_state(job).setdefault("batches", {})
-    for batch in batches.values():
-        if isinstance(batch, dict) and batch.get("state") == "running":
-            return batch
-    return None
+    running = [
+        batch
+        for batch in batches.values()
+        if isinstance(batch, dict) and batch.get("state") == "running"
+    ]
+    return sorted(running, key=lambda batch: str(batch.get("started_at") or ""))
 
 
 def next_eager_batch_id(job: dict[str, Any], group_name: str, paths: list[str]) -> str:
@@ -2257,7 +2352,31 @@ def finish_eager_batch(
     return upload
 
 
-def run_eager_batch(
+def submit_eager_gpu_job(
+    job: dict[str, Any],
+    batch: dict[str, Any],
+    *,
+    force: bool = False,
+) -> bool:
+    payload = batch.get("payload")
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"eager batch is missing payload: {batch.get('batch_id')}")
+    last_submitted = safe_parse_iso(batch.get("last_submitted_at"))
+    if (
+        not force
+        and last_submitted is not None
+        and (datetime.now(UTC) - last_submitted).total_seconds()
+        < max(30.0, GPU_REPOST_SECONDS)
+    ):
+        return False
+    start_gpu_job(payload)
+    batch["last_submitted_at"] = now_iso()
+    batch["submit_count"] = int(batch.get("submit_count") or 0) + 1
+    save_job(job)
+    return True
+
+
+def start_eager_batch(
     job: dict[str, Any],
     upload: dict[str, Any],
     *,
@@ -2269,6 +2388,11 @@ def run_eager_batch(
     job_id = str(job["job_id"])
     paths = [str(file_state["path"]) for file_state in file_states]
     batch_id = next_eager_batch_id(job, group_name, paths)
+    batch_bytes = sum(int(file_state["bytes"]) for file_state in file_states)
+    storage_hint = input_upload_storage_hint(upload)
+    required_gpu_free = gpu_scratch_required_bytes(batch_bytes, storage_hint) + MIN_FREE_BYTES
+    require_free_space(GPU_RUNTIME_DIR, required_gpu_free, label="gpu eager scratch")
+
     batch_root = eager_batch_input_root(job_id, batch_id)
     if batch_root.exists():
         shutil.rmtree(batch_root, ignore_errors=True)
@@ -2293,31 +2417,30 @@ def run_eager_batch(
         "started_at": now_iso(),
     }
     eager_archive_state(job).setdefault("batches", {})[batch_id] = batch
-    job["phase"] = f"gpu-eager:{group_name}:{len(paths)}"
+    for file_state in file_states:
+        mark_eager_file_encoding(
+            job,
+            file_state,
+            group_name=group_name,
+            group_config=group_config,
+            archive_dir=archive_dir,
+            batch_id=batch_id,
+        )
+    job["phase"] = (
+        f"gpu-eager:{group_name}:pipeline={len(running_eager_batches(job))}/"
+        f"{EAGER_ARCHIVE_PIPELINE_BATCHES}"
+    )
     save_job(job)
 
-    batch_bytes = sum(int(file_state["bytes"]) for file_state in file_states)
-    storage_hint = input_upload_storage_hint(upload)
-    required_gpu_free = gpu_scratch_required_bytes(batch_bytes, storage_hint) + MIN_FREE_BYTES
-    require_free_space(GPU_RUNTIME_DIR, required_gpu_free, label="gpu eager scratch")
-
-    token = acquire_gpu(job_id)
     try:
-        start_gpu_job(payload)
-        gpu_result = wait_gpu_job(str(payload["job_id"]), gpu_payload=payload, job=job)
-    finally:
-        release_gpu(token)
-    return finish_eager_batch(
-        job,
-        upload,
-        batch,
-        groups=dict(job["groups"]),
-        archive_dir=archive_dir,
-        gpu_result=gpu_result,
-    )
+        submit_eager_gpu_job(job, batch, force=True)
+    except Exception as exc:
+        notify_job_issue(job, component="gpu_target", error=exc)
+        log.warning("gpu target eager submit failed; retrying: %s", exc)
+    return upload
 
 
-def resume_running_eager_batch(
+def poll_eager_batch(
     job: dict[str, Any],
     upload: dict[str, Any],
     batch: dict[str, Any],
@@ -2327,16 +2450,35 @@ def resume_running_eager_batch(
     payload = batch.get("payload")
     if not isinstance(payload, dict):
         raise RuntimeError(f"eager batch is missing payload: {batch.get('batch_id')}")
-    job_id = str(job["job_id"])
-    job["phase"] = f"gpu-eager-resume:{batch.get('group')}"
-    save_job(job)
-    token = acquire_gpu(job_id)
+    gpu_job_id = str(batch.get("gpu_job_id") or payload.get("job_id"))
     try:
-        start_gpu_job(payload)
-        gpu_result = wait_gpu_job(str(payload["job_id"]), gpu_payload=payload, job=job)
-    finally:
-        release_gpu(token)
-    return finish_eager_batch(job, upload, batch, groups, archive_dir, gpu_result)
+        status = gpu_target_request("GET", f"/v1/jobs/{gpu_job_id}")
+    except Exception as exc:
+        notify_job_issue(job, component="gpu_target", error=exc)
+        log.warning("gpu target status check failed for eager batch %s; retrying: %s", gpu_job_id, exc)
+        try:
+            submit_eager_gpu_job(job, batch, force=True)
+        except Exception as start_exc:
+            notify_job_issue(job, component="gpu_target", error=start_exc)
+            log.warning("gpu target eager re-submit failed; retrying: %s", start_exc)
+        return upload
+
+    state = str(status.get("state") or "")
+    batch["gpu_state"] = state
+    batch["last_polled_at"] = now_iso()
+    if state == "succeeded":
+        return finish_eager_batch(job, upload, batch, groups, archive_dir, status)
+    if state == "failed":
+        if status.get("error_code") == "target_restarted":
+            log.warning("gpu target restarted during eager batch %s; re-submitting job", gpu_job_id)
+            submit_eager_gpu_job(job, batch, force=True)
+            return upload
+        error = f"gpu eager batch failed: {status.get('error')}"
+        notify_job_issue(job, component="encoding", error=error, severity="critical")
+        raise EncodingFailed(error)
+    submit_eager_gpu_job(job, batch)
+    save_job(job)
+    return upload
 
 
 def run_eager_archive_groups(
@@ -2347,28 +2489,59 @@ def run_eager_archive_groups(
     archive_dir: Path,
 ) -> dict[str, Any]:
     job_id = str(job["job_id"])
-    while True:
-        raise_if_job_cancelled(job_id)
-        upload = load_input_upload(str(job["input_upload_id"]))
-        upload, _ = mark_existing_eager_outputs(job, upload, groups, eager_groups, archive_dir)
-        running = running_eager_batch(job)
-        if running is not None:
-            upload = resume_running_eager_batch(job, upload, running, groups, archive_dir)
-            continue
-        if eager_groups_complete(job, upload, eager_groups):
-            eager = eager_archive_state(job)
-            eager["completed_at"] = eager.get("completed_at") or now_iso()
-            save_job(job)
-            return upload
-        ready = ready_eager_files(
-            job,
-            upload,
-            groups,
-            eager_groups,
-            archive_dir,
-            limit=EAGER_ARCHIVE_BATCH_FILES,
-        )
-        if ready is None:
+    token = ""
+    try:
+        while True:
+            raise_if_job_cancelled(job_id)
+            upload = load_input_upload(str(job["input_upload_id"]))
+            upload, _ = mark_existing_eager_outputs(job, upload, groups, eager_groups, archive_dir)
+            claim_running_eager_batch_files(job, upload, groups, archive_dir)
+            running = running_eager_batches(job)
+            if running and not token:
+                token = acquire_job_gpu(job)
+            for batch in running:
+                upload = poll_eager_batch(job, upload, batch, groups, archive_dir)
+            if eager_groups_complete(job, upload, eager_groups):
+                eager = eager_archive_state(job)
+                eager["completed_at"] = eager.get("completed_at") or now_iso()
+                save_job(job)
+                return upload
+
+            while len(running_eager_batches(job)) < EAGER_ARCHIVE_PIPELINE_BATCHES:
+                ready = ready_eager_files(
+                    job,
+                    upload,
+                    groups,
+                    eager_groups,
+                    archive_dir,
+                    limit=EAGER_ARCHIVE_BATCH_FILES,
+                )
+                if ready is None:
+                    break
+                if not token:
+                    token = acquire_job_gpu(job)
+                group_name, file_states = ready
+                upload = start_eager_batch(
+                    job,
+                    upload,
+                    group_name=group_name,
+                    group_config=groups[group_name],
+                    file_states=file_states,
+                    archive_dir=archive_dir,
+                )
+
+            running = running_eager_batches(job)
+            if running:
+                job["phase"] = (
+                    f"gpu-eager:pipeline={len(running)}/{EAGER_ARCHIVE_PIPELINE_BATCHES}"
+                )
+                save_job(job)
+                retry_sleep(EAGER_ARCHIVE_WAIT_SECONDS, job_id=job_id)
+                continue
+
+            if token:
+                release_job_gpu(job, token)
+                token = ""
             progress = upload_group_progress(upload, eager_groups)
             job["input_upload_progress"] = progress
             job["phase"] = (
@@ -2376,16 +2549,9 @@ def run_eager_archive_groups(
             )
             save_job(job)
             retry_sleep(EAGER_ARCHIVE_WAIT_SECONDS, job_id=job_id)
-            continue
-        group_name, file_states = ready
-        upload = run_eager_batch(
-            job,
-            upload,
-            group_name=group_name,
-            group_config=groups[group_name],
-            file_states=file_states,
-            archive_dir=archive_dir,
-        )
+    finally:
+        if token:
+            release_job_gpu(job, token)
 
 
 def run_job(job_id: str) -> None:
@@ -2473,7 +2639,7 @@ def run_job(job_id: str) -> None:
                 gpu_work.append((str(group_name), group_config, tasks))
 
         if gpu_work:
-            token = acquire_gpu(job_id)
+            token = acquire_job_gpu(job)
             try:
                 for group_name, group_config, gpu_tasks in gpu_work:
                     raise_if_job_cancelled(job_id)
@@ -2508,7 +2674,7 @@ def run_job(job_id: str) -> None:
                         job["gpu_result"] = {"state": "succeeded", "groups": gpu_results}
                     save_job(job)
             finally:
-                release_gpu(token)
+                release_job_gpu(job, token)
         raise_if_job_cancelled(job_id)
 
         workflow_mode = str(job.get("workflow_mode") or "archive")
@@ -2680,6 +2846,7 @@ def capabilities() -> dict[str, Any]:
             == path_device(GPU_RUNTIME_DIR),
             "eager_archive_only_encoding": True,
             "eager_archive_batch_files": EAGER_ARCHIVE_BATCH_FILES,
+            "eager_archive_pipeline_batches": EAGER_ARCHIVE_PIPELINE_BATCHES,
             "scratch_extra_multipliers": {
                 "review_only": REVIEW_SCRATCH_EXTRA_MULTIPLIER,
                 "collection_preview": COLLECTION_PREVIEW_SCRATCH_EXTRA_MULTIPLIER,

@@ -48,10 +48,16 @@ Important environment variables:
 - `MUNCHY_RUNNER_GPU_MANAGER_URL`
 - `MUNCHY_RUNNER_GPU_TARGET_URL`
 - `MUNCHY_RUNNER_MIN_FREE_BYTES`
+- `MUNCHY_RUNNER_EAGER_ARCHIVE_PIPELINE_BATCHES`
 - `MUNCHY_RUNNER_REVIEW_UPLOAD_ENABLED`
 - `MUNCHY_RUNNER_RIVERHOG_UPLOAD_ENABLED`
 - `MUNCHY_RUNNER_NOTIFY_ENABLED`
 - `MUNCHY_RUNNER_NOTIFY_WEBHOOKS`
+
+Archive-only profile groups are encoded eagerly as soon as files are uploaded.
+`MUNCHY_RUNNER_EAGER_ARCHIVE_PIPELINE_BATCHES` controls how many eager archive
+batches may be queued/running on the GPU target at once; the target still owns
+the actual encode concurrency limit.
 
 Webhook payloads identify themselves with `source = "munchy"` and the canonical
 emoji `🤤`.
