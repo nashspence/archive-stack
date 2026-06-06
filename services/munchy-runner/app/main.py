@@ -2126,6 +2126,23 @@ def eager_file_claimed(job: dict[str, Any], rel_path: str) -> bool:
     return isinstance(item, dict) and item.get("state") in {"encoding", "encoded", "failed"}
 
 
+def format_log_bytes(value: int | str | None) -> str:
+    try:
+        num = int(value or 0)
+    except (TypeError, ValueError):
+        num = 0
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    amount = float(num)
+    unit = units[0]
+    for unit in units:
+        if amount < 1024 or unit == units[-1]:
+            break
+        amount /= 1024
+    if unit == "B":
+        return f"{num} B"
+    return f"{amount:.2f} {unit}"
+
+
 def mark_eager_file_encoding(
     job: dict[str, Any],
     file_state: dict[str, Any],
@@ -2135,6 +2152,8 @@ def mark_eager_file_encoding(
     archive_dir: Path,
     batch_id: str,
 ) -> None:
+    rel_path = str(file_state["path"])
+    started_at = now_iso()
     output = archive_output_for_upload_file(
         file_state,
         group_name=group_name,
@@ -2142,12 +2161,21 @@ def mark_eager_file_encoding(
         archive_dir=archive_dir,
     )
     files = eager_archive_state(job).setdefault("files", {})
-    files[str(file_state["path"])] = {
+    files[rel_path] = {
         "state": "encoding",
-        "started_at": now_iso(),
+        "started_at": started_at,
         "batch_id": batch_id,
         "output": str(output),
     }
+    log.info(
+        "encoding started job=%s group=%s batch=%s path=%s input=%s output=%s",
+        job.get("job_id"),
+        group_name,
+        batch_id,
+        rel_path,
+        format_log_bytes(file_state.get("bytes")),
+        output,
+    )
 
 
 def mark_eager_file_encoded(
@@ -2160,6 +2188,8 @@ def mark_eager_file_encoded(
     batch_id: str | None,
     detected_existing: bool = False,
 ) -> None:
+    rel_path = str(file_state["path"])
+    encoded_at = now_iso()
     output = archive_output_for_upload_file(
         file_state,
         group_name=group_name,
@@ -2167,13 +2197,30 @@ def mark_eager_file_encoded(
         archive_dir=archive_dir,
     )
     files = eager_archive_state(job).setdefault("files", {})
-    files[str(file_state["path"])] = {
+    previous = files.get(rel_path) if isinstance(files.get(rel_path), dict) else {}
+    started = safe_parse_iso(previous.get("started_at")) if isinstance(previous, dict) else None
+    elapsed = ""
+    if started is not None:
+        elapsed = f" elapsed={max(0.0, (datetime.now(UTC) - started).total_seconds()):.1f}s"
+    output_bytes = output.stat().st_size if output.exists() else 0
+    files[rel_path] = {
         "state": "encoded",
-        "encoded_at": now_iso(),
+        "encoded_at": encoded_at,
         "batch_id": batch_id,
         "output": str(output),
         "detected_existing": detected_existing,
     }
+    log.info(
+        "encoding finished job=%s group=%s batch=%s path=%s output=%s output_bytes=%s%s%s",
+        job.get("job_id"),
+        group_name,
+        batch_id or "",
+        rel_path,
+        output,
+        format_log_bytes(output_bytes),
+        elapsed,
+        " detected_existing=true" if detected_existing else "",
+    )
 
 
 def consume_input_upload_file(upload: dict[str, Any], file_state: dict[str, Any]) -> bool:
