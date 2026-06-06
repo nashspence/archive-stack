@@ -160,7 +160,29 @@ def test_client_preflight_failed_notification_uses_runner_defaults(
     assert calls[0]["recipients"] == ["operator"]
     assert calls[0]["job"]["phase"] == "preflight_failed"
     assert calls[0]["extra"]["component"] == "preflight"
+    assert calls[0]["extra"]["error"] == "bad atom (bad.mp4)"
     assert calls[0]["extra"]["failed_file_count"] == 1
+
+
+def test_preflight_issue_notification_error_keeps_truncated_filename_at_end(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    filename = "front-yard-camera-" + ("very-long-" * 12) + "clip.mp4"
+
+    error = runner.preflight_issue_notification_error(
+        path=f"reolink-video/2026/06/06/{filename}",
+        issue_message=(
+            "ffprobe failed because the MP4 atom table points past the end of the "
+            "available local file"
+        ),
+    )
+
+    assert len(error) <= 120
+    assert error.startswith("ffprobe failed because")
+    assert error.endswith("clip.mp4)")
+    assert " (..." in error
 
 
 def test_ready_eager_files_skips_claimed_encoding_files(

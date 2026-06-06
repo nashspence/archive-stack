@@ -321,7 +321,7 @@ def test_build_munchy_job_payload_uses_operator_notification_contract() -> None:
         recipient="operator",
         details={
             "component": "preflight",
-            "error": "camera/bad.mp4: atom extends past EOF",
+            "error": "atom extends past EOF (bad.mp4)",
             "failed_file_count": 1,
         },
     )
@@ -336,7 +336,7 @@ def test_build_munchy_job_payload_uses_operator_notification_contract() -> None:
     assert payload["component"] == "preflight"
     assert payload["notification"] == {
         "title": "🤤 backyard-collection-preview-q49",
-        "body": "camera/bad.mp4: atom extends past EOF",
+        "body": "atom extends past EOF (bad.mp4)",
     }
 
 

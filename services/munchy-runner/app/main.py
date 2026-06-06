@@ -2948,6 +2948,37 @@ def capabilities() -> dict[str, Any]:
     }
 
 
+def _tail_truncate(value: str, limit: int) -> str:
+    normalized = " ".join(str(value).split())
+    if len(normalized) <= limit:
+        return normalized
+    if limit <= 3:
+        return normalized[-limit:]
+    return "..." + normalized[-(limit - 3) :]
+
+
+def _head_truncate(value: str, limit: int) -> str:
+    normalized = " ".join(str(value).split())
+    if len(normalized) <= limit:
+        return normalized
+    if limit <= 3:
+        return normalized[:limit]
+    return f"{normalized[: limit - 3].rstrip()}..."
+
+
+def preflight_issue_notification_error(
+    *,
+    path: str,
+    issue_message: str,
+    limit: int = 120,
+    filename_limit: int = 48,
+) -> str:
+    filename = path.rstrip("/").rsplit("/", 1)[-1] or path
+    suffix = f" ({_tail_truncate(filename, filename_limit)})"
+    issue_limit = max(1, limit - len(suffix))
+    return f"{_head_truncate(issue_message, issue_limit)}{suffix}"
+
+
 @app.post("/v1/notifications/preflight-failed", status_code=202)
 def notify_preflight_failed(req: ClientPreflightFailedNotificationRequest) -> dict[str, Any]:
     config = req.notify.model_dump()
@@ -2966,7 +2997,10 @@ def notify_preflight_failed(req: ClientPreflightFailedNotificationRequest) -> di
     first_issue = ""
     if req.failed_files and req.failed_files[0].issues:
         first = req.failed_files[0]
-        first_issue = f"{first.path}: {first.issues[0].message}"
+        first_issue = preflight_issue_notification_error(
+            path=first.path,
+            issue_message=first.issues[0].message,
+        )
     extra: dict[str, Any] = {
         "component": "preflight",
         "error": first_issue or req.message,
