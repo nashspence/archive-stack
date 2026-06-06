@@ -63,6 +63,8 @@ def test_capabilities_advertise_munchy_profile_target(tmp_path: Path, monkeypatc
     assert capabilities["storage"]["eager_archive_pipeline_batches"] == 3
     assert capabilities["notify"]["default_enabled"] is False
     assert capabilities["notify"]["default_recipients"] == []
+    assert capabilities["notify"]["client_preflight_failed"] is True
+    assert capabilities["operations"]["notify_preflight_failed"] is True
 
 
 def test_notification_defaults_come_from_runner_environment(
@@ -106,6 +108,52 @@ def test_notification_payload_identifies_munchy_with_canonical_emoji(
     assert payload["source"] == "munchy"
     assert payload["emoji"] == "🤤"
     assert payload["event"] == "job.received"
+
+
+def test_client_preflight_failed_notification_uses_runner_defaults(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("MUNCHY_RUNNER_NOTIFY_ENABLED", "1")
+    monkeypatch.setenv("MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS", "operator")
+    runner = load_runner(tmp_path, monkeypatch)
+    calls: list[dict[str, object]] = []
+
+    def fake_send_notify_deliveries(job, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append({"job": job, **kwargs})
+        return [{"recipient": "operator", "status": 200}]
+
+    monkeypatch.setattr(runner, "send_notify_deliveries", fake_send_notify_deliveries)
+
+    result = runner.notify_preflight_failed(
+        runner.ClientPreflightFailedNotificationRequest(
+            message="Local media preflight failed for camera.",
+            device_id="camera",
+            workflow_mode="collection_preview",
+            profile_group="camera-video",
+            collection_slug="camera-preview",
+            collection_timestamp="20260606T120000Z",
+            upload_id="upload-1",
+            job_id="job-1",
+            files=2,
+            failed_file_count=1,
+            failed_files=[
+                {
+                    "path": "camera-video/bad.mp4",
+                    "source": "/source/bad.mp4",
+                    "issues": [{"code": "mp4_atom_extends_past_eof", "message": "bad atom"}],
+                }
+            ],
+        )
+    )
+
+    assert result["status"] == "attempted"
+    assert calls[0]["event"] == "job.issue"
+    assert calls[0]["severity"] == "error"
+    assert calls[0]["recipients"] == ["operator"]
+    assert calls[0]["job"]["phase"] == "preflight_failed"
+    assert calls[0]["extra"]["component"] == "preflight"
+    assert calls[0]["extra"]["failed_file_count"] == 1
 
 
 def test_ready_eager_files_skips_claimed_encoding_files(

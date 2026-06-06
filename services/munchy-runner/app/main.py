@@ -355,6 +355,46 @@ class NotifyConfig(BaseModel):
         return self
 
 
+class ClientPreflightIssue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=1, max_length=120)
+    message: str = Field(min_length=1, max_length=1000)
+
+
+class ClientPreflightFailedFile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=4096)
+    source: str = Field(min_length=1, max_length=4096)
+    issues: list[ClientPreflightIssue] = Field(default_factory=list)
+
+
+class ClientPreflightFailedNotificationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["family-archive"] = "family-archive"
+    severity: Literal["warning", "error", "critical"] = "error"
+    message: str = Field(min_length=1, max_length=1000)
+    device_id: str = Field(min_length=1, max_length=180)
+    workflow_mode: WorkflowMode
+    profile_group: str = Field(min_length=1, max_length=180)
+    collection_slug: str = Field(min_length=1, max_length=180)
+    collection_timestamp: str | None = Field(default=None, min_length=1, max_length=64)
+    upload_id: str | None = Field(default=None, min_length=1, max_length=180)
+    job_id: str | None = Field(default=None, min_length=1, max_length=180)
+    files: int = Field(ge=0)
+    failed_file_count: int = Field(ge=1)
+    failed_files: list[ClientPreflightFailedFile] = Field(default_factory=list)
+    elapsed_seconds: float | None = Field(default=None, ge=0)
+    notify: NotifyConfig = Field(default_factory=NotifyConfig)
+
+    @field_validator("profile_group")
+    @classmethod
+    def validate_profile_group(cls, value: str) -> str:
+        return validate_profile_group_name(value)
+
+
 class ArchiveAudioProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1534,49 +1574,19 @@ def notify_payload(
     return payload
 
 
-def notify_job_event(
+def notify_recipients(config: dict[str, Any]) -> list[str]:
+    return [str(item) for item in config.get("recipients") or [] if str(item).strip()]
+
+
+def send_notify_deliveries(
     job: dict[str, Any],
+    *,
     event: NotifyEvent,
     message: str,
-    *,
-    severity: str = "info",
-    extra: dict[str, Any] | None = None,
-    dedupe_key: str | None = None,
-    fingerprint: str | None = None,
-) -> dict[str, Any] | None:
-    config = job.get("notify") if isinstance(job.get("notify"), dict) else {}
-    if not NOTIFY_ENABLED or not config.get("enabled"):
-        return None
-    events = config.get("events") or DEFAULT_NOTIFY_EVENTS
-    if event not in events:
-        return None
-    recipients = [str(item) for item in config.get("recipients") or [] if str(item).strip()]
-    if not recipients:
-        return None
-
-    key = dedupe_key or event
-    notifications = job.setdefault("notifications", {})
-    event_state = notifications.setdefault(key, {})
-    now = datetime.now(UTC)
-    now_text = now.isoformat().replace("+00:00", "Z")
-
-    if event == "job.issue":
-        last_fingerprint = str(event_state.get("fingerprint") or "")
-        last_attempt = safe_parse_iso(event_state.get("last_attempt_at"))
-        if (
-            fingerprint
-            and fingerprint == last_fingerprint
-            and last_attempt is not None
-            and (now - last_attempt).total_seconds() < NOTIFY_ISSUE_REPEAT_SECONDS
-        ):
-            return {"status": "suppressed", "reason": "issue_repeat_limit"}
-        event_state["fingerprint"] = fingerprint or ""
-        event_state["last_attempt_at"] = now_text
-    elif event_state.get("sent_at"):
-        return {"status": "suppressed", "reason": "already_sent"}
-    else:
-        event_state["last_attempt_at"] = now_text
-
+    severity: str,
+    recipients: list[str],
+    extra: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
     deliveries: list[dict[str, Any]] = []
     for recipient in recipients:
         url = notify_webhook_url(recipient)
@@ -1603,6 +1613,60 @@ def notify_job_event(
         except Exception as exc:
             deliveries.append({"recipient": recipient, "status": "error", "error": str(exc)})
             log.warning("notification webhook for %s failed: %s", recipient, exc)
+    return deliveries
+
+
+def notify_job_event(
+    job: dict[str, Any],
+    event: NotifyEvent,
+    message: str,
+    *,
+    severity: str = "info",
+    extra: dict[str, Any] | None = None,
+    dedupe_key: str | None = None,
+    fingerprint: str | None = None,
+) -> dict[str, Any] | None:
+    config = job.get("notify") if isinstance(job.get("notify"), dict) else {}
+    if not NOTIFY_ENABLED or not config.get("enabled"):
+        return None
+    events = config.get("events") or DEFAULT_NOTIFY_EVENTS
+    if event not in events:
+        return None
+    recipients = notify_recipients(config)
+    if not recipients:
+        return None
+
+    key = dedupe_key or event
+    notifications = job.setdefault("notifications", {})
+    event_state = notifications.setdefault(key, {})
+    now = datetime.now(UTC)
+    now_text = now.isoformat().replace("+00:00", "Z")
+
+    if event == "job.issue":
+        last_fingerprint = str(event_state.get("fingerprint") or "")
+        last_attempt = safe_parse_iso(event_state.get("last_attempt_at"))
+        if (
+            fingerprint
+            and fingerprint == last_fingerprint
+            and last_attempt is not None
+            and (now - last_attempt).total_seconds() < NOTIFY_ISSUE_REPEAT_SECONDS
+        ):
+            return {"status": "suppressed", "reason": "issue_repeat_limit"}
+        event_state["fingerprint"] = fingerprint or ""
+        event_state["last_attempt_at"] = now_text
+    elif event_state.get("sent_at"):
+        return {"status": "suppressed", "reason": "already_sent"}
+    else:
+        event_state["last_attempt_at"] = now_text
+
+    deliveries = send_notify_deliveries(
+        job,
+        event=event,
+        message=message,
+        severity=severity,
+        recipients=recipients,
+        extra=extra,
+    )
 
     event_state["deliveries"] = deliveries
     if any(
@@ -2873,6 +2937,7 @@ def capabilities() -> dict[str, Any]:
             "default_enabled": DEFAULT_NOTIFY_ENABLED,
             "default_recipients": list(DEFAULT_NOTIFY_RECIPIENTS),
             "events": DEFAULT_NOTIFY_EVENTS,
+            "client_preflight_failed": True,
             "webhook_config": [
                 "MUNCHY_RUNNER_NOTIFY_WEBHOOKS",
                 "MUNCHY_RUNNER_NOTIFY_WEBHOOK_<RECIPIENT>",
@@ -2883,10 +2948,62 @@ def capabilities() -> dict[str, Any]:
         "operations": {
             "cancel_job": True,
             "delete_input_upload": True,
+            "notify_preflight_failed": True,
             "pause_scheduler": True,
             "resume_scheduler": True,
         },
     }
+
+
+@app.post("/v1/notifications/preflight-failed", status_code=202)
+def notify_preflight_failed(req: ClientPreflightFailedNotificationRequest) -> dict[str, Any]:
+    config = req.notify.model_dump()
+    if not NOTIFY_ENABLED or not config.get("enabled"):
+        return {"status": "suppressed", "reason": "notifications_disabled"}
+    recipients = notify_recipients(config)
+    if not recipients:
+        return {"status": "suppressed", "reason": "no_recipients"}
+    job = {
+        "job_id": req.job_id or "",
+        "collection_slug": req.collection_slug,
+        "collection_timestamp": req.collection_timestamp or "",
+        "phase": "preflight_failed",
+        "state": "failed",
+    }
+    first_issue = ""
+    if req.failed_files and req.failed_files[0].issues:
+        first = req.failed_files[0]
+        first_issue = f"{first.path}: {first.issues[0].message}"
+    extra: dict[str, Any] = {
+        "component": "preflight",
+        "error": first_issue or req.message,
+        "client_source": req.source,
+        "device_id": req.device_id,
+        "workflow_mode": req.workflow_mode,
+        "profile_group": req.profile_group,
+        "upload_id": req.upload_id or "",
+        "files": req.files,
+        "failed_file_count": req.failed_file_count,
+        "failed_files": [
+            {
+                "path": item.path,
+                "source": item.source,
+                "issues": [issue.model_dump() for issue in item.issues],
+            }
+            for item in req.failed_files[:20]
+        ],
+    }
+    if req.elapsed_seconds is not None:
+        extra["elapsed_seconds"] = req.elapsed_seconds
+    deliveries = send_notify_deliveries(
+        job,
+        event="job.issue",
+        message=req.message,
+        severity=req.severity,
+        recipients=recipients,
+        extra=extra,
+    )
+    return {"status": "attempted", "deliveries": deliveries}
 
 
 @app.get("/v1/admin/scheduler")
