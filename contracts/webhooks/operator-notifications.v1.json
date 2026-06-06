@@ -179,7 +179,7 @@
       "canonical_notification": {
         "actor": "munchy",
         "title_template": "{emoji} {subject_40}",
-        "body_template": "Needs attention: {error_120}"
+        "body_template": "{error_120}"
       },
       "required_payload_fields": [
         "event",
