@@ -316,7 +316,7 @@ def test_build_munchy_job_payload_uses_operator_notification_contract() -> None:
             "state": "failed",
         },
         message="Local media preflight failed.",
-        severity="error",
+        severity="critical",
         delivered_at=datetime(2026, 6, 6, 12, 0, tzinfo=UTC),
         recipient="operator",
         details={
@@ -331,12 +331,12 @@ def test_build_munchy_job_payload_uses_operator_notification_contract() -> None:
     assert payload["source"] == "munchy"
     assert payload["actor"] == "munchy"
     assert payload["delivered_at"] == "2026-06-06T12:00:00Z"
-    assert payload["operator_urgency"] == "time_sensitive"
-    assert payload["operator_action"] == "inspect Munchy job details when convenient"
+    assert payload["operator_urgency"] == "critical"
+    assert payload["operator_action"] == "inspect Munchy job details immediately"
     assert payload["component"] == "preflight"
     assert payload["notification"] == {
         "title": "🤤 backyard-collection-preview-q49",
-        "body": "Munchy needs attention: camera/bad.mp4: atom extends past EOF",
+        "body": "Needs attention: camera/bad.mp4: atom extends past EOF",
     }
 
 

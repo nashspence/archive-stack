@@ -374,7 +374,6 @@ class ClientPreflightFailedNotificationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source: Literal["family-archive"] = "family-archive"
-    severity: Literal["warning", "error", "critical"] = "error"
     message: str = Field(min_length=1, max_length=1000)
     device_id: str = Field(min_length=1, max_length=180)
     workflow_mode: WorkflowMode
@@ -2993,7 +2992,7 @@ def notify_preflight_failed(req: ClientPreflightFailedNotificationRequest) -> di
         job,
         event="job.issue",
         message=req.message,
-        severity=req.severity,
+        severity="critical",
         recipients=recipients,
         extra=extra,
     )

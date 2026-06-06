@@ -156,7 +156,7 @@ def test_client_preflight_failed_notification_uses_runner_defaults(
 
     assert result["status"] == "attempted"
     assert calls[0]["event"] == "job.issue"
-    assert calls[0]["severity"] == "error"
+    assert calls[0]["severity"] == "critical"
     assert calls[0]["recipients"] == ["operator"]
     assert calls[0]["job"]["phase"] == "preflight_failed"
     assert calls[0]["extra"]["component"] == "preflight"

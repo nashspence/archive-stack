@@ -612,6 +612,12 @@ def _munchy_operator_urgency(*, event: str, severity: str) -> str:
     return _operator_event_field(event=event, field="operator_urgency", default="passive")
 
 
+def _munchy_operator_action(*, event: str, severity: str) -> str:
+    if event == "job.issue" and severity == "critical":
+        return "inspect Munchy job details immediately"
+    return _operator_event_field(event=event, field="operator_action")
+
+
 def _munchy_job_notification(
     *,
     event: str,
@@ -721,7 +727,7 @@ def build_munchy_job_payload(
         "actor": "munchy",
         "delivered_at": isoformat_z(delivered_at),
         "operator_urgency": _munchy_operator_urgency(event=event, severity=severity),
-        "operator_action": _operator_event_field(event=event, field="operator_action"),
+        "operator_action": _munchy_operator_action(event=event, severity=severity),
         "severity": severity,
         "message": message,
         "job_id": str(job.get("job_id") or ""),
