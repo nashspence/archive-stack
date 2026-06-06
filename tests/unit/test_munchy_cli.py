@@ -86,6 +86,23 @@ def test_munchy_job_list_json(monkeypatch) -> None:  # type: ignore[no-untyped-d
     assert json.loads(result.stdout) == {"jobs": [{"job_id": "job-1"}]}
 
 
+def test_munchy_job_list_reports_runner_errors_without_traceback(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class FakeClient:
+        def __init__(self, base_url: str) -> None:
+            self.base_url = base_url
+
+        def list_jobs(self, *, include_terminal: bool, limit: int) -> list[dict[str, object]]:
+            raise OSError("connection refused")
+
+    monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
+
+    result = runner.invoke(app, ["job", "list", "--runner-url", "http://runner"])
+
+    assert result.exit_code == 1
+    assert "munchy: connection refused" in result.stderr
+    assert "Traceback" not in result.output
+
+
 def test_munchy_job_cancel_requires_confirmation(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     result = runner.invoke(app, ["job", "cancel", "job-1", "--runner-url", "http://runner"])
 

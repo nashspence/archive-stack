@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import typer
 from pydantic import ValidationError
@@ -27,6 +27,11 @@ def _load_profile_or_exit(path: Path) -> EncodeProfile:
         return load_encode_profile(path)
     except (OSError, ProfileError, ValidationError) as exc:
         raise typer.BadParameter(str(exc), param_hint=str(path)) from exc
+
+
+def _exit_runner_error(exc: BaseException) -> NoReturn:
+    typer.echo(f"munchy: {exc}", err=True)
+    raise typer.Exit(1) from exc
 
 
 @profile_app.command("validate")
@@ -65,7 +70,10 @@ def list_jobs(
     """List runner jobs."""
 
     client = MunchyRunnerClient(runner_url_setting(runner_url))
-    jobs = client.list_jobs(include_terminal=all_jobs, limit=limit)
+    try:
+        jobs = client.list_jobs(include_terminal=all_jobs, limit=limit)
+    except Exception as exc:
+        _exit_runner_error(exc)
     if json_mode:
         typer.echo(json.dumps({"jobs": jobs}, indent=2, sort_keys=True))
         return
@@ -87,10 +95,13 @@ def watch_job(
 ) -> None:
     """Monitor a runner job until it reaches a terminal state."""
 
-    final = MunchyRunnerClient(runner_url_setting(runner_url)).wait_for_job(
-        job_id,
-        interval=interval,
-    )
+    try:
+        final = MunchyRunnerClient(runner_url_setting(runner_url)).wait_for_job(
+            job_id,
+            interval=interval,
+        )
+    except Exception as exc:
+        _exit_runner_error(exc)
     if final.get("state") != "succeeded":
         raise typer.Exit(1)
 
@@ -115,12 +126,21 @@ def cancel_job(
     if not yes:
         raise typer.BadParameter("add --yes to confirm job cancellation", param_hint="--yes")
     client = MunchyRunnerClient(runner_url_setting(runner_url))
-    job = client.cancel_job(job_id, cleanup=cleanup)
+    try:
+        job = client.cancel_job(job_id, cleanup=cleanup)
+    except Exception as exc:
+        _exit_runner_error(exc)
     typer.echo(format_job_status_line(job), err=True)
     if wait or cleanup:
-        final = client.wait_for_job(job_id, interval=interval)
+        try:
+            final = client.wait_for_job(job_id, interval=interval)
+        except Exception as exc:
+            _exit_runner_error(exc)
         if cleanup and final.get("state") == "cancelled":
-            final = client.cancel_job(job_id, cleanup=True)
+            try:
+                final = client.cancel_job(job_id, cleanup=True)
+            except Exception as exc:
+                _exit_runner_error(exc)
             typer.echo(format_job_status_line(final), err=True)
         if final.get("state") != "cancelled":
             raise typer.Exit(1)
