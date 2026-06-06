@@ -1222,7 +1222,10 @@ def upload_files_for_groups(
 
 
 def upload_bytes_for_groups(upload: dict[str, Any], group_names: set[str]) -> int:
-    return sum(int(file_state["bytes"]) for file_state in upload_files_for_groups(upload, group_names))
+    return sum(
+        int(file_state["bytes"])
+        for file_state in upload_files_for_groups(upload, group_names)
+    )
 
 
 def upload_groups_complete(upload: dict[str, Any], group_names: set[str]) -> bool:
@@ -1231,7 +1234,10 @@ def upload_groups_complete(upload: dict[str, Any], group_names: set[str]) -> boo
 
 
 def upload_group_progress(upload: dict[str, Any], group_names: set[str]) -> dict[str, Any]:
-    files = [upload_file_status(file_state) for file_state in upload_files_for_groups(upload, group_names)]
+    files = [
+        upload_file_status(file_state)
+        for file_state in upload_files_for_groups(upload, group_names)
+    ]
     bytes_total = sum(int(item["bytes"]) for item in files)
     uploaded_bytes = sum(int(item["uploaded_bytes"]) for item in files)
     return {
@@ -1466,7 +1472,9 @@ def archive_output_for_upload_file(
     archive_dir: Path,
 ) -> Path:
     group_rel = upload_file_group_rel(str(file_state["path"]), group_name)
-    return (archive_dir / group_name / group_rel).with_suffix(archive_container_suffix(group_config))
+    return (archive_dir / group_name / group_rel).with_suffix(
+        archive_container_suffix(group_config)
+    )
 
 
 def group_is_eager_archive_only(group_config: dict[str, Any]) -> bool:
@@ -2429,7 +2437,9 @@ def eager_groups_complete(
     eager_groups: set[str],
 ) -> bool:
     files = upload_files_for_groups(upload, eager_groups)
-    return bool(files) and all(eager_file_encoded(job, str(file_state["path"])) for file_state in files)
+    return bool(files) and all(
+        eager_file_encoded(job, str(file_state["path"])) for file_state in files
+    )
 
 
 def safe_file_size(path: str | Path | None) -> int:
@@ -2602,6 +2612,33 @@ def job_response(job: dict[str, Any]) -> dict[str, Any]:
     return response
 
 
+def compact_job_response(job: dict[str, Any]) -> dict[str, Any]:
+    response = job_response(job)
+    keys = [
+        "job_id",
+        "state",
+        "phase",
+        "created_at",
+        "updated_at",
+        "started_at",
+        "finished_at",
+        "input_upload_id",
+        "collection_slug",
+        "collection_timestamp",
+        "workflow_mode",
+        "archive_mode",
+        "profile",
+        "upload_progress",
+        "encode_progress",
+        "review_upload_result",
+        "collection_preview_upload_result",
+        "riverhog_upload_result",
+        "cancel_requested",
+        "error",
+    ]
+    return {key: response[key] for key in keys if key in response}
+
+
 def ready_eager_files(
     job: dict[str, Any],
     upload: dict[str, Any],
@@ -2731,7 +2768,10 @@ def finish_eager_batch(
     batch["finished_at"] = now_iso()
     batch["gpu_result"] = gpu_result
     eager_archive_state(job).setdefault("gpu_results", {})[str(batch["batch_id"])] = gpu_result
-    shutil.rmtree(eager_batch_input_root(str(job["job_id"]), str(batch["batch_id"])), ignore_errors=True)
+    shutil.rmtree(
+        eager_batch_input_root(str(job["job_id"]), str(batch["batch_id"])),
+        ignore_errors=True,
+    )
     upload = consume_input_upload_files(str(job["input_upload_id"]), paths)
     save_job(job)
     return upload
@@ -2840,7 +2880,11 @@ def poll_eager_batch(
         status = gpu_target_request("GET", f"/v1/jobs/{gpu_job_id}")
     except Exception as exc:
         notify_job_issue(job, component="gpu_target", error=exc)
-        log.warning("gpu target status check failed for eager batch %s; retrying: %s", gpu_job_id, exc)
+        log.warning(
+            "gpu target status check failed for eager batch %s; retrying: %s",
+            gpu_job_id,
+            exc,
+        )
         try:
             submit_eager_gpu_job(job, batch, force=True)
         except Exception as start_exc:
@@ -2952,7 +2996,6 @@ def run_job(job_id: str) -> None:
         save_job(job)
 
         input_upload = load_input_upload(str(job["input_upload_id"]))
-        input_bytes = int(input_upload["bytes_total"])
         storage_hint = input_upload_storage_hint(input_upload)
         gpu_job_root = GPU_RUNTIME_DIR / "jobs" / job_id
         input_dir = gpu_job_root / "input"
@@ -3258,6 +3301,8 @@ def capabilities() -> dict[str, Any]:
         "operations": {
             "cancel_job": True,
             "delete_input_upload": True,
+            "list_jobs": True,
+            "compact_job_status": True,
             "notify_preflight_failed": True,
             "pause_scheduler": True,
             "resume_scheduler": True,
@@ -3540,9 +3585,31 @@ def create_job(req: CreateJobRequest, background_tasks: BackgroundTasks) -> dict
     return job
 
 
+@app.get("/v1/jobs")
+def list_jobs(include_terminal: bool = False, limit: int = 50) -> dict[str, Any]:
+    bounded_limit = max(1, min(limit, 500))
+    jobs = [
+        compact_job_response(job)
+        for job in job_states()
+        if include_terminal or job.get("state") not in TERMINAL_JOB_STATES
+    ]
+    jobs.sort(
+        key=lambda job: str(job.get("updated_at") or job.get("created_at") or ""),
+        reverse=True,
+    )
+    return {
+        "jobs": jobs[:bounded_limit],
+        "count": min(len(jobs), bounded_limit),
+        "total_matching": len(jobs),
+        "include_terminal": include_terminal,
+        "limit": bounded_limit,
+    }
+
+
 @app.get("/v1/jobs/{job_id}")
-def get_job(job_id: str) -> dict[str, Any]:
-    return job_response(load_job(job_id))
+def get_job(job_id: str, compact: bool = False) -> dict[str, Any]:
+    job = load_job(job_id)
+    return compact_job_response(job) if compact else job_response(job)
 
 
 @app.post("/v1/jobs/{job_id}/resume", status_code=202)

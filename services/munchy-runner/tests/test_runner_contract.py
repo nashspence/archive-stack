@@ -187,7 +187,11 @@ def test_upload_waiting_reminder_is_time_sensitive_and_paced(
         "collection_timestamp": "20260606T120000Z",
         "state": "running",
         "phase": "waiting_for_eager_files:1/2",
-        "notify": {"enabled": True, "recipients": ["operator"], "events": runner.DEFAULT_NOTIFY_EVENTS},
+        "notify": {
+            "enabled": True,
+            "recipients": ["operator"],
+            "events": runner.DEFAULT_NOTIFY_EVENTS,
+        },
     }
     runner.save_job(job)
     upload = {
@@ -523,6 +527,78 @@ def test_job_response_includes_eager_encode_progress(
     assert progress["running_batches"] == 1
     assert progress["pipeline_batches"] == 3
     assert progress["started_at"] == "2026-06-04T00:00:00Z"
+
+
+def test_compact_job_response_keeps_operational_fields_only(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    runner.save_input_upload(
+        {
+            "upload_id": "upload-1",
+            "files": [{"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"}],
+        }
+    )
+    job = {
+        "job_id": "job-1",
+        "state": "running",
+        "phase": "gpu-eager:pipeline=1/3",
+        "input_upload_id": "upload-1",
+        "collection_slug": "camera-preview",
+        "eager_archive": {
+            "files": {},
+            "batches": {"batch-1": {"state": "running"}},
+            "gpu_results": {"batch-0": {"large": ["payload"]}},
+        },
+        "gpu_result": {"large": ["payload"]},
+    }
+
+    compact = runner.compact_job_response(job)
+
+    assert compact["job_id"] == "job-1"
+    assert compact["state"] == "running"
+    assert compact["phase"] == "gpu-eager:pipeline=1/3"
+    assert compact["upload_progress"]["files_total"] == 1
+    assert "eager_archive" not in compact
+    assert "gpu_result" not in compact
+
+
+def test_list_jobs_returns_recent_compact_jobs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    runner.save_job(
+        {
+            "job_id": "done",
+            "state": "succeeded",
+            "phase": "done",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "eager_archive": {"gpu_results": {"large": ["payload"]}},
+        }
+    )
+    runner.save_job(
+        {
+            "job_id": "active",
+            "state": "running",
+            "phase": "gpu-eager:pipeline=1/3",
+            "updated_at": "2026-01-02T00:00:00Z",
+        }
+    )
+
+    active = runner.list_jobs()
+    all_jobs = runner.list_jobs(include_terminal=True)
+
+    assert [job["job_id"] for job in active["jobs"]] == ["active"]
+    assert active["count"] == 1
+    assert active["total_matching"] == 1
+    assert [job["job_id"] for job in all_jobs["jobs"]] == ["active", "done"]
+    assert "eager_archive" not in all_jobs["jobs"][1]
 
 
 def test_acquire_job_gpu_reuses_persisted_lease_token(
