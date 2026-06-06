@@ -2476,7 +2476,6 @@ def poll_eager_batch(
         error = f"gpu eager batch failed: {status.get('error')}"
         notify_job_issue(job, component="encoding", error=error, severity="critical")
         raise EncodingFailed(error)
-    submit_eager_gpu_job(job, batch)
     save_job(job)
     return upload
 
