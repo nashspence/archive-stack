@@ -32,7 +32,7 @@ def test_capabilities_advertise_munchy_profile_target(tmp_path: Path, monkeypatc
     assert capabilities["profile_groups"]["input_path_shape"] == "<profile-group>/<file>"
     assert capabilities["storage"]["eager_archive_only_encoding"] is True
     assert "MUNCHY_RUNNER_NOTIFY_WEBHOOKS" in capabilities["notify"]["webhook_config"]
-    assert capabilities["storage"]["eager_archive_pipeline_batches"] == 2
+    assert capabilities["storage"]["eager_archive_pipeline_batches"] == 3
 
 
 def test_notification_payload_identifies_munchy_with_canonical_emoji(

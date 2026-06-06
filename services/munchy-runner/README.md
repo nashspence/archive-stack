@@ -57,7 +57,9 @@ Important environment variables:
 Archive-only profile groups are encoded eagerly as soon as files are uploaded.
 `MUNCHY_RUNNER_EAGER_ARCHIVE_PIPELINE_BATCHES` controls how many eager archive
 batches may be queued/running on the GPU target at once; the target still owns
-the actual encode concurrency limit.
+the actual encode concurrency limit. The default is `3`, which keeps one batch
+ready behind the active work to avoid starving the encoder during batch
+transitions.
 
 Webhook payloads identify themselves with `source = "munchy"` and the canonical
 emoji `🤤`.
