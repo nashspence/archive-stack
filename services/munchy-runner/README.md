@@ -53,6 +53,8 @@ Important environment variables:
 - `MUNCHY_RUNNER_RIVERHOG_UPLOAD_ENABLED`
 - `MUNCHY_RUNNER_NOTIFY_ENABLED`
 - `MUNCHY_RUNNER_NOTIFY_WEBHOOKS`
+- `MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS`
+- `MUNCHY_RUNNER_NOTIFY_DEFAULT_ENABLED`
 
 Archive-only profile groups are encoded eagerly as soon as files are uploaded.
 `MUNCHY_RUNNER_EAGER_ARCHIVE_PIPELINE_BATCHES` controls how many eager archive
@@ -63,6 +65,9 @@ transitions.
 
 Webhook payloads identify themselves with `source = "munchy"` and the canonical
 emoji `🤤`.
+When runner notifications are enabled, `MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS`
+can provide comma-separated recipients for jobs whose request omits an explicit
+`notify` block.
 
 ## Upload Shape
 

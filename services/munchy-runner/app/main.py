@@ -29,6 +29,7 @@ from munchy.profiles import (
     MUNCHY_PROFILE_TARGET,
     normalize_artifact_drop_selector,
 )
+from munchy.uvicorn_logging import uvicorn_log_config_without_health_access_logs
 
 LOGGING = {
     "version": 1,
@@ -47,9 +48,24 @@ LOGGING = {
         }
     },
     "root": {"level": os.getenv("MUNCHY_RUNNER_LOG_LEVEL", "INFO"), "handlers": ["stdout"]},
+    "loggers": {
+        "httpx": {
+            "level": os.getenv("MUNCHY_RUNNER_HTTPX_LOG_LEVEL", "WARNING"),
+            "handlers": ["stdout"],
+            "propagate": False,
+        },
+    },
 }
 logging.config.dictConfig(LOGGING)
 log = logging.getLogger("munchy_runner")
+
+
+def env_flag(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).lower() in {"1", "true", "yes", "on"}
+
+
+def env_list(name: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in os.getenv(name, "").split(",") if item.strip())
 
 
 STATE_DIR = Path(os.getenv("MUNCHY_RUNNER_STATE_DIR", "/state")).resolve()
@@ -101,14 +117,14 @@ REVIEW_UPLOAD_ENABLED = os.getenv("MUNCHY_RUNNER_REVIEW_UPLOAD_ENABLED", "0").lo
 }
 REVIEW_UPLOAD_COMMAND = os.getenv("MUNCHY_RUNNER_REVIEW_UPLOAD_COMMAND", "").strip()
 REVIEW_RCLONE_COMMAND = os.getenv("MUNCHY_RUNNER_REVIEW_RCLONE_COMMAND", "rclone")
-NOTIFY_ENABLED = os.getenv("MUNCHY_RUNNER_NOTIFY_ENABLED", "0").lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
+NOTIFY_ENABLED = env_flag("MUNCHY_RUNNER_NOTIFY_ENABLED")
 NOTIFY_ISSUE_REPEAT_SECONDS = int(os.getenv("MUNCHY_RUNNER_NOTIFY_ISSUE_REPEAT_SECONDS", "86400"))
 NOTIFY_TIMEOUT_SECONDS = float(os.getenv("MUNCHY_RUNNER_NOTIFY_TIMEOUT_SECONDS", "5"))
+DEFAULT_NOTIFY_RECIPIENTS = env_list("MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS")
+DEFAULT_NOTIFY_ENABLED = env_flag(
+    "MUNCHY_RUNNER_NOTIFY_DEFAULT_ENABLED",
+    "1" if NOTIFY_ENABLED and DEFAULT_NOTIFY_RECIPIENTS else "0",
+)
 HANDOFF_RETRY_INITIAL_SECONDS = float(
     os.getenv("MUNCHY_RUNNER_HANDOFF_RETRY_INITIAL_SECONDS", "30")
 )
@@ -303,8 +319,8 @@ class ReviewUploadConfig(BaseModel):
 class NotifyConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = False
-    recipients: list[str] = Field(default_factory=list)
+    enabled: bool = DEFAULT_NOTIFY_ENABLED
+    recipients: list[str] = Field(default_factory=lambda: list(DEFAULT_NOTIFY_RECIPIENTS))
     events: list[NotifyEvent] = Field(default_factory=lambda: list(DEFAULT_NOTIFY_EVENTS))
 
     @field_validator("recipients")
@@ -2050,7 +2066,7 @@ def eager_file_encoded(job: dict[str, Any], rel_path: str) -> bool:
 def eager_file_claimed(job: dict[str, Any], rel_path: str) -> bool:
     files = eager_archive_state(job).setdefault("files", {})
     item = files.get(rel_path)
-    return isinstance(item, dict) and item.get("state") in {"encoding", "encoded"}
+    return isinstance(item, dict) and item.get("state") in {"encoding", "encoded", "failed"}
 
 
 def mark_eager_file_encoding(
@@ -2142,7 +2158,7 @@ def mark_existing_eager_outputs(
         group_config = groups[group_name]
         for file_state in upload_files_for_groups(upload, {group_name}):
             rel_path = str(file_state["path"])
-            if eager_file_encoded(job, rel_path):
+            if eager_file_claimed(job, rel_path):
                 continue
             output = archive_output_for_upload_file(
                 file_state,
@@ -2853,10 +2869,15 @@ def capabilities() -> dict[str, Any]:
             },
         },
         "notify": {
+            "enabled": NOTIFY_ENABLED,
+            "default_enabled": DEFAULT_NOTIFY_ENABLED,
+            "default_recipients": list(DEFAULT_NOTIFY_RECIPIENTS),
             "events": DEFAULT_NOTIFY_EVENTS,
             "webhook_config": [
                 "MUNCHY_RUNNER_NOTIFY_WEBHOOKS",
                 "MUNCHY_RUNNER_NOTIFY_WEBHOOK_<RECIPIENT>",
+                "MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS",
+                "MUNCHY_RUNNER_NOTIFY_DEFAULT_ENABLED",
             ],
         },
         "operations": {
@@ -3161,6 +3182,7 @@ def main() -> None:
         host=os.getenv("MUNCHY_RUNNER_HOST", "127.0.0.1"),
         port=int(os.getenv("MUNCHY_RUNNER_PORT", "8092")),
         log_level=os.getenv("MUNCHY_RUNNER_UVICORN_LOG_LEVEL", "info"),
+        log_config=uvicorn_log_config_without_health_access_logs(),
     )
 
 

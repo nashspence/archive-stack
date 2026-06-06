@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 import sys
 import uuid
 from pathlib import Path
 from types import ModuleType
+
+from munchy.uvicorn_logging import DropHealthAccessLogFilter
 
 
 def load_runner(tmp_path: Path, monkeypatch) -> ModuleType:  # type: ignore[no-untyped-def]
@@ -23,6 +26,31 @@ def load_runner(tmp_path: Path, monkeypatch) -> ModuleType:  # type: ignore[no-u
     return module
 
 
+def test_health_access_log_filter_drops_only_health_paths() -> None:
+    access_filter = DropHealthAccessLogFilter()
+    health = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        "",
+        0,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1:1", "GET", "/health/ready", "1.1", 200),
+        None,
+    )
+    api = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        "",
+        0,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1:1", "GET", "/v1/jobs/job-1", "1.1", 200),
+        None,
+    )
+
+    assert access_filter.filter(health) is False
+    assert access_filter.filter(api) is True
+
+
 def test_capabilities_advertise_munchy_profile_target(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     runner = load_runner(tmp_path, monkeypatch)
 
@@ -33,6 +61,25 @@ def test_capabilities_advertise_munchy_profile_target(tmp_path: Path, monkeypatc
     assert capabilities["storage"]["eager_archive_only_encoding"] is True
     assert "MUNCHY_RUNNER_NOTIFY_WEBHOOKS" in capabilities["notify"]["webhook_config"]
     assert capabilities["storage"]["eager_archive_pipeline_batches"] == 3
+    assert capabilities["notify"]["default_enabled"] is False
+    assert capabilities["notify"]["default_recipients"] == []
+
+
+def test_notification_defaults_come_from_runner_environment(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("MUNCHY_RUNNER_NOTIFY_ENABLED", "1")
+    monkeypatch.setenv("MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS", "operator")
+    runner = load_runner(tmp_path, monkeypatch)
+
+    req = runner.CreateJobRequest(collection_slug="collection")
+    capabilities = runner.capabilities()
+
+    assert req.notify.enabled is True
+    assert req.notify.recipients == ["operator"]
+    assert capabilities["notify"]["default_enabled"] is True
+    assert capabilities["notify"]["default_recipients"] == ["operator"]
 
 
 def test_notification_payload_identifies_munchy_with_canonical_emoji(
@@ -76,6 +123,10 @@ def test_ready_eager_files_skips_claimed_encoding_files(
                 "camera/a.mp4": {
                     "state": "encoding",
                     "batch_id": "batch-1",
+                },
+                "camera/c.mp4": {
+                    "state": "failed",
+                    "batch_id": "batch-2",
                 }
             },
             "batches": {},
@@ -87,6 +138,7 @@ def test_ready_eager_files_skips_claimed_encoding_files(
         "files": [
             {"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"},
             {"path": "camera/b.mp4", "bytes": 1, "upload_id": "upload-b"},
+            {"path": "camera/c.mp4", "bytes": 1, "upload_id": "upload-c"},
         ],
     }
 
@@ -141,6 +193,49 @@ def test_claim_running_eager_batch_files_marks_legacy_running_paths(
     )
 
     assert changed is True
+    assert job["eager_archive"]["files"]["camera/a.mp4"]["state"] == "encoding"
+    assert job["eager_archive"]["files"]["camera/a.mp4"]["batch_id"] == "batch-1"
+
+
+def test_mark_existing_eager_outputs_does_not_complete_claimed_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    archive_dir = tmp_path / "archive"
+    output = archive_dir / "camera" / "a.mkv"
+    output.parent.mkdir(parents=True)
+    output.write_bytes(b"partial")
+    job = {
+        "job_id": "job-1",
+        "eager_archive": {
+            "files": {
+                "camera/a.mp4": {
+                    "state": "encoding",
+                    "batch_id": "batch-1",
+                }
+            },
+            "batches": {},
+            "next_batch_number": 2,
+        },
+    }
+    upload = {
+        "upload_id": "upload-1",
+        "files": [{"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"}],
+    }
+
+    updated_upload, changed = runner.mark_existing_eager_outputs(
+        job,
+        upload,
+        {"camera": {}},
+        {"camera"},
+        archive_dir,
+    )
+
+    assert updated_upload is upload
+    assert changed is False
     assert job["eager_archive"]["files"]["camera/a.mp4"]["state"] == "encoding"
     assert job["eager_archive"]["files"]["camera/a.mp4"]["batch_id"] == "batch-1"
 

@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -27,6 +28,7 @@ from munchy.profiles import (
     normalize_artifact_drop_selector,
 )
 from munchy.source_artifact_bridge import build_strict_source_artifacts
+from munchy.uvicorn_logging import uvicorn_log_config_without_health_access_logs
 
 LOGGING = {
     "version": 1,
@@ -45,6 +47,13 @@ LOGGING = {
         }
     },
     "root": {"level": os.getenv("MUNCHY_LOG_LEVEL", "INFO"), "handlers": ["stdout"]},
+    "loggers": {
+        "httpx": {
+            "level": os.getenv("MUNCHY_HTTPX_LOG_LEVEL", "WARNING"),
+            "handlers": ["stdout"],
+            "propagate": False,
+        },
+    },
 }
 logging.config.dictConfig(LOGGING)
 log = logging.getLogger("munchy_av1")
@@ -1763,3 +1772,17 @@ def create_job(req: JobRequest, background_tasks: BackgroundTasks) -> dict[str, 
 @app.get("/v1/jobs/{job_id}")
 def get_job(job_id: str) -> dict[str, Any]:
     return load_status(job_id)
+
+
+def main() -> None:
+    uvicorn.run(
+        "app.main:app",
+        host=os.getenv("MUNCHY_HOST", "0.0.0.0"),
+        port=int(os.getenv("MUNCHY_PORT", "8000")),
+        log_level=os.getenv("MUNCHY_UVICORN_LOG_LEVEL", "info"),
+        log_config=uvicorn_log_config_without_health_access_logs(),
+    )
+
+
+if __name__ == "__main__":
+    main()
