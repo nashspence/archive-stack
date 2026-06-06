@@ -55,6 +55,7 @@ Important environment variables:
 - `MUNCHY_RUNNER_NOTIFY_WEBHOOKS`
 - `MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS`
 - `MUNCHY_RUNNER_NOTIFY_DEFAULT_ENABLED`
+- `MUNCHY_RUNNER_NOTIFY_UPLOAD_WAITING_REMINDER_SECONDS`
 
 Archive-only profile groups are encoded eagerly as soon as files are uploaded.
 `MUNCHY_RUNNER_EAGER_ARCHIVE_PIPELINE_BATCHES` controls how many eager archive
@@ -68,6 +69,9 @@ emoji `🤤`.
 When runner notifications are enabled, `MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS`
 can provide comma-separated recipients for jobs whose request omits an explicit
 `notify` block.
+Incomplete uploads that appear stalled while already-uploaded files have been
+encoded emit `job.upload_waiting.reminder` at most once per
+`MUNCHY_RUNNER_NOTIFY_UPLOAD_WAITING_REMINDER_SECONDS`.
 
 ## Upload Shape
 

@@ -43,6 +43,7 @@ def test_operator_webhook_contract_covers_current_events() -> None:
         "review.handoff",
         "archive.handoff",
         "job.issue",
+        "job.upload_waiting.reminder",
         "job.succeeded",
         "collections.upload_staged",
         "collections.finalized",
@@ -71,6 +72,8 @@ def test_operator_webhook_contract_covers_current_events() -> None:
     assert events["collections.planner_failed"]["operator_urgency"] == "critical"
     assert events["collections.archive_failed"]["operator_urgency"] == "critical"
     assert events["job.issue"]["canonical_notification"]["actor"] == "munchy"
+    assert events["job.upload_waiting.reminder"]["operator_urgency"] == "time_sensitive"
+    assert events["job.upload_waiting.reminder"]["delivery"]["reminder"] is True
     assert events["fetches.waiting_media"]["delivery"]["mode"] == "durable"
     assert events["glacier_recovery.started"]["operator_urgency"] == "time_sensitive"
 
@@ -337,6 +340,38 @@ def test_build_munchy_job_payload_uses_operator_notification_contract() -> None:
     assert payload["notification"] == {
         "title": "🤤 backyard-collection-preview-q49",
         "body": "atom extends past EOF (bad.mp4)",
+    }
+
+
+def test_build_munchy_upload_waiting_reminder_payload() -> None:
+    payload = build_munchy_job_payload(
+        event="job.upload_waiting.reminder",
+        job={
+            "job_id": "job-1",
+            "collection_slug": "backyard-collection-preview-q49",
+            "collection_timestamp": "20260606T120000Z",
+            "phase": "waiting_for_eager_files:3031/5006",
+            "state": "running",
+        },
+        message="Upload paused: 3031/5006 files. Resume or cancel.",
+        severity="warning",
+        delivered_at=datetime(2026, 6, 6, 12, 0, tzinfo=UTC),
+        recipient="operator",
+        details={
+            "upload_progress": {"files_uploaded": 3031, "files_total": 5006},
+            "reminder_count": 1,
+            "reminder_interval_seconds": 86400,
+        },
+    )
+
+    assert payload["event"] == "job.upload_waiting.reminder"
+    assert payload["operator_urgency"] == "time_sensitive"
+    assert payload["operator_action"] == "resume upload or cancel the Munchy job"
+    assert payload["severity"] == "warning"
+    assert payload["reminder_count"] == 1
+    assert payload["notification"] == {
+        "title": "🤤 backyard-collection-preview-q49",
+        "body": "Upload paused: 3031/5006 files. Resume or cancel.",
     }
 
 

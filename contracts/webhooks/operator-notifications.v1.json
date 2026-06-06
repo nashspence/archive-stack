@@ -208,6 +208,53 @@
       ]
     },
     {
+      "event": "job.upload_waiting.reminder",
+      "category": "munchy_job",
+      "source": "services.munchy-runner",
+      "purpose": "Reminder that a Munchy job is still waiting for more client-uploaded input files.",
+      "operator_urgency": "time_sensitive",
+      "operator_action": "resume upload or cancel the Munchy job",
+      "reminder_of": "job.received",
+      "delivery": {
+        "mode": "paced_best_effort",
+        "retry": false,
+        "reminder": true,
+        "reminder_interval_env": "MUNCHY_RUNNER_NOTIFY_UPLOAD_WAITING_REMINDER_SECONDS"
+      },
+      "canonical_notification": {
+        "actor": "munchy",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "{message_120}"
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "source",
+        "actor",
+        "job_id",
+        "delivered_at",
+        "operator_urgency",
+        "operator_action",
+        "state",
+        "phase",
+        "severity",
+        "message",
+        "notification",
+        "upload_progress",
+        "reminder_count",
+        "reminder_interval_seconds"
+      ],
+      "optional_payload_fields": [
+        "collection_slug",
+        "collection_timestamp",
+        "recipient",
+        "encode_progress",
+        "last_upload_activity_at",
+        "stalled_seconds",
+        "upload_id"
+      ]
+    },
+    {
       "event": "job.succeeded",
       "category": "munchy_job",
       "source": "services.munchy-runner",

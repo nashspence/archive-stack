@@ -119,6 +119,9 @@ REVIEW_UPLOAD_COMMAND = os.getenv("MUNCHY_RUNNER_REVIEW_UPLOAD_COMMAND", "").str
 REVIEW_RCLONE_COMMAND = os.getenv("MUNCHY_RUNNER_REVIEW_RCLONE_COMMAND", "rclone")
 NOTIFY_ENABLED = env_flag("MUNCHY_RUNNER_NOTIFY_ENABLED")
 NOTIFY_ISSUE_REPEAT_SECONDS = int(os.getenv("MUNCHY_RUNNER_NOTIFY_ISSUE_REPEAT_SECONDS", "86400"))
+NOTIFY_UPLOAD_WAITING_REMINDER_SECONDS = int(
+    os.getenv("MUNCHY_RUNNER_NOTIFY_UPLOAD_WAITING_REMINDER_SECONDS", "86400")
+)
 NOTIFY_TIMEOUT_SECONDS = float(os.getenv("MUNCHY_RUNNER_NOTIFY_TIMEOUT_SECONDS", "5"))
 DEFAULT_NOTIFY_RECIPIENTS = env_list("MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS")
 DEFAULT_NOTIFY_ENABLED = env_flag(
@@ -161,6 +164,7 @@ NotifyEvent = Literal[
     "review.handoff",
     "archive.handoff",
     "job.issue",
+    "job.upload_waiting.reminder",
     "job.succeeded",
 ]
 DEFAULT_NOTIFY_EVENTS: list[NotifyEvent] = [
@@ -168,6 +172,7 @@ DEFAULT_NOTIFY_EVENTS: list[NotifyEvent] = [
     "review.handoff",
     "archive.handoff",
     "job.issue",
+    "job.upload_waiting.reminder",
     "job.succeeded",
 ]
 SAFE_GROUP_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
@@ -1037,12 +1042,30 @@ def input_upload_last_activity(upload: dict[str, Any]) -> datetime:
     return max(timestamps) if timestamps else datetime.now(UTC)
 
 
+def input_upload_data_last_activity(upload: dict[str, Any]) -> datetime:
+    timestamps = [
+        parsed
+        for value in (upload.get("created_at"),)
+        if (parsed := safe_parse_iso(value)) is not None
+    ]
+    for file_state in upload.get("files", []):
+        tus_path = tusd_data_path(str(file_state["upload_id"]))
+        for path in (
+            tus_path,
+            tus_path.with_suffix(tus_path.suffix + ".info"),
+            tus_path.with_suffix(tus_path.suffix + ".lock"),
+        ):
+            if path.exists():
+                timestamps.append(datetime.fromtimestamp(path.stat().st_mtime, UTC))
+    return max(timestamps) if timestamps else datetime.now(UTC)
+
+
 def load_input_upload(upload_id: str) -> dict[str, Any]:
     with state_lock:
         upload = read_state("input-upload", upload_id)
         if upload is None:
             raise HTTPException(status_code=404, detail=f"unknown input upload: {upload_id}")
-        return save_input_upload(upload)
+        return refresh_input_upload(upload)
 
 
 def save_job(job: dict[str, Any]) -> dict[str, Any]:
@@ -1477,6 +1500,22 @@ def remove_job_local_work(job: dict[str, Any]) -> list[str]:
     return removed
 
 
+def cleanup_cancelled_job(job: dict[str, Any]) -> list[str]:
+    removed = remove_job_local_work(job)
+    upload_id = str(job.get("input_upload_id") or "")
+    if upload_id:
+        upload = read_state("input-upload", upload_id)
+        if upload is not None:
+            remove_input_upload_data(upload)
+            delete_state("input-upload", upload_id)
+            removed.append(f"input-upload:{upload_id}")
+            job["input_upload_deleted_at"] = now_iso()
+    if removed:
+        job["cleanup_removed"] = removed
+        job["cleanup_completed_at"] = now_iso()
+    return removed
+
+
 def should_cleanup_local_work_on_success(job: dict[str, Any]) -> bool:
     workflow_mode = str(job.get("workflow_mode") or "archive")
     if workflow_mode in {"review_only", "collection_preview"}:
@@ -1634,6 +1673,7 @@ def notify_job_event(
     event_state = notifications.setdefault(key, {})
     now = datetime.now(UTC)
     now_text = now.isoformat().replace("+00:00", "Z")
+    send_extra = dict(extra or {})
 
     if event == "job.issue":
         last_fingerprint = str(event_state.get("fingerprint") or "")
@@ -1647,6 +1687,18 @@ def notify_job_event(
             return {"status": "suppressed", "reason": "issue_repeat_limit"}
         event_state["fingerprint"] = fingerprint or ""
         event_state["last_attempt_at"] = now_text
+    elif event == "job.upload_waiting.reminder":
+        interval = max(0, NOTIFY_UPLOAD_WAITING_REMINDER_SECONDS)
+        if interval <= 0:
+            return {"status": "suppressed", "reason": "reminders_disabled"}
+        last_attempt = safe_parse_iso(event_state.get("last_attempt_at"))
+        if last_attempt is not None and (now - last_attempt).total_seconds() < interval:
+            return {"status": "suppressed", "reason": "reminder_repeat_limit"}
+        event_state["last_attempt_at"] = now_text
+        reminder_count = int(event_state.get("reminder_count") or 0) + 1
+        event_state["reminder_count"] = reminder_count
+        send_extra.setdefault("reminder_count", reminder_count)
+        send_extra.setdefault("reminder_interval_seconds", interval)
     elif event_state.get("sent_at"):
         return {"status": "suppressed", "reason": "already_sent"}
     else:
@@ -1658,14 +1710,14 @@ def notify_job_event(
         message=message,
         severity=severity,
         recipients=recipients,
-        extra=extra,
+        extra=send_extra,
     )
 
     event_state["deliveries"] = deliveries
     if any(
         isinstance(item.get("status"), int) and int(item["status"]) < 400 for item in deliveries
     ):
-        if event == "job.issue":
+        if event in {"job.issue", "job.upload_waiting.reminder"}:
             event_state["last_sent_at"] = now_text
         else:
             event_state["sent_at"] = now_text
@@ -1700,6 +1752,44 @@ def notify_job_issue(
         extra=extra,
         dedupe_key=f"job.issue:{component}",
         fingerprint=fingerprint,
+    )
+
+
+def notify_upload_waiting_reminder(
+    job: dict[str, Any],
+    upload: dict[str, Any],
+    progress: dict[str, Any],
+) -> dict[str, Any] | None:
+    interval = max(0, NOTIFY_UPLOAD_WAITING_REMINDER_SECONDS)
+    if interval <= 0:
+        return None
+    if int(progress.get("files_uploaded") or 0) >= int(progress.get("files_total") or 0):
+        return None
+
+    now = datetime.now(UTC)
+    last_activity = input_upload_data_last_activity(upload)
+    stalled_seconds = max(0.0, (now - last_activity).total_seconds())
+    if stalled_seconds < interval:
+        return None
+
+    files_uploaded = int(progress.get("files_uploaded") or 0)
+    files_total = int(progress.get("files_total") or 0)
+    message = f"Upload paused: {files_uploaded}/{files_total} files. Resume or cancel."
+    extra: dict[str, Any] = {
+        "upload_id": str(upload.get("upload_id") or ""),
+        "upload_progress": progress,
+        "last_upload_activity_at": last_activity.isoformat().replace("+00:00", "Z"),
+        "stalled_seconds": int(stalled_seconds),
+    }
+    encode_progress = encode_progress_for_job(job)
+    if encode_progress is not None:
+        extra["encode_progress"] = encode_progress
+    return notify_job_event(
+        job,
+        "job.upload_waiting.reminder",
+        message,
+        severity="warning",
+        extra=extra,
     )
 
 
@@ -2842,6 +2932,7 @@ def run_eager_archive_groups(
                 f"waiting_for_eager_files:{progress['files_uploaded']}/{progress['files_total']}"
             )
             save_job(job)
+            notify_upload_waiting_reminder(job, upload, progress)
             retry_sleep(EAGER_ARCHIVE_WAIT_SECONDS, job_id=job_id)
     finally:
         if token:
@@ -3026,6 +3117,8 @@ def run_job(job_id: str) -> None:
         job["cancelled_at"] = now_iso()
         job["finished_at"] = job["cancelled_at"]
         job.pop("error", None)
+        if job.get("cleanup_requested"):
+            cleanup_cancelled_job(job)
         save_job(job)
     except Exception as exc:
         log.exception("job %s failed", job_id)
@@ -3152,12 +3245,14 @@ def capabilities() -> dict[str, Any]:
             "default_enabled": DEFAULT_NOTIFY_ENABLED,
             "default_recipients": list(DEFAULT_NOTIFY_RECIPIENTS),
             "events": DEFAULT_NOTIFY_EVENTS,
+            "upload_waiting_reminder_seconds": NOTIFY_UPLOAD_WAITING_REMINDER_SECONDS,
             "client_preflight_failed": True,
             "webhook_config": [
                 "MUNCHY_RUNNER_NOTIFY_WEBHOOKS",
                 "MUNCHY_RUNNER_NOTIFY_WEBHOOK_<RECIPIENT>",
                 "MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS",
                 "MUNCHY_RUNNER_NOTIFY_DEFAULT_ENABLED",
+                "MUNCHY_RUNNER_NOTIFY_UPLOAD_WAITING_REMINDER_SECONDS",
             ],
         },
         "operations": {
@@ -3472,19 +3567,26 @@ def resume_job(job_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]
 
 
 @app.post("/v1/jobs/{job_id}/cancel", status_code=202)
-def cancel_job(job_id: str) -> dict[str, Any]:
+def cancel_job(job_id: str, cleanup: bool = False) -> dict[str, Any]:
     with state_lock:
         job = load_job(job_id)
         if job.get("state") in TERMINAL_JOB_STATES:
+            if cleanup and job.get("state") == "cancelled":
+                cleanup_cancelled_job(job)
+                return save_job(job)
             return job
         now = now_iso()
         job["cancel_requested"] = True
         job["cancel_requested_at"] = now
+        if cleanup:
+            job["cleanup_requested"] = True
         if job_id not in active_jobs:
             job["state"] = "cancelled"
             job["phase"] = "cancelled"
             job["cancelled_at"] = now
             job["finished_at"] = now
+            if cleanup:
+                cleanup_cancelled_job(job)
         else:
             job["phase"] = "cancel_requested"
         return save_job(job)

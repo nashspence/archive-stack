@@ -164,6 +164,123 @@ def test_client_preflight_failed_notification_uses_runner_defaults(
     assert calls[0]["extra"]["failed_file_count"] == 1
 
 
+def test_upload_waiting_reminder_is_time_sensitive_and_paced(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("MUNCHY_RUNNER_NOTIFY_ENABLED", "1")
+    monkeypatch.setenv("MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS", "operator")
+    monkeypatch.setenv("MUNCHY_RUNNER_NOTIFY_UPLOAD_WAITING_REMINDER_SECONDS", "1")
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    calls: list[dict[str, object]] = []
+
+    def fake_send_notify_deliveries(job, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append({"job": job, **kwargs})
+        return [{"recipient": "operator", "status": 200}]
+
+    monkeypatch.setattr(runner, "send_notify_deliveries", fake_send_notify_deliveries)
+    job = {
+        "job_id": "job-1",
+        "collection_slug": "backyard-preview",
+        "collection_timestamp": "20260606T120000Z",
+        "state": "running",
+        "phase": "waiting_for_eager_files:1/2",
+        "notify": {"enabled": True, "recipients": ["operator"], "events": runner.DEFAULT_NOTIFY_EVENTS},
+    }
+    runner.save_job(job)
+    upload = {
+        "upload_id": "upload-1",
+        "created_at": "2026-01-01T00:00:00Z",
+        "files": [
+            {"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"},
+            {"path": "camera/b.mp4", "bytes": 1, "upload_id": "upload-b"},
+        ],
+    }
+    progress = {
+        "files_total": 2,
+        "files_uploaded": 1,
+        "bytes_total": 2,
+        "uploaded_bytes": 1,
+    }
+
+    first = runner.notify_upload_waiting_reminder(job, upload, progress)
+    second = runner.notify_upload_waiting_reminder(job, upload, progress)
+
+    assert first["status"] == "attempted"
+    assert second["status"] == "suppressed"
+    assert second["reason"] == "reminder_repeat_limit"
+    assert calls[0]["event"] == "job.upload_waiting.reminder"
+    assert calls[0]["severity"] == "warning"
+    assert calls[0]["extra"]["reminder_count"] == 1
+    assert calls[0]["extra"]["reminder_interval_seconds"] == 1
+    assert calls[0]["extra"]["upload_progress"]["files_uploaded"] == 1
+
+
+def test_load_input_upload_does_not_refresh_state_timestamp(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    runner.save_input_upload(
+        {
+            "upload_id": "upload-1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "files": [{"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"}],
+        }
+    )
+    before = runner.read_state("input-upload", "upload-1")["updated_at"]
+
+    loaded = runner.load_input_upload("upload-1")
+
+    after = runner.read_state("input-upload", "upload-1")["updated_at"]
+    assert loaded["files_total"] == 1
+    assert after == before
+
+
+def test_cancel_job_with_cleanup_removes_local_work_and_input_upload(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    data_path = runner.tusd_data_path("upload-a")
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.write_bytes(b"a")
+    work_dir = runner.GPU_RUNTIME_DIR / "jobs" / "job-1"
+    work_dir.mkdir(parents=True)
+    (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
+    runner.save_input_upload(
+        {
+            "upload_id": "upload-1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "files": [{"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"}],
+        }
+    )
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "queued",
+            "phase": "queued",
+            "input_upload_id": "upload-1",
+            "groups": {"camera": {}},
+        }
+    )
+
+    job = runner.cancel_job("job-1", cleanup=True)
+
+    assert job["state"] == "cancelled"
+    assert job["cleanup_requested"] is True
+    assert runner.read_state("input-upload", "upload-1") is None
+    assert not data_path.exists()
+    assert not work_dir.exists()
+    assert "input-upload:upload-1" in job["cleanup_removed"]
+
+
 def test_preflight_issue_notification_error_keeps_truncated_filename_at_end(
     tmp_path: Path,
     monkeypatch,
