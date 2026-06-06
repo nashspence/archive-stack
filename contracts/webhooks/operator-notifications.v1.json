@@ -30,7 +30,8 @@
     ],
     "actors": {
       "riverhog": "🐷",
-      "djdan": "👨🏻‍🎤"
+      "djdan": "👨🏻‍🎤",
+      "munchy": "🤤"
     },
     "interruption_level_template": "critical when operator_urgency is critical; otherwise time-sensitive"
   },
@@ -48,6 +49,202 @@
     "critical": "Unrecoverable or operator-blocking error that should bypass normal quieting."
   },
   "events": [
+    {
+      "event": "job.received",
+      "category": "munchy_job",
+      "source": "services.munchy-runner",
+      "purpose": "Munchy accepted an ingest or conversion job.",
+      "operator_urgency": "passive",
+      "operator_action": "none",
+      "delivery": {
+        "mode": "best_effort",
+        "retry": false,
+        "reminder": false
+      },
+      "canonical_notification": {
+        "actor": "munchy",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Munchy received this job and queued the work."
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "source",
+        "actor",
+        "job_id",
+        "delivered_at",
+        "operator_urgency",
+        "operator_action",
+        "state",
+        "phase",
+        "notification"
+      ],
+      "optional_payload_fields": [
+        "collection_slug",
+        "collection_timestamp",
+        "recipient",
+        "message",
+        "severity"
+      ]
+    },
+    {
+      "event": "review.handoff",
+      "category": "munchy_job",
+      "source": "services.munchy-runner",
+      "purpose": "Munchy completed review output and is handing it to the configured review destination.",
+      "operator_urgency": "time_sensitive",
+      "operator_action": "none",
+      "delivery": {
+        "mode": "best_effort",
+        "retry": false,
+        "reminder": false
+      },
+      "canonical_notification": {
+        "actor": "munchy",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Munchy review output is ready and heading to the review destination."
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "source",
+        "actor",
+        "job_id",
+        "delivered_at",
+        "operator_urgency",
+        "operator_action",
+        "state",
+        "phase",
+        "notification"
+      ],
+      "optional_payload_fields": [
+        "collection_slug",
+        "collection_timestamp",
+        "recipient",
+        "message",
+        "severity"
+      ]
+    },
+    {
+      "event": "archive.handoff",
+      "category": "munchy_job",
+      "source": "services.munchy-runner",
+      "purpose": "Munchy completed archive encodes and is handing them off to archival storage.",
+      "operator_urgency": "time_sensitive",
+      "operator_action": "none",
+      "delivery": {
+        "mode": "best_effort",
+        "retry": false,
+        "reminder": false
+      },
+      "canonical_notification": {
+        "actor": "munchy",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Munchy archive output is complete and heading to archival storage."
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "source",
+        "actor",
+        "job_id",
+        "delivered_at",
+        "operator_urgency",
+        "operator_action",
+        "state",
+        "phase",
+        "notification"
+      ],
+      "optional_payload_fields": [
+        "collection_slug",
+        "collection_timestamp",
+        "recipient",
+        "message",
+        "severity"
+      ]
+    },
+    {
+      "event": "job.issue",
+      "category": "munchy_job",
+      "source": "services.munchy-runner",
+      "purpose": "Munchy encountered an operator-visible issue, such as a local preflight failure or a retrying handoff.",
+      "operator_urgency": "time_sensitive",
+      "operator_action": "inspect Munchy job details when convenient",
+      "delivery": {
+        "mode": "paced_best_effort",
+        "retry": false,
+        "reminder": true,
+        "reminder_interval_env": "MUNCHY_RUNNER_NOTIFY_ISSUE_REPEAT_SECONDS"
+      },
+      "canonical_notification": {
+        "actor": "munchy",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Munchy needs attention: {error_120}"
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "source",
+        "actor",
+        "job_id",
+        "delivered_at",
+        "operator_urgency",
+        "operator_action",
+        "state",
+        "phase",
+        "severity",
+        "message",
+        "notification"
+      ],
+      "optional_payload_fields": [
+        "collection_slug",
+        "collection_timestamp",
+        "recipient",
+        "component",
+        "error",
+        "device_id",
+        "workflow_mode",
+        "failed_file_count"
+      ]
+    },
+    {
+      "event": "job.succeeded",
+      "category": "munchy_job",
+      "source": "services.munchy-runner",
+      "purpose": "Munchy completed a job successfully.",
+      "operator_urgency": "time_sensitive",
+      "operator_action": "none",
+      "delivery": {
+        "mode": "best_effort",
+        "retry": false,
+        "reminder": false
+      },
+      "canonical_notification": {
+        "actor": "munchy",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Munchy finished this job successfully."
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "source",
+        "actor",
+        "job_id",
+        "delivered_at",
+        "operator_urgency",
+        "operator_action",
+        "state",
+        "phase",
+        "notification"
+      ],
+      "optional_payload_fields": [
+        "collection_slug",
+        "collection_timestamp",
+        "recipient",
+        "message",
+        "severity"
+      ]
+    },
     {
       "event": "collections.upload_staged",
       "category": "collection_lifecycle",

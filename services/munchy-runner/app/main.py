@@ -24,12 +24,12 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from munchy.notifications import MUNCHY_WEBHOOK_EMOJI
 from munchy.profiles import (
     MUNCHY_PROFILE_TARGET,
     normalize_artifact_drop_selector,
 )
 from munchy.uvicorn_logging import uvicorn_log_config_without_health_access_logs
+from riverhog_core.webhooks import build_munchy_job_payload, utcnow
 
 LOGGING = {
     "version": 1,
@@ -1555,23 +1555,17 @@ def notify_payload(
     recipient: str,
     extra: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "source": "munchy",
-        "emoji": MUNCHY_WEBHOOK_EMOJI,
-        "event": event,
-        "severity": severity,
-        "message": message,
-        "recipient": recipient,
-        "job_id": str(job.get("job_id") or ""),
-        "collection_slug": str(job.get("collection_slug") or ""),
-        "collection_timestamp": str(job.get("collection_timestamp") or ""),
-        "phase": str(job.get("phase") or ""),
-        "state": str(job.get("state") or ""),
-        "sent_at": now_iso(),
-    }
-    if extra:
-        payload.update(extra)
-    return payload
+    return dict(
+        build_munchy_job_payload(
+            event=event,
+            job=job,
+            message=message,
+            severity=severity,
+            delivered_at=utcnow(),
+            recipient=recipient,
+            details=extra,
+        )
+    )
 
 
 def notify_recipients(config: dict[str, Any]) -> list[str]:

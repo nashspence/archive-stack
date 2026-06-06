@@ -12,6 +12,7 @@ from riverhog_core.webhooks import (
     build_copy_label_needed_payload,
     build_fetch_waiting_payload,
     build_images_ready_payload,
+    build_munchy_job_payload,
     build_recovery_completed_payload,
     build_recovery_ready_payload,
     build_recovery_started_payload,
@@ -35,8 +36,14 @@ def test_operator_webhook_contract_covers_current_events() -> None:
     assert contract["receiver_rendering"]["actors"] == {
         "riverhog": "🐷",
         "djdan": "👨🏻‍🎤",
+        "munchy": "🤤",
     }
     assert set(events) == {
+        "job.received",
+        "review.handoff",
+        "archive.handoff",
+        "job.issue",
+        "job.succeeded",
         "collections.upload_staged",
         "collections.finalized",
         "collections.archive_retrying",
@@ -63,6 +70,7 @@ def test_operator_webhook_contract_covers_current_events() -> None:
         assert all(len(template["body_template"]) <= 150 for template in templates.values())
     assert events["collections.planner_failed"]["operator_urgency"] == "critical"
     assert events["collections.archive_failed"]["operator_urgency"] == "critical"
+    assert events["job.issue"]["canonical_notification"]["actor"] == "munchy"
     assert events["fetches.waiting_media"]["delivery"]["mode"] == "durable"
     assert events["glacier_recovery.started"]["operator_urgency"] == "time_sensitive"
 
@@ -294,6 +302,41 @@ def test_build_archive_failed_payload_is_critical_and_nonretrying() -> None:
             "Oink! Archive finalizing stopped: collection archive member sha256 "
             "mismatch: 20240512T093848Z.MP4. Please inspect Riverhog; I will not retry this."
         ),
+    }
+
+
+def test_build_munchy_job_payload_uses_operator_notification_contract() -> None:
+    payload = build_munchy_job_payload(
+        event="job.issue",
+        job={
+            "job_id": "job-1",
+            "collection_slug": "backyard-collection-preview-q49",
+            "collection_timestamp": "20260606T120000Z",
+            "phase": "preflight_failed",
+            "state": "failed",
+        },
+        message="Local media preflight failed.",
+        severity="error",
+        delivered_at=datetime(2026, 6, 6, 12, 0, tzinfo=UTC),
+        recipient="operator",
+        details={
+            "component": "preflight",
+            "error": "camera/bad.mp4: atom extends past EOF",
+            "failed_file_count": 1,
+        },
+    )
+
+    assert payload["event"] == "job.issue"
+    assert payload["type"] == "munchy_job"
+    assert payload["source"] == "munchy"
+    assert payload["actor"] == "munchy"
+    assert payload["delivered_at"] == "2026-06-06T12:00:00Z"
+    assert payload["operator_urgency"] == "time_sensitive"
+    assert payload["operator_action"] == "inspect Munchy job details when convenient"
+    assert payload["component"] == "preflight"
+    assert payload["notification"] == {
+        "title": "🤤 backyard-collection-preview-q49",
+        "body": "Munchy needs attention: camera/bad.mp4: atom extends past EOF",
     }
 
 

@@ -106,8 +106,15 @@ def test_notification_payload_identifies_munchy_with_canonical_emoji(
     )
 
     assert payload["source"] == "munchy"
-    assert payload["emoji"] == "🤤"
+    assert payload["actor"] == "munchy"
     assert payload["event"] == "job.received"
+    assert payload["delivered_at"].endswith("Z")
+    assert payload["operator_urgency"] == "passive"
+    assert payload["operator_action"] == "none"
+    assert payload["notification"] == {
+        "title": "🤤 collection",
+        "body": "Munchy received this job and queued the work.",
+    }
 
 
 def test_client_preflight_failed_notification_uses_runner_defaults(

@@ -593,6 +593,38 @@ def _collection_notification(
     )
 
 
+def _munchy_job_subject(job: Mapping[str, object]) -> str:
+    collection_slug = str(job.get("collection_slug") or "")
+    if collection_slug:
+        return _collection_subject(collection_slug)
+    job_id = str(job.get("job_id") or "")
+    if job_id:
+        return _target_subject(job_id)
+    return "munchy job"
+
+
+def _munchy_operator_urgency(*, event: str, severity: str) -> str:
+    if event == "job.issue":
+        if severity == "critical":
+            return "critical"
+        if severity in {"error", "warning"}:
+            return "time_sensitive"
+    return _operator_event_field(event=event, field="operator_urgency", default="passive")
+
+
+def _munchy_job_notification(
+    *,
+    event: str,
+    job: Mapping[str, object],
+    values: Mapping[str, object] | None = None,
+) -> dict[str, str]:
+    return _canonical_notification_from_contract(
+        event=event,
+        subject=_munchy_job_subject(job),
+        values=values,
+    )
+
+
 def _images_ready_notification(
     *,
     event: str,
@@ -663,6 +695,48 @@ def build_collection_lifecycle_payload(
     if config.base_url:
         payload["collection_url"] = collection_url(config.base_url, collection_id)
         payload["upload_url"] = collection_upload_url(config.base_url, collection_id)
+    if details:
+        payload.update(details)
+    return payload
+
+
+def build_munchy_job_payload(
+    *,
+    event: str,
+    job: Mapping[str, object],
+    message: str,
+    severity: str,
+    delivered_at: datetime,
+    recipient: str | None = None,
+    details: dict[str, object] | None = None,
+) -> dict[str, object]:
+    detail_values = dict(details or {})
+    detail_values.setdefault("message", message)
+    if "error" not in detail_values and severity in {"warning", "error", "critical"}:
+        detail_values["error"] = message
+    payload: dict[str, object] = {
+        "event": event,
+        "type": "munchy_job",
+        "source": "munchy",
+        "actor": "munchy",
+        "delivered_at": isoformat_z(delivered_at),
+        "operator_urgency": _munchy_operator_urgency(event=event, severity=severity),
+        "operator_action": _operator_event_field(event=event, field="operator_action"),
+        "severity": severity,
+        "message": message,
+        "job_id": str(job.get("job_id") or ""),
+        "collection_slug": str(job.get("collection_slug") or ""),
+        "collection_timestamp": str(job.get("collection_timestamp") or ""),
+        "phase": str(job.get("phase") or ""),
+        "state": str(job.get("state") or ""),
+        "notification": _munchy_job_notification(
+            event=event,
+            job=job,
+            values=detail_values,
+        ),
+    }
+    if recipient:
+        payload["recipient"] = recipient
     if details:
         payload.update(details)
     return payload
