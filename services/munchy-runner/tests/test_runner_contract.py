@@ -376,7 +376,12 @@ def test_job_response_includes_eager_encode_progress(
                     "started_at": "2026-06-05T00:00:05Z",
                 },
             },
-            "batches": {"batch-1": {"state": "running"}},
+            "batches": {
+                "batch-1": {
+                    "state": "running",
+                    "started_at": "2026-06-04T00:00:00Z",
+                }
+            },
         },
     }
 
@@ -392,6 +397,7 @@ def test_job_response_includes_eager_encode_progress(
     assert progress["active_output_bytes"] == 6
     assert progress["running_batches"] == 1
     assert progress["pipeline_batches"] == 3
+    assert progress["started_at"] == "2026-06-04T00:00:00Z"
 
 
 def test_acquire_job_gpu_reuses_persisted_lease_token(

@@ -2430,11 +2430,6 @@ def encode_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
         elif status == "failed":
             files_failed += 1
 
-    started_at = min(started_values) if started_values else None
-    finished_at = max(finished_values) if finished_values else None
-    elapsed_seconds = max(0.001, (now - started_at).total_seconds()) if started_at else 0.0
-    input_rate = input_bytes_encoded / elapsed_seconds if elapsed_seconds else 0.0
-    output_rate = output_bytes / elapsed_seconds if elapsed_seconds else 0.0
     batches = eager.get("batches") if isinstance(eager.get("batches"), dict) else {}
     for batch in batches.values():
         if not isinstance(batch, dict):
@@ -2445,6 +2440,11 @@ def encode_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
             started_values.append(batch_started)
         if batch_finished is not None:
             finished_values.append(batch_finished)
+    started_at = min(started_values) if started_values else None
+    finished_at = max(finished_values) if finished_values else None
+    elapsed_seconds = max(0.001, (now - started_at).total_seconds()) if started_at else 0.0
+    input_rate = input_bytes_encoded / elapsed_seconds if elapsed_seconds else 0.0
+    output_rate = output_bytes / elapsed_seconds if elapsed_seconds else 0.0
     running_batches = sum(
         1
         for batch in batches.values()
