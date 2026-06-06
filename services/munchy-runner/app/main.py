@@ -2436,6 +2436,15 @@ def encode_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
     input_rate = input_bytes_encoded / elapsed_seconds if elapsed_seconds else 0.0
     output_rate = output_bytes / elapsed_seconds if elapsed_seconds else 0.0
     batches = eager.get("batches") if isinstance(eager.get("batches"), dict) else {}
+    for batch in batches.values():
+        if not isinstance(batch, dict):
+            continue
+        batch_started = safe_parse_iso(batch.get("started_at"))
+        batch_finished = safe_parse_iso(batch.get("finished_at"))
+        if batch_started is not None:
+            started_values.append(batch_started)
+        if batch_finished is not None:
+            finished_values.append(batch_finished)
     running_batches = sum(
         1
         for batch in batches.values()
