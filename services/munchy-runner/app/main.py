@@ -2478,8 +2478,35 @@ def encode_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
+    upload_id = str(job.get("input_upload_id") or "")
+    if not upload_id:
+        return None
+    try:
+        stored_upload = read_state("input-upload", upload_id)
+        upload = refresh_input_upload(stored_upload) if stored_upload is not None else None
+    except Exception:
+        upload = None
+    if upload is None:
+        return None
+    files_total = int(upload.get("files_total") or 0)
+    files_uploaded = int(upload.get("files_uploaded") or 0)
+    bytes_total = int(upload.get("bytes_total") or 0)
+    uploaded_bytes = int(upload.get("uploaded_bytes") or 0)
+    return {
+        "files_total": files_total,
+        "files_uploaded": files_uploaded,
+        "bytes_total": bytes_total,
+        "uploaded_bytes": uploaded_bytes,
+        "percent_bytes": round((uploaded_bytes / bytes_total * 100.0) if bytes_total else 100.0, 2),
+        "completed": files_uploaded == files_total and files_total > 0,
+    }
+
+
 def job_response(job: dict[str, Any]) -> dict[str, Any]:
     response = dict(job)
+    if progress := upload_progress_for_job(job):
+        response["upload_progress"] = progress
     if progress := encode_progress_for_job(job):
         response["encode_progress"] = progress
     return response

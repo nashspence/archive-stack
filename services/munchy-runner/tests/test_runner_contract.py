@@ -385,7 +385,15 @@ def test_job_response_includes_eager_encode_progress(
         },
     }
 
-    progress = runner.job_response(job)["encode_progress"]
+    response = runner.job_response(job)
+    upload_progress = response["upload_progress"]
+    progress = response["encode_progress"]
+
+    assert upload_progress["files_total"] == 2
+    assert upload_progress["files_uploaded"] == 1
+    assert upload_progress["bytes_total"] == 3072
+    assert upload_progress["uploaded_bytes"] == 1024
+    assert upload_progress["completed"] is False
 
     assert progress["files_total"] == 2
     assert progress["files_encoded"] == 1
