@@ -50,6 +50,26 @@ def test_format_job_summary_line_includes_upload_and_encode_progress() -> None:
     assert "batches 1/3" in line
 
 
+def test_format_job_summary_line_includes_encoder_queue_position() -> None:
+    line = format_job_summary_line(
+        {
+            "job_id": "job-2",
+            "collection_slug": "example-q49",
+            "state": "queued",
+            "phase": "queued",
+            "queue": {
+                "position": 2,
+                "running_job_limit": 1,
+                "running_jobs": 1,
+                "scheduled_jobs": 0,
+            },
+        }
+    )
+
+    assert "job: queued" in line
+    assert "encoder queue position 2 (1/1 running or starting)" in line
+
+
 def test_runner_client_list_jobs_validates_response() -> None:
     client = MunchyRunnerClient("http://runner")
 
@@ -61,6 +81,30 @@ def test_runner_client_list_jobs_validates_response() -> None:
     client.json = fake_json  # type: ignore[method-assign]
 
     assert client.list_jobs(limit=2) == [{"job_id": "job-1"}]
+
+
+def test_runner_http_error_formats_insufficient_storage_concisely() -> None:
+    error = RunnerHttpError(
+        "POST",
+        "http://runner/v1/input-uploads",
+        507,
+        b"""
+        {
+          "detail": {
+            "error": "insufficient_storage",
+            "label": "source upload spool, future gpu scratch",
+            "required_bytes": 2147483648,
+            "free_bytes": 1073741824,
+            "reserved_bytes": 536870912
+          }
+        }
+        """,
+    )
+
+    assert "insufficient storage for source upload spool, future gpu scratch" in str(error)
+    assert "need 2.00 GiB free" in str(error)
+    assert "have 1.00 GiB" in str(error)
+    assert "512.00 MiB reserved by active uploads" in str(error)
 
 
 def test_upload_file_retries_transient_error_and_refreshes_offset(tmp_path: Path) -> None:
@@ -96,6 +140,51 @@ def test_upload_file_retries_transient_error_and_refreshes_offset(tmp_path: Path
         nonlocal request_calls
         request_calls += 1
         raise ConnectionResetError(54, "Connection reset by peer")
+
+    client.json = fake_json  # type: ignore[method-assign]
+    client.request = fake_request  # type: ignore[method-assign]
+
+    with patch("munchy.runner_client.time.sleep"):
+        with contextlib.redirect_stderr(io.StringIO()):
+            client.upload_file("upload", item, chunk_bytes=1024)
+
+    assert json_calls == 2
+    assert request_calls == 1
+
+
+def test_upload_file_retries_temporary_insufficient_storage(tmp_path: Path) -> None:
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    item = RunnerInputFile(
+        source=source,
+        rel_path="video/clip.mp4",
+        bytes=source.stat().st_size,
+        sha256="0" * 64,
+    )
+
+    client = MunchyRunnerClient("http://runner")
+    json_calls = 0
+    request_calls = 0
+
+    def fake_json(method: str, path: str, **_kwargs: object) -> dict[str, object]:
+        nonlocal json_calls
+        assert method == "POST"
+        json_calls += 1
+        offset = 0 if json_calls == 1 else item.bytes
+        return {
+            "upload_url": "http://uploads.test/file",
+            "offset": offset,
+            "length": item.bytes,
+        }
+
+    def fake_request(
+        method: str,
+        path_or_url: str,
+        **_kwargs: object,
+    ) -> tuple[int, bytes, object]:
+        nonlocal request_calls
+        request_calls += 1
+        raise RunnerHttpError(method, path_or_url, 507, b"temporary storage pressure")
 
     client.json = fake_json  # type: ignore[method-assign]
     client.request = fake_request  # type: ignore[method-assign]

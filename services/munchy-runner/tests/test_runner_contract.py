@@ -61,10 +61,53 @@ def test_capabilities_advertise_munchy_profile_target(tmp_path: Path, monkeypatc
     assert capabilities["storage"]["eager_archive_only_encoding"] is True
     assert "MUNCHY_RUNNER_NOTIFY_WEBHOOKS" in capabilities["notify"]["webhook_config"]
     assert capabilities["storage"]["eager_archive_pipeline_batches"] == 3
+    assert capabilities["storage"]["max_running_jobs"] == 1
     assert capabilities["notify"]["default_enabled"] is False
     assert capabilities["notify"]["default_recipients"] == []
     assert capabilities["notify"]["client_preflight_failed"] is True
     assert capabilities["operations"]["notify_preflight_failed"] is True
+
+
+def test_scheduler_reserves_running_job_slots_and_leaves_extra_jobs_queued(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("MUNCHY_RUNNER_MAX_RUNNING_JOBS", "1")
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    runner.save_job(
+        {
+            "job_id": "job-a",
+            "state": "queued",
+            "phase": "queued",
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+    )
+    runner.save_job(
+        {
+            "job_id": "job-b",
+            "state": "queued",
+            "phase": "queued",
+            "created_at": "2026-01-01T00:00:01Z",
+        }
+    )
+    scheduled_tasks: list[tuple[object, tuple[object, ...]]] = []
+
+    class Tasks:
+        def add_task(self, func, *args):  # type: ignore[no-untyped-def]
+            scheduled_tasks.append((func, args))
+
+    first = runner.schedule_pending_jobs(Tasks())
+    second = runner.schedule_pending_jobs(Tasks())
+    job_b = runner.job_response(runner.load_job("job-b"))
+
+    assert first == ["job-a"]
+    assert second == []
+    assert scheduled_tasks == [(runner.run_job, ("job-a",))]
+    assert runner.scheduler_status()["scheduled_jobs"] == ["job-a"]
+    assert job_b["queue"]["position"] == 2
+    assert job_b["queue"]["running_job_limit"] == 1
 
 
 def test_notification_defaults_come_from_runner_environment(

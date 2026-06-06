@@ -99,7 +99,7 @@ COLLECTION_PREVIEW_SCRATCH_EXTRA_MULTIPLIER = float(
     os.getenv("MUNCHY_RUNNER_COLLECTION_PREVIEW_SCRATCH_EXTRA_MULTIPLIER", "1.25")
 )
 MAX_ACTIVE_INPUT_UPLOADS = int(os.getenv("MUNCHY_RUNNER_MAX_ACTIVE_INPUT_UPLOADS", "8"))
-MAX_ACTIVE_JOBS = int(os.getenv("MUNCHY_RUNNER_MAX_ACTIVE_JOBS", "2"))
+MAX_RUNNING_JOBS = int(os.getenv("MUNCHY_RUNNER_MAX_RUNNING_JOBS", "1"))
 RIVERHOG_UPLOAD_ENABLED = os.getenv("MUNCHY_RUNNER_RIVERHOG_UPLOAD_ENABLED", "0").lower() in {
     "1",
     "true",
@@ -152,6 +152,10 @@ EAGER_ARCHIVE_PIPELINE_BATCHES = max(
 EAGER_ARCHIVE_WAIT_SECONDS = max(
     1.0,
     float(os.getenv("MUNCHY_RUNNER_EAGER_ARCHIVE_WAIT_SECONDS", "5")),
+)
+STORAGE_WAIT_SECONDS = max(
+    1.0,
+    float(os.getenv("MUNCHY_RUNNER_STORAGE_WAIT_SECONDS", "60")),
 )
 
 UploadState = Literal["pending", "partial", "uploaded", "consumed"]
@@ -248,6 +252,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="munchy-runner", version="0.1.0", lifespan=lifespan)
 state_lock = threading.RLock()
 active_jobs: set[str] = set()
+scheduled_jobs: set[str] = set()
 
 
 @app.exception_handler(InsufficientStorage)
@@ -799,6 +804,52 @@ def require_free_space(path: Path, required_bytes: int, *, label: str) -> None:
         raise insufficient_storage(label=label, required_bytes=required_bytes, free=free)
 
 
+def notify_storage_waiting(job: dict[str, Any], exc: InsufficientStorage) -> dict[str, Any] | None:
+    fingerprint = hashlib.sha256(
+        f"storage:{exc.label}:{exc.required_bytes}".encode()
+    ).hexdigest()
+    return notify_job_event(
+        job,
+        "job.issue",
+        f"Waiting for storage: {exc.label}",
+        severity="warning",
+        extra={
+            "component": "storage",
+            "error": str(exc),
+            "label": exc.label,
+            "required_bytes": exc.required_bytes,
+            "free_bytes": exc.free_bytes,
+            "reserved_bytes": exc.reserved_bytes,
+        },
+        dedupe_key=f"job.issue:storage:{exc.label}",
+        fingerprint=fingerprint,
+    )
+
+
+def wait_for_free_space(job: dict[str, Any], path: Path, required_bytes: int, *, label: str) -> None:
+    job_id = str(job["job_id"])
+    while True:
+        raise_if_job_cancelled(job_id)
+        try:
+            require_free_space(path, required_bytes, label=label)
+            job.pop("storage_wait", None)
+            return
+        except InsufficientStorage as exc:
+            job["phase"] = f"waiting_for_space:{label.replace(' ', '_')}"
+            job["storage_wait"] = {
+                "label": exc.label,
+                "required_bytes": exc.required_bytes,
+                "free_bytes": exc.free_bytes,
+                "reserved_bytes": exc.reserved_bytes,
+                "last_checked_at": now_iso(),
+                "retry_after_seconds": STORAGE_WAIT_SECONDS,
+            }
+            save_job(job)
+            notify_storage_waiting(job, exc)
+            log.warning("job %s waiting for storage: %s", job_id, exc)
+            retry_sleep(STORAGE_WAIT_SECONDS, job_id=job_id)
+
+
 def input_upload_states() -> list[dict[str, Any]]:
     return list_states("input-upload")
 
@@ -861,17 +912,45 @@ def active_input_uploads() -> list[dict[str, Any]]:
     return uploads
 
 
-def active_job_count() -> int:
-    count = 0
-    for job in job_states():
-        try:
-            state = job.get("state")
-        except Exception:
-            log.exception("failed to read job state")
+def running_job_count() -> int:
+    return len(active_jobs | scheduled_jobs)
+
+
+def running_job_slots_available() -> int:
+    if MAX_RUNNING_JOBS <= 0:
+        return 1_000_000
+    return max(0, MAX_RUNNING_JOBS - running_job_count())
+
+
+def runnable_job_sort_key(job: dict[str, Any]) -> tuple[int, str, str]:
+    state = str(job.get("state") or "")
+    state_priority = 0 if state == "running" else 1
+    queued_at = str(job.get("started_at") or job.get("created_at") or job.get("updated_at") or "")
+    return (state_priority, queued_at, str(job.get("job_id") or ""))
+
+
+def runnable_jobs_in_order() -> list[dict[str, Any]]:
+    jobs = [job for job in job_states() if runnable_job(job)]
+    jobs.sort(key=runnable_job_sort_key)
+    return jobs
+
+
+def queue_info_for_job(job_id: str) -> dict[str, Any] | None:
+    ordered = [
+        job
+        for job in runnable_jobs_in_order()
+        if str(job.get("job_id") or "") not in active_jobs
+    ]
+    for index, job in enumerate(ordered, start=1):
+        if str(job.get("job_id") or "") != job_id:
             continue
-        if state not in TERMINAL_JOB_STATES:
-            count += 1
-    return count
+        return {
+            "position": index,
+            "running_job_limit": MAX_RUNNING_JOBS,
+            "running_jobs": len(active_jobs),
+            "scheduled_jobs": len(scheduled_jobs),
+        }
+    return None
 
 
 def input_upload_remaining_bytes(upload: dict[str, Any]) -> int:
@@ -1101,19 +1180,6 @@ def raise_if_job_cancelled(job_id: str) -> None:
         raise RuntimeError(f"unknown job: {job_id}")
     if job.get("cancel_requested") or job.get("state") == "cancelled":
         raise JobCancelled(f"job cancelled: {job_id}")
-
-
-def require_job_capacity() -> None:
-    count = active_job_count()
-    if MAX_ACTIVE_JOBS > 0 and count >= MAX_ACTIVE_JOBS:
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "error": "too_many_active_jobs",
-                "active": count,
-                "limit": MAX_ACTIVE_JOBS,
-            },
-        )
 
 
 def normalize_public_tusd_url(location: str) -> str:
@@ -2605,6 +2671,8 @@ def upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
 
 def job_response(job: dict[str, Any]) -> dict[str, Any]:
     response = dict(job)
+    if queue := queue_info_for_job(str(job.get("job_id") or "")):
+        response["queue"] = queue
     if progress := upload_progress_for_job(job):
         response["upload_progress"] = progress
     if progress := encode_progress_for_job(job):
@@ -2633,6 +2701,8 @@ def compact_job_response(job: dict[str, Any]) -> dict[str, Any]:
         "review_upload_result",
         "collection_preview_upload_result",
         "riverhog_upload_result",
+        "queue",
+        "storage_wait",
         "cancel_requested",
         "error",
     ]
@@ -2809,6 +2879,7 @@ def start_eager_batch(
     group_config: dict[str, Any],
     file_states: list[dict[str, Any]],
     archive_dir: Path,
+    space_checked: bool = False,
 ) -> dict[str, Any]:
     job_id = str(job["job_id"])
     paths = [str(file_state["path"]) for file_state in file_states]
@@ -2816,7 +2887,8 @@ def start_eager_batch(
     batch_bytes = sum(int(file_state["bytes"]) for file_state in file_states)
     storage_hint = input_upload_storage_hint(upload)
     required_gpu_free = gpu_scratch_required_bytes(batch_bytes, storage_hint) + MIN_FREE_BYTES
-    require_free_space(GPU_RUNTIME_DIR, required_gpu_free, label="gpu eager scratch")
+    if not space_checked:
+        wait_for_free_space(job, GPU_RUNTIME_DIR, required_gpu_free, label="gpu eager scratch")
 
     batch_root = eager_batch_input_root(job_id, batch_id)
     if batch_root.exists():
@@ -2946,9 +3018,20 @@ def run_eager_archive_groups(
                 )
                 if ready is None:
                     break
+                group_name, file_states = ready
+                batch_bytes = sum(int(file_state["bytes"]) for file_state in file_states)
+                storage_hint = input_upload_storage_hint(upload)
+                required_gpu_free = (
+                    gpu_scratch_required_bytes(batch_bytes, storage_hint) + MIN_FREE_BYTES
+                )
+                wait_for_free_space(
+                    job,
+                    GPU_RUNTIME_DIR,
+                    required_gpu_free,
+                    label="gpu eager scratch",
+                )
                 if not token:
                     token = acquire_job_gpu(job)
-                group_name, file_states = ready
                 upload = start_eager_batch(
                     job,
                     upload,
@@ -2956,6 +3039,7 @@ def run_eager_archive_groups(
                     group_config=groups[group_name],
                     file_states=file_states,
                     archive_dir=archive_dir,
+                    space_checked=True,
                 )
 
             running = running_eager_batches(job)
@@ -2985,6 +3069,7 @@ def run_eager_archive_groups(
 
 def run_job(job_id: str) -> None:
     with state_lock:
+        scheduled_jobs.discard(job_id)
         if job_id in active_jobs:
             return
         active_jobs.add(job_id)
@@ -3030,7 +3115,7 @@ def run_job(job_id: str) -> None:
             required_gpu_free = (
                 gpu_scratch_required_bytes(non_eager_bytes, storage_hint) + MIN_FREE_BYTES
             )
-            require_free_space(GPU_RUNTIME_DIR, required_gpu_free, label="gpu scratch")
+            wait_for_free_space(job, GPU_RUNTIME_DIR, required_gpu_free, label="gpu scratch")
             job["phase"] = "materializing"
             save_job(job)
             materialize_upload_groups(input_upload, input_dir, non_eager_groups)
@@ -3178,31 +3263,46 @@ def run_job(job_id: str) -> None:
     finally:
         with state_lock:
             active_jobs.discard(job_id)
+        schedule_pending_jobs()
 
 
-def schedule_job(job_id: str, background_tasks: BackgroundTasks | None = None) -> None:
+def schedule_job(
+    job_id: str,
+    background_tasks: BackgroundTasks | None = None,
+    *,
+    ignore_capacity: bool = False,
+) -> bool:
     if scheduling_paused():
         log.info("scheduler is paused; leaving job queued: %s", job_id)
-        return
+        return False
+    with state_lock:
+        if job_id in active_jobs or job_id in scheduled_jobs:
+            return False
+        if not ignore_capacity and running_job_slots_available() <= 0:
+            return False
+        scheduled_jobs.add(job_id)
     if background_tasks is None:
         thread = threading.Thread(target=run_job, args=(job_id,), daemon=True)
         thread.start()
-        return
+        return True
     background_tasks.add_task(run_job, job_id)
+    return True
 
 
 def schedule_pending_jobs(background_tasks: BackgroundTasks | None = None) -> list[str]:
     if scheduling_paused():
         return []
     scheduled: list[str] = []
-    for job in job_states():
+    for job in runnable_jobs_in_order():
+        if running_job_slots_available() <= 0:
+            break
         if not runnable_job(job):
             continue
         job_id = str(job["job_id"])
-        if job_id in active_jobs:
+        if job_id in active_jobs or job_id in scheduled_jobs:
             continue
-        schedule_job(job_id, background_tasks)
-        scheduled.append(job_id)
+        if schedule_job(job_id, background_tasks, ignore_capacity=True):
+            scheduled.append(job_id)
     return scheduled
 
 
@@ -3237,6 +3337,9 @@ def health_ready() -> dict[str, Any]:
         "review_rclone_command": REVIEW_RCLONE_COMMAND,
         "notify_enabled": NOTIFY_ENABLED,
         "scheduler_paused": scheduling_paused(),
+        "running_job_limit": MAX_RUNNING_JOBS,
+        "running_jobs": len(active_jobs),
+        "scheduled_jobs": len(scheduled_jobs),
     }
 
 
@@ -3274,9 +3377,12 @@ def capabilities() -> dict[str, Any]:
             "input_upload_storage_hint_required": True,
             "same_filesystem_hardlink_discount": path_device(TUSD_DIR)
             == path_device(GPU_RUNTIME_DIR),
+            "max_active_input_uploads": MAX_ACTIVE_INPUT_UPLOADS,
+            "max_running_jobs": MAX_RUNNING_JOBS,
             "eager_archive_only_encoding": True,
             "eager_archive_batch_files": EAGER_ARCHIVE_BATCH_FILES,
             "eager_archive_pipeline_batches": EAGER_ARCHIVE_PIPELINE_BATCHES,
+            "storage_wait_seconds": STORAGE_WAIT_SECONDS,
             "scratch_extra_multipliers": {
                 "review_only": REVIEW_SCRATCH_EXTRA_MULTIPLIER,
                 "collection_preview": COLLECTION_PREVIEW_SCRATCH_EXTRA_MULTIPLIER,
@@ -3401,6 +3507,9 @@ def scheduler_status() -> dict[str, Any]:
     return {
         **control,
         "active_jobs": sorted(active_jobs),
+        "scheduled_jobs": sorted(scheduled_jobs),
+        "running_job_limit": MAX_RUNNING_JOBS,
+        "running_job_slots_available": running_job_slots_available(),
         "runnable_jobs": [str(job["job_id"]) for job in job_states() if runnable_job(job)],
     }
 
@@ -3551,7 +3660,6 @@ def create_job(req: CreateJobRequest, background_tasks: BackgroundTasks) -> dict
     with state_lock:
         input_upload = load_input_upload(req.input_upload_id)
         validate_job_storage_hint(input_upload, req)
-        require_job_capacity()
         groups = resolve_job_groups(input_upload, req)
         job_id = req.job_id or uuid.uuid4().hex
         if state_exists("job", job_id):
@@ -3581,7 +3689,7 @@ def create_job(req: CreateJobRequest, background_tasks: BackgroundTasks) -> dict
         }
         save_job(job)
     notify_job_event(job, "job.received", "Munchy job received.")
-    schedule_job(job_id, background_tasks)
+    schedule_pending_jobs(background_tasks)
     return job
 
 
@@ -3618,8 +3726,6 @@ def resume_job(job_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]
         job = load_job(job_id)
         if job.get("state") == "succeeded":
             return job
-        if job.get("state") not in {"queued", "running"}:
-            require_job_capacity()
         job["state"] = "queued"
         job["phase"] = "queued"
         job.pop("cancel_requested", None)
@@ -3629,7 +3735,7 @@ def resume_job(job_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]
         job.pop("finished_at", None)
         job["_allow_clear_cancel"] = True
         save_job(job)
-    schedule_job(job_id, background_tasks)
+    schedule_pending_jobs(background_tasks)
     return job
 
 
@@ -3648,6 +3754,7 @@ def cancel_job(job_id: str, cleanup: bool = False) -> dict[str, Any]:
         if cleanup:
             job["cleanup_requested"] = True
         if job_id not in active_jobs:
+            scheduled_jobs.discard(job_id)
             job["state"] = "cancelled"
             job["phase"] = "cancelled"
             job["cancelled_at"] = now

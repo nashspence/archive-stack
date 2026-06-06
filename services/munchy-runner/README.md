@@ -64,6 +64,9 @@ Important environment variables:
 - `MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS`
 - `MUNCHY_RUNNER_NOTIFY_DEFAULT_ENABLED`
 - `MUNCHY_RUNNER_NOTIFY_UPLOAD_WAITING_REMINDER_SECONDS`
+- `MUNCHY_RUNNER_MAX_ACTIVE_INPUT_UPLOADS`
+- `MUNCHY_RUNNER_MAX_RUNNING_JOBS`
+- `MUNCHY_RUNNER_STORAGE_WAIT_SECONDS`
 
 Archive-only profile groups are encoded eagerly as soon as files are uploaded.
 `MUNCHY_RUNNER_EAGER_ARCHIVE_PIPELINE_BATCHES` controls how many eager archive
@@ -71,6 +74,14 @@ batches may be queued/running on the GPU target at once; the target still owns
 the actual encode concurrency limit. The default is `3`, which keeps one batch
 ready behind the active work to avoid starving the encoder during batch
 transitions.
+
+Job admission and job execution are separate. Valid jobs are accepted as queued
+work, while `MUNCHY_RUNNER_MAX_RUNNING_JOBS` controls how many jobs the runner
+starts at once. The default is `1` because one collection job is expected to
+fully use the encoder. New input uploads are still admitted only when the upload
+buffer and future scratch reservation fit. Already-admitted uploads and jobs
+retry transient network, capacity, and scratch-space pressure instead of failing
+immediately.
 
 Webhook payloads identify themselves with `source = "munchy"` and the canonical
 emoji `🤤`.

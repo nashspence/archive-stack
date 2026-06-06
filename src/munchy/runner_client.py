@@ -24,7 +24,7 @@ DEFAULT_UPLOAD_WORKERS = 12
 UPLOAD_RETRY_INITIAL_DELAY_SECONDS = 1.0
 UPLOAD_RETRY_MAX_DELAY_SECONDS = 60.0
 UPLOAD_RETRY_NOTICE_SECONDS = 60.0
-TRANSIENT_UPLOAD_HTTP_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504}
+TRANSIENT_UPLOAD_HTTP_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504, 507}
 TRANSIENT_UPLOAD_ERRNOS = {
     errno.ECONNABORTED,
     errno.ECONNRESET,
@@ -95,9 +95,45 @@ def short_path(value: str, *, max_len: int = 80) -> str:
     return "..." + value[-(max_len - 3) :]
 
 
+def format_runner_http_body(status: int, body: bytes) -> str:
+    text = body.decode("utf-8", "replace").strip()
+    if not text:
+        return ""
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return text
+    if not isinstance(parsed, dict):
+        return text
+    detail = parsed.get("detail")
+    if isinstance(detail, dict):
+        error = str(detail.get("error") or "").strip()
+        message = str(detail.get("message") or "").strip()
+        if status == 507 and error == "insufficient_storage":
+            label = str(detail.get("label") or "storage").strip()
+            required = int(detail.get("required_bytes") or 0)
+            free = int(detail.get("free_bytes") or 0)
+            reserved = int(detail.get("reserved_bytes") or 0)
+            parts = [
+                f"insufficient storage for {label}",
+                f"need {format_bytes(required)} free",
+                f"have {format_bytes(free)}",
+            ]
+            if reserved:
+                parts.append(f"{format_bytes(reserved)} reserved by active uploads")
+            return "; ".join(parts)
+        if error and message:
+            return f"{error}: {message}"
+        if message:
+            return message
+        if error:
+            return error
+    return text
+
+
 class RunnerHttpError(RuntimeError):
     def __init__(self, method: str, url: str, status: int, body: bytes) -> None:
-        text = body.decode("utf-8", "replace").strip()
+        text = format_runner_http_body(status, body)
         message = f"{method} {url} returned HTTP {status}"
         if text:
             message = f"{message}: {text}"
@@ -158,7 +194,7 @@ class UploadRetryReporter:
             elapsed = now - self.started_at
             print(
                 (
-                    f"{self.label} retrying after transient network issue: "
+                    f"{self.label} retrying after transient issue: "
                     f"{self.total_retries} retries across {len(self.files)} file(s), "
                     f"latest {short_path(rel_path)} retry {retry_count}, "
                     f"next in {retry_delay:.0f}s"
@@ -175,7 +211,7 @@ class UploadRetryReporter:
                 return
             print(
                 (
-                    f"{self.label} recovered from transient network issues: "
+                    f"{self.label} recovered from transient issues: "
                     f"{self.total_retries} retries across {len(self.files)} file(s)"
                 ),
                 file=sys.stderr,
@@ -272,6 +308,27 @@ def format_job_status_line(job: dict[str, Any]) -> str:
     pieces = [f"job: {state}"]
     if phase:
         pieces.append(phase)
+    queue = job.get("queue")
+    if state == "queued" and isinstance(queue, dict):
+        try:
+            position = int(queue.get("position") or 0)
+            running = int(queue.get("running_jobs") or 0)
+            scheduled = int(queue.get("scheduled_jobs") or 0)
+            limit = int(queue.get("running_job_limit") or 0)
+        except (TypeError, ValueError):
+            position = running = scheduled = limit = 0
+        if position:
+            if limit > 0:
+                pieces.append(
+                    f"encoder queue position {position} "
+                    f"({running + scheduled}/{limit} running or starting)"
+                )
+            else:
+                pieces.append(f"encoder queue position {position}")
+    storage_wait = job.get("storage_wait")
+    if isinstance(storage_wait, dict):
+        label = str(storage_wait.get("label") or "storage").replace("_", " ")
+        pieces.append(f"waiting for {label}")
     progress = format_progress_status_line(job)
     if progress != "progress: waiting":
         pieces.append(progress)
