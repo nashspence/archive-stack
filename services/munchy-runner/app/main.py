@@ -2165,6 +2165,8 @@ def mark_eager_file_encoding(
         "state": "encoding",
         "started_at": started_at,
         "batch_id": batch_id,
+        "group": group_name,
+        "input_bytes": int(file_state.get("bytes") or 0),
         "output": str(output),
     }
     log.info(
@@ -2207,6 +2209,9 @@ def mark_eager_file_encoded(
         "state": "encoded",
         "encoded_at": encoded_at,
         "batch_id": batch_id,
+        "group": group_name,
+        "input_bytes": int(file_state.get("bytes") or 0),
+        "output_bytes": output_bytes,
         "output": str(output),
         "detected_existing": detected_existing,
     }
@@ -2335,6 +2340,140 @@ def eager_groups_complete(
 ) -> bool:
     files = upload_files_for_groups(upload, eager_groups)
     return bool(files) and all(eager_file_encoded(job, str(file_state["path"])) for file_state in files)
+
+
+def safe_file_size(path: str | Path | None) -> int:
+    if not path:
+        return 0
+    try:
+        file_path = Path(path)
+        return file_path.stat().st_size if file_path.exists() else 0
+    except OSError:
+        return 0
+
+
+def encode_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
+    eager = job.get("eager_archive")
+    if not isinstance(eager, dict):
+        return None
+    groups = job.get("groups")
+    eager_groups = eager_archive_group_names(groups) if isinstance(groups, dict) else set()
+    files_state = eager.get("files")
+    if not isinstance(files_state, dict):
+        files_state = {}
+    if not eager_groups:
+        eager_groups = {
+            str(item.get("group") or upload_file_group(str(rel_path)))
+            for rel_path, item in files_state.items()
+            if isinstance(item, dict)
+        }
+    if not eager_groups:
+        return None
+
+    upload: dict[str, Any] | None = None
+    upload_id = str(job.get("input_upload_id") or "")
+    if upload_id:
+        try:
+            stored_upload = read_state("input-upload", upload_id)
+            upload = refresh_input_upload(stored_upload) if stored_upload is not None else None
+        except Exception:
+            upload = None
+
+    upload_files: list[dict[str, Any]] = []
+    if upload is not None:
+        upload_files = upload_files_for_groups(upload, eager_groups)
+    by_path = {str(item.get("path")): item for item in upload_files}
+    known_paths = set(by_path) | {
+        str(path)
+        for path, item in files_state.items()
+        if isinstance(item, dict)
+        and str(item.get("group") or upload_file_group(str(path))) in eager_groups
+    }
+    if not known_paths:
+        return None
+
+    now = datetime.now(UTC)
+    started_values: list[datetime] = []
+    finished_values: list[datetime] = []
+    files_total = len(known_paths)
+    files_encoded = 0
+    files_encoding = 0
+    files_failed = 0
+    input_bytes_total = 0
+    input_bytes_encoded = 0
+    input_bytes_encoding = 0
+    output_bytes = 0
+    active_output_bytes = 0
+
+    for rel_path in sorted(known_paths):
+        upload_file = by_path.get(rel_path, {})
+        state_item = files_state.get(rel_path)
+        state = state_item if isinstance(state_item, dict) else {}
+        input_bytes = int(upload_file.get("bytes") or state.get("input_bytes") or 0)
+        input_bytes_total += input_bytes
+        started = safe_parse_iso(state.get("started_at"))
+        finished = safe_parse_iso(state.get("encoded_at"))
+        if started is not None:
+            started_values.append(started)
+        if finished is not None:
+            finished_values.append(finished)
+        current_output = int(state.get("output_bytes") or safe_file_size(state.get("output")))
+        status = str(state.get("state") or "")
+        if status == "encoded":
+            files_encoded += 1
+            input_bytes_encoded += input_bytes
+            output_bytes += current_output
+        elif status == "encoding":
+            files_encoding += 1
+            input_bytes_encoding += input_bytes
+            active_output_bytes += current_output
+        elif status == "failed":
+            files_failed += 1
+
+    started_at = min(started_values) if started_values else None
+    finished_at = max(finished_values) if finished_values else None
+    elapsed_seconds = max(0.001, (now - started_at).total_seconds()) if started_at else 0.0
+    input_rate = input_bytes_encoded / elapsed_seconds if elapsed_seconds else 0.0
+    output_rate = output_bytes / elapsed_seconds if elapsed_seconds else 0.0
+    batches = eager.get("batches") if isinstance(eager.get("batches"), dict) else {}
+    running_batches = sum(
+        1
+        for batch in batches.values()
+        if isinstance(batch, dict) and batch.get("state") == "running"
+    )
+    return {
+        "mode": "eager_archive",
+        "groups": sorted(eager_groups),
+        "files_total": files_total,
+        "files_encoded": files_encoded,
+        "files_encoding": files_encoding,
+        "files_failed": files_failed,
+        "input_bytes_total": input_bytes_total,
+        "input_bytes_encoded": input_bytes_encoded,
+        "input_bytes_encoding": input_bytes_encoding,
+        "output_bytes": output_bytes,
+        "active_output_bytes": active_output_bytes,
+        "percent_files": round((files_encoded / files_total * 100.0) if files_total else 100.0, 2),
+        "percent_input_bytes": round(
+            (input_bytes_encoded / input_bytes_total * 100.0) if input_bytes_total else 100.0,
+            2,
+        ),
+        "elapsed_seconds": round(elapsed_seconds, 3) if started_at else 0.0,
+        "input_rate_bytes_per_second": int(input_rate),
+        "output_rate_bytes_per_second": int(output_rate),
+        "running_batches": running_batches,
+        "pipeline_batches": EAGER_ARCHIVE_PIPELINE_BATCHES,
+        "started_at": started_at.isoformat().replace("+00:00", "Z") if started_at else None,
+        "finished_at": finished_at.isoformat().replace("+00:00", "Z") if finished_at else None,
+        "completed": files_encoded == files_total and files_total > 0,
+    }
+
+
+def job_response(job: dict[str, Any]) -> dict[str, Any]:
+    response = dict(job)
+    if progress := encode_progress_for_job(job):
+        response["encode_progress"] = progress
+    return response
 
 
 def ready_eager_files(
@@ -3272,7 +3411,7 @@ def create_job(req: CreateJobRequest, background_tasks: BackgroundTasks) -> dict
 
 @app.get("/v1/jobs/{job_id}")
 def get_job(job_id: str) -> dict[str, Any]:
-    return load_job(job_id)
+    return job_response(load_job(job_id))
 
 
 @app.post("/v1/jobs/{job_id}/resume", status_code=202)

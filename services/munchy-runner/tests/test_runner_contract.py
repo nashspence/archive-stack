@@ -317,6 +317,83 @@ def test_mark_existing_eager_outputs_does_not_complete_claimed_files(
     assert job["eager_archive"]["files"]["camera/a.mp4"]["batch_id"] == "batch-1"
 
 
+def test_job_response_includes_eager_encode_progress(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    archive_dir = tmp_path / "archive"
+    encoded_output = archive_dir / "camera" / "a.webm"
+    active_output = archive_dir / "camera" / "b.webm"
+    encoded_output.parent.mkdir(parents=True)
+    encoded_output.write_bytes(b"encoded")
+    active_output.write_bytes(b"active")
+    runner.save_input_upload(
+        {
+            "upload_id": "upload-1",
+            "files": [
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 1024,
+                    "upload_id": "upload-a",
+                    "consumed_at": "2026-06-05T00:00:00Z",
+                },
+                {
+                    "path": "camera/b.mp4",
+                    "bytes": 2048,
+                    "upload_id": "upload-b",
+                },
+            ],
+        }
+    )
+    job = {
+        "job_id": "job-1",
+        "input_upload_id": "upload-1",
+        "groups": {
+            "camera": {
+                "archive_mode": "av1_nvenc",
+                "gpu_tasks": ["archive_video"],
+            }
+        },
+        "eager_archive": {
+            "files": {
+                "camera/a.mp4": {
+                    "state": "encoded",
+                    "group": "camera",
+                    "input_bytes": 1024,
+                    "output": str(encoded_output),
+                    "output_bytes": 7,
+                    "started_at": "2026-06-05T00:00:00Z",
+                    "encoded_at": "2026-06-05T00:00:10Z",
+                },
+                "camera/b.mp4": {
+                    "state": "encoding",
+                    "group": "camera",
+                    "input_bytes": 2048,
+                    "output": str(active_output),
+                    "started_at": "2026-06-05T00:00:05Z",
+                },
+            },
+            "batches": {"batch-1": {"state": "running"}},
+        },
+    }
+
+    progress = runner.job_response(job)["encode_progress"]
+
+    assert progress["files_total"] == 2
+    assert progress["files_encoded"] == 1
+    assert progress["files_encoding"] == 1
+    assert progress["input_bytes_total"] == 3072
+    assert progress["input_bytes_encoded"] == 1024
+    assert progress["input_bytes_encoding"] == 2048
+    assert progress["output_bytes"] == 7
+    assert progress["active_output_bytes"] == 6
+    assert progress["running_batches"] == 1
+    assert progress["pipeline_batches"] == 3
+
+
 def test_acquire_job_gpu_reuses_persisted_lease_token(
     tmp_path: Path,
     monkeypatch,
