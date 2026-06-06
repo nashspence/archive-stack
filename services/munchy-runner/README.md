@@ -39,6 +39,14 @@ The compose example runs:
 - `munchy-runner-tusd` on `127.0.0.1:8093/files`
 - `munchy-runner-lan-gateway` as an optional nginx gateway
 
+Inspect active work with the Munchy CLI:
+
+```bash
+munchy job list --runner-url http://127.0.0.1:8092
+munchy job watch <job-id> --runner-url http://127.0.0.1:8092
+munchy job cancel <job-id> --runner-url http://127.0.0.1:8092 --cleanup --yes
+```
+
 Important environment variables:
 
 - `MUNCHY_RUNNER_STATE_DIR`

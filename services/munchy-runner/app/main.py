@@ -378,7 +378,7 @@ class ClientPreflightFailedFile(BaseModel):
 class ClientPreflightFailedNotificationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    source: Literal["family-archive"] = "family-archive"
+    source: str = Field(default="client", min_length=1, max_length=120)
     message: str = Field(min_length=1, max_length=1000)
     device_id: str = Field(min_length=1, max_length=180)
     workflow_mode: WorkflowMode
