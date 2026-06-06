@@ -63,6 +63,78 @@ class ContainerProfileTests(unittest.TestCase):
         self.assertIn("-c:s", cmd)
         self.assertIn("-c:t", cmd)
 
+    def test_archive_command_uses_cuda_lanczos_scale_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "clip.mp4"
+            output = root / "clip.webm"
+            source.write_bytes(b"source")
+
+            archive = av1.ArchiveEncodeProfile(
+                container="webm",
+                max_height=720,
+                scale_flags="lanczos",
+                pix_fmt="p010le",
+            )
+            scale_details = {
+                "crop_top": 0,
+                "crop_bottom": 0,
+                "crop_left": 0,
+                "crop_right": 0,
+                "rotation": 0,
+            }
+            with (
+                patch.object(av1, "VIDEO_SCALE_MODE", "cuda"),
+                patch.object(av1, "validate_archive_container_source"),
+                patch.object(av1, "archive_decoder_args", return_value=["-c:v", "hevc_cuvid"]),
+                patch.object(av1, "archive_scale_target", return_value=(scale_details, (1280, 720))),
+                patch.object(av1, "archive_frame_rate_filters", return_value=[]),
+                patch.object(av1, "ffmpeg_filter_available", return_value=True),
+            ):
+                cmd = av1.av1_archive_command(source, output, archive)
+
+        self.assertIn("-vf", cmd)
+        self.assertEqual(
+            cmd[cmd.index("-vf") + 1],
+            "scale_cuda=w=1280:h=720:format=p010le:interp_algo=lanczos",
+        )
+        self.assertIn("-hwaccel", cmd)
+        self.assertIn("-hwaccel_output_format", cmd)
+        self.assertNotIn("-pix_fmt", cmd)
+
+    def test_cuda_scale_mode_falls_back_without_cuvid_decoder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "clip.mp4"
+            output = root / "clip.webm"
+            source.write_bytes(b"source")
+
+            archive = av1.ArchiveEncodeProfile(
+                container="webm",
+                max_height=720,
+                scale_flags="lanczos",
+            )
+            scale_details = {
+                "crop_top": 0,
+                "crop_bottom": 0,
+                "crop_left": 0,
+                "crop_right": 0,
+                "rotation": 0,
+            }
+            with (
+                patch.object(av1, "VIDEO_SCALE_MODE", "cuda"),
+                patch.object(av1, "validate_archive_container_source"),
+                patch.object(av1, "archive_decoder_args", return_value=[]),
+                patch.object(av1, "archive_scale_target", return_value=(scale_details, (1280, 720))),
+                patch.object(av1, "archive_frame_rate_filters", return_value=[]),
+                patch.object(av1, "archive_video_filters", return_value=["scale=-2:720:flags=lanczos"]),
+                patch.object(av1, "ffmpeg_filter_available", return_value=True),
+            ):
+                cmd = av1.av1_archive_command(source, output, archive)
+
+        self.assertIn("-vf", cmd)
+        self.assertEqual(cmd[cmd.index("-vf") + 1], "scale=-2:720:flags=lanczos")
+
     def test_webm_container_allows_iso_bmff_data_streams_for_source_artifacts(self) -> None:
         archive = av1.ArchiveEncodeProfile(container="webm")
         with patch.object(

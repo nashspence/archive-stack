@@ -58,6 +58,7 @@ SOURCE_ARTIFACTS_SUFFIX = ".source-artifacts.tar.zst"
 MAX_PARALLEL_ENCODES = max(1, int(os.getenv("MUNCHY_MAX_PARALLEL_ENCODES", "4")))
 FFMPEG_TIMEOUT_SECONDS = float(os.getenv("MUNCHY_FFMPEG_TIMEOUT_SECONDS", "0"))
 VIDEO_DECODE_MODE = os.getenv("MUNCHY_VIDEO_DECODE_MODE", "cuvid").strip().lower()
+VIDEO_SCALE_MODE = os.getenv("MUNCHY_VIDEO_SCALE_MODE", "software").strip().lower()
 ARCHIVE_CQ = os.getenv("MUNCHY_AV1_CQ", "23")
 ARCHIVE_PRESET = os.getenv("MUNCHY_AV1_PRESET", "p7")
 ARCHIVE_TUNE = os.getenv("MUNCHY_AV1_TUNE", "uhq")
@@ -131,6 +132,8 @@ app = FastAPI(title="munchy-av1-nvenc", version="0.1.0")
 jobs_lock = threading.Lock()
 jobs: dict[str, dict[str, Any]] = {}
 encode_semaphore = threading.Semaphore(MAX_PARALLEL_ENCODES)
+ffmpeg_filter_lock = threading.Lock()
+ffmpeg_filter_cache: set[str] | None = None
 
 
 class RiverhogConfig(BaseModel):
@@ -476,6 +479,31 @@ def ffprobe_video_stream(path: Path, *, timeout_s: int = 30) -> dict[str, Any] |
     return streams[0] if streams else None
 
 
+def ffmpeg_filter_names() -> set[str]:
+    global ffmpeg_filter_cache
+    with ffmpeg_filter_lock:
+        if ffmpeg_filter_cache is not None:
+            return ffmpeg_filter_cache
+        proc = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-filters"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        names: set[str] = set()
+        for line in proc.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 3 and "->" in parts[2]:
+                names.add(parts[1])
+        ffmpeg_filter_cache = names
+        return names
+
+
+def ffmpeg_filter_available(name: str) -> bool:
+    return name in ffmpeg_filter_names()
+
+
 def frame_crop(stream: dict[str, Any]) -> tuple[int, int, int, int]:
     for side_data in stream.get("side_data_list") or []:
         if side_data.get("side_data_type") == "Frame Cropping":
@@ -498,7 +526,7 @@ def display_rotation(stream: dict[str, Any]) -> int:
     return 0
 
 
-def expected_archive_geometry(source: Path) -> tuple[int, int] | None:
+def source_geometry_details(source: Path) -> dict[str, int] | None:
     stream = ffprobe_video_stream(source)
     if not stream:
         return None
@@ -510,11 +538,31 @@ def expected_archive_geometry(source: Path) -> tuple[int, int] | None:
     if width <= 0 or height <= 0:
         return None
     crop_top, crop_bottom, crop_left, crop_right = frame_crop(stream)
-    width = max(1, width - crop_left - crop_right)
-    height = max(1, height - crop_top - crop_bottom)
-    if display_rotation(stream) in {90, 270}:
-        width, height = height, width
-    return width, height
+    cropped_width = max(1, width - crop_left - crop_right)
+    cropped_height = max(1, height - crop_top - crop_bottom)
+    rotation = display_rotation(stream)
+    display_width = cropped_width
+    display_height = cropped_height
+    if rotation in {90, 270}:
+        display_width, display_height = display_height, display_width
+    return {
+        "width": width,
+        "height": height,
+        "crop_top": crop_top,
+        "crop_bottom": crop_bottom,
+        "crop_left": crop_left,
+        "crop_right": crop_right,
+        "rotation": rotation,
+        "display_width": display_width,
+        "display_height": display_height,
+    }
+
+
+def expected_archive_geometry(source: Path) -> tuple[int, int] | None:
+    details = source_geometry_details(source)
+    if details is None:
+        return None
+    return details["display_width"], details["display_height"]
 
 
 def source_frame_rate(source: Path) -> float | None:
@@ -555,7 +603,22 @@ def scale_geometry(width: int, height: int, max_height: int | None) -> tuple[int
     return scaled_width, max_height
 
 
-def archive_video_filters(source: Path, archive: ArchiveEncodeProfile) -> list[str]:
+def archive_scale_target(
+    source: Path, archive: ArchiveEncodeProfile
+) -> tuple[dict[str, int], tuple[int, int]] | None:
+    if archive.max_height is None:
+        return None
+    details = source_geometry_details(source)
+    if details is None or details["display_height"] <= archive.max_height:
+        return None
+    return details, scale_geometry(
+        details["display_width"],
+        details["display_height"],
+        archive.max_height,
+    )
+
+
+def archive_frame_rate_filters(source: Path, archive: ArchiveEncodeProfile) -> list[str]:
     filters: list[str] = []
     if archive.fps_mode == "halve_60_to_30":
         fps = source_frame_rate(source)
@@ -564,11 +627,92 @@ def archive_video_filters(source: Path, archive: ArchiveEncodeProfile) -> list[s
             filters.append(f"framestep=2,setpts=N/({ffmpeg_number(output_fps)}*TB)")
         else:
             log.info("not halving frame rate for %s because source fps is %s", source, fps)
-    if archive.max_height is not None:
-        expected = expected_archive_geometry(source)
-        if expected is None or expected[1] > archive.max_height:
-            filters.append(f"scale=-2:{archive.max_height}:flags={archive.scale_flags}")
     return filters
+
+
+def archive_video_filters(source: Path, archive: ArchiveEncodeProfile) -> list[str]:
+    filters = archive_frame_rate_filters(source, archive)
+    if archive_scale_target(source, archive) is not None:
+        filters.append(f"scale=-2:{archive.max_height}:flags={archive.scale_flags}")
+    return filters
+
+
+def hardware_scale_mode() -> tuple[str, bool]:
+    mode = VIDEO_SCALE_MODE
+    if mode in {"", "cpu", "none"}:
+        mode = "software"
+    required = mode.endswith("-required")
+    if required:
+        mode = mode.removesuffix("-required")
+    if mode == "auto":
+        mode = "cuda"
+    if mode not in {"software", "cuda", "npp"}:
+        raise RuntimeError(f"unsupported MUNCHY_VIDEO_SCALE_MODE={VIDEO_SCALE_MODE!r}")
+    return mode, required
+
+
+def hardware_scale_interp(mode: str, scale_flags: str) -> str | None:
+    if mode == "cuda":
+        return {
+            "fast_bilinear": "bilinear",
+            "bilinear": "bilinear",
+            "bicubic": "bicubic",
+            "lanczos": "lanczos",
+        }.get(scale_flags)
+    if mode == "npp":
+        return {
+            "fast_bilinear": "linear",
+            "bilinear": "linear",
+            "bicubic": "cubic",
+            "lanczos": "lanczos",
+            "spline": "lanczos",
+            "super": "super",
+        }.get(scale_flags)
+    return None
+
+
+def archive_hardware_scale_filter(
+    source: Path,
+    archive: ArchiveEncodeProfile,
+    decoder_args: list[str],
+) -> str | None:
+    mode, required = hardware_scale_mode()
+    if mode == "software":
+        return None
+    scale_target = archive_scale_target(source, archive)
+    if scale_target is None:
+        return None
+
+    def fallback(reason: str) -> None:
+        if required:
+            raise RuntimeError(f"{mode} archive scaling requested but unavailable: {reason}")
+        log.info("falling back to software archive scaling for %s: %s", source, reason)
+
+    frame_rate_filters = archive_frame_rate_filters(source, archive)
+    if frame_rate_filters:
+        fallback("frame-rate filters require the software filter path")
+        return None
+    if not any(arg.endswith("_cuvid") for arg in decoder_args):
+        fallback("source is not using a CUVID decoder")
+        return None
+    details, target = scale_target
+    if any(
+        details[key] != 0
+        for key in ("crop_top", "crop_bottom", "crop_left", "crop_right", "rotation")
+    ):
+        fallback("cropped or rotated display geometry requires the software filter path")
+        return None
+    filter_name = "scale_npp" if mode == "npp" else "scale_cuda"
+    if not ffmpeg_filter_available(filter_name):
+        fallback(f"ffmpeg filter {filter_name!r} is not available in this image")
+        return None
+    interp = hardware_scale_interp(mode, archive.scale_flags)
+    if interp is None:
+        fallback(f"{filter_name} does not support scale_flags={archive.scale_flags!r}")
+        return None
+    width, height = target
+    pix_fmt = archive.pix_fmt or ARCHIVE_PIX_FMT
+    return f"{filter_name}=w={width}:h={height}:format={pix_fmt}:interp_algo={interp}"
 
 
 def archive_decoder_args(source: Path) -> list[str]:
@@ -878,8 +1022,12 @@ def drawtext_filter(epoch_int: int) -> str:
     )
 
 
-def archive_video_encode_args(archive: ArchiveEncodeProfile) -> list[str]:
-    return [
+def archive_video_encode_args(
+    archive: ArchiveEncodeProfile,
+    *,
+    hardware_frames: bool = False,
+) -> list[str]:
+    args = [
         "-c:v",
         "av1_nvenc",
         "-preset",
@@ -906,11 +1054,12 @@ def archive_video_encode_args(archive: ArchiveEncodeProfile) -> list[str]:
         "middle",
         "-split_encode_mode",
         ARCHIVE_SPLIT_ENCODE_MODE,
-        "-pix_fmt",
-        archive.pix_fmt or ARCHIVE_PIX_FMT,
         "-fps_mode",
         "passthrough",
     ]
+    if not hardware_frames:
+        args[-2:-2] = ["-pix_fmt", archive.pix_fmt or ARCHIVE_PIX_FMT]
+    return args
 
 
 def archive_audio_encode_args(audio: ArchiveAudioProfile) -> list[str]:
@@ -939,13 +1088,24 @@ def archive_audio_encode_args(audio: ArchiveAudioProfile) -> list[str]:
 def av1_archive_command(source: Path, dest: Path, archive: ArchiveEncodeProfile) -> list[str]:
     dest.parent.mkdir(parents=True, exist_ok=True)
     validate_archive_container_source(source, archive)
-    filters = archive_video_filters(source, archive)
+    decoder_args = archive_decoder_args(source)
+    hardware_scale_filter = archive_hardware_scale_filter(source, archive, decoder_args)
+    filters = [hardware_scale_filter] if hardware_scale_filter else archive_video_filters(source, archive)
+    hardware_frames = hardware_scale_filter is not None
+    if hardware_frames:
+        decoder_args = [
+            "-hwaccel",
+            "cuda",
+            "-hwaccel_output_format",
+            "cuda",
+            *decoder_args,
+        ]
     cmd = [
         "ffmpeg",
         "-hide_banner",
         "-y",
         "-ignore_unknown",
-        *archive_decoder_args(source),
+        *decoder_args,
         "-i",
         str(source),
         "-map",
@@ -954,7 +1114,7 @@ def av1_archive_command(source: Path, dest: Path, archive: ArchiveEncodeProfile)
         "0:a?",
         "-map_metadata",
         "0",
-        *archive_video_encode_args(archive),
+        *archive_video_encode_args(archive, hardware_frames=hardware_frames),
         "-c:a",
         "libopus",
         *archive_audio_encode_args(archive.audio),
@@ -1469,6 +1629,9 @@ def health_ready() -> dict[str, Any]:
         "data_dir": str(DATA_DIR),
         "max_parallel_encodes": MAX_PARALLEL_ENCODES,
         "video_decode_mode": VIDEO_DECODE_MODE,
+        "video_scale_mode": VIDEO_SCALE_MODE,
+        "scale_cuda": ffmpeg_filter_available("scale_cuda"),
+        "scale_npp": ffmpeg_filter_available("scale_npp"),
         "riverhog_upload_enabled": RIVERHOG_UPLOAD_ENABLED,
         "review_upload_enabled": REVIEW_UPLOAD_ENABLED,
     }
@@ -1513,16 +1676,27 @@ def capabilities() -> dict[str, Any]:
             "fps_modes": ["passthrough", "halve_60_to_30"],
             "audio_codecs": ["opus"],
             "scale_flags": ["fast_bilinear", "bilinear", "bicubic", "lanczos", "spline"],
+            "scale_modes": [
+                "software",
+                "cuda",
+                "cuda-required",
+                "npp",
+                "npp-required",
+                "auto",
+            ],
         },
         "tasks": ["archive_video", "qcut_video", "audio_review"],
         "ffmpeg": {
             "av1_nvenc": "av1_nvenc" in encoders,
             "libopus": "libopus" in encoders,
             "drawtext": "drawtext" in filters,
+            "scale_cuda": "scale_cuda" in filters,
+            "scale_npp": "scale_npp" in filters,
             "av1_nvenc_uhq": "uhq" in av1_help,
         },
         "archive": {
             "decode_mode": VIDEO_DECODE_MODE,
+            "scale_mode": VIDEO_SCALE_MODE,
             "preset": ARCHIVE_PRESET,
             "tune": ARCHIVE_TUNE,
             "cq": ARCHIVE_CQ,

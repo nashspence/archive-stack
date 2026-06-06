@@ -2,6 +2,7 @@ FROM nvidia/cuda:13.0.0-devel-ubuntu24.04 AS ffmpeg-build
 
 ARG FFMPEG_REF=8885116f4dbe10527d4e7a14dc691b07e3915d55
 ARG NV_CODEC_HEADERS_REF=33a9ede8d9914299d9262539c576a15bd0a19621
+ARG FFMPEG_NVCCFLAGS="-gencode arch=compute_120,code=sm_120 -O2"
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -31,12 +32,17 @@ RUN git clone https://git.ffmpeg.org/ffmpeg.git \
       --disable-shared \
       --enable-static \
       --enable-gpl \
+      --enable-nonfree \
       --enable-libfreetype \
       --enable-libharfbuzz \
       --enable-libfontconfig \
       --enable-libfribidi \
       --enable-libopus \
+      --enable-cuda-nvcc \
+      --enable-cuvid \
+      --enable-nvdec \
       --enable-nvenc \
+      --nvccflags="${FFMPEG_NVCCFLAGS}" \
  && make -j"$(nproc)" \
  && make install
 
