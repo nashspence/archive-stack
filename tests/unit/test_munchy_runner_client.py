@@ -9,6 +9,7 @@ import pytest
 
 from munchy.runner_client import (
     MunchyRunnerClient,
+    RichProgressRenderer,
     RunnerHttpError,
     RunnerInputFile,
     RunnerUploadRequest,
@@ -151,6 +152,52 @@ def test_upload_retry_reporter_uses_live_renderer_for_transient_issues() -> None
     assert updates[0]["transient_issue"]["label"] == "remote upload"  # type: ignore[index]
     assert updates[0]["transient_issue"]["next_retry_seconds"] == 2.0  # type: ignore[index]
     assert updates[-1]["transient_issue"]["message"] == "recovered from transient issues"  # type: ignore[index]
+
+
+def test_rich_renderer_overlays_transient_issue_without_replacing_progress() -> None:
+    pytest.importorskip("rich")
+
+    class Live:
+        def __init__(self) -> None:
+            self.rendered: list[object] = []
+
+        def update(self, renderable: object, *, refresh: bool = False) -> None:
+            self.rendered.append(renderable)
+
+    live = Live()
+    renderer = RichProgressRenderer(include_job=True, title="Test")
+    renderer.started = True
+    renderer.live = live  # type: ignore[assignment]
+    renderer.update(
+        {
+            "state": "running",
+            "phase": "gpu:camera",
+            "upload_progress": {
+                "files_uploaded": 5,
+                "files_total": 10,
+                "uploaded_bytes": 500,
+                "bytes_total": 1000,
+                "percent_bytes": 50.0,
+            },
+        }
+    )
+    renderer.update(
+        {
+            "transient_issue": {
+                "label": "remote job status",
+                "retries": 1,
+                "next_retry_seconds": 2.0,
+                "error": "connection reset",
+            }
+        }
+    )
+
+    assert renderer.current_job["state"] == "running"
+    assert renderer.current_job["phase"] == "gpu:camera"
+    assert renderer.current_job["upload_progress"]["files_uploaded"] == 5
+    assert renderer.transient_issue is not None
+    assert renderer.transient_issue["label"] == "remote job status"
+    assert len(live.rendered) == 2
 
 
 def test_format_job_summary_line_includes_encoder_queue_position() -> None:

@@ -24,6 +24,7 @@ DEFAULT_UPLOAD_WORKERS = 12
 UPLOAD_RETRY_INITIAL_DELAY_SECONDS = 1.0
 UPLOAD_RETRY_MAX_DELAY_SECONDS = 60.0
 UPLOAD_RETRY_NOTICE_SECONDS = 60.0
+TRANSIENT_ISSUE_RECOVERY_DISPLAY_SECONDS = 8.0
 TRANSIENT_UPLOAD_HTTP_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504, 507}
 TRANSIENT_UPLOAD_ERRNOS = {
     errno.ECONNABORTED,
@@ -540,6 +541,9 @@ class RichProgressRenderer(ProgressRenderer):
             transient=False,
         )
         self.started = False
+        self.current_job: dict[str, Any] = {}
+        self.transient_issue: dict[str, Any] | None = None
+        self.transient_issue_expires_at: float | None = None
 
     def __enter__(self) -> RichProgressRenderer:
         self.live.start(refresh=True)
@@ -549,12 +553,46 @@ class RichProgressRenderer(ProgressRenderer):
     def update(self, job: dict[str, Any], *, force: bool = False) -> None:
         if not self.started:
             self.__enter__()
-        self.live.update(self._render(job), refresh=True)
+        now = time.monotonic()
+        self._prune_transient_issue(now)
+        update = dict(job)
+        if "transient_issue" in update:
+            issue = update.pop("transient_issue")
+            if isinstance(issue, dict):
+                self.transient_issue = issue
+                self.transient_issue_expires_at = self._transient_issue_expiry(issue, now=now)
+            else:
+                self.transient_issue = None
+                self.transient_issue_expires_at = None
+        if update:
+            self.current_job.update(update)
+        self.live.update(self._render(self._render_job()), refresh=True)
 
     def stop(self) -> None:
         if self.started:
             self.live.stop()
             self.started = False
+
+    def _transient_issue_expiry(self, issue: dict[str, Any], *, now: float) -> float | None:
+        message = str(issue.get("message") or "").strip().lower()
+        if message.startswith("recovered"):
+            return now + TRANSIENT_ISSUE_RECOVERY_DISPLAY_SECONDS
+        return None
+
+    def _prune_transient_issue(self, now: float) -> None:
+        if (
+            self.transient_issue is not None
+            and self.transient_issue_expires_at is not None
+            and now >= self.transient_issue_expires_at
+        ):
+            self.transient_issue = None
+            self.transient_issue_expires_at = None
+
+    def _render_job(self) -> dict[str, Any]:
+        job = dict(self.current_job)
+        if self.transient_issue is not None:
+            job["transient_issue"] = self.transient_issue
+        return job
 
     def _render(self, job: dict[str, Any]) -> Any:
         from rich import box
