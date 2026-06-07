@@ -50,6 +50,36 @@ def test_format_job_summary_line_includes_upload_and_encode_progress() -> None:
     assert "batches 1/3" in line
 
 
+def test_format_job_summary_line_renders_review_clip_progress() -> None:
+    line = format_job_summary_line(
+        {
+            "job_id": "job-review",
+            "collection_slug": "camera-review-q49",
+            "state": "running",
+            "phase": "review_upload_retrying",
+            "encode_progress": {
+                "mode": "qcut_video",
+                "phase": "encoding_clips",
+                "clips_total": 48,
+                "clips_done": 12,
+                "clips_running": 2,
+                "clips_failed": 0,
+                "percent_clips": 25.0,
+                "output_bytes": 1024 * 1024,
+                "active_output_bytes": 512 * 1024,
+                "output_rate_bytes_per_second": 256 * 1024,
+            },
+        }
+    )
+
+    assert "review 12/48 clips" in line
+    assert "25.00%" in line
+    assert "encoding clips" in line
+    assert "2 active" in line
+    assert "active output" in line
+    assert "encode 12/48 files" not in line
+
+
 def test_format_job_summary_line_includes_encoder_queue_position() -> None:
     line = format_job_summary_line(
         {

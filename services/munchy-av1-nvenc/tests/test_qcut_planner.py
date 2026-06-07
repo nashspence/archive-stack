@@ -58,6 +58,31 @@ class QcutPlannerTests(unittest.TestCase):
         self.assertEqual(plan["files"][0]["quota"], 1)
         self.assertEqual(plan["files"][-1]["quota"], 1)
 
+    def test_clip_progress_payload_reports_review_clip_progress(self) -> None:
+        payload = av1.clip_progress_payload(
+            task="qcut_video",
+            phase="encoding_clips",
+            clips_total=10,
+            clips_done=3,
+            clips_running=2,
+            clips_failed=1,
+            output_bytes=1024,
+            active_output_bytes=512,
+            started_at="2026-06-05T00:00:00Z",
+        )
+
+        self.assertEqual(payload["mode"], "qcut_video")
+        self.assertEqual(payload["task"], "qcut_video")
+        self.assertEqual(payload["phase"], "encoding_clips")
+        self.assertEqual(payload["clips_total"], 10)
+        self.assertEqual(payload["clips_done"], 3)
+        self.assertEqual(payload["clips_running"], 2)
+        self.assertEqual(payload["clips_failed"], 1)
+        self.assertEqual(payload["percent_clips"], 30.0)
+        self.assertEqual(payload["output_bytes"], 1024)
+        self.assertEqual(payload["active_output_bytes"], 512)
+        self.assertFalse(payload["completed"])
+
 
 if __name__ == "__main__":
     unittest.main()

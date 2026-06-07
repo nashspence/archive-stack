@@ -2029,6 +2029,46 @@ def start_gpu_job(gpu_payload: dict[str, Any]) -> None:
         raise
 
 
+def compact_gpu_status_for_progress(status: dict[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {
+        key: status[key]
+        for key in ("job_id", "state", "profile", "tasks", "started_at", "finished_at", "updated_at")
+        if key in status
+    }
+    items = status.get("items")
+    if isinstance(items, dict):
+        compact_items: dict[str, dict[str, Any]] = {}
+        for name, item in items.items():
+            if not isinstance(item, dict):
+                continue
+            compact_item = {
+                key: item[key]
+                for key in ("status", "reason", "bytes")
+                if key in item
+            }
+            progress = item.get("progress")
+            if isinstance(progress, dict):
+                compact_item["progress"] = progress
+            if compact_item:
+                compact_items[str(name)] = compact_item
+        if compact_items:
+            compact["items"] = compact_items
+    if "error" in status:
+        compact["error"] = status["error"]
+    if "error_code" in status:
+        compact["error_code"] = status["error_code"]
+    return compact
+
+
+def record_gpu_status(job: dict[str, Any], gpu_job_id: str, status: dict[str, Any]) -> None:
+    statuses = job.setdefault("gpu_statuses", {})
+    if not isinstance(statuses, dict):
+        statuses = {}
+        job["gpu_statuses"] = statuses
+    statuses[gpu_job_id] = compact_gpu_status_for_progress(status)
+    save_job(job)
+
+
 def wait_gpu_job(
     gpu_job_id: str,
     *,
@@ -2051,6 +2091,7 @@ def wait_gpu_job(
                 notify_job_issue(job, component="gpu_target", error=start_exc)
                 log.warning("gpu target restart attempt failed; retrying: %s", start_exc)
             continue
+        record_gpu_status(job, gpu_job_id, status)
         state = status.get("state")
         if state == "succeeded":
             return status
@@ -2518,10 +2559,67 @@ def safe_file_size(path: str | Path | None) -> int:
         return 0
 
 
+def review_encode_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
+    statuses = job.get("gpu_statuses")
+    if not isinstance(statuses, dict):
+        return None
+    progress_items: list[dict[str, Any]] = []
+    for status in statuses.values():
+        if not isinstance(status, dict):
+            continue
+        items = status.get("items")
+        if not isinstance(items, dict):
+            continue
+        for task_name in ("qcut_video", "audio_review"):
+            item = items.get(task_name)
+            if not isinstance(item, dict):
+                continue
+            progress = item.get("progress")
+            if isinstance(progress, dict):
+                progress_items.append(progress)
+    if not progress_items:
+        return None
+
+    # Prefer active work; otherwise show the most recently updated completed review task.
+    progress_items.sort(
+        key=lambda item: (
+            0 if str(item.get("phase") or "") != "done" else 1,
+            str(item.get("started_at") or ""),
+        )
+    )
+    progress = dict(progress_items[0])
+    clips_total = int(progress.get("clips_total") or 0)
+    clips_done = int(progress.get("clips_done") or 0)
+    clips_running = int(progress.get("clips_running") or 0)
+    clips_failed = int(progress.get("clips_failed") or 0)
+    pct = float(
+        progress.get("percent_clips")
+        or ((clips_done / clips_total * 100.0) if clips_total else 100.0)
+    )
+    return {
+        **progress,
+        "mode": str(progress.get("mode") or progress.get("task") or "review"),
+        "clips_total": clips_total,
+        "clips_done": clips_done,
+        "clips_running": clips_running,
+        "clips_failed": clips_failed,
+        "files_total": clips_total,
+        "files_encoded": clips_done,
+        "files_encoding": clips_running,
+        "files_failed": clips_failed,
+        "percent_clips": round(pct, 2),
+        "percent_files": round(pct, 2),
+        "percent_input_bytes": round(pct, 2),
+        "output_bytes": int(progress.get("output_bytes") or 0),
+        "active_output_bytes": int(progress.get("active_output_bytes") or 0),
+        "output_rate_bytes_per_second": int(progress.get("output_rate_bytes_per_second") or 0),
+    }
+
+
 def encode_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
     eager = job.get("eager_archive")
     if not isinstance(eager, dict):
-        return None
+        return review_encode_progress_for_job(job)
     groups = job.get("groups")
     eager_groups = eager_archive_group_names(groups) if isinstance(groups, dict) else set()
     files_state = eager.get("files")

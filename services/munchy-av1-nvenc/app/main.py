@@ -17,7 +17,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException
@@ -1225,8 +1225,11 @@ def run_encode_item(
     dry_run: bool,
     source_artifacts_source: Path | None = None,
     source_artifacts_profile: dict[str, Any] | None = None,
+    on_start: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     with encode_semaphore:
+        if on_start is not None:
+            on_start()
         result = run_command(cmd, action=action, dry_run=dry_run)
     payload: dict[str, Any] = {
         "output": str(output_path),
@@ -1347,12 +1350,57 @@ def concat_opus(clips: list[Path], output_path: Path, *, dry_run: bool) -> dict[
     return result
 
 
+def safe_file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size if path.exists() else 0
+    except OSError:
+        return 0
+
+
+def clip_progress_payload(
+    *,
+    task: str,
+    phase: str,
+    clips_total: int,
+    clips_done: int,
+    clips_running: int,
+    clips_failed: int,
+    output_bytes: int,
+    active_output_bytes: int,
+    started_at: str,
+    finished_at: str | None = None,
+) -> dict[str, Any]:
+    started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    now = datetime.now(UTC)
+    elapsed_seconds = max(0.001, (now - started).total_seconds())
+    payload: dict[str, Any] = {
+        "mode": task,
+        "task": task,
+        "phase": phase,
+        "clips_total": clips_total,
+        "clips_done": clips_done,
+        "clips_running": clips_running,
+        "clips_failed": clips_failed,
+        "percent_clips": round((clips_done / clips_total * 100.0) if clips_total else 100.0, 2),
+        "output_bytes": output_bytes,
+        "active_output_bytes": active_output_bytes,
+        "output_rate_bytes_per_second": int(output_bytes / elapsed_seconds),
+        "started_at": started_at,
+        "elapsed_seconds": round(elapsed_seconds, 3),
+        "completed": clips_done == clips_total and clips_total > 0,
+    }
+    if finished_at:
+        payload["finished_at"] = finished_at
+    return payload
+
+
 def run_qcut_video(
     input_dir: Path,
     review_dir: Path,
     *,
     archive: ArchiveEncodeProfile,
     dry_run: bool,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     sources = iter_files(input_dir, VIDEO_EXTENSIONS)
     if not sources:
@@ -1367,6 +1415,58 @@ def run_qcut_video(
     )
     clip_outputs: list[Path] = []
     clip_results: list[dict[str, Any]] = []
+    clips_total = len(plan["clips"])
+    progress_lock = threading.Lock()
+    progress_started_at = now_iso()
+    progress_state: dict[str, Any] = {
+        "clips_done": 0,
+        "clips_running": 0,
+        "clips_failed": 0,
+        "output_bytes": 0,
+        "active_outputs": set(),
+    }
+
+    def emit_progress(phase: str, *, finished_at: str | None = None) -> None:
+        if progress_callback is None:
+            return
+        active_outputs = progress_state["active_outputs"]
+        active_output_bytes = sum(safe_file_size(path) for path in active_outputs)
+        progress_callback(
+            clip_progress_payload(
+                task="qcut_video",
+                phase=phase,
+                clips_total=clips_total,
+                clips_done=int(progress_state["clips_done"]),
+                clips_running=int(progress_state["clips_running"]),
+                clips_failed=int(progress_state["clips_failed"]),
+                output_bytes=int(progress_state["output_bytes"]),
+                active_output_bytes=active_output_bytes,
+                started_at=progress_started_at,
+                finished_at=finished_at,
+            )
+        )
+
+    def mark_started(output: Path) -> None:
+        with progress_lock:
+            progress_state["clips_running"] = int(progress_state["clips_running"]) + 1
+            progress_state["active_outputs"].add(output)
+            emit_progress("encoding_clips")
+
+    def mark_finished(output: Path, item: dict[str, Any] | None, *, failed: bool = False) -> None:
+        with progress_lock:
+            active_outputs = progress_state["active_outputs"]
+            active_outputs.discard(output)
+            progress_state["clips_running"] = max(0, int(progress_state["clips_running"]) - 1)
+            if failed:
+                progress_state["clips_failed"] = int(progress_state["clips_failed"]) + 1
+            else:
+                progress_state["clips_done"] = int(progress_state["clips_done"]) + 1
+                progress_state["output_bytes"] = int(progress_state["output_bytes"]) + int(
+                    (item or {}).get("bytes") or safe_file_size(output)
+                )
+            emit_progress("encoding_clips")
+
+    emit_progress("planning")
     with ThreadPoolExecutor(max_workers=MAX_PARALLEL_ENCODES) as pool:
         futures = {}
         for clip in plan["clips"]:
@@ -1388,12 +1488,20 @@ def run_qcut_video(
                     output_path=output,
                     action="qcut video clip",
                     dry_run=dry_run,
+                    on_start=lambda output=output: mark_started(output),
                 )
             ] = clip
         for future in as_completed(futures):
-            item = future.result()
-            item["clip"] = futures[future]
+            clip = futures[future]
+            output = work_dir / f"clip{int(clip['index']):03d}{archive_container_suffix(archive)}"
+            try:
+                item = future.result()
+            except Exception:
+                mark_finished(output, None, failed=True)
+                raise
+            item["clip"] = clip
             clip_results.append(item)
+            mark_finished(output, item)
 
     files_span = plan["files"]
     start_epoch = min(int(file["base_epoch"]) for file in files_span)
@@ -1405,6 +1513,7 @@ def run_qcut_video(
         f"{start_dt:%Y%m%dT%H%M%S}--{end_dt:%Y%m%dT%H%M%S} "
         f"auto-edit{archive_container_suffix(archive)}"
     )
+    emit_progress("concat")
     concat_result = concat_with_mkvmerge(
         clip_outputs,
         output_path,
@@ -1423,6 +1532,22 @@ def run_qcut_video(
     if output_path.exists():
         result["bytes"] = output_path.stat().st_size
         result["sha256"] = file_sha256(output_path)
+    finished_at = now_iso()
+    with progress_lock:
+        progress_state["output_bytes"] = int(result.get("bytes") or progress_state["output_bytes"])
+        emit_progress("done", finished_at=finished_at)
+    result["progress"] = clip_progress_payload(
+        task="qcut_video",
+        phase="done",
+        clips_total=clips_total,
+        clips_done=clips_total,
+        clips_running=0,
+        clips_failed=0,
+        output_bytes=int(result.get("bytes") or 0),
+        active_output_bytes=0,
+        started_at=progress_started_at,
+        finished_at=finished_at,
+    )
     return result
 
 
@@ -1573,6 +1698,17 @@ def run_job(job_id: str, req: JobRequest) -> None:
         "items": {},
     }
     write_status(job_id, status)
+    status_lock = threading.Lock()
+
+    def update_task_progress(task: str, progress: dict[str, Any]) -> None:
+        with status_lock:
+            existing = status.setdefault("items", {}).get(task)
+            item = dict(existing) if isinstance(existing, dict) else {}
+            item["status"] = "running"
+            item["progress"] = progress
+            status["items"][task] = item
+            write_status(job_id, status)
+
     try:
         video_sources = iter_files(req.input_dir, VIDEO_EXTENSIONS)
         if "archive_video" in req.tasks:
@@ -1601,6 +1737,10 @@ def run_job(job_id: str, req: JobRequest) -> None:
                 req.review_dir / "video",
                 archive=archive_profile,
                 dry_run=req.dry_run,
+                progress_callback=lambda progress: update_task_progress(
+                    "qcut_video",
+                    progress,
+                ),
             )
             write_status(job_id, status)
         if "audio_review" in req.tasks:

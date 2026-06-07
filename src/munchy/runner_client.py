@@ -229,6 +229,36 @@ def format_progress_bytes(done: int | float | None, total: int | float | None) -
 
 
 def format_encode_progress(progress: dict[str, Any]) -> str:
+    clips_total = int(progress.get("clips_total") or 0)
+    if clips_total:
+        mode = str(progress.get("mode") or progress.get("task") or "review")
+        label = "audio review" if mode == "audio_review" else "review"
+        clips_done = int(progress.get("clips_done") or 0)
+        clips_running = int(progress.get("clips_running") or 0)
+        clips_failed = int(progress.get("clips_failed") or 0)
+        pct = float(progress.get("percent_clips") or 0.0)
+        output_bytes = int(progress.get("output_bytes") or 0)
+        active_output_bytes = int(progress.get("active_output_bytes") or 0)
+        output_rate = int(progress.get("output_rate_bytes_per_second") or 0)
+        phase = str(progress.get("phase") or "").strip()
+        parts = [
+            f"{label} {clips_done}/{clips_total} clips",
+            f"{pct:.2f}%",
+        ]
+        if phase and phase != "done":
+            parts.append(phase.replace("_", " "))
+        if output_rate:
+            parts.append(f"{format_rate(output_rate)} output")
+        if output_bytes:
+            parts.append(f"{format_bytes(output_bytes)} written")
+        if clips_running:
+            parts.append(f"{clips_running} active")
+        if active_output_bytes:
+            parts.append(f"{format_bytes(active_output_bytes)} active output")
+        if clips_failed:
+            parts.append(f"{clips_failed} failed")
+        return ", ".join(parts)
+
     files_total = int(progress.get("files_total") or 0)
     files_encoded = int(progress.get("files_encoded") or 0)
     files_encoding = int(progress.get("files_encoding") or 0)
@@ -428,7 +458,8 @@ class RichProgressRenderer(ProgressRenderer):
 
         encode_progress = job.get("encode_progress")
         if isinstance(encode_progress, dict):
-            table.add_row("Encode", self._bar(encode_progress, percent_key="percent_input_bytes"))
+            label = "Review" if int(encode_progress.get("clips_total") or 0) else "Encode"
+            table.add_row(label, self._bar(encode_progress, percent_key="percent_input_bytes"))
             table.add_row("", format_encode_progress(encode_progress))
 
         if upload_progress is None and not isinstance(encode_progress, dict):
@@ -439,7 +470,12 @@ class RichProgressRenderer(ProgressRenderer):
     def _bar(self, progress: dict[str, Any], *, percent_key: str) -> Any:
         from rich.progress import BarColumn, Progress, TextColumn
 
-        pct = float(progress.get(percent_key) or progress.get("percent_files") or 0.0)
+        pct = float(
+            progress.get(percent_key)
+            or progress.get("percent_clips")
+            or progress.get("percent_files")
+            or 0.0
+        )
         pct = max(0.0, min(100.0, pct))
         bar = Progress(
             TextColumn(""),

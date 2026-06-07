@@ -572,6 +572,61 @@ def test_job_response_includes_eager_encode_progress(
     assert progress["started_at"] == "2026-06-04T00:00:00Z"
 
 
+def test_job_response_includes_review_clip_progress_from_gpu_status(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    job = {
+        "job_id": "job-1",
+        "state": "running",
+        "phase": "review",
+        "gpu_statuses": {
+            "gpu-job-1": {
+                "state": "running",
+                "items": {
+                    "qcut_video": {
+                        "status": "running",
+                        "progress": {
+                            "mode": "qcut_video",
+                            "task": "qcut_video",
+                            "phase": "encoding_clips",
+                            "clips_total": 40,
+                            "clips_done": 10,
+                            "clips_running": 2,
+                            "clips_failed": 0,
+                            "percent_clips": 25.0,
+                            "output_bytes": 1048576,
+                            "active_output_bytes": 262144,
+                            "output_rate_bytes_per_second": 131072,
+                            "started_at": "2026-06-05T00:00:00Z",
+                        },
+                    }
+                },
+            }
+        },
+    }
+
+    response = runner.job_response(job)
+    progress = response["encode_progress"]
+
+    assert progress["mode"] == "qcut_video"
+    assert progress["phase"] == "encoding_clips"
+    assert progress["clips_total"] == 40
+    assert progress["clips_done"] == 10
+    assert progress["clips_running"] == 2
+    assert progress["files_total"] == 40
+    assert progress["files_encoded"] == 10
+    assert progress["files_encoding"] == 2
+    assert progress["percent_clips"] == 25.0
+    assert progress["percent_input_bytes"] == 25.0
+    assert progress["output_bytes"] == 1048576
+    assert progress["active_output_bytes"] == 262144
+    assert progress["output_rate_bytes_per_second"] == 131072
+
+
 def test_compact_job_response_keeps_operational_fields_only(
     tmp_path: Path,
     monkeypatch,
