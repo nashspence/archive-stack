@@ -416,6 +416,15 @@ def test_prepare_shared_input_tree_links_uploaded_files_without_sha_rehash(
     metadata = json.loads(marker.read_text(encoding="utf-8"))
     assert metadata["upload_id"] == "upload-1"
     assert metadata["files"] == 1
+    monkeypatch.setattr(
+        runner,
+        "materialize_upload_file",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("prepared shared input tree should be reused")
+        ),
+    )
+
+    assert runner.prepare_shared_input_tree(upload, {"camera"}) == root
 
 
 def test_run_job_points_gpu_payload_at_shared_input_tree(

@@ -1400,6 +1400,35 @@ def materialize_upload_groups(
         materialize_upload_file(file_state, dest_root)
 
 
+def shared_input_tree_metadata(
+    upload: dict[str, Any],
+    group_names: set[str],
+) -> dict[str, Any]:
+    files = upload_files_for_groups(upload, group_names)
+    return {
+        "upload_id": str(upload["upload_id"]),
+        "groups": sorted(group_names),
+        "files": len(files),
+        "bytes": sum(int(file_state["bytes"]) for file_state in files),
+    }
+
+
+def shared_input_tree_ready(
+    root: Path,
+    upload: dict[str, Any],
+    group_names: set[str],
+) -> bool:
+    marker = root / ".munchy-input-upload.json"
+    if not marker.is_file():
+        return False
+    try:
+        metadata = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    expected = shared_input_tree_metadata(upload, group_names)
+    return all(metadata.get(key) == value for key, value in expected.items())
+
+
 def prepare_shared_input_tree(
     upload: dict[str, Any],
     group_names: set[str],
@@ -1412,6 +1441,8 @@ def prepare_shared_input_tree(
     upload_id = str(upload["upload_id"])
     root = shared_input_upload_root(upload_id)
     files = upload_files_for_groups(upload, group_names)
+    if shared_input_tree_ready(root, upload, group_names):
+        return root
     root.mkdir(parents=True, exist_ok=True)
     for index, file_state in enumerate(files, start=1):
         materialize_upload_file(file_state, root)
@@ -1419,11 +1450,8 @@ def prepare_shared_input_tree(
             job["phase"] = f"preparing_input:{index}/{len(files)}"
             save_job(job)
     metadata = {
-        "upload_id": upload_id,
+        **shared_input_tree_metadata(upload, group_names),
         "prepared_at": now_iso(),
-        "groups": sorted(group_names),
-        "files": len(files),
-        "bytes": sum(int(file_state["bytes"]) for file_state in files),
     }
     marker = root / ".munchy-input-upload.json"
     part = marker.with_suffix(marker.suffix + ".part")
