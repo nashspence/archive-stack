@@ -164,8 +164,9 @@ def next_upload_retry_delay(current_delay: float) -> float:
 
 
 class UploadRetryReporter:
-    def __init__(self, *, label: str = "upload") -> None:
+    def __init__(self, *, label: str = "upload", renderer: ProgressRenderer | None = None) -> None:
         self.label = label
+        self.renderer = renderer
         self.total_retries = 0
         self.files: set[str] = set()
         self.started_at: float | None = None
@@ -173,6 +174,27 @@ class UploadRetryReporter:
         self.latest_path = ""
         self.latest_error = ""
         self.lock = Lock()
+
+    def bind_renderer(self, renderer: ProgressRenderer) -> None:
+        self.renderer = renderer
+
+    def payload(
+        self,
+        *,
+        rel_path: str,
+        retry_count: int,
+        retry_delay: float,
+        exc: BaseException,
+    ) -> dict[str, Any]:
+        return {
+            "label": self.label,
+            "retries": self.total_retries,
+            "files": len(self.files),
+            "path": rel_path,
+            "retry_count": retry_count,
+            "next_retry_seconds": retry_delay,
+            "error": short_error(exc),
+        }
 
     def mark_retry(
         self,
@@ -190,6 +212,20 @@ class UploadRetryReporter:
             self.latest_path = rel_path
             self.latest_error = short_error(exc)
             if self.last_notice and now - self.last_notice < UPLOAD_RETRY_NOTICE_SECONDS:
+                return
+            if self.renderer is not None and self.renderer.is_live:
+                self.renderer.update(
+                    {
+                        "transient_issue": self.payload(
+                            rel_path=rel_path,
+                            retry_count=retry_count,
+                            retry_delay=retry_delay,
+                            exc=exc,
+                        )
+                    },
+                    force=True,
+                )
+                self.last_notice = now
                 return
             elapsed = now - self.started_at
             print(
@@ -209,13 +245,26 @@ class UploadRetryReporter:
         with self.lock:
             if not self.total_retries:
                 return
-            print(
-                (
-                    f"{self.label} recovered from transient issues: "
-                    f"{self.total_retries} retries across {len(self.files)} file(s)"
-                ),
-                file=sys.stderr,
-            )
+            if self.renderer is not None and self.renderer.is_live:
+                self.renderer.update(
+                    {
+                        "transient_issue": {
+                            "label": self.label,
+                            "retries": self.total_retries,
+                            "files": len(self.files),
+                            "message": "recovered from transient issues",
+                        }
+                    },
+                    force=True,
+                )
+            else:
+                print(
+                    (
+                        f"{self.label} recovered from transient issues: "
+                        f"{self.total_retries} retries across {len(self.files)} file(s)"
+                    ),
+                    file=sys.stderr,
+                )
             self.total_retries = 0
             self.files.clear()
             self.started_at = None
@@ -232,7 +281,7 @@ def format_encode_progress(progress: dict[str, Any]) -> str:
     clips_total = int(progress.get("clips_total") or 0)
     if clips_total:
         mode = str(progress.get("mode") or progress.get("task") or "review")
-        label = "audio review" if mode == "audio_review" else "review"
+        label = "remote audio review" if mode == "audio_review" else "remote review"
         clips_done = int(progress.get("clips_done") or 0)
         clips_running = int(progress.get("clips_running") or 0)
         clips_failed = int(progress.get("clips_failed") or 0)
@@ -273,7 +322,7 @@ def format_encode_progress(progress: dict[str, Any]) -> str:
     running_batches = int(progress.get("running_batches") or 0)
     pipeline_batches = int(progress.get("pipeline_batches") or 0)
     parts = [
-        f"encode {files_encoded}/{files_total} files",
+        f"remote encode {files_encoded}/{files_total} files",
         f"{format_progress_bytes(input_done, input_total)} input",
         f"{pct:.2f}%",
         f"{format_rate(input_rate)} input",
@@ -302,12 +351,76 @@ def format_input_upload_progress(progress: dict[str, Any]) -> str:
     )
     rate = int(progress.get("rate_bytes_per_second") or 0)
     parts = [
-        f"upload {files_uploaded}/{files_total} files",
+        f"remote upload {files_uploaded}/{files_total} files",
         format_progress_bytes(uploaded_bytes, bytes_total),
         f"{pct:.2f}%",
     ]
     if rate:
         parts.append(format_rate(rate))
+    return ", ".join(parts)
+
+
+def local_progress_items(job: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    progress = job.get("local_progress")
+    if isinstance(progress, dict):
+        items: list[tuple[str, dict[str, Any]]] = []
+        for stage in ("hash", "preflight"):
+            item = progress.get(stage)
+            if isinstance(item, dict):
+                items.append((stage, item))
+        for stage, item in progress.items():
+            if stage in {"hash", "preflight"} or not isinstance(item, dict):
+                continue
+            items.append((str(stage), item))
+        return items
+    if isinstance(progress, list):
+        return [
+            (str(item.get("stage") or "local"), item)
+            for item in progress
+            if isinstance(item, dict)
+        ]
+    return []
+
+
+def format_local_progress(stage: str, progress: dict[str, Any]) -> str:
+    label = str(progress.get("label") or stage).replace("_", " ").strip() or "local"
+    files_done = int(progress.get("files_done") or 0)
+    files_total = int(progress.get("files_total") or 0)
+    bytes_done = int(progress.get("bytes_done") or 0)
+    bytes_total = int(progress.get("bytes_total") or 0)
+    pct = float(
+        progress.get("percent_bytes")
+        or ((bytes_done / bytes_total * 100.0) if bytes_total else 100.0)
+    )
+    parts = [
+        f"local {label} {files_done}/{files_total} files",
+        format_progress_bytes(bytes_done, bytes_total),
+        f"{pct:.2f}%",
+    ]
+    rate = int(progress.get("rate_bytes_per_second") or 0)
+    if rate:
+        suffix = str(progress.get("rate_label") or "").strip()
+        parts.append(f"{format_rate(rate)}{(' ' + suffix) if suffix else ''}")
+    elapsed = float(progress.get("elapsed_seconds") or 0.0)
+    if elapsed >= 1:
+        parts.append(f"{elapsed:.1f}s")
+    cache_hits = int(progress.get("cache_hits") or 0)
+    cache_misses = int(progress.get("cache_misses") or 0)
+    cache_writes = int(progress.get("cache_writes") or 0)
+    cache_seeded = int(progress.get("cache_seeded") or 0)
+    if cache_hits or cache_misses or cache_writes or cache_seeded:
+        cache = f"cache hits {cache_hits}, misses {cache_misses}"
+        if cache_writes:
+            cache += f", writes {cache_writes}"
+        if cache_seeded:
+            cache += f", seeded {cache_seeded}"
+        parts.append(cache)
+    failures = int(progress.get("failures") or progress.get("failed_files") or 0)
+    if failures:
+        parts.append(f"{failures} failed")
+    message = str(progress.get("message") or "").strip()
+    if message:
+        parts.append(message)
     return ", ".join(parts)
 
 
@@ -323,12 +436,17 @@ def job_upload_progress(job: dict[str, Any]) -> dict[str, Any] | None:
 
 def format_progress_status_line(job: dict[str, Any]) -> str:
     pieces: list[str] = []
+    for stage, progress in local_progress_items(job):
+        pieces.append(format_local_progress(stage, progress))
     upload_progress = job_upload_progress(job)
     if upload_progress is not None:
         pieces.append(format_input_upload_progress(upload_progress))
     encode_progress = job.get("encode_progress")
     if isinstance(encode_progress, dict):
         pieces.append(format_encode_progress(encode_progress))
+    issue = job.get("transient_issue")
+    if isinstance(issue, dict):
+        pieces.append(format_transient_issue(issue))
     return " | ".join(pieces) if pieces else "progress: waiting"
 
 
@@ -374,6 +492,7 @@ def format_job_summary_line(job: dict[str, Any]) -> str:
 
 class ProgressRenderer:
     include_job: bool
+    is_live: bool = False
 
     @classmethod
     def plain(cls, *, include_job: bool) -> ProgressRenderer:
@@ -405,6 +524,8 @@ class PlainProgressRenderer(ProgressRenderer):
 
 
 class RichProgressRenderer(ProgressRenderer):
+    is_live = True
+
     def __init__(self, *, include_job: bool, title: str) -> None:
         from rich.console import Console
         from rich.live import Live
@@ -451,18 +572,32 @@ class RichProgressRenderer(ProgressRenderer):
             if phase:
                 table.add_row("Phase", phase)
 
+        for stage, progress in local_progress_items(job):
+            label = f"Local {str(progress.get('label') or stage).replace('_', ' ').title()}"
+            table.add_row(label, self._bar(progress, percent_key="percent_bytes"))
+            table.add_row("", format_local_progress(stage, progress))
+
         upload_progress = job_upload_progress(job)
         if upload_progress is not None:
-            table.add_row("Upload", self._bar(upload_progress, percent_key="percent_bytes"))
+            table.add_row("Remote Upload", self._bar(upload_progress, percent_key="percent_bytes"))
             table.add_row("", format_input_upload_progress(upload_progress))
 
         encode_progress = job.get("encode_progress")
         if isinstance(encode_progress, dict):
-            label = "Review" if int(encode_progress.get("clips_total") or 0) else "Encode"
+            label = "Remote Review" if int(encode_progress.get("clips_total") or 0) else "Remote Encode"
             table.add_row(label, self._bar(encode_progress, percent_key="percent_input_bytes"))
             table.add_row("", format_encode_progress(encode_progress))
 
-        if upload_progress is None and not isinstance(encode_progress, dict):
+        issue = job.get("transient_issue")
+        if isinstance(issue, dict):
+            table.add_row("Remote Transient Issue", format_transient_issue(issue))
+
+        if (
+            not local_progress_items(job)
+            and upload_progress is None
+            and not isinstance(encode_progress, dict)
+            and not isinstance(issue, dict)
+        ):
             table.add_row("Progress", "waiting")
 
         return Panel(table, title=self.title, border_style="cyan", box=box.ROUNDED)
@@ -485,6 +620,31 @@ class RichProgressRenderer(ProgressRenderer):
         )
         bar.add_task("", total=100.0, completed=pct)
         return bar
+
+
+def format_transient_issue(issue: dict[str, Any]) -> str:
+    label = str(issue.get("label") or "remote").strip() or "remote"
+    retries = int(issue.get("retries") or issue.get("retry_count") or 0)
+    files = int(issue.get("files") or 0)
+    next_retry = issue.get("next_retry_seconds")
+    error = str(issue.get("error") or "").strip()
+    message = str(issue.get("message") or "").strip()
+    path = short_path(str(issue.get("path") or ""), max_len=56)
+    parts = [f"{label} retry {retries}"]
+    if files:
+        parts.append(f"{files} file(s)")
+    if next_retry is not None:
+        try:
+            parts.append(f"next in {float(next_retry):.0f}s")
+        except (TypeError, ValueError):
+            pass
+    if error:
+        parts.append(short_path(error, max_len=96))
+    if message:
+        parts.append(message)
+    if path:
+        parts.append(path)
+    return ", ".join(parts)
 
 
 def make_progress_renderer(*, include_job: bool, title: str) -> ProgressRenderer:
@@ -747,7 +907,7 @@ class MunchyRunnerClient:
         total_files = len(request.files)
         total_bytes = sum(item.bytes for item in request.files)
         chunk_mib = request.upload_chunk_mib
-        retry_reporter = UploadRetryReporter(label="upload")
+        retry_reporter = UploadRetryReporter(label="remote upload")
         current_upload = self.json(
             "GET",
             f"/v1/input-uploads/{urllib.parse.quote(request.upload_id)}",
@@ -775,6 +935,7 @@ class MunchyRunnerClient:
             )
         if pending_files:
             renderer = make_progress_renderer(include_job=False, title="Munchy Upload")
+            retry_reporter.bind_renderer(renderer)
             if request.upload_workers == 1 or len(pending_files) <= 1:
                 with renderer:
                     self._upload_files_serial(request, pending_files, retry_reporter, renderer)
@@ -989,11 +1150,12 @@ class MunchyRunnerClient:
 
     def wait_for_job(self, job_id: str, *, interval: float = 10.0) -> dict[str, Any]:
         retry_delay = UPLOAD_RETRY_INITIAL_DELAY_SECONDS
-        retry_reporter = UploadRetryReporter(label="job status")
+        retry_reporter = UploadRetryReporter(label="remote job status")
         renderer = make_progress_renderer(
             include_job=True,
             title=f"Munchy Job {short_path(job_id, max_len=48)}",
         )
+        retry_reporter.bind_renderer(renderer)
         with renderer:
             while True:
                 try:

@@ -12,7 +12,9 @@ from munchy.runner_client import (
     RunnerHttpError,
     RunnerInputFile,
     RunnerUploadRequest,
+    UploadRetryReporter,
     UploadProgress,
+    format_progress_status_line,
     format_job_summary_line,
 )
 
@@ -45,8 +47,8 @@ def test_format_job_summary_line_includes_upload_and_encode_progress() -> None:
     )
 
     assert line.startswith("job-1 [example-q49] | job: running | gpu-eager:pipeline=3/3")
-    assert "upload 10/20 files" in line
-    assert "encode 4/20 files" in line
+    assert "remote upload 10/20 files" in line
+    assert "remote encode 4/20 files" in line
     assert "batches 1/3" in line
 
 
@@ -72,12 +74,83 @@ def test_format_job_summary_line_renders_review_clip_progress() -> None:
         }
     )
 
-    assert "review 12/48 clips" in line
+    assert "remote review 12/48 clips" in line
     assert "25.00%" in line
     assert "encoding clips" in line
     assert "2 active" in line
     assert "active output" in line
-    assert "encode 12/48 files" not in line
+    assert "remote encode 12/48 files" not in line
+
+
+def test_format_progress_status_line_renders_local_and_remote_progress() -> None:
+    line = format_progress_status_line(
+        {
+            "local_progress": {
+                "hash": {
+                    "label": "hash",
+                    "files_done": 4,
+                    "files_total": 10,
+                    "bytes_done": 400,
+                    "bytes_total": 1000,
+                    "percent_bytes": 40.0,
+                    "rate_bytes_per_second": 200,
+                    "rate_label": "logical",
+                    "cache_hits": 3,
+                    "cache_misses": 1,
+                    "cache_writes": 1,
+                },
+                "preflight": {
+                    "label": "preflight",
+                    "files_done": 2,
+                    "files_total": 10,
+                    "bytes_done": 100,
+                    "bytes_total": 1000,
+                    "percent_bytes": 10.0,
+                    "failures": 1,
+                },
+            },
+            "upload_progress": {
+                "files_uploaded": 1,
+                "files_total": 10,
+                "uploaded_bytes": 50,
+                "bytes_total": 1000,
+                "percent_bytes": 5.0,
+            },
+        }
+    )
+
+    assert "local hash 4/10 files" in line
+    assert "cache hits 3, misses 1, writes 1" in line
+    assert "local preflight 2/10 files" in line
+    assert "1 failed" in line
+    assert "remote upload 1/10 files" in line
+
+
+def test_upload_retry_reporter_uses_live_renderer_for_transient_issues() -> None:
+    updates: list[dict[str, object]] = []
+
+    class Renderer:
+        is_live = True
+
+        def update(self, job: dict[str, object], *, force: bool = False) -> None:
+            updates.append(job)
+
+    reporter = UploadRetryReporter(label="remote upload", renderer=Renderer())  # type: ignore[arg-type]
+    stderr = io.StringIO()
+
+    with contextlib.redirect_stderr(stderr):
+        reporter.mark_retry(
+            rel_path="camera/clip.mp4",
+            retry_count=1,
+            retry_delay=2.0,
+            exc=ConnectionResetError(54, "Connection reset by peer"),
+        )
+        reporter.finish()
+
+    assert stderr.getvalue() == ""
+    assert updates[0]["transient_issue"]["label"] == "remote upload"  # type: ignore[index]
+    assert updates[0]["transient_issue"]["next_retry_seconds"] == 2.0  # type: ignore[index]
+    assert updates[-1]["transient_issue"]["message"] == "recovered from transient issues"  # type: ignore[index]
 
 
 def test_format_job_summary_line_includes_encoder_queue_position() -> None:
