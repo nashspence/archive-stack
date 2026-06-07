@@ -760,6 +760,22 @@ def tusd_data_path(upload_id: str) -> Path:
     return TUSD_DIR / upload_id
 
 
+def safe_local_id(value: str) -> str:
+    cleaned = "".join(ch if ch in SAFE_GROUP_NAME_CHARS else "-" for ch in value).strip(".-_")
+    digest = hashlib.sha256(value.encode()).hexdigest()[:12]
+    prefix = (cleaned or "upload")[:96].strip(".-_") or "upload"
+    return f"{prefix}-{digest}"
+
+
+def shared_input_upload_root(upload_id: str) -> Path:
+    return GPU_RUNTIME_DIR / "input-uploads" / safe_local_id(upload_id)
+
+
+def gpu_runtime_container_path(path: Path) -> str:
+    rel = path.resolve().relative_to(GPU_RUNTIME_DIR)
+    return f"/data/{rel.as_posix()}"
+
+
 def target_path_for(upload_id: str, rel_path: str) -> str:
     return f".munchy-runner/uploads/{upload_id}/{rel_path}"
 
@@ -897,6 +913,16 @@ def referenced_input_upload_ids() -> set[str]:
         if upload_id:
             upload_ids.add(str(upload_id))
     return upload_ids
+
+
+def jobs_referencing_input_upload(upload_id: str, *, exclude_job_id: str | None = None) -> list[str]:
+    return [
+        str(job["job_id"])
+        for job in job_states()
+        if str(job.get("input_upload_id") or "") == upload_id
+        and str(job.get("job_id") or "") != exclude_job_id
+        and job.get("state") not in TERMINAL_JOB_STATES
+    ]
 
 
 def active_input_uploads() -> list[dict[str, Any]]:
@@ -1094,6 +1120,7 @@ def save_input_upload(upload: dict[str, Any]) -> dict[str, Any]:
 def remove_input_upload_data(upload: dict[str, Any]) -> None:
     for file_state in upload.get("files", []):
         remove_input_file_data(file_state)
+    shutil.rmtree(shared_input_upload_root(str(upload["upload_id"])), ignore_errors=True)
 
 
 def remove_input_file_data(file_state: dict[str, Any]) -> None:
@@ -1335,7 +1362,12 @@ def wait_for_upload_groups(
         retry_sleep(EAGER_ARCHIVE_WAIT_SECONDS, job_id=job_id)
 
 
-def materialize_upload_file(file_state: dict[str, Any], dest_root: Path) -> None:
+def materialize_upload_file(
+    file_state: dict[str, Any],
+    dest_root: Path,
+    *,
+    verify_sha256: bool = False,
+) -> None:
     rel_path = str(file_state["path"])
     status = upload_file_status(file_state)
     if status["upload_state"] == "consumed":
@@ -1347,11 +1379,11 @@ def materialize_upload_file(file_state: dict[str, Any], dest_root: Path) -> None
     expected_sha256 = file_state.get("sha256")
     if not source.exists() or source.stat().st_size < expected_bytes:
         raise RuntimeError(f"input file is incomplete: {rel_path}")
-    if expected_sha256 and file_sha256(source) != expected_sha256:
+    if verify_sha256 and expected_sha256 and file_sha256(source) != expected_sha256:
         raise RuntimeError(f"input file sha256 mismatch: {rel_path}")
     dest = dest_root / rel_path
     if dest.exists() and dest.stat().st_size == expected_bytes:
-        if not expected_sha256 or file_sha256(dest) == expected_sha256:
+        if not verify_sha256 or not expected_sha256 or file_sha256(dest) == expected_sha256:
             return
     link_or_copy(source, dest)
 
@@ -1366,6 +1398,38 @@ def materialize_upload_groups(
         raise RuntimeError("input upload groups are not complete")
     for file_state in upload_files_for_groups(upload, group_names):
         materialize_upload_file(file_state, dest_root)
+
+
+def prepare_shared_input_tree(
+    upload: dict[str, Any],
+    group_names: set[str],
+    *,
+    job: dict[str, Any] | None = None,
+) -> Path:
+    upload = refresh_input_upload(upload)
+    if not upload_groups_complete(upload, group_names):
+        raise RuntimeError("input upload groups are not complete")
+    upload_id = str(upload["upload_id"])
+    root = shared_input_upload_root(upload_id)
+    files = upload_files_for_groups(upload, group_names)
+    root.mkdir(parents=True, exist_ok=True)
+    for index, file_state in enumerate(files, start=1):
+        materialize_upload_file(file_state, root)
+        if job is not None and (index == len(files) or index % 100 == 0):
+            job["phase"] = f"preparing_input:{index}/{len(files)}"
+            save_job(job)
+    metadata = {
+        "upload_id": upload_id,
+        "prepared_at": now_iso(),
+        "groups": sorted(group_names),
+        "files": len(files),
+        "bytes": sum(int(file_state["bytes"]) for file_state in files),
+    }
+    marker = root / ".munchy-input-upload.json"
+    part = marker.with_suffix(marker.suffix + ".part")
+    part.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+    part.replace(marker)
+    return root
 
 
 def materialize_upload(upload: dict[str, Any], dest_root: Path) -> None:
@@ -1576,10 +1640,14 @@ def remove_job_local_work(job: dict[str, Any]) -> list[str]:
 
 def cleanup_cancelled_job(job: dict[str, Any]) -> list[str]:
     removed = remove_job_local_work(job)
+    job_id = str(job.get("job_id") or "")
     upload_id = str(job.get("input_upload_id") or "")
     if upload_id:
         upload = read_state("input-upload", upload_id)
-        if upload is not None:
+        if upload is not None and not jobs_referencing_input_upload(
+            upload_id,
+            exclude_job_id=job_id,
+        ):
             remove_input_upload_data(upload)
             delete_state("input-upload", upload_id)
             removed.append(f"input-upload:{upload_id}")
@@ -3203,6 +3271,7 @@ def run_job(job_id: str) -> None:
             raise_if_job_cancelled(job_id)
 
         non_eager_groups = set(str(group_name) for group_name in groups) - eager_groups
+        input_dir = gpu_job_root / "input"
         if non_eager_groups:
             input_upload = wait_for_upload_groups(
                 job,
@@ -3214,9 +3283,13 @@ def run_job(job_id: str) -> None:
                 gpu_scratch_required_bytes(non_eager_bytes, storage_hint) + MIN_FREE_BYTES
             )
             wait_for_free_space(job, GPU_RUNTIME_DIR, required_gpu_free, label="gpu scratch")
-            job["phase"] = "materializing"
+            job["phase"] = "preparing_input"
             save_job(job)
-            materialize_upload_groups(input_upload, input_dir, non_eager_groups)
+            input_dir = prepare_shared_input_tree(
+                input_upload,
+                non_eager_groups,
+                job=job,
+            )
             raise_if_job_cancelled(job_id)
 
         gpu_work: list[tuple[str, dict[str, Any], list[TaskName]]] = []
@@ -3259,9 +3332,9 @@ def run_job(job_id: str) -> None:
                     save_job(job)
                     gpu_payload = {
                         "job_id": gpu_job_id,
-                        "input_dir": f"/data/jobs/{job_id}/input/{group_name}",
-                        "archive_dir": f"/data/jobs/{job_id}/archive/{group_name}",
-                        "review_dir": f"/data/jobs/{job_id}/review/{group_name}",
+                        "input_dir": gpu_runtime_container_path(input_dir / group_name),
+                        "archive_dir": gpu_runtime_container_path(archive_dir / group_name),
+                        "review_dir": gpu_runtime_container_path(review_dir / group_name),
                         "profile": group_config.get("profile", "av1-nvenc-high"),
                         "tasks": gpu_tasks,
                         "collection_slug": job["collection_slug"],
@@ -3689,12 +3762,7 @@ def get_input_upload(upload_id: str) -> dict[str, Any]:
 def delete_input_upload(upload_id: str) -> dict[str, Any]:
     with state_lock:
         upload = load_input_upload(upload_id)
-        referenced_jobs = [
-            str(job["job_id"])
-            for job in job_states()
-            if str(job.get("input_upload_id") or "") == upload_id
-            and job.get("state") not in TERMINAL_JOB_STATES
-        ]
+        referenced_jobs = jobs_referencing_input_upload(upload_id)
         if referenced_jobs:
             raise HTTPException(
                 status_code=409,

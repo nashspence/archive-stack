@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import logging
 import sys
 import uuid
@@ -298,6 +299,10 @@ def test_cancel_job_with_cleanup_removes_local_work_and_input_upload(
     data_path = runner.tusd_data_path("upload-a")
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_bytes(b"a")
+    shared_root = runner.shared_input_upload_root("upload-1")
+    shared_root.mkdir(parents=True)
+    (shared_root / "camera").mkdir()
+    (shared_root / "camera" / "a.mp4").write_bytes(b"a")
     work_dir = runner.GPU_RUNTIME_DIR / "jobs" / "job-1"
     work_dir.mkdir(parents=True)
     (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
@@ -324,8 +329,155 @@ def test_cancel_job_with_cleanup_removes_local_work_and_input_upload(
     assert job["cleanup_requested"] is True
     assert runner.read_state("input-upload", "upload-1") is None
     assert not data_path.exists()
+    assert not shared_root.exists()
     assert not work_dir.exists()
     assert "input-upload:upload-1" in job["cleanup_removed"]
+
+
+def test_cancel_job_with_cleanup_preserves_input_upload_referenced_by_sibling(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    data_path = runner.tusd_data_path("upload-a")
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.write_bytes(b"a")
+    shared_root = runner.shared_input_upload_root("upload-1")
+    shared_root.mkdir(parents=True)
+    runner.save_input_upload(
+        {
+            "upload_id": "upload-1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "files": [{"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"}],
+        }
+    )
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "queued",
+            "phase": "queued",
+            "input_upload_id": "upload-1",
+            "groups": {"camera": {}},
+        }
+    )
+    runner.save_job(
+        {
+            "job_id": "job-2",
+            "state": "queued",
+            "phase": "queued",
+            "input_upload_id": "upload-1",
+            "groups": {"camera": {}},
+        }
+    )
+
+    job = runner.cancel_job("job-1", cleanup=True)
+
+    assert job["state"] == "cancelled"
+    assert runner.read_state("input-upload", "upload-1") is not None
+    assert data_path.exists()
+    assert shared_root.exists()
+    assert "input-upload:upload-1" not in job.get("cleanup_removed", [])
+
+
+def test_prepare_shared_input_tree_links_uploaded_files_without_sha_rehash(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    data_path = runner.tusd_data_path("upload-a")
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.write_bytes(b"video")
+    monkeypatch.setattr(
+        runner,
+        "file_sha256",
+        lambda path: (_ for _ in ()).throw(AssertionError("sha256 should not run")),
+    )
+    upload = {
+        "upload_id": "upload-1",
+        "files": [
+            {
+                "path": "camera/a.mp4",
+                "bytes": 5,
+                "sha256": "0" * 64,
+                "upload_id": "upload-a",
+            }
+        ],
+    }
+
+    root = runner.prepare_shared_input_tree(upload, {"camera"})
+
+    linked = root / "camera" / "a.mp4"
+    assert linked.read_bytes() == b"video"
+    assert linked.stat().st_ino == data_path.stat().st_ino
+    marker = root / ".munchy-input-upload.json"
+    metadata = json.loads(marker.read_text(encoding="utf-8"))
+    assert metadata["upload_id"] == "upload-1"
+    assert metadata["files"] == 1
+
+
+def test_run_job_points_gpu_payload_at_shared_input_tree(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    data_path = runner.tusd_data_path("upload-a")
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.write_bytes(b"video")
+    runner.save_input_upload(
+        {
+            "upload_id": "upload-1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "storage_hint": {
+                "workflow_mode": "review_only",
+                "archive_mode": "av1_nvenc",
+                "gpu_tasks": ["qcut_video"],
+                "groups": {"camera": {"archive_mode": "av1_nvenc", "gpu_tasks": ["qcut_video"]}},
+            },
+            "files": [{"path": "camera/a.mp4", "bytes": 5, "upload_id": "upload-a"}],
+        }
+    )
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "queued",
+            "phase": "queued",
+            "workflow_mode": "review_only",
+            "input_upload_id": "upload-1",
+            "collection_slug": "camera-review",
+            "groups": {
+                "camera": {
+                    "archive_mode": "av1_nvenc",
+                    "gpu_tasks": ["qcut_video"],
+                    "profile": "profile",
+                }
+            },
+        }
+    )
+    payloads: list[dict[str, object]] = []
+    monkeypatch.setattr(runner, "acquire_job_gpu", lambda job: "token")
+    monkeypatch.setattr(runner, "release_job_gpu", lambda job, token: None)
+    monkeypatch.setattr(runner, "start_gpu_job", lambda payload: payloads.append(payload))
+    monkeypatch.setattr(
+        runner,
+        "wait_gpu_job",
+        lambda gpu_job_id, *, gpu_payload, job: {"state": "succeeded"},
+    )
+    monkeypatch.setattr(runner, "upload_review", lambda *args, **kwargs: {"returncode": 0})
+    monkeypatch.setattr(runner, "notify_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
+
+    runner.run_job("job-1")
+
+    assert len(payloads) == 1
+    assert str(payloads[0]["input_dir"]).startswith("/data/input-uploads/")
+    assert str(payloads[0]["input_dir"]).endswith("/camera")
+    assert "/jobs/job-1/input" not in str(payloads[0]["input_dir"])
+    assert runner.load_job("job-1")["state"] == "succeeded"
 
 
 def test_preflight_issue_notification_error_keeps_truncated_filename_at_end(
