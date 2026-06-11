@@ -1732,11 +1732,36 @@ def gpu_eager_batch_job_id(job_id: str, batch_id: str) -> str:
 
 def gpu_job_work_roots(job: dict[str, Any]) -> list[Path]:
     job_id = str(job["job_id"])
-    roots = [GPU_RUNTIME_DIR / "jobs" / job_id]
+    roots: list[Path] = []
+    seen: set[Path] = set()
+
+    def add_gpu_job_root(gpu_job_id: str) -> None:
+        if not gpu_job_id:
+            return
+        root = GPU_RUNTIME_DIR / "jobs" / gpu_job_id
+        if root in seen:
+            return
+        seen.add(root)
+        roots.append(root)
+
+    add_gpu_job_root(job_id)
     groups = job.get("groups")
     if isinstance(groups, dict):
         for group_name in groups:
-            roots.append(GPU_RUNTIME_DIR / "jobs" / gpu_group_job_id(job_id, str(group_name)))
+            add_gpu_job_root(gpu_group_job_id(job_id, str(group_name)))
+    eager = job.get("eager_archive")
+    batches = eager.get("batches") if isinstance(eager, dict) else None
+    if isinstance(batches, dict):
+        for batch_key, batch in batches.items():
+            if not isinstance(batch, dict):
+                continue
+            gpu_job_id = str(batch.get("gpu_job_id") or "")
+            add_gpu_job_root(gpu_job_id)
+            payload = batch.get("payload")
+            if isinstance(payload, dict):
+                add_gpu_job_root(str(payload.get("job_id") or ""))
+            batch_id = str(batch.get("batch_id") or batch_key)
+            add_gpu_job_root(gpu_eager_batch_job_id(job_id, batch_id))
     return roots
 
 

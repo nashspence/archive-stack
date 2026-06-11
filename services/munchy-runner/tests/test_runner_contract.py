@@ -430,6 +430,47 @@ def test_failed_job_with_cleanup_removes_local_work_and_input_upload(
     assert "input_upload_progress" not in job
 
 
+def test_terminal_cleanup_removes_eager_batch_gpu_work_roots(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    computed_id = runner.gpu_eager_batch_job_id("job-1", "batch-2")
+    roots = [
+        runner.GPU_RUNTIME_DIR / "jobs" / "job-1",
+        runner.GPU_RUNTIME_DIR / "jobs" / "explicit-eager-gpu-job",
+        runner.GPU_RUNTIME_DIR / "jobs" / "payload-eager-gpu-job",
+        runner.GPU_RUNTIME_DIR / "jobs" / computed_id,
+    ]
+    for root in roots:
+        root.mkdir(parents=True)
+        (root / "scratch.txt").write_text("scratch", encoding="utf-8")
+    job = {
+        "job_id": "job-1",
+        "state": "failed",
+        "phase": "gpu",
+        "eager_archive": {
+            "batches": {
+                "batch-1": {
+                    "batch_id": "batch-1",
+                    "gpu_job_id": "explicit-eager-gpu-job",
+                    "payload": {"job_id": "payload-eager-gpu-job"},
+                },
+                "batch-2": {"batch_id": "batch-2"},
+            }
+        },
+    }
+
+    removed = runner.cleanup_terminal_job(job)
+
+    assert len(removed) == len(roots)
+    for root in roots:
+        assert not root.exists()
+        assert str(root) in removed
+
+
 def test_cleanup_once_removes_old_failed_job_work_and_input_upload(
     tmp_path: Path,
     monkeypatch,
