@@ -427,6 +427,45 @@ def test_prepare_shared_input_tree_links_uploaded_files_without_sha_rehash(
     assert runner.prepare_shared_input_tree(upload, {"camera"}) == root
 
 
+def test_sync_shared_input_tree_links_completed_files_incrementally(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    complete_path = runner.tusd_data_path("upload-a")
+    partial_path = runner.tusd_data_path("upload-b")
+    complete_path.parent.mkdir(parents=True, exist_ok=True)
+    complete_path.write_bytes(b"video-a")
+    partial_path.write_bytes(b"vid")
+    upload = {
+        "upload_id": "upload-1",
+        "files": [
+            {"path": "camera/a.mp4", "bytes": 7, "upload_id": "upload-a"},
+            {"path": "camera/b.mp4", "bytes": 7, "upload_id": "upload-b"},
+        ],
+    }
+
+    summary = runner.sync_shared_input_tree(upload, {"camera"})
+    progress = runner.upload_group_progress(upload, {"camera"})
+    root = runner.shared_input_upload_root("upload-1")
+
+    assert summary["linked"] == 1
+    assert (root / "camera" / "a.mp4").read_bytes() == b"video-a"
+    assert not (root / "camera" / "b.mp4").exists()
+    assert progress["files_uploaded"] == 1
+    assert progress["input_tree_files_ready"] == 1
+
+    partial_path.write_bytes(b"video-b")
+    summary = runner.sync_shared_input_tree(upload, {"camera"})
+    progress = runner.upload_group_progress(upload, {"camera"})
+
+    assert summary["linked"] == 2
+    assert (root / "camera" / "b.mp4").read_bytes() == b"video-b"
+    assert progress["files_uploaded"] == 2
+    assert progress["input_tree_files_ready"] == 2
+
+
 def test_run_job_points_gpu_payload_at_shared_input_tree(
     tmp_path: Path,
     monkeypatch,
@@ -487,6 +526,72 @@ def test_run_job_points_gpu_payload_at_shared_input_tree(
     assert str(payloads[0]["input_dir"]).endswith("/camera")
     assert "/jobs/job-1/input" not in str(payloads[0]["input_dir"])
     assert runner.load_job("job-1")["state"] == "succeeded"
+
+
+def test_run_job_reuses_stored_shared_review_plan(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    data_path = runner.tusd_data_path("upload-a")
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.write_bytes(b"video")
+    plan = {
+        "kind": "munchy.qcut-plan",
+        "version": 1,
+        "clips": [{"index": 1, "source": "/data/input-uploads/upload/camera/a.mp4"}],
+        "files": [{"path": "/data/input-uploads/upload/camera/a.mp4"}],
+    }
+    runner.store_shared_review_plan("upload-1", "camera", "qcut_video", plan)
+    runner.save_input_upload(
+        {
+            "upload_id": "upload-1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "storage_hint": {
+                "workflow_mode": "review_only",
+                "archive_mode": "av1_nvenc",
+                "gpu_tasks": ["qcut_video"],
+                "groups": {"camera": {"archive_mode": "av1_nvenc", "gpu_tasks": ["qcut_video"]}},
+            },
+            "files": [{"path": "camera/a.mp4", "bytes": 5, "upload_id": "upload-a"}],
+        }
+    )
+    runner.save_job(
+        {
+            "job_id": "job-2",
+            "state": "queued",
+            "phase": "queued",
+            "workflow_mode": "review_only",
+            "input_upload_id": "upload-1",
+            "collection_slug": "camera-review-q43",
+            "groups": {
+                "camera": {
+                    "archive_mode": "av1_nvenc",
+                    "gpu_tasks": ["qcut_video"],
+                    "profile": "profile",
+                }
+            },
+        }
+    )
+    payloads: list[dict[str, object]] = []
+    monkeypatch.setattr(runner, "acquire_job_gpu", lambda job: "token")
+    monkeypatch.setattr(runner, "release_job_gpu", lambda job, token: None)
+    monkeypatch.setattr(runner, "start_gpu_job", lambda payload: payloads.append(payload))
+    monkeypatch.setattr(
+        runner,
+        "wait_gpu_job",
+        lambda gpu_job_id, *, gpu_payload, job: {"state": "succeeded"},
+    )
+    monkeypatch.setattr(runner, "upload_review", lambda *args, **kwargs: {"returncode": 0})
+    monkeypatch.setattr(runner, "notify_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
+
+    runner.run_job("job-2")
+
+    assert payloads[0]["review_plans"]["qcut_video"]["kind"] == "munchy.qcut-plan"  # type: ignore[index]
+    assert payloads[0]["review_plans"]["qcut_video"]["shared_plan"]["upload_id"] == "upload-1"  # type: ignore[index]
 
 
 def test_preflight_issue_notification_error_keeps_truncated_filename_at_end(

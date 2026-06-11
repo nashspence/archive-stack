@@ -98,7 +98,7 @@ services:
       - "-hooks-http-forward-headers"
       - "X-Munchy-Runner-Tusd-Hook-Secret"
       - "-hooks-enabled-events"
-      - "pre-create"
+      - "pre-create,post-finish"
     volumes:
       - ${MUNCHY_RUNNER_TUSD_HOST_DIR:-./runtime/tusd}:/uploads
 

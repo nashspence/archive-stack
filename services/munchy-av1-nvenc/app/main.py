@@ -278,6 +278,7 @@ class JobRequest(BaseModel):
     collection_timestamp: str | None = None
     riverhog: RiverhogConfig = Field(default_factory=RiverhogConfig)
     review_upload: ReviewUploadConfig = Field(default_factory=ReviewUploadConfig)
+    review_plans: dict[str, dict[str, Any]] = Field(default_factory=dict)
     dry_run: bool = False
 
     @field_validator("tasks")
@@ -888,11 +889,18 @@ def base_epoch_for_file(path: Path) -> int:
     return epoch_from_filename(path) or int(path.stat().st_mtime)
 
 
-def build_len_slots(target_sec: int, min_slot_sec: int, max_slot_sec: int) -> list[int]:
+def build_len_slots(
+    target_sec: int,
+    min_slot_sec: int,
+    max_slot_sec: int,
+    *,
+    rng: random.Random | None = None,
+) -> list[int]:
+    chooser = rng or random
     remain = max(0, int(target_sec))
     slots: list[int] = []
     while remain >= min_slot_sec:
-        length = random.randint(min_slot_sec, max_slot_sec)
+        length = chooser.randint(min_slot_sec, max_slot_sec)
         if length > remain:
             length = remain
         slots.append(length)
@@ -967,15 +975,52 @@ def quotas_by_duration(durations: list[float], slot_count: int, min_seconds: int
     return quotas
 
 
+def stable_review_plan_seed(
+    sources: list[Path],
+    durations: list[float],
+    *,
+    target_sec: int,
+    min_sec: int,
+    max_sec: int,
+) -> str:
+    payload = {
+        "version": 1,
+        "target_sec": int(target_sec),
+        "min_sec": int(min_sec),
+        "max_sec": int(max_sec),
+        "sources": [
+            {
+                "path": str(source),
+                "duration": round(float(duration), 6),
+            }
+            for source, duration in zip(sources, durations, strict=False)
+        ],
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
 def plan_review_clips(
-    sources: list[Path], *, target_sec: int, min_sec: int, max_sec: int
+    sources: list[Path],
+    *,
+    target_sec: int,
+    min_sec: int,
+    max_sec: int,
+    seed: str | None = None,
 ) -> dict[str, Any]:
     durations = [ffprobe_duration(path) for path in sources]
     if not any(duration > 0 for duration in durations):
         raise RuntimeError("cannot read durations for review sources")
     combined = sum(durations)
     target = min(target_sec, int(combined)) if combined > 0 else 0
-    slots = build_len_slots(target, min_sec, max_sec)
+    plan_seed = seed or stable_review_plan_seed(
+        sources,
+        durations,
+        target_sec=target_sec,
+        min_sec=min_sec,
+        max_sec=max_sec,
+    )
+    rng = random.Random(plan_seed)
+    slots = build_len_slots(target, min_sec, max_sec, rng=rng)
     quotas = quotas_by_duration(durations, len(slots), min_sec)
     files: list[dict[str, Any]] = []
     clips: list[dict[str, Any]] = []
@@ -999,7 +1044,7 @@ def plan_review_clips(
             length = float(slots[clip_index - 1] if clip_index - 1 < len(slots) else min_sec)
             slot_start = (slot - 1) * part
             max_offset = max(0.0, part - length)
-            start = slot_start + (random.random() * max_offset if max_offset > 0 else 0.0)
+            start = slot_start + (rng.random() * max_offset if max_offset > 0 else 0.0)
             start = min(start, max(0.0, duration - length))
             clips.append(
                 {
@@ -1012,6 +1057,9 @@ def plan_review_clips(
             )
             clip_index += 1
     return {
+        "kind": "munchy.qcut-plan",
+        "version": 1,
+        "seed": plan_seed,
         "target_sec": target,
         "min_sec": min_sec,
         "max_sec": max_sec,
@@ -1394,24 +1442,71 @@ def clip_progress_payload(
     return payload
 
 
+def normalize_supplied_review_plan(plan: dict[str, Any], *, input_dir: Path) -> dict[str, Any]:
+    input_root = input_dir.resolve()
+    try:
+        normalized = json.loads(json.dumps(plan))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("review plan must be JSON serializable") from exc
+    if not isinstance(normalized, dict):
+        raise RuntimeError("review plan must be an object")
+    clips = normalized.get("clips")
+    files = normalized.get("files")
+    if not isinstance(clips, list) or not clips:
+        raise RuntimeError("review plan must include clips")
+    if not isinstance(files, list) or not files:
+        raise RuntimeError("review plan must include files")
+
+    for file_info in files:
+        if not isinstance(file_info, dict):
+            raise RuntimeError("review plan files must be objects")
+        source = Path(str(file_info.get("path") or "")).resolve()
+        if source != input_root and input_root not in source.parents:
+            raise RuntimeError(f"review plan source is outside input_dir: {source}")
+        if not source.is_file():
+            raise RuntimeError(f"review plan source is missing: {source}")
+        float(file_info.get("duration") or 0)
+        int(file_info.get("base_epoch") or 0)
+
+    for clip in clips:
+        if not isinstance(clip, dict):
+            raise RuntimeError("review plan clips must be objects")
+        source = Path(str(clip.get("source") or "")).resolve()
+        if source != input_root and input_root not in source.parents:
+            raise RuntimeError(f"review plan clip source is outside input_dir: {source}")
+        if not source.is_file():
+            raise RuntimeError(f"review plan clip source is missing: {source}")
+        int(clip["index"])
+        float(clip["start"])
+        float(clip["length"])
+        int(clip["epoch"])
+    normalized["reused"] = True
+    return normalized
+
+
 def run_qcut_video(
     input_dir: Path,
     review_dir: Path,
     *,
     archive: ArchiveEncodeProfile,
     dry_run: bool,
+    review_plan: dict[str, Any] | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     sources = iter_files(input_dir, VIDEO_EXTENSIONS)
-    if not sources:
+    if not sources and review_plan is None:
         return {"status": "skipped", "reason": "no video sources"}
     work_dir = review_dir / ".qcut_work" / "video"
     work_dir.mkdir(parents=True, exist_ok=True)
-    plan = plan_review_clips(
-        sources,
-        target_sec=QCUT_TARGET_SECONDS,
-        min_sec=QCUT_MIN_SECONDS,
-        max_sec=QCUT_MAX_SECONDS,
+    plan = (
+        normalize_supplied_review_plan(review_plan, input_dir=input_dir)
+        if review_plan is not None
+        else plan_review_clips(
+            sources,
+            target_sec=QCUT_TARGET_SECONDS,
+            min_sec=QCUT_MIN_SECONDS,
+            max_sec=QCUT_MAX_SECONDS,
+        )
     )
     clip_outputs: list[Path] = []
     clip_results: list[dict[str, Any]] = []
@@ -1557,21 +1652,26 @@ def run_audio_review(
     *,
     archive: ArchiveEncodeProfile,
     dry_run: bool,
+    review_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     sources = iter_files(input_dir, AUDIO_EXTENSIONS)
     if not sources:
         sources = [
             path for path in iter_files(input_dir, VIDEO_EXTENSIONS) if has_audio_stream(path)
         ]
-    if not sources:
+    if not sources and review_plan is None:
         return {"status": "skipped", "reason": "no audio sources"}
     work_dir = review_dir / ".qcut_work" / "audio"
     work_dir.mkdir(parents=True, exist_ok=True)
-    plan = plan_review_clips(
-        sources,
-        target_sec=QCUT_TARGET_SECONDS,
-        min_sec=QCUT_MIN_SECONDS,
-        max_sec=QCUT_MAX_SECONDS,
+    plan = (
+        normalize_supplied_review_plan(review_plan, input_dir=input_dir)
+        if review_plan is not None
+        else plan_review_clips(
+            sources,
+            target_sec=QCUT_TARGET_SECONDS,
+            min_sec=QCUT_MIN_SECONDS,
+            max_sec=QCUT_MAX_SECONDS,
+        )
     )
     clip_outputs: list[Path] = []
     clip_results: list[dict[str, Any]] = []
@@ -1737,6 +1837,7 @@ def run_job(job_id: str, req: JobRequest) -> None:
                 req.review_dir / "video",
                 archive=archive_profile,
                 dry_run=req.dry_run,
+                review_plan=req.review_plans.get("qcut_video"),
                 progress_callback=lambda progress: update_task_progress(
                     "qcut_video",
                     progress,
@@ -1751,6 +1852,7 @@ def run_job(job_id: str, req: JobRequest) -> None:
                 req.review_dir / "audio",
                 archive=archive_profile,
                 dry_run=req.dry_run,
+                review_plan=req.review_plans.get("audio_review"),
             )
             write_status(job_id, status)
         status["riverhog_upload"] = maybe_upload_riverhog(req)

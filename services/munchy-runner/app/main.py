@@ -771,6 +771,11 @@ def shared_input_upload_root(upload_id: str) -> Path:
     return GPU_RUNTIME_DIR / "input-uploads" / safe_local_id(upload_id)
 
 
+def shared_review_plan_path(upload_id: str, group_name: str, task_name: str) -> Path:
+    validate_profile_group_name(group_name)
+    return shared_input_upload_root(upload_id) / f".munchy-{task_name}-{group_name}-plan.json"
+
+
 def gpu_runtime_container_path(path: Path) -> str:
     rel = path.resolve().relative_to(GPU_RUNTIME_DIR)
     return f"/data/{rel.as_posix()}"
@@ -778,6 +783,18 @@ def gpu_runtime_container_path(path: Path) -> str:
 
 def target_path_for(upload_id: str, rel_path: str) -> str:
     return f".munchy-runner/uploads/{upload_id}/{rel_path}"
+
+
+def upload_id_from_target_path(target_path: str) -> str | None:
+    normalized = target_path.lstrip("/")
+    prefix = ".munchy-runner/uploads/"
+    if not normalized.startswith(prefix):
+        return None
+    rest = normalized.removeprefix(prefix)
+    upload_id, sep, _rel_path = rest.partition("/")
+    if not sep or not upload_id:
+        return None
+    return upload_id
 
 
 def file_sha256(path: Path) -> str:
@@ -1326,6 +1343,25 @@ def upload_groups_complete(upload: dict[str, Any], group_names: set[str]) -> boo
     return bool(files) and all(upload_file_status(file_state)["complete"] for file_state in files)
 
 
+def shared_input_tree_progress(upload: dict[str, Any], group_names: set[str]) -> dict[str, int]:
+    root = shared_input_upload_root(str(upload["upload_id"]))
+    files_ready = 0
+    bytes_ready = 0
+    for file_state in upload_files_for_groups(upload, group_names):
+        dest = root / str(file_state["path"])
+        expected_bytes = int(file_state["bytes"])
+        try:
+            if dest.exists() and dest.stat().st_size == expected_bytes:
+                files_ready += 1
+                bytes_ready += expected_bytes
+        except OSError:
+            continue
+    return {
+        "input_tree_files_ready": files_ready,
+        "input_tree_bytes_ready": bytes_ready,
+    }
+
+
 def upload_group_progress(upload: dict[str, Any], group_names: set[str]) -> dict[str, Any]:
     files = [
         upload_file_status(file_state)
@@ -1333,11 +1369,13 @@ def upload_group_progress(upload: dict[str, Any], group_names: set[str]) -> dict
     ]
     bytes_total = sum(int(item["bytes"]) for item in files)
     uploaded_bytes = sum(int(item["uploaded_bytes"]) for item in files)
+    tree_progress = shared_input_tree_progress(upload, group_names)
     return {
         "files_total": len(files),
         "files_uploaded": sum(1 for item in files if item["complete"]),
         "bytes_total": bytes_total,
         "uploaded_bytes": uploaded_bytes,
+        **tree_progress,
     }
 
 
@@ -1350,6 +1388,7 @@ def wait_for_upload_groups(
     while True:
         raise_if_job_cancelled(job_id)
         upload = load_input_upload(upload_id)
+        sync_shared_input_tree(upload, group_names)
         progress = upload_group_progress(upload, group_names)
         job["input_upload_progress"] = progress
         if upload_groups_complete(upload, group_names):
@@ -1400,6 +1439,37 @@ def materialize_upload_groups(
         materialize_upload_file(file_state, dest_root)
 
 
+def sync_shared_input_tree(
+    upload: dict[str, Any],
+    group_names: set[str] | None = None,
+    *,
+    job: dict[str, Any] | None = None,
+) -> dict[str, int]:
+    upload = refresh_input_upload(upload)
+    selected_groups = set(group_names or input_upload_groups(upload))
+    upload_id = str(upload["upload_id"])
+    root = shared_input_upload_root(upload_id)
+    files = upload_files_for_groups(upload, selected_groups)
+    root.mkdir(parents=True, exist_ok=True)
+    linked = 0
+    skipped = 0
+    for index, file_state in enumerate(files, start=1):
+        status = upload_file_status(file_state)
+        if not status["complete"] or status["upload_state"] == "consumed":
+            skipped += 1
+            continue
+        materialize_upload_file(file_state, root)
+        linked += 1
+        if job is not None and (index == len(files) or index % 100 == 0):
+            progress = shared_input_tree_progress(upload, selected_groups)
+            job["phase"] = (
+                f"preparing_input:{progress['input_tree_files_ready']}/{len(files)}"
+            )
+            job["input_upload_progress"] = upload_group_progress(upload, selected_groups)
+            save_job(job)
+    return {"linked": linked, "skipped": skipped, "files": len(files)}
+
+
 def shared_input_tree_metadata(
     upload: dict[str, Any],
     group_names: set[str],
@@ -1443,12 +1513,13 @@ def prepare_shared_input_tree(
     files = upload_files_for_groups(upload, group_names)
     if shared_input_tree_ready(root, upload, group_names):
         return root
-    root.mkdir(parents=True, exist_ok=True)
-    for index, file_state in enumerate(files, start=1):
-        materialize_upload_file(file_state, root)
-        if job is not None and (index == len(files) or index % 100 == 0):
-            job["phase"] = f"preparing_input:{index}/{len(files)}"
-            save_job(job)
+    sync_shared_input_tree(upload, group_names, job=job)
+    progress = shared_input_tree_progress(upload, group_names)
+    if progress["input_tree_files_ready"] != len(files):
+        raise RuntimeError(
+            "input upload groups are complete but shared input tree is incomplete: "
+            f"{progress['input_tree_files_ready']}/{len(files)}"
+        )
     metadata = {
         **shared_input_tree_metadata(upload, group_names),
         "prepared_at": now_iso(),
@@ -1458,6 +1529,68 @@ def prepare_shared_input_tree(
     part.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
     part.replace(marker)
     return root
+
+
+def load_shared_review_plan(
+    upload_id: str,
+    group_name: str,
+    task_name: str,
+) -> dict[str, Any] | None:
+    path = shared_review_plan_path(upload_id, group_name, task_name)
+    if not path.is_file():
+        return None
+    try:
+        plan = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return plan if isinstance(plan, dict) else None
+
+
+def store_shared_review_plan(
+    upload_id: str,
+    group_name: str,
+    task_name: str,
+    plan: dict[str, Any],
+) -> None:
+    path = shared_review_plan_path(upload_id, group_name, task_name)
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        **plan,
+        "shared_plan": {
+            "upload_id": upload_id,
+            "group": group_name,
+            "task": task_name,
+            "stored_at": now_iso(),
+        },
+    }
+    part = path.with_suffix(path.suffix + ".part")
+    part.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    try:
+        part.replace(path)
+    finally:
+        part.unlink(missing_ok=True)
+
+
+def remember_review_plans_from_gpu_result(
+    job: dict[str, Any],
+    group_name: str,
+    gpu_result: dict[str, Any],
+) -> None:
+    upload_id = str(job.get("input_upload_id") or "")
+    if not upload_id:
+        return
+    items = gpu_result.get("items")
+    if not isinstance(items, dict):
+        return
+    for task_name in ("qcut_video", "audio_review"):
+        item = items.get(task_name)
+        if not isinstance(item, dict):
+            continue
+        plan = item.get("plan")
+        if isinstance(plan, dict):
+            store_shared_review_plan(upload_id, group_name, task_name, plan)
 
 
 def materialize_upload(upload: dict[str, Any], dest_root: Path) -> None:
@@ -2853,6 +2986,8 @@ def upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
     files_uploaded = int(upload.get("files_uploaded") or 0)
     bytes_total = int(upload.get("bytes_total") or 0)
     uploaded_bytes = int(upload.get("uploaded_bytes") or 0)
+    group_names = set(input_upload_groups(upload))
+    tree_progress = shared_input_tree_progress(upload, group_names)
     return {
         "files_total": files_total,
         "files_uploaded": files_uploaded,
@@ -2860,6 +2995,7 @@ def upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
         "uploaded_bytes": uploaded_bytes,
         "percent_bytes": round((uploaded_bytes / bytes_total * 100.0) if bytes_total else 100.0, 2),
         "completed": files_uploaded == files_total and files_total > 0,
+        **tree_progress,
     }
 
 
@@ -3372,6 +3508,16 @@ def run_job(job_id: str) -> None:
                     }
                     if group_config.get("encode_profile") is not None:
                         gpu_payload["encode_profile"] = group_config["encode_profile"]
+                    for task_name in ("qcut_video", "audio_review"):
+                        if task_name not in gpu_tasks:
+                            continue
+                        review_plan = load_shared_review_plan(
+                            str(job["input_upload_id"]),
+                            group_name,
+                            task_name,
+                        )
+                        if review_plan is not None:
+                            gpu_payload.setdefault("review_plans", {})[task_name] = review_plan
                     gpu_payloads[group_name] = gpu_payload
                     save_job(job)
                     start_gpu_job(gpu_payload)
@@ -3379,6 +3525,11 @@ def run_job(job_id: str) -> None:
                         gpu_job_id,
                         gpu_payload=gpu_payload,
                         job=job,
+                    )
+                    remember_review_plans_from_gpu_result(
+                        job,
+                        group_name,
+                        gpu_results[group_name],
                     )
                     if len(groups) == 1:
                         job["gpu_result"] = gpu_results[group_name]
@@ -3733,11 +3884,20 @@ async def tusd_hooks(request: Request) -> JSONResponse:
     ):
         return hook_error("invalid hook secret", status_code=403)
     payload = await request.json()
-    if payload.get("Type") != "pre-create":
-        return JSONResponse({})
     event = payload.get("Event", {})
     upload = event.get("Upload", {}) if isinstance(event, dict) else {}
     metadata = upload.get("MetaData", {}) if isinstance(upload, dict) else {}
+    if payload.get("Type") == "post-finish":
+        target_path = str(metadata.get("target_path", "")).lstrip("/")
+        upload_id = upload_id_from_target_path(target_path)
+        if upload_id:
+            try:
+                sync_shared_input_tree(load_input_upload(upload_id))
+            except Exception:
+                log.exception("failed to sync shared input tree after tusd post-finish")
+        return JSONResponse({})
+    if payload.get("Type") != "pre-create":
+        return JSONResponse({})
     target_path = str(metadata.get("target_path", "")).lstrip("/")
     if not target_path:
         return hook_error("missing target_path metadata")
@@ -3783,7 +3943,9 @@ def create_input_upload(req: CreateInputUploadRequest) -> dict[str, Any]:
 
 @app.get("/v1/input-uploads/{upload_id}")
 def get_input_upload(upload_id: str) -> dict[str, Any]:
-    return load_input_upload(upload_id)
+    upload = load_input_upload(upload_id)
+    sync_shared_input_tree(upload)
+    return refresh_input_upload(upload)
 
 
 @app.delete("/v1/input-uploads/{upload_id}", status_code=202)
@@ -3825,6 +3987,7 @@ def create_or_resume_input_file_upload(upload_id: str, rel_path: str) -> dict[st
                 "headers": {"Tus-Resumable": "1.0.0"},
                 "file": status,
             }
+        sync_shared_input_tree(upload)
         upload_url = file_state.get("upload_url")
         offset = -1
         if upload_url:

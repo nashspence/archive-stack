@@ -127,6 +127,25 @@ def test_format_progress_status_line_renders_local_and_remote_progress() -> None
     assert "remote upload 1/10 files" in line
 
 
+def test_format_progress_status_line_shows_input_tree_when_it_lags_upload() -> None:
+    line = format_progress_status_line(
+        {
+            "upload_progress": {
+                "files_uploaded": 8,
+                "files_total": 10,
+                "uploaded_bytes": 800,
+                "bytes_total": 1000,
+                "percent_bytes": 80.0,
+                "input_tree_files_ready": 5,
+                "input_tree_bytes_ready": 500,
+            },
+        }
+    )
+
+    assert "remote upload 8/10 files" in line
+    assert "input tree 5/10 files" in line
+
+
 def test_upload_retry_reporter_uses_live_renderer_for_transient_issues() -> None:
     updates: list[dict[str, object]] = []
 

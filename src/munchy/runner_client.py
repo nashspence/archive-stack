@@ -356,6 +356,9 @@ def format_input_upload_progress(progress: dict[str, Any]) -> str:
         format_progress_bytes(uploaded_bytes, bytes_total),
         f"{pct:.2f}%",
     ]
+    input_tree_files = int(progress.get("input_tree_files_ready") or 0)
+    if input_tree_files and input_tree_files < files_uploaded:
+        parts.append(f"input tree {input_tree_files}/{files_total} files")
     if rate:
         parts.append(format_rate(rate))
     return ", ".join(parts)

@@ -58,6 +58,35 @@ class QcutPlannerTests(unittest.TestCase):
         self.assertEqual(plan["files"][0]["quota"], 1)
         self.assertEqual(plan["files"][-1]["quota"], 1)
 
+    def test_plan_review_clips_is_stable_for_same_collection(self) -> None:
+        sources = [Path(f"/data/input/source{i:02d}.mp4") for i in range(8)]
+        original_duration = av1.ffprobe_duration
+        original_base_epoch = av1.base_epoch_for_file
+        try:
+            av1.ffprobe_duration = lambda path: 45.0
+            av1.base_epoch_for_file = lambda path: 1_800_000_000 + sources.index(path) * 45
+            random.seed(1)
+            first = av1.plan_review_clips(
+                sources,
+                target_sec=120,
+                min_sec=6,
+                max_sec=9,
+            )
+            random.seed(999)
+            second = av1.plan_review_clips(
+                sources,
+                target_sec=120,
+                min_sec=6,
+                max_sec=9,
+            )
+        finally:
+            av1.ffprobe_duration = original_duration
+            av1.base_epoch_for_file = original_base_epoch
+
+        self.assertEqual(first["seed"], second["seed"])
+        self.assertEqual(first["slots"], second["slots"])
+        self.assertEqual(first["clips"], second["clips"])
+
     def test_clip_progress_payload_reports_review_clip_progress(self) -> None:
         payload = av1.clip_progress_payload(
             task="qcut_video",
