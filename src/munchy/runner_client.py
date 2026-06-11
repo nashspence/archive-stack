@@ -364,6 +364,45 @@ def format_input_upload_progress(progress: dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
+def _float_value(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _ratio_percent(done: Any, total: Any) -> float | None:
+    done_value = _float_value(done)
+    total_value = _float_value(total)
+    if done_value is None or total_value is None or total_value <= 0:
+        return None
+    return done_value / total_value * 100.0
+
+
+def progress_percent(progress: dict[str, Any], *, percent_key: str) -> float:
+    configured = _float_value(progress.get(percent_key))
+    if configured is None:
+        configured = _float_value(progress.get("percent_clips"))
+    if configured is None:
+        configured = _float_value(progress.get("percent_files"))
+
+    computed_candidates = (
+        _ratio_percent(progress.get("uploaded_bytes"), progress.get("bytes_total")),
+        _ratio_percent(progress.get("bytes_done"), progress.get("bytes_total")),
+        _ratio_percent(progress.get("input_bytes_encoded"), progress.get("input_bytes_total")),
+        _ratio_percent(progress.get("clips_done"), progress.get("clips_total")),
+        _ratio_percent(progress.get("files_encoded"), progress.get("files_total")),
+        _ratio_percent(progress.get("files_uploaded"), progress.get("files_total")),
+        _ratio_percent(progress.get("files_done"), progress.get("files_total")),
+    )
+    computed = next((pct for pct in computed_candidates if pct is not None), None)
+    if configured is None or (configured <= 0.0 and computed is not None and computed > 0.0):
+        configured = computed
+    return max(0.0, min(100.0, configured or 0.0))
+
+
 def local_progress_items(job: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     progress = job.get("local_progress")
     if isinstance(progress, dict):
@@ -603,7 +642,7 @@ class RichProgressRenderer(ProgressRenderer):
         from rich.table import Table
 
         table = Table.grid(padding=(0, 2))
-        table.add_column(justify="right", style="cyan", no_wrap=True)
+        table.add_column(justify="right", style="cyan", no_wrap=True, width=24)
         table.add_column(ratio=1)
 
         state = str(job.get("state") or "running")
@@ -630,9 +669,10 @@ class RichProgressRenderer(ProgressRenderer):
             table.add_row("", format_encode_progress(encode_progress))
 
         issue = job.get("transient_issue")
+        issue = issue if isinstance(issue, dict) else None
         table.add_row(
-            "Remote Transient Issue",
-            self._transient_issue_renderable(issue if isinstance(issue, dict) else None),
+            self._transient_issue_label(issue),
+            self._transient_issue_renderable(issue),
         )
 
         if (
@@ -651,16 +691,18 @@ class RichProgressRenderer(ProgressRenderer):
             return Text(" ", no_wrap=True, overflow="ellipsis")
         return Text(format_transient_issue(issue), style="yellow", no_wrap=True, overflow="ellipsis")
 
+    def _transient_issue_label(self, issue: dict[str, Any] | None) -> str:
+        if issue is None:
+            return ""
+        label = str(issue.get("label") or "").strip()
+        if not label:
+            return "Transient Issue"
+        return f"{label.replace('_', ' ').title()} Issue"
+
     def _bar(self, progress: dict[str, Any], *, percent_key: str) -> Any:
         from rich.progress import BarColumn, Progress, TextColumn
 
-        pct = float(
-            progress.get(percent_key)
-            or progress.get("percent_clips")
-            or progress.get("percent_files")
-            or 0.0
-        )
-        pct = max(0.0, min(100.0, pct))
+        pct = progress_percent(progress, percent_key=percent_key)
         bar = Progress(
             TextColumn(""),
             BarColumn(bar_width=None),

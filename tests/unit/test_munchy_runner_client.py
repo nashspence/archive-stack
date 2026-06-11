@@ -17,6 +17,7 @@ from munchy.runner_client import (
     UploadProgress,
     format_progress_status_line,
     format_job_summary_line,
+    progress_percent,
 )
 
 
@@ -146,6 +147,18 @@ def test_format_progress_status_line_shows_input_tree_when_it_lags_upload() -> N
     assert "input tree 5/10 files" in line
 
 
+def test_progress_percent_uses_uploaded_bytes_when_payload_percent_is_stale() -> None:
+    progress = {
+        "files_uploaded": 147,
+        "files_total": 3638,
+        "uploaded_bytes": 7 * 1024 * 1024 * 1024,
+        "bytes_total": 63 * 1024 * 1024 * 1024,
+        "percent_bytes": 0.0,
+    }
+
+    assert progress_percent(progress, percent_key="percent_bytes") == pytest.approx(11.111, rel=0.001)
+
+
 def test_upload_retry_reporter_uses_live_renderer_for_transient_issues() -> None:
     updates: list[dict[str, object]] = []
 
@@ -257,8 +270,8 @@ def test_rich_renderer_reserves_single_line_for_transient_issues() -> None:
     )
 
     assert len(with_issue) == len(without_issue)
-    assert any("Remote Transient Issue" in line for line in without_issue)
-    assert any("Remote Transient Issue" in line for line in with_issue)
+    assert not any("Transient Issue" in line for line in without_issue)
+    assert any("Remote Job Status Issue" in line for line in with_issue)
     assert all(len(line) <= 72 for line in with_issue)
 
 
