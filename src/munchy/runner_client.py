@@ -580,6 +580,82 @@ def format_job_summary_line(job: dict[str, Any]) -> str:
     return f"{prefix} | {format_job_status_line(job)}"
 
 
+JOB_FAILURE_DETAIL_KEYS = {
+    "error",
+    "error_code",
+    "failed_reason",
+    "message",
+    "reason",
+}
+
+
+def _format_failure_detail(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        text = value
+    elif isinstance(value, (int, float, bool)):
+        text = str(value)
+    elif isinstance(value, (dict, list)):
+        try:
+            text = json.dumps(value, sort_keys=True)
+        except (TypeError, ValueError):
+            text = str(value)
+    else:
+        text = str(value)
+    text = " ".join(text.strip().split())
+    return short_path(text, max_len=220)
+
+
+def _job_failure_details(value: Any, *, prefix: str = "", limit: int = 6) -> list[tuple[str, str]]:
+    if limit <= 0:
+        return []
+    details: list[tuple[str, str]] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            path = f"{prefix}.{key}" if prefix else str(key)
+            if str(key) in JOB_FAILURE_DETAIL_KEYS:
+                detail = _format_failure_detail(item)
+                if detail:
+                    details.append((path, detail))
+                    if len(details) >= limit:
+                        return details
+            if isinstance(item, (dict, list)):
+                details.extend(_job_failure_details(item, prefix=path, limit=limit - len(details)))
+                if len(details) >= limit:
+                    return details
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            if not isinstance(item, (dict, list)):
+                continue
+            details.extend(
+                _job_failure_details(item, prefix=f"{prefix}[{index}]", limit=limit - len(details))
+            )
+            if len(details) >= limit:
+                return details
+    return details
+
+
+def format_job_failure(job: dict[str, Any], *, label: str = "job") -> str:
+    lines = [f"{label} did not succeed:"]
+    job_id = str(job.get("job_id") or job.get("id") or "").strip()
+    if job_id:
+        lines.append(f"- job: {job_id}")
+    collection = str(job.get("collection_slug") or "").strip()
+    if collection:
+        lines.append(f"- collection: {collection}")
+    lines.append(f"- status: {format_job_status_line(job)}")
+
+    seen: set[str] = set()
+    for path, detail in _job_failure_details(job):
+        if detail in seen:
+            continue
+        seen.add(detail)
+        label_path = path.replace("_", " ")
+        lines.append(f"- {label_path}: {detail}")
+    return "\n".join(lines)
+
+
 class ProgressRenderer:
     include_job: bool
     is_live: bool = False
@@ -1352,7 +1428,7 @@ class MunchyRunnerClient:
         with renderer:
             while True:
                 try:
-                    job = self.get_job(job_id)
+                    job = self.get_job(job_id, compact=True)
                     retry_delay = UPLOAD_RETRY_INITIAL_DELAY_SECONDS
                     retry_reporter.finish()
                 except Exception as exc:

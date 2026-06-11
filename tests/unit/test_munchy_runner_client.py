@@ -15,6 +15,7 @@ from munchy.runner_client import (
     RunnerUploadRequest,
     UploadRetryReporter,
     UploadProgress,
+    format_job_failure,
     format_progress_status_line,
     format_job_summary_line,
     progress_percent,
@@ -347,6 +348,36 @@ def test_format_job_summary_line_includes_encoder_queue_position() -> None:
     assert "encoder queue position 2 (1/1 running or starting)" in line
 
 
+def test_format_job_failure_is_compact_and_includes_error_details() -> None:
+    failure = format_job_failure(
+        {
+            "job_id": "job-1",
+            "collection_slug": "camera-preview",
+            "state": "failed",
+            "phase": "collection_preview_upload",
+            "error": "rclone failed after many retries",
+            "gpu_statuses": {
+                "batch-1": {
+                    "state": "failed",
+                    "error": "ffmpeg failed for camera/clip.mp4",
+                    "large": ["payload"] * 100,
+                }
+            },
+            "eager_archive": {"large": ["payload"] * 100},
+        },
+        label="review job",
+    )
+
+    assert failure.startswith("review job did not succeed:")
+    assert "- job: job-1" in failure
+    assert "- collection: camera-preview" in failure
+    assert "- status: job: failed" in failure
+    assert "- error: rclone failed after many retries" in failure
+    assert "- gpu statuses.batch-1.error: ffmpeg failed for camera/clip.mp4" in failure
+    assert "eager_archive" not in failure
+    assert len(failure) < 700
+
+
 def test_runner_client_list_jobs_validates_response() -> None:
     client = MunchyRunnerClient("http://runner")
 
@@ -358,6 +389,20 @@ def test_runner_client_list_jobs_validates_response() -> None:
     client.json = fake_json  # type: ignore[method-assign]
 
     assert client.list_jobs(limit=2) == [{"job_id": "job-1"}]
+
+
+def test_wait_for_job_polls_compact_status() -> None:
+    client = MunchyRunnerClient("http://runner")
+    calls: list[bool] = []
+
+    def fake_get_job(job_id: str, *, compact: bool = False) -> dict[str, object]:
+        calls.append(compact)
+        return {"job_id": job_id, "state": "succeeded", "phase": "done"}
+
+    client.get_job = fake_get_job  # type: ignore[method-assign]
+
+    assert client.wait_for_job("job-1", interval=0)["state"] == "succeeded"
+    assert calls == [True]
 
 
 def test_runner_http_error_formats_insufficient_storage_concisely() -> None:
