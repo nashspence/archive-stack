@@ -16,6 +16,7 @@ from munchy.runner_client import (
     UploadRetryReporter,
     UploadProgress,
     format_job_failure,
+    format_job_status_line,
     format_progress_status_line,
     format_job_summary_line,
     progress_percent,
@@ -346,6 +347,19 @@ def test_format_job_summary_line_includes_encoder_queue_position() -> None:
 
     assert "job: queued" in line
     assert "encoder queue position 2 (1/1 running or starting)" in line
+
+
+def test_format_job_status_line_includes_cleanup_completion() -> None:
+    line = format_job_status_line(
+        {
+            "state": "failed",
+            "phase": "gpu",
+            "cleanup_completed_at": "2026-01-01T00:00:00Z",
+            "cleanup_removed": ["job-work:job-1", "input-upload:upload-1"],
+        }
+    )
+
+    assert "cleanup complete (2 item(s) removed)" in line
 
 
 def test_format_job_failure_is_compact_and_includes_error_details() -> None:

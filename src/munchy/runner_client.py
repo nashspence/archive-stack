@@ -546,6 +546,12 @@ def format_job_status_line(job: dict[str, Any]) -> str:
     pieces = [f"job: {state}"]
     if phase:
         pieces.append(phase)
+    if job.get("cleanup_completed_at"):
+        removed = job.get("cleanup_removed")
+        if isinstance(removed, list) and removed:
+            pieces.append(f"cleanup complete ({len(removed)} item(s) removed)")
+        else:
+            pieces.append("cleanup complete")
     queue = job.get("queue")
     if state == "queued" and isinstance(queue, dict):
         try:

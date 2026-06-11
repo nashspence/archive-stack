@@ -1813,6 +1813,7 @@ def cleanup_terminal_job(job: dict[str, Any]) -> list[str]:
             delete_state("input-upload", upload_id)
             removed.append(f"input-upload:{upload_id}")
             job["input_upload_deleted_at"] = now_iso()
+            job.pop("input_upload_progress", None)
     if removed:
         job["cleanup_removed"] = removed
         job["cleanup_completed_at"] = now_iso()
@@ -1829,7 +1830,7 @@ def should_cleanup_local_work_on_success(job: dict[str, Any]) -> bool:
         return True
     riverhog = job.get("riverhog")
     riverhog_enabled = isinstance(riverhog, dict) and bool(riverhog.get("enabled"))
-    return bool(job.get("cleanup_local_on_success") and riverhog_enabled)
+    return riverhog_enabled
 
 
 def should_cleanup_terminal_local_work(job: dict[str, Any], cutoff: datetime) -> bool:
@@ -3038,6 +3039,11 @@ def compact_job_response(job: dict[str, Any]) -> dict[str, Any]:
         "queue",
         "storage_wait",
         "cancel_requested",
+        "cleanup_removed",
+        "cleanup_completed_at",
+        "input_upload_deleted_at",
+        "local_work_cleaned_at",
+        "local_work_removed",
         "error",
     ]
     return {key: response[key] for key in keys if key in response}
@@ -3577,16 +3583,13 @@ def run_job(job_id: str) -> None:
                 save_job(job)
                 raise_if_job_cancelled(job_id)
 
-        if should_cleanup_local_work_on_success(job):
-            job["phase"] = "cleanup"
-            save_job(job)
-            remove_job_local_work(job)
-            save_job(job)
-
         job["phase"] = "done"
         job["state"] = "succeeded"
         job["finished_at"] = now_iso()
         save_job(job)
+        if should_cleanup_local_work_on_success(job):
+            cleanup_terminal_job(job)
+            save_job(job)
         notify_job_event(job, "job.succeeded", "Munchy job completed successfully.")
     except JobCancelled as exc:
         log.info("job %s cancelled: %s", job_id, exc)
@@ -3612,7 +3615,10 @@ def run_job(job_id: str) -> None:
         job["error"] = str(exc)
         job["finished_at"] = now_iso()
         save_job(job)
-        if not isinstance(exc, EncodingFailed):
+        if isinstance(exc, EncodingFailed):
+            cleanup_terminal_job(job)
+            save_job(job)
+        else:
             notify_job_issue(job, component="job", error=exc, severity="error")
     finally:
         with state_lock:
@@ -4107,8 +4113,8 @@ def cancel_job(job_id: str, cleanup: bool = False) -> dict[str, Any]:
         if job.get("state") in TERMINAL_JOB_STATES:
             if cleanup:
                 cleanup_terminal_job(job)
-                return save_job(job)
-            return job
+                return compact_job_response(save_job(job))
+            return compact_job_response(job)
         now = now_iso()
         job["cancel_requested"] = True
         job["cancel_requested_at"] = now

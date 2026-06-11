@@ -412,6 +412,7 @@ def test_failed_job_with_cleanup_removes_local_work_and_input_upload(
             "phase": "gpu",
             "finished_at": "2026-01-01T00:00:00Z",
             "input_upload_id": "upload-1",
+            "input_upload_progress": {"files_total": 1, "files_uploaded": 1},
             "groups": {"camera": {}},
         }
     )
@@ -424,6 +425,9 @@ def test_failed_job_with_cleanup_removes_local_work_and_input_upload(
     assert not shared_root.exists()
     assert not work_dir.exists()
     assert "input-upload:upload-1" in job["cleanup_removed"]
+    assert job["cleanup_completed_at"]
+    assert job["input_upload_deleted_at"]
+    assert "input_upload_progress" not in job
 
 
 def test_cleanup_once_removes_old_failed_job_work_and_input_upload(
@@ -468,6 +472,34 @@ def test_cleanup_once_removes_old_failed_job_work_and_input_upload(
     assert not data_path.exists()
     assert not shared_root.exists()
     assert not work_dir.exists()
+
+
+def test_compact_job_response_includes_cleanup_metadata(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    job = {
+        "job_id": "job-1",
+        "state": "failed",
+        "phase": "failed",
+        "cleanup_removed": ["input-upload:upload-1"],
+        "cleanup_completed_at": "2026-01-01T00:00:00Z",
+        "input_upload_deleted_at": "2026-01-01T00:00:00Z",
+        "local_work_cleaned_at": "2026-01-01T00:00:00Z",
+        "local_work_removed": ["/gpu/jobs/job-1"],
+        "eager_archive": {"large": ["payload"]},
+    }
+
+    compact = runner.compact_job_response(job)
+
+    assert compact["cleanup_removed"] == ["input-upload:upload-1"]
+    assert compact["cleanup_completed_at"] == "2026-01-01T00:00:00Z"
+    assert compact["input_upload_deleted_at"] == "2026-01-01T00:00:00Z"
+    assert compact["local_work_removed"] == ["/gpu/jobs/job-1"]
+    assert "eager_archive" not in compact
 
 
 def test_prepare_shared_input_tree_links_uploaded_files_without_sha_rehash(
@@ -614,7 +646,210 @@ def test_run_job_points_gpu_payload_at_shared_input_tree(
     assert str(payloads[0]["input_dir"]).startswith("/data/input-uploads/")
     assert str(payloads[0]["input_dir"]).endswith("/camera")
     assert "/jobs/job-1/input" not in str(payloads[0]["input_dir"])
+    job = runner.load_job("job-1")
+    assert job["state"] == "succeeded"
+    assert runner.read_state("input-upload", "upload-1") is None
+    assert not data_path.exists()
+    assert not runner.shared_input_upload_root("upload-1").exists()
+
+
+def test_successful_job_keeps_shared_input_upload_for_unfinished_sibling(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    data_path = runner.tusd_data_path("upload-a")
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.write_bytes(b"video")
+    runner.save_input_upload(
+        {
+            "upload_id": "upload-1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "storage_hint": {
+                "workflow_mode": "review_only",
+                "archive_mode": "av1_nvenc",
+                "gpu_tasks": ["qcut_video"],
+                "groups": {"camera": {"archive_mode": "av1_nvenc", "gpu_tasks": ["qcut_video"]}},
+            },
+            "files": [{"path": "camera/a.mp4", "bytes": 5, "upload_id": "upload-a"}],
+        }
+    )
+    common_job = {
+        "state": "queued",
+        "phase": "queued",
+        "workflow_mode": "review_only",
+        "input_upload_id": "upload-1",
+        "groups": {
+            "camera": {
+                "archive_mode": "av1_nvenc",
+                "gpu_tasks": ["qcut_video"],
+                "profile": "profile",
+            }
+        },
+    }
+    runner.save_job({"job_id": "job-1", "collection_slug": "camera-review-q42", **common_job})
+    runner.save_job({"job_id": "job-2", "collection_slug": "camera-review-q44", **common_job})
+    monkeypatch.setattr(runner, "acquire_job_gpu", lambda job: "token")
+    monkeypatch.setattr(runner, "release_job_gpu", lambda job, token: None)
+    monkeypatch.setattr(runner, "start_gpu_job", lambda payload: None)
+    monkeypatch.setattr(
+        runner,
+        "wait_gpu_job",
+        lambda gpu_job_id, *, gpu_payload, job: {"state": "succeeded"},
+    )
+    monkeypatch.setattr(runner, "upload_review", lambda *args, **kwargs: {"returncode": 0})
+    monkeypatch.setattr(runner, "notify_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
+
+    runner.run_job("job-1")
+
     assert runner.load_job("job-1")["state"] == "succeeded"
+    assert runner.load_job("job-2")["state"] == "queued"
+    assert runner.read_state("input-upload", "upload-1") is not None
+    assert data_path.exists()
+    assert runner.shared_input_upload_root("upload-1").exists()
+
+
+def test_successful_riverhog_handoff_cleans_job_work_and_input_upload(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    data_path = runner.tusd_data_path("upload-a")
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.write_bytes(b"video")
+    runner.save_input_upload(
+        {
+            "upload_id": "upload-1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "storage_hint": {
+                "workflow_mode": "archive",
+                "archive_mode": "av1_nvenc",
+                "gpu_tasks": ["archive_video", "qcut_video"],
+                "groups": {
+                    "camera": {
+                        "archive_mode": "av1_nvenc",
+                        "gpu_tasks": ["archive_video", "qcut_video"],
+                    }
+                },
+            },
+            "files": [{"path": "camera/a.mp4", "bytes": 5, "upload_id": "upload-a"}],
+        }
+    )
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "queued",
+            "phase": "queued",
+            "workflow_mode": "archive",
+            "input_upload_id": "upload-1",
+            "collection_slug": "camera-archive",
+            "collection_timestamp": "20260101T000000Z",
+            "groups": {
+                "camera": {
+                    "archive_mode": "av1_nvenc",
+                    "gpu_tasks": ["archive_video", "qcut_video"],
+                    "profile": "profile",
+                }
+            },
+            "riverhog": {"enabled": True},
+        }
+    )
+    monkeypatch.setattr(runner, "acquire_job_gpu", lambda job: "token")
+    monkeypatch.setattr(runner, "release_job_gpu", lambda job, token: None)
+    monkeypatch.setattr(runner, "start_gpu_job", lambda payload: None)
+
+    def wait_gpu_job(gpu_job_id, *, gpu_payload, job):  # type: ignore[no-untyped-def]
+        (runner.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive").mkdir(parents=True)
+        return {"state": "succeeded"}
+
+    monkeypatch.setattr(runner, "wait_gpu_job", wait_gpu_job)
+    monkeypatch.setattr(runner, "upload_review", lambda *args, **kwargs: {"returncode": 0})
+    monkeypatch.setattr(runner, "upload_to_riverhog", lambda *args, **kwargs: {"returncode": 0})
+    monkeypatch.setattr(runner, "notify_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
+
+    runner.run_job("job-1")
+
+    job = runner.load_job("job-1")
+    assert job["state"] == "succeeded"
+    assert job["riverhog_upload_result"] == {"returncode": 0}
+    assert job["cleanup_completed_at"]
+    assert "input-upload:upload-1" in job["cleanup_removed"]
+    assert runner.read_state("input-upload", "upload-1") is None
+    assert not data_path.exists()
+    assert not runner.shared_input_upload_root("upload-1").exists()
+    assert not (runner.GPU_RUNTIME_DIR / "jobs" / "job-1").exists()
+
+
+def test_encoding_failure_cleans_job_work_and_input_upload(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    data_path = runner.tusd_data_path("upload-a")
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.write_bytes(b"video")
+    runner.save_input_upload(
+        {
+            "upload_id": "upload-1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "storage_hint": {
+                "workflow_mode": "review_only",
+                "archive_mode": "av1_nvenc",
+                "gpu_tasks": ["qcut_video"],
+                "groups": {"camera": {"archive_mode": "av1_nvenc", "gpu_tasks": ["qcut_video"]}},
+            },
+            "files": [{"path": "camera/a.mp4", "bytes": 5, "upload_id": "upload-a"}],
+        }
+    )
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "queued",
+            "phase": "queued",
+            "workflow_mode": "review_only",
+            "input_upload_id": "upload-1",
+            "collection_slug": "camera-review",
+            "groups": {
+                "camera": {
+                    "archive_mode": "av1_nvenc",
+                    "gpu_tasks": ["qcut_video"],
+                    "profile": "profile",
+                }
+            },
+        }
+    )
+    monkeypatch.setattr(runner, "acquire_job_gpu", lambda job: "token")
+    monkeypatch.setattr(runner, "release_job_gpu", lambda job, token: None)
+    monkeypatch.setattr(runner, "start_gpu_job", lambda payload: None)
+    monkeypatch.setattr(
+        runner,
+        "wait_gpu_job",
+        lambda gpu_job_id, *, gpu_payload, job: (_ for _ in ()).throw(
+            runner.EncodingFailed("gpu job failed: bad encode")
+        ),
+    )
+    monkeypatch.setattr(runner, "notify_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
+
+    runner.run_job("job-1")
+
+    job = runner.load_job("job-1")
+    assert job["state"] == "failed"
+    assert job["error"] == "gpu job failed: bad encode"
+    assert job["cleanup_completed_at"]
+    assert "input-upload:upload-1" in job["cleanup_removed"]
+    assert runner.read_state("input-upload", "upload-1") is None
+    assert not data_path.exists()
+    assert not runner.shared_input_upload_root("upload-1").exists()
+    assert not (runner.GPU_RUNTIME_DIR / "jobs" / "job-1").exists()
 
 
 def test_run_job_reuses_stored_shared_review_plan(
