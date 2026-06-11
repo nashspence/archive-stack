@@ -381,6 +381,95 @@ def test_cancel_job_with_cleanup_preserves_input_upload_referenced_by_sibling(
     assert "input-upload:upload-1" not in job.get("cleanup_removed", [])
 
 
+def test_failed_job_with_cleanup_removes_local_work_and_input_upload(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    data_path = runner.tusd_data_path("upload-a")
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.write_bytes(b"a")
+    shared_root = runner.shared_input_upload_root("upload-1")
+    shared_root.mkdir(parents=True)
+    (shared_root / "camera").mkdir()
+    (shared_root / "camera" / "a.mp4").write_bytes(b"a")
+    work_dir = runner.GPU_RUNTIME_DIR / "jobs" / "job-1"
+    work_dir.mkdir(parents=True)
+    (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
+    runner.save_input_upload(
+        {
+            "upload_id": "upload-1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "files": [{"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"}],
+        }
+    )
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "failed",
+            "phase": "gpu",
+            "finished_at": "2026-01-01T00:00:00Z",
+            "input_upload_id": "upload-1",
+            "groups": {"camera": {}},
+        }
+    )
+
+    job = runner.cancel_job("job-1", cleanup=True)
+
+    assert job["state"] == "failed"
+    assert runner.read_state("input-upload", "upload-1") is None
+    assert not data_path.exists()
+    assert not shared_root.exists()
+    assert not work_dir.exists()
+    assert "input-upload:upload-1" in job["cleanup_removed"]
+
+
+def test_cleanup_once_removes_old_failed_job_work_and_input_upload(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    data_path = runner.tusd_data_path("upload-a")
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.write_bytes(b"a")
+    shared_root = runner.shared_input_upload_root("upload-1")
+    shared_root.mkdir(parents=True)
+    (shared_root / "camera").mkdir()
+    (shared_root / "camera" / "a.mp4").write_bytes(b"a")
+    work_dir = runner.GPU_RUNTIME_DIR / "jobs" / "job-1"
+    work_dir.mkdir(parents=True)
+    (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
+    runner.save_input_upload(
+        {
+            "upload_id": "upload-1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "files": [{"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"}],
+        }
+    )
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "failed",
+            "phase": "gpu",
+            "finished_at": "2026-01-01T00:00:00Z",
+            "input_upload_id": "upload-1",
+            "groups": {"camera": {}},
+        }
+    )
+
+    result = runner.cleanup_once()
+
+    assert "job-cleanup:job-1" in result["removed"]
+    assert runner.read_state("input-upload", "upload-1") is None
+    assert not data_path.exists()
+    assert not shared_root.exists()
+    assert not work_dir.exists()
+
+
 def test_prepare_shared_input_tree_links_uploaded_files_without_sha_rehash(
     tmp_path: Path,
     monkeypatch,

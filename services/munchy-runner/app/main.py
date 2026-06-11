@@ -1799,7 +1799,7 @@ def remove_job_local_work(job: dict[str, Any]) -> list[str]:
     return removed
 
 
-def cleanup_cancelled_job(job: dict[str, Any]) -> list[str]:
+def cleanup_terminal_job(job: dict[str, Any]) -> list[str]:
     removed = remove_job_local_work(job)
     job_id = str(job.get("job_id") or "")
     upload_id = str(job.get("input_upload_id") or "")
@@ -1817,6 +1817,10 @@ def cleanup_cancelled_job(job: dict[str, Any]) -> list[str]:
         job["cleanup_removed"] = removed
         job["cleanup_completed_at"] = now_iso()
     return removed
+
+
+def cleanup_cancelled_job(job: dict[str, Any]) -> list[str]:
+    return cleanup_terminal_job(job)
 
 
 def should_cleanup_local_work_on_success(job: dict[str, Any]) -> bool:
@@ -4101,8 +4105,8 @@ def cancel_job(job_id: str, cleanup: bool = False) -> dict[str, Any]:
     with state_lock:
         job = load_job(job_id)
         if job.get("state") in TERMINAL_JOB_STATES:
-            if cleanup and job.get("state") == "cancelled":
-                cleanup_cancelled_job(job)
+            if cleanup:
+                cleanup_terminal_job(job)
                 return save_job(job)
             return job
         now = now_iso()
@@ -4153,10 +4157,10 @@ def cleanup_once() -> dict[str, Any]:
                 continue
             if not should_cleanup_terminal_local_work(job, job_cutoff):
                 continue
-            local_removed = remove_job_local_work(job)
-            if local_removed:
+            removed_for_job = cleanup_terminal_job(job)
+            if removed_for_job:
                 save_job(job)
-                removed.append(f"job-work:{job_id}")
+                removed.append(f"job-cleanup:{job_id}")
     return {"removed": removed}
 
 
