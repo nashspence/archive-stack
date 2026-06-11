@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
 import json
 import logging
@@ -72,6 +73,7 @@ STATE_DIR = Path(os.getenv("MUNCHY_RUNNER_STATE_DIR", "/state")).resolve()
 STATE_DB_PATH = Path(
     os.getenv("MUNCHY_RUNNER_STATE_DB", str(STATE_DIR / "runner.sqlite3"))
 ).resolve()
+DEBUG_DIR = Path(os.getenv("MUNCHY_RUNNER_DEBUG_DIR", str(STATE_DIR / "debug"))).resolve()
 WORK_DIR = Path(os.getenv("MUNCHY_RUNNER_WORK_DIR", "/work")).resolve()
 TUSD_DIR = Path(os.getenv("MUNCHY_RUNNER_TUSD_DIR", "/tusd")).resolve()
 TUSD_INTERNAL_BASE_URL = os.getenv(
@@ -745,6 +747,14 @@ def delete_state(kind: str, item_id: str) -> None:
         conn.commit()
 
 
+def vacuum_state_store() -> None:
+    STATE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(STATE_DB_PATH, timeout=30)) as conn:
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("VACUUM")
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
 def ensure_dirs() -> None:
     for path in (STATE_DIR, WORK_DIR, TUSD_DIR, GPU_RUNTIME_DIR):
         path.mkdir(parents=True, exist_ok=True)
@@ -765,6 +775,47 @@ def safe_local_id(value: str) -> str:
     digest = hashlib.sha256(value.encode()).hexdigest()[:12]
     prefix = (cleaned or "upload")[:96].strip(".-_") or "upload"
     return f"{prefix}-{digest}"
+
+
+def write_job_debug_bundle(
+    job: dict[str, Any],
+    *,
+    reason: str,
+    error: Any | None = None,
+) -> bool:
+    if job.get("debug_bundle_dir"):
+        return False
+    job_id = str(job.get("job_id") or "unknown-job")
+    created_at = now_iso()
+    bundle_dir = DEBUG_DIR / "jobs" / safe_local_id(job_id) / created_at.replace(":", "")
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    error_text = str(error or job.get("error") or "")
+    metadata = {
+        "job_id": job_id,
+        "state": job.get("state"),
+        "phase": job.get("phase"),
+        "reason": reason,
+        "error": error_text,
+        "created_at": created_at,
+    }
+    (bundle_dir / "metadata.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    if error_text:
+        (bundle_dir / "error.txt").write_text(error_text + "\n", encoding="utf-8")
+    with gzip.open(bundle_dir / "job-state-full.json.gz", "wt", encoding="utf-8") as handle:
+        json.dump(job, handle, sort_keys=True)
+    for key in ("gpu_statuses", "gpu_payloads", "gpu_result", "gpu_results", "eager_archive"):
+        value = job.get(key)
+        if value is None:
+            continue
+        with gzip.open(bundle_dir / f"{key}.json.gz", "wt", encoding="utf-8") as handle:
+            json.dump(value, handle, sort_keys=True)
+    job["debug_bundle_dir"] = str(bundle_dir)
+    job["debug_bundle_created_at"] = created_at
+    job["debug_bundle_reason"] = reason
+    return True
 
 
 def shared_input_upload_root(upload_id: str) -> Path:
@@ -1824,7 +1875,106 @@ def remove_job_local_work(job: dict[str, Any]) -> list[str]:
     return removed
 
 
+def compact_command_result(result: Any) -> Any:
+    if not isinstance(result, dict):
+        return result
+    keep_keys = [
+        "artifact_count",
+        "attempt",
+        "destination",
+        "duration_s",
+        "method",
+        "mode",
+        "returncode",
+        "source_label",
+        "succeeded_at",
+    ]
+    compact = {key: result[key] for key in keep_keys if key in result}
+    for key in ("stdout", "stderr"):
+        value = str(result.get(key) or "")
+        if value:
+            compact[f"{key}_tail"] = value[-4000:]
+    return compact
+
+
+def compact_list_field(
+    job: dict[str, Any],
+    key: str,
+    *,
+    sample: int = 8,
+) -> bool:
+    value = job.get(key)
+    if not isinstance(value, list):
+        return False
+    count_key = f"{key}_count"
+    sample_key = f"{key}_sample"
+    changed = False
+    if job.get(count_key) != len(value):
+        job[count_key] = len(value)
+        changed = True
+    if len(value) > sample:
+        new_sample = value[:sample]
+        if job.get(sample_key) != new_sample:
+            job[sample_key] = new_sample
+            changed = True
+        job.pop(key, None)
+        changed = True
+    return changed
+
+
+def compact_terminal_job_state(job: dict[str, Any]) -> bool:
+    if job.get("state") not in TERMINAL_JOB_STATES:
+        return False
+    changed = False
+
+    if "encode_progress" not in job:
+        progress = encode_progress_for_job(job)
+        if progress is not None:
+            job["encode_progress"] = progress
+            changed = True
+    if "upload_progress" not in job:
+        progress = upload_progress_for_job(job)
+        if progress is None and isinstance(job.get("input_upload_progress"), dict):
+            progress = dict(job["input_upload_progress"])
+        if progress is not None:
+            job["upload_progress"] = progress
+            changed = True
+
+    for result_key in (
+        "review_upload_result",
+        "collection_preview_upload_result",
+        "riverhog_upload_result",
+    ):
+        compact = compact_command_result(job.get(result_key))
+        if compact != job.get(result_key):
+            job[result_key] = compact
+            changed = True
+
+    for key in (
+        "eager_archive",
+        "gpu_payloads",
+        "gpu_result",
+        "gpu_results",
+        "gpu_statuses",
+        "group_results",
+        "input_upload_progress",
+    ):
+        if key in job:
+            job.pop(key, None)
+            changed = True
+
+    changed = compact_list_field(job, "cleanup_removed") or changed
+    changed = compact_list_field(job, "local_work_removed") or changed
+    if changed and not job.get("terminal_state_compacted_at"):
+        job["terminal_state_compacted_at"] = now_iso()
+    return changed
+
+
 def cleanup_terminal_job(job: dict[str, Any]) -> list[str]:
+    if "upload_progress" not in job:
+        progress = upload_progress_for_job(job)
+        if progress is not None:
+            job["upload_progress"] = progress
     removed = remove_job_local_work(job)
     job_id = str(job.get("job_id") or "")
     upload_id = str(job.get("input_upload_id") or "")
@@ -3065,10 +3215,18 @@ def compact_job_response(job: dict[str, Any]) -> dict[str, Any]:
         "storage_wait",
         "cancel_requested",
         "cleanup_removed",
+        "cleanup_removed_count",
+        "cleanup_removed_sample",
         "cleanup_completed_at",
         "input_upload_deleted_at",
         "local_work_cleaned_at",
         "local_work_removed",
+        "local_work_removed_count",
+        "local_work_removed_sample",
+        "terminal_state_compacted_at",
+        "debug_bundle_dir",
+        "debug_bundle_created_at",
+        "debug_bundle_reason",
         "error",
     ]
     return {key: response[key] for key in keys if key in response}
@@ -3614,7 +3772,8 @@ def run_job(job_id: str) -> None:
         save_job(job)
         if should_cleanup_local_work_on_success(job):
             cleanup_terminal_job(job)
-            save_job(job)
+        compact_terminal_job_state(job)
+        save_job(job)
         notify_job_event(job, "job.succeeded", "Munchy job completed successfully.")
     except JobCancelled as exc:
         log.info("job %s cancelled: %s", job_id, exc)
@@ -3629,6 +3788,7 @@ def run_job(job_id: str) -> None:
         job.pop("error", None)
         if job.get("cleanup_requested"):
             cleanup_cancelled_job(job)
+            compact_terminal_job_state(job)
         save_job(job)
     except Exception as exc:
         log.exception("job %s failed", job_id)
@@ -3639,9 +3799,15 @@ def run_job(job_id: str) -> None:
         job["state"] = "failed"
         job["error"] = str(exc)
         job["finished_at"] = now_iso()
+        write_job_debug_bundle(
+            job,
+            reason="encoding_failed" if isinstance(exc, EncodingFailed) else "job_failed",
+            error=exc,
+        )
         save_job(job)
         if isinstance(exc, EncodingFailed):
             cleanup_terminal_job(job)
+            compact_terminal_job_state(job)
             save_job(job)
         else:
             notify_job_issue(job, component="job", error=exc, severity="error")
@@ -4137,7 +4303,10 @@ def cancel_job(job_id: str, cleanup: bool = False) -> dict[str, Any]:
         job = load_job(job_id)
         if job.get("state") in TERMINAL_JOB_STATES:
             if cleanup:
+                if job.get("state") == "failed":
+                    write_job_debug_bundle(job, reason="terminal_failed_cleanup")
                 cleanup_terminal_job(job)
+                compact_terminal_job_state(job)
                 return compact_job_response(save_job(job))
             return compact_job_response(job)
         now = now_iso()
@@ -4153,6 +4322,7 @@ def cancel_job(job_id: str, cleanup: bool = False) -> dict[str, Any]:
             job["finished_at"] = now
             if cleanup:
                 cleanup_cancelled_job(job)
+                compact_terminal_job_state(job)
         else:
             job["phase"] = "cancel_requested"
         return save_job(job)
@@ -4160,6 +4330,7 @@ def cancel_job(job_id: str, cleanup: bool = False) -> dict[str, Any]:
 
 def cleanup_once() -> dict[str, Any]:
     removed: list[str] = []
+    compacted: list[str] = []
     upload_cutoff = datetime.now(UTC) - timedelta(hours=INPUT_UPLOAD_TTL_HOURS)
     orphan_upload_cutoff = datetime.now(UTC) - timedelta(hours=ORPHAN_INPUT_UPLOAD_TTL_HOURS)
     with state_lock:
@@ -4186,21 +4357,44 @@ def cleanup_once() -> dict[str, Any]:
             job_id = str(job.get("job_id") or "")
             if not job_id or job_id in active_jobs:
                 continue
-            if not should_cleanup_terminal_local_work(job, job_cutoff):
-                continue
-            removed_for_job = cleanup_terminal_job(job)
+            cleanup_due = should_cleanup_terminal_local_work(job, job_cutoff)
+            removed_for_job: list[str] = []
+            if cleanup_due:
+                if job.get("state") == "failed":
+                    write_job_debug_bundle(job, reason="maintenance_failed_cleanup")
+                removed_for_job = cleanup_terminal_job(job)
+            compacted_for_job = (
+                job.get("state") in TERMINAL_JOB_STATES
+                and (cleanup_due or bool(job.get("cleanup_completed_at")))
+                and compact_terminal_job_state(job)
+            )
             if removed_for_job:
-                save_job(job)
                 removed.append(f"job-cleanup:{job_id}")
-    return {"removed": removed}
+            if compacted_for_job:
+                compacted.append(job_id)
+            if removed_for_job or compacted_for_job:
+                save_job(job)
+
+    vacuumed = False
+    if removed or compacted:
+        with state_lock:
+            if not active_jobs:
+                vacuum_state_store()
+                vacuumed = True
+    return {"removed": removed, "compacted": compacted, "vacuumed": vacuumed}
 
 
 def cleanup_loop() -> None:
     while not cleanup_stop.wait(CLEANUP_INTERVAL_SECONDS):
         try:
             result = cleanup_once()
-            if result["removed"]:
-                log.info("maintenance cleanup removed: %s", ", ".join(result["removed"]))
+            if result["removed"] or result["compacted"]:
+                log.info(
+                    "maintenance cleanup removed=%s compacted=%s vacuumed=%s",
+                    ", ".join(result["removed"]) or "-",
+                    len(result["compacted"]),
+                    result["vacuumed"],
+                )
         except Exception:
             log.exception("maintenance cleanup failed")
 

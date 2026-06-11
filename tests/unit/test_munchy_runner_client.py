@@ -362,6 +362,19 @@ def test_format_job_status_line_includes_cleanup_completion() -> None:
     assert "cleanup complete (2 item(s) removed)" in line
 
 
+def test_format_job_status_line_uses_compacted_cleanup_count() -> None:
+    line = format_job_status_line(
+        {
+            "state": "succeeded",
+            "phase": "done",
+            "cleanup_completed_at": "2026-01-01T00:00:00Z",
+            "cleanup_removed_count": 164,
+        }
+    )
+
+    assert "cleanup complete (164 item(s) removed)" in line
+
+
 def test_format_job_failure_is_compact_and_includes_error_details() -> None:
     failure = format_job_failure(
         {

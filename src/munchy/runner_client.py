@@ -550,6 +550,8 @@ def format_job_status_line(job: dict[str, Any]) -> str:
         removed = job.get("cleanup_removed")
         if isinstance(removed, list) and removed:
             pieces.append(f"cleanup complete ({len(removed)} item(s) removed)")
+        elif job.get("cleanup_removed_count"):
+            pieces.append(f"cleanup complete ({int(job['cleanup_removed_count'])} item(s) removed)")
         else:
             pieces.append("cleanup complete")
     queue = job.get("queue")

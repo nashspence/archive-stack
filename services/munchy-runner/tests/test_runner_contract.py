@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import gzip
 import json
 import logging
 import sys
@@ -543,6 +544,127 @@ def test_compact_job_response_includes_cleanup_metadata(
     assert "eager_archive" not in compact
 
 
+def test_compact_terminal_job_state_keeps_summaries_and_drops_heavy_payloads(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    job = {
+        "job_id": "job-1",
+        "state": "succeeded",
+        "phase": "done",
+        "workflow_mode": "collection_preview",
+        "input_upload_id": "upload-1",
+        "groups": {
+            "camera": {
+                "archive_mode": "av1_nvenc",
+                "gpu_tasks": ["archive_video"],
+            }
+        },
+        "eager_archive": {
+            "files": {
+                "camera/a.mp4": {
+                    "state": "encoded",
+                    "group": "camera",
+                    "input_bytes": 100,
+                    "output_bytes": 10,
+                    "started_at": "2026-01-01T00:00:00Z",
+                    "encoded_at": "2026-01-01T00:00:10Z",
+                }
+            },
+            "batches": {
+                "batch-1": {
+                    "state": "succeeded",
+                    "started_at": "2026-01-01T00:00:00Z",
+                    "finished_at": "2026-01-01T00:00:10Z",
+                    "payload": {"large": "payload"},
+                    "gpu_result": {"large": "result"},
+                }
+            },
+            "gpu_results": {"batch-1": {"large": "result"}},
+        },
+        "gpu_payloads": {"camera": {"large": "payload"}},
+        "gpu_result": {"large": "result"},
+        "gpu_results": {"camera": {"large": "result"}},
+        "gpu_statuses": {"gpu-job": {"state": "succeeded"}},
+        "group_results": {"camera": {"large": "result"}},
+        "cleanup_removed": [f"/tmp/work-{index}" for index in range(12)],
+        "local_work_removed": [f"/tmp/work-{index}" for index in range(12)],
+        "collection_preview_upload_result": {
+            "method": "rclone",
+            "returncode": 0,
+            "stdout": "x" * 5000,
+            "stderr": "",
+            "destination": "remote:path",
+            "succeeded_at": "2026-01-01T00:01:00Z",
+        },
+    }
+
+    changed = runner.compact_terminal_job_state(job)
+
+    assert changed is True
+    assert job["encode_progress"]["files_total"] == 1
+    assert job["encode_progress"]["files_encoded"] == 1
+    assert job["cleanup_removed_count"] == 12
+    assert len(job["cleanup_removed_sample"]) == 8
+    assert "cleanup_removed" not in job
+    assert job["local_work_removed_count"] == 12
+    assert "local_work_removed" not in job
+    assert "stdout" not in job["collection_preview_upload_result"]
+    assert len(job["collection_preview_upload_result"]["stdout_tail"]) == 4000
+    assert job["terminal_state_compacted_at"]
+    for key in (
+        "eager_archive",
+        "gpu_payloads",
+        "gpu_result",
+        "gpu_results",
+        "gpu_statuses",
+        "group_results",
+    ):
+        assert key not in job
+
+
+def test_failed_job_debug_bundle_preserves_pre_compaction_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    job = {
+        "job_id": "job-1",
+        "state": "failed",
+        "phase": "gpu",
+        "error": "gpu job failed: bad encode",
+        "eager_archive": {"files": {"camera/a.mp4": {"state": "failed"}}},
+        "gpu_payloads": {"camera": {"input_dir": "/data/input"}},
+        "gpu_results": {"camera": {"state": "failed"}},
+    }
+
+    changed = runner.write_job_debug_bundle(
+        job,
+        reason="encoding_failed",
+        error=runner.EncodingFailed("gpu job failed: bad encode"),
+    )
+    runner.compact_terminal_job_state(job)
+
+    bundle = Path(job["debug_bundle_dir"])
+    assert changed is True
+    assert bundle.is_dir()
+    assert (bundle / "metadata.json").is_file()
+    assert (bundle / "error.txt").read_text(encoding="utf-8") == (
+        "gpu job failed: bad encode\n"
+    )
+    with gzip.open(bundle / "job-state-full.json.gz", "rt", encoding="utf-8") as handle:
+        full_state = json.load(handle)
+    assert full_state["eager_archive"]["files"]["camera/a.mp4"]["state"] == "failed"
+    assert full_state["gpu_payloads"]["camera"]["input_dir"] == "/data/input"
+    assert "eager_archive" not in job
+    assert job["debug_bundle_reason"] == "encoding_failed"
+
+
 def test_prepare_shared_input_tree_links_uploaded_files_without_sha_rehash(
     tmp_path: Path,
     monkeypatch,
@@ -680,6 +802,7 @@ def test_run_job_points_gpu_payload_at_shared_input_tree(
     monkeypatch.setattr(runner, "upload_review", lambda *args, **kwargs: {"returncode": 0})
     monkeypatch.setattr(runner, "notify_job_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "schedule_pending_jobs", lambda *args, **kwargs: [])
 
     runner.run_job("job-1")
 
@@ -743,6 +866,7 @@ def test_successful_job_keeps_shared_input_upload_for_unfinished_sibling(
     monkeypatch.setattr(runner, "upload_review", lambda *args, **kwargs: {"returncode": 0})
     monkeypatch.setattr(runner, "notify_job_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "schedule_pending_jobs", lambda *args, **kwargs: [])
 
     runner.run_job("job-1")
 
