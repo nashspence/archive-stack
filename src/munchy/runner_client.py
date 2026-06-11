@@ -630,18 +630,26 @@ class RichProgressRenderer(ProgressRenderer):
             table.add_row("", format_encode_progress(encode_progress))
 
         issue = job.get("transient_issue")
-        if isinstance(issue, dict):
-            table.add_row("Remote Transient Issue", format_transient_issue(issue))
+        table.add_row(
+            "Remote Transient Issue",
+            self._transient_issue_renderable(issue if isinstance(issue, dict) else None),
+        )
 
         if (
             not local_progress_items(job)
             and upload_progress is None
             and not isinstance(encode_progress, dict)
-            and not isinstance(issue, dict)
         ):
             table.add_row("Progress", "waiting")
 
         return Panel(table, title=self.title, border_style="cyan", box=box.ROUNDED)
+
+    def _transient_issue_renderable(self, issue: dict[str, Any] | None) -> Any:
+        from rich.text import Text
+
+        if issue is None:
+            return Text(" ", no_wrap=True, overflow="ellipsis")
+        return Text(format_transient_issue(issue), style="yellow", no_wrap=True, overflow="ellipsis")
 
     def _bar(self, progress: dict[str, Any], *, percent_key: str) -> Any:
         from rich.progress import BarColumn, Progress, TextColumn

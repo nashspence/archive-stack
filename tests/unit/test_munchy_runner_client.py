@@ -219,6 +219,49 @@ def test_rich_renderer_overlays_transient_issue_without_replacing_progress() -> 
     assert len(live.rendered) == 2
 
 
+def test_rich_renderer_reserves_single_line_for_transient_issues() -> None:
+    pytest.importorskip("rich")
+    from rich.console import Console
+
+    renderer = RichProgressRenderer(include_job=True, title="Test")
+    base_job = {
+        "state": "running",
+        "phase": "gpu:camera",
+        "upload_progress": {
+            "files_uploaded": 5,
+            "files_total": 10,
+            "uploaded_bytes": 500,
+            "bytes_total": 1000,
+            "percent_bytes": 50.0,
+        },
+    }
+
+    def render_lines(job: dict[str, object]) -> list[str]:
+        console = Console(record=True, width=72, color_system=None)
+        console.print(renderer._render(job))
+        return console.export_text().splitlines()
+
+    without_issue = render_lines(base_job)
+    with_issue = render_lines(
+        {
+            **base_job,
+            "transient_issue": {
+                "label": "remote job status",
+                "retries": 12,
+                "files": 3,
+                "next_retry_seconds": 60.0,
+                "error": "connection reset by peer while reading a very long response body",
+                "path": "camera/" + ("very-long-directory/" * 8) + "clip.mp4",
+            },
+        }
+    )
+
+    assert len(with_issue) == len(without_issue)
+    assert any("Remote Transient Issue" in line for line in without_issue)
+    assert any("Remote Transient Issue" in line for line in with_issue)
+    assert all(len(line) <= 72 for line in with_issue)
+
+
 def test_format_job_summary_line_includes_encoder_queue_position() -> None:
     line = format_job_summary_line(
         {
