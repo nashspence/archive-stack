@@ -157,7 +157,7 @@ def test_client_can_override_host_header_for_pinned_lan_routes(monkeypatch) -> N
             verify=self.verify_tls,
         )
 
-    monkeypatch.setenv("RIVERHOG_HOST_HEADER", "riverhog.0819870.xyz")
+    monkeypatch.setenv("RIVERHOG_HOST_HEADER", "riverhog.example.test")
     monkeypatch.setenv("RIVERHOG_TLS_VERIFY", "false")
     monkeypatch.setattr(ApiClient, "_client", fake_client)
 
@@ -166,7 +166,7 @@ def test_client_can_override_host_header_for_pinned_lan_routes(monkeypatch) -> N
 
     client.get_collection("docs")
 
-    assert captured == ["riverhog.0819870.xyz"]
+    assert captured == ["riverhog.example.test"]
 
 
 def test_list_collections_uses_collection_listing_endpoint(monkeypatch) -> None:
@@ -584,7 +584,7 @@ def test_append_upload_chunk_can_override_absolute_upload_base_url(monkeypatch) 
 
     client = ApiClient(base_url="http://127.0.0.1:18080")
     client.append_upload_chunk(
-        "https://riverhog.0819870.xyz/v1/collection-uploads/docs/files/report.txt/upload",
+        "https://riverhog.example.test/v1/collection-uploads/docs/files/report.txt/upload",
         offset=0,
         checksum_algorithm="sha256",
         content=content,

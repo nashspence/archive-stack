@@ -72,8 +72,20 @@ src/
     main.py
     client.py
     output.py
+  munchy/
+    ingest.py
+    local_files.py
+    preflight.py
+    profiles.py
+    runner_client.py
+    source_artifacts.py
+  munchy_cli/
+    main.py
   djdan/
     main.py
+services/
+  munchy-runner/
+  munchy-av1-nvenc/
 tests/
   acceptance/
   harness/
@@ -88,3 +100,5 @@ tests/
 - Keep selector parsing and normalization in one shared place.
 - Keep planner helpers and donor code adaptations behind ports and services rather than wiring them directly into routers.
 - Keep explanation docs aligned to the actual repository layout rather than an aspirational one.
+- Keep Munchy generic: tests and examples should use role-based names, not private devices,
+  hostnames, remotes, or deployment overlays.

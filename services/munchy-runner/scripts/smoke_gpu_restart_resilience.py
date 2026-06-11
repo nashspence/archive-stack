@@ -328,7 +328,7 @@ def main() -> int:
         "gpu_tasks": ["archive_video"],
         "encode_profile": {
             "schema_version": 1,
-            "name": "gpu-restart-zshades-720p",
+            "name": "gpu-restart-camera-720p",
             "archive": {
                 "quality": 48,
                 "max_height": 720,
@@ -354,7 +354,7 @@ def main() -> int:
                 "gpu_tasks": ["archive_video"],
                 "encode_profile": {
                     "schema_version": 1,
-                    "name": "gpu-restart-zshades-720p",
+                    "name": "gpu-restart-camera-720p",
                     "archive": {
                         "quality": 48,
                         "max_height": 720,

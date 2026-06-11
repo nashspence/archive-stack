@@ -10,9 +10,9 @@ SHA256 = "0" * 64
 
 
 def test_input_files_must_include_a_profile_group_prefix() -> None:
-    file_spec = InputFileSpec(path="sony-a6700-video/C0001.MP4", bytes=12, sha256=SHA256)
+    file_spec = InputFileSpec(path="camera-main-video/clip001.mp4", bytes=12, sha256=SHA256)
 
-    assert file_spec.profile_group == "sony-a6700-video"
+    assert file_spec.profile_group == "camera-main-video"
 
 
 @pytest.mark.parametrize("path", ["C0001.MP4", "/video/C0001.MP4", "../video/C0001.MP4", "a\\b"])

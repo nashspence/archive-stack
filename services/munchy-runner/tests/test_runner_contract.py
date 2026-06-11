@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import importlib.util
 import gzip
+import importlib.util
 import json
 import logging
 import sys
@@ -228,7 +228,7 @@ def test_upload_waiting_reminder_is_time_sensitive_and_paced(
     monkeypatch.setattr(runner, "send_notify_deliveries", fake_send_notify_deliveries)
     job = {
         "job_id": "job-1",
-        "collection_slug": "backyard-preview",
+        "collection_slug": "camera-preview",
         "collection_timestamp": "20260606T120000Z",
         "state": "running",
         "phase": "waiting_for_eager_files:1/2",
@@ -1088,10 +1088,10 @@ def test_preflight_issue_notification_error_keeps_truncated_filename_at_end(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     runner = load_runner(tmp_path, monkeypatch)
-    filename = "front-yard-camera-" + ("very-long-" * 12) + "clip.mp4"
+    filename = "example-camera-" + ("very-long-" * 12) + "clip.mp4"
 
     error = runner.preflight_issue_notification_error(
-        path=f"reolink-video/2026/06/06/{filename}",
+        path=f"camera-video/2026/06/06/{filename}",
         issue_message=(
             "ffprobe failed because the MP4 atom table points past the end of the "
             "available local file"

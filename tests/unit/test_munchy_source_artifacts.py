@@ -94,7 +94,7 @@ def test_source_artifact_bridge_accepts_service_encode_profile_shape() -> None:
     profile = {
         "schema_version": 1,
         "target": "munchy-av1-nvenc",
-        "name": "reolink-preview",
+        "name": "camera-preview",
         "archive": {
             "codec": "av1_nvenc",
             "container": "webm",
