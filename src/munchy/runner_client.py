@@ -346,9 +346,9 @@ def format_input_upload_progress(progress: dict[str, Any]) -> str:
     files_total = int(progress.get("files_total") or 0)
     uploaded_bytes = int(progress.get("uploaded_bytes") or 0)
     bytes_total = int(progress.get("bytes_total") or 0)
-    pct = float(
-        progress.get("percent_bytes")
-        or ((uploaded_bytes / bytes_total * 100.0) if bytes_total else 100.0)
+    pct = (uploaded_bytes / bytes_total * 100.0) if bytes_total else progress_percent(
+        progress,
+        percent_key="percent_bytes",
     )
     rate = int(progress.get("rate_bytes_per_second") or 0)
     parts = [
@@ -356,12 +356,47 @@ def format_input_upload_progress(progress: dict[str, Any]) -> str:
         format_progress_bytes(uploaded_bytes, bytes_total),
         f"{pct:.2f}%",
     ]
-    input_tree_files = int(progress.get("input_tree_files_ready") or 0)
-    if input_tree_files and input_tree_files < files_uploaded:
-        parts.append(f"input tree {input_tree_files}/{files_total} files")
     if rate:
         parts.append(format_rate(rate))
     return ", ".join(parts)
+
+
+def input_tree_progress(upload_progress: dict[str, Any]) -> dict[str, Any] | None:
+    if (
+        "input_tree_files_ready" not in upload_progress
+        and "input_tree_bytes_ready" not in upload_progress
+    ):
+        return None
+    files_total = int(upload_progress.get("files_total") or 0)
+    bytes_total = int(upload_progress.get("bytes_total") or 0)
+    files_done = min(int(upload_progress.get("input_tree_files_ready") or 0), files_total)
+    bytes_done = min(int(upload_progress.get("input_tree_bytes_ready") or 0), bytes_total)
+    if files_total <= 0 and bytes_total <= 0:
+        return None
+    if files_total > 0 and files_done >= files_total and (
+        bytes_total <= 0 or bytes_done >= bytes_total
+    ):
+        return None
+    percent = (bytes_done / bytes_total * 100.0) if bytes_total else 0.0
+    return {
+        "files_done": files_done,
+        "files_total": files_total,
+        "bytes_done": bytes_done,
+        "bytes_total": bytes_total,
+        "percent_bytes": percent,
+    }
+
+
+def format_input_tree_progress(progress: dict[str, Any]) -> str:
+    files_done = int(progress.get("files_done") or 0)
+    files_total = int(progress.get("files_total") or 0)
+    bytes_done = int(progress.get("bytes_done") or 0)
+    bytes_total = int(progress.get("bytes_total") or 0)
+    pct = progress_percent(progress, percent_key="percent_bytes")
+    return (
+        f"remote input tree {files_done}/{files_total} files, "
+        f"{format_progress_bytes(bytes_done, bytes_total)}, {pct:.2f}%"
+    )
 
 
 def _float_value(value: Any) -> float | None:
@@ -382,6 +417,15 @@ def _ratio_percent(done: Any, total: Any) -> float | None:
 
 
 def progress_percent(progress: dict[str, Any], *, percent_key: str) -> float:
+    uploaded_bytes_percent = _ratio_percent(progress.get("uploaded_bytes"), progress.get("bytes_total"))
+    bytes_done_percent = _ratio_percent(progress.get("bytes_done"), progress.get("bytes_total"))
+    if percent_key == "percent_bytes":
+        computed_byte_percent = uploaded_bytes_percent
+        if computed_byte_percent is None:
+            computed_byte_percent = bytes_done_percent
+        if computed_byte_percent is not None:
+            return max(0.0, min(100.0, computed_byte_percent))
+
     configured = _float_value(progress.get(percent_key))
     if configured is None:
         configured = _float_value(progress.get("percent_clips"))
@@ -389,8 +433,8 @@ def progress_percent(progress: dict[str, Any], *, percent_key: str) -> float:
         configured = _float_value(progress.get("percent_files"))
 
     computed_candidates = (
-        _ratio_percent(progress.get("uploaded_bytes"), progress.get("bytes_total")),
-        _ratio_percent(progress.get("bytes_done"), progress.get("bytes_total")),
+        uploaded_bytes_percent,
+        bytes_done_percent,
         _ratio_percent(progress.get("input_bytes_encoded"), progress.get("input_bytes_total")),
         _ratio_percent(progress.get("clips_done"), progress.get("clips_total")),
         _ratio_percent(progress.get("files_encoded"), progress.get("files_total")),
@@ -484,6 +528,9 @@ def format_progress_status_line(job: dict[str, Any]) -> str:
     upload_progress = job_upload_progress(job)
     if upload_progress is not None:
         pieces.append(format_input_upload_progress(upload_progress))
+        tree_progress = input_tree_progress(upload_progress)
+        if tree_progress is not None:
+            pieces.append(format_input_tree_progress(tree_progress))
     encode_progress = job.get("encode_progress")
     if isinstance(encode_progress, dict):
         pieces.append(format_encode_progress(encode_progress))
@@ -586,6 +633,7 @@ class RichProgressRenderer(ProgressRenderer):
         self.current_job: dict[str, Any] = {}
         self.transient_issue: dict[str, Any] | None = None
         self.transient_issue_expires_at: float | None = None
+        self.transient_issue_clear_after_uploaded_bytes: int | None = None
 
     def __enter__(self) -> RichProgressRenderer:
         self.live.start(refresh=True)
@@ -603,11 +651,12 @@ class RichProgressRenderer(ProgressRenderer):
             if isinstance(issue, dict):
                 self.transient_issue = issue
                 self.transient_issue_expires_at = self._transient_issue_expiry(issue, now=now)
+                self.transient_issue_clear_after_uploaded_bytes = self._current_uploaded_bytes()
             else:
-                self.transient_issue = None
-                self.transient_issue_expires_at = None
+                self._clear_transient_issue()
         if update:
             self.current_job.update(update)
+        self._clear_transient_issue_if_upload_advanced()
         self.live.update(self._render(self._render_job()), refresh=True)
 
     def stop(self) -> None:
@@ -627,8 +676,28 @@ class RichProgressRenderer(ProgressRenderer):
             and self.transient_issue_expires_at is not None
             and now >= self.transient_issue_expires_at
         ):
-            self.transient_issue = None
-            self.transient_issue_expires_at = None
+            self._clear_transient_issue()
+
+    def _clear_transient_issue(self) -> None:
+        self.transient_issue = None
+        self.transient_issue_expires_at = None
+        self.transient_issue_clear_after_uploaded_bytes = None
+
+    def _current_uploaded_bytes(self) -> int | None:
+        progress = job_upload_progress(self.current_job)
+        if progress is None:
+            return None
+        try:
+            return int(progress.get("uploaded_bytes") or 0)
+        except (TypeError, ValueError):
+            return None
+
+    def _clear_transient_issue_if_upload_advanced(self) -> None:
+        if self.transient_issue is None or self.transient_issue_clear_after_uploaded_bytes is None:
+            return
+        uploaded_bytes = self._current_uploaded_bytes()
+        if uploaded_bytes is not None and uploaded_bytes > self.transient_issue_clear_after_uploaded_bytes:
+            self._clear_transient_issue()
 
     def _render_job(self) -> dict[str, Any]:
         job = dict(self.current_job)
@@ -661,6 +730,10 @@ class RichProgressRenderer(ProgressRenderer):
         if upload_progress is not None:
             table.add_row("Remote Upload", self._bar(upload_progress, percent_key="percent_bytes"))
             table.add_row("", format_input_upload_progress(upload_progress))
+            tree_progress = input_tree_progress(upload_progress)
+            if tree_progress is not None:
+                table.add_row("Remote Input Tree", self._bar(tree_progress, percent_key="percent_bytes"))
+                table.add_row("", format_input_tree_progress(tree_progress))
 
         encode_progress = job.get("encode_progress")
         if isinstance(encode_progress, dict):
@@ -758,13 +831,16 @@ class UploadProgress:
         total_files: int,
         total_bytes: int,
         *,
+        completed_files: int = 0,
+        completed_bytes: int = 0,
         job_status_provider: Any | None = None,
         renderer: ProgressRenderer | None = None,
     ) -> None:
         self.total_files = total_files
         self.total_bytes = total_bytes
-        self.completed_files = 0
-        self.completed_bytes = 0
+        self.completed_files = completed_files
+        self.completed_bytes = completed_bytes
+        self.initial_completed_bytes = completed_bytes
         self.started_at = time.monotonic()
         self.last_printed_at = self.started_at
         self.lock = Lock()
@@ -809,12 +885,13 @@ class UploadProgress:
             if not should_print:
                 return
             elapsed = max(now - self.started_at, 0.001)
+            session_uploaded_bytes = max(self.completed_bytes - self.initial_completed_bytes, 0)
             upload_progress = {
                 "files_uploaded": self.completed_files,
                 "files_total": self.total_files,
                 "uploaded_bytes": self.completed_bytes,
                 "bytes_total": self.total_bytes,
-                "rate_bytes_per_second": int(self.completed_bytes / elapsed),
+                "rate_bytes_per_second": int(session_uploaded_bytes / elapsed),
             }
             job: dict[str, Any] = {"upload_progress": upload_progress}
             if self.job_status_provider is not None:
@@ -1011,6 +1088,7 @@ class MunchyRunnerClient:
         pending_files = [item for item in request.files if item.rel_path not in completed_paths]
         pending_bytes = sum(item.bytes for item in pending_files)
         skipped_files = total_files - len(pending_files)
+        completed_bytes = total_bytes - pending_bytes
         print(
             (
                 f"uploading {len(pending_files)}/{total_files} remaining files "
@@ -1029,10 +1107,24 @@ class MunchyRunnerClient:
             retry_reporter.bind_renderer(renderer)
             if request.upload_workers == 1 or len(pending_files) <= 1:
                 with renderer:
-                    self._upload_files_serial(request, pending_files, retry_reporter, renderer)
+                    self._upload_files_serial(
+                        request,
+                        pending_files,
+                        retry_reporter,
+                        renderer,
+                        completed_files=skipped_files,
+                        completed_bytes=completed_bytes,
+                    )
             else:
                 with renderer:
-                    self._upload_files_parallel(request, pending_files, retry_reporter, renderer)
+                    self._upload_files_parallel(
+                        request,
+                        pending_files,
+                        retry_reporter,
+                        renderer,
+                        completed_files=skipped_files,
+                        completed_bytes=completed_bytes,
+                    )
         retry_reporter.finish()
         upload = self.json("GET", f"/v1/input-uploads/{urllib.parse.quote(request.upload_id)}")
         if upload.get("state") != "uploaded":
@@ -1045,10 +1137,15 @@ class MunchyRunnerClient:
         files: list[RunnerInputFile],
         retry_reporter: UploadRetryReporter,
         renderer: ProgressRenderer,
+        *,
+        completed_files: int = 0,
+        completed_bytes: int = 0,
     ) -> None:
         progress = UploadProgress(
-            len(files),
-            sum(item.bytes for item in files),
+            len(request.files),
+            sum(item.bytes for item in request.files),
+            completed_files=completed_files,
+            completed_bytes=completed_bytes,
             renderer=renderer,
             job_status_provider=lambda: self.json(
                 "GET",
@@ -1071,10 +1168,15 @@ class MunchyRunnerClient:
         files: list[RunnerInputFile],
         retry_reporter: UploadRetryReporter,
         renderer: ProgressRenderer,
+        *,
+        completed_files: int = 0,
+        completed_bytes: int = 0,
     ) -> None:
         progress = UploadProgress(
-            len(files),
-            sum(item.bytes for item in files),
+            len(request.files),
+            sum(item.bytes for item in request.files),
+            completed_files=completed_files,
+            completed_bytes=completed_bytes,
             renderer=renderer,
             job_status_provider=lambda: self.json(
                 "GET",

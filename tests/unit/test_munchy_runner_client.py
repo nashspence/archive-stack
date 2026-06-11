@@ -144,7 +144,7 @@ def test_format_progress_status_line_shows_input_tree_when_it_lags_upload() -> N
     )
 
     assert "remote upload 8/10 files" in line
-    assert "input tree 5/10 files" in line
+    assert "remote input tree 5/10 files" in line
 
 
 def test_progress_percent_uses_uploaded_bytes_when_payload_percent_is_stale() -> None:
@@ -157,6 +157,16 @@ def test_progress_percent_uses_uploaded_bytes_when_payload_percent_is_stale() ->
     }
 
     assert progress_percent(progress, percent_key="percent_bytes") == pytest.approx(11.111, rel=0.001)
+
+
+def test_progress_percent_prefers_uploaded_bytes_when_payload_percent_is_stale_positive() -> None:
+    progress = {
+        "uploaded_bytes": 46,
+        "bytes_total": 100,
+        "percent_bytes": 57.0,
+    }
+
+    assert progress_percent(progress, percent_key="percent_bytes") == pytest.approx(46.0)
 
 
 def test_upload_retry_reporter_uses_live_renderer_for_transient_issues() -> None:
@@ -273,6 +283,48 @@ def test_rich_renderer_reserves_single_line_for_transient_issues() -> None:
     assert not any("Transient Issue" in line for line in without_issue)
     assert any("Remote Job Status Issue" in line for line in with_issue)
     assert all(len(line) <= 72 for line in with_issue)
+
+
+def test_rich_renderer_clears_transient_issue_when_upload_advances() -> None:
+    pytest.importorskip("rich")
+
+    class Live:
+        def __init__(self) -> None:
+            self.rendered: list[object] = []
+
+        def update(self, renderable: object, *, refresh: bool = False) -> None:
+            self.rendered.append(renderable)
+
+    live = Live()
+    renderer = RichProgressRenderer(include_job=False, title="Test")
+    renderer.started = True
+    renderer.live = live  # type: ignore[assignment]
+    renderer.update(
+        {
+            "upload_progress": {
+                "files_uploaded": 1,
+                "files_total": 10,
+                "uploaded_bytes": 100,
+                "bytes_total": 1000,
+            }
+        }
+    )
+    renderer.update({"transient_issue": {"label": "remote upload", "retries": 1}})
+
+    assert renderer.transient_issue is not None
+
+    renderer.update(
+        {
+            "upload_progress": {
+                "files_uploaded": 2,
+                "files_total": 10,
+                "uploaded_bytes": 200,
+                "bytes_total": 1000,
+            }
+        }
+    )
+
+    assert renderer.transient_issue is None
 
 
 def test_format_job_summary_line_includes_encoder_queue_position() -> None:
@@ -554,3 +606,33 @@ def test_upload_progress_can_merge_remote_upload_and_encode_progress() -> None:
     assert renderer_jobs
     assert "upload_progress" in renderer_jobs[0]
     assert "encode_progress" in renderer_jobs[0]
+
+
+def test_upload_progress_fallback_uses_full_upload_baseline_on_resume() -> None:
+    item = RunnerInputFile(
+        source=Path("pending.mp4"),
+        rel_path="video/pending.mp4",
+        bytes=4,
+        sha256="0" * 64,
+    )
+    renderer_jobs: list[dict[str, object]] = []
+
+    class Renderer:
+        def update(self, job: dict[str, object], *, force: bool = False) -> None:
+            renderer_jobs.append(job)
+
+    progress = UploadProgress(
+        total_files=3,
+        total_bytes=12,
+        completed_files=2,
+        completed_bytes=8,
+        renderer=Renderer(),  # type: ignore[arg-type]
+    )
+
+    progress.mark_complete(item)
+
+    upload = renderer_jobs[0]["upload_progress"]
+    assert upload["files_uploaded"] == 3  # type: ignore[index]
+    assert upload["files_total"] == 3  # type: ignore[index]
+    assert upload["uploaded_bytes"] == 12  # type: ignore[index]
+    assert upload["bytes_total"] == 12  # type: ignore[index]
