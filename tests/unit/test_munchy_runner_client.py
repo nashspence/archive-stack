@@ -13,12 +13,12 @@ from munchy.runner_client import (
     RunnerHttpError,
     RunnerInputFile,
     RunnerUploadRequest,
-    UploadRetryReporter,
     UploadProgress,
+    UploadRetryReporter,
     format_job_failure,
     format_job_status_line,
-    format_progress_status_line,
     format_job_summary_line,
+    format_progress_status_line,
     progress_percent,
 )
 
@@ -158,7 +158,10 @@ def test_progress_percent_uses_uploaded_bytes_when_payload_percent_is_stale() ->
         "percent_bytes": 0.0,
     }
 
-    assert progress_percent(progress, percent_key="percent_bytes") == pytest.approx(11.111, rel=0.001)
+    assert progress_percent(progress, percent_key="percent_bytes") == pytest.approx(
+        11.111,
+        rel=0.001,
+    )
 
 
 def test_progress_percent_prefers_uploaded_bytes_when_payload_percent_is_stale_positive() -> None:
@@ -196,6 +199,42 @@ def test_upload_retry_reporter_uses_live_renderer_for_transient_issues() -> None
     assert updates[0]["transient_issue"]["label"] == "remote upload"  # type: ignore[index]
     assert updates[0]["transient_issue"]["next_retry_seconds"] == 2.0  # type: ignore[index]
     assert updates[-1]["transient_issue"]["message"] == "recovered from transient issues"  # type: ignore[index]
+
+
+def test_upload_retry_reporter_does_not_restart_stopped_live_renderer() -> None:
+    class Renderer:
+        is_live = True
+        started = True
+        updates = 0
+
+        def update(self, job: dict[str, object], *, force: bool = False) -> None:
+            if not self.started:
+                raise AssertionError("stopped live renderer should not be updated")
+            self.updates += 1
+
+    renderer = Renderer()
+    reporter = UploadRetryReporter(label="remote upload", renderer=renderer)  # type: ignore[arg-type]
+    reporter.mark_retry(
+        rel_path="camera/clip.mp4",
+        retry_count=1,
+        retry_delay=2.0,
+        exc=ConnectionResetError(54, "Connection reset by peer"),
+    )
+    renderer.started = False
+    reporter.finish()
+    reporter.finish()
+
+    assert renderer.updates == 1
+    assert reporter.total_retries == 0
+    assert reporter.files == set()
+
+
+def test_rich_renderer_uses_transient_live_display() -> None:
+    pytest.importorskip("rich")
+
+    renderer = RichProgressRenderer(include_job=False, title="Test")
+
+    assert renderer.live.transient is True
 
 
 def test_rich_renderer_overlays_transient_issue_without_replacing_progress() -> None:

@@ -247,17 +247,18 @@ class UploadRetryReporter:
             if not self.total_retries:
                 return
             if self.renderer is not None and self.renderer.is_live:
-                self.renderer.update(
-                    {
-                        "transient_issue": {
-                            "label": self.label,
-                            "retries": self.total_retries,
-                            "files": len(self.files),
-                            "message": "recovered from transient issues",
-                        }
-                    },
-                    force=True,
-                )
+                if getattr(self.renderer, "started", True):
+                    self.renderer.update(
+                        {
+                            "transient_issue": {
+                                "label": self.label,
+                                "retries": self.total_retries,
+                                "files": len(self.files),
+                                "message": "recovered from transient issues",
+                            }
+                        },
+                        force=True,
+                    )
             else:
                 print(
                     (
@@ -417,7 +418,10 @@ def _ratio_percent(done: Any, total: Any) -> float | None:
 
 
 def progress_percent(progress: dict[str, Any], *, percent_key: str) -> float:
-    uploaded_bytes_percent = _ratio_percent(progress.get("uploaded_bytes"), progress.get("bytes_total"))
+    uploaded_bytes_percent = _ratio_percent(
+        progress.get("uploaded_bytes"),
+        progress.get("bytes_total"),
+    )
     bytes_done_percent = _ratio_percent(progress.get("bytes_done"), progress.get("bytes_total"))
     if percent_key == "percent_bytes":
         computed_byte_percent = uploaded_bytes_percent
@@ -711,7 +715,7 @@ class RichProgressRenderer(ProgressRenderer):
             self._render({}),
             console=self.console,
             refresh_per_second=4,
-            transient=False,
+            transient=True,
         )
         self.started = False
         self.current_job: dict[str, Any] = {}
@@ -780,7 +784,10 @@ class RichProgressRenderer(ProgressRenderer):
         if self.transient_issue is None or self.transient_issue_clear_after_uploaded_bytes is None:
             return
         uploaded_bytes = self._current_uploaded_bytes()
-        if uploaded_bytes is not None and uploaded_bytes > self.transient_issue_clear_after_uploaded_bytes:
+        if (
+            uploaded_bytes is not None
+            and uploaded_bytes > self.transient_issue_clear_after_uploaded_bytes
+        ):
             self._clear_transient_issue()
 
     def _render_job(self) -> dict[str, Any]:
@@ -816,12 +823,19 @@ class RichProgressRenderer(ProgressRenderer):
             table.add_row("", format_input_upload_progress(upload_progress))
             tree_progress = input_tree_progress(upload_progress)
             if tree_progress is not None:
-                table.add_row("Remote Input Tree", self._bar(tree_progress, percent_key="percent_bytes"))
+                table.add_row(
+                    "Remote Input Tree",
+                    self._bar(tree_progress, percent_key="percent_bytes"),
+                )
                 table.add_row("", format_input_tree_progress(tree_progress))
 
         encode_progress = job.get("encode_progress")
         if isinstance(encode_progress, dict):
-            label = "Remote Review" if int(encode_progress.get("clips_total") or 0) else "Remote Encode"
+            label = (
+                "Remote Review"
+                if int(encode_progress.get("clips_total") or 0)
+                else "Remote Encode"
+            )
             table.add_row(label, self._bar(encode_progress, percent_key="percent_input_bytes"))
             table.add_row("", format_encode_progress(encode_progress))
 
@@ -846,7 +860,12 @@ class RichProgressRenderer(ProgressRenderer):
 
         if issue is None:
             return Text(" ", no_wrap=True, overflow="ellipsis")
-        return Text(format_transient_issue(issue), style="yellow", no_wrap=True, overflow="ellipsis")
+        return Text(
+            format_transient_issue(issue),
+            style="yellow",
+            no_wrap=True,
+            overflow="ellipsis",
+        )
 
     def _transient_issue_label(self, issue: dict[str, Any] | None) -> str:
         if issue is None:
@@ -1199,6 +1218,7 @@ class MunchyRunnerClient:
                         completed_files=skipped_files,
                         completed_bytes=completed_bytes,
                     )
+                    retry_reporter.finish()
             else:
                 with renderer:
                     self._upload_files_parallel(
@@ -1209,7 +1229,7 @@ class MunchyRunnerClient:
                         completed_files=skipped_files,
                         completed_bytes=completed_bytes,
                     )
-        retry_reporter.finish()
+                    retry_reporter.finish()
         upload = self.json("GET", f"/v1/input-uploads/{urllib.parse.quote(request.upload_id)}")
         if upload.get("state") != "uploaded":
             raise RuntimeError(f"input upload did not complete: {upload}")
