@@ -231,6 +231,148 @@ def test_upload_collection_files_uses_worker_clients_when_concurrent(
     assert sorted(closed_clients) == ["worker-0", "worker-1"]
 
 
+def test_upload_collection_via_session_registers_files_before_completion(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "collection"
+    root.mkdir()
+    (root / "a.txt").write_bytes(b"aaa")
+    (root / "b.txt").write_bytes(b"bbbb")
+    events: list[tuple[str, str]] = []
+    registered: dict[str, dict[str, object]] = {}
+    uploaded_offsets: dict[str, int] = {}
+
+    class FakeSessionApi:
+        def create_or_resume_collection_upload_session(
+            self,
+            slug: str,
+            *,
+            ingest_source: str | None = None,
+            upload_timestamp: str | None = None,
+        ) -> dict[str, object]:
+            assert slug == "photos 2024"
+            assert ingest_source == str(root)
+            assert upload_timestamp == "20250712T213200Z"
+            events.append(("open", slug))
+            return {"collection_id": "2025/20250712T213200Z__photos-2024", "state": "open"}
+
+        def register_collection_upload_session_file(
+            self,
+            collection_id: str,
+            file: dict[str, object],
+        ) -> dict[str, object]:
+            assert collection_id == "2025/20250712T213200Z__photos-2024"
+            path = str(file["path"])
+            events.append(("register", path))
+            registered[path] = dict(file)
+            uploaded_offsets.setdefault(path, 0)
+            return {
+                "collection_id": collection_id,
+                "state": "open",
+                "files": [
+                    {
+                        **payload,
+                        "upload_state": "pending",
+                        "uploaded_bytes": uploaded_offsets[str(payload["path"])],
+                    }
+                    for payload in registered.values()
+                ],
+            }
+
+        def create_or_resume_collection_file_upload(
+            self,
+            collection_id: str,
+            path: str,
+        ) -> dict[str, object]:
+            assert collection_id == "2025/20250712T213200Z__photos-2024"
+            events.append(("resume", path))
+            return {
+                "upload_url": f"https://uploads.test/{path}",
+                "offset": uploaded_offsets[path],
+                "checksum_algorithm": "sha256",
+            }
+
+        def append_upload_chunk(
+            self,
+            upload_url: str,
+            *,
+            offset: int,
+            checksum_algorithm: str,
+            content: bytes,
+        ) -> dict[str, object]:
+            path = upload_url.rsplit("/", 1)[-1]
+            assert checksum_algorithm == "sha256"
+            assert offset == uploaded_offsets[path]
+            uploaded_offsets[path] = offset + len(content)
+            events.append(("upload", path))
+            return {"offset": uploaded_offsets[path], "expires_at": None}
+
+        def get_collection_upload(self, collection_id: str) -> dict[str, object]:
+            assert collection_id == "2025/20250712T213200Z__photos-2024"
+            return {
+                "collection_id": collection_id,
+                "state": "open",
+                "files": [
+                    {
+                        **payload,
+                        "upload_state": "uploaded",
+                        "uploaded_bytes": uploaded_offsets[str(payload["path"])],
+                    }
+                    for payload in registered.values()
+                ],
+            }
+
+        def complete_collection_upload_session(self, collection_id: str) -> dict[str, object]:
+            assert collection_id == "2025/20250712T213200Z__photos-2024"
+            events.append(("complete", collection_id))
+            return {"collection_id": collection_id, "state": "archiving", "files": []}
+
+    monkeypatch.setattr(riverhog_main, "UPLOAD_CHUNK_BYTES", 100)
+
+    payload = riverhog_main._upload_collection_via_session(
+        FakeSessionApi(),  # type: ignore[arg-type]
+        "photos 2024",
+        root,
+        ingest_source=str(root),
+        upload_timestamp="20250712T213200Z",
+        wait_mode="staged",
+    )
+
+    assert payload["state"] == "archiving"
+    assert events == [
+        ("open", "photos 2024"),
+        ("register", "a.txt"),
+        ("resume", "a.txt"),
+        ("upload", "a.txt"),
+        ("register", "b.txt"),
+        ("resume", "b.txt"),
+        ("upload", "b.txt"),
+        ("complete", "2025/20250712T213200Z__photos-2024"),
+    ]
+
+
+def test_upload_collection_via_session_rejects_empty_source_before_opening(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "empty"
+    root.mkdir()
+
+    class FakeSessionApi:
+        def create_or_resume_collection_upload_session(self, *args: object) -> object:
+            raise AssertionError("empty session should fail before opening on the server")
+
+    with pytest.raises(typer.BadParameter, match="at least one file"):
+        riverhog_main._upload_collection_via_session(
+            FakeSessionApi(),  # type: ignore[arg-type]
+            "empty",
+            root,
+            ingest_source=str(root),
+            upload_timestamp=None,
+            wait_mode="staged",
+        )
+
+
 def test_upload_collection_file_retries_after_interrupted_chunk_with_unchanged_offset(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

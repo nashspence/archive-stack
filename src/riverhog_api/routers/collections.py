@@ -12,7 +12,9 @@ from riverhog_api.schemas.collections import (
     CollectionSummaryOut,
     CollectionUploadSessionOut,
     CreateOrResumeCollectionUploadRequest,
+    CreateOrResumeCollectionUploadSessionRequest,
     ListCollectionsResponse,
+    RegisterCollectionUploadSessionFileRequest,
 )
 from riverhog_api.tus import (
     tus_delete_headers,
@@ -73,6 +75,59 @@ def create_or_resume_collection_upload(
         ingest_source=request.ingest_source,
         upload_timestamp=request.upload_timestamp,
     )
+    return CollectionUploadSessionOut.model_validate(payload)
+
+
+@router.post("/collection-upload-sessions", response_model=CollectionUploadSessionOut)
+def create_or_resume_collection_upload_session(
+    request: CreateOrResumeCollectionUploadSessionRequest,
+    container: ContainerDep,
+) -> CollectionUploadSessionOut:
+    payload = container.collections.create_or_resume_upload_session(
+        upload_slug=request.slug,
+        ingest_source=request.ingest_source,
+        upload_timestamp=request.upload_timestamp,
+    )
+    return CollectionUploadSessionOut.model_validate(payload)
+
+
+@router.post(
+    "/collection-upload-sessions/{collection_id:path}/files",
+    response_model=CollectionUploadSessionOut,
+)
+def register_collection_upload_session_file(
+    collection_id: str,
+    request: RegisterCollectionUploadSessionFileRequest,
+    container: ContainerDep,
+) -> CollectionUploadSessionOut:
+    payload = container.collections.register_upload_session_file(
+        collection_id,
+        request.model_dump(),
+    )
+    return CollectionUploadSessionOut.model_validate(payload)
+
+
+@router.post(
+    "/collection-upload-sessions/{collection_id:path}/complete",
+    response_model=CollectionUploadSessionOut,
+)
+def complete_collection_upload_session(
+    collection_id: str,
+    container: ContainerDep,
+) -> CollectionUploadSessionOut:
+    payload = container.collections.complete_upload_session(collection_id)
+    return CollectionUploadSessionOut.model_validate(payload)
+
+
+@router.post(
+    "/collection-upload-sessions/{collection_id:path}/cancel",
+    response_model=CollectionUploadSessionOut,
+)
+def cancel_collection_upload_session(
+    collection_id: str,
+    container: ContainerDep,
+) -> CollectionUploadSessionOut:
+    payload = container.collections.cancel_upload_session(collection_id)
     return CollectionUploadSessionOut.model_validate(payload)
 
 

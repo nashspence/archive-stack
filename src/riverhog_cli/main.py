@@ -304,6 +304,44 @@ def _create_or_resume_collection_upload(
     )
 
 
+def _create_or_resume_collection_upload_session(
+    api: ApiClient,
+    slug: str,
+    *,
+    ingest_source: str | None,
+    upload_timestamp: str | None,
+) -> dict[str, Any]:
+    return _retry_transient_upload_operation(
+        "Upload session open/resume",
+        lambda: api.create_or_resume_collection_upload_session(
+            slug,
+            ingest_source=ingest_source,
+            upload_timestamp=upload_timestamp,
+        ),
+    )
+
+
+def _register_collection_upload_session_file(
+    api: ApiClient,
+    collection_id: str,
+    file_payload: CollectionManifestEntry,
+) -> dict[str, Any]:
+    return _retry_transient_upload_operation(
+        f"Upload session register file {file_payload['path']}",
+        lambda: api.register_collection_upload_session_file(collection_id, file_payload),
+    )
+
+
+def _complete_collection_upload_session(
+    api: ApiClient,
+    collection_id: str,
+) -> dict[str, Any]:
+    return _retry_transient_upload_operation(
+        "Upload session complete",
+        lambda: api.complete_collection_upload_session(collection_id),
+    )
+
+
 def _create_or_resume_collection_file_upload(
     api: ApiClient,
     collection_id: str,
@@ -331,6 +369,12 @@ def _local_collection_manifest(root: Path) -> list[CollectionManifestEntry]:
     if not files:
         raise typer.BadParameter("collection source must contain at least one file")
     return files
+
+
+def _iter_local_collection_paths(root: Path) -> Iterator[Path]:
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            yield path
 
 
 def _upload_collection_file(
@@ -662,6 +706,132 @@ def _staged_collection_upload_payload(
         }
 
 
+def _upload_collection_via_session(
+    api: ApiClient,
+    slug: str,
+    resolved_root: Path,
+    *,
+    ingest_source: str | None,
+    upload_timestamp: str | None,
+    wait_mode: UploadWaitMode,
+) -> dict[str, object]:
+    local_paths = _iter_local_collection_paths(resolved_root)
+    try:
+        first_source_path = next(local_paths)
+    except StopIteration as exc:
+        raise typer.BadParameter("collection source must contain at least one file") from exc
+
+    _log_upload(f"Opening incremental upload session for {resolved_root}")
+    session_payload = _create_or_resume_collection_upload_session(
+        api,
+        slug,
+        ingest_source=ingest_source,
+        upload_timestamp=upload_timestamp,
+    )
+    collection_id = str(session_payload["collection_id"])
+    _log_upload(f"Upload session {collection_id}: registering files incrementally")
+
+    manifest: list[CollectionManifestEntry] = []
+    uploaded_bytes_this_run = 0
+    total_discovered_bytes = 0
+    last_progress_log_at = time.monotonic()
+
+    def note_uploaded(delta: int) -> None:
+        nonlocal uploaded_bytes_this_run, last_progress_log_at
+        uploaded_bytes_this_run += delta
+        now = time.monotonic()
+        if now - last_progress_log_at < UPLOAD_PROGRESS_INTERVAL_SECONDS:
+            return
+        _log_upload(
+            "Upload progress: "
+            f"{_format_bytes(uploaded_bytes_this_run)} uploaded this run; "
+            f"{_format_bytes(total_discovered_bytes)} discovered so far"
+        )
+        last_progress_log_at = now
+
+    def upload_one(source_path: Path) -> None:
+        nonlocal total_discovered_bytes
+
+        rel_path = source_path.relative_to(resolved_root).as_posix()
+        stat = source_path.stat()
+        if stat.st_size >= _upload_file_log_bytes():
+            _log_upload(f"Hashing {rel_path} ({_format_bytes(stat.st_size)})")
+        entry: CollectionManifestEntry = {
+            "path": rel_path,
+            "bytes": stat.st_size,
+            "sha256": _file_sha256(source_path),
+        }
+        manifest.append(entry)
+        total_discovered_bytes += stat.st_size
+
+        registered_payload = _register_collection_upload_session_file(
+            api,
+            collection_id,
+            entry,
+        )
+        file_payload = next(
+            (
+                current
+                for current in registered_payload.get("files", [])
+                if isinstance(current, dict) and current.get("path") == rel_path
+            ),
+            {
+                "path": rel_path,
+                "bytes": stat.st_size,
+                "sha256": entry["sha256"],
+                "upload_state": "pending",
+                "uploaded_bytes": 0,
+            },
+        )
+        _upload_collection_file(
+            api,
+            collection_id,
+            source_path,
+            file_payload,
+            progress=note_uploaded,
+        )
+
+    upload_one(first_source_path)
+    for source_path in local_paths:
+        upload_one(source_path)
+
+    latest_payload = api.get_collection_upload(collection_id)
+    local_paths = {item["path"] for item in manifest}
+    registered_paths = {
+        str(item.get("path"))
+        for item in latest_payload.get("files", [])
+        if isinstance(item, dict)
+    }
+    if registered_paths != local_paths:
+        extra = sorted(registered_paths - local_paths)
+        missing = sorted(local_paths - registered_paths)
+        details: list[str] = []
+        if extra:
+            details.append(f"extra server files: {', '.join(extra[:5])}")
+        if missing:
+            details.append(f"missing server files: {', '.join(missing[:5])}")
+        raise RuntimeError(
+            "incremental upload session file set differs from local tree; "
+            "not completing session"
+            + (f" ({'; '.join(details)})" if details else "")
+        )
+
+    complete_payload = _complete_collection_upload_session(api, collection_id)
+    _log_upload("All files uploaded; collection finalization will continue in the background")
+    if wait_mode == "finalized":
+        final_payload, completion_state = _wait_for_finalized_collection(
+            api,
+            collection_id,
+            manifest,
+        )
+        if completion_state == "timeout":
+            raise typer.Exit(124)
+        if completion_state == "failed":
+            raise typer.Exit(1)
+        return final_payload
+    return complete_payload
+
+
 def _archive_wait_status(payload: dict[str, object]) -> str:
     phase = payload.get("archive_phase")
     if not phase:
@@ -727,6 +897,13 @@ def upload_cmd(
         ),
     ] = _default_upload_wait_mode(),
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+    session_mode: Annotated[
+        bool,
+        typer.Option(
+            "--session",
+            help="Register and upload files incrementally before explicitly completing",
+        ),
+    ] = False,
 ) -> None:
     wait_mode = _normalize_upload_wait_mode(wait)
     resolved_root = root.expanduser().resolve()
@@ -734,6 +911,20 @@ def upload_cmd(
         raise typer.BadParameter("collection source must be a directory")
 
     api = client()
+    if session_mode:
+        payload = _upload_collection_via_session(
+            api,
+            slug,
+            resolved_root,
+            ingest_source=str(resolved_root),
+            upload_timestamp=upload_timestamp,
+            wait_mode=wait_mode,
+        )
+        emit(payload if json_mode else format_collection_upload(payload), json_mode=json_mode)
+        if payload.get("state") == "failed":
+            raise typer.Exit(1)
+        return
+
     _log_upload(f"Hashing collection manifest from {resolved_root}")
     manifest_started_at = time.monotonic()
     manifest = _local_collection_manifest(resolved_root)
@@ -811,6 +1002,15 @@ def upload_cmd(
         raise typer.Exit(1)
     if completion_state == "timeout":
         raise typer.Exit(124)
+
+
+@app.command("upload-cancel")
+def upload_cancel_cmd(
+    collection_id: Annotated[str, typer.Argument(help="Open collection upload session id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    payload = client().cancel_collection_upload_session(collection_id)
+    emit(payload if json_mode else format_collection_upload(payload), json_mode=json_mode)
 
 
 @app.command("find")

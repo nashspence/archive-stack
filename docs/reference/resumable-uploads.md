@@ -12,8 +12,11 @@ Riverhog uses the same resumable-upload lifecycle for collection ingest and fetc
 
 For collection ingest specifically:
 
-- the terminal successful collection-file upload chunk may move the collection
-  upload from `uploading` to `archiving` once every required file verifies
+- determinate manifest uploads can move from `uploading` to `archiving` when
+  the terminal successful collection-file upload chunk verifies every declared
+  file
+- incremental upload sessions remain `open` after file bytes verify and move to
+  `archiving` only when the client explicitly completes the session
 - the collection upload reaches `finalized` only after the whole-collection
   Glacier archive package uploads and verifies
 - archival finalization failures leave the collection upload `archiving` with a
@@ -28,12 +31,19 @@ For collection ingest specifically:
   restart cannot make a retry depend on already-deleted staged bytes
 - the S3 multipart upload used for the collection Glacier object is also
   restart-resumable while the remote multipart upload still exists
-- once the last resumable collection-file state expires, Riverhog forgets the upload session instead of keeping an empty pending record
+- once the last resumable collection-file state expires, Riverhog forgets a
+  determinate upload session instead of keeping an empty pending record
+- open incremental sessions expire after `RIVERHOG_UPLOAD_SESSION_IDLE_TTL`
+  without activity; expiry cancels staged bytes and leaves an `expired` audit
+  state
 
 ## Collection Upload Creation
 
-`POST /v1/collection-uploads` creates or resumes a collection upload from a
-human-readable slug and a complete file manifest. Clients do not provide
+Riverhog supports two upload front doors. Both use the same per-file resumable
+upload resources and the same archival finalization pipeline.
+
+`POST /v1/collection-uploads` creates or resumes a determinate collection upload
+from a human-readable slug and a complete file manifest. Clients do not provide
 collection ids.
 
 Riverhog normalizes the slug, mints the canonical collection id with the server
@@ -54,6 +64,26 @@ Retry behavior is manifest-aware:
   collection payload after the collection has already completed
 - the same normalized slug with a different file manifest creates a separate
   timestamped collection id
+
+`POST /v1/collection-upload-sessions` creates or resumes an incremental
+collection upload session from a human-readable slug without a complete file
+manifest up front. The returned session is `open`. Clients then register files
+one at a time with `POST /v1/collection-upload-sessions/{collection_id}/files`,
+upload each file through the normal collection-file upload resource, and call
+`POST /v1/collection-upload-sessions/{collection_id}/complete` once the local
+tree has been fully walked.
+
+Incremental sessions are intentionally explicit:
+
+- the server may mint the timestamp at session open, or the client may provide
+  `upload_timestamp` for migration
+- re-opening the same normalized slug resumes the existing open session
+- registered file metadata is immutable except for idempotent re-registration
+  of the same path, byte count, and SHA-256
+- final completion freezes the file set and hands the upload to archiving
+- canceling an open session deletes staged bytes and records `canceled`
+- idle open sessions expire after `RIVERHOG_UPLOAD_SESSION_IDLE_TTL` and record
+  `expired`
 
 ## Collection File Upload Session
 

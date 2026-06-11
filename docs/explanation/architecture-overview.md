@@ -15,12 +15,16 @@ tus-compatible upload resources. Incomplete bytes stage under `.riverhog/uploads
 inside the S3-compatible object store and remain outside the committed hot
 namespace until Riverhog verifies them.
 
-Collection ingest begins with a human-readable slug and a complete file
-manifest. Riverhog normalizes the slug, mints a timestamped canonical collection
-id, and returns that id for subsequent file-upload and status calls. Migration
-uploads may provide the timestamp explicitly in UTC basic form while still
-providing the slug. Retrying the same normalized slug with the same manifest
-resumes the same unfinished upload or returns the already-finalized collection.
+Collection ingest begins with a human-readable slug. Determinate uploads provide
+a complete file manifest up front; incremental upload sessions register files
+one at a time and explicitly complete once the file set is frozen. Riverhog
+normalizes the slug, mints a timestamped canonical collection id, and returns
+that id for subsequent file-upload and status calls. Migration uploads may
+provide the timestamp explicitly in UTC basic form while still providing the
+slug. Retrying the same normalized slug with the same determinate manifest
+resumes the same unfinished upload or returns the already-finalized collection;
+retrying the same normalized slug for an open incremental session resumes that
+session until it is completed, canceled, or expired.
 
 Collection ingest has two gates. The upload gate verifies every declared file.
 The archive gate builds the whole-collection Glacier archive package, uploads

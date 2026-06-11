@@ -307,9 +307,80 @@ def test_live_openapi_matches_checked_in_contract_shape() -> None:
     )
 
 
+def _stub_collection_upload_payload(
+    *,
+    state: str,
+    files: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    upload_files = files if files is not None else [
+        {
+            "path": "report.txt",
+            "bytes": 12,
+            "sha256": "0" * 64,
+            "upload_state": "pending",
+            "uploaded_bytes": 0,
+            "upload_state_expires_at": None,
+        }
+    ]
+    bytes_total = sum(int(file["bytes"]) for file in upload_files)
+    uploaded_bytes = sum(int(file["uploaded_bytes"]) for file in upload_files)
+    return {
+        "collection_id": "docs",
+        "ingest_source": None,
+        "state": state,
+        "files_total": len(upload_files),
+        "files_pending": sum(1 for file in upload_files if file["upload_state"] == "pending"),
+        "files_partial": sum(1 for file in upload_files if file["upload_state"] == "partial"),
+        "files_uploaded": sum(1 for file in upload_files if file["upload_state"] == "uploaded"),
+        "hot_promoted_files": 0,
+        "bytes_total": bytes_total,
+        "uploaded_bytes": uploaded_bytes,
+        "hot_promoted_bytes": 0,
+        "missing_bytes": max(bytes_total - uploaded_bytes, 0),
+        "upload_state_expires_at": None,
+        "latest_failure": None,
+        "archive_phase": None,
+        "archive_phase_updated_at": None,
+        "archive_object_path": None,
+        "archive_uploaded_bytes": None,
+        "archive_total_bytes": None,
+        "archive_uploaded_parts": None,
+        "archive_total_parts": None,
+        "files": upload_files,
+        "collection": None,
+    }
+
+
 class _StubCollectionUploads:
     def expire_stale_uploads(self) -> None:
         return None
+
+    def create_or_resume_upload_session(
+        self,
+        *,
+        upload_slug: str,
+        ingest_source: str | None = None,
+        upload_timestamp: str | None = None,
+    ) -> dict[str, object]:
+        _ = upload_slug, ingest_source, upload_timestamp
+        return _stub_collection_upload_payload(state="open")
+
+    def register_upload_session_file(
+        self,
+        collection_id: str,
+        file: dict[str, object],
+    ) -> dict[str, object]:
+        assert collection_id
+        assert file
+        return _stub_collection_upload_payload(state="open")
+
+    def complete_upload_session(self, collection_id: str) -> dict[str, object]:
+        assert collection_id
+        return _stub_collection_upload_payload(state="archiving")
+
+    def cancel_upload_session(self, collection_id: str) -> dict[str, object]:
+        assert collection_id
+        return _stub_collection_upload_payload(state="canceled", files=[])
 
     def create_or_resume_file_upload(self, collection_id: str, path: str) -> dict[str, object]:
         return {

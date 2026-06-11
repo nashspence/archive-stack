@@ -135,6 +135,7 @@ class RuntimeConfig:
     tusd_append_timeout_seconds: float = 60.0
     database_url: str = ""
     incomplete_upload_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
+    upload_session_idle_ttl: timedelta = field(default_factory=lambda: timedelta(days=7))
     upload_expiry_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
     log_level: str = DEFAULT_LOG_LEVEL
     glacier_endpoint_url: str = "http://127.0.0.1:9000"
@@ -229,6 +230,8 @@ class RuntimeConfig:
         object.__setattr__(self, "log_level", log_level)
         if self.tusd_append_timeout_seconds <= 0.0:
             raise ValueError("RIVERHOG_TUSD_APPEND_TIMEOUT_SECONDS must be > 0")
+        if self.upload_session_idle_ttl.total_seconds() <= 0.0:
+            raise ValueError("RIVERHOG_UPLOAD_SESSION_IDLE_TTL must be > 0")
         if self.glacier_multipart_part_bytes < 1:
             raise ValueError("RIVERHOG_GLACIER_MULTIPART_PART_BYTES must be >= 1")
         if self.glacier_multipart_concurrency < 1:
@@ -290,6 +293,7 @@ def load_runtime_config() -> RuntimeConfig:
     if sqlite_path_raw:
         raise ValueError("RIVERHOG_DB_PATH has been removed; set RIVERHOG_DATABASE_URL")
     ttl_raw = os.getenv("INCOMPLETE_UPLOAD_TTL", "24h")
+    session_idle_ttl_raw = os.getenv("RIVERHOG_UPLOAD_SESSION_IDLE_TTL", "168h")
     sweep_raw = os.getenv("UPLOAD_EXPIRY_SWEEP_INTERVAL", "30s")
     log_level = os.getenv("RIVERHOG_LOG_LEVEL", DEFAULT_LOG_LEVEL).strip() or DEFAULT_LOG_LEVEL
 
@@ -297,6 +301,7 @@ def load_runtime_config() -> RuntimeConfig:
     if _database_url_driver(database_url) != "postgresql":
         raise ValueError("RIVERHOG_DATABASE_URL must use postgresql")
     incomplete_upload_ttl = _parse_duration(ttl_raw)
+    upload_session_idle_ttl = _parse_duration(session_idle_ttl_raw)
     upload_expiry_sweep_interval = _parse_duration(sweep_raw)
     s3_endpoint_url = os.getenv("RIVERHOG_S3_ENDPOINT_URL", "http://127.0.0.1:9000").rstrip("/")
     s3_region = os.getenv("RIVERHOG_S3_REGION", "us-east-1")
@@ -607,6 +612,7 @@ def load_runtime_config() -> RuntimeConfig:
         ),
         database_url=database_url,
         incomplete_upload_ttl=incomplete_upload_ttl,
+        upload_session_idle_ttl=upload_session_idle_ttl,
         upload_expiry_sweep_interval=upload_expiry_sweep_interval,
         log_level=log_level,
         glacier_endpoint_url=os.getenv("RIVERHOG_GLACIER_ENDPOINT_URL", s3_endpoint_url).rstrip(

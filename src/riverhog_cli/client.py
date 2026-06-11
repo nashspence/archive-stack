@@ -202,6 +202,43 @@ class ApiClient:
             payload["upload_timestamp"] = upload_timestamp
         return self._json("POST", "/v1/collection-uploads", json=payload)
 
+    def create_or_resume_collection_upload_session(
+        self,
+        slug: str,
+        *,
+        ingest_source: str | None = None,
+        upload_timestamp: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"slug": slug}
+        if ingest_source is not None:
+            payload["ingest_source"] = ingest_source
+        if upload_timestamp is not None:
+            payload["upload_timestamp"] = upload_timestamp
+        return self._json("POST", "/v1/collection-upload-sessions", json=payload)
+
+    def register_collection_upload_session_file(
+        self,
+        collection_id: str,
+        file: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/collection-upload-sessions/{quote(collection_id, safe='/')}/files",
+            json=dict(file),
+        )
+
+    def complete_collection_upload_session(self, collection_id: str) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/collection-upload-sessions/{quote(collection_id, safe='/')}/complete",
+        )
+
+    def cancel_collection_upload_session(self, collection_id: str) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/collection-upload-sessions/{quote(collection_id, safe='/')}/cancel",
+        )
+
     def get_collection_upload(self, collection_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/collection-uploads/{quote(collection_id, safe='/')}")
 

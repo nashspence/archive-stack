@@ -27,6 +27,92 @@ paths:
                 $ref: "#/components/schemas/CollectionUploadSession"
         default:
           $ref: "#/components/responses/Error"
+  /collection-upload-sessions:
+    post:
+      summary: Create or resume one incremental collection upload session
+      description: Creates or resumes an open collection upload session from a human-readable slug without requiring a complete file manifest up front. Files are registered one at a time, uploaded through the normal collection-file upload resource, then frozen by an explicit complete call.
+      operationId: createOrResumeCollectionUploadSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrResumeCollectionUploadSessionRequest"
+      responses:
+        "200":
+          description: Collection upload session state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionUploadSession"
+        default:
+          $ref: "#/components/responses/Error"
+  /collection-upload-sessions/{collection_id}/files:
+    post:
+      summary: Register one file in an incremental collection upload session
+      description: Adds one logical file metadata entry to an open incremental upload session. Re-registering the same path with identical metadata is idempotent; conflicting metadata is rejected. File bytes are still uploaded through `/collection-uploads/{collection_id}/files/{path}/upload`.
+      operationId: registerCollectionUploadSessionFile
+      parameters:
+        - in: path
+          name: collection_id
+          required: true
+          description: Server-minted canonical collection id returned by incremental session creation. Slash-bearing ids occupy multiple path segments.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterCollectionUploadSessionFileRequest"
+      responses:
+        "200":
+          description: Collection upload session state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionUploadSession"
+        default:
+          $ref: "#/components/responses/Error"
+  /collection-upload-sessions/{collection_id}/complete:
+    post:
+      summary: Complete one incremental collection upload session
+      description: Freezes the registered file set for one open incremental upload session. Completion requires at least one registered file and all registered bytes uploaded and verified, then hands the collection to the existing archive finalization pipeline.
+      operationId: completeCollectionUploadSession
+      parameters:
+        - in: path
+          name: collection_id
+          required: true
+          description: Server-minted canonical collection id returned by incremental session creation. Slash-bearing ids occupy multiple path segments.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Collection upload session state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionUploadSession"
+        default:
+          $ref: "#/components/responses/Error"
+  /collection-upload-sessions/{collection_id}/cancel:
+    post:
+      summary: Cancel one incremental collection upload session
+      description: Cancels an open incremental upload session, deletes staged upload bytes, and leaves a closed audit state. Sessions cannot be canceled after the archival handoff begins.
+      operationId: cancelCollectionUploadSession
+      parameters:
+        - in: path
+          name: collection_id
+          required: true
+          description: Server-minted canonical collection id returned by incremental session creation. Slash-bearing ids occupy multiple path segments.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Collection upload session state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionUploadSession"
+        default:
+          $ref: "#/components/responses/Error"
   /collection-uploads/{collection_id}:
     get:
       summary: Get one collection upload session
@@ -2027,6 +2113,26 @@ components:
           minItems: 1
           items:
             $ref: "#/components/schemas/CollectionUploadFile"
+    CreateOrResumeCollectionUploadSessionRequest:
+      type: object
+      required: [slug]
+      properties:
+        slug:
+          type: string
+          description: Human-readable collection slug. Riverhog normalizes this and mints or resumes the canonical collection id.
+        upload_timestamp:
+          oneOf:
+            - type: string
+            - type: "null"
+          description: Optional UTC basic timestamp in `YYYYMMDDTHHMMSSZ` form to use in the canonical collection id for migration of older archival sets. Slug remains required.
+        ingest_source:
+          oneOf:
+            - type: string
+            - type: "null"
+          description: Descriptive source hint from the client. Never part of collection identity.
+    RegisterCollectionUploadSessionFileRequest:
+      allOf:
+        - $ref: "#/components/schemas/CollectionUploadFile"
     CollectionUploadFileState:
       type: object
       required: [path, bytes, sha256, upload_state, uploaded_bytes, upload_state_expires_at]
@@ -2074,7 +2180,7 @@ components:
             - type: "null"
         state:
           type: string
-          enum: [uploading, archiving, finalized, failed]
+          enum: [open, uploading, archiving, finalized, failed, canceled, expired]
         files_total: { type: integer }
         files_pending: { type: integer }
         files_partial: { type: integer }

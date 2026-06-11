@@ -31,7 +31,9 @@ recognition. Allowing a validated timestamp override lets older archival sets
 migrate without losing their original date identity while still avoiding manual
 collection ids.
 
-Resume behavior is based on the normalized slug plus the complete file manifest:
-the same pair resumes an unfinished upload or returns the already-finalized
-collection, while the same slug with different contents becomes a distinct
-timestamped collection.
+Determinate-upload resume behavior is based on the normalized slug plus the
+complete file manifest: the same pair resumes an unfinished upload or returns
+the already-finalized collection, while the same slug with different contents
+becomes a distinct timestamped collection. Incremental upload sessions resume an
+open server-minted session by normalized slug until the operator explicitly
+completes or cancels it, or Riverhog expires it after the configured idle TTL.

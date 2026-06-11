@@ -57,6 +57,66 @@ def test_create_or_resume_collection_upload_uses_collection_upload_endpoint(monk
     assert "collection_id" not in str(captured[0][2])
 
 
+def test_create_or_resume_incremental_upload_session_uses_session_endpoint(
+    monkeypatch,
+) -> None:
+    captured: list[tuple[str, str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append((request.method, str(request.url), request.read().decode("utf-8")))
+        return httpx.Response(200, json={"collection_id": "docs", "state": "open"})
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_client(self: ApiClient) -> httpx.Client:
+        return httpx.Client(base_url=self.base_url, transport=transport)
+
+    monkeypatch.setattr(ApiClient, "_client", fake_client)
+
+    client = ApiClient(base_url="https://api.test")
+    client.create_or_resume_collection_upload_session(
+        "Tax 2022",
+        ingest_source="/tmp/tax/2022",
+        upload_timestamp="20250712T213200Z",
+    )
+
+    assert captured[0][0] == "POST"
+    assert captured[0][1] == "https://api.test/v1/collection-upload-sessions"
+    assert '"slug":"Tax 2022"' in str(captured[0][2])
+    assert '"upload_timestamp":"20250712T213200Z"' in str(captured[0][2])
+
+
+def test_incremental_upload_session_file_and_close_endpoints_quote_collection_id(
+    monkeypatch,
+) -> None:
+    captured: list[tuple[str, str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append((request.method, str(request.url), request.read().decode("utf-8")))
+        return httpx.Response(200, json={"collection_id": "tax/2022", "state": "open"})
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_client(self: ApiClient) -> httpx.Client:
+        return httpx.Client(base_url=self.base_url, transport=transport)
+
+    monkeypatch.setattr(ApiClient, "_client", fake_client)
+
+    client = ApiClient(base_url="https://api.test")
+    client.register_collection_upload_session_file(
+        "tax/2022",
+        {"path": "invoice 123.pdf", "bytes": 12, "sha256": "a" * 64},
+    )
+    client.complete_collection_upload_session("tax/2022")
+    client.cancel_collection_upload_session("tax/2022")
+
+    assert captured[0][0] == "POST"
+    assert captured[0][1] == "https://api.test/v1/collection-upload-sessions/tax/2022/files"
+    assert '"path":"invoice 123.pdf"' in str(captured[0][2])
+    assert captured[1][1] == "https://api.test/v1/collection-upload-sessions/tax/2022/complete"
+    assert captured[2][1] == "https://api.test/v1/collection-upload-sessions/tax/2022/cancel"
+
+
 def test_get_collection_quotes_reserved_characters_but_preserves_slashes(monkeypatch) -> None:
     captured: list[str] = []
 

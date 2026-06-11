@@ -418,6 +418,10 @@ def _config(sqlite_path: Path, **overrides: object) -> RuntimeConfig:
     )
 
 
+def _chunk_checksum(content: bytes) -> str:
+    return "sha256 " + base64.b64encode(hashlib.sha256(content).digest()).decode("ascii")
+
+
 def _seed_docs_collection_with_finalized_image(sqlite_path: Path, image_root: Path) -> None:
     session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
@@ -518,6 +522,141 @@ def test_partial_collection_upload_does_not_publish_committed_hot_file(tmp_path:
     )
 
     assert not hot_store.has_collection_file(collection_id, relpath)
+
+
+def test_incremental_collection_upload_session_requires_explicit_complete(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+
+    service = SqlAlchemyCollectionService(
+        _config(sqlite_path),
+        _FakeHotStore(),
+        _StreamingOnlyUploadStore(),
+    )
+
+    content = b"hello session\n"
+    relpath = "albums/day-01.txt"
+    opened = service.create_or_resume_upload_session(
+        upload_slug="Photos 2024",
+        ingest_source="/tmp/source",
+        upload_timestamp="20250712T213200Z",
+    )
+    collection_id = str(opened["collection_id"])
+    assert collection_id == "2025/20250712T213200Z__photos-2024"
+    assert opened["state"] == "open"
+    assert opened["files_total"] == 0
+
+    registered = service.register_upload_session_file(
+        collection_id,
+        {
+            "path": relpath,
+            "bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        },
+    )
+    assert registered["state"] == "open"
+    assert registered["files_total"] == 1
+
+    file_upload = service.create_or_resume_file_upload(collection_id, relpath)
+    service.append_upload_chunk(
+        collection_id,
+        relpath,
+        offset=int(file_upload["offset"]),
+        checksum=_chunk_checksum(content),
+        content=content,
+    )
+
+    staged = service.get_upload(collection_id)
+    assert staged["state"] == "open"
+    assert staged["files_uploaded"] == 1
+
+    completed = service.complete_upload_session(collection_id)
+    assert completed["state"] == "archiving"
+    assert completed["files_uploaded"] == 1
+
+
+def test_incremental_collection_upload_session_cancel_cleans_staged_files(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+
+    upload_store = _FakeUploadStore()
+    service = SqlAlchemyCollectionService(_config(sqlite_path), _FakeHotStore(), upload_store)
+
+    content = b"partial session"
+    opened = service.create_or_resume_upload_session(upload_slug="photos 2024")
+    collection_id = str(opened["collection_id"])
+    service.register_upload_session_file(
+        collection_id,
+        {
+            "path": "partial.txt",
+            "bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        },
+    )
+    file_upload = service.create_or_resume_file_upload(collection_id, "partial.txt")
+    service.append_upload_chunk(
+        collection_id,
+        "partial.txt",
+        offset=int(file_upload["offset"]),
+        checksum=_chunk_checksum(content[:7]),
+        content=content[:7],
+    )
+
+    canceled = service.cancel_upload_session(collection_id)
+
+    assert canceled["state"] == "canceled"
+    assert canceled["files_total"] == 0
+    assert upload_store.deleted_targets == [
+        f"/.riverhog/uploads/collections/{collection_id}/partial.txt"
+    ]
+    with pytest.raises(Conflict, match="not accepting|not open|canceled"):
+        service.create_or_resume_file_upload(collection_id, "partial.txt")
+
+
+def test_incremental_collection_upload_session_idle_ttl_expires_to_audit_state(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+
+    upload_store = _FakeUploadStore()
+    service = SqlAlchemyCollectionService(
+        _config(sqlite_path, upload_session_idle_ttl=timedelta(seconds=1)),
+        _FakeHotStore(),
+        upload_store,
+    )
+
+    content = b"stale session"
+    opened = service.create_or_resume_upload_session(upload_slug="photos 2024")
+    collection_id = str(opened["collection_id"])
+    service.register_upload_session_file(
+        collection_id,
+        {
+            "path": "stale.txt",
+            "bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        },
+    )
+    service.create_or_resume_file_upload(collection_id, "stale.txt")
+
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
+    with session_scope(session_factory) as session:
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is not None
+        upload.last_activity_at = "2020-01-01T00:00:00Z"
+
+    service.expire_stale_uploads()
+    expired = service.get_upload(collection_id)
+
+    assert expired["state"] == "expired"
+    assert expired["files_total"] == 0
+    assert upload_store.deleted_targets == [
+        f"/.riverhog/uploads/collections/{collection_id}/stale.txt"
+    ]
 
 
 def test_file_upload_resume_does_not_sync_unrelated_upload_files(tmp_path: Path) -> None:

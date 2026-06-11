@@ -16,8 +16,9 @@ unexpired upload progress.
 
 #### `POST /v1/collection-uploads`
 
-Creates or resumes one collection upload session from a human-readable slug.
-Riverhog normalizes the slug and mints the canonical collection id.
+Creates or resumes one determinate collection upload from a human-readable slug
+and a complete file manifest. Riverhog normalizes the slug and mints the
+canonical collection id.
 
 Request body:
 
@@ -59,6 +60,88 @@ Required behavior:
 - reports collection-upload state as `uploading`, `archiving`, `finalized`, or
   `failed`
 
+#### `POST /v1/collection-upload-sessions`
+
+Creates or resumes one incremental collection upload session from a
+human-readable slug without requiring a complete file manifest up front.
+
+Request body:
+
+```json
+{
+  "slug": "mom iphone photos",
+  "upload_timestamp": "20250712T213200Z",
+  "ingest_source": "/operator/photos/2024"
+}
+```
+
+Required behavior:
+
+- the client does not provide a collection id
+- the server normalizes the slug and creates collection ids like
+  `2026/20260524T190233Z__mom-iphone-photos`
+- repeated calls with the same normalized slug resume an open session until it
+  is completed, canceled, or expired
+- if `upload_timestamp` is provided, repeated calls target that exact canonical
+  collection id
+- the returned session state is `open`
+- open sessions remain mutable until explicitly completed or canceled
+- open sessions expire after `RIVERHOG_UPLOAD_SESSION_IDLE_TTL` without
+  activity and transition to `expired`
+
+#### `POST /v1/collection-upload-sessions/{collection_id}/files`
+
+Registers one logical file in an open incremental collection upload session.
+
+Request body:
+
+```json
+{
+  "path": "albums/japan/day-01.txt",
+  "bytes": 18,
+  "sha256": "..."
+}
+```
+
+Required behavior:
+
+- collection ids may span multiple path segments
+- file paths are normalized relative paths inside the collection
+- re-registering the same path with identical `bytes` and `sha256` is
+  idempotent
+- re-registering the same path with different metadata is rejected
+- file bytes are uploaded with the existing
+  `/v1/collection-uploads/{collection_id}/files/{path}/upload` resource
+- each successful registration refreshes the open-session idle TTL
+
+#### `POST /v1/collection-upload-sessions/{collection_id}/complete`
+
+Freezes and completes one open incremental collection upload session.
+
+Required behavior:
+
+- collection ids may span multiple path segments
+- completion requires at least one registered file
+- completion requires every registered file to have uploaded and verified
+- once accepted, the session transitions to `archiving` and uses the same
+  Glacier archive finalization path as determinate uploads
+- repeated completion after archival handoff is idempotent while the upload
+  session remains visible
+- a finalized collection response is returned if finalization has already
+  completed
+
+#### `POST /v1/collection-upload-sessions/{collection_id}/cancel`
+
+Cancels one open incremental collection upload session.
+
+Required behavior:
+
+- collection ids may span multiple path segments
+- canceling deletes staged upload bytes and cancels outstanding tus resources
+- the session transitions to `canceled` and remains as a small audit record
+- sessions cannot be canceled after explicit completion hands the collection to
+  archiving
+
 #### `GET /v1/collection-uploads/{collection_id}`
 
 Returns the current upload-session state for one server-minted collection id.
@@ -84,10 +167,15 @@ Required behavior:
 - repeated calls while the file remains resumable return the current upload resource rather than creating duplicates
 - the response includes tus-style status headers such as `Tus-Resumable`, `Upload-Offset`, `Upload-Length`, and `Location`
 - offsets and checksums are measured against the logical file byte stream for that file
-- the terminal successful upload chunk may move the session into `archiving`,
-  but it must not report final success until the collection archive package has
-  uploaded to Glacier and verified successfully
-- incomplete upload state expires after `INCOMPLETE_UPLOAD_TTL`; once the last resumable file state expires, Riverhog forgets the upload session entirely and later retries start a fresh session
+- for determinate uploads, the terminal successful upload chunk may move the
+  session into `archiving`, but it must not report final success until the
+  collection archive package has uploaded to Glacier and verified successfully
+- for incremental upload sessions, the terminal successful upload chunk leaves
+  the session `open`; the client must call
+  `/v1/collection-upload-sessions/{collection_id}/complete`
+- incomplete file upload state expires after `INCOMPLETE_UPLOAD_TTL`; once the
+  last resumable file state expires, Riverhog forgets a determinate upload
+  session entirely and later retries start a fresh session
 
 #### `HEAD /v1/collection-uploads/{collection_id}/files/{path}/upload`
 

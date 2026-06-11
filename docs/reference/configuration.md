@@ -1121,6 +1121,27 @@ When the TTL expires:
 - the fetch manifest returns to `waiting_media` if any selected bytes are still not hot
 - `upload_state_expires_at` becomes `null` until a new upload session is opened
 
+## `RIVERHOG_UPLOAD_SESSION_IDLE_TTL`
+
+- type: duration
+- default: `168h`
+
+This controls how long an open incremental collection upload session may remain
+idle before Riverhog expires it. Activity includes opening or resuming the
+session, registering a file, creating or resuming a file upload resource,
+accepting upload chunks, and completing or canceling the session.
+
+When an open session is idle past this TTL:
+
+- outstanding `tusd` upload resources are canceled
+- staged upload bytes are deleted
+- registered file rows are removed
+- the upload session remains as a closed `expired` audit record
+
+This TTL is intentionally separate from `INCOMPLETE_UPLOAD_TTL`. A collection
+session may reasonably span multiple operator runs, while an individual partial
+file upload should expire more quickly after its last accepted chunk.
+
 ## `UPLOAD_EXPIRY_SWEEP_INTERVAL`
 
 - type: duration

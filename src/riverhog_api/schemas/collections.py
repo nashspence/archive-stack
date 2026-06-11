@@ -22,6 +22,16 @@ class CreateOrResumeCollectionUploadRequest(RiverhogModel):
     upload_timestamp: str | None = None
 
 
+class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
+    slug: str
+    ingest_source: str | None = None
+    upload_timestamp: str | None = None
+
+
+class RegisterCollectionUploadSessionFileRequest(CollectionUploadFileIn):
+    pass
+
+
 class CollectionSummaryOut(RiverhogModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -86,7 +96,7 @@ class CollectionUploadFileOut(RiverhogModel):
 class CollectionUploadSessionOut(RiverhogModel):
     collection_id: str
     ingest_source: str | None
-    state: Literal["uploading", "archiving", "finalized", "failed"]
+    state: Literal["open", "uploading", "archiving", "finalized", "failed", "canceled", "expired"]
     files_total: int
     files_pending: int
     files_partial: int

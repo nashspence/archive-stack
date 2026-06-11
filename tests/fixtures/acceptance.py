@@ -1207,6 +1207,128 @@ class AcceptanceCollectionService:
             return self._upload_payload(upload, state=upload.state, collection=None)
         return self._upload_payload(upload, state="uploading", collection=None)
 
+    @_with_state_lock
+    def create_or_resume_upload_session(
+        self,
+        *,
+        upload_slug: str,
+        ingest_source: str | None = None,
+        upload_timestamp: str | None = None,
+    ) -> dict[str, object]:
+        normalized_slug = normalize_upload_slug(upload_slug)
+        normalized_upload_timestamp = (
+            normalize_upload_timestamp(upload_timestamp) if upload_timestamp is not None else None
+        )
+        requested_collection_id = (
+            self._collection_id_for_upload_timestamp(
+                normalized_slug,
+                normalized_upload_timestamp,
+            )
+            if normalized_upload_timestamp is not None
+            else None
+        )
+        if requested_collection_id is not None:
+            collection_key = CollectionId(requested_collection_id)
+            if collection_key in self.state.files_by_collection:
+                return self._finalized_upload_payload(collection_key)
+            upload = self.state.collection_uploads.get(collection_key)
+            if upload is not None:
+                if upload.state != "open":
+                    raise Conflict(f"collection upload session is {upload.state}: {collection_key}")
+                upload.ingest_source = ingest_source
+                return self._upload_payload(upload, state="open", collection=None)
+        else:
+            upload = self._open_upload_session_for_slug(normalized_slug)
+            if upload is not None:
+                upload.ingest_source = ingest_source
+                return self._upload_payload(upload, state="open", collection=None)
+
+        normalized_collection_id = requested_collection_id or self._mint_collection_id(
+            normalized_slug
+        )
+        collection_key = CollectionId(normalized_collection_id)
+        if collection_key in self.state.files_by_collection:
+            raise Conflict(f"collection already exists: {normalized_collection_id}")
+        if collection_key in self.state.collection_uploads:
+            raise Conflict(f"collection upload already exists: {normalized_collection_id}")
+        upload = CollectionUploadRecord(
+            collection_id=collection_key,
+            ingest_source=ingest_source,
+            files={},
+            state="open",
+        )
+        self.state.collection_uploads[collection_key] = upload
+        return self._upload_payload(upload, state="open", collection=None)
+
+    @_with_state_lock
+    def register_upload_session_file(
+        self,
+        collection_id: str,
+        file: dict[str, object],
+    ) -> dict[str, object]:
+        normalized_collection_id = normalize_collection_id(collection_id)
+        collection_key = CollectionId(normalized_collection_id)
+        upload = self.state.collection_uploads.get(collection_key)
+        if upload is None:
+            raise NotFound(f"collection upload session not found: {normalized_collection_id}")
+        if upload.state != "open":
+            raise Conflict(f"collection upload session is not open: {normalized_collection_id}")
+        normalized_file = self._normalize_files([file])[0]
+        path = str(normalized_file["path"])
+        existing = upload.files.get(path)
+        if existing is not None:
+            if {
+                "path": existing.path,
+                "bytes": existing.bytes,
+                "sha256": str(existing.sha256),
+            } != normalized_file:
+                raise Conflict(
+                    "collection upload session file already exists with different metadata: "
+                    f"{path}"
+                )
+            return self._upload_payload(upload, state="open", collection=None)
+        upload.files[path] = CollectionUploadFileRecord(
+            path=path,
+            bytes=int(normalized_file["bytes"]),
+            sha256=Sha256Hex(str(normalized_file["sha256"])),
+        )
+        return self._upload_payload(upload, state="open", collection=None)
+
+    @_with_state_lock
+    def complete_upload_session(self, collection_id: str) -> dict[str, object]:
+        normalized_collection_id = normalize_collection_id(collection_id)
+        collection_key = CollectionId(normalized_collection_id)
+        if collection_key in self.state.files_by_collection:
+            return self._finalized_upload_payload(collection_key)
+        upload = self.state.collection_uploads.get(collection_key)
+        if upload is None:
+            raise NotFound(f"collection upload session not found: {normalized_collection_id}")
+        if upload.state in {"archiving", "failed"}:
+            return self._upload_payload(upload, state=upload.state, collection=None)
+        if upload.state != "open":
+            raise Conflict(f"collection upload session is not open: {normalized_collection_id}")
+        if not upload.files:
+            raise Conflict("collection upload session cannot complete without files")
+        if not self._is_complete(upload):
+            raise Conflict("collection upload session still has missing file bytes")
+        upload.state = "archiving"
+        return self._upload_payload(upload, state="archiving", collection=None)
+
+    @_with_state_lock
+    def cancel_upload_session(self, collection_id: str) -> dict[str, object]:
+        normalized_collection_id = normalize_collection_id(collection_id)
+        collection_key = CollectionId(normalized_collection_id)
+        upload = self.state.collection_uploads.get(collection_key)
+        if upload is None:
+            raise NotFound(f"collection upload session not found: {normalized_collection_id}")
+        if upload.state in {"canceled", "expired"}:
+            return self._upload_payload(upload, state=upload.state, collection=None)
+        if upload.state != "open":
+            raise Conflict("collection upload session cannot be canceled after completion handoff")
+        upload.files.clear()
+        upload.state = "canceled"
+        return self._upload_payload(upload, state="canceled", collection=None)
+
     def _matching_collection(
         self,
         upload_slug: str,
@@ -1217,6 +1339,17 @@ class AcceptanceCollectionService:
                 continue
             if self._stored_collection_manifest(records.values()) == files:
                 return collection_id
+        return None
+
+    def _open_upload_session_for_slug(self, upload_slug: str) -> CollectionUploadRecord | None:
+        for upload in sorted(
+            self.state.collection_uploads.values(),
+            key=lambda current: str(current.collection_id),
+        ):
+            if upload.state != "open":
+                continue
+            if self._collection_id_upload_slug(str(upload.collection_id)) == upload_slug:
+                return upload
         return None
 
     def _matching_upload(
@@ -1329,6 +1462,8 @@ class AcceptanceCollectionService:
         upload = self._expire_upload(upload)
         if upload is None:
             raise NotFound(f"collection upload not found: {normalized_collection_id}")
+        if upload.state in {"open", "canceled", "expired"}:
+            return self._upload_payload(upload, state=upload.state, collection=None)
         if self._is_complete(upload):
             if upload.state == "uploading":
                 upload.state = "archiving"
@@ -1345,6 +1480,10 @@ class AcceptanceCollectionService:
         upload = self._expire_upload(upload)
         if upload is None:
             raise NotFound(f"collection upload not found: {normalized_collection_id}")
+        if upload.state not in {"open", "uploading"}:
+            raise Conflict(
+                f"collection upload is not accepting file bytes: {normalized_collection_id}"
+            )
         try:
             file_record = upload.files[normalized_path]
         except KeyError as exc:
@@ -1384,6 +1523,10 @@ class AcceptanceCollectionService:
         upload = self._expire_upload(upload)
         if upload is None:
             raise NotFound(f"collection upload not found: {normalized_collection_id}")
+        if upload.state not in {"open", "uploading"}:
+            raise Conflict(
+                f"collection upload is not accepting file bytes: {normalized_collection_id}"
+            )
         file_record = upload.files[normalized_path]
         if offset != file_record.uploaded_bytes:
             raise Conflict("upload offset did not match current collection file offset")
