@@ -120,7 +120,19 @@ RIVERHOG_UPLOAD_CHUNK_BYTES = int(
 )
 RIVERHOG_EAGER_UPLOAD_FILES_PER_TICK = max(
     1,
-    int(os.getenv("MUNCHY_RUNNER_RIVERHOG_EAGER_UPLOAD_FILES_PER_TICK", "1")),
+    int(os.getenv("MUNCHY_RUNNER_RIVERHOG_EAGER_UPLOAD_FILES_PER_TICK", "128")),
+)
+RIVERHOG_EAGER_UPLOAD_BYTES_PER_TICK = max(
+    1,
+    int(os.getenv("MUNCHY_RUNNER_RIVERHOG_EAGER_UPLOAD_BYTES_PER_TICK", str(512 * 1024 * 1024))),
+)
+RIVERHOG_EAGER_UPLOAD_SECONDS_PER_TICK = max(
+    0.25,
+    float(os.getenv("MUNCHY_RUNNER_RIVERHOG_EAGER_UPLOAD_SECONDS_PER_TICK", "8")),
+)
+RIVERHOG_EAGER_UPLOAD_INTERVAL_SECONDS = max(
+    0.25,
+    float(os.getenv("MUNCHY_RUNNER_RIVERHOG_EAGER_UPLOAD_INTERVAL_SECONDS", "1")),
 )
 RIVERHOG_FINALIZE_POLL_SECONDS = max(
     1.0,
@@ -201,6 +213,8 @@ SAFE_GROUP_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXY
 TERMINAL_JOB_STATES = {"succeeded", "failed", "cancelled"}
 cleanup_stop = threading.Event()
 cleanup_thread: threading.Thread | None = None
+riverhog_upload_stop = threading.Event()
+riverhog_upload_thread: threading.Thread | None = None
 
 
 def validate_profile_group_name(value: str) -> str:
@@ -250,7 +264,7 @@ class JobCancelled(RuntimeError):
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global cleanup_thread
+    global cleanup_thread, riverhog_upload_thread
     ensure_dirs()
     init_state_store()
     if RESUME_ON_START:
@@ -259,9 +273,20 @@ async def lifespan(_app: FastAPI):
         cleanup_stop.clear()
         cleanup_thread = threading.Thread(target=cleanup_loop, name="cleanup-loop", daemon=True)
         cleanup_thread.start()
+    if RIVERHOG_UPLOAD_ENABLED:
+        riverhog_upload_stop.clear()
+        riverhog_upload_thread = threading.Thread(
+            target=riverhog_upload_loop,
+            name="riverhog-upload-loop",
+            daemon=True,
+        )
+        riverhog_upload_thread.start()
     try:
         yield
     finally:
+        riverhog_upload_stop.set()
+        if riverhog_upload_thread is not None:
+            riverhog_upload_thread.join(timeout=5)
         cleanup_stop.set()
         if cleanup_thread is not None:
             cleanup_thread.join(timeout=5)
@@ -273,6 +298,8 @@ active_jobs: set[str] = set()
 scheduled_jobs: set[str] = set()
 shared_input_tree_locks: dict[str, threading.Lock] = {}
 shared_input_tree_locks_guard = threading.Lock()
+riverhog_upload_locks: dict[str, threading.Lock] = {}
+riverhog_upload_locks_guard = threading.Lock()
 
 
 def shared_input_tree_lock(upload_id: str) -> threading.Lock:
@@ -281,6 +308,15 @@ def shared_input_tree_lock(upload_id: str) -> threading.Lock:
         if lock is None:
             lock = threading.Lock()
             shared_input_tree_locks[upload_id] = lock
+        return lock
+
+
+def riverhog_upload_lock(job_id: str) -> threading.Lock:
+    with riverhog_upload_locks_guard:
+        lock = riverhog_upload_locks.get(job_id)
+        if lock is None:
+            lock = threading.Lock()
+            riverhog_upload_locks[job_id] = lock
         return lock
 
 
@@ -1285,6 +1321,16 @@ def save_job(job: dict[str, Any]) -> dict[str, Any]:
     job_id = str(payload["job_id"])
     with state_lock:
         current = read_state("job", job_id)
+        if isinstance(current, dict) and payload.get("state") not in TERMINAL_JOB_STATES:
+            current_riverhog = current.get("riverhog_session_upload")
+            payload_riverhog = payload.get("riverhog_session_upload")
+            if isinstance(current_riverhog, dict) and isinstance(payload_riverhog, dict):
+                current_updated = safe_parse_iso(current_riverhog.get("updated_at"))
+                payload_updated = safe_parse_iso(payload_riverhog.get("updated_at"))
+                if current_updated and (payload_updated is None or current_updated > payload_updated):
+                    payload["riverhog_session_upload"] = current_riverhog
+            elif isinstance(current_riverhog, dict) and "riverhog_session_upload" not in payload:
+                payload["riverhog_session_upload"] = current_riverhog
         if (
             not allow_clear_cancel
             and isinstance(current, dict)
@@ -2726,6 +2772,10 @@ def update_riverhog_state_from_payload(
     return state
 
 
+def touch_riverhog_session_state(job: dict[str, Any]) -> None:
+    riverhog_session_state(job)["updated_at"] = now_iso()
+
+
 def ensure_riverhog_session(
     job: dict[str, Any],
     api: ApiClient,
@@ -2788,6 +2838,7 @@ def riverhog_file_record(
     if not record.get("sha256"):
         record["sha256"] = file_sha256(source_path)
     record["state"] = record.get("state") or "pending"
+    touch_riverhog_session_state(job)
     return record
 
 
@@ -2815,6 +2866,7 @@ def remove_uploaded_riverhog_artifact(
         parent = parent.parent
     record["state"] = "deleted"
     record["deleted_at"] = record.get("deleted_at") or now_iso()
+    touch_riverhog_session_state(job)
     log.info(
         "riverhog upload accepted; removed local artifact job=%s path=%s bytes=%s",
         job.get("job_id"),
@@ -2859,6 +2911,7 @@ def riverhog_upload_artifact(
         raise RuntimeError(f"riverhog upload offset for {rel_path} is past expected length")
     record["uploaded_bytes"] = offset
     record["state"] = "uploading" if offset < length else "uploaded"
+    touch_riverhog_session_state(job)
     save_job(job)
 
     if offset >= length:
@@ -2904,6 +2957,7 @@ def riverhog_upload_artifact(
                     continue
                 offset = recovered_offset
                 record["uploaded_bytes"] = offset
+                touch_riverhog_session_state(job)
                 save_job(job)
                 continue
 
@@ -2913,6 +2967,7 @@ def riverhog_upload_artifact(
             offset = next_offset
             record["uploaded_bytes"] = offset
             record["state"] = "uploading"
+            touch_riverhog_session_state(job)
             save_job(job)
 
     if offset != length:
@@ -2920,6 +2975,7 @@ def riverhog_upload_artifact(
     record["uploaded_bytes"] = length
     record["state"] = "uploaded"
     record["uploaded_at"] = record.get("uploaded_at") or now_iso()
+    touch_riverhog_session_state(job)
     remove_uploaded_riverhog_artifact(job, archive_dir, source_path, record)
     save_job(job)
     return True
@@ -2999,21 +3055,68 @@ def upload_riverhog_artifacts(
     *,
     final: bool,
     max_files: int | None = None,
-) -> int:
+    max_bytes: int | None = None,
+    max_seconds: float | None = None,
+) -> dict[str, int | float]:
     if not riverhog_config_enabled(job):
-        return 0
+        return {
+            "processed_files": 0,
+            "uploaded_files": 0,
+            "uploaded_bytes": 0,
+            "elapsed_seconds": 0.0,
+        }
+    job_id = str(job["job_id"])
+    lock = riverhog_upload_lock(job_id)
+    with lock:
+        return _upload_riverhog_artifacts_unlocked(
+            job,
+            archive_dir,
+            final=final,
+            max_files=max_files,
+            max_bytes=max_bytes,
+            max_seconds=max_seconds,
+        )
+
+
+def _upload_riverhog_artifacts_unlocked(
+    job: dict[str, Any],
+    archive_dir: Path,
+    *,
+    final: bool,
+    max_files: int | None = None,
+    max_bytes: int | None = None,
+    max_seconds: float | None = None,
+) -> dict[str, int | float]:
     uploaded = 0
     processed = 0
+    uploaded_bytes = 0
+    started = time.monotonic()
     api = ApiClient()
     try:
         ensure_riverhog_session(job, api, archive_dir)
         for source_path in riverhog_artifact_paths(job, archive_dir, final=final):
-            processed += 1
-            if riverhog_upload_artifact(job, api, archive_dir, source_path):
-                uploaded += 1
+            elapsed = time.monotonic() - started
             if max_files is not None and processed >= max_files:
                 break
-        return uploaded
+            if max_seconds is not None and processed > 0 and elapsed >= max_seconds:
+                break
+            source_bytes = source_path.stat().st_size if source_path.exists() else 0
+            if (
+                max_bytes is not None
+                and processed > 0
+                and uploaded_bytes + source_bytes > max_bytes
+            ):
+                break
+            if riverhog_upload_artifact(job, api, archive_dir, source_path):
+                uploaded += 1
+                uploaded_bytes += source_bytes
+            processed += 1
+        return {
+            "processed_files": processed,
+            "uploaded_files": uploaded,
+            "uploaded_bytes": uploaded_bytes,
+            "elapsed_seconds": round(max(0.0, time.monotonic() - started), 6),
+        }
     finally:
         api.close()
 
@@ -3022,15 +3125,20 @@ def maybe_upload_riverhog_artifacts(job: dict[str, Any], archive_dir: Path) -> N
     if not riverhog_config_enabled(job) or not RIVERHOG_UPLOAD_ENABLED:
         return
     try:
-        uploaded = upload_riverhog_artifacts(
+        result = upload_riverhog_artifacts(
             job,
             archive_dir,
             final=False,
             max_files=RIVERHOG_EAGER_UPLOAD_FILES_PER_TICK,
+            max_bytes=RIVERHOG_EAGER_UPLOAD_BYTES_PER_TICK,
+            max_seconds=RIVERHOG_EAGER_UPLOAD_SECONDS_PER_TICK,
         )
-        if uploaded:
+        if result["processed_files"]:
             state = riverhog_session_state(job)
             state["last_eager_upload_at"] = now_iso()
+            state["last_eager_upload_files"] = int(result["uploaded_files"])
+            state["last_eager_upload_bytes"] = int(result["uploaded_bytes"])
+            state["last_eager_upload_elapsed_seconds"] = float(result["elapsed_seconds"])
             save_job(job)
     except JobCancelled:
         raise
@@ -3141,6 +3249,41 @@ def upload_to_riverhog(job: dict[str, Any], archive_dir: Path) -> dict[str, Any]
         component="riverhog_upload",
         operation=operation,
     )
+
+
+def riverhog_eager_upload_candidate_jobs() -> list[dict[str, Any]]:
+    if not RIVERHOG_UPLOAD_ENABLED:
+        return []
+    candidates: list[dict[str, Any]] = []
+    for job in job_states():
+        if job.get("state") != "running" or job.get("cancel_requested"):
+            continue
+        if str(job.get("workflow_mode") or "archive") != "archive":
+            continue
+        if not riverhog_config_enabled(job):
+            continue
+        if str(job.get("phase") or "") == "riverhog_upload":
+            continue
+        state = job.get("riverhog_session_upload")
+        if isinstance(state, dict) and state.get("state") in {"canceled", "archiving", "finalized"}:
+            continue
+        archive_dir = GPU_RUNTIME_DIR / "jobs" / str(job.get("job_id") or "") / "archive"
+        if eager_riverhog_artifact_paths(job):
+            candidates.append(job)
+    candidates.sort(key=lambda item: str(item.get("created_at") or ""))
+    return candidates
+
+
+def riverhog_upload_loop() -> None:
+    while not riverhog_upload_stop.wait(RIVERHOG_EAGER_UPLOAD_INTERVAL_SECONDS):
+        try:
+            for job in riverhog_eager_upload_candidate_jobs():
+                if riverhog_upload_stop.is_set():
+                    return
+                archive_dir = GPU_RUNTIME_DIR / "jobs" / str(job.get("job_id") or "") / "archive"
+                maybe_upload_riverhog_artifacts(job, archive_dir)
+        except Exception:
+            log.exception("riverhog eager upload worker failed")
 
 
 def cancel_riverhog_upload_session(job: dict[str, Any], *, reason: str) -> None:
@@ -3841,7 +3984,16 @@ def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | No
     elapsed_seconds = (
         max(0.001, (datetime.now(UTC) - started_at).total_seconds()) if started_at else 0.0
     )
-    rate = int(uploaded_bytes / elapsed_seconds) if elapsed_seconds else 0
+    average_rate = int(uploaded_bytes / elapsed_seconds) if elapsed_seconds else 0
+    recent_rate = 0
+    last_eager_upload_at = safe_parse_iso(state.get("last_eager_upload_at"))
+    if last_eager_upload_at is not None:
+        recent_age = (datetime.now(UTC) - last_eager_upload_at).total_seconds()
+        recent_elapsed = float(state.get("last_eager_upload_elapsed_seconds") or 0.0)
+        recent_bytes = int(state.get("last_eager_upload_bytes") or 0)
+        if recent_age <= 120 and recent_elapsed > 0 and recent_bytes > 0:
+            recent_rate = int(recent_bytes / recent_elapsed)
+    rate = recent_rate or average_rate
     state_name = str(state.get("riverhog_state") or state.get("state") or "not_started")
     completed = state_name in {"archiving", "finalized"} or (
         files_total > 0 and files_uploaded == files_total and bool(state.get("completed_at"))
@@ -3860,6 +4012,8 @@ def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | No
         "percent_bytes": round((uploaded_bytes / bytes_total * 100.0) if bytes_total else 0.0, 2),
         "percent_files": round((files_uploaded / files_total * 100.0) if files_total else 0.0, 2),
         "rate_bytes_per_second": rate,
+        "average_rate_bytes_per_second": average_rate,
+        "recent_rate_bytes_per_second": recent_rate,
         "completed": completed,
     }
 
@@ -4212,7 +4366,6 @@ def run_eager_archive_groups(
                 token = acquire_job_gpu(job)
             for batch in running:
                 upload = poll_eager_batch(job, upload, batch, groups, archive_dir)
-            maybe_upload_riverhog_artifacts(job, archive_dir)
             if eager_groups_complete(job, upload, eager_groups):
                 eager = eager_archive_state(job)
                 eager["completed_at"] = eager.get("completed_at") or now_iso()
@@ -4584,6 +4737,9 @@ def health_ready() -> dict[str, Any]:
         "running_job_limit": MAX_RUNNING_JOBS,
         "running_jobs": len(active_jobs),
         "scheduled_jobs": len(scheduled_jobs),
+        "riverhog_upload_worker": bool(
+            riverhog_upload_thread is not None and riverhog_upload_thread.is_alive()
+        ),
     }
 
 

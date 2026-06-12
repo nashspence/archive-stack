@@ -1208,10 +1208,112 @@ def test_eager_riverhog_upload_can_be_bounded_per_tick(
 
     monkeypatch.setattr(runner, "riverhog_upload_artifact", fake_upload_artifact)
 
-    count = runner.upload_riverhog_artifacts(job, archive_dir, final=False, max_files=1)
+    result = runner.upload_riverhog_artifacts(job, archive_dir, final=False, max_files=1)
 
-    assert count == 1
+    assert result["uploaded_files"] == 1
+    assert result["processed_files"] == 1
     assert uploaded == ["a.webm"]
+
+
+def test_eager_riverhog_upload_can_be_bounded_by_bytes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+
+    archive_dir = tmp_path / "archive"
+    first = archive_dir / "camera" / "a.webm"
+    second = archive_dir / "camera" / "b.webm"
+    first.parent.mkdir(parents=True)
+    first.write_bytes(b"aa")
+    second.write_bytes(b"bb")
+    job = {
+        "job_id": "job-1",
+        "riverhog": {"enabled": True},
+        "riverhog_session_upload": {
+            "state": "open",
+            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "files": {},
+        },
+        "eager_archive": {
+            "files": {
+                "camera/a.mp4": {"state": "encoded", "output": str(first)},
+                "camera/b.mp4": {"state": "encoded", "output": str(second)},
+            },
+        },
+    }
+    uploaded: list[str] = []
+
+    class FakeRiverhogApi:
+        def close(self) -> None:
+            return
+
+    monkeypatch.setattr(runner, "ApiClient", lambda: FakeRiverhogApi())
+    monkeypatch.setattr(
+        runner,
+        "ensure_riverhog_session",
+        lambda job, api, archive_dir: "2026/20260101T000000Z__camera-archive",
+    )
+
+    def fake_upload_artifact(job, api, archive_dir, source_path):  # type: ignore[no-untyped-def]
+        uploaded.append(Path(source_path).name)
+        return True
+
+    monkeypatch.setattr(runner, "riverhog_upload_artifact", fake_upload_artifact)
+
+    result = runner.upload_riverhog_artifacts(
+        job,
+        archive_dir,
+        final=False,
+        max_files=100,
+        max_bytes=2,
+    )
+
+    assert result["uploaded_files"] == 1
+    assert result["uploaded_bytes"] == 2
+    assert uploaded == ["a.webm"]
+
+
+def test_save_job_preserves_newer_riverhog_upload_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "running",
+            "phase": "gpu-eager",
+            "riverhog_session_upload": {
+                "state": "open",
+                "updated_at": "2026-01-01T00:00:02Z",
+                "files": {"camera/a.webm": {"state": "uploaded"}},
+            },
+        }
+    )
+
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "running",
+            "phase": "gpu-eager:pipeline=3/3",
+            "riverhog_session_upload": {
+                "state": "open",
+                "updated_at": "2026-01-01T00:00:01Z",
+                "files": {},
+            },
+        }
+    )
+
+    stored = runner.load_job("job-1")
+    assert stored["phase"] == "gpu-eager:pipeline=3/3"
+    assert stored["riverhog_session_upload"]["files"] == {
+        "camera/a.webm": {"state": "uploaded"}
+    }
 
 
 def test_riverhog_upload_progress_uses_expected_archive_output_count(
@@ -1255,6 +1357,41 @@ def test_riverhog_upload_progress_uses_expected_archive_output_count(
     assert progress["files_total"] == 3636
     assert progress["files_uploaded"] == 6
     assert progress["percent_files"] == 0.17
+
+
+def test_riverhog_upload_progress_prefers_recent_burst_rate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    monkeypatch.setattr(runner, "encode_progress_for_job", lambda job: {"files_total": 1})
+
+    job = {
+        "job_id": "job-1",
+        "riverhog": {"enabled": True},
+        "riverhog_session_upload": {
+            "state": "open",
+            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "last_eager_upload_at": runner.now_iso(),
+            "last_eager_upload_bytes": 2048,
+            "last_eager_upload_elapsed_seconds": 2.0,
+            "files": {
+                "camera/a.webm": {
+                    "path": "camera/a.webm",
+                    "bytes": 2048,
+                    "uploaded_bytes": 2048,
+                    "state": "uploaded",
+                },
+            },
+        },
+    }
+
+    progress = runner.riverhog_upload_progress_for_job(job)
+
+    assert progress["recent_rate_bytes_per_second"] == 1024
+    assert progress["rate_bytes_per_second"] == 1024
 
 
 def test_riverhog_upload_progress_counts_known_local_sidecars(
