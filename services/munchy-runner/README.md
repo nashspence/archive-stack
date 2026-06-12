@@ -24,7 +24,7 @@ GPU service-manager details.
 - preflight disk usage before accepting work
 - submit GPU encode work to `munchy-av1-nvenc`
 - upload review outputs when configured
-- call `riverhog upload` for finished archive collections when configured
+- upload finished archive collection files through Riverhog upload sessions when configured
 - retry handoffs until success
 - clean local source spools and scratch data according to configured TTLs
 
@@ -59,6 +59,8 @@ Important environment variables:
 - `MUNCHY_RUNNER_EAGER_ARCHIVE_PIPELINE_BATCHES`
 - `MUNCHY_RUNNER_REVIEW_UPLOAD_ENABLED`
 - `MUNCHY_RUNNER_RIVERHOG_UPLOAD_ENABLED`
+- `MUNCHY_RUNNER_RIVERHOG_WAIT`
+- `MUNCHY_RUNNER_RIVERHOG_UPLOAD_CHUNK_BYTES`
 - `MUNCHY_RUNNER_NOTIFY_ENABLED`
 - `MUNCHY_RUNNER_NOTIFY_WEBHOOKS`
 - `MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS`

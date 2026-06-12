@@ -362,6 +362,29 @@ def format_input_upload_progress(progress: dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
+def format_riverhog_upload_progress(progress: dict[str, Any]) -> str:
+    files_uploaded = int(progress.get("files_uploaded") or 0)
+    files_total = int(progress.get("files_total") or 0)
+    uploaded_bytes = int(progress.get("uploaded_bytes") or 0)
+    bytes_total = int(progress.get("bytes_total") or 0)
+    pct = (uploaded_bytes / bytes_total * 100.0) if bytes_total else progress_percent(
+        progress,
+        percent_key="percent_bytes",
+    )
+    rate = int(progress.get("rate_bytes_per_second") or 0)
+    state = str(progress.get("state") or "").strip()
+    parts = [
+        f"riverhog upload {files_uploaded}/{files_total} files",
+        format_progress_bytes(uploaded_bytes, bytes_total),
+        f"{pct:.2f}%",
+    ]
+    if state and state not in {"open", "uploading"}:
+        parts.append(state)
+    if rate:
+        parts.append(format_rate(rate))
+    return ", ".join(parts)
+
+
 def input_tree_progress(upload_progress: dict[str, Any]) -> dict[str, Any] | None:
     if (
         "input_tree_files_ready" not in upload_progress
@@ -538,6 +561,9 @@ def format_progress_status_line(job: dict[str, Any]) -> str:
     encode_progress = job.get("encode_progress")
     if isinstance(encode_progress, dict):
         pieces.append(format_encode_progress(encode_progress))
+    riverhog_progress = job.get("riverhog_upload_progress")
+    if isinstance(riverhog_progress, dict):
+        pieces.append(format_riverhog_upload_progress(riverhog_progress))
     issue = job.get("transient_issue")
     if isinstance(issue, dict):
         pieces.append(format_transient_issue(issue))
@@ -839,6 +865,14 @@ class RichProgressRenderer(ProgressRenderer):
             table.add_row(label, self._bar(encode_progress, percent_key="percent_input_bytes"))
             table.add_row("", format_encode_progress(encode_progress))
 
+        riverhog_progress = job.get("riverhog_upload_progress")
+        if isinstance(riverhog_progress, dict):
+            table.add_row(
+                "Riverhog Upload",
+                self._bar(riverhog_progress, percent_key="percent_bytes"),
+            )
+            table.add_row("", format_riverhog_upload_progress(riverhog_progress))
+
         issue = job.get("transient_issue")
         issue = issue if isinstance(issue, dict) else None
         table.add_row(
@@ -850,6 +884,7 @@ class RichProgressRenderer(ProgressRenderer):
             not local_progress_items(job)
             and upload_progress is None
             and not isinstance(encode_progress, dict)
+            and not isinstance(riverhog_progress, dict)
         ):
             table.add_row("Progress", "waiting")
 
@@ -1012,6 +1047,9 @@ class UploadProgress:
                     encode_progress = remote_job.get("encode_progress")
                     if isinstance(encode_progress, dict):
                         job["encode_progress"] = encode_progress
+                    riverhog_progress = remote_job.get("riverhog_upload_progress")
+                    if isinstance(riverhog_progress, dict):
+                        job["riverhog_upload_progress"] = riverhog_progress
             self.renderer.update(
                 job,
                 force=self.completed_files == self.total_files,

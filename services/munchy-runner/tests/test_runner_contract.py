@@ -951,6 +951,197 @@ def test_successful_riverhog_handoff_cleans_job_work_and_input_upload(
     assert not (runner.GPU_RUNTIME_DIR / "jobs" / "job-1").exists()
 
 
+def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("MUNCHY_RUNNER_RIVERHOG_UPLOAD_ENABLED", "1")
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    monkeypatch.setattr(runner, "RIVERHOG_UPLOAD_CHUNK_BYTES", 2)
+
+    archive_dir = runner.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive"
+    video = archive_dir / "camera" / "a.webm"
+    sidecar = archive_dir / "camera" / "a.webm.source-artifacts.tar.zst"
+    video.parent.mkdir(parents=True)
+    video.write_bytes(b"video")
+    sidecar.write_bytes(b"meta")
+
+    job = {
+        "job_id": "job-1",
+        "state": "running",
+        "phase": "riverhog_upload",
+        "workflow_mode": "archive",
+        "input_upload_id": "upload-1",
+        "collection_slug": "camera-archive",
+        "collection_timestamp": "20260101T000000Z",
+        "riverhog": {"enabled": True, "wait": "staged"},
+    }
+    runner.save_job(job)
+
+    class FakeRiverhogApi:
+        def __init__(self) -> None:
+            self.registered: dict[str, dict[str, object]] = {}
+            self.offsets: dict[str, int] = {}
+            self.completed = False
+
+        def close(self) -> None:
+            return
+
+        def create_or_resume_collection_upload_session(
+            self,
+            slug: str,
+            *,
+            ingest_source: str | None = None,
+            upload_timestamp: str | None = None,
+        ) -> dict[str, object]:
+            assert slug == "camera-archive"
+            assert ingest_source == str(archive_dir)
+            assert upload_timestamp == "20260101T000000Z"
+            return self.payload(state="open")
+
+        def register_collection_upload_session_file(
+            self,
+            collection_id: str,
+            file: dict[str, object],
+        ) -> dict[str, object]:
+            assert collection_id == "2026/20260101T000000Z__camera-archive"
+            self.registered[str(file["path"])] = dict(file)
+            self.offsets.setdefault(str(file["path"]), 0)
+            return self.payload(state="open")
+
+        def create_or_resume_collection_file_upload(
+            self,
+            collection_id: str,
+            path: str,
+        ) -> dict[str, object]:
+            assert collection_id == "2026/20260101T000000Z__camera-archive"
+            return {
+                "upload_url": f"upload://{path}",
+                "offset": self.offsets.get(path, 0),
+                "checksum_algorithm": "sha256",
+            }
+
+        def append_upload_chunk(
+            self,
+            upload_url: str,
+            *,
+            offset: int,
+            checksum_algorithm: str,
+            content: bytes,
+        ) -> dict[str, object]:
+            assert checksum_algorithm == "sha256"
+            path = upload_url.removeprefix("upload://")
+            assert offset == self.offsets[path]
+            self.offsets[path] = offset + len(content)
+            return {"offset": self.offsets[path], "expires_at": None}
+
+        def complete_collection_upload_session(self, collection_id: str) -> dict[str, object]:
+            assert collection_id == "2026/20260101T000000Z__camera-archive"
+            self.completed = True
+            return self.payload(state="archiving")
+
+        def payload(self, *, state: str) -> dict[str, object]:
+            files = [
+                {
+                    **payload,
+                    "upload_state": "uploaded"
+                    if self.offsets.get(path, 0) >= int(payload["bytes"])
+                    else "partial",
+                    "uploaded_bytes": self.offsets.get(path, 0),
+                    "upload_state_expires_at": None,
+                }
+                for path, payload in sorted(self.registered.items())
+            ]
+            return {
+                "collection_id": "2026/20260101T000000Z__camera-archive",
+                "state": state,
+                "files_total": len(files),
+                "files_uploaded": sum(
+                    int(item["uploaded_bytes"]) >= int(item["bytes"]) for item in files
+                ),
+                "bytes_total": sum(int(item["bytes"]) for item in files),
+                "uploaded_bytes": sum(int(item["uploaded_bytes"]) for item in files),
+                "missing_bytes": 0,
+                "files": files,
+            }
+
+    fake = FakeRiverhogApi()
+    monkeypatch.setattr(runner, "ApiClient", lambda: fake)
+    monkeypatch.setattr(runner, "notify_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
+
+    result = runner.upload_to_riverhog(job, archive_dir)
+
+    assert result["method"] == "session"
+    assert result["collection_id"] == "2026/20260101T000000Z__camera-archive"
+    assert fake.completed is True
+    assert sorted(fake.registered) == [
+        "camera/a.webm",
+        "camera/a.webm.source-artifacts.tar.zst",
+    ]
+    assert not video.exists()
+    assert not sidecar.exists()
+    progress = runner.riverhog_upload_progress_for_job(job)
+    assert progress["files_uploaded"] == 2
+    assert progress["bytes_total"] == 9
+
+
+def test_cancel_riverhog_upload_session_cancels_open_session(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("MUNCHY_RUNNER_RIVERHOG_UPLOAD_ENABLED", "1")
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+
+    job = {
+        "job_id": "job-1",
+        "state": "running",
+        "phase": "riverhog_upload",
+        "riverhog": {"enabled": True, "wait": "staged"},
+        "riverhog_session_upload": {
+            "state": "open",
+            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "files": {},
+        },
+    }
+    runner.save_job(job)
+
+    class FakeRiverhogApi:
+        def __init__(self) -> None:
+            self.cancelled: list[str] = []
+
+        def close(self) -> None:
+            return
+
+        def cancel_collection_upload_session(self, collection_id: str) -> dict[str, object]:
+            self.cancelled.append(collection_id)
+            return {
+                "collection_id": collection_id,
+                "state": "canceled",
+                "files_total": 0,
+                "files_uploaded": 0,
+                "bytes_total": 0,
+                "uploaded_bytes": 0,
+                "missing_bytes": 0,
+                "files": [],
+            }
+
+    fake = FakeRiverhogApi()
+    monkeypatch.setattr(runner, "ApiClient", lambda: fake)
+
+    runner.cancel_riverhog_upload_session(job, reason="test")
+
+    assert fake.cancelled == ["2026/20260101T000000Z__camera-archive"]
+    stored = runner.load_job("job-1")
+    assert stored["riverhog_session_upload"]["state"] == "canceled"
+    assert stored["riverhog_session_upload"]["cancelled_at"]
+    assert stored["riverhog_session_upload"]["cancel_reason"] == "test"
+
+
 def test_encoding_failure_cleans_job_work_and_input_upload(
     tmp_path: Path,
     monkeypatch,
