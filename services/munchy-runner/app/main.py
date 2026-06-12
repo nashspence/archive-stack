@@ -2903,7 +2903,6 @@ def riverhog_upload_artifact(
     record = riverhog_file_record(job, archive_dir, source_path)
     record["registered_at"] = record.get("registered_at") or now_iso()
     record["state"] = "registered"
-    save_job(job)
 
     session = api.create_or_resume_collection_file_upload(collection_id, rel_path)
     offset = int(session["offset"])
@@ -2912,7 +2911,6 @@ def riverhog_upload_artifact(
     record["uploaded_bytes"] = offset
     record["state"] = "uploading" if offset < length else "uploaded"
     touch_riverhog_session_state(job)
-    save_job(job)
 
     if offset >= length:
         record["uploaded_at"] = record.get("uploaded_at") or now_iso()
@@ -2958,7 +2956,6 @@ def riverhog_upload_artifact(
                 offset = recovered_offset
                 record["uploaded_bytes"] = offset
                 touch_riverhog_session_state(job)
-                save_job(job)
                 continue
 
             next_offset = int(upload_result["offset"])
@@ -2968,7 +2965,6 @@ def riverhog_upload_artifact(
             record["uploaded_bytes"] = offset
             record["state"] = "uploading"
             touch_riverhog_session_state(job)
-            save_job(job)
 
     if offset != length:
         raise RuntimeError(f"riverhog upload for {rel_path} stopped at {offset} of {length} bytes")
