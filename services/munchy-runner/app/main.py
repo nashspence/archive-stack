@@ -2915,7 +2915,6 @@ def riverhog_upload_artifact(
     if offset >= length:
         record["uploaded_at"] = record.get("uploaded_at") or now_iso()
         remove_uploaded_riverhog_artifact(job, archive_dir, source_path, record)
-        save_job(job)
         return True
 
     with source_path.open("rb") as handle:
@@ -2973,7 +2972,6 @@ def riverhog_upload_artifact(
     record["uploaded_at"] = record.get("uploaded_at") or now_iso()
     touch_riverhog_session_state(job)
     remove_uploaded_riverhog_artifact(job, archive_dir, source_path, record)
-    save_job(job)
     return True
 
 
