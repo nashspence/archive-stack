@@ -3778,7 +3778,17 @@ def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | No
     if not file_items and not state.get("collection_id"):
         return None
 
-    files_total = len(file_items)
+    registered_files_total = len(file_items)
+    local_artifacts_total = 0
+    if riverhog_config_enabled(job):
+        archive_dir = GPU_RUNTIME_DIR / "jobs" / str(job.get("job_id") or "") / "archive"
+        local_artifacts_total = len(eager_riverhog_artifact_paths(job))
+        if not local_artifacts_total:
+            local_artifacts_total = len(archive_dir_artifact_paths(archive_dir))
+    files_total = max(registered_files_total, local_artifacts_total)
+    encode_progress = encode_progress_for_job(job)
+    if isinstance(encode_progress, dict):
+        files_total = max(files_total, int(encode_progress.get("files_total") or 0))
     files_uploaded = 0
     files_deleted = 0
     bytes_total = 0
@@ -3809,11 +3819,14 @@ def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | No
         "collection_id": str(state.get("collection_id") or ""),
         "state": state_name,
         "files_total": files_total,
+        "registered_files_total": registered_files_total,
+        "local_artifacts_total": local_artifacts_total,
         "files_uploaded": files_uploaded,
         "files_deleted": files_deleted,
         "bytes_total": bytes_total,
         "uploaded_bytes": uploaded_bytes,
         "percent_bytes": round((uploaded_bytes / bytes_total * 100.0) if bytes_total else 0.0, 2),
+        "percent_files": round((files_uploaded / files_total * 100.0) if files_total else 0.0, 2),
         "rate_bytes_per_second": rate,
         "completed": completed,
     }

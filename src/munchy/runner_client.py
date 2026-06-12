@@ -365,19 +365,20 @@ def format_input_upload_progress(progress: dict[str, Any]) -> str:
 def format_riverhog_upload_progress(progress: dict[str, Any]) -> str:
     files_uploaded = int(progress.get("files_uploaded") or 0)
     files_total = int(progress.get("files_total") or 0)
+    registered_files_total = int(progress.get("registered_files_total") or files_total)
     uploaded_bytes = int(progress.get("uploaded_bytes") or 0)
     bytes_total = int(progress.get("bytes_total") or 0)
-    pct = (uploaded_bytes / bytes_total * 100.0) if bytes_total else progress_percent(
-        progress,
-        percent_key="percent_bytes",
-    )
+    pct = progress_percent(progress, percent_key="percent_files")
     rate = int(progress.get("rate_bytes_per_second") or 0)
     state = str(progress.get("state") or "").strip()
     parts = [
         f"riverhog upload {files_uploaded}/{files_total} files",
-        format_progress_bytes(uploaded_bytes, bytes_total),
         f"{pct:.2f}%",
     ]
+    if bytes_total and registered_files_total >= files_total:
+        parts.insert(1, format_progress_bytes(uploaded_bytes, bytes_total))
+    elif uploaded_bytes:
+        parts.insert(1, f"{format_bytes(uploaded_bytes)} uploaded")
     if state and state not in {"open", "uploading"}:
         parts.append(state)
     if rate:
@@ -869,7 +870,7 @@ class RichProgressRenderer(ProgressRenderer):
         if isinstance(riverhog_progress, dict):
             table.add_row(
                 "Riverhog Upload",
-                self._bar(riverhog_progress, percent_key="percent_bytes"),
+                self._bar(riverhog_progress, percent_key="percent_files"),
             )
             table.add_row("", format_riverhog_upload_progress(riverhog_progress))
 

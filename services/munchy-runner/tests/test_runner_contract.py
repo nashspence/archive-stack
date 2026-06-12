@@ -1140,6 +1140,90 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
     assert progress["bytes_total"] == 9
 
 
+def test_riverhog_upload_progress_uses_expected_archive_output_count(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    monkeypatch.setattr(
+        runner,
+        "encode_progress_for_job",
+        lambda job: {"files_total": 3636},
+    )
+
+    files = {
+        f"camera/{index}.webm": {
+            "path": f"camera/{index}.webm",
+            "bytes": 100,
+            "uploaded_bytes": 100 if index < 6 else 0,
+            "state": "uploaded" if index < 6 else "registered",
+            "upload_state": "uploaded" if index < 6 else "partial",
+        }
+        for index in range(7)
+    }
+    job = {
+        "job_id": "job-1",
+        "riverhog": {"enabled": True},
+        "riverhog_session_upload": {
+            "state": "open",
+            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "files": files,
+        },
+    }
+
+    progress = runner.riverhog_upload_progress_for_job(job)
+
+    assert progress["registered_files_total"] == 7
+    assert progress["files_total"] == 3636
+    assert progress["files_uploaded"] == 6
+    assert progress["percent_files"] == 0.17
+
+
+def test_riverhog_upload_progress_counts_known_local_sidecars(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    monkeypatch.setattr(
+        runner,
+        "encode_progress_for_job",
+        lambda job: {"files_total": 1},
+    )
+
+    video = tmp_path / "archive" / "camera" / "a.webm"
+    sidecar = runner.source_artifact_sidecar_for_archive_output(video)
+    video.parent.mkdir(parents=True)
+    video.write_bytes(b"video")
+    sidecar.write_bytes(b"meta")
+    job = {
+        "job_id": "job-1",
+        "riverhog": {"enabled": True},
+        "riverhog_session_upload": {
+            "state": "open",
+            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "files": {},
+        },
+        "eager_archive": {
+            "files": {
+                "camera/a.mp4": {
+                    "state": "encoded",
+                    "output": str(video),
+                },
+            },
+        },
+    }
+
+    progress = runner.riverhog_upload_progress_for_job(job)
+
+    assert progress["registered_files_total"] == 0
+    assert progress["local_artifacts_total"] == 2
+    assert progress["files_total"] == 2
+
+
 def test_cancel_riverhog_upload_session_cancels_open_session(
     tmp_path: Path,
     monkeypatch,

@@ -19,6 +19,7 @@ from munchy.runner_client import (
     format_job_status_line,
     format_job_summary_line,
     format_progress_status_line,
+    format_riverhog_upload_progress,
     progress_percent,
 )
 
@@ -54,6 +55,26 @@ def test_format_job_summary_line_includes_upload_and_encode_progress() -> None:
     assert "remote upload 10/20 files" in line
     assert "remote encode 4/20 files" in line
     assert "batches 1/3" in line
+
+
+def test_format_riverhog_upload_progress_uses_expected_file_total() -> None:
+    line = format_riverhog_upload_progress(
+        {
+            "files_uploaded": 6,
+            "files_total": 3636,
+            "registered_files_total": 7,
+            "uploaded_bytes": 1_614_000,
+            "bytes_total": 2_130_000,
+            "percent_files": 0.17,
+            "rate_bytes_per_second": 9_000,
+            "state": "open",
+        }
+    )
+
+    assert line.startswith("riverhog upload 6/3636 files")
+    assert "0.17%" in line
+    assert "1.54 MiB uploaded" in line
+    assert "72." not in line
 
 
 def test_format_job_summary_line_renders_review_clip_progress() -> None:
