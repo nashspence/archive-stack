@@ -111,3 +111,43 @@ front-sensor/recording.webm
 ```
 
 The runner rejects ambiguous uploads that omit the profile-group directory.
+
+## Archive Handoff Lifecycle
+
+Archive jobs may enable Riverhog upload with:
+
+```json
+{"riverhog": {"enabled": true, "wait": "staged"}}
+```
+
+When enabled, the runner opens or resumes a Riverhog collection-upload session
+and uploads finished archive artifacts through Riverhog's session file-upload
+API. `wait = "staged"` waits until all session files have been accepted and the
+session has been completed. `wait = "finalized"` also waits for Riverhog to make
+the collection visible as finalized.
+
+Archive-only profile groups are encoded eagerly as uploaded source files become
+complete. This lets the runner overlap source upload, GPU encode work, and
+Riverhog upload while keeping local storage pressure low.
+
+## Cleanup Contract
+
+The runner owns pre-custody local storage:
+
+- source upload bytes in the TUS spool
+- shared input trees used by the GPU target
+- GPU job scratch directories
+- encoded archive artifacts waiting for Riverhog
+- review artifacts waiting for the configured review upload
+
+For archive-only eager groups, the runner consumes a source upload file after
+that file has been successfully encoded. For Riverhog-enabled archive jobs, the
+runner removes an encoded artifact after Riverhog confirms the corresponding
+session file is uploaded.
+
+Successful terminal cleanup removes remaining local job work and input-upload
+state when the workflow no longer needs it. Cancellation requests cancel the
+Riverhog upload session when one exists, then clean local runner work and the
+referenced input upload. Unrecoverable encode failures write a debug bundle
+before cleanup so the operator can inspect the failed job without keeping the
+full source spool around.
