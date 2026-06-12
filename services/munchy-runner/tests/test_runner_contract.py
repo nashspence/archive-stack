@@ -1160,6 +1160,60 @@ def test_expected_riverhog_primary_files_total_counts_archive_outputs(
     assert runner.expected_riverhog_primary_files_total(upload, groups) == 2
 
 
+def test_eager_riverhog_upload_can_be_bounded_per_tick(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+
+    archive_dir = tmp_path / "archive"
+    first = archive_dir / "camera" / "a.webm"
+    second = archive_dir / "camera" / "b.webm"
+    first.parent.mkdir(parents=True)
+    first.write_bytes(b"a")
+    second.write_bytes(b"b")
+    job = {
+        "job_id": "job-1",
+        "riverhog": {"enabled": True},
+        "riverhog_session_upload": {
+            "state": "open",
+            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "files": {},
+        },
+        "eager_archive": {
+            "files": {
+                "camera/a.mp4": {"state": "encoded", "output": str(first)},
+                "camera/b.mp4": {"state": "encoded", "output": str(second)},
+            },
+        },
+    }
+    uploaded: list[str] = []
+
+    class FakeRiverhogApi:
+        def close(self) -> None:
+            return
+
+    monkeypatch.setattr(runner, "ApiClient", lambda: FakeRiverhogApi())
+    monkeypatch.setattr(
+        runner,
+        "ensure_riverhog_session",
+        lambda job, api, archive_dir: "2026/20260101T000000Z__camera-archive",
+    )
+
+    def fake_upload_artifact(job, api, archive_dir, source_path):  # type: ignore[no-untyped-def]
+        uploaded.append(Path(source_path).name)
+        return True
+
+    monkeypatch.setattr(runner, "riverhog_upload_artifact", fake_upload_artifact)
+
+    count = runner.upload_riverhog_artifacts(job, archive_dir, final=False, max_files=1)
+
+    assert count == 1
+    assert uploaded == ["a.webm"]
+
+
 def test_riverhog_upload_progress_uses_expected_archive_output_count(
     tmp_path: Path,
     monkeypatch,

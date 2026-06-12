@@ -118,6 +118,10 @@ RIVERHOG_UPLOAD_CHUNK_BYTES = int(
         os.getenv("RIVERHOG_UPLOAD_CHUNK_BYTES", str(8 * 1024 * 1024)),
     )
 )
+RIVERHOG_EAGER_UPLOAD_FILES_PER_TICK = max(
+    1,
+    int(os.getenv("MUNCHY_RUNNER_RIVERHOG_EAGER_UPLOAD_FILES_PER_TICK", "1")),
+)
 RIVERHOG_FINALIZE_POLL_SECONDS = max(
     1.0,
     float(os.getenv("MUNCHY_RUNNER_RIVERHOG_FINALIZE_POLL_SECONDS", "5")),
@@ -2994,16 +2998,21 @@ def upload_riverhog_artifacts(
     archive_dir: Path,
     *,
     final: bool,
+    max_files: int | None = None,
 ) -> int:
     if not riverhog_config_enabled(job):
         return 0
     uploaded = 0
+    processed = 0
     api = ApiClient()
     try:
         ensure_riverhog_session(job, api, archive_dir)
         for source_path in riverhog_artifact_paths(job, archive_dir, final=final):
+            processed += 1
             if riverhog_upload_artifact(job, api, archive_dir, source_path):
                 uploaded += 1
+            if max_files is not None and processed >= max_files:
+                break
         return uploaded
     finally:
         api.close()
@@ -3013,7 +3022,12 @@ def maybe_upload_riverhog_artifacts(job: dict[str, Any], archive_dir: Path) -> N
     if not riverhog_config_enabled(job) or not RIVERHOG_UPLOAD_ENABLED:
         return
     try:
-        uploaded = upload_riverhog_artifacts(job, archive_dir, final=False)
+        uploaded = upload_riverhog_artifacts(
+            job,
+            archive_dir,
+            final=False,
+            max_files=RIVERHOG_EAGER_UPLOAD_FILES_PER_TICK,
+        )
         if uploaded:
             state = riverhog_session_state(job)
             state["last_eager_upload_at"] = now_iso()
