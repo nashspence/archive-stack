@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import errno
 import gzip
 import hashlib
 import json
@@ -266,6 +267,17 @@ app = FastAPI(title="munchy-runner", version="0.1.0", lifespan=lifespan)
 state_lock = threading.RLock()
 active_jobs: set[str] = set()
 scheduled_jobs: set[str] = set()
+shared_input_tree_locks: dict[str, threading.Lock] = {}
+shared_input_tree_locks_guard = threading.Lock()
+
+
+def shared_input_tree_lock(upload_id: str) -> threading.Lock:
+    with shared_input_tree_locks_guard:
+        lock = shared_input_tree_locks.get(upload_id)
+        if lock is None:
+            lock = threading.Lock()
+            shared_input_tree_locks[upload_id] = lock
+        return lock
 
 
 @app.exception_handler(InsufficientStorage)
@@ -1355,14 +1367,48 @@ def find_upload_file(upload: dict[str, Any], rel_path: str) -> dict[str, Any]:
     raise HTTPException(status_code=404, detail=f"unknown upload file: {rel_path}")
 
 
+LINK_COPY_FALLBACK_ERRNOS = {
+    errno.EXDEV,
+    errno.EPERM,
+    errno.EACCES,
+}
+if hasattr(errno, "ENOTSUP"):
+    LINK_COPY_FALLBACK_ERRNOS.add(errno.ENOTSUP)
+if hasattr(errno, "EOPNOTSUPP"):
+    LINK_COPY_FALLBACK_ERRNOS.add(errno.EOPNOTSUPP)
+
+
 def link_or_copy(source: Path, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists():
-        dest.unlink()
+    part = dest.with_name(f".{dest.name}.{uuid.uuid4().hex}.part")
     try:
-        os.link(source, dest)
+        try:
+            os.link(source, part)
+        except OSError as exc:
+            if exc.errno not in LINK_COPY_FALLBACK_ERRNOS:
+                raise RuntimeError(f"failed to link {source} to {dest}: {exc}") from exc
+            try:
+                shutil.copy2(source, part)
+            except OSError as copy_exc:
+                raise RuntimeError(f"failed to copy {source} to {dest}: {copy_exc}") from copy_exc
+        part.replace(dest)
+    finally:
+        part.unlink(missing_ok=True)
+
+
+def file_matches_expected(
+    path: Path,
+    expected_bytes: int,
+    *,
+    expected_sha256: str | None = None,
+    verify_sha256: bool = False,
+) -> bool:
+    try:
+        if path.stat().st_size != expected_bytes:
+            return False
+        return not verify_sha256 or not expected_sha256 or file_sha256(path) == expected_sha256
     except OSError:
-        shutil.copy2(source, dest)
+        return False
 
 
 def copy_tree_files(source_root: Path, dest_root: Path) -> None:
@@ -1422,12 +1468,9 @@ def shared_input_tree_progress(upload: dict[str, Any], group_names: set[str]) ->
     for file_state in upload_files_for_groups(upload, group_names):
         dest = root / str(file_state["path"])
         expected_bytes = int(file_state["bytes"])
-        try:
-            if dest.exists() and dest.stat().st_size == expected_bytes:
-                files_ready += 1
-                bytes_ready += expected_bytes
-        except OSError:
-            continue
+        if file_matches_expected(dest, expected_bytes):
+            files_ready += 1
+            bytes_ready += expected_bytes
     return {
         "input_tree_files_ready": files_ready,
         "input_tree_bytes_ready": bytes_ready,
@@ -1480,23 +1523,45 @@ def materialize_upload_file(
     verify_sha256: bool = False,
 ) -> None:
     rel_path = str(file_state["path"])
+    expected_bytes = int(file_state["bytes"])
+    expected_sha256 = file_state.get("sha256")
+    dest = dest_root / rel_path
+    if file_matches_expected(
+        dest,
+        expected_bytes,
+        expected_sha256=expected_sha256,
+        verify_sha256=verify_sha256,
+    ):
+        return
     status = upload_file_status(file_state)
     if status["upload_state"] == "consumed":
         raise RuntimeError(f"input file has already been consumed: {rel_path}")
     if not status["complete"]:
         raise RuntimeError(f"input file is incomplete: {rel_path}")
     source = tusd_data_path(str(file_state["upload_id"]))
-    expected_bytes = int(file_state["bytes"])
-    expected_sha256 = file_state.get("sha256")
-    if not source.exists() or source.stat().st_size < expected_bytes:
+    try:
+        source_bytes = source.stat().st_size
+    except FileNotFoundError as exc:
+        if file_matches_expected(
+            dest,
+            expected_bytes,
+            expected_sha256=expected_sha256,
+            verify_sha256=verify_sha256,
+        ):
+            return
+        raise RuntimeError(f"input file data is missing: {rel_path} ({source})") from exc
+    if source_bytes < expected_bytes:
         raise RuntimeError(f"input file is incomplete: {rel_path}")
     if verify_sha256 and expected_sha256 and file_sha256(source) != expected_sha256:
         raise RuntimeError(f"input file sha256 mismatch: {rel_path}")
-    dest = dest_root / rel_path
-    if dest.exists() and dest.stat().st_size == expected_bytes:
-        if not verify_sha256 or not expected_sha256 or file_sha256(dest) == expected_sha256:
-            return
     link_or_copy(source, dest)
+    if not file_matches_expected(
+        dest,
+        expected_bytes,
+        expected_sha256=expected_sha256,
+        verify_sha256=verify_sha256,
+    ):
+        raise RuntimeError(f"input file materialization failed: {rel_path}")
 
 
 def materialize_upload_groups(
@@ -1520,26 +1585,28 @@ def sync_shared_input_tree(
     upload = refresh_input_upload(upload)
     selected_groups = set(group_names or input_upload_groups(upload))
     upload_id = str(upload["upload_id"])
-    root = shared_input_upload_root(upload_id)
-    files = upload_files_for_groups(upload, selected_groups)
-    root.mkdir(parents=True, exist_ok=True)
-    linked = 0
-    skipped = 0
-    for index, file_state in enumerate(files, start=1):
-        status = upload_file_status(file_state)
-        if not status["complete"] or status["upload_state"] == "consumed":
-            skipped += 1
-            continue
-        materialize_upload_file(file_state, root)
-        linked += 1
-        if job is not None and (index == len(files) or index % 100 == 0):
-            progress = shared_input_tree_progress(upload, selected_groups)
-            job["phase"] = (
-                f"preparing_input:{progress['input_tree_files_ready']}/{len(files)}"
-            )
-            job["input_upload_progress"] = upload_group_progress(upload, selected_groups)
-            save_job(job)
-    return {"linked": linked, "skipped": skipped, "files": len(files)}
+    with shared_input_tree_lock(upload_id):
+        upload = refresh_input_upload(upload)
+        root = shared_input_upload_root(upload_id)
+        files = upload_files_for_groups(upload, selected_groups)
+        root.mkdir(parents=True, exist_ok=True)
+        linked = 0
+        skipped = 0
+        for index, file_state in enumerate(files, start=1):
+            status = upload_file_status(file_state)
+            if not status["complete"] or status["upload_state"] == "consumed":
+                skipped += 1
+                continue
+            materialize_upload_file(file_state, root)
+            linked += 1
+            if job is not None and (index == len(files) or index % 100 == 0):
+                progress = shared_input_tree_progress(upload, selected_groups)
+                job["phase"] = (
+                    f"preparing_input:{progress['input_tree_files_ready']}/{len(files)}"
+                )
+                job["input_upload_progress"] = upload_group_progress(upload, selected_groups)
+                save_job(job)
+        return {"linked": linked, "skipped": skipped, "files": len(files)}
 
 
 def shared_input_tree_metadata(

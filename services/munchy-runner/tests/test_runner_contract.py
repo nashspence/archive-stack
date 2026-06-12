@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import gzip
 import importlib.util
 import json
@@ -748,6 +749,57 @@ def test_sync_shared_input_tree_links_completed_files_incrementally(
     assert (root / "camera" / "b.mp4").read_bytes() == b"video-b"
     assert progress["files_uploaded"] == 2
     assert progress["input_tree_files_ready"] == 2
+
+
+def test_link_or_copy_replaces_destination_atomically_on_copy_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    source = tmp_path / "source.mp4"
+    dest = tmp_path / "dest" / "target.mp4"
+    source.write_bytes(b"new-video")
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"old-video")
+    copy_dests: list[Path] = []
+
+    def fake_link(_source: Path, link_dest: Path) -> None:
+        assert link_dest.name.startswith(".target.mp4.")
+        assert link_dest.name.endswith(".part")
+        raise OSError(errno.EXDEV, "cross-device")
+
+    def fake_copy2(copy_source: Path, copy_dest: Path) -> Path:
+        copy_dests.append(copy_dest)
+        copy_dest.write_bytes(copy_source.read_bytes())
+        return copy_dest
+
+    monkeypatch.setattr(runner.os, "link", fake_link)
+    monkeypatch.setattr(runner.shutil, "copy2", fake_copy2)
+
+    runner.link_or_copy(source, dest)
+
+    assert dest.read_bytes() == b"new-video"
+    assert len(copy_dests) == 1
+    assert copy_dests[0].name.startswith(".target.mp4.")
+    assert copy_dests[0].name.endswith(".part")
+    assert not copy_dests[0].exists()
+
+
+def test_materialize_upload_file_reuses_existing_dest_when_tusd_data_is_gone(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    dest_root = tmp_path / "shared"
+    dest = dest_root / "camera" / "a.mp4"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"video-a")
+    file_state = {"path": "camera/a.mp4", "bytes": 7, "upload_id": "missing-upload"}
+
+    runner.materialize_upload_file(file_state, dest_root)
+
+    assert dest.read_bytes() == b"video-a"
 
 
 def test_run_job_points_gpu_payload_at_shared_input_tree(
