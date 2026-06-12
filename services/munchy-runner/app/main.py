@@ -1939,6 +1939,22 @@ def group_is_eager_archive_only(group_config: dict[str, Any]) -> bool:
     return tasks == {"archive_video"}
 
 
+def group_produces_primary_archive_output(group_config: dict[str, Any]) -> bool:
+    tasks = set(str(task) for task in group_config.get("gpu_tasks") or [])
+    return "archive_video" in tasks
+
+
+def expected_riverhog_primary_files_total(
+    input_upload: dict[str, Any],
+    groups: dict[str, dict[str, Any]],
+) -> int:
+    return sum(
+        len(upload_files_for_groups(input_upload, {str(group_name)}))
+        for group_name, group_config in groups.items()
+        if group_produces_primary_archive_output(group_config)
+    )
+
+
 def eager_archive_group_names(groups: dict[str, dict[str, Any]]) -> set[str]:
     return {
         str(group_name)
@@ -3785,7 +3801,8 @@ def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | No
         local_artifacts_total = len(eager_riverhog_artifact_paths(job))
         if not local_artifacts_total:
             local_artifacts_total = len(archive_dir_artifact_paths(archive_dir))
-    files_total = max(registered_files_total, local_artifacts_total)
+    expected_primary_files_total = int(job.get("riverhog_expected_primary_files_total") or 0)
+    files_total = max(registered_files_total, local_artifacts_total, expected_primary_files_total)
     encode_progress = encode_progress_for_job(job)
     if isinstance(encode_progress, dict):
         files_total = max(files_total, int(encode_progress.get("files_total") or 0))
@@ -3821,6 +3838,7 @@ def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | No
         "files_total": files_total,
         "registered_files_total": registered_files_total,
         "local_artifacts_total": local_artifacts_total,
+        "expected_primary_files_total": expected_primary_files_total,
         "files_uploaded": files_uploaded,
         "files_deleted": files_deleted,
         "bytes_total": bytes_total,
@@ -4901,6 +4919,12 @@ def create_job(req: CreateJobRequest, background_tasks: BackgroundTasks) -> dict
             if req.encode_profile is not None
             else None,
             "groups": groups,
+            "riverhog_expected_primary_files_total": expected_riverhog_primary_files_total(
+                input_upload,
+                groups,
+            )
+            if req.riverhog.enabled
+            else 0,
             "riverhog": req.riverhog.model_dump(),
             "review_upload": req.review_upload.model_dump(),
             "notify": req.notify.model_dump(),

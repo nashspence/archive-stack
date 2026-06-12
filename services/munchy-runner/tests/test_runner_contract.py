@@ -1140,6 +1140,26 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
     assert progress["bytes_total"] == 9
 
 
+def test_expected_riverhog_primary_files_total_counts_archive_outputs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    upload = {
+        "files": [
+            {"path": "video/a.mp4", "bytes": 1},
+            {"path": "video/b.mp4", "bytes": 1},
+            {"path": "review/c.mp4", "bytes": 1},
+        ],
+    }
+    groups = {
+        "video": {"gpu_tasks": ["archive_video"]},
+        "review": {"gpu_tasks": ["qcut_video"]},
+    }
+
+    assert runner.expected_riverhog_primary_files_total(upload, groups) == 2
+
+
 def test_riverhog_upload_progress_uses_expected_archive_output_count(
     tmp_path: Path,
     monkeypatch,
@@ -1150,7 +1170,7 @@ def test_riverhog_upload_progress_uses_expected_archive_output_count(
     monkeypatch.setattr(
         runner,
         "encode_progress_for_job",
-        lambda job: {"files_total": 3636},
+        lambda job: {"files_total": 69},
     )
 
     files = {
@@ -1166,6 +1186,7 @@ def test_riverhog_upload_progress_uses_expected_archive_output_count(
     job = {
         "job_id": "job-1",
         "riverhog": {"enabled": True},
+        "riverhog_expected_primary_files_total": 3636,
         "riverhog_session_upload": {
             "state": "open",
             "collection_id": "2026/20260101T000000Z__camera-archive",
@@ -1176,6 +1197,7 @@ def test_riverhog_upload_progress_uses_expected_archive_output_count(
     progress = runner.riverhog_upload_progress_for_job(job)
 
     assert progress["registered_files_total"] == 7
+    assert progress["expected_primary_files_total"] == 3636
     assert progress["files_total"] == 3636
     assert progress["files_uploaded"] == 6
     assert progress["percent_files"] == 0.17
