@@ -2320,25 +2320,7 @@ def compact_list_field(
 def compact_terminal_job_state(job: dict[str, Any]) -> bool:
     if job.get("state") not in TERMINAL_JOB_STATES:
         return False
-    changed = False
-
-    if "encode_progress" not in job:
-        progress = encode_progress_for_job(job)
-        if progress is not None:
-            job["encode_progress"] = progress
-            changed = True
-    if "upload_progress" not in job:
-        progress = upload_progress_for_job(job)
-        if progress is None and isinstance(job.get("input_upload_progress"), dict):
-            progress = dict(job["input_upload_progress"])
-        if progress is not None:
-            job["upload_progress"] = progress
-            changed = True
-    if "riverhog_upload_progress" not in job:
-        progress = riverhog_upload_progress_for_job(job)
-        if progress is not None:
-            job["riverhog_upload_progress"] = progress
-            changed = True
+    changed = snapshot_terminal_progress(job)
 
     for result_key in (
         "review_upload_result",
@@ -2363,6 +2345,9 @@ def compact_terminal_job_state(job: dict[str, Any]) -> bool:
         if key in job:
             job.pop(key, None)
             changed = True
+    if job.get("state") == "cancelled" and "cancel_requested" in job:
+        job.pop("cancel_requested", None)
+        changed = True
 
     changed = compact_list_field(job, "cleanup_removed") or changed
     changed = compact_list_field(job, "local_work_removed") or changed
@@ -2372,10 +2357,7 @@ def compact_terminal_job_state(job: dict[str, Any]) -> bool:
 
 
 def cleanup_terminal_job(job: dict[str, Any]) -> list[str]:
-    if "upload_progress" not in job:
-        progress = upload_progress_for_job(job)
-        if progress is not None:
-            job["upload_progress"] = progress
+    snapshot_terminal_progress(job)
     removed = remove_job_local_work(job)
     job_id = str(job.get("job_id") or "")
     upload_id = str(job.get("input_upload_id") or "")
@@ -2400,7 +2382,30 @@ def cleanup_cancelled_job(job: dict[str, Any]) -> list[str]:
     return cleanup_terminal_job(job)
 
 
+def snapshot_terminal_progress(job: dict[str, Any]) -> bool:
+    changed = False
+    if "encode_progress" not in job:
+        progress = encode_progress_for_job(job)
+        if progress is not None:
+            job["encode_progress"] = progress
+            changed = True
+    if "upload_progress" not in job:
+        progress = upload_progress_for_job(job)
+        if progress is None and isinstance(job.get("input_upload_progress"), dict):
+            progress = dict(job["input_upload_progress"])
+        if progress is not None:
+            job["upload_progress"] = progress
+            changed = True
+    if "riverhog_upload_progress" not in job:
+        progress = riverhog_upload_progress_for_job(job)
+        if progress is not None:
+            job["riverhog_upload_progress"] = progress
+            changed = True
+    return changed
+
+
 def mark_job_cancelled(job: dict[str, Any], *, reason: str) -> dict[str, Any]:
+    snapshot_terminal_progress(job)
     cancelled_at = job.get("cancelled_at") or now_iso()
     job["state"] = "cancelled"
     job["phase"] = "cancelled"
@@ -2409,6 +2414,7 @@ def mark_job_cancelled(job: dict[str, Any], *, reason: str) -> dict[str, Any]:
     job["cleanup_requested"] = True
     job["cancel_reason"] = reason
     job.pop("error", None)
+    job.pop("cancel_requested", None)
     return save_job(job)
 
 
