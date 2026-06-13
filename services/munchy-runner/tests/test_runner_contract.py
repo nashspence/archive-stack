@@ -384,6 +384,66 @@ def test_cancel_job_with_cleanup_preserves_input_upload_referenced_by_sibling(
     assert "input-upload:upload-1" not in job.get("cleanup_removed", [])
 
 
+def test_finalize_cancelled_job_persists_terminal_state_before_cleanup_failures(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    data_path = runner.tusd_data_path("upload-a")
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.write_bytes(b"a")
+    shared_root = runner.shared_input_upload_root("upload-1")
+    shared_root.mkdir(parents=True)
+    (shared_root / "camera").mkdir()
+    (shared_root / "camera" / "a.mp4").write_bytes(b"a")
+    work_dir = runner.GPU_RUNTIME_DIR / "jobs" / "job-1"
+    work_dir.mkdir(parents=True)
+    (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
+    runner.save_input_upload(
+        {
+            "upload_id": "upload-1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "files": [{"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"}],
+        }
+    )
+    job = runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "running",
+            "phase": "cancel_requested",
+            "cancel_requested": True,
+            "input_upload_id": "upload-1",
+            "groups": {"camera": {}},
+            "riverhog": {"enabled": True},
+            "riverhog_session_upload": {
+                "state": "open",
+                "collection_id": "2026/20260101T000000Z__camera-archive",
+                "files": {},
+            },
+        }
+    )
+
+    def fail_cancel(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("riverhog cancel unavailable")
+
+    monkeypatch.setattr(runner, "cancel_riverhog_upload_session", fail_cancel)
+
+    finalized = runner.finalize_cancelled_job(job, reason="test_cancel")
+    stored = runner.load_job("job-1")
+
+    assert finalized["state"] == "cancelled"
+    assert stored["state"] == "cancelled"
+    assert stored["phase"] == "cancelled"
+    assert stored["riverhog_cancel_failed_at"]
+    assert "riverhog cancel unavailable" in stored["riverhog_cancel_error"]
+    assert runner.read_state("input-upload", "upload-1") is None
+    assert not data_path.exists()
+    assert not shared_root.exists()
+    assert not work_dir.exists()
+
+
 def test_failed_job_with_cleanup_removes_local_work_and_input_upload(
     tmp_path: Path,
     monkeypatch,
@@ -512,6 +572,54 @@ def test_cleanup_once_removes_old_failed_job_work_and_input_upload(
     result = runner.cleanup_once()
 
     assert "job-cleanup:job-1" in result["removed"]
+    assert runner.read_state("input-upload", "upload-1") is None
+    assert not data_path.exists()
+    assert not shared_root.exists()
+    assert not work_dir.exists()
+
+
+def test_cleanup_once_repairs_stale_cancel_requested_job(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    data_path = runner.tusd_data_path("upload-a")
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.write_bytes(b"a")
+    shared_root = runner.shared_input_upload_root("upload-1")
+    shared_root.mkdir(parents=True)
+    (shared_root / "camera").mkdir()
+    (shared_root / "camera" / "a.mp4").write_bytes(b"a")
+    work_dir = runner.GPU_RUNTIME_DIR / "jobs" / "job-1"
+    work_dir.mkdir(parents=True)
+    (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
+    runner.save_input_upload(
+        {
+            "upload_id": "upload-1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "files": [{"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"}],
+        }
+    )
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "running",
+            "phase": "cancel_requested",
+            "cancel_requested": True,
+            "input_upload_id": "upload-1",
+            "groups": {"camera": {}},
+        }
+    )
+
+    result = runner.cleanup_once()
+    job = runner.load_job("job-1")
+
+    assert result["repaired_cancelled"] == ["job-1"]
+    assert job["state"] == "cancelled"
+    assert job["phase"] == "cancelled"
+    assert job["cancel_reason"] == "stale_cancel_requested"
     assert runner.read_state("input-upload", "upload-1") is None
     assert not data_path.exists()
     assert not shared_root.exists()

@@ -2400,6 +2400,38 @@ def cleanup_cancelled_job(job: dict[str, Any]) -> list[str]:
     return cleanup_terminal_job(job)
 
 
+def mark_job_cancelled(job: dict[str, Any], *, reason: str) -> dict[str, Any]:
+    cancelled_at = job.get("cancelled_at") or now_iso()
+    job["state"] = "cancelled"
+    job["phase"] = "cancelled"
+    job["cancelled_at"] = cancelled_at
+    job["finished_at"] = job.get("finished_at") or cancelled_at
+    job["cleanup_requested"] = True
+    job["cancel_reason"] = reason
+    job.pop("error", None)
+    return save_job(job)
+
+
+def finalize_cancelled_job(job: dict[str, Any], *, reason: str) -> dict[str, Any]:
+    job = mark_job_cancelled(job, reason=reason)
+    try:
+        cancel_riverhog_upload_session(job, reason=reason)
+    except Exception as exc:
+        job["riverhog_cancel_failed_at"] = now_iso()
+        job["riverhog_cancel_error"] = str(exc)
+        log.exception("unexpected failure while cancelling riverhog session for %s", job.get("job_id"))
+        save_job(job)
+
+    try:
+        cleanup_cancelled_job(job)
+        compact_terminal_job_state(job)
+    except Exception as exc:
+        job["cleanup_failed_at"] = now_iso()
+        job["cleanup_error"] = str(exc)
+        log.exception("failed to clean cancelled job %s", job.get("job_id"))
+    return save_job(job)
+
+
 def should_cleanup_local_work_on_success(job: dict[str, Any]) -> bool:
     workflow_mode = str(job.get("workflow_mode") or "archive")
     if workflow_mode in {"review_only", "collection_preview"}:
@@ -5014,15 +5046,7 @@ def run_job(job_id: str) -> None:
             job = load_job(job_id)
         except HTTPException:
             job = {"job_id": job_id}
-        cancel_riverhog_upload_session(job, reason="job_cancelled")
-        job["state"] = "cancelled"
-        job["phase"] = "cancelled"
-        job["cancelled_at"] = now_iso()
-        job["finished_at"] = job["cancelled_at"]
-        job.pop("error", None)
-        cleanup_cancelled_job(job)
-        compact_terminal_job_state(job)
-        save_job(job)
+        finalize_cancelled_job(job, reason="job_cancelled")
     except Exception as exc:
         log.exception("job %s failed", job_id)
         try:
@@ -5547,6 +5571,7 @@ def resume_job(job_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]
 
 @app.post("/v1/jobs/{job_id}/cancel", status_code=202)
 def cancel_job(job_id: str, cleanup: bool = False) -> dict[str, Any]:
+    finalize_now = False
     with state_lock:
         job = load_job(job_id)
         if job.get("state") in TERMINAL_JOB_STATES:
@@ -5564,23 +5589,37 @@ def cancel_job(job_id: str, cleanup: bool = False) -> dict[str, Any]:
         job["cleanup_requested"] = True
         if job_id not in active_jobs:
             scheduled_jobs.discard(job_id)
-            cancel_riverhog_upload_session(job, reason="job_cancelled")
-            job["state"] = "cancelled"
-            job["phase"] = "cancelled"
-            job["cancelled_at"] = now
-            job["finished_at"] = now
-            cleanup_cancelled_job(job)
-            compact_terminal_job_state(job)
+            job = save_job(job)
+            finalize_now = True
         else:
             job["phase"] = "cancel_requested"
-        return save_job(job)
+            return save_job(job)
+    if finalize_now:
+        return finalize_cancelled_job(job, reason="job_cancelled")
+    return job
 
 
 def cleanup_once() -> dict[str, Any]:
     removed: list[str] = []
     compacted: list[str] = []
+    repaired_cancelled: list[str] = []
     upload_cutoff = datetime.now(UTC) - timedelta(hours=INPUT_UPLOAD_TTL_HOURS)
     orphan_upload_cutoff = datetime.now(UTC) - timedelta(hours=ORPHAN_INPUT_UPLOAD_TTL_HOURS)
+    stale_cancelled_jobs: list[dict[str, Any]] = []
+    with state_lock:
+        for job in job_states():
+            job_id = str(job.get("job_id") or "")
+            if (
+                job_id
+                and job_id not in active_jobs
+                and job.get("cancel_requested")
+                and job.get("state") not in TERMINAL_JOB_STATES
+            ):
+                stale_cancelled_jobs.append(job)
+    for job in stale_cancelled_jobs:
+        finalize_cancelled_job(job, reason="stale_cancel_requested")
+        repaired_cancelled.append(str(job.get("job_id") or ""))
+
     with state_lock:
         referenced_uploads = referenced_input_upload_ids()
         for upload_state in input_upload_states():
@@ -5624,23 +5663,29 @@ def cleanup_once() -> dict[str, Any]:
                 save_job(job)
 
     vacuumed = False
-    if removed or compacted:
+    if removed or compacted or repaired_cancelled:
         with state_lock:
             if not active_jobs:
                 vacuum_state_store()
                 vacuumed = True
-    return {"removed": removed, "compacted": compacted, "vacuumed": vacuumed}
+    return {
+        "removed": removed,
+        "compacted": compacted,
+        "repaired_cancelled": repaired_cancelled,
+        "vacuumed": vacuumed,
+    }
 
 
 def cleanup_loop() -> None:
     while not cleanup_stop.wait(CLEANUP_INTERVAL_SECONDS):
         try:
             result = cleanup_once()
-            if result["removed"] or result["compacted"]:
+            if result["removed"] or result["compacted"] or result["repaired_cancelled"]:
                 log.info(
-                    "maintenance cleanup removed=%s compacted=%s vacuumed=%s",
+                    "maintenance cleanup removed=%s compacted=%s repaired_cancelled=%s vacuumed=%s",
                     ", ".join(result["removed"]) or "-",
                     len(result["compacted"]),
+                    ", ".join(result["repaired_cancelled"]) or "-",
                     result["vacuumed"],
                 )
         except Exception:
