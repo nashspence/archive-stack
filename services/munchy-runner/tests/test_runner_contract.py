@@ -1611,7 +1611,7 @@ def test_eager_riverhog_upload_can_be_bounded_per_tick(
         lambda job, api, archive_dir: "2026/20260101T000000Z__camera-archive",
     )
 
-    def fake_upload_artifact(job, api, archive_dir, source_path):  # type: ignore[no-untyped-def]
+    def fake_upload_artifact(job, api, archive_dir, source_path, **_kwargs):  # type: ignore[no-untyped-def]
         uploaded.append(Path(source_path).name)
         return True
 
@@ -1666,7 +1666,7 @@ def test_eager_riverhog_upload_can_be_bounded_by_bytes(
         lambda job, api, archive_dir: "2026/20260101T000000Z__camera-archive",
     )
 
-    def fake_upload_artifact(job, api, archive_dir, source_path):  # type: ignore[no-untyped-def]
+    def fake_upload_artifact(job, api, archive_dir, source_path, **_kwargs):  # type: ignore[no-untyped-def]
         uploaded.append(Path(source_path).name)
         return True
 
@@ -1733,7 +1733,7 @@ def test_eager_riverhog_upload_uses_parallel_workers(
     seen: list[str] = []
     lock = threading.Lock()
 
-    def fake_upload_artifact(job, api, archive_dir, source_path):  # type: ignore[no-untyped-def]
+    def fake_upload_artifact(job, api, archive_dir, source_path, **_kwargs):  # type: ignore[no-untyped-def]
         nonlocal active, max_active
         with lock:
             active += 1

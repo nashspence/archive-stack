@@ -140,6 +140,14 @@ RIVERHOG_EAGER_UPLOAD_INTERVAL_SECONDS = max(
     0.25,
     float(os.getenv("MUNCHY_RUNNER_RIVERHOG_EAGER_UPLOAD_INTERVAL_SECONDS", "1")),
 )
+RIVERHOG_UPLOAD_SAVE_EVERY_FILES = max(
+    1,
+    int(os.getenv("MUNCHY_RUNNER_RIVERHOG_UPLOAD_SAVE_EVERY_FILES", "32")),
+)
+RIVERHOG_UPLOAD_SAVE_EVERY_SECONDS = max(
+    0.25,
+    float(os.getenv("MUNCHY_RUNNER_RIVERHOG_UPLOAD_SAVE_EVERY_SECONDS", "5")),
+)
 RIVERHOG_FINALIZE_POLL_SECONDS = max(
     1.0,
     float(os.getenv("MUNCHY_RUNNER_RIVERHOG_FINALIZE_POLL_SECONDS", "5")),
@@ -3222,6 +3230,16 @@ def update_riverhog_state_from_payload(
         return state
 
 
+def sync_riverhog_session_from_remote(job: dict[str, Any], api: ApiClient) -> dict[str, Any] | None:
+    state = riverhog_session_state(job)
+    collection_id = str(state.get("collection_id") or "")
+    if not collection_id:
+        return None
+    payload = api.get_collection_upload(collection_id)
+    update_riverhog_state_from_payload(job, payload)
+    return payload
+
+
 def touch_riverhog_session_state(job: dict[str, Any]) -> None:
     with riverhog_upload_lock(str(job.get("job_id") or "")):
         riverhog_session_state(job)["updated_at"] = now_iso()
@@ -3321,6 +3339,8 @@ def remove_uploaded_riverhog_artifact(
     archive_dir: Path,
     source_path: Path,
     record: dict[str, Any],
+    *,
+    persist: bool = True,
 ) -> None:
     if source_path.exists():
         source_path.unlink()
@@ -3341,7 +3361,8 @@ def remove_uploaded_riverhog_artifact(
         record.get("path"),
         format_log_bytes(record.get("bytes")),
     )
-    save_job(job)
+    if persist:
+        save_job(job)
 
 
 def riverhog_upload_artifact(
@@ -3349,6 +3370,8 @@ def riverhog_upload_artifact(
     api: ApiClient,
     archive_dir: Path,
     source_path: Path,
+    *,
+    persist: bool = True,
 ) -> bool:
     job_id = str(job["job_id"])
     collection_id = ensure_riverhog_session(job, api, archive_dir)
@@ -3357,8 +3380,13 @@ def riverhog_upload_artifact(
     length = int(record["bytes"])
     if riverhog_upload_file_complete(record):
         if source_path.exists() and record.get("state") != "deleted":
-            remove_uploaded_riverhog_artifact(job, archive_dir, source_path, record)
-            save_job(job)
+            remove_uploaded_riverhog_artifact(
+                job,
+                archive_dir,
+                source_path,
+                record,
+                persist=persist,
+            )
             return True
         return False
 
@@ -3387,7 +3415,13 @@ def riverhog_upload_artifact(
     if offset >= length:
         with riverhog_upload_lock(job_id):
             record["uploaded_at"] = record.get("uploaded_at") or now_iso()
-        remove_uploaded_riverhog_artifact(job, archive_dir, source_path, record)
+        remove_uploaded_riverhog_artifact(
+            job,
+            archive_dir,
+            source_path,
+            record,
+            persist=persist,
+        )
         return True
 
     while offset < length:
@@ -3447,7 +3481,13 @@ def riverhog_upload_artifact(
         record["state"] = "uploaded"
         record["uploaded_at"] = record.get("uploaded_at") or now_iso()
         touch_riverhog_session_state(job)
-    remove_uploaded_riverhog_artifact(job, archive_dir, source_path, record)
+    remove_uploaded_riverhog_artifact(
+        job,
+        archive_dir,
+        source_path,
+        record,
+        persist=persist,
+    )
     return True
 
 
@@ -3615,12 +3655,30 @@ def _upload_riverhog_artifacts_unlocked(
         }
 
     worker_count = min(max(1, RIVERHOG_UPLOAD_WORKERS), len(selected))
+    last_save_at = started
+
+    def persist_progress_if_due(*, force: bool = False) -> None:
+        nonlocal last_save_at
+        now = time.monotonic()
+        if (
+            force
+            or processed % RIVERHOG_UPLOAD_SAVE_EVERY_FILES == 0
+            or now - last_save_at >= RIVERHOG_UPLOAD_SAVE_EVERY_SECONDS
+        ):
+            save_job(job)
+            last_save_at = now
 
     def upload_one(item: tuple[Path, int]) -> tuple[int, int, int]:
         source_path, source_bytes = item
         worker_api = ApiClient()
         try:
-            did_upload = riverhog_upload_artifact(job, worker_api, archive_dir, source_path)
+            did_upload = riverhog_upload_artifact(
+                job,
+                worker_api,
+                archive_dir,
+                source_path,
+                persist=False,
+            )
             return 1, 1 if did_upload else 0, source_bytes if did_upload else 0
         finally:
             worker_api.close()
@@ -3633,6 +3691,8 @@ def _upload_riverhog_artifacts_unlocked(
                 processed += item_processed
                 uploaded += item_uploaded
                 uploaded_bytes += item_bytes
+                persist_progress_if_due()
+        persist_progress_if_due(force=True)
         return {
             "processed_files": processed,
             "uploaded_files": uploaded,
@@ -3644,10 +3704,18 @@ def _upload_riverhog_artifacts_unlocked(
     try:
         ensure_riverhog_session(job, api, archive_dir)
         for source_path, source_bytes in selected:
-            if riverhog_upload_artifact(job, api, archive_dir, source_path):
+            if riverhog_upload_artifact(
+                job,
+                api,
+                archive_dir,
+                source_path,
+                persist=False,
+            ):
                 uploaded += 1
                 uploaded_bytes += source_bytes
             processed += 1
+            persist_progress_if_due()
+        persist_progress_if_due(force=True)
         return {
             "processed_files": processed,
             "uploaded_files": uploaded,
@@ -3796,6 +3864,7 @@ def upload_to_riverhog(job: dict[str, Any], archive_dir: Path) -> dict[str, Any]
             metrics["final_sweep_processed_files"] = final_sweep["processed_files"]
             metrics["final_sweep_uploaded_files"] = final_sweep["uploaded_files"]
             metrics["final_sweep_uploaded_bytes"] = final_sweep["uploaded_bytes"]
+            sync_riverhog_session_from_remote(job, api)
             metrics["final_sweep_after"] = compact_riverhog_progress_metrics(
                 riverhog_upload_progress_for_job(job)
             )
