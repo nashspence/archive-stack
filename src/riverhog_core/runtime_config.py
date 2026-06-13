@@ -132,6 +132,7 @@ class RuntimeConfig:
     s3_force_path_style: bool
     tusd_base_url: str
     tusd_hook_secret: str
+    upload_staging_root: Path = field(default_factory=lambda: Path(".riverhog/uploads"))
     tusd_append_timeout_seconds: float = 60.0
     database_url: str = ""
     incomplete_upload_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
@@ -281,6 +282,11 @@ class RuntimeConfig:
             "planner_image_root",
             self.planner_image_root.expanduser().resolve(),
         )
+        object.__setattr__(
+            self,
+            "upload_staging_root",
+            self.upload_staging_root.expanduser().resolve(),
+        )
 
 
 def load_runtime_config() -> RuntimeConfig:
@@ -309,6 +315,10 @@ def load_runtime_config() -> RuntimeConfig:
     s3_access_key_id = os.getenv("RIVERHOG_S3_ACCESS_KEY_ID", "minioadmin")
     s3_secret_access_key = os.getenv("RIVERHOG_S3_SECRET_ACCESS_KEY", "minioadmin")
     s3_force_path_style = _parse_bool(os.getenv("RIVERHOG_S3_FORCE_PATH_STYLE", "true"))
+    upload_staging_root = Path(
+        os.getenv("RIVERHOG_UPLOAD_STAGING_ROOT", ".riverhog/uploads").strip()
+        or ".riverhog/uploads"
+    )
 
     glacier_multipart_part_bytes = _parse_bytes(
         os.getenv("RIVERHOG_GLACIER_MULTIPART_PART_BYTES", "64MiB"),
@@ -601,6 +611,7 @@ def load_runtime_config() -> RuntimeConfig:
         s3_access_key_id=s3_access_key_id,
         s3_secret_access_key=s3_secret_access_key,
         s3_force_path_style=s3_force_path_style,
+        upload_staging_root=upload_staging_root,
         tusd_base_url=os.getenv("RIVERHOG_TUSD_BASE_URL", "http://127.0.0.1:1080/files").rstrip(
             "/"
         ),

@@ -38,6 +38,11 @@ The checked-in stack uses Garage for S3-compatible committed storage, Postgres
 for authoritative catalog state, `tusd` for resumable staging uploads, and
 `rclone serve webdav --read-only` for day-to-day browsing.
 
+The `tusd` and `app` services share the `upload-staging` volume at `/uploads`.
+That volume is temporary ingest custody: upload chunks land there first for
+maximum local write throughput, then `riverhog-app` streams the verified staged
+files into Glacier-compatible archive storage and committed Garage hot storage.
+
 ## Run the Checked-In Tests
 
 For the normal full check:

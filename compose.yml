@@ -7,8 +7,6 @@ services:
 
   tusd:
     image: tusproject/tusd:v2.8.0
-    depends_on:
-      - garage
     command:
       - "-host"
       - "0.0.0.0"
@@ -16,19 +14,14 @@ services:
       - "1080"
       - "-base-path"
       - "/files/"
-      - "-s3-bucket"
-      - "${RIVERHOG_S3_BUCKET}"
-      - "-s3-endpoint"
-      - "http://garage:3900"
-      - "-s3-disable-ssl"
+      - "-dir"
+      - "/uploads"
       - "-hooks-http"
       - "http://app:8000/internal/tusd/hooks"
       - "-hooks-http-forward-headers"
       - "X-Riverhog-Tusd-Hook-Secret"
-    environment:
-      AWS_ACCESS_KEY_ID: ${RIVERHOG_S3_ACCESS_KEY_ID}
-      AWS_SECRET_ACCESS_KEY: ${RIVERHOG_S3_SECRET_ACCESS_KEY}
-      AWS_REGION: ${RIVERHOG_S3_REGION}
+    volumes:
+      - upload-staging:/uploads
 
   webdav:
     image: rclone/rclone:1.69.3
@@ -131,6 +124,7 @@ services:
       RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES: ${RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES:-300GB}
       RIVERHOG_PLANNER_IMAGE_ROOT: ${RIVERHOG_PLANNER_IMAGE_ROOT:-/app/.riverhog/images}
       RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT: ${RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT:-500GB}
+      RIVERHOG_UPLOAD_STAGING_ROOT: ${RIVERHOG_UPLOAD_STAGING_ROOT:-/uploads}
       RIVERHOG_TUSD_BASE_URL: ${RIVERHOG_TUSD_BASE_URL}
       RIVERHOG_TUSD_HOOK_SECRET: ${RIVERHOG_TUSD_HOOK_SECRET}
       RIVERHOG_WEBDAV_ENABLED: ${RIVERHOG_WEBDAV_ENABLED}
@@ -155,6 +149,7 @@ services:
       - "${RIVERHOG_API_PORT:-8000}:8000"
     volumes:
       - .:/app
+      - upload-staging:/uploads
 
   test:
     image: riverhog-test:dev
@@ -212,6 +207,7 @@ services:
       RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES: ${RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES:-300GB}
       RIVERHOG_PLANNER_IMAGE_ROOT: ${RIVERHOG_PLANNER_IMAGE_ROOT:-/app/.riverhog/images}
       RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT: ${RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT:-500GB}
+      RIVERHOG_UPLOAD_STAGING_ROOT: ${RIVERHOG_UPLOAD_STAGING_ROOT:-/uploads}
       RIVERHOG_TUSD_BASE_URL: ${RIVERHOG_TUSD_BASE_URL}
       RIVERHOG_TUSD_HOOK_SECRET: ${RIVERHOG_TUSD_HOOK_SECRET}
       RIVERHOG_PUBLIC_BASE_URL: ${RIVERHOG_PUBLIC_BASE_URL:-http://app:8000}
@@ -219,7 +215,9 @@ services:
       PYTHONPATH: /app:/app/src
     volumes:
       - .:/app
+      - upload-staging:/uploads
 
 volumes:
   garage-data:
   postgres-data:
+  upload-staging:

@@ -71,10 +71,13 @@ capped backoff and re-check the authoritative server offset before sending more
 bytes. This is intentional: app restarts, proxy reloads, and brief network
 outages should not force the operator to restart a long upload.
 
-Riverhog passes tusd a deterministic staging object id through its pre-create
-hook. The target path metadata sent to tusd is itself base64 text, not the raw
-path, so S3-compatible stores never need to sign metadata headers containing
-literal spaces or other path punctuation.
+Riverhog passes tusd a deterministic staging file id through its pre-create
+hook. The checked-in deployment uses tusd filesystem storage on a shared local
+mount, so upload chunks land on disk first instead of passing through Garage.
+Riverhog later streams those staged files into the encrypted Glacier archive and
+then into committed hot storage for planning. The target path metadata sent to
+tusd is itself base64 text, not the raw path, so upload metadata remains safe
+for paths with literal spaces or other punctuation.
 
 Larger socket write slices or shorter write delays are riskier than larger
 request chunks. Do not benchmark more aggressive values after a failed or

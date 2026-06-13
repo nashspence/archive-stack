@@ -911,6 +911,22 @@ Base URL for the internal `tusd` service that owns resumable staging uploads.
 Riverhog remains the public upload contract and maps logical upload resources to
 internal `tusd` uploads.
 
+## `RIVERHOG_UPLOAD_STAGING_ROOT`
+
+- type: filesystem path
+- default: `.riverhog/uploads`
+
+Directory where Riverhog reads staged upload bytes written by `tusd`.
+Production deployments should mount the same persistent local filesystem path
+into both `tusd` and `riverhog-app`. The checked-in compose stack mounts this
+directory as `/uploads` in both containers.
+
+This directory is temporary ingest custody, not authoritative archive storage.
+Riverhog deletes staged files only after the collection archive is safely
+uploaded and verified in Glacier-compatible storage, the collection files are
+promoted into committed hot storage, or the upload session is canceled or
+expired.
+
 ## CLI upload transport
 
 The following variables are read by the `riverhog` CLI process. They tune the

@@ -60,9 +60,9 @@ artifacts and do not define the cloud archive unit.
 Finalization is gated by verified archive receipt. Riverhog persists that
 receipt, promotes staged bytes into the hot collection namespace with per-file
 verification markers, and commits the collection/archive records before deleting
-staging objects. A retry after restart resumes the archive multipart upload, the
-completed archive receipt, or the hot-file promotion phase according to the last
-durable state.
+staged upload files from the shared tusd filesystem directory. A retry after
+restart resumes the archive multipart upload, the completed archive receipt, or
+the hot-file promotion phase according to the last durable state.
 
 ## Pinned Hot Storage
 
