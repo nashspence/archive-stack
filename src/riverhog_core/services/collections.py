@@ -345,7 +345,7 @@ class SqlAlchemyCollectionService:
                 _touch_collection_upload(upload)
                 return _collection_upload_file_registration_payload(upload, existing)
 
-            _ensure_unburned_collection_limit_allows(
+            _ensure_active_upload_limit_allows(
                 session,
                 incoming_bytes=int(normalized_file["bytes"]),
                 limit_bytes=self._config.unburned_collection_bytes_limit,
@@ -1287,6 +1287,40 @@ def _ensure_unburned_collection_limit_allows(
         "finalize, burn, and register enough physical image copies before uploading "
         "new collections"
     )
+
+
+def _ensure_active_upload_limit_allows(
+    session: Session,
+    *,
+    incoming_bytes: int,
+    limit_bytes: int,
+) -> None:
+    if limit_bytes <= 0:
+        return
+
+    current_bytes = _active_collection_upload_bytes(session)
+    projected_bytes = current_bytes + incoming_bytes
+    if projected_bytes <= limit_bytes:
+        return
+
+    raise Conflict(
+        "unburned collection limit exceeded: "
+        f"{projected_bytes} bytes would exceed the configured {limit_bytes} byte limit; "
+        "finalize, burn, and register enough physical image copies before uploading "
+        "new collections"
+    )
+
+
+def _active_collection_upload_bytes(session: Session) -> int:
+    value = session.scalar(
+        select(func.coalesce(func.sum(CollectionUploadFileRecord.bytes), 0))
+        .join(
+            CollectionUploadRecord,
+            CollectionUploadRecord.collection_id == CollectionUploadFileRecord.collection_id,
+        )
+        .where(CollectionUploadRecord.state != "finalized")
+    )
+    return int(value or 0)
 
 
 def _unburned_collection_bytes(session: Session) -> int:

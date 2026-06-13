@@ -36,6 +36,7 @@ from riverhog_core.planner.manifest import MANIFEST_FILENAME
 from riverhog_core.ports.archive_store import ArchiveUploadReceipt, CollectionArchiveUploadReceipt
 from riverhog_core.ports.hot_store import HotFileStat
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services import collections as collections_service
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.glacier_uploads import SqlAlchemyGlacierUploadService
 from riverhog_core.services.planning import (
@@ -706,6 +707,81 @@ def test_incremental_collection_upload_session_idle_ttl_expires_to_audit_state(
     assert upload_store.deleted_targets == [
         f"/.riverhog/uploads/collections/{collection_id}/stale.txt"
     ]
+
+
+def test_incremental_session_file_registration_uses_cheap_limit_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+
+    hot_store = _FakeHotStore()
+    upload_store = _FakeUploadStore()
+    setup_service = SqlAlchemyCollectionService(
+        _config(sqlite_path),
+        hot_store,
+        upload_store,
+    )
+    opened = setup_service.create_or_resume_upload_session(upload_slug="camera")
+    collection_id = str(opened["collection_id"])
+
+    def fail_coverage(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("session file registration must not scan collection coverage")
+
+    monkeypatch.setattr(collections_service, "_collection_image_coverage", fail_coverage)
+    limited_service = SqlAlchemyCollectionService(
+        _config(sqlite_path, unburned_collection_bytes_limit=100),
+        hot_store,
+        upload_store,
+    )
+    content = b"hot path"
+
+    registered = limited_service.register_upload_session_file(
+        collection_id,
+        {
+            "path": "clips/001.webm",
+            "bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        },
+    )
+
+    assert registered["file"]["path"] == "clips/001.webm"
+
+
+def test_incremental_session_file_registration_enforces_active_upload_limit(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+
+    service = SqlAlchemyCollectionService(
+        _config(sqlite_path, unburned_collection_bytes_limit=10),
+        _FakeHotStore(),
+        _FakeUploadStore(),
+    )
+    opened = service.create_or_resume_upload_session(upload_slug="camera")
+    collection_id = str(opened["collection_id"])
+    first = b"12345678"
+    second = b"123"
+    service.register_upload_session_file(
+        collection_id,
+        {
+            "path": "clips/001.webm",
+            "bytes": len(first),
+            "sha256": hashlib.sha256(first).hexdigest(),
+        },
+    )
+
+    with pytest.raises(Conflict, match="unburned collection limit exceeded"):
+        service.register_upload_session_file(
+            collection_id,
+            {
+                "path": "clips/002.webm",
+                "bytes": len(second),
+                "sha256": hashlib.sha256(second).hexdigest(),
+            },
+        )
 
 
 def test_file_upload_resume_does_not_sync_unrelated_upload_files(tmp_path: Path) -> None:
