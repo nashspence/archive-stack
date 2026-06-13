@@ -3398,12 +3398,14 @@ def riverhog_upload_artifact(
     payload = api.register_collection_upload_session_file(collection_id, file_payload)
     update_riverhog_state_from_payload(job, payload)
     record = riverhog_file_record(job, archive_dir, source_path)
+    session = payload.get("upload")
+    if not isinstance(session, dict):
+        raise RuntimeError(f"riverhog upload registration did not return a TUS upload for {rel_path}")
     with riverhog_upload_lock(job_id):
         record["registered_at"] = record.get("registered_at") or now_iso()
         record["state"] = "registered"
         touch_riverhog_session_state(job)
 
-    session = api.create_or_resume_collection_file_upload(collection_id, rel_path)
     offset = int(session["offset"])
     if offset > length:
         raise RuntimeError(f"riverhog upload offset for {rel_path} is past expected length")

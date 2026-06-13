@@ -1454,20 +1454,28 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
         ) -> dict[str, object]:
             assert collection_id == "2026/20260101T000000Z__camera-archive"
             self.registered[str(file["path"])] = dict(file)
-            self.offsets.setdefault(str(file["path"]), 0)
-            return self.payload(state="open")
+            path = str(file["path"])
+            self.offsets.setdefault(path, 0)
+            return {
+                **self.payload(state="open"),
+                "file": next(item for item in self.payload(state="open")["files"] if item["path"] == path),
+                "upload": {
+                    "path": path,
+                    "protocol": "tus",
+                    "upload_url": f"upload://{path}",
+                    "offset": self.offsets.get(path, 0),
+                    "length": int(file["bytes"]),
+                    "checksum_algorithm": "sha256",
+                    "expires_at": None,
+                },
+            }
 
         def create_or_resume_collection_file_upload(
             self,
             collection_id: str,
             path: str,
         ) -> dict[str, object]:
-            assert collection_id == "2026/20260101T000000Z__camera-archive"
-            return {
-                "upload_url": f"upload://{path}",
-                "offset": self.offsets.get(path, 0),
-                "checksum_algorithm": "sha256",
-            }
+            raise AssertionError("Munchy should use the registration upload payload")
 
         def complete_collection_upload_session(self, collection_id: str) -> dict[str, object]:
             assert collection_id == "2026/20260101T000000Z__camera-archive"
