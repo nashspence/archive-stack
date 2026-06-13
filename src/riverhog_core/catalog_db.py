@@ -78,6 +78,16 @@ def _mark_schema_baseline(engine: Engine) -> None:
             )
 
 
+def _ensure_schema_indexes(engine: Engine) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_collection_upload_files_collection_order "
+                "ON collection_upload_files (collection_id, file_order)"
+            )
+        )
+
+
 def initialize_db(database_url: str) -> None:
     """Create the current baseline catalog schema.
 
@@ -132,6 +142,7 @@ def initialize_db(database_url: str) -> None:
     engine = create_catalog_engine(database_url)
     _check_database_is_baseline_compatible(engine)
     Base.metadata.create_all(engine)
+    _ensure_schema_indexes(engine)
     _mark_schema_baseline(engine)
 
 

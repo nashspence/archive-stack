@@ -61,6 +61,7 @@ def test_initialize_db_creates_current_baseline_schema(tmp_path: Path) -> None:
         index["name"]
         for table in (
             "candidate_covered_paths",
+            "collection_upload_files",
             "finalized_image_covered_paths",
             "finalized_image_coverage_parts",
         )
@@ -68,6 +69,7 @@ def test_initialize_db_creates_current_baseline_schema(tmp_path: Path) -> None:
     }
     assert {
         "ix_candidate_covered_paths_collection_path",
+        "idx_collection_upload_files_collection_order",
         "ix_finalized_image_covered_paths_collection_path",
         "ix_finalized_image_coverage_parts_collection_path",
     }.issubset(index_names)
