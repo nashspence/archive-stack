@@ -1315,6 +1315,112 @@ def load_input_upload(upload_id: str) -> dict[str, Any]:
         return refresh_input_upload(upload)
 
 
+def item_lifecycle_time(item: dict[str, Any]) -> datetime | None:
+    values = [
+        safe_parse_iso(item.get(key))
+        for key in (
+            "updated_at",
+            "finished_at",
+            "encoded_at",
+            "failed_at",
+            "last_polled_at",
+            "last_submitted_at",
+            "started_at",
+        )
+    ]
+    values = [value for value in values if value is not None]
+    return max(values) if values else None
+
+
+def newer_lifecycle_item(
+    current_item: dict[str, Any],
+    payload_item: dict[str, Any],
+    *,
+    state_rank: dict[str, int],
+) -> dict[str, Any]:
+    current_rank = state_rank.get(str(current_item.get("state") or ""), 0)
+    payload_rank = state_rank.get(str(payload_item.get("state") or ""), 0)
+    if current_rank > payload_rank:
+        return current_item
+    if payload_rank > current_rank:
+        return payload_item
+    current_time = item_lifecycle_time(current_item)
+    payload_time = item_lifecycle_time(payload_item)
+    if current_time is not None and (payload_time is None or current_time > payload_time):
+        return current_item
+    return payload_item
+
+
+def merge_eager_archive_state(
+    current_eager: dict[str, Any],
+    payload_eager: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(payload_eager)
+
+    current_files = (
+        current_eager.get("files") if isinstance(current_eager.get("files"), dict) else {}
+    )
+    payload_files = (
+        payload_eager.get("files") if isinstance(payload_eager.get("files"), dict) else {}
+    )
+    file_state_rank = {"encoding": 1, "encoded": 2, "failed": 2}
+    merged_files = dict(payload_files)
+    for rel_path, current_item in current_files.items():
+        if not isinstance(current_item, dict):
+            continue
+        payload_item = merged_files.get(rel_path)
+        if isinstance(payload_item, dict):
+            merged_files[rel_path] = newer_lifecycle_item(
+                current_item,
+                payload_item,
+                state_rank=file_state_rank,
+            )
+        else:
+            merged_files[rel_path] = current_item
+    merged["files"] = merged_files
+
+    current_batches = (
+        current_eager.get("batches") if isinstance(current_eager.get("batches"), dict) else {}
+    )
+    payload_batches = (
+        payload_eager.get("batches") if isinstance(payload_eager.get("batches"), dict) else {}
+    )
+    batch_state_rank = {"running": 1, "succeeded": 2, "failed": 2}
+    merged_batches = dict(payload_batches)
+    for batch_id, current_item in current_batches.items():
+        if not isinstance(current_item, dict):
+            continue
+        payload_item = merged_batches.get(batch_id)
+        if isinstance(payload_item, dict):
+            merged_batches[batch_id] = newer_lifecycle_item(
+                current_item,
+                payload_item,
+                state_rank=batch_state_rank,
+            )
+        else:
+            merged_batches[batch_id] = current_item
+    merged["batches"] = merged_batches
+
+    current_results = (
+        current_eager.get("gpu_results")
+        if isinstance(current_eager.get("gpu_results"), dict)
+        else {}
+    )
+    payload_results = (
+        payload_eager.get("gpu_results")
+        if isinstance(payload_eager.get("gpu_results"), dict)
+        else {}
+    )
+    if current_results or payload_results:
+        merged["gpu_results"] = {**current_results, **payload_results}
+
+    merged["next_batch_number"] = max(
+        int(current_eager.get("next_batch_number") or 1),
+        int(payload_eager.get("next_batch_number") or 1),
+    )
+    return merged
+
+
 def save_job(job: dict[str, Any]) -> dict[str, Any]:
     payload = dict(job)
     allow_clear_cancel = bool(payload.pop("_allow_clear_cancel", False))
@@ -1331,6 +1437,12 @@ def save_job(job: dict[str, Any]) -> dict[str, Any]:
                     payload["riverhog_session_upload"] = current_riverhog
             elif isinstance(current_riverhog, dict) and "riverhog_session_upload" not in payload:
                 payload["riverhog_session_upload"] = current_riverhog
+            current_eager = current.get("eager_archive")
+            payload_eager = payload.get("eager_archive")
+            if isinstance(current_eager, dict) and isinstance(payload_eager, dict):
+                payload["eager_archive"] = merge_eager_archive_state(current_eager, payload_eager)
+            elif isinstance(current_eager, dict) and "eager_archive" not in payload:
+                payload["eager_archive"] = current_eager
         if (
             not allow_clear_cancel
             and isinstance(current, dict)

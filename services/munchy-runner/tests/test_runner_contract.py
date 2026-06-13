@@ -1316,6 +1316,80 @@ def test_save_job_preserves_newer_riverhog_upload_state(
     }
 
 
+def test_save_job_merges_newer_eager_archive_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "running",
+            "phase": "gpu-eager:pipeline=2/3",
+            "eager_archive": {
+                "next_batch_number": 7,
+                "files": {
+                    "camera/a.mp4": {
+                        "state": "encoded",
+                        "encoded_at": "2026-01-01T00:00:03Z",
+                        "output_bytes": 123,
+                    }
+                },
+                "batches": {
+                    "batch-1": {
+                        "state": "succeeded",
+                        "finished_at": "2026-01-01T00:00:03Z",
+                    }
+                },
+                "gpu_results": {"batch-1": {"state": "succeeded"}},
+            },
+        }
+    )
+
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "running",
+            "phase": "riverhog-upload",
+            "eager_archive": {
+                "next_batch_number": 4,
+                "files": {
+                    "camera/a.mp4": {
+                        "state": "encoding",
+                        "started_at": "2026-01-01T00:00:01Z",
+                    },
+                    "camera/b.mp4": {
+                        "state": "encoding",
+                        "started_at": "2026-01-01T00:00:04Z",
+                    },
+                },
+                "batches": {
+                    "batch-1": {
+                        "state": "running",
+                        "started_at": "2026-01-01T00:00:01Z",
+                    },
+                    "batch-2": {
+                        "state": "running",
+                        "started_at": "2026-01-01T00:00:04Z",
+                    },
+                },
+            },
+        }
+    )
+
+    stored = runner.load_job("job-1")
+    eager = stored["eager_archive"]
+    assert eager["next_batch_number"] == 7
+    assert eager["files"]["camera/a.mp4"]["state"] == "encoded"
+    assert eager["files"]["camera/a.mp4"]["output_bytes"] == 123
+    assert eager["files"]["camera/b.mp4"]["state"] == "encoding"
+    assert eager["batches"]["batch-1"]["state"] == "succeeded"
+    assert eager["batches"]["batch-2"]["state"] == "running"
+    assert eager["gpu_results"] == {"batch-1": {"state": "succeeded"}}
+
+
 def test_riverhog_upload_progress_uses_expected_archive_output_count(
     tmp_path: Path,
     monkeypatch,
