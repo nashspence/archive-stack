@@ -100,9 +100,6 @@ def register_collection_upload_session_file(
         collection_id,
         request.model_dump(),
     )
-    upload = payload.get("upload")
-    if isinstance(upload, dict) and upload.get("upload_url"):
-        upload["upload_url"] = public_tusd_upload_url(str(upload["upload_url"]))
     return CollectionUploadSessionFileRegistrationOut.model_validate(payload)
 
 

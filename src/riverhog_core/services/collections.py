@@ -342,25 +342,8 @@ class SqlAlchemyCollectionService:
                         "collection upload session file already exists with different metadata: "
                         f"{normalized_file['path']}"
                     )
-                _expire_collection_upload_file(existing, self._upload_store)
-                target_path = _collection_upload_target_path(
-                    normalized_collection_id,
-                    existing.path,
-                )
-                updated, tus_url = create_or_resume_upload_state(
-                    current=_upload_lifecycle_state(existing),
-                    target_path=target_path,
-                    length=existing.bytes,
-                    upload_store=self._upload_store,
-                    ttl=self._upload_ttl,
-                )
-                _apply_upload_lifecycle_state(existing, updated)
                 _touch_collection_upload(upload)
-                return _collection_upload_file_registration_payload(
-                    upload,
-                    existing,
-                    tus_url=tus_url,
-                )
+                return _collection_upload_file_registration_payload(upload, existing)
 
             _ensure_active_upload_limit_allows(
                 session,
@@ -386,24 +369,8 @@ class SqlAlchemyCollectionService:
                 tus_url=None,
             )
             session.add(file_record)
-            target_path = _collection_upload_target_path(
-                normalized_collection_id,
-                file_record.path,
-            )
-            updated, tus_url = create_or_resume_upload_state(
-                current=_upload_lifecycle_state(file_record),
-                target_path=target_path,
-                length=file_record.bytes,
-                upload_store=self._upload_store,
-                ttl=self._upload_ttl,
-            )
-            _apply_upload_lifecycle_state(file_record, updated)
             _touch_collection_upload(upload)
-            return _collection_upload_file_registration_payload(
-                upload,
-                file_record,
-                tus_url=tus_url,
-            )
+            return _collection_upload_file_registration_payload(upload, file_record)
 
     def complete_upload_session(self, collection_id: str) -> dict[str, object]:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
@@ -1850,18 +1817,13 @@ def _collection_upload_payload(
 def _collection_upload_file_registration_payload(
     upload: CollectionUploadRecord,
     file_record: CollectionUploadFileRecord,
-    *,
-    tus_url: str | None = None,
 ) -> dict[str, object]:
-    payload: dict[str, object] = {
+    return {
         "collection_id": upload.collection_id,
         "ingest_source": upload.ingest_source,
         "state": upload.state or "open",
         "file": _collection_upload_file_payload(file_record),
     }
-    if tus_url is not None:
-        payload["upload"] = _collection_file_upload_payload(file_record, tus_url=tus_url)
-    return payload
 
 
 def _collection_upload_file_payload(

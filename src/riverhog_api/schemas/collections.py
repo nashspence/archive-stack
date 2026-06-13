@@ -93,22 +93,11 @@ class CollectionUploadFileOut(RiverhogModel):
     upload_state_expires_at: str | None
 
 
-class CollectionFileUploadSessionOut(RiverhogModel):
-    path: str
-    protocol: str
-    upload_url: str
-    offset: int
-    length: int
-    checksum_algorithm: str
-    expires_at: str | None
-
-
 class CollectionUploadSessionFileRegistrationOut(RiverhogModel):
     collection_id: str
     ingest_source: str | None
     state: Literal["open", "uploading"]
     file: CollectionUploadFileOut
-    upload: CollectionFileUploadSessionOut
 
 
 class CollectionUploadSessionOut(RiverhogModel):
@@ -135,3 +124,13 @@ class CollectionUploadSessionOut(RiverhogModel):
     archive_total_parts: int | None = None
     files: list[CollectionUploadFileOut]
     collection: CollectionSummaryOut | None
+
+
+class CollectionFileUploadSessionOut(RiverhogModel):
+    path: str
+    protocol: str
+    upload_url: str
+    offset: int
+    length: int
+    checksum_algorithm: str
+    expires_at: str | None
