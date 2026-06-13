@@ -675,6 +675,7 @@ def test_prepare_shared_input_tree_links_uploaded_files_without_sha_rehash(
     data_path = runner.tusd_data_path("upload-a")
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_bytes(b"video")
+    source_inode = data_path.stat().st_ino
     monkeypatch.setattr(
         runner,
         "file_sha256",
@@ -696,7 +697,8 @@ def test_prepare_shared_input_tree_links_uploaded_files_without_sha_rehash(
 
     linked = root / "camera" / "a.mp4"
     assert linked.read_bytes() == b"video"
-    assert linked.stat().st_ino == data_path.stat().st_ino
+    assert linked.stat().st_ino == source_inode
+    assert not data_path.exists()
     marker = root / ".munchy-input-upload.json"
     metadata = json.loads(marker.read_text(encoding="utf-8"))
     assert metadata["upload_id"] == "upload-1"
@@ -737,7 +739,9 @@ def test_sync_shared_input_tree_links_completed_files_incrementally(
 
     assert summary["linked"] == 1
     assert (root / "camera" / "a.mp4").read_bytes() == b"video-a"
+    assert not complete_path.exists()
     assert not (root / "camera" / "b.mp4").exists()
+    assert partial_path.exists()
     assert progress["files_uploaded"] == 1
     assert progress["input_tree_files_ready"] == 1
 
@@ -747,8 +751,86 @@ def test_sync_shared_input_tree_links_completed_files_incrementally(
 
     assert summary["linked"] == 2
     assert (root / "camera" / "b.mp4").read_bytes() == b"video-b"
+    assert not partial_path.exists()
     assert progress["files_uploaded"] == 2
     assert progress["input_tree_files_ready"] == 2
+
+
+def test_consume_input_upload_file_removes_only_that_shared_input_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    upload = runner.save_input_upload(
+        {
+            "upload_id": "upload-1",
+            "files": [
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 7,
+                    "upload_id": "upload-a",
+                    "input_upload_id": "upload-1",
+                },
+                {
+                    "path": "camera/b.mp4",
+                    "bytes": 7,
+                    "upload_id": "upload-b",
+                    "input_upload_id": "upload-1",
+                },
+            ],
+        }
+    )
+    root = runner.shared_input_upload_root("upload-1")
+    (root / "camera").mkdir(parents=True)
+    (root / "camera" / "a.mp4").write_bytes(b"video-a")
+    (root / "camera" / "b.mp4").write_bytes(b"video-b")
+
+    upload = runner.consume_input_upload_files("upload-1", {"camera/a.mp4"})
+
+    assert not (root / "camera" / "a.mp4").exists()
+    assert (root / "camera" / "b.mp4").read_bytes() == b"video-b"
+    by_path = {str(item["path"]): item for item in upload["files"]}
+    assert by_path["camera/a.mp4"]["consumed_at"]
+    assert by_path["camera/a.mp4"]["complete"] is True
+    assert by_path["camera/b.mp4"]["complete"] is True
+
+
+def test_cleanup_consumed_shared_input_files_removes_existing_consumed_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    upload = {
+        "upload_id": "upload-1",
+        "files": [
+            {
+                "path": "camera/a.mp4",
+                "bytes": 7,
+                "upload_id": "upload-a",
+                "input_upload_id": "upload-1",
+                "consumed_at": "2026-01-01T00:00:00Z",
+            },
+            {
+                "path": "camera/b.mp4",
+                "bytes": 7,
+                "upload_id": "upload-b",
+                "input_upload_id": "upload-1",
+            },
+        ],
+    }
+    root = runner.shared_input_upload_root("upload-1")
+    (root / "camera").mkdir(parents=True)
+    (root / "camera" / "a.mp4").write_bytes(b"video-a")
+    (root / "camera" / "b.mp4").write_bytes(b"video-b")
+
+    removed = runner.cleanup_consumed_shared_input_files(upload, {"camera"})
+
+    assert removed == 1
+    assert not (root / "camera" / "a.mp4").exists()
+    assert (root / "camera" / "b.mp4").exists()
 
 
 def test_link_or_copy_replaces_destination_atomically_on_copy_fallback(
@@ -925,8 +1007,9 @@ def test_successful_job_keeps_shared_input_upload_for_unfinished_sibling(
     assert runner.load_job("job-1")["state"] == "succeeded"
     assert runner.load_job("job-2")["state"] == "queued"
     assert runner.read_state("input-upload", "upload-1") is not None
-    assert data_path.exists()
-    assert runner.shared_input_upload_root("upload-1").exists()
+    assert not data_path.exists()
+    shared_root = runner.shared_input_upload_root("upload-1")
+    assert (shared_root / "camera" / "a.mp4").read_bytes() == b"video"
 
 
 def test_successful_riverhog_handoff_cleans_job_work_and_input_upload(

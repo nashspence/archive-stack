@@ -1219,7 +1219,23 @@ def require_input_upload_capacity(
             )
 
 
+def shared_input_file_path(file_state: dict[str, Any]) -> Path | None:
+    input_upload_id = str(file_state.get("input_upload_id") or "")
+    rel_path = str(file_state.get("path") or "")
+    if not input_upload_id or not rel_path:
+        return None
+    return shared_input_upload_root(input_upload_id) / rel_path
+
+
+def file_matches_size(path: Path, expected_bytes: int) -> bool:
+    try:
+        return path.stat().st_size >= expected_bytes
+    except FileNotFoundError:
+        return False
+
+
 def upload_file_status(file_state: dict[str, Any]) -> dict[str, Any]:
+    file_state = dict(file_state)
     upload_id = str(file_state["upload_id"])
     data_path = tusd_data_path(upload_id)
     expected = int(file_state["bytes"])
@@ -1232,6 +1248,12 @@ def upload_file_status(file_state: dict[str, Any]) -> dict[str, Any]:
             state = "uploaded"
         elif uploaded > 0:
             state = "partial"
+        elif (shared_path := shared_input_file_path(file_state)) is not None and file_matches_size(
+            shared_path,
+            expected,
+        ):
+            uploaded = expected
+            state = "uploaded"
         else:
             state = "pending"
     out = dict(file_state)
@@ -1241,7 +1263,23 @@ def upload_file_status(file_state: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def normalized_input_upload(upload: dict[str, Any]) -> dict[str, Any]:
+    out = dict(upload)
+    upload_id = str(out.get("upload_id") or "")
+    files: list[dict[str, Any]] = []
+    for file_state in out.get("files", []):
+        if not isinstance(file_state, dict):
+            continue
+        item = dict(file_state)
+        if upload_id:
+            item.setdefault("input_upload_id", upload_id)
+        files.append(item)
+    out["files"] = files
+    return out
+
+
 def refresh_input_upload(upload: dict[str, Any]) -> dict[str, Any]:
+    upload = normalized_input_upload(upload)
     files = [upload_file_status(file_state) for file_state in upload.get("files", [])]
     out = dict(upload)
     out["files"] = files
@@ -1259,16 +1297,45 @@ def save_input_upload(upload: dict[str, Any]) -> dict[str, Any]:
 
 
 def remove_input_upload_data(upload: dict[str, Any]) -> None:
+    upload = normalized_input_upload(upload)
     for file_state in upload.get("files", []):
         remove_input_file_data(file_state)
     shutil.rmtree(shared_input_upload_root(str(upload["upload_id"])), ignore_errors=True)
 
 
-def remove_input_file_data(file_state: dict[str, Any]) -> None:
+def remove_tusd_file_data(file_state: dict[str, Any]) -> None:
     tus_path = tusd_data_path(str(file_state["upload_id"]))
     tus_path.unlink(missing_ok=True)
     tus_path.with_suffix(tus_path.suffix + ".info").unlink(missing_ok=True)
     tus_path.with_suffix(tus_path.suffix + ".lock").unlink(missing_ok=True)
+
+
+def remove_empty_parents(path: Path, root: Path) -> None:
+    parent = path.parent
+    while parent != root:
+        try:
+            parent.rmdir()
+        except OSError:
+            return
+        parent = parent.parent
+    try:
+        root.rmdir()
+    except OSError:
+        pass
+
+
+def remove_shared_input_file_data(file_state: dict[str, Any]) -> None:
+    shared_path = shared_input_file_path(file_state)
+    if shared_path is None:
+        return
+    root = shared_input_upload_root(str(file_state["input_upload_id"]))
+    shared_path.unlink(missing_ok=True)
+    remove_empty_parents(shared_path, root)
+
+
+def remove_input_file_data(file_state: dict[str, Any]) -> None:
+    remove_tusd_file_data(file_state)
+    remove_shared_input_file_data(file_state)
 
 
 def input_upload_last_activity(upload: dict[str, Any]) -> datetime:
@@ -1604,6 +1671,7 @@ def upload_files_for_groups(
     upload: dict[str, Any],
     group_names: set[str],
 ) -> list[dict[str, Any]]:
+    upload = normalized_input_upload(upload)
     return [
         file_state
         for file_state in upload.get("files", [])
@@ -1656,6 +1724,24 @@ def upload_group_progress(upload: dict[str, Any], group_names: set[str]) -> dict
     }
 
 
+def cleanup_consumed_shared_input_files(
+    upload: dict[str, Any],
+    group_names: set[str] | None = None,
+) -> int:
+    upload = normalized_input_upload(upload)
+    selected_groups = set(group_names or input_upload_groups(upload))
+    removed = 0
+    for file_state in upload_files_for_groups(upload, selected_groups):
+        if not file_state.get("consumed_at"):
+            continue
+        shared_path = shared_input_file_path(file_state)
+        if shared_path is None or not shared_path.exists():
+            continue
+        remove_shared_input_file_data(file_state)
+        removed += 1
+    return removed
+
+
 def wait_for_upload_groups(
     job: dict[str, Any],
     upload_id: str,
@@ -1683,6 +1769,7 @@ def materialize_upload_file(
     dest_root: Path,
     *,
     verify_sha256: bool = False,
+    consume_upload_source: bool = False,
 ) -> None:
     rel_path = str(file_state["path"])
     expected_bytes = int(file_state["bytes"])
@@ -1694,13 +1781,19 @@ def materialize_upload_file(
         expected_sha256=expected_sha256,
         verify_sha256=verify_sha256,
     ):
+        if consume_upload_source:
+            remove_tusd_file_data(file_state)
         return
     status = upload_file_status(file_state)
     if status["upload_state"] == "consumed":
         raise RuntimeError(f"input file has already been consumed: {rel_path}")
     if not status["complete"]:
         raise RuntimeError(f"input file is incomplete: {rel_path}")
-    source = tusd_data_path(str(file_state["upload_id"]))
+    tusd_source = tusd_data_path(str(file_state["upload_id"]))
+    shared_source = shared_input_file_path(file_state)
+    source = tusd_source if tusd_source.exists() else shared_source
+    if source is None:
+        raise RuntimeError(f"input file data is missing: {rel_path} ({tusd_source})")
     try:
         source_bytes = source.stat().st_size
     except FileNotFoundError as exc:
@@ -1724,6 +1817,8 @@ def materialize_upload_file(
         verify_sha256=verify_sha256,
     ):
         raise RuntimeError(f"input file materialization failed: {rel_path}")
+    if consume_upload_source:
+        remove_tusd_file_data(file_state)
 
 
 def materialize_upload_groups(
@@ -1752,14 +1847,19 @@ def sync_shared_input_tree(
         root = shared_input_upload_root(upload_id)
         files = upload_files_for_groups(upload, selected_groups)
         root.mkdir(parents=True, exist_ok=True)
+        cleanup_consumed_shared_input_files(upload, selected_groups)
         linked = 0
         skipped = 0
         for index, file_state in enumerate(files, start=1):
             status = upload_file_status(file_state)
-            if not status["complete"] or status["upload_state"] == "consumed":
+            if status["upload_state"] == "consumed":
+                remove_shared_input_file_data(file_state)
                 skipped += 1
                 continue
-            materialize_upload_file(file_state, root)
+            if not status["complete"]:
+                skipped += 1
+                continue
+            materialize_upload_file(file_state, root, consume_upload_source=True)
             linked += 1
             if job is not None and (index == len(files) or index % 100 == 0):
                 progress = shared_input_tree_progress(upload, selected_groups)
@@ -4465,6 +4565,7 @@ def run_eager_archive_groups(
         while True:
             raise_if_job_cancelled(job_id)
             upload = load_input_upload(str(job["input_upload_id"]))
+            cleanup_consumed_shared_input_files(upload, eager_groups)
             upload, _ = mark_existing_eager_outputs(job, upload, groups, eager_groups, archive_dir)
             claim_running_eager_batch_files(job, upload, groups, archive_dir)
             running = running_eager_batches(job)
@@ -5082,6 +5183,7 @@ def create_input_upload(req: CreateInputUploadRequest) -> dict[str, Any]:
                     "bytes": item.bytes,
                     "sha256": item.sha256,
                     "target_path": target_path,
+                    "input_upload_id": upload_id,
                     "upload_id": tusd_upload_id_for_target_path(target_path),
                     "upload_url": None,
                 }
