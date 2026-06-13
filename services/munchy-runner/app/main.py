@@ -1563,6 +1563,7 @@ def save_job(job: dict[str, Any]) -> dict[str, Any]:
                 "local_work_removed_sample",
                 "riverhog_cancel_failed_at",
                 "riverhog_cancel_error",
+                "riverhog_handoff_metrics",
                 "terminal_state_compacted_at",
                 "debug_bundle_dir",
                 "debug_bundle_created_at",
@@ -3606,6 +3607,25 @@ def complete_riverhog_session(
     return payload
 
 
+def compact_riverhog_progress_metrics(progress: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(progress, dict):
+        return {}
+    keys = (
+        "primary_files_uploaded",
+        "primary_files_total",
+        "artifact_files_uploaded",
+        "artifact_files_known",
+        "artifact_files_registered",
+        "artifact_files_deleted",
+        "uploaded_bytes",
+        "bytes_total",
+        "percent_bytes",
+        "percent_files",
+        "state",
+    )
+    return {key: progress[key] for key in keys if key in progress}
+
+
 def wait_for_riverhog_finalized(
     job: dict[str, Any],
     api: ApiClient,
@@ -3653,20 +3673,67 @@ def upload_to_riverhog(job: dict[str, Any], archive_dir: Path) -> dict[str, Any]
         if not RIVERHOG_UPLOAD_ENABLED:
             raise RuntimeError("riverhog upload requested, but runner Riverhog upload is disabled")
         api = ApiClient()
+        metrics: dict[str, Any] = {
+            "started_at": now_iso(),
+            "wait": wait,
+        }
+        job["riverhog_handoff_metrics"] = metrics
+        save_job(job)
         try:
-            upload_riverhog_artifacts(job, archive_dir, final=True)
+            metrics["final_sweep_started_at"] = now_iso()
+            metrics["final_sweep_before"] = compact_riverhog_progress_metrics(
+                riverhog_upload_progress_for_job(job)
+            )
+            final_sweep = upload_riverhog_artifacts(job, archive_dir, final=True)
+            metrics["final_sweep_finished_at"] = now_iso()
+            metrics["final_sweep_elapsed_seconds"] = final_sweep["elapsed_seconds"]
+            metrics["final_sweep_processed_files"] = final_sweep["processed_files"]
+            metrics["final_sweep_uploaded_files"] = final_sweep["uploaded_files"]
+            metrics["final_sweep_uploaded_bytes"] = final_sweep["uploaded_bytes"]
+            metrics["final_sweep_after"] = compact_riverhog_progress_metrics(
+                riverhog_upload_progress_for_job(job)
+            )
+            save_job(job)
             if not all_riverhog_session_files_uploaded(job):
                 raise RuntimeError("riverhog upload did not upload every registered file")
+            complete_started = time.monotonic()
+            metrics["session_complete_started_at"] = now_iso()
+            save_job(job)
             payload = complete_riverhog_session(job, api, archive_dir)
+            metrics["session_complete_finished_at"] = now_iso()
+            metrics["session_complete_elapsed_seconds"] = round(
+                max(0.0, time.monotonic() - complete_started),
+                6,
+            )
             collection_id = str(payload.get("collection_id") or "")
             if wait == "finalized" and collection_id:
+                finalize_started = time.monotonic()
+                metrics["wait_finalized_started_at"] = now_iso()
+                save_job(job)
                 payload = wait_for_riverhog_finalized(job, api, collection_id)
+                metrics["wait_finalized_finished_at"] = now_iso()
+                metrics["wait_finalized_elapsed_seconds"] = round(
+                    max(0.0, time.monotonic() - finalize_started),
+                    6,
+                )
+            metrics["finished_at"] = now_iso()
+            save_job(job)
             return {
                 "method": "session",
                 "wait": wait,
                 "collection_id": collection_id,
+                "metrics": dict(metrics),
                 "payload": compact_riverhog_payload(payload),
             }
+        except JobCancelled:
+            metrics["cancelled_at"] = now_iso()
+            save_job(job)
+            raise
+        except Exception as exc:
+            metrics["failed_at"] = now_iso()
+            metrics["error"] = str(exc)
+            save_job(job)
+            raise
         finally:
             api.close()
 
@@ -4553,6 +4620,7 @@ def compact_job_response(job: dict[str, Any]) -> dict[str, Any]:
         "upload_progress",
         "encode_progress",
         "riverhog_upload_progress",
+        "riverhog_handoff_metrics",
         "review_upload_result",
         "collection_preview_upload_result",
         "riverhog_upload_result",

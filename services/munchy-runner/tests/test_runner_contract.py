@@ -861,6 +861,19 @@ def test_compact_terminal_job_state_keeps_summaries_and_drops_heavy_payloads(
             "destination": "remote:path",
             "succeeded_at": "2026-01-01T00:01:00Z",
         },
+        "riverhog_handoff_metrics": {
+            "final_sweep_uploaded_files": 0,
+            "session_complete_elapsed_seconds": 0.25,
+        },
+        "riverhog_session_upload": {
+            "files": {
+                "camera/a.webm": {
+                    "path": "camera/a.webm",
+                    "bytes": 10,
+                    "uploaded_bytes": 10,
+                }
+            }
+        },
     }
 
     changed = runner.compact_terminal_job_state(job)
@@ -875,6 +888,7 @@ def test_compact_terminal_job_state_keeps_summaries_and_drops_heavy_payloads(
     assert "local_work_removed" not in job
     assert "stdout" not in job["collection_preview_upload_result"]
     assert len(job["collection_preview_upload_result"]["stdout_tail"]) == 4000
+    assert job["riverhog_handoff_metrics"]["session_complete_elapsed_seconds"] == 0.25
     assert job["terminal_state_compacted_at"]
     for key in (
         "eager_archive",
@@ -883,6 +897,7 @@ def test_compact_terminal_job_state_keeps_summaries_and_drops_heavy_payloads(
         "gpu_results",
         "gpu_statuses",
         "group_results",
+        "riverhog_session_upload",
     ):
         assert key not in job
 
@@ -1484,6 +1499,17 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
     progress = runner.riverhog_upload_progress_for_job(job)
     assert progress["files_uploaded"] == 2
     assert progress["bytes_total"] == 9
+    metrics = job["riverhog_handoff_metrics"]
+    assert metrics["wait"] == "staged"
+    assert metrics["final_sweep_processed_files"] == 2
+    assert metrics["final_sweep_uploaded_files"] == 2
+    assert metrics["final_sweep_uploaded_bytes"] == 9
+    assert metrics["final_sweep_before"] == {}
+    assert metrics["final_sweep_after"]["artifact_files_uploaded"] == 2
+    assert metrics["session_complete_elapsed_seconds"] >= 0
+    assert metrics["finished_at"]
+    assert result["metrics"]["final_sweep_uploaded_files"] == 2
+    assert result["metrics"]["session_complete_elapsed_seconds"] >= 0
 
 
 def test_expected_riverhog_primary_files_total_counts_archive_outputs(
