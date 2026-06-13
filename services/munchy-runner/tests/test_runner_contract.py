@@ -1794,6 +1794,68 @@ def test_save_job_preserves_newer_riverhog_upload_state(
     }
 
 
+def test_save_job_compacts_gpu_results_before_persisting(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "running",
+            "phase": "gpu-eager:pipeline=1/3",
+            "eager_archive": {
+                "files": {},
+                "batches": {
+                    "batch-1": {
+                        "state": "succeeded",
+                        "gpu_result": {
+                            "job_id": "gpu-job-1",
+                            "state": "succeeded",
+                            "profile": "camera-archive",
+                            "items": {
+                                "archive_video": [
+                                    {
+                                        "source": "/data/in/a.mp4",
+                                        "output": "/data/out/a.webm",
+                                        "command": ["ffmpeg", "-i", "a.mp4"],
+                                        "source_artifacts": {"audit": {"ok": True}},
+                                    }
+                                ]
+                            },
+                        },
+                    }
+                },
+                "gpu_results": {
+                    "batch-1": {
+                        "job_id": "gpu-job-1",
+                        "state": "succeeded",
+                        "items": {"archive_video": [{"command": ["ffmpeg"]}]},
+                    }
+                },
+            },
+        }
+    )
+
+    stored = runner.load_job("job-1")
+    batch_result = stored["eager_archive"]["batches"]["batch-1"]["gpu_result"]
+    stored_result = stored["eager_archive"]["gpu_results"]["batch-1"]
+    assert batch_result == {
+        "job_id": "gpu-job-1",
+        "state": "succeeded",
+        "profile": "camera-archive",
+        "item_counts": {"archive_video": 1},
+    }
+    assert stored_result == {
+        "job_id": "gpu-job-1",
+        "state": "succeeded",
+        "item_counts": {"archive_video": 1},
+    }
+
+
 def test_save_job_merges_newer_eager_archive_state(
     tmp_path: Path,
     monkeypatch,

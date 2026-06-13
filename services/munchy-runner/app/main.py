@@ -1557,6 +1557,57 @@ def merge_eager_archive_state(
     return merged
 
 
+GPU_RESULT_STORAGE_KEYS = {
+    "job_id",
+    "state",
+    "profile",
+    "tasks",
+    "archive_dir",
+    "review_dir",
+    "started_at",
+    "finished_at",
+    "updated_at",
+    "error",
+    "error_code",
+}
+
+
+def compact_gpu_result_for_storage(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    compact = {key: value[key] for key in GPU_RESULT_STORAGE_KEYS if key in value}
+    items = value.get("items")
+    if isinstance(items, dict):
+        item_counts: dict[str, int] = {}
+        for task_name, task_items in items.items():
+            if isinstance(task_items, list):
+                item_counts[str(task_name)] = len(task_items)
+            elif task_items is not None:
+                item_counts[str(task_name)] = 1
+        if item_counts:
+            compact["item_counts"] = item_counts
+    return compact
+
+
+def compact_eager_archive_for_storage(eager: Any) -> None:
+    if not isinstance(eager, dict):
+        return
+    batches = eager.get("batches")
+    if isinstance(batches, dict):
+        for batch in batches.values():
+            if isinstance(batch, dict) and isinstance(batch.get("gpu_result"), dict):
+                batch["gpu_result"] = compact_gpu_result_for_storage(batch["gpu_result"])
+    gpu_results = eager.get("gpu_results")
+    if isinstance(gpu_results, dict):
+        for batch_id, result in list(gpu_results.items()):
+            gpu_results[batch_id] = compact_gpu_result_for_storage(result)
+
+
+def compact_job_for_storage(payload: dict[str, Any]) -> dict[str, Any]:
+    compact_eager_archive_for_storage(payload.get("eager_archive"))
+    return payload
+
+
 def save_job(job: dict[str, Any]) -> dict[str, Any]:
     payload = dict(job)
     allow_clear_cancel = bool(payload.pop("_allow_clear_cancel", False))
@@ -1626,6 +1677,7 @@ def save_job(job: dict[str, Any]) -> dict[str, Any]:
             ):
                 if key in current and key not in payload:
                     payload[key] = current[key]
+        payload = compact_job_for_storage(payload)
         return write_state("job", job_id, payload)
 
 
