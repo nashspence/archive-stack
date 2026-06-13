@@ -779,6 +779,32 @@ def test_cleanup_terminal_job_records_empty_cleanup_completion(
     assert job["cleanup_removed_count"] == 0
 
 
+def test_cleanup_terminal_job_preserves_repeat_cleanup_summary(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    job = {
+        "job_id": "job-1",
+        "state": "cancelled",
+        "phase": "cancelled",
+        "cleanup_removed": [f"/gpu/jobs/job-1-{index}" for index in range(12)],
+        "cleanup_completed_at": "2026-01-01T00:00:00Z",
+    }
+    runner.compact_terminal_job_state(job)
+
+    removed = runner.cleanup_terminal_job(job)
+    runner.compact_terminal_job_state(job)
+
+    assert removed == []
+    assert job["cleanup_completed_at"] != "2026-01-01T00:00:00Z"
+    assert job["cleanup_removed_count"] == 12
+    assert len(job["cleanup_removed_sample"]) == 8
+    assert "cleanup_removed" not in job
+
+
 def test_compact_terminal_job_state_keeps_summaries_and_drops_heavy_payloads(
     tmp_path: Path,
     monkeypatch,

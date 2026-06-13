@@ -2343,6 +2343,31 @@ def compact_list_field(
     return changed
 
 
+def append_cleanup_removed(job: dict[str, Any], removed: list[str]) -> None:
+    if not removed:
+        if not job.get("cleanup_completed_at") and "cleanup_removed_count" not in job:
+            job["cleanup_removed"] = []
+        return
+
+    current = job.get("cleanup_removed")
+    if isinstance(current, list):
+        job["cleanup_removed"] = current + removed
+        return
+
+    count_key = "cleanup_removed_count"
+    sample_key = "cleanup_removed_sample"
+    if count_key not in job and sample_key not in job:
+        job["cleanup_removed"] = removed
+        return
+
+    previous_count = int(job.get(count_key) or 0)
+    sample = list(job.get(sample_key) or [])
+    if len(sample) < 8:
+        sample.extend(removed[: 8 - len(sample)])
+    job[count_key] = previous_count + len(removed)
+    job[sample_key] = sample
+
+
 def compact_terminal_job_state(job: dict[str, Any]) -> bool:
     if job.get("state") not in TERMINAL_JOB_STATES:
         return False
@@ -2398,7 +2423,7 @@ def cleanup_terminal_job(job: dict[str, Any]) -> list[str]:
             removed.append(f"input-upload:{upload_id}")
             job["input_upload_deleted_at"] = now_iso()
             job.pop("input_upload_progress", None)
-    job["cleanup_removed"] = removed
+    append_cleanup_removed(job, removed)
     job["cleanup_completed_at"] = now_iso()
     return removed
 
