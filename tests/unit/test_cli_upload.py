@@ -679,47 +679,6 @@ def test_create_or_resume_file_upload_keeps_retrying_transient_errors(
     assert payload["offset"] == 0
 
 
-def test_create_or_resume_collection_upload_retries_transient_errors(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    request = httpx.Request("POST", "https://riverhog.test/v1/collection-uploads")
-    response = httpx.Response(503, request=request, content=b"Service Unavailable")
-
-    class FakeApi:
-        calls = 0
-
-        def create_or_resume_collection_upload(
-            self,
-            slug: str,
-            files: list[riverhog_main.CollectionManifestEntry],
-            *,
-            ingest_source: str | None,
-            upload_timestamp: str | None,
-        ) -> dict[str, object]:
-            self.calls += 1
-            if self.calls <= 2:
-                raise httpx.HTTPStatusError(
-                    "service unavailable",
-                    request=request,
-                    response=response,
-                )
-            return {"collection_id": "2025/docs", "files": []}
-
-    fake_api = FakeApi()
-    monkeypatch.setattr(riverhog_main.time, "sleep", lambda seconds: None)
-
-    payload = riverhog_main._create_or_resume_collection_upload(
-        fake_api,  # type: ignore[arg-type]
-        "docs",
-        [],
-        ingest_source="/tmp/docs",
-        upload_timestamp="20250101T000000Z",
-    )
-
-    assert fake_api.calls == 3
-    assert payload["collection_id"] == "2025/docs"
-
-
 def test_wait_for_finalized_collection_waits_through_archiving(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

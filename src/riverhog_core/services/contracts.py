@@ -56,14 +56,6 @@ class FilesPayload(TypedDict):
 
 
 class CollectionService(Protocol):
-    def create_or_resume_upload(
-        self,
-        *,
-        upload_slug: str,
-        files: list[dict[str, object]],
-        ingest_source: str | None = None,
-        upload_timestamp: str | None = None,
-    ) -> JsonObject: ...
     def create_or_resume_upload_session(
         self,
         *,
@@ -80,17 +72,6 @@ class CollectionService(Protocol):
     def cancel_upload_session(self, collection_id: str) -> JsonObject: ...
     def get_upload(self, collection_id: str) -> JsonObject: ...
     def create_or_resume_file_upload(self, collection_id: str, path: str) -> JsonObject: ...
-    def append_upload_chunk(
-        self,
-        collection_id: str,
-        path: str,
-        *,
-        offset: int,
-        checksum: str,
-        content: bytes,
-    ) -> JsonObject: ...
-    def get_file_upload(self, collection_id: str, path: str) -> JsonObject: ...
-    def cancel_file_upload(self, collection_id: str, path: str) -> None: ...
     def expire_stale_uploads(self) -> None: ...
     def get(self, collection_id: str) -> CollectionSummary: ...
     def list(

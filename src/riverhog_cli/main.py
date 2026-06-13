@@ -285,25 +285,6 @@ def _retry_transient_upload_operation(
             delay = min(delay * 2, UPLOAD_RESUME_RETRY_MAX_DELAY_SECONDS)
 
 
-def _create_or_resume_collection_upload(
-    api: ApiClient,
-    slug: str,
-    manifest: list[CollectionManifestEntry],
-    *,
-    ingest_source: str | None,
-    upload_timestamp: str | None,
-) -> dict[str, Any]:
-    return _retry_transient_upload_operation(
-        "Upload session create/resume",
-        lambda: api.create_or_resume_collection_upload(
-            slug,
-            manifest,
-            ingest_source=ingest_source,
-            upload_timestamp=upload_timestamp,
-        ),
-    )
-
-
 def _create_or_resume_collection_upload_session(
     api: ApiClient,
     slug: str,
@@ -897,13 +878,6 @@ def upload_cmd(
         ),
     ] = _default_upload_wait_mode(),
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-    session_mode: Annotated[
-        bool,
-        typer.Option(
-            "--session",
-            help="Register and upload files incrementally before explicitly completing",
-        ),
-    ] = False,
 ) -> None:
     wait_mode = _normalize_upload_wait_mode(wait)
     resolved_root = root.expanduser().resolve()
@@ -911,97 +885,17 @@ def upload_cmd(
         raise typer.BadParameter("collection source must be a directory")
 
     api = client()
-    if session_mode:
-        payload = _upload_collection_via_session(
-            api,
-            slug,
-            resolved_root,
-            ingest_source=str(resolved_root),
-            upload_timestamp=upload_timestamp,
-            wait_mode=wait_mode,
-        )
-        emit(payload if json_mode else format_collection_upload(payload), json_mode=json_mode)
-        if payload.get("state") == "failed":
-            raise typer.Exit(1)
-        return
-
-    _log_upload(f"Hashing collection manifest from {resolved_root}")
-    manifest_started_at = time.monotonic()
-    manifest = _local_collection_manifest(resolved_root)
-    manifest_bytes = sum(item["bytes"] for item in manifest)
-    _log_upload(
-        "Manifest hashed: "
-        f"{len(manifest)} files, {_format_bytes(manifest_bytes)} "
-        f"in {time.monotonic() - manifest_started_at:.1f}s"
-    )
-    payload = _create_or_resume_collection_upload(
+    payload = _upload_collection_via_session(
         api,
         slug,
-        manifest,
+        resolved_root,
         ingest_source=str(resolved_root),
         upload_timestamp=upload_timestamp,
+        wait_mode=wait_mode,
     )
-    collection_id = str(payload["collection_id"])
-    upload_files = payload["files"]
-    uploaded_bytes = sum(
-        min(int(file_payload.get("uploaded_bytes", 0)), int(file_payload["bytes"]))
-        for file_payload in upload_files
-    )
-    uploaded_files = sum(
-        1 for file_payload in upload_files if file_payload["upload_state"] == "uploaded"
-    )
-    _log_upload(
-        f"Upload session {collection_id}: "
-        f"{uploaded_files}/{len(upload_files)} files already uploaded, "
-        f"{_format_bytes(uploaded_bytes)} / {_format_bytes(manifest_bytes)}"
-    )
-    last_progress_log_at = time.monotonic()
-    progress_lock = threading.Lock()
-
-    def note_uploaded(delta: int) -> None:
-        nonlocal uploaded_bytes, last_progress_log_at
-        with progress_lock:
-            uploaded_bytes += delta
-            now = time.monotonic()
-            if now - last_progress_log_at < UPLOAD_PROGRESS_INTERVAL_SECONDS:
-                return
-            percent = (uploaded_bytes / manifest_bytes * 100.0) if manifest_bytes else 100.0
-            _log_upload(
-                "Upload progress: "
-                f"{_format_bytes(uploaded_bytes)} / {_format_bytes(manifest_bytes)} "
-                f"({percent:.1f}%)"
-            )
-            last_progress_log_at = now
-
-    _upload_collection_files(
-        api,
-        collection_id,
-        resolved_root,
-        upload_files,
-        progress=note_uploaded,
-        file_concurrency=_upload_file_concurrency(),
-    )
-
-    if wait_mode == "finalized":
-        final_payload, completion_state = _wait_for_finalized_collection(
-            api,
-            collection_id,
-            manifest,
-        )
-    else:
-        _log_upload(
-            "All files uploaded; collection finalization will continue in the background"
-        )
-        final_payload = _staged_collection_upload_payload(api, collection_id, manifest)
-        completion_state = "staged"
-    emit(
-        final_payload if json_mode else format_collection_upload(final_payload),
-        json_mode=json_mode,
-    )
-    if completion_state == "failed":
+    emit(payload if json_mode else format_collection_upload(payload), json_mode=json_mode)
+    if payload.get("state") == "failed":
         raise typer.Exit(1)
-    if completion_state == "timeout":
-        raise typer.Exit(124)
 
 
 @app.command("upload-cancel")

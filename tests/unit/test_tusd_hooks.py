@@ -137,3 +137,27 @@ def test_precreate_hook_rejects_committed_collection_target(monkeypatch) -> None
     payload = response.json()
     assert payload["RejectUpload"] is True
     assert payload["HTTPResponse"]["StatusCode"] == 400
+
+
+def test_tusd_data_plane_authorize_accepts_valid_api_token(monkeypatch) -> None:
+    monkeypatch.setenv("RIVERHOG_API_TOKEN", "api-token")
+    client = _client()
+
+    response = client.get(
+        "/internal/tusd/authorize",
+        headers={"Authorization": "Bearer api-token"},
+    )
+
+    assert response.status_code == 204
+
+
+def test_tusd_data_plane_authorize_rejects_invalid_api_token(monkeypatch) -> None:
+    monkeypatch.setenv("RIVERHOG_API_TOKEN", "api-token")
+    client = _client()
+
+    response = client.get(
+        "/internal/tusd/authorize",
+        headers={"Authorization": "Bearer wrong-token"},
+    )
+
+    assert response.status_code == 401

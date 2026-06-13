@@ -7,26 +7,6 @@ info:
 servers:
   - url: /v1
 paths:
-  /collection-uploads:
-    post:
-      summary: Create or resume one collection upload session
-      description: Creates or resumes a collection upload session from a human-readable slug and expected logical file set. Riverhog normalizes the slug, mints the canonical collection id with either the server UTC upload timestamp or an optional caller-provided UTC timestamp, and resumes an existing non-finalized session when the normalized slug and manifest match.
-      operationId: createOrResumeCollectionUpload
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/CollectionUploadRequest"
-      responses:
-        "200":
-          description: Collection upload session state
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/CollectionUploadSession"
-        default:
-          $ref: "#/components/responses/Error"
   /collection-upload-sessions:
     post:
       summary: Create or resume one incremental collection upload session
@@ -169,143 +149,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CollectionFileUploadSession"
-        default:
-          $ref: "#/components/responses/Error"
-    patch:
-      summary: Append one collection-file upload chunk
-      description: Streams bytes into the resumable upload resource. When the final required chunk completes the last outstanding file and the full-file hashes verify, Riverhog moves the upload into `archiving`; the collection is not finalized or admitted until its whole-collection Glacier archive package uploads, verifies, promotes to hot storage, and commits.
-      operationId: appendCollectionFileUploadChunk
-      parameters:
-        - in: path
-          name: collection_id
-          required: true
-          description: Server-minted canonical collection id returned by collection upload creation. Slash-bearing ids occupy multiple path segments.
-          schema: { type: string }
-        - in: path
-          name: path
-          required: true
-          description: Relative logical file path within the collection.
-          schema: { type: string }
-        - in: header
-          name: Tus-Resumable
-          required: true
-          schema: { type: string, enum: ["1.0.0"] }
-        - in: header
-          name: Upload-Offset
-          required: true
-          schema: { type: integer, minimum: 0 }
-        - in: header
-          name: Upload-Checksum
-          required: true
-          schema: { type: string }
-      requestBody:
-        required: true
-        content:
-          application/offset+octet-stream:
-            schema:
-              type: string
-              format: binary
-      responses:
-        "204":
-          description: Chunk accepted
-          headers:
-            Tus-Resumable:
-              schema: { type: string }
-            Cache-Control:
-              schema: { type: string }
-            Upload-Offset:
-              schema: { type: integer, minimum: 0 }
-            Upload-Length:
-              schema: { type: integer, minimum: 0 }
-            Upload-Expires:
-              schema: { type: string, format: date-time }
-        default:
-          $ref: "#/components/responses/Error"
-    head:
-      summary: Read one collection-file upload resource state
-      description: Returns the current tus-style offset and metadata for one existing Riverhog-managed collection-file upload resource. Returns `not_found` once the upload resource no longer exists.
-      operationId: headCollectionFileUpload
-      parameters:
-        - in: path
-          name: collection_id
-          required: true
-          description: Server-minted canonical collection id returned by collection upload creation. Slash-bearing ids occupy multiple path segments.
-          schema: { type: string }
-        - in: path
-          name: path
-          required: true
-          description: Relative logical file path within the collection.
-          schema: { type: string }
-      responses:
-        "204":
-          description: Current collection-file upload resource state
-          headers:
-            Tus-Resumable:
-              schema: { type: string }
-            Cache-Control:
-              schema: { type: string }
-            Upload-Offset:
-              schema: { type: integer, minimum: 0 }
-            Upload-Length:
-              schema: { type: integer, minimum: 0 }
-            Upload-Expires:
-              schema: { type: string, format: date-time }
-            Location:
-              schema: { type: string }
-        default:
-          $ref: "#/components/responses/Error"
-    delete:
-      summary: Cancel one collection-file upload resource
-      description: Cancels one existing Riverhog-managed collection-file upload resource, deletes any incomplete server-side bytes for that file, and resets that file back to `pending`.
-      operationId: deleteCollectionFileUpload
-      parameters:
-        - in: path
-          name: collection_id
-          required: true
-          description: Server-minted canonical collection id returned by collection upload creation. Slash-bearing ids occupy multiple path segments.
-          schema: { type: string }
-        - in: path
-          name: path
-          required: true
-          description: Relative logical file path within the collection.
-          schema: { type: string }
-      responses:
-        "204":
-          description: Upload resource canceled
-          headers:
-            Tus-Resumable:
-              schema: { type: string }
-            Cache-Control:
-              schema: { type: string }
-        default:
-          $ref: "#/components/responses/Error"
-    options:
-      summary: Describe collection-file upload resource capabilities
-      description: Returns the tus-compatible capability headers Riverhog supports for collection-file upload resources.
-      operationId: optionsCollectionFileUpload
-      parameters:
-        - in: path
-          name: collection_id
-          required: true
-          description: Server-minted canonical collection id returned by collection upload creation. Slash-bearing ids occupy multiple path segments.
-          schema: { type: string }
-        - in: path
-          name: path
-          required: true
-          description: Relative logical file path within the collection.
-          schema: { type: string }
-      responses:
-        "204":
-          description: Upload resource capabilities
-          headers:
-            Tus-Resumable:
-              schema: { type: string }
-            Tus-Version:
-              schema: { type: string }
-            Tus-Extension:
-              schema: { type: string }
-            Tus-Checksum-Algorithm:
-              schema: { type: string }
         default:
           $ref: "#/components/responses/Error"
   /search:
@@ -2091,28 +1934,6 @@ components:
         sha256:
           type: string
           description: Logical-file SHA-256 digest for final verification.
-    CollectionUploadRequest:
-      type: object
-      required: [slug, files]
-      properties:
-        slug:
-          type: string
-          description: Human-readable collection slug. Riverhog normalizes this and mints the canonical collection id.
-        upload_timestamp:
-          oneOf:
-            - type: string
-            - type: "null"
-          description: Optional UTC basic timestamp in `YYYYMMDDTHHMMSSZ` form to use in the canonical collection id for migration of older archival sets. Slug remains required.
-        ingest_source:
-          oneOf:
-            - type: string
-            - type: "null"
-          description: Descriptive source hint from the client. Never part of collection identity.
-        files:
-          type: array
-          minItems: 1
-          items:
-            $ref: "#/components/schemas/CollectionUploadFile"
     CreateOrResumeCollectionUploadSessionRequest:
       type: object
       required: [slug]

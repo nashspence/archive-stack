@@ -4,8 +4,9 @@ import base64
 import binascii
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
+from riverhog_api.auth import BearerCredentials, require_api_auth
 from riverhog_core.runtime_config import load_runtime_config
 from riverhog_core.tusd_ids import tusd_upload_id_for_target_path
 
@@ -69,3 +70,9 @@ async def handle_tusd_hook(request: Request) -> JSONResponse:
     return _json_response(
         {"ChangeFileInfo": {"ID": tusd_upload_id_for_target_path(raw_target_path)}}
     )
+
+
+@router.get("/internal/tusd/authorize", status_code=204)
+def authorize_tusd_data_plane(credentials: BearerCredentials) -> Response:
+    require_api_auth(credentials)
+    return Response(status_code=204)

@@ -77,7 +77,10 @@ class _RiverhogHttpxLogFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         message = record.getMessage()
         if (
-            message.startswith("HTTP Request: PATCH http://riverhog-tusd:1080/files/")
+            (
+                message.startswith("HTTP Request: PATCH http://riverhog-tusd:1080/files/")
+                or message.startswith("HTTP Request: DELETE http://riverhog-tusd:1080/files/")
+            )
             and '"HTTP/1.1 204 No Content"' in message
         ):
             return False

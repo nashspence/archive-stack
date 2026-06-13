@@ -11,18 +11,12 @@ from riverhog_api.schemas.collections import (
     CollectionFileUploadSessionOut,
     CollectionSummaryOut,
     CollectionUploadSessionOut,
-    CreateOrResumeCollectionUploadRequest,
     CreateOrResumeCollectionUploadSessionRequest,
     ListCollectionsResponse,
     RegisterCollectionUploadSessionFileRequest,
 )
-from riverhog_api.tus import (
-    tus_delete_headers,
-    tus_options_headers,
-    tus_upload_headers,
-    validate_tus_chunk_request,
-)
-from riverhog_api.urls import public_request_url
+from riverhog_api.tus import tus_upload_headers
+from riverhog_api.urls import public_tusd_upload_url
 
 router = APIRouter(tags=["collections"])
 
@@ -62,20 +56,6 @@ def list_collections(
         protection_state=service_protection_state,
     )
     return ListCollectionsResponse.model_validate(map_collection_list_page(summary))
-
-
-@router.post("/collection-uploads", response_model=CollectionUploadSessionOut)
-def create_or_resume_collection_upload(
-    request: CreateOrResumeCollectionUploadRequest,
-    container: ContainerDep,
-) -> CollectionUploadSessionOut:
-    payload = container.collections.create_or_resume_upload(
-        upload_slug=request.slug,
-        files=[item.model_dump() for item in request.files],
-        ingest_source=request.ingest_source,
-        upload_timestamp=request.upload_timestamp,
-    )
-    return CollectionUploadSessionOut.model_validate(payload)
 
 
 @router.post("/collection-upload-sessions", response_model=CollectionUploadSessionOut)
@@ -152,57 +132,9 @@ def create_or_resume_collection_file_upload(
     container: ContainerDep,
 ) -> CollectionFileUploadSessionOut:
     payload = container.collections.create_or_resume_file_upload(collection_id, path)
-    payload["upload_url"] = public_request_url(request)
+    payload["upload_url"] = public_tusd_upload_url(str(payload["upload_url"]))
     response.headers.update(tus_upload_headers(payload, request=request))
     return CollectionFileUploadSessionOut.model_validate(payload)
-
-
-@router.patch("/collection-uploads/{collection_id:path}/files/{path:path}/upload", status_code=204)
-async def append_collection_file_upload_chunk(
-    collection_id: str,
-    path: str,
-    request: Request,
-    container: ContainerDep,
-) -> Response:
-    offset, checksum = validate_tus_chunk_request(request)
-    payload = container.collections.append_upload_chunk(
-        collection_id,
-        path,
-        offset=offset,
-        checksum=checksum,
-        content=await request.body(),
-    )
-    headers = tus_upload_headers(payload, request=request)
-    return Response(status_code=204, headers=headers)
-
-
-@router.head("/collection-uploads/{collection_id:path}/files/{path:path}/upload", status_code=204)
-def head_collection_file_upload(
-    collection_id: str,
-    path: str,
-    request: Request,
-    container: ContainerDep,
-) -> Response:
-    payload = container.collections.get_file_upload(collection_id, path)
-    return Response(status_code=204, headers=tus_upload_headers(payload, request=request))
-
-
-@router.delete("/collection-uploads/{collection_id:path}/files/{path:path}/upload", status_code=204)
-def delete_collection_file_upload(
-    collection_id: str,
-    path: str,
-    container: ContainerDep,
-) -> Response:
-    container.collections.cancel_file_upload(collection_id, path)
-    return Response(status_code=204, headers=tus_delete_headers())
-
-
-@router.options(
-    "/collection-uploads/{collection_id:path}/files/{path:path}/upload",
-    status_code=204,
-)
-def options_collection_file_upload() -> Response:
-    return Response(status_code=204, headers=tus_options_headers())
 
 
 @router.get("/collections/{collection_id:path}", response_model=CollectionSummaryOut)
