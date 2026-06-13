@@ -77,7 +77,6 @@ from riverhog_core.webhooks import (
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _LOG = logging.getLogger(__name__)
-_UPLOAD_ACTIVITY_TOUCH_INTERVAL = timedelta(minutes=5)
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,7 +342,7 @@ class SqlAlchemyCollectionService:
                         "collection upload session file already exists with different metadata: "
                         f"{normalized_file['path']}"
                     )
-                _touch_collection_upload_if_stale(upload)
+                _touch_collection_upload(upload)
                 return _collection_upload_file_registration_payload(upload, existing)
 
             _ensure_active_upload_limit_allows(
@@ -370,7 +369,7 @@ class SqlAlchemyCollectionService:
                 tus_url=None,
             )
             session.add(file_record)
-            _touch_collection_upload_if_stale(upload)
+            _touch_collection_upload(upload)
             return _collection_upload_file_registration_payload(upload, file_record)
 
     def complete_upload_session(self, collection_id: str) -> dict[str, object]:
@@ -574,7 +573,7 @@ class SqlAlchemyCollectionService:
                 ttl=self._upload_ttl,
             )
             _apply_upload_lifecycle_state(file_record, updated)
-            _touch_collection_upload_if_stale(upload)
+            _touch_collection_upload(upload)
 
             return _collection_file_upload_payload(file_record, tus_url=tus_url)
 
@@ -642,7 +641,7 @@ class SqlAlchemyCollectionService:
             else:
                 file_record.upload_expires_at = upload_expiry_timestamp(self._upload_ttl)
 
-            _touch_collection_upload_if_stale(upload)
+            _touch_collection_upload(upload)
             if upload.state != "open" and _collection_upload_is_complete_for_session(
                 session, normalized_collection_id
             ):
@@ -1526,16 +1525,6 @@ def _touch_collection_upload(upload: CollectionUploadRecord) -> None:
     if upload.opened_at is None:
         upload.opened_at = now
     upload.last_activity_at = now
-
-
-def _touch_collection_upload_if_stale(
-    upload: CollectionUploadRecord,
-    *,
-    interval: timedelta = _UPLOAD_ACTIVITY_TOUCH_INTERVAL,
-) -> None:
-    activity_at = _parse_utc_timestamp(upload.last_activity_at or upload.opened_at)
-    if activity_at is None or _utc_now_dt() >= activity_at + interval:
-        _touch_collection_upload(upload)
 
 
 def _collection_upload_session_is_idle_expired(
