@@ -3126,6 +3126,7 @@ def remove_uploaded_riverhog_artifact(
         record.get("path"),
         format_log_bytes(record.get("bytes")),
     )
+    save_job(job)
 
 
 def riverhog_upload_artifact(
