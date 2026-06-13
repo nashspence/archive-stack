@@ -27,7 +27,7 @@ from riverhog_core.collection_archives import (
     CollectionArchiveFile,
     build_collection_archive_package,
 )
-from riverhog_core.domain.errors import Conflict
+from riverhog_core.domain.errors import Conflict, NotFound
 from riverhog_core.finalized_image_coverage import (
     read_finalized_image_collection_artifacts,
     read_finalized_image_coverage_parts,
@@ -613,7 +613,9 @@ def test_incremental_collection_upload_session_cancel_cleans_staged_files(
     assert upload_store.deleted_targets == [
         f"/.riverhog/uploads/collections/{collection_id}/partial.txt"
     ]
-    with pytest.raises(Conflict, match="not accepting|not open|canceled"):
+    with pytest.raises(NotFound, match="not found"):
+        service.get_upload(collection_id)
+    with pytest.raises(NotFound, match="not found"):
         service.create_or_resume_file_upload(collection_id, "partial.txt")
 
 

@@ -468,7 +468,7 @@ class SqlAlchemyCollectionService:
             if upload is None:
                 raise NotFound(f"collection upload session not found: {normalized_collection_id}")
             if upload.state in {"canceled", "expired"}:
-                return _collection_upload_payload(
+                payload = _collection_upload_payload(
                     collection_id=upload.collection_id,
                     ingest_source=upload.ingest_source,
                     files=upload.files,
@@ -476,6 +476,8 @@ class SqlAlchemyCollectionService:
                     collection=None,
                     upload=upload,
                 )
+                session.delete(upload)
+                return payload
             if upload.state != "open":
                 raise Conflict(
                     "collection upload session cannot be canceled after completion handoff"
@@ -487,7 +489,7 @@ class SqlAlchemyCollectionService:
             upload.state = "canceled"
             upload.closed_at = now
             upload.last_activity_at = now
-            return _collection_upload_payload(
+            payload = _collection_upload_payload(
                 collection_id=upload.collection_id,
                 ingest_source=upload.ingest_source,
                 files=upload.files,
@@ -495,6 +497,8 @@ class SqlAlchemyCollectionService:
                 collection=None,
                 upload=upload,
             )
+            session.delete(upload)
+            return payload
 
     def get_upload(self, collection_id: str) -> dict[str, object]:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
