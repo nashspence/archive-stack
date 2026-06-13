@@ -8,6 +8,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MAKEFILE = REPO_ROOT / "Makefile"
+COMPOSE_FILE = REPO_ROOT / "compose.yml"
 
 
 def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
@@ -93,6 +94,13 @@ def _read_log_lines(log_path: Path) -> list[str]:
     if not log_path.exists():
         return []
     return log_path.read_text().splitlines()
+
+
+def test_checked_in_compose_uses_supported_tusd_filesystem_storage_flag() -> None:
+    compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
+
+    assert "- \"-upload-dir\"" in compose_text
+    assert "- \"-dir\"" not in compose_text
 
 
 @pytest.mark.parametrize(

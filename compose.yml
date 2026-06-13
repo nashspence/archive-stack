@@ -14,7 +14,7 @@ services:
       - "1080"
       - "-base-path"
       - "/files/"
-      - "-dir"
+      - "-upload-dir"
       - "/uploads"
       - "-hooks-http"
       - "http://app:8000/internal/tusd/hooks"
