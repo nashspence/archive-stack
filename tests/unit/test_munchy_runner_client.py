@@ -65,6 +65,7 @@ def test_format_riverhog_upload_progress_uses_expected_file_total() -> None:
             "primary_files_encoded": 4,
             "artifact_files_uploaded": 6,
             "artifact_files_known": 7,
+            "artifact_files_registered": 6,
             "uploaded_bytes": 1_614_000,
             "bytes_total": 2_130_000,
             "percent_primary_files": 15.0,
@@ -77,7 +78,7 @@ def test_format_riverhog_upload_progress_uses_expected_file_total() -> None:
     assert "15.00%" in line
     assert "4 encoded" in line
     assert "6/7 artifacts" in line
-    assert "1.54 MiB / 2.03 MiB" in line
+    assert "1.54 MiB uploaded" in line
     assert "72." not in line
 
 

@@ -370,6 +370,7 @@ def format_riverhog_upload_progress(progress: dict[str, Any]) -> str:
     primary_encoded = int(progress.get("primary_files_encoded") or 0)
     artifact_uploaded = int(progress.get("artifact_files_uploaded") or 0)
     artifact_known = int(progress.get("artifact_files_known") or 0)
+    artifact_registered = int(progress.get("artifact_files_registered") or 0)
     uploaded_bytes = int(progress.get("uploaded_bytes") or 0)
     bytes_total = int(progress.get("bytes_total") or 0)
     pct = progress_percent(progress, percent_key="percent_primary_files")
@@ -390,7 +391,7 @@ def format_riverhog_upload_progress(progress: dict[str, Any]) -> str:
         ]
     if artifact_known:
         parts.append(f"{artifact_uploaded}/{artifact_known} artifacts")
-    if bytes_total:
+    if bytes_total and artifact_registered >= artifact_known:
         parts.append(format_progress_bytes(uploaded_bytes, bytes_total))
     elif uploaded_bytes:
         parts.append(f"{format_bytes(uploaded_bytes)} uploaded")
