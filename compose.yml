@@ -14,12 +14,15 @@ services:
       - "1080"
       - "-base-path"
       - "/files/"
+      - "-behind-proxy"
       - "-upload-dir"
       - "/uploads"
       - "-hooks-http"
       - "http://app:8000/internal/tusd/hooks"
       - "-hooks-http-forward-headers"
       - "X-Riverhog-Tusd-Hook-Secret"
+      - "-hooks-enabled-events"
+      - "pre-create"
     volumes:
       - upload-staging:/uploads
 
@@ -126,6 +129,7 @@ services:
       RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT: ${RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT:-500GB}
       RIVERHOG_UPLOAD_STAGING_ROOT: ${RIVERHOG_UPLOAD_STAGING_ROOT:-/uploads}
       RIVERHOG_TUSD_BASE_URL: ${RIVERHOG_TUSD_BASE_URL}
+      RIVERHOG_TUSD_PUBLIC_BASE_URL: ${RIVERHOG_TUSD_PUBLIC_BASE_URL:-}
       RIVERHOG_TUSD_HOOK_SECRET: ${RIVERHOG_TUSD_HOOK_SECRET}
       RIVERHOG_WEBDAV_ENABLED: ${RIVERHOG_WEBDAV_ENABLED}
       RIVERHOG_WEBDAV_ADDR: ${RIVERHOG_WEBDAV_ADDR}

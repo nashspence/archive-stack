@@ -43,9 +43,7 @@ class CollectionFileRecord(Base):
     hot_multipart_uploaded_parts: Mapped[int | None] = mapped_column(
         Integer, default=0, nullable=True
     )
-    hot_multipart_total_parts: Mapped[int | None] = mapped_column(
-        Integer, default=0, nullable=True
-    )
+    hot_multipart_total_parts: Mapped[int | None] = mapped_column(Integer, default=0, nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -143,9 +141,7 @@ class PlannedCandidateRecord(Base):
     target_bytes: Mapped[int] = mapped_column(BigInteger)
     min_fill_bytes: Mapped[int] = mapped_column(BigInteger)
     ready_notification_sent_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    ready_notification_next_attempt_at: Mapped[str | None] = mapped_column(
-        String, nullable=True
-    )
+    ready_notification_next_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
     ready_notification_failure: Mapped[str | None] = mapped_column(String, nullable=True)
     ready_notification_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
@@ -495,9 +491,7 @@ class CollectionUploadRecord(Base):
     archive_next_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_last_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_failure: Mapped[str | None] = mapped_column(String, nullable=True)
-    archive_last_failure_notification_at: Mapped[str | None] = mapped_column(
-        String, nullable=True
-    )
+    archive_last_failure_notification_at: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_storage_prefix: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_object_path: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_multipart_upload_id: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -546,9 +540,7 @@ class CollectionUploadFileRecord(Base):
     hot_multipart_uploaded_parts: Mapped[int | None] = mapped_column(
         Integer, default=0, nullable=True
     )
-    hot_multipart_total_parts: Mapped[int | None] = mapped_column(
-        Integer, default=0, nullable=True
-    )
+    hot_multipart_total_parts: Mapped[int | None] = mapped_column(Integer, default=0, nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -556,6 +548,7 @@ class CollectionUploadFileRecord(Base):
             ["collection_uploads.collection_id"],
             ondelete="CASCADE",
         ),
+        Index("idx_collection_upload_files_collection_order", "collection_id", "file_order"),
     )
 
     upload: Mapped[CollectionUploadRecord] = relationship(back_populates="files")

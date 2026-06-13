@@ -132,6 +132,7 @@ class RuntimeConfig:
     s3_force_path_style: bool
     tusd_base_url: str
     tusd_hook_secret: str
+    tusd_public_base_url: str | None = None
     upload_staging_root: Path = field(default_factory=lambda: Path(".riverhog/uploads"))
     tusd_append_timeout_seconds: float = 60.0
     database_url: str = ""
@@ -343,9 +344,7 @@ def load_runtime_config() -> RuntimeConfig:
         os.getenv("RIVERHOG_GLACIER_UPLOAD_SWEEP_INTERVAL", "30s")
     )
     operator_webhook_url = os.getenv("RIVERHOG_OPERATOR_WEBHOOK_URL", "").strip() or None
-    operator_webhook_timeout = _parse_duration(
-        os.getenv("RIVERHOG_OPERATOR_WEBHOOK_TIMEOUT", "5s")
-    )
+    operator_webhook_timeout = _parse_duration(os.getenv("RIVERHOG_OPERATOR_WEBHOOK_TIMEOUT", "5s"))
     operator_webhook_retry_delay = _parse_duration(
         os.getenv("RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY", "60s")
     )
@@ -614,6 +613,9 @@ def load_runtime_config() -> RuntimeConfig:
         upload_staging_root=upload_staging_root,
         tusd_base_url=os.getenv("RIVERHOG_TUSD_BASE_URL", "http://127.0.0.1:1080/files").rstrip(
             "/"
+        ),
+        tusd_public_base_url=(
+            os.getenv("RIVERHOG_TUSD_PUBLIC_BASE_URL", "").strip().rstrip("/") or None
         ),
         tusd_hook_secret=os.getenv("RIVERHOG_TUSD_HOOK_SECRET", "dev-tusd-hook-secret"),
         tusd_append_timeout_seconds=_parse_float(

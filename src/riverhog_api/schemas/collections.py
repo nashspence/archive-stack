@@ -93,6 +93,13 @@ class CollectionUploadFileOut(RiverhogModel):
     upload_state_expires_at: str | None
 
 
+class CollectionUploadSessionFileRegistrationOut(RiverhogModel):
+    collection_id: str
+    ingest_source: str | None
+    state: Literal["open", "uploading"]
+    file: CollectionUploadFileOut
+
+
 class CollectionUploadSessionOut(RiverhogModel):
     collection_id: str
     ingest_source: str | None

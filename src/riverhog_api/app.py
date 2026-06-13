@@ -35,12 +35,10 @@ _LOG = logging.getLogger(__name__)
 
 class _RiverhogAccessLogFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        method: str | None = None
         path: str | None = None
         status_code: int | None = None
         args = record.args
         if isinstance(args, tuple) and len(args) >= 5:
-            method = str(args[1])
             path = str(args[2]).split("?", 1)[0]
             try:
                 status_code = int(str(args[4]))
@@ -52,8 +50,6 @@ class _RiverhogAccessLogFilter(logging.Filter):
                 path = "/healthz"
             elif " /internal/tusd/hooks " in message:
                 path = "/internal/tusd/hooks"
-            elif " /v1/collection-uploads/" in message and "/upload " in message:
-                path = "/v1/collection-uploads/.../upload"
             if '" 2' in message or '" 3' in message:
                 status_code = 200
 
@@ -61,25 +57,6 @@ class _RiverhogAccessLogFilter(logging.Filter):
             return False
         successful = status_code is not None and status_code < 400
         if successful and path == "/internal/tusd/hooks":
-            return False
-        if (
-            successful
-            and method == "PATCH"
-            and path is not None
-            and path.startswith("/v1/collection-uploads/")
-            and path.endswith("/upload")
-        ):
-            return False
-        return True
-
-
-class _RiverhogHttpxLogFilter(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:
-        message = record.getMessage()
-        if (
-            message.startswith("HTTP Request: PATCH http://riverhog-tusd:1080/files/")
-            and '"HTTP/1.1 204 No Content"' in message
-        ):
             return False
         return True
 
@@ -92,9 +69,6 @@ def _configure_logging(level_name: str) -> None:
     )
     for logger_name in ("riverhog_api", "riverhog_core"):
         logging.getLogger(logger_name).setLevel(level)
-    httpx_logger = logging.getLogger("httpx")
-    if not any(isinstance(current, _RiverhogHttpxLogFilter) for current in httpx_logger.filters):
-        httpx_logger.addFilter(_RiverhogHttpxLogFilter())
     access_logger = logging.getLogger("uvicorn.access")
     if not any(isinstance(current, _RiverhogAccessLogFilter) for current in access_logger.filters):
         access_logger.addFilter(_RiverhogAccessLogFilter())

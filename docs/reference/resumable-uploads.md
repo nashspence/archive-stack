@@ -68,10 +68,12 @@ Retry behavior is manifest-aware:
 `POST /v1/collection-upload-sessions` creates or resumes an incremental
 collection upload session from a human-readable slug without a complete file
 manifest up front. The returned session is `open`. Clients then register files
-one at a time with `POST /v1/collection-upload-sessions/{collection_id}/files`,
-upload each file through the normal collection-file upload resource, and call
+one at a time with `POST /v1/collection-upload-sessions/{collection_id}/files`.
+For each registered file, clients call
+`POST /v1/collection-uploads/{collection_id}/files/{path}/upload` to receive a
+direct tusd `upload_url`, send TUS requests to that returned URL, and then call
 `POST /v1/collection-upload-sessions/{collection_id}/complete` once the local
-tree has been fully walked.
+tree has been fully walked and uploaded.
 
 Incremental sessions are intentionally explicit:
 
@@ -87,15 +89,20 @@ Incremental sessions are intentionally explicit:
 
 ## Collection File Upload Session
 
-`POST /v1/collection-uploads/{collection_id}/files/{path}/upload` creates or resumes the upload resource for one logical
-collection file.
+`POST /v1/collection-uploads/{collection_id}/files/{path}/upload` creates or
+resumes the upload resource for one logical collection file.
 
-The returned `upload_url` is a Riverhog-managed tus-compatible upload resource for that logical file. Riverhog supports:
+The returned `upload_url` is a direct tusd URL for that logical file. Clients
+send TUS requests to that URL:
 
 - `HEAD` to read `Upload-Offset`, `Upload-Length`, `Upload-Expires`, and `Location`
 - `PATCH` to append bytes using `Content-Type: application/offset+octet-stream` plus `Tus-Resumable`, `Upload-Offset`, and `Upload-Checksum`
 - `DELETE` to cancel the current upload resource and reset that file back to `pending`
 - `OPTIONS` to advertise the supported tus capability headers
+
+Riverhog stays on the control plane for session creation, file registration,
+lease creation/resume, completion, and final reconciliation. It does not proxy
+collection file upload bytes.
 
 The response exposes at least:
 

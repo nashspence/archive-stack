@@ -14,29 +14,17 @@ Feature: Collections API
       And collection upload "photos-2024" state is "uploading"
       And collection "photos-2024" is not yet visible
 
-    Scenario: Collection file upload resources expose tus-style status and cancellation
+    Scenario: Collection file upload leases expose direct tus upload state
       Given collection upload "photos-2024" has a partial file upload in progress
-      When the client sends HEAD to "/v1/collection-uploads/photos-2024/files/albums/japan/day-01.txt/upload"
-      Then the response status is 204
+      When the client posts to "/v1/collection-uploads/photos-2024/files/albums/japan/day-01.txt/upload"
+      Then the response status is 200
+      And the response contains "path", "protocol", "upload_url", "offset", "length", "checksum_algorithm", and "expires_at"
       And the response header "Tus-Resumable" is "1.0.0"
       And the response has header "Upload-Offset"
       And the response has header "Upload-Length"
       And the response has header "Upload-Expires"
-      When the client sends DELETE to "/v1/collection-uploads/photos-2024/files/albums/japan/day-01.txt/upload"
-      Then the response status is 204
-      And the response header "Tus-Resumable" is "1.0.0"
-      When the client creates or resumes collection upload "photos-2024" again
-      Then the response status is 200
-      And collection upload "photos-2024" file "albums/japan/day-01.txt" is "pending"
+      And the returned offset matches the previously uploaded bytes
 
-    Scenario: Collection file upload chunks require the tus chunk media type
-      Given a local collection source "photos-2024" with deterministic fixture contents
-      When the client creates or resumes collection upload "photos-2024"
-      When the client posts to "/v1/collection-uploads/photos-2024/files/albums/japan/day-01.txt/upload"
-      Then the response status is 200
-      When the client sends PATCH to "/v1/collection-uploads/photos-2024/files/albums/japan/day-01.txt/upload" with upload chunk content type "application/json"
-      Then the response status is 400
-      And the error code is "bad_request"
     Scenario: Uploading every required file archives the collection before finalization and survives restart
       Given a local collection source "photos-2024" with deterministic fixture contents
       When the client uploads every required file for collection "photos-2024"

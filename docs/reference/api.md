@@ -110,8 +110,8 @@ Required behavior:
 - re-registering the same path with identical `bytes` and `sha256` is
   idempotent
 - re-registering the same path with different metadata is rejected
-- file bytes are uploaded with the existing
-  `/v1/collection-uploads/{collection_id}/files/{path}/upload` resource
+- file bytes are uploaded to the direct tusd URL returned by
+  `POST /v1/collection-uploads/{collection_id}/files/{path}/upload`
 - each successful registration refreshes the open-session idle TTL
 
 #### `POST /v1/collection-upload-sessions/{collection_id}/complete`
@@ -163,52 +163,18 @@ Creates or resumes the resumable upload resource for one logical collection file
 
 Required behavior:
 
-- the returned `upload_url` is a Riverhog-managed tus-compatible upload resource for that logical collection file
-- repeated calls while the file remains resumable return the current upload resource rather than creating duplicates
+- the returned `upload_url` is a direct tusd URL for that logical collection file
+- clients send TUS `HEAD`, `PATCH`, and `DELETE` requests directly to the
+  returned `upload_url`; Riverhog does not proxy collection file bytes
+- repeated calls while the file remains resumable return the current upload
+  resource rather than creating duplicates
 - the response includes tus-style status headers such as `Tus-Resumable`, `Upload-Offset`, `Upload-Length`, and `Location`
 - offsets and checksums are measured against the logical file byte stream for that file
-- for determinate uploads, the terminal successful upload chunk may move the
-  session into `archiving`, but it must not report final success until the
-  collection archive package has uploaded to Glacier and verified successfully
-- for incremental upload sessions, the terminal successful upload chunk leaves
-  the session `open`; the client must call
-  `/v1/collection-upload-sessions/{collection_id}/complete`
+- completing all file uploads leaves an incremental session `open`; the client
+  must call `/v1/collection-upload-sessions/{collection_id}/complete`
 - incomplete file upload state expires after `INCOMPLETE_UPLOAD_TTL`; once the
   last resumable file state expires, Riverhog forgets a determinate upload
   session entirely and later retries start a fresh session
-
-#### `HEAD /v1/collection-uploads/{collection_id}/files/{path}/upload`
-
-Reads the current tus-style state for one existing collection-file upload resource.
-
-Required behavior:
-
-- returns `204`
-- exposes `Tus-Resumable`, `Upload-Offset`, `Upload-Length`, and `Location`
-- exposes `Upload-Expires` while the file still has incomplete resumable state
-- returns `not_found` after the upload resource has been canceled, expired, or finalized away with the collection session
-
-#### `DELETE /v1/collection-uploads/{collection_id}/files/{path}/upload`
-
-Cancels one existing collection-file upload resource.
-
-Required behavior:
-
-- returns `204`
-- cancels the current upload resource for that logical file
-- deletes any incomplete server-side bytes for that file
-- resets that file back to `pending`
-
-#### `OPTIONS /v1/collection-uploads/{collection_id}/files/{path}/upload`
-
-Describes the Riverhog-managed collection-file upload resource capabilities.
-
-Required behavior:
-
-- returns `204`
-- exposes `Tus-Version`
-- exposes `Tus-Extension`
-- exposes `Tus-Checksum-Algorithm`
 
 ### Search
 

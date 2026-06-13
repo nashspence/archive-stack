@@ -10,13 +10,18 @@ TUS_CHECKSUM_ALGORITHMS = "sha256"
 TUS_CHUNK_CONTENT_TYPE = "application/offset+octet-stream"
 
 
-def tus_upload_headers(payload: dict[str, object], *, request: Request) -> dict[str, str]:
+def tus_upload_headers(
+    payload: dict[str, object],
+    *,
+    request: Request,
+    location: str | None = None,
+) -> dict[str, str]:
     headers = {
         "Tus-Resumable": TUS_RESUMABLE,
         "Cache-Control": "no-store",
         "Upload-Offset": str(payload["offset"]),
         "Upload-Length": str(payload["length"]),
-        "Location": str(request.url),
+        "Location": location or str(request.url),
     }
     if payload.get("expires_at") is not None:
         headers["Upload-Expires"] = str(payload["expires_at"])

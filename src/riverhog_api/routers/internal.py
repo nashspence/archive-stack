@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import base64
 import binascii
+import os
+import secrets
+from urllib.parse import unquote, urlsplit
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
 from riverhog_core.runtime_config import load_runtime_config
@@ -11,6 +14,7 @@ from riverhog_core.tusd_ids import tusd_upload_id_for_target_path
 
 router = APIRouter(tags=["internal"], include_in_schema=False)
 _HOOK_SECRET_HEADER = "x-riverhog-tusd-hook-secret"
+_TUSD_FILE_METHODS = {"HEAD", "PATCH", "DELETE", "OPTIONS"}
 
 
 def _json_response(payload: dict[str, object], *, status_code: int = 200) -> JSONResponse:
@@ -38,6 +42,33 @@ def _target_path_from_metadata(metadata: dict[object, object]) -> str:
         except (binascii.Error, UnicodeDecodeError):
             return ""
     return str(metadata.get("target_path", ""))
+
+
+def _authorized_bearer(request: Request) -> bool:
+    expected = os.getenv("RIVERHOG_API_TOKEN", "")
+    if not expected:
+        return True
+    raw = request.headers.get("authorization", "")
+    scheme, _, token = raw.partition(" ")
+    return scheme.casefold() == "bearer" and secrets.compare_digest(token, expected)
+
+
+@router.get("/internal/tusd/auth")
+def authorize_tusd_data_plane(request: Request) -> Response:
+    if not _authorized_bearer(request):
+        return Response(status_code=401, headers={"WWW-Authenticate": "Bearer"})
+
+    method = request.headers.get("x-original-method", "").upper()
+    if method not in _TUSD_FILE_METHODS:
+        return Response(status_code=405)
+
+    original_uri = request.headers.get("x-original-uri") or request.headers.get(
+        "x-original-url", ""
+    )
+    original_path = unquote(urlsplit(original_uri).path)
+    if not original_path.startswith("/files/.riverhog/uploads/by-target/"):
+        return Response(status_code=403)
+    return Response(status_code=204)
 
 
 @router.post("/internal/tusd/hooks")

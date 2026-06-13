@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from urllib.parse import quote
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -112,6 +113,54 @@ def test_tusd_upload_store_sends_signature_safe_target_metadata() -> None:
     assert name == "target_path_b64"
     assert base64.b64decode(decoded_value, validate=True).decode("utf-8") == target_path
     assert " " not in decoded_value
+
+
+def test_tusd_data_plane_auth_allows_encoded_upload_id(monkeypatch) -> None:
+    monkeypatch.setenv("RIVERHOG_API_TOKEN", "api-token")
+    client = _client()
+    upload_id = ".riverhog/uploads/by-target/" + "a" * 64
+    response = client.get(
+        "/internal/tusd/auth",
+        headers={
+            "Authorization": "Bearer api-token",
+            "X-Original-Method": "PATCH",
+            "X-Original-Uri": f"/files/{quote(upload_id, safe='')}",
+        },
+    )
+
+    assert response.status_code == 204
+
+
+def test_tusd_data_plane_auth_rejects_wrong_token(monkeypatch) -> None:
+    monkeypatch.setenv("RIVERHOG_API_TOKEN", "api-token")
+    client = _client()
+
+    response = client.get(
+        "/internal/tusd/auth",
+        headers={
+            "Authorization": "Bearer wrong",
+            "X-Original-Method": "PATCH",
+            "X-Original-Uri": "/files/.riverhog%2Fuploads%2Fby-target%2Fabc",
+        },
+    )
+
+    assert response.status_code == 401
+
+
+def test_tusd_data_plane_auth_rejects_non_upload_namespace(monkeypatch) -> None:
+    monkeypatch.setenv("RIVERHOG_API_TOKEN", "api-token")
+    client = _client()
+
+    response = client.get(
+        "/internal/tusd/auth",
+        headers={
+            "Authorization": "Bearer api-token",
+            "X-Original-Method": "PATCH",
+            "X-Original-Uri": "/files/collections/docs/report.txt",
+        },
+    )
+
+    assert response.status_code == 403
 
 
 def test_precreate_hook_rejects_committed_collection_target(monkeypatch) -> None:

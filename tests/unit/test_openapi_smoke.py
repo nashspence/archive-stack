@@ -312,16 +312,20 @@ def _stub_collection_upload_payload(
     state: str,
     files: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
-    upload_files = files if files is not None else [
-        {
-            "path": "report.txt",
-            "bytes": 12,
-            "sha256": "0" * 64,
-            "upload_state": "pending",
-            "uploaded_bytes": 0,
-            "upload_state_expires_at": None,
-        }
-    ]
+    upload_files = (
+        files
+        if files is not None
+        else [
+            {
+                "path": "report.txt",
+                "bytes": 12,
+                "sha256": "0" * 64,
+                "upload_state": "pending",
+                "uploaded_bytes": 0,
+                "upload_state_expires_at": None,
+            }
+        ]
+    )
     bytes_total = sum(int(file["bytes"]) for file in upload_files)
     uploaded_bytes = sum(int(file["uploaded_bytes"]) for file in upload_files)
     return {
@@ -372,7 +376,19 @@ class _StubCollectionUploads:
     ) -> dict[str, object]:
         assert collection_id
         assert file
-        return _stub_collection_upload_payload(state="open")
+        return {
+            "collection_id": collection_id,
+            "ingest_source": None,
+            "state": "open",
+            "file": {
+                "path": str(file["path"]),
+                "bytes": int(file["bytes"]),
+                "sha256": str(file["sha256"]),
+                "upload_state": "pending",
+                "uploaded_bytes": 0,
+                "upload_state_expires_at": None,
+            },
+        }
 
     def complete_upload_session(self, collection_id: str) -> dict[str, object]:
         assert collection_id
@@ -694,14 +710,15 @@ def _assert_contract_patch_request_requirements(
 
 
 def test_collection_upload_runtime_matches_contract_headers(monkeypatch) -> None:
-    monkeypatch.setenv("RIVERHOG_PUBLIC_BASE_URL", "https://riverhog.test")
+    monkeypatch.setenv("RIVERHOG_TUSD_PUBLIC_BASE_URL", "https://uploads.test/files")
     with _contract_runtime_client() as client:
         runtime_path = "/v1/collection-uploads/docs/files/report.txt/upload"
         contract_path = "/v1/collection-uploads/{collection_id}/files/{path}/upload"
 
         post = client.post(runtime_path)
         assert post.status_code == 200
-        assert post.json()["upload_url"] == f"https://riverhog.test{runtime_path}"
+        assert post.json()["upload_url"] == "https://uploads.test/files/collections/docs/report.txt"
+        assert post.headers["location"] == "https://uploads.test/files/collections/docs/report.txt"
         _assert_contract_success_headers(
             post,
             contract_path=contract_path,
@@ -709,60 +726,21 @@ def test_collection_upload_runtime_matches_contract_headers(monkeypatch) -> None
             status_code="200",
         )
 
-        patch = client.patch(
-            runtime_path,
-            headers=_valid_tus_chunk_headers(),
-            content=b"chunk-bytes",
-        )
-        assert patch.status_code == 204
-        _assert_contract_success_headers(
-            patch,
-            contract_path=contract_path,
-            method="patch",
-            status_code="204",
-        )
-
-        head = client.head(runtime_path)
-        assert head.status_code == 204
-        _assert_contract_success_headers(
-            head,
-            contract_path=contract_path,
-            method="head",
-            status_code="204",
-        )
-
-        delete = client.delete(runtime_path)
-        assert delete.status_code == 204
-        _assert_contract_success_headers(
-            delete,
-            contract_path=contract_path,
-            method="delete",
-            status_code="204",
-        )
-
-        options = client.options(runtime_path)
-        assert options.status_code == 204
-        _assert_contract_success_headers(
-            options,
-            contract_path=contract_path,
-            method="options",
-            status_code="204",
-        )
-
 
 def test_collection_upload_response_preserves_literal_percent_encoded_file_names(
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_PUBLIC_BASE_URL", "https://riverhog.test")
+    monkeypatch.setenv("RIVERHOG_TUSD_PUBLIC_BASE_URL", "https://uploads.test/files")
     with _contract_runtime_client() as client:
-        runtime_path = (
-            "/v1/collection-uploads/docs/files/Logos/AZ%2520Logo%2520ClrAZ.jpg/upload"
-        )
+        runtime_path = "/v1/collection-uploads/docs/files/Logos/AZ%2520Logo%2520ClrAZ.jpg/upload"
 
         post = client.post(runtime_path)
 
         assert post.status_code == 200
-        assert post.json()["upload_url"] == f"https://riverhog.test{runtime_path}"
+        assert (
+            post.json()["upload_url"]
+            == "https://uploads.test/files/collections/docs/Logos/AZ%20Logo%20ClrAZ.jpg"
+        )
 
 
 def test_fetch_upload_runtime_matches_contract_headers(monkeypatch) -> None:
@@ -819,15 +797,6 @@ def test_fetch_upload_runtime_matches_contract_headers(monkeypatch) -> None:
             contract_path=contract_path,
             method="options",
             status_code="204",
-        )
-
-
-def test_collection_upload_runtime_enforces_contract_patch_request_requirements() -> None:
-    with _contract_runtime_client() as client:
-        _assert_contract_patch_request_requirements(
-            client,
-            runtime_path="/v1/collection-uploads/docs/files/report.txt/upload",
-            contract_path="/v1/collection-uploads/{collection_id}/files/{path}/upload",
         )
 
 
@@ -945,21 +914,6 @@ def test_access_log_filter_suppresses_noisy_successes_only() -> None:
         ("127.0.0.1:12345", "GET", "/healthz", "1.1", 200),
         None,
     )
-    upload_record = logging.LogRecord(
-        "uvicorn.access",
-        logging.INFO,
-        __file__,
-        1,
-        '%s - "%s %s HTTP/%s" %s',
-        (
-            "127.0.0.1:12345",
-            "PATCH",
-            "/v1/collection-uploads/docs/files/video.mp4/upload",
-            "1.1",
-            204,
-        ),
-        None,
-    )
     upload_start_record = logging.LogRecord(
         "uvicorn.access",
         logging.INFO,
@@ -1010,52 +964,7 @@ def test_access_log_filter_suppresses_noisy_successes_only() -> None:
     )
 
     assert not access_filter.filter(health_record)
-    assert not access_filter.filter(upload_record)
     assert access_filter.filter(upload_start_record)
     assert not access_filter.filter(hook_record)
     assert access_filter.filter(upload_error_record)
     assert access_filter.filter(api_record)
-
-
-def test_httpx_log_filter_suppresses_only_successful_tusd_chunk_forwarding() -> None:
-    httpx_filter = riverhog_app._RiverhogHttpxLogFilter()
-    chunk_record = logging.LogRecord(
-        "httpx",
-        logging.INFO,
-        __file__,
-        1,
-        '%s',
-        (
-            'HTTP Request: PATCH http://riverhog-tusd:1080/files/.riverhog%2Fuploads '
-            '"HTTP/1.1 204 No Content"',
-        ),
-        None,
-    )
-    webhook_record = logging.LogRecord(
-        "httpx",
-        logging.INFO,
-        __file__,
-        1,
-        '%s',
-        (
-            'HTTP Request: POST http://host.docker.internal:8123/api/webhook/example '
-            '"HTTP/1.1 200 OK"',
-        ),
-        None,
-    )
-    chunk_error_record = logging.LogRecord(
-        "httpx",
-        logging.INFO,
-        __file__,
-        1,
-        '%s',
-        (
-            'HTTP Request: PATCH http://riverhog-tusd:1080/files/.riverhog%2Fuploads '
-            '"HTTP/1.1 500 Internal Server Error"',
-        ),
-        None,
-    )
-
-    assert not httpx_filter.filter(chunk_record)
-    assert httpx_filter.filter(webhook_record)
-    assert httpx_filter.filter(chunk_error_record)

@@ -7,8 +7,9 @@ from pathlib import Path
 import httpx
 import pytest
 
-from riverhog_cli.client import ApiClient, _iter_upload_body
+from riverhog_cli.client import ApiClient
 from riverhog_core.domain.errors import ServiceUnavailable
+from riverhog_core.tus_upload import TusHttpClient
 
 
 def test_create_or_resume_collection_upload_uses_collection_upload_endpoint(monkeypatch) -> None:
@@ -524,10 +525,16 @@ def test_append_upload_chunk_uses_tus_patch_headers(monkeypatch) -> None:
 
     transport = httpx.MockTransport(handler)
 
-    def fake_client(self: ApiClient) -> httpx.Client:
-        return httpx.Client(base_url=self.base_url, transport=transport)
+    def fake_upload_client(self: TusHttpClient) -> httpx.Client:
+        return httpx.Client(
+            headers=self._headers,
+            transport=transport,
+            verify=self._verify_tls,
+            http2=self._http2,
+            timeout=self._timeout_seconds,
+        )
 
-    monkeypatch.setattr(ApiClient, "_client", fake_client)
+    monkeypatch.setattr(TusHttpClient, "_client_for_request", fake_upload_client)
 
     client = ApiClient(base_url="https://api.test")
     payload = client.append_upload_chunk(
@@ -541,7 +548,7 @@ def test_append_upload_chunk_uses_tus_patch_headers(monkeypatch) -> None:
 
     assert payload == {
         "offset": len(content),
-        "expires_at": "2026-04-23T00:00:00Z",
+        "expires_at": None,
     }
     assert len(captured) == 1
     request = captured[0]
@@ -555,17 +562,6 @@ def test_append_upload_chunk_uses_tus_patch_headers(monkeypatch) -> None:
     assert request.read() == content
 
 
-def test_iter_upload_body_splits_configured_write_chunks() -> None:
-    content = b"invoice fixture bytes\n"
-
-    assert list(_iter_upload_body(content, chunk_bytes=7, delay_seconds=0)) == [
-        b"invoice",
-        b" fixtur",
-        b"e bytes",
-        b"\n",
-    ]
-
-
 def test_append_upload_chunk_can_override_absolute_upload_base_url(monkeypatch) -> None:
     captured: list[httpx.Request] = []
     content = b"invoice fixture bytes\n"
@@ -576,11 +572,17 @@ def test_append_upload_chunk_can_override_absolute_upload_base_url(monkeypatch) 
 
     transport = httpx.MockTransport(handler)
 
-    def fake_client(self: ApiClient) -> httpx.Client:
-        return httpx.Client(base_url=self.base_url, transport=transport)
+    def fake_upload_client(self: TusHttpClient) -> httpx.Client:
+        return httpx.Client(
+            headers=self._headers,
+            transport=transport,
+            verify=self._verify_tls,
+            http2=self._http2,
+            timeout=self._timeout_seconds,
+        )
 
     monkeypatch.setenv("RIVERHOG_UPLOAD_BASE_URL", "http://127.0.0.1:18080")
-    monkeypatch.setattr(ApiClient, "_client", fake_client)
+    monkeypatch.setattr(TusHttpClient, "_client_for_request", fake_upload_client)
 
     client = ApiClient(base_url="http://127.0.0.1:18080")
     client.append_upload_chunk(
@@ -757,8 +759,7 @@ def test_notify_copy_label_needed_uses_copy_endpoint(monkeypatch) -> None:
     assert captured == [
         (
             "POST",
-            "https://api.test/v1/images/20260420T040001Z/copies/"
-            "20260420T040001Z-1/label-needed",
+            "https://api.test/v1/images/20260420T040001Z/copies/20260420T040001Z-1/label-needed",
             "",
         )
     ]

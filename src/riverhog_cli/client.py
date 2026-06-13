@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import base64
-import hashlib
 import os
-import time
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -22,13 +19,12 @@ from riverhog_core.domain.errors import (
     RiverhogError,
     ServiceUnavailable,
 )
+from riverhog_core.tus_upload import TusHttpClient
 
 _HTTP_TIMEOUT_SECONDS = 300.0
-_UPLOAD_TIMEOUT_SECONDS = 60.0
+_UPLOAD_TIMEOUT_SECONDS = 300.0
 _DOWNLOAD_TIMEOUT_SECONDS = 3600.0
 _COPY_REGISTRATION_TIMEOUT_SECONDS = 3600.0
-_UPLOAD_WRITE_CHUNK_BYTES = 256 * 1024
-_UPLOAD_WRITE_DELAY_SECONDS = 0.005
 _DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 _TRANSIENT_HTTP_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 DownloadProgress = Callable[[int, int | None], None]
@@ -59,43 +55,6 @@ def _timeout_seconds(env_name: str, default: float) -> float:
     return value
 
 
-def _positive_int_env(env_name: str, default: int) -> int:
-    raw_value = os.getenv(env_name)
-    if raw_value is None or raw_value.strip() == "":
-        return default
-    try:
-        value = int(raw_value)
-    except ValueError as exc:
-        raise BadRequest(f"{env_name} must be a positive integer") from exc
-    if value <= 0:
-        raise BadRequest(f"{env_name} must be a positive integer")
-    return value
-
-
-def _nonnegative_seconds_env(env_name: str, default: float) -> float:
-    raw_value = os.getenv(env_name)
-    if raw_value is None or raw_value.strip() == "":
-        return default
-    try:
-        value = float(raw_value)
-    except ValueError as exc:
-        raise BadRequest(f"{env_name} must be a non-negative number of seconds") from exc
-    if value < 0:
-        raise BadRequest(f"{env_name} must be a non-negative number of seconds")
-    return value
-
-
-def _iter_upload_body(content: bytes, *, chunk_bytes: int, delay_seconds: float) -> Iterable[bytes]:
-    def chunks() -> Iterator[bytes]:
-        for offset in range(0, len(content), chunk_bytes):
-            next_offset = offset + chunk_bytes
-            yield content[offset:next_offset]
-            if delay_seconds > 0 and next_offset < len(content):
-                time.sleep(delay_seconds)
-
-    return chunks()
-
-
 class ApiClient:
     def __init__(self, base_url: str | None = None, token: str | None = None) -> None:
         self.base_url = (
@@ -107,6 +66,7 @@ class ApiClient:
         self.verify_tls = _bool_env("RIVERHOG_TLS_VERIFY", True)
         self.http2 = _bool_env("RIVERHOG_HTTP2", True)
         self._request_client: httpx.Client | None = None
+        self._upload_client: TusHttpClient | None = None
 
     def _make_client(self, *, timeout_seconds: float) -> httpx.Client:
         headers = {"Accept": "application/json"}
@@ -131,10 +91,34 @@ class ApiClient:
         return self._request_client
 
     def close(self) -> None:
-        if self._request_client is None:
-            return
-        self._request_client.close()
-        self._request_client = None
+        if self._request_client is not None:
+            self._request_client.close()
+            self._request_client = None
+        if self._upload_client is not None:
+            self._upload_client.close()
+            self._upload_client = None
+
+    def _upload_headers(self) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        if self.host_header:
+            headers["Host"] = self.host_header
+        return headers
+
+    def tus_client(self) -> TusHttpClient:
+        if self._upload_client is None:
+            self._upload_client = TusHttpClient(
+                headers=self._upload_headers(),
+                timeout_seconds=_timeout_seconds(
+                    "RIVERHOG_UPLOAD_TIMEOUT_SECONDS",
+                    _UPLOAD_TIMEOUT_SECONDS,
+                ),
+                verify_tls=self.verify_tls,
+                http2=self.http2,
+                url_rewriter=self._upload_url,
+            )
+        return self._upload_client
 
     def _raise_for_error(self, response: httpx.Response) -> None:
         if response.is_success:
@@ -528,38 +512,15 @@ class ApiClient:
         checksum_algorithm: str,
         content: bytes,
     ) -> dict[str, Any]:
-        checksum = base64.b64encode(hashlib.new(checksum_algorithm, content).digest()).decode(
-            "ascii"
+        next_offset = self.tus_client().patch_chunk(
+            upload_url,
+            offset=offset,
+            checksum_algorithm=checksum_algorithm,
+            content=content,
         )
-        write_chunk_bytes = _positive_int_env(
-            "RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES",
-            _UPLOAD_WRITE_CHUNK_BYTES,
-        )
-        write_delay_seconds = _nonnegative_seconds_env(
-            "RIVERHOG_UPLOAD_WRITE_DELAY_SECONDS",
-            _UPLOAD_WRITE_DELAY_SECONDS,
-        )
-        response = self._request(
-            "PATCH",
-            self._upload_url(upload_url),
-            headers={
-                "Content-Length": str(len(content)),
-                "Content-Type": "application/offset+octet-stream",
-                "Tus-Resumable": "1.0.0",
-                "Upload-Offset": str(offset),
-                "Upload-Checksum": f"{checksum_algorithm} {checksum}",
-            },
-            content=_iter_upload_body(
-                content,
-                chunk_bytes=write_chunk_bytes,
-                delay_seconds=write_delay_seconds,
-            ),
-            timeout=_timeout_seconds("RIVERHOG_UPLOAD_TIMEOUT_SECONDS", _UPLOAD_TIMEOUT_SECONDS),
-        )
-        next_offset = int(response.headers.get("Upload-Offset", offset + len(content)))
         return {
             "offset": next_offset,
-            "expires_at": response.headers.get("Upload-Expires"),
+            "expires_at": None,
         }
 
     def complete_fetch(self, fetch_id: str) -> dict[str, Any]:

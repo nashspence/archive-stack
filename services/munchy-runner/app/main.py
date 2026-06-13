@@ -34,6 +34,7 @@ from munchy.profiles import (
 from munchy.uvicorn_logging import uvicorn_log_config_without_health_access_logs
 from riverhog_cli.client import ApiClient
 from riverhog_core.domain.errors import Conflict, HashMismatch, NotFound, ServiceUnavailable
+from riverhog_core.tus_upload import TusUploadLease, upload_path_to_tus
 from riverhog_core.webhooks import build_munchy_job_payload, utcnow
 
 LOGGING = {
@@ -968,9 +969,7 @@ def require_free_space(path: Path, required_bytes: int, *, label: str) -> None:
 
 
 def notify_storage_waiting(job: dict[str, Any], exc: InsufficientStorage) -> dict[str, Any] | None:
-    fingerprint = hashlib.sha256(
-        f"storage:{exc.label}:{exc.required_bytes}".encode()
-    ).hexdigest()
+    fingerprint = hashlib.sha256(f"storage:{exc.label}:{exc.required_bytes}".encode()).hexdigest()
     return notify_job_event(
         job,
         "job.issue",
@@ -1120,9 +1119,7 @@ def runnable_jobs_in_order() -> list[dict[str, Any]]:
 
 def queue_info_for_job(job_id: str) -> dict[str, Any] | None:
     ordered = [
-        job
-        for job in runnable_jobs_in_order()
-        if str(job.get("job_id") or "") not in active_jobs
+        job for job in runnable_jobs_in_order() if str(job.get("job_id") or "") not in active_jobs
     ]
     for index, job in enumerate(ordered, start=1):
         if str(job.get("job_id") or "") != job_id:
@@ -1579,7 +1576,9 @@ def save_job(job: dict[str, Any]) -> dict[str, Any]:
             if isinstance(current_riverhog, dict) and isinstance(payload_riverhog, dict):
                 current_updated = safe_parse_iso(current_riverhog.get("updated_at"))
                 payload_updated = safe_parse_iso(payload_riverhog.get("updated_at"))
-                if current_updated and (payload_updated is None or current_updated > payload_updated):
+                if current_updated and (
+                    payload_updated is None or current_updated > payload_updated
+                ):
                     payload["riverhog_session_upload"] = current_riverhog
             elif isinstance(current_riverhog, dict) and "riverhog_session_upload" not in payload:
                 payload["riverhog_session_upload"] = current_riverhog
@@ -1787,8 +1786,7 @@ def upload_files_for_groups(
 
 def upload_bytes_for_groups(upload: dict[str, Any], group_names: set[str]) -> int:
     return sum(
-        int(file_state["bytes"])
-        for file_state in upload_files_for_groups(upload, group_names)
+        int(file_state["bytes"]) for file_state in upload_files_for_groups(upload, group_names)
     )
 
 
@@ -1867,9 +1865,7 @@ def wait_for_upload_groups(
         if upload_groups_complete(upload, group_names):
             save_job(job)
             return upload
-        job["phase"] = (
-            f"waiting_for_upload:{progress['files_uploaded']}/{progress['files_total']}"
-        )
+        job["phase"] = f"waiting_for_upload:{progress['files_uploaded']}/{progress['files_total']}"
         save_job(job)
         retry_sleep(EAGER_ARCHIVE_WAIT_SECONDS, job_id=job_id)
 
@@ -1973,9 +1969,7 @@ def sync_shared_input_tree(
             linked += 1
             if job is not None and (index == len(files) or index % 100 == 0):
                 progress = shared_input_tree_progress(upload, selected_groups)
-                job["phase"] = (
-                    f"preparing_input:{progress['input_tree_files_ready']}/{len(files)}"
-                )
+                job["phase"] = f"preparing_input:{progress['input_tree_files_ready']}/{len(files)}"
                 job["input_upload_progress"] = upload_group_progress(upload, selected_groups)
                 save_job(job)
         return {"linked": linked, "skipped": skipped, "files": len(files)}
@@ -2536,7 +2530,9 @@ def finalize_cancelled_job(job: dict[str, Any], *, reason: str) -> dict[str, Any
     except Exception as exc:
         job["riverhog_cancel_failed_at"] = now_iso()
         job["riverhog_cancel_error"] = str(exc)
-        log.exception("unexpected failure while cancelling riverhog session for %s", job.get("job_id"))
+        log.exception(
+            "unexpected failure while cancelling riverhog session for %s", job.get("job_id")
+        )
         save_job(job)
 
     try:
@@ -3010,11 +3006,7 @@ def compact_gpu_status_for_progress(status: dict[str, Any]) -> dict[str, Any]:
         for name, item in items.items():
             if not isinstance(item, dict):
                 continue
-            compact_item = {
-                key: item[key]
-                for key in ("status", "reason", "bytes")
-                if key in item
-            }
+            compact_item = {key: item[key] for key in ("status", "reason", "bytes") if key in item}
             progress = item.get("progress")
             if isinstance(progress, dict):
                 compact_item["progress"] = progress
@@ -3146,8 +3138,15 @@ def update_riverhog_state_from_payload(
 
         files = state.setdefault("files", {})
         if isinstance(files, dict):
+            file_items: list[dict[str, Any]] = []
+            single_file = payload.get("file")
+            if isinstance(single_file, dict):
+                file_items.append(single_file)
             for item in payload.get("files") or []:
-                if not isinstance(item, dict) or not item.get("path"):
+                if isinstance(item, dict):
+                    file_items.append(item)
+            for item in file_items:
+                if not item.get("path"):
                     continue
                 rel_path = str(item["path"])
                 record = files.setdefault(rel_path, {"path": rel_path})
@@ -3339,55 +3338,55 @@ def riverhog_upload_artifact(
         remove_uploaded_riverhog_artifact(job, archive_dir, source_path, record)
         return True
 
-    with source_path.open("rb") as handle:
-        while offset < length:
-            raise_if_job_cancelled(job_id)
-            handle.seek(offset)
-            chunk = handle.read(min(max(1, RIVERHOG_UPLOAD_CHUNK_BYTES), length - offset))
-            if not chunk:
-                break
-            try:
-                upload_result = api.append_upload_chunk(
-                    str(session["upload_url"]),
-                    offset=offset,
-                    checksum_algorithm=str(session["checksum_algorithm"]),
-                    content=chunk,
-                )
-            except (httpx.TransportError, Conflict, ServiceUnavailable) as exc:
-                log.warning(
-                    "riverhog upload interrupted job=%s path=%s offset=%s: %s",
-                    job_id,
-                    rel_path,
-                    offset,
-                    exc,
-                )
-                session = api.create_or_resume_collection_file_upload(collection_id, rel_path)
-                recovered_offset = int(session["offset"])
-                if recovered_offset < offset:
-                    raise RuntimeError(
-                        f"riverhog upload offset for {rel_path} moved backward to "
-                        f"{recovered_offset}; expected at least {offset}"
-                    ) from exc
-                if recovered_offset > length:
-                    raise RuntimeError(
-                        f"riverhog upload offset for {rel_path} is past expected length"
-                    ) from exc
-                if recovered_offset == offset:
-                    continue
-                offset = recovered_offset
-                with riverhog_upload_lock(job_id):
-                    record["uploaded_bytes"] = max(int(record.get("uploaded_bytes") or 0), offset)
-                    touch_riverhog_session_state(job)
-                continue
+    while offset < length:
 
-            next_offset = int(upload_result["offset"])
-            if next_offset != offset + len(chunk):
-                raise RuntimeError(f"riverhog upload offset advanced unexpectedly for {rel_path}")
-            offset = next_offset
+        def mark_progress(bytes_sent: int) -> None:
+            nonlocal offset
+            offset += bytes_sent
             with riverhog_upload_lock(job_id):
                 record["uploaded_bytes"] = max(int(record.get("uploaded_bytes") or 0), offset)
                 record["state"] = "uploading"
                 touch_riverhog_session_state(job)
+
+        try:
+            result = upload_path_to_tus(
+                client=api.tus_client(),
+                source_path=source_path,
+                lease=TusUploadLease(
+                    upload_url=str(session["upload_url"]),
+                    offset=offset,
+                    length=length,
+                    checksum_algorithm=str(session["checksum_algorithm"]),
+                ),
+                chunk_bytes=RIVERHOG_UPLOAD_CHUNK_BYTES,
+                cancel_check=lambda: raise_if_job_cancelled(job_id),
+                progress=mark_progress,
+            )
+        except (httpx.TransportError, Conflict, ServiceUnavailable) as exc:
+            log.warning(
+                "riverhog upload interrupted job=%s path=%s offset=%s: %s",
+                job_id,
+                rel_path,
+                offset,
+                exc,
+            )
+            session = api.create_or_resume_collection_file_upload(collection_id, rel_path)
+            recovered_offset = int(session["offset"])
+            if recovered_offset < offset:
+                raise RuntimeError(
+                    f"riverhog upload offset for {rel_path} moved backward to "
+                    f"{recovered_offset}; expected at least {offset}"
+                ) from exc
+            if recovered_offset > length:
+                raise RuntimeError(
+                    f"riverhog upload offset for {rel_path} is past expected length"
+                ) from exc
+            offset = recovered_offset
+            with riverhog_upload_lock(job_id):
+                record["uploaded_bytes"] = max(int(record.get("uploaded_bytes") or 0), offset)
+                touch_riverhog_session_state(job)
+            continue
+        offset = result.offset
 
     if offset != length:
         raise RuntimeError(f"riverhog upload for {rel_path} stopped at {offset} of {length} bytes")
@@ -3644,8 +3643,7 @@ def all_riverhog_session_files_uploaded(job: dict[str, Any]) -> bool:
     if not isinstance(files, dict) or not files:
         return False
     return all(
-        isinstance(item, dict) and riverhog_upload_file_complete(item)
-        for item in files.values()
+        isinstance(item, dict) and riverhog_upload_file_complete(item) for item in files.values()
     )
 
 
@@ -3819,7 +3817,6 @@ def riverhog_eager_upload_candidate_jobs() -> list[dict[str, Any]]:
         state = job.get("riverhog_session_upload")
         if isinstance(state, dict) and state.get("state") in {"canceled", "archiving", "finalized"}:
             continue
-        archive_dir = GPU_RUNTIME_DIR / "jobs" / str(job.get("job_id") or "") / "archive"
         if eager_riverhog_artifact_paths(job):
             candidates.append(job)
     candidates.sort(key=lambda item: str(item.get("created_at") or ""))
@@ -4572,10 +4569,16 @@ def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | No
         primary_files_uploaded = min(artifact_files_uploaded, primary_files_total)
     else:
         primary_files_uploaded = artifact_files_uploaded
-        primary_files_total = max(registered_files_total, len(known_artifact_paths), primary_files_uploaded)
+        primary_files_total = max(
+            registered_files_total, len(known_artifact_paths), primary_files_uploaded
+        )
     primary_files_uploaded = min(primary_files_uploaded, primary_files_total)
-    primary_files_encoded = min(max(primary_files_encoded, primary_files_uploaded), primary_files_total)
-    artifact_files_known = max(len(known_artifact_paths), registered_files_total, local_artifacts_total)
+    primary_files_encoded = min(
+        max(primary_files_encoded, primary_files_uploaded), primary_files_total
+    )
+    artifact_files_known = max(
+        len(known_artifact_paths), registered_files_total, local_artifacts_total
+    )
 
     started_at = safe_parse_iso(state.get("opened_at"))
     if started_at is None:
@@ -4620,15 +4623,11 @@ def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | No
         "uploaded_bytes": uploaded_bytes,
         "percent_bytes": round((uploaded_bytes / bytes_total * 100.0) if bytes_total else 0.0, 2),
         "percent_files": round(
-            (primary_files_uploaded / primary_files_total * 100.0)
-            if primary_files_total
-            else 0.0,
+            (primary_files_uploaded / primary_files_total * 100.0) if primary_files_total else 0.0,
             2,
         ),
         "percent_primary_files": round(
-            (primary_files_uploaded / primary_files_total * 100.0)
-            if primary_files_total
-            else 0.0,
+            (primary_files_uploaded / primary_files_total * 100.0) if primary_files_total else 0.0,
             2,
         ),
         "percent_artifact_files": round(
@@ -4852,8 +4851,7 @@ def submit_eager_gpu_job(
     if (
         not force
         and last_submitted is not None
-        and (datetime.now(UTC) - last_submitted).total_seconds()
-        < max(30.0, GPU_REPOST_SECONDS)
+        and (datetime.now(UTC) - last_submitted).total_seconds() < max(30.0, GPU_REPOST_SECONDS)
     ):
         return False
     start_gpu_job(payload)
@@ -5037,9 +5035,7 @@ def run_eager_archive_groups(
 
             running = running_eager_batches(job)
             if running:
-                job["phase"] = (
-                    f"gpu-eager:pipeline={len(running)}/{EAGER_ARCHIVE_PIPELINE_BATCHES}"
-                )
+                job["phase"] = f"gpu-eager:pipeline={len(running)}/{EAGER_ARCHIVE_PIPELINE_BATCHES}"
                 save_job(job)
                 retry_sleep(EAGER_ARCHIVE_WAIT_SECONDS, job_id=job_id)
                 continue

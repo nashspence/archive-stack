@@ -557,7 +557,10 @@ def test_incremental_collection_upload_session_requires_explicit_complete(
         },
     )
     assert registered["state"] == "open"
-    assert registered["files_total"] == 1
+    assert registered["file"]["path"] == relpath
+    assert registered["file"]["bytes"] == len(content)
+    assert registered["file"]["upload_state"] == "pending"
+    assert registered["file"]["uploaded_bytes"] == 0
 
     file_upload = service.create_or_resume_file_upload(collection_id, relpath)
     service.append_upload_chunk(
@@ -573,6 +576,50 @@ def test_incremental_collection_upload_session_requires_explicit_complete(
     assert staged["files_uploaded"] == 1
 
     completed = service.complete_upload_session(collection_id)
+    assert completed["state"] == "archiving"
+    assert completed["files_uploaded"] == 1
+
+
+def test_collection_upload_session_complete_force_syncs_direct_tusd_bytes(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+
+    upload_store = _StreamingOnlyUploadStore()
+    service = SqlAlchemyCollectionService(
+        _config(sqlite_path),
+        _FakeHotStore(),
+        upload_store,
+    )
+
+    content = b"direct tusd data-plane bytes\n"
+    relpath = "camera/day-01.webm"
+    opened = service.create_or_resume_upload_session(
+        upload_slug="Camera 2024",
+        ingest_source="/tmp/source",
+        upload_timestamp="20250712T213200Z",
+    )
+    collection_id = str(opened["collection_id"])
+    service.register_upload_session_file(
+        collection_id,
+        {
+            "path": relpath,
+            "bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        },
+    )
+    file_upload = service.create_or_resume_file_upload(collection_id, relpath)
+
+    upload_store.append_upload_chunk(
+        str(file_upload["upload_url"]),
+        offset=int(file_upload["offset"]),
+        checksum=_chunk_checksum(content),
+        content=content,
+    )
+
+    completed = service.complete_upload_session(collection_id)
+
     assert completed["state"] == "archiving"
     assert completed["files_uploaded"] == 1
 

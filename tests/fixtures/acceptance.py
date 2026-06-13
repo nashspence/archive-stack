@@ -20,7 +20,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from functools import wraps
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
 
 import httpx
 import pytest
@@ -1490,8 +1490,8 @@ class AcceptanceCollectionService:
             raise NotFound(f"collection upload file not found: {normalized_path}") from exc
         if file_record.upload_url is None:
             file_record.upload_url = (
-                f"/v1/collection-uploads/{quote(normalized_collection_id, safe='/')}/files/"
-                f"{quote(normalized_path, safe='/')}/upload"
+                f"/files/collections/{quote(normalized_collection_id, safe='')}/"
+                f"{quote(normalized_path, safe='/')}"
             )
         if self._file_upload_state(file_record) != "uploaded":
             file_record.upload_expires_at = FIXTURE_UPLOAD_EXPIRES_AT
@@ -4297,6 +4297,17 @@ def _reserve_local_port() -> _PortReservation:
     return _PortReservation(socket=reserved, port=int(reserved.getsockname()[1]))
 
 
+def _fixture_tus_upload_headers(payload: Mapping[str, object]) -> dict[str, str]:
+    headers = {
+        "Tus-Resumable": "1.0.0",
+        "Upload-Offset": str(payload["offset"]),
+        "Upload-Length": str(payload["length"]),
+    }
+    if payload.get("expires_at") is not None:
+        headers["Upload-Expires"] = str(payload["expires_at"])
+    return headers
+
+
 @dataclass(slots=True)
 class AcceptanceSystem:
     workspace: Path
@@ -4436,6 +4447,14 @@ class AcceptanceSystem:
         headers: Mapping[str, str] | None = None,
         content: bytes | None = None,
     ) -> httpx.Response:
+        direct_upload = self._direct_collection_upload_request(
+            method,
+            path,
+            headers=headers,
+            content=content,
+        )
+        if direct_upload is not None:
+            return direct_upload
         with time_block(f"http {method} {path}"):
             for attempt in range(3):
                 try:
@@ -4453,6 +4472,59 @@ class AcceptanceSystem:
                         raise
                     time.sleep(0.05)
         raise RuntimeError("unreachable")
+
+    def _direct_collection_upload_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        headers: Mapping[str, str] | None,
+        content: bytes | None,
+    ) -> httpx.Response | None:
+        parsed_path = urlsplit(path).path
+        prefix = "/files/collections/"
+        if not parsed_path.startswith(prefix):
+            return None
+        tail = parsed_path.removeprefix(prefix)
+        encoded_collection_id, separator, encoded_relpath = tail.partition("/")
+        if not separator:
+            return httpx.Response(404, json={"error": {"code": "not_found"}})
+        collection_id = unquote(encoded_collection_id)
+        relpath = unquote(encoded_relpath)
+        method = method.upper()
+        try:
+            if method == "PATCH":
+                request_headers = headers or {}
+                payload = self.collections.append_upload_chunk(
+                    collection_id,
+                    relpath,
+                    offset=int(request_headers.get("Upload-Offset", "0")),
+                    checksum=str(request_headers.get("Upload-Checksum", "")),
+                    content=content or b"",
+                )
+                return httpx.Response(204, headers=_fixture_tus_upload_headers(payload))
+            if method == "HEAD":
+                payload = self.collections.get_file_upload(collection_id, relpath)
+                return httpx.Response(204, headers=_fixture_tus_upload_headers(payload))
+            if method == "DELETE":
+                self.collections.cancel_file_upload(collection_id, relpath)
+                return httpx.Response(204, headers={"Tus-Resumable": "1.0.0"})
+            if method == "OPTIONS":
+                return httpx.Response(
+                    204,
+                    headers={
+                        "Tus-Resumable": "1.0.0",
+                        "Tus-Version": "1.0.0",
+                        "Tus-Extension": "checksum,expiration,termination",
+                        "Tus-Checksum-Algorithm": "sha256",
+                    },
+                )
+            return httpx.Response(405)
+        except Exception as exc:
+            return httpx.Response(
+                400,
+                json={"error": {"code": "bad_request", "message": str(exc)}},
+            )
 
     def seed_finalized_image(self, candidate_id: str, *, force_ready: bool = False) -> None:
         with self.state.lock:

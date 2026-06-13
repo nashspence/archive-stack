@@ -664,7 +664,7 @@ def test_cancel_cleanup_snapshots_partial_encode_totals_before_input_deletion(
     runner = load_runner(tmp_path, monkeypatch)
     runner.ensure_dirs()
     runner.init_state_store()
-    for upload_id, path in (("upload-a", "camera/a.mp4"), ("upload-b", "camera/b.mp4")):
+    for upload_id, _path in (("upload-a", "camera/a.mp4"), ("upload-b", "camera/b.mp4")):
         data_path = runner.tusd_data_path(upload_id)
         data_path.parent.mkdir(parents=True, exist_ok=True)
         data_path.write_bytes(b"a")
@@ -1427,9 +1427,13 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
             self.registered: dict[str, dict[str, object]] = {}
             self.offsets: dict[str, int] = {}
             self.completed = False
+            self._tus_client = FakeTusClient(self)
 
         def close(self) -> None:
             return
+
+        def tus_client(self) -> object:
+            return self._tus_client
 
         def create_or_resume_collection_upload_session(
             self,
@@ -1465,20 +1469,6 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
                 "checksum_algorithm": "sha256",
             }
 
-        def append_upload_chunk(
-            self,
-            upload_url: str,
-            *,
-            offset: int,
-            checksum_algorithm: str,
-            content: bytes,
-        ) -> dict[str, object]:
-            assert checksum_algorithm == "sha256"
-            path = upload_url.removeprefix("upload://")
-            assert offset == self.offsets[path]
-            self.offsets[path] = offset + len(content)
-            return {"offset": self.offsets[path], "expires_at": None}
-
         def complete_collection_upload_session(self, collection_id: str) -> dict[str, object]:
             assert collection_id == "2026/20260101T000000Z__camera-archive"
             self.completed = True
@@ -1508,6 +1498,24 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
                 "missing_bytes": 0,
                 "files": files,
             }
+
+    class FakeTusClient:
+        def __init__(self, api: FakeRiverhogApi) -> None:
+            self.api = api
+
+        def patch_chunk(
+            self,
+            upload_url: str,
+            *,
+            offset: int,
+            checksum_algorithm: str,
+            content: bytes,
+        ) -> int:
+            assert checksum_algorithm == "sha256"
+            path = upload_url.removeprefix("upload://")
+            assert offset == self.api.offsets[path]
+            self.api.offsets[path] = offset + len(content)
+            return self.api.offsets[path]
 
     fake = FakeRiverhogApi()
     monkeypatch.setattr(runner, "ApiClient", lambda: fake)

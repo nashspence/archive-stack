@@ -271,8 +271,7 @@ class SqlAlchemyCollectionService:
                     )
                 if upload.state in {"canceled", "expired"}:
                     raise Conflict(
-                        f"collection upload session is {upload.state}: "
-                        f"{upload.collection_id}"
+                        f"collection upload session is {upload.state}: {upload.collection_id}"
                     )
                 return _collection_upload_payload(
                     collection_id=upload.collection_id,
@@ -330,9 +329,7 @@ class SqlAlchemyCollectionService:
                 session_idle_ttl=self._upload_session_idle_ttl,
             )
             if upload.state != "open":
-                raise Conflict(
-                    f"collection upload session is not open: {normalized_collection_id}"
-                )
+                raise Conflict(f"collection upload session is not open: {normalized_collection_id}")
 
             existing = session.get(
                 CollectionUploadFileRecord,
@@ -346,14 +343,7 @@ class SqlAlchemyCollectionService:
                         f"{normalized_file['path']}"
                     )
                 _touch_collection_upload(upload)
-                return _collection_upload_payload(
-                    collection_id=upload.collection_id,
-                    ingest_source=upload.ingest_source,
-                    files=upload.files,
-                    state="open",
-                    collection=None,
-                    upload=upload,
-                )
+                return _collection_upload_file_registration_payload(upload, existing)
 
             _ensure_unburned_collection_limit_allows(
                 session,
@@ -361,29 +351,26 @@ class SqlAlchemyCollectionService:
                 limit_bytes=self._config.unburned_collection_bytes_limit,
             )
             file_order = (
-                max((file_record.file_order for file_record in upload.files), default=0) + 1
-            )
-            upload.files.append(
-                CollectionUploadFileRecord(
-                    collection_id=normalized_collection_id,
-                    path=normalized_file["path"],
-                    file_order=file_order,
-                    bytes=normalized_file["bytes"],
-                    sha256=normalized_file["sha256"],
-                    uploaded_bytes=0,
-                    upload_expires_at=None,
-                    tus_url=None,
+                session.scalar(
+                    select(func.max(CollectionUploadFileRecord.file_order)).where(
+                        CollectionUploadFileRecord.collection_id == normalized_collection_id
+                    )
                 )
+                or 0
+            ) + 1
+            file_record = CollectionUploadFileRecord(
+                collection_id=normalized_collection_id,
+                path=normalized_file["path"],
+                file_order=file_order,
+                bytes=normalized_file["bytes"],
+                sha256=normalized_file["sha256"],
+                uploaded_bytes=0,
+                upload_expires_at=None,
+                tus_url=None,
             )
+            session.add(file_record)
             _touch_collection_upload(upload)
-            return _collection_upload_payload(
-                collection_id=upload.collection_id,
-                ingest_source=upload.ingest_source,
-                files=upload.files,
-                state="open",
-                collection=None,
-                upload=upload,
-            )
+            return _collection_upload_file_registration_payload(upload, file_record)
 
     def complete_upload_session(self, collection_id: str) -> dict[str, object]:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
@@ -402,13 +389,13 @@ class SqlAlchemyCollectionService:
                 upload,
                 upload_store=self._upload_store,
                 session_idle_ttl=self._upload_session_idle_ttl,
+                force_offset_sync=True,
             )
             if upload is None:
                 raise NotFound(f"collection upload session not found: {normalized_collection_id}")
             if upload.state in {"canceled", "expired"}:
                 raise Conflict(
-                    f"collection upload session is {upload.state}: "
-                    f"{normalized_collection_id}"
+                    f"collection upload session is {upload.state}: {normalized_collection_id}"
                 )
             if upload.state in {"archiving", "failed"}:
                 return _collection_upload_payload(
@@ -420,9 +407,7 @@ class SqlAlchemyCollectionService:
                     upload=upload,
                 )
             if upload.state != "open":
-                raise Conflict(
-                    f"collection upload session is not open: {normalized_collection_id}"
-                )
+                raise Conflict(f"collection upload session is not open: {normalized_collection_id}")
             if not upload.files:
                 raise Conflict("collection upload session cannot complete without files")
             if not _collection_upload_is_complete_for_session(session, normalized_collection_id):
@@ -657,9 +642,8 @@ class SqlAlchemyCollectionService:
                 file_record.upload_expires_at = upload_expiry_timestamp(self._upload_ttl)
 
             _touch_collection_upload(upload)
-            if (
-                upload.state != "open"
-                and _collection_upload_is_complete_for_session(session, normalized_collection_id)
+            if upload.state != "open" and _collection_upload_is_complete_for_session(
+                session, normalized_collection_id
             ):
                 was_archiving = upload.state == "archiving"
                 _ensure_collection_upload_archiving(upload)
@@ -927,9 +911,7 @@ class SqlAlchemyCollectionService:
                     collection_stats["hot_bytes"] += file_row.bytes
                 if file_row.archived:
                     collection_stats["archived_bytes"] += file_row.bytes
-                image_ids = coverage_by_path.get(
-                    (file_row.collection_id, file_row.path), set()
-                )
+                image_ids = coverage_by_path.get((file_row.collection_id, file_row.path), set())
                 if image_ids and all(
                     image_states.get(image_id, ProtectionState.UNPROTECTED)
                     == ProtectionState.PROTECTED
@@ -954,9 +936,7 @@ class SqlAlchemyCollectionService:
                     {
                         **collection_stats,
                         "pending_bytes": bytes_total - archived_bytes,
-                        "protection_state": _api_collection_protection_state(
-                            protection_state
-                        ),
+                        "protection_state": _api_collection_protection_state(protection_state),
                         "recovery": {
                             "available": [
                                 name
@@ -1419,6 +1399,8 @@ def _collection_file_upload_payload(
 def _sync_collection_upload_files(
     file_records: Sequence[CollectionUploadFileRecord],
     upload_store: UploadStore,
+    *,
+    force: bool = False,
 ) -> None:
     for file_record in file_records:
         updated = sync_upload_state(
@@ -1426,6 +1408,7 @@ def _sync_collection_upload_files(
             target_path=_collection_upload_target_path(file_record.collection_id, file_record.path),
             length=file_record.bytes,
             upload_store=upload_store,
+            force=force,
         )
         _apply_upload_lifecycle_state(file_record, updated)
 
@@ -1465,10 +1448,11 @@ def _sync_and_expire_collection_upload(
     *,
     upload_store: UploadStore,
     session_idle_ttl: timedelta | None = None,
+    force_offset_sync: bool = False,
 ) -> CollectionUploadRecord | None:
     if upload.state in {"canceled", "expired"}:
         return upload
-    _sync_collection_upload_files(upload.files, upload_store)
+    _sync_collection_upload_files(upload.files, upload_store, force=force_offset_sync)
     expired_any = _expire_collection_upload_files(upload.files, upload_store)
     if upload.state == "open":
         if _collection_upload_session_is_idle_expired(upload, ttl=session_idle_ttl):
@@ -1784,28 +1768,43 @@ def _collection_upload_payload(
         "archive_phase": getattr(upload_record, "archive_phase", None),
         "archive_phase_updated_at": getattr(upload_record, "archive_phase_updated_at", None),
         "archive_object_path": getattr(upload_record, "archive_object_path", None),
-        "archive_uploaded_bytes": getattr(
-            upload_record, "archive_multipart_uploaded_bytes", None
-        ),
+        "archive_uploaded_bytes": getattr(upload_record, "archive_multipart_uploaded_bytes", None),
         "archive_total_bytes": getattr(upload_record, "archive_multipart_content_length", None),
-        "archive_uploaded_parts": getattr(
-            upload_record, "archive_multipart_uploaded_parts", None
-        ),
+        "archive_uploaded_parts": getattr(upload_record, "archive_multipart_uploaded_parts", None),
         "archive_total_parts": getattr(upload_record, "archive_multipart_total_parts", None),
         "files": [
-            {
-                "path": file_record.path,
-                "bytes": file_record.bytes,
-                "sha256": file_record.sha256,
-                "upload_state": upload_state_name(
-                    uploaded_bytes=file_record.uploaded_bytes, length=file_record.bytes
-                ),
-                "uploaded_bytes": file_record.uploaded_bytes,
-                "upload_state_expires_at": file_record.upload_expires_at,
-            }
+            _collection_upload_file_payload(file_record)
             for file_record in sorted(files, key=lambda current: current.file_order)
         ],
         "collection": _collection_summary_payload(collection) if collection is not None else None,
+    }
+
+
+def _collection_upload_file_registration_payload(
+    upload: CollectionUploadRecord,
+    file_record: CollectionUploadFileRecord,
+) -> dict[str, object]:
+    return {
+        "collection_id": upload.collection_id,
+        "ingest_source": upload.ingest_source,
+        "state": upload.state or "open",
+        "file": _collection_upload_file_payload(file_record),
+    }
+
+
+def _collection_upload_file_payload(
+    file_record: CollectionUploadFileRecord,
+) -> dict[str, object]:
+    return {
+        "path": file_record.path,
+        "bytes": file_record.bytes,
+        "sha256": file_record.sha256,
+        "upload_state": upload_state_name(
+            uploaded_bytes=file_record.uploaded_bytes,
+            length=file_record.bytes,
+        ),
+        "uploaded_bytes": file_record.uploaded_bytes,
+        "upload_state_expires_at": file_record.upload_expires_at,
     }
 
 
@@ -2038,9 +2037,7 @@ def _collection_image_coverage(
     if not image_ids:
         return [], {}, {}
 
-    image_metadata = {
-        row.image_id: (row.filename, row.required_copy_count) for row in image_rows
-    }
+    image_metadata = {row.image_id: (row.filename, row.required_copy_count) for row in image_rows}
 
     covered_path_rows = session.execute(
         select(
@@ -2097,9 +2094,7 @@ def _collection_image_coverage(
             )
         )
         if copy_counts_toward_protection(copy.state):
-            registered_copy_counts[copy.image_id] = (
-                registered_copy_counts.get(copy.image_id, 0) + 1
-            )
+            registered_copy_counts[copy.image_id] = registered_copy_counts.get(copy.image_id, 0) + 1
         if copy_counts_as_verified(
             state=copy.state,
             verification_state=copy.verification_state,
