@@ -1546,6 +1546,67 @@ def test_save_job_merges_newer_eager_archive_state(
     assert eager["gpu_results"] == {"batch-1": {"state": "succeeded"}}
 
 
+def test_save_job_does_not_resurrect_terminal_job_from_stale_worker_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "cancelled",
+            "phase": "cancelled",
+            "finished_at": "2026-01-01T00:00:02Z",
+        }
+    )
+
+    saved = runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "running",
+            "phase": "cancel_requested",
+            "cancel_requested": True,
+            "updated_at": "2026-01-01T00:00:01Z",
+        }
+    )
+
+    assert saved["state"] == "cancelled"
+    stored = runner.load_job("job-1")
+    assert stored["state"] == "cancelled"
+    assert stored["phase"] == "cancelled"
+
+
+def test_save_job_allows_explicit_resume_from_cancelled_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "cancelled",
+            "phase": "cancelled",
+            "finished_at": "2026-01-01T00:00:02Z",
+        }
+    )
+
+    saved = runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "queued",
+            "phase": "queued",
+            "_allow_clear_cancel": True,
+        }
+    )
+
+    assert saved["state"] == "queued"
+    assert runner.load_job("job-1")["state"] == "queued"
+
+
 def test_riverhog_upload_progress_uses_expected_archive_output_count(
     tmp_path: Path,
     monkeypatch,

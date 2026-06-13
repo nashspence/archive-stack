@@ -1510,6 +1510,13 @@ def save_job(job: dict[str, Any]) -> dict[str, Any]:
     job_id = str(payload["job_id"])
     with state_lock:
         current = read_state("job", job_id)
+        if (
+            not allow_clear_cancel
+            and isinstance(current, dict)
+            and current.get("state") in TERMINAL_JOB_STATES
+            and payload.get("state") not in TERMINAL_JOB_STATES
+        ):
+            return current
         if isinstance(current, dict) and payload.get("state") not in TERMINAL_JOB_STATES:
             current_riverhog = current.get("riverhog_session_upload")
             payload_riverhog = payload.get("riverhog_session_upload")
@@ -3604,6 +3611,8 @@ def riverhog_upload_loop() -> None:
                     return
                 archive_dir = GPU_RUNTIME_DIR / "jobs" / str(job.get("job_id") or "") / "archive"
                 maybe_upload_riverhog_artifacts(job, archive_dir)
+        except JobCancelled as exc:
+            log.info("riverhog eager upload worker noticed cancellation: %s", exc)
         except Exception:
             log.exception("riverhog eager upload worker failed")
 
