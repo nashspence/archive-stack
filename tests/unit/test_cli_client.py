@@ -599,6 +599,25 @@ def test_append_upload_chunk_can_override_absolute_upload_base_url(monkeypatch) 
     )
 
 
+def test_upload_client_can_disable_http2_independently(monkeypatch) -> None:
+    created_http2: list[bool] = []
+
+    def fake_upload_client(self: TusHttpClient) -> httpx.Client:
+        created_http2.append(self._http2)
+        return httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(404)))
+
+    monkeypatch.setenv("RIVERHOG_HTTP2", "true")
+    monkeypatch.setenv("RIVERHOG_UPLOAD_HTTP2", "false")
+    monkeypatch.setattr(TusHttpClient, "_client_for_request", fake_upload_client)
+
+    client = ApiClient(base_url="https://api.test")
+    assert client.http2 is True
+    assert client.upload_http2 is False
+
+    assert client.tus_client().head_offset("https://uploads.test/fx-1/e1") == -1
+    assert created_http2 == [False]
+
+
 def test_api_client_reuses_http_client_for_requests(monkeypatch) -> None:
     created = 0
     seen: list[str] = []

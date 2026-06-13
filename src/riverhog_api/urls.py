@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from urllib.parse import quote, urlsplit, urlunsplit
+import base64
+import hashlib
+from datetime import UTC, datetime
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
 
 from fastapi import Request
 
@@ -21,7 +24,30 @@ def public_request_url(request: Request) -> str:
     return str(request.url)
 
 
-def public_tusd_upload_url(tus_url: str) -> str:
+def _upload_expires_epoch(expires_at: str | None) -> int | None:
+    if expires_at is None:
+        return None
+    normalized = expires_at.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return int(parsed.timestamp())
+
+
+def _signed_tusd_query(path: str, *, expires_at: str | None, secret: str) -> dict[str, str]:
+    expires = _upload_expires_epoch(expires_at)
+    if expires is None:
+        return {}
+    normalized_uri = unquote(path)
+    digest = hashlib.md5(f"{expires}{normalized_uri} {secret}".encode("utf-8")).digest()
+    token = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    return {"md5": token, "expires": str(expires)}
+
+
+def public_tusd_upload_url(tus_url: str, *, expires_at: str | None = None) -> str:
     config = load_runtime_config()
     public_base_url = str(config.tusd_public_base_url or config.tusd_base_url).rstrip("/")
     internal_base_url = config.tusd_base_url.rstrip("/")
@@ -38,4 +64,15 @@ def public_tusd_upload_url(tus_url: str) -> str:
     public_path = (
         f"{public.path.rstrip('/')}/{encoded_suffix}" if encoded_suffix else public.path.rstrip("/")
     )
-    return urlunsplit((public.scheme, public.netloc, public_path, parsed.query, parsed.fragment))
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if config.tusd_public_signing_secret:
+        query.update(
+            _signed_tusd_query(
+                public_path,
+                expires_at=expires_at,
+                secret=config.tusd_public_signing_secret,
+            )
+        )
+    return urlunsplit(
+        (public.scheme, public.netloc, public_path, urlencode(query), parsed.fragment)
+    )

@@ -148,7 +148,10 @@ def create_or_resume_collection_file_upload(
     container: ContainerDep,
 ) -> CollectionFileUploadSessionOut:
     payload = container.collections.create_or_resume_file_upload(collection_id, path)
-    payload["upload_url"] = public_tusd_upload_url(str(payload["upload_url"]))
+    payload["upload_url"] = public_tusd_upload_url(
+        str(payload["upload_url"]),
+        expires_at=str(payload["expires_at"]) if payload.get("expires_at") is not None else None,
+    )
     response.headers.update(
         tus_upload_headers(payload, request=request, location=str(payload["upload_url"]))
     )

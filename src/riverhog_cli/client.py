@@ -65,6 +65,7 @@ class ApiClient:
         self.host_header = os.getenv("RIVERHOG_HOST_HEADER", "").strip() or None
         self.verify_tls = _bool_env("RIVERHOG_TLS_VERIFY", True)
         self.http2 = _bool_env("RIVERHOG_HTTP2", True)
+        self.upload_http2 = _bool_env("RIVERHOG_UPLOAD_HTTP2", self.http2)
         self._request_client: httpx.Client | None = None
         self._upload_client: TusHttpClient | None = None
 
@@ -115,7 +116,7 @@ class ApiClient:
                     _UPLOAD_TIMEOUT_SECONDS,
                 ),
                 verify_tls=self.verify_tls,
-                http2=self.http2,
+                http2=self.upload_http2,
                 url_rewriter=self._upload_url,
             )
         return self._upload_client

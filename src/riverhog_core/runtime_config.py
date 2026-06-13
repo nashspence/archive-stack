@@ -133,6 +133,7 @@ class RuntimeConfig:
     tusd_base_url: str
     tusd_hook_secret: str
     tusd_public_base_url: str | None = None
+    tusd_public_signing_secret: str | None = None
     upload_staging_root: Path = field(default_factory=lambda: Path(".riverhog/uploads"))
     tusd_append_timeout_seconds: float = 60.0
     database_url: str = ""
@@ -616,6 +617,9 @@ def load_runtime_config() -> RuntimeConfig:
         ),
         tusd_public_base_url=(
             os.getenv("RIVERHOG_TUSD_PUBLIC_BASE_URL", "").strip().rstrip("/") or None
+        ),
+        tusd_public_signing_secret=(
+            os.getenv("RIVERHOG_TUSD_PUBLIC_SIGNING_SECRET", "").strip() or None
         ),
         tusd_hook_secret=os.getenv("RIVERHOG_TUSD_HOOK_SECRET", "dev-tusd-hook-secret"),
         tusd_append_timeout_seconds=_parse_float(
