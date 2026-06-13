@@ -93,6 +93,7 @@ services:
       - "8093"
       - "-base-path"
       - "/files/"
+      - "-behind-proxy"
       - "-upload-dir"
       - "/uploads"
       - "-hooks-http"
