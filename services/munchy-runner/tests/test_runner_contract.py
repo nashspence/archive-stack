@@ -72,6 +72,35 @@ def test_capabilities_advertise_munchy_profile_target(tmp_path: Path, monkeypatc
     assert capabilities["operations"]["notify_preflight_failed"] is True
 
 
+def test_archive_admission_uses_eager_batch_peak_for_gpu_scratch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    monkeypatch.setattr(runner, "EAGER_ARCHIVE_BATCH_FILES", 2)
+    monkeypatch.setattr(runner, "EAGER_ARCHIVE_PIPELINE_BATCHES", 2)
+    monkeypatch.setattr(runner, "GPU_SCRATCH_MULTIPLIER", 2.5)
+    monkeypatch.setattr(runner, "gpu_input_copy_multiplier", lambda: 0.0)
+    files = [
+        runner.InputFileSpec(path=f"camera/{index}.mp4", bytes=size)
+        for index, size in enumerate([100, 90, 80, 70, 60], start=1)
+    ]
+    hint = runner.InputUploadStorageHint(
+        workflow_mode="archive",
+        groups={
+            "camera": runner.StorageGroupHint(
+                archive_mode="av1_nvenc",
+                gpu_tasks=["archive_video"],
+            )
+        },
+    )
+
+    required = runner.gpu_scratch_admission_required_bytes(files, hint)
+
+    assert required == int((100 + 90 + 80 + 70) * 2.5)
+    assert required < runner.gpu_scratch_required_bytes(sum(item.bytes for item in files), hint)
+
+
 def test_scheduler_reserves_running_job_slots_and_leaves_extra_jobs_queued(
     tmp_path: Path,
     monkeypatch,

@@ -1176,6 +1176,62 @@ def gpu_scratch_required_bytes(total_bytes: int, hint: InputUploadStorageHint) -
     return int(total_bytes * (gpu_input_copy_multiplier() + multiplier))
 
 
+def storage_group_hint_for_path(
+    path: str,
+    hint: InputUploadStorageHint,
+) -> StorageGroupHint:
+    group_name = input_path_group(path)
+    if hint.groups:
+        group = hint.groups.get(group_name)
+        if group is not None:
+            return group
+    return StorageGroupHint(
+        archive_mode=hint.archive_mode,
+        gpu_tasks=hint.gpu_tasks,
+    )
+
+
+def storage_group_hint_is_eager_archive_only(group: StorageGroupHint) -> bool:
+    if str(group.archive_mode or "av1_nvenc") != "av1_nvenc":
+        return False
+    return set(str(task) for task in group.gpu_tasks) == {"archive_video"}
+
+
+def eager_archive_admission_bytes(files: list[InputFileSpec]) -> int:
+    if not files:
+        return 0
+    concurrent_files = EAGER_ARCHIVE_BATCH_FILES * EAGER_ARCHIVE_PIPELINE_BATCHES
+    if concurrent_files <= 0:
+        return 0
+    largest = sorted((int(item.bytes) for item in files), reverse=True)[:concurrent_files]
+    return sum(largest)
+
+
+def gpu_scratch_admission_required_bytes(
+    files: list[InputFileSpec],
+    hint: InputUploadStorageHint,
+) -> int:
+    multiplier = storage_hint_scratch_extra_multiplier(hint)
+    if multiplier <= 0:
+        return 0
+    if hint.workflow_mode != "archive":
+        return gpu_scratch_required_bytes(sum(item.bytes for item in files), hint)
+
+    eager_files: list[InputFileSpec] = []
+    non_eager_gpu_bytes = 0
+    for item in files:
+        group = storage_group_hint_for_path(item.path, hint)
+        if not group.gpu_tasks:
+            continue
+        if storage_group_hint_is_eager_archive_only(group):
+            eager_files.append(item)
+        else:
+            non_eager_gpu_bytes += int(item.bytes)
+
+    required_source_bytes = non_eager_gpu_bytes + eager_archive_admission_bytes(eager_files)
+    return int(required_source_bytes * (gpu_input_copy_multiplier() + multiplier))
+
+
 def input_upload_storage_hint(upload: dict[str, Any]) -> InputUploadStorageHint:
     raw = upload.get("storage_hint")
     if not isinstance(raw, dict):
@@ -1201,7 +1257,7 @@ def require_input_upload_capacity(
     total_bytes = sum(item.bytes for item in files)
     reserved_spool_bytes = sum(input_upload_remaining_bytes(upload) for upload in active_uploads)
     spool_required = reserved_spool_bytes + total_bytes
-    gpu_required = gpu_scratch_required_bytes(total_bytes, storage_hint)
+    gpu_required = gpu_scratch_admission_required_bytes(files, storage_hint)
 
     requirements = [
         ("source upload spool", TUSD_DIR, spool_required, reserved_spool_bytes),
