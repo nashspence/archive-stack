@@ -11,6 +11,52 @@ from riverhog_cli.client import ApiClient, _iter_upload_body
 from riverhog_core.domain.errors import ServiceUnavailable
 
 
+def test_create_or_resume_collection_upload_uses_collection_upload_endpoint(monkeypatch) -> None:
+    captured: list[tuple[str, str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append((request.method, str(request.url), request.read().decode("utf-8")))
+        return httpx.Response(
+            200,
+            json={
+                "collection_id": "2026/20260524T190233Z__tax-2022",
+                "ingest_source": "/tmp/tax/2022",
+                "state": "uploading",
+                "files_total": 1,
+                "files_pending": 1,
+                "files_partial": 0,
+                "files_uploaded": 0,
+                "bytes_total": 12,
+                "uploaded_bytes": 0,
+                "missing_bytes": 12,
+                "upload_state_expires_at": None,
+                "files": [],
+                "collection": None,
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_client(self: ApiClient) -> httpx.Client:
+        return httpx.Client(base_url=self.base_url, transport=transport)
+
+    monkeypatch.setattr(ApiClient, "_client", fake_client)
+
+    client = ApiClient(base_url="https://api.test")
+    client.create_or_resume_collection_upload(
+        "Tax 2022",
+        [{"path": "invoice.pdf", "bytes": 12, "sha256": "a" * 64}],
+        ingest_source="/tmp/tax/2022",
+        upload_timestamp="20250712T213200Z",
+    )
+
+    assert captured[0][0] == "POST"
+    assert captured[0][1] == "https://api.test/v1/collection-uploads"
+    assert '"slug":"Tax 2022"' in str(captured[0][2])
+    assert '"upload_timestamp":"20250712T213200Z"' in str(captured[0][2])
+    assert "collection_id" not in str(captured[0][2])
+
+
 def test_create_or_resume_incremental_upload_session_uses_session_endpoint(
     monkeypatch,
 ) -> None:

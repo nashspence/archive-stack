@@ -132,7 +132,6 @@ class RuntimeConfig:
     s3_force_path_style: bool
     tusd_base_url: str
     tusd_hook_secret: str
-    tusd_public_base_url: str | None = None
     tusd_append_timeout_seconds: float = 60.0
     database_url: str = ""
     incomplete_upload_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
@@ -223,8 +222,6 @@ class RuntimeConfig:
     def __post_init__(self) -> None:
         if not self.database_url:
             object.__setattr__(self, "database_url", DEFAULT_DATABASE_URL)
-        if self.tusd_public_base_url is None:
-            object.__setattr__(self, "tusd_public_base_url", self.tusd_base_url)
         log_level = self.log_level.strip().upper()
         if log_level not in {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}:
             raise ValueError(
@@ -476,9 +473,6 @@ def load_runtime_config() -> RuntimeConfig:
         minimum=1,
     )
     public_base_url = os.getenv("RIVERHOG_PUBLIC_BASE_URL", "").strip() or None
-    tusd_public_base_url = (
-        os.getenv("RIVERHOG_TUSD_PUBLIC_BASE_URL", "").strip().rstrip("/") or None
-    )
     ots_stamp_command = _parse_command(
         os.getenv("RIVERHOG_OTS_STAMP_COMMAND", "ots"),
         name="RIVERHOG_OTS_STAMP_COMMAND",
@@ -610,7 +604,6 @@ def load_runtime_config() -> RuntimeConfig:
         tusd_base_url=os.getenv("RIVERHOG_TUSD_BASE_URL", "http://127.0.0.1:1080/files").rstrip(
             "/"
         ),
-        tusd_public_base_url=tusd_public_base_url,
         tusd_hook_secret=os.getenv("RIVERHOG_TUSD_HOOK_SECRET", "dev-tusd-hook-secret"),
         tusd_append_timeout_seconds=_parse_float(
             os.getenv("RIVERHOG_TUSD_APPEND_TIMEOUT_SECONDS", "60"),

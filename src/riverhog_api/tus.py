@@ -16,7 +16,7 @@ def tus_upload_headers(payload: dict[str, object], *, request: Request) -> dict[
         "Cache-Control": "no-store",
         "Upload-Offset": str(payload["offset"]),
         "Upload-Length": str(payload["length"]),
-        "Location": str(payload.get("upload_url") or request.url),
+        "Location": str(request.url),
     }
     if payload.get("expires_at") is not None:
         headers["Upload-Expires"] = str(payload["expires_at"])

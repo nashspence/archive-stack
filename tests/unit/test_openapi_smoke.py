@@ -694,18 +694,14 @@ def _assert_contract_patch_request_requirements(
 
 
 def test_collection_upload_runtime_matches_contract_headers(monkeypatch) -> None:
-    monkeypatch.setenv("RIVERHOG_TUSD_BASE_URL", "https://uploads.test")
-    monkeypatch.setenv("RIVERHOG_TUSD_PUBLIC_BASE_URL", "https://uploads-public.test/files")
+    monkeypatch.setenv("RIVERHOG_PUBLIC_BASE_URL", "https://riverhog.test")
     with _contract_runtime_client() as client:
         runtime_path = "/v1/collection-uploads/docs/files/report.txt/upload"
         contract_path = "/v1/collection-uploads/{collection_id}/files/{path}/upload"
 
         post = client.post(runtime_path)
         assert post.status_code == 200
-        assert post.json()["upload_url"] == (
-            "https://uploads-public.test/files/collections/docs/report.txt"
-        )
-        assert post.headers["Location"] == post.json()["upload_url"]
+        assert post.json()["upload_url"] == f"https://riverhog.test{runtime_path}"
         _assert_contract_success_headers(
             post,
             contract_path=contract_path,
@@ -713,12 +709,51 @@ def test_collection_upload_runtime_matches_contract_headers(monkeypatch) -> None
             status_code="200",
         )
 
+        patch = client.patch(
+            runtime_path,
+            headers=_valid_tus_chunk_headers(),
+            content=b"chunk-bytes",
+        )
+        assert patch.status_code == 204
+        _assert_contract_success_headers(
+            patch,
+            contract_path=contract_path,
+            method="patch",
+            status_code="204",
+        )
+
+        head = client.head(runtime_path)
+        assert head.status_code == 204
+        _assert_contract_success_headers(
+            head,
+            contract_path=contract_path,
+            method="head",
+            status_code="204",
+        )
+
+        delete = client.delete(runtime_path)
+        assert delete.status_code == 204
+        _assert_contract_success_headers(
+            delete,
+            contract_path=contract_path,
+            method="delete",
+            status_code="204",
+        )
+
+        options = client.options(runtime_path)
+        assert options.status_code == 204
+        _assert_contract_success_headers(
+            options,
+            contract_path=contract_path,
+            method="options",
+            status_code="204",
+        )
+
 
 def test_collection_upload_response_preserves_literal_percent_encoded_file_names(
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_TUSD_BASE_URL", "https://uploads.test")
-    monkeypatch.setenv("RIVERHOG_TUSD_PUBLIC_BASE_URL", "https://uploads-public.test/files")
+    monkeypatch.setenv("RIVERHOG_PUBLIC_BASE_URL", "https://riverhog.test")
     with _contract_runtime_client() as client:
         runtime_path = (
             "/v1/collection-uploads/docs/files/Logos/AZ%2520Logo%2520ClrAZ.jpg/upload"
@@ -727,9 +762,7 @@ def test_collection_upload_response_preserves_literal_percent_encoded_file_names
         post = client.post(runtime_path)
 
         assert post.status_code == 200
-        assert post.json()["upload_url"] == (
-            "https://uploads-public.test/files/collections/docs/Logos/AZ%20Logo%20ClrAZ.jpg"
-        )
+        assert post.json()["upload_url"] == f"https://riverhog.test{runtime_path}"
 
 
 def test_fetch_upload_runtime_matches_contract_headers(monkeypatch) -> None:
@@ -786,6 +819,15 @@ def test_fetch_upload_runtime_matches_contract_headers(monkeypatch) -> None:
             contract_path=contract_path,
             method="options",
             status_code="204",
+        )
+
+
+def test_collection_upload_runtime_enforces_contract_patch_request_requirements() -> None:
+    with _contract_runtime_client() as client:
+        _assert_contract_patch_request_requirements(
+            client,
+            runtime_path="/v1/collection-uploads/docs/files/report.txt/upload",
+            contract_path="/v1/collection-uploads/{collection_id}/files/{path}/upload",
         )
 
 

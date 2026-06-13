@@ -4,7 +4,7 @@ import base64
 import hashlib
 import os
 import time
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -183,6 +183,24 @@ class ApiClient:
         if not isinstance(payload, dict):
             raise BadRequest("API returned a non-object JSON payload")
         return payload
+
+    def create_or_resume_collection_upload(
+        self,
+        slug: str,
+        files: Sequence[Mapping[str, Any]],
+        *,
+        ingest_source: str | None = None,
+        upload_timestamp: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "slug": slug,
+            "files": [dict(file) for file in files],
+        }
+        if ingest_source is not None:
+            payload["ingest_source"] = ingest_source
+        if upload_timestamp is not None:
+            payload["upload_timestamp"] = upload_timestamp
+        return self._json("POST", "/v1/collection-uploads", json=payload)
 
     def create_or_resume_collection_upload_session(
         self,
