@@ -827,10 +827,13 @@ def test_cleanup_consumed_shared_input_files_removes_existing_consumed_files(
     (root / "camera" / "b.mp4").write_bytes(b"video-b")
 
     removed = runner.cleanup_consumed_shared_input_files(upload, {"camera"})
+    progress = runner.shared_input_tree_progress(upload, {"camera"})
 
     assert removed == 1
     assert not (root / "camera" / "a.mp4").exists()
     assert (root / "camera" / "b.mp4").exists()
+    assert progress["input_tree_files_ready"] == 2
+    assert progress["input_tree_bytes_ready"] == 14
 
 
 def test_link_or_copy_replaces_destination_atomically_on_copy_fallback(

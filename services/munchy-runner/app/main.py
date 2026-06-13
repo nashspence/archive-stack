@@ -1696,8 +1696,12 @@ def shared_input_tree_progress(upload: dict[str, Any], group_names: set[str]) ->
     files_ready = 0
     bytes_ready = 0
     for file_state in upload_files_for_groups(upload, group_names):
-        dest = root / str(file_state["path"])
         expected_bytes = int(file_state["bytes"])
+        if file_state.get("consumed_at"):
+            files_ready += 1
+            bytes_ready += expected_bytes
+            continue
+        dest = root / str(file_state["path"])
         if file_matches_expected(dest, expected_bytes):
             files_ready += 1
             bytes_ready += expected_bytes
