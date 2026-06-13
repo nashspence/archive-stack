@@ -1516,7 +1516,12 @@ def test_riverhog_upload_progress_uses_expected_archive_output_count(
     assert progress["expected_primary_files_total"] == 3636
     assert progress["files_total"] == 3636
     assert progress["files_uploaded"] == 6
+    assert progress["primary_files_total"] == 3636
+    assert progress["primary_files_uploaded"] == 6
+    assert progress["artifact_files_known"] == 7
+    assert progress["artifact_files_uploaded"] == 6
     assert progress["percent_files"] == 0.17
+    assert progress["percent_primary_files"] == 0.17
 
 
 def test_riverhog_upload_progress_prefers_recent_burst_rate(
@@ -1567,7 +1572,7 @@ def test_riverhog_upload_progress_counts_known_local_sidecars(
         lambda job: {"files_total": 1},
     )
 
-    video = tmp_path / "archive" / "camera" / "a.webm"
+    video = runner.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive" / "camera" / "a.webm"
     sidecar = runner.source_artifact_sidecar_for_archive_output(video)
     video.parent.mkdir(parents=True)
     video.write_bytes(b"video")
@@ -1594,7 +1599,12 @@ def test_riverhog_upload_progress_counts_known_local_sidecars(
 
     assert progress["registered_files_total"] == 0
     assert progress["local_artifacts_total"] == 2
-    assert progress["files_total"] == 2
+    assert progress["files_total"] == 1
+    assert progress["primary_files_total"] == 1
+    assert progress["primary_files_encoded"] == 1
+    assert progress["primary_files_uploaded"] == 0
+    assert progress["artifact_files_known"] == 2
+    assert progress["artifact_files_pending_local"] == 2
 
 
 def test_cancel_riverhog_upload_session_cancels_open_session(

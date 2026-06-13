@@ -363,22 +363,37 @@ def format_input_upload_progress(progress: dict[str, Any]) -> str:
 
 
 def format_riverhog_upload_progress(progress: dict[str, Any]) -> str:
-    files_uploaded = int(progress.get("files_uploaded") or 0)
-    files_total = int(progress.get("files_total") or 0)
-    registered_files_total = int(progress.get("registered_files_total") or files_total)
+    primary_uploaded = int(
+        progress.get("primary_files_uploaded") or progress.get("files_uploaded") or 0
+    )
+    primary_total = int(progress.get("primary_files_total") or progress.get("files_total") or 0)
+    primary_encoded = int(progress.get("primary_files_encoded") or 0)
+    artifact_uploaded = int(progress.get("artifact_files_uploaded") or 0)
+    artifact_known = int(progress.get("artifact_files_known") or 0)
     uploaded_bytes = int(progress.get("uploaded_bytes") or 0)
     bytes_total = int(progress.get("bytes_total") or 0)
-    pct = progress_percent(progress, percent_key="percent_files")
+    pct = progress_percent(progress, percent_key="percent_primary_files")
     rate = int(progress.get("rate_bytes_per_second") or 0)
     state = str(progress.get("state") or "").strip()
-    parts = [
-        f"riverhog upload {files_uploaded}/{files_total} files",
-        f"{pct:.2f}%",
-    ]
-    if bytes_total and registered_files_total >= files_total:
-        parts.insert(1, format_progress_bytes(uploaded_bytes, bytes_total))
+    if primary_total:
+        parts = [
+            f"riverhog handoff {primary_uploaded}/{primary_total} recordings delivered",
+            f"{pct:.2f}%",
+        ]
+        if primary_encoded:
+            parts.append(f"{primary_encoded} encoded")
+    else:
+        artifact_pct = progress_percent(progress, percent_key="percent_artifact_files")
+        parts = [
+            f"riverhog handoff {artifact_uploaded}/{artifact_known} artifacts",
+            f"{artifact_pct:.2f}%",
+        ]
+    if artifact_known:
+        parts.append(f"{artifact_uploaded}/{artifact_known} artifacts")
+    if bytes_total:
+        parts.append(format_progress_bytes(uploaded_bytes, bytes_total))
     elif uploaded_bytes:
-        parts.insert(1, f"{format_bytes(uploaded_bytes)} uploaded")
+        parts.append(f"{format_bytes(uploaded_bytes)} uploaded")
     if state and state not in {"open", "uploading"}:
         parts.append(state)
     if rate:
@@ -869,8 +884,8 @@ class RichProgressRenderer(ProgressRenderer):
         riverhog_progress = job.get("riverhog_upload_progress")
         if isinstance(riverhog_progress, dict):
             table.add_row(
-                "Riverhog Upload",
-                self._bar(riverhog_progress, percent_key="percent_files"),
+                "Riverhog Handoff",
+                self._bar(riverhog_progress, percent_key="percent_primary_files"),
             )
             table.add_row("", format_riverhog_upload_progress(riverhog_progress))
 

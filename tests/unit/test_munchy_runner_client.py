@@ -60,20 +60,24 @@ def test_format_job_summary_line_includes_upload_and_encode_progress() -> None:
 def test_format_riverhog_upload_progress_uses_expected_file_total() -> None:
     line = format_riverhog_upload_progress(
         {
-            "files_uploaded": 6,
-            "files_total": 3636,
-            "registered_files_total": 7,
+            "primary_files_uploaded": 3,
+            "primary_files_total": 20,
+            "primary_files_encoded": 4,
+            "artifact_files_uploaded": 6,
+            "artifact_files_known": 7,
             "uploaded_bytes": 1_614_000,
             "bytes_total": 2_130_000,
-            "percent_files": 0.17,
+            "percent_primary_files": 15.0,
             "rate_bytes_per_second": 9_000,
             "state": "open",
         }
     )
 
-    assert line.startswith("riverhog upload 6/3636 files")
-    assert "0.17%" in line
-    assert "1.54 MiB uploaded" in line
+    assert line.startswith("riverhog handoff 3/20 recordings delivered")
+    assert "15.00%" in line
+    assert "4 encoded" in line
+    assert "6/7 artifacts" in line
+    assert "1.54 MiB / 2.03 MiB" in line
     assert "72." not in line
 
 

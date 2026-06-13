@@ -3238,6 +3238,36 @@ def uploaded_riverhog_paths(job: dict[str, Any]) -> set[str]:
     return uploaded
 
 
+def path_relative_to_archive(path: Path, archive_dir: Path) -> str | None:
+    try:
+        return path.relative_to(archive_dir).as_posix()
+    except ValueError:
+        return None
+
+
+def primary_archive_output_paths(job: dict[str, Any], archive_dir: Path) -> list[str]:
+    eager = job.get("eager_archive")
+    if not isinstance(eager, dict):
+        return []
+    files = eager.get("files")
+    if not isinstance(files, dict):
+        return []
+    paths: list[str] = []
+    seen: set[str] = set()
+    for item in files.values():
+        if not isinstance(item, dict) or item.get("state") != "encoded":
+            continue
+        output_value = item.get("output")
+        if not output_value:
+            continue
+        rel_path = path_relative_to_archive(Path(str(output_value)), archive_dir)
+        if rel_path is None or rel_path in seen:
+            continue
+        seen.add(rel_path)
+        paths.append(rel_path)
+    return paths
+
+
 def riverhog_artifact_paths(
     job: dict[str, Any],
     archive_dir: Path,
@@ -4163,18 +4193,35 @@ def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | No
 
     registered_files_total = len(file_items)
     local_artifacts_total = 0
+    local_artifact_paths: set[str] = set()
     if riverhog_config_enabled(job):
         archive_dir = GPU_RUNTIME_DIR / "jobs" / str(job.get("job_id") or "") / "archive"
-        local_artifacts_total = len(eager_riverhog_artifact_paths(job))
+        local_artifact_paths = {
+            rel_path
+            for path in eager_riverhog_artifact_paths(job)
+            if (rel_path := path_relative_to_archive(path, archive_dir)) is not None
+        }
+        local_artifacts_total = len(local_artifact_paths)
         if not local_artifacts_total:
-            local_artifacts_total = len(archive_dir_artifact_paths(archive_dir))
+            local_artifact_paths = {
+                rel_path
+                for path in archive_dir_artifact_paths(archive_dir)
+                if (rel_path := path_relative_to_archive(path, archive_dir)) is not None
+            }
+            local_artifacts_total = len(local_artifact_paths)
+    else:
+        archive_dir = GPU_RUNTIME_DIR / "jobs" / str(job.get("job_id") or "") / "archive"
+    registered_artifact_paths = {str(path) for path in files if isinstance(path, str)}
+    known_artifact_paths = registered_artifact_paths | local_artifact_paths
     expected_primary_files_total = int(job.get("riverhog_expected_primary_files_total") or 0)
-    files_total = max(registered_files_total, local_artifacts_total, expected_primary_files_total)
     encode_progress = encode_progress_for_job(job)
+    encode_files_total = 0
+    encode_files_encoded = 0
     if isinstance(encode_progress, dict):
-        files_total = max(files_total, int(encode_progress.get("files_total") or 0))
-    files_uploaded = 0
-    files_deleted = 0
+        encode_files_total = int(encode_progress.get("files_total") or 0)
+        encode_files_encoded = int(encode_progress.get("files_encoded") or 0)
+    artifact_files_uploaded = 0
+    artifact_files_deleted = 0
     bytes_total = 0
     uploaded_bytes = 0
     for item in file_items:
@@ -4182,11 +4229,26 @@ def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | No
         item_uploaded = min(int(item.get("uploaded_bytes") or 0), item_bytes)
         bytes_total += item_bytes
         if riverhog_upload_file_complete(item):
-            files_uploaded += 1
+            artifact_files_uploaded += 1
             item_uploaded = item_bytes
         if item.get("state") == "deleted":
-            files_deleted += 1
+            artifact_files_deleted += 1
         uploaded_bytes += item_uploaded
+
+    uploaded_paths = uploaded_riverhog_paths(job)
+    primary_paths = primary_archive_output_paths(job, archive_dir)
+    primary_files_total = max(expected_primary_files_total, encode_files_total, len(primary_paths))
+    primary_files_encoded = max(encode_files_encoded, len(primary_paths))
+    if primary_paths:
+        primary_files_uploaded = sum(1 for path in primary_paths if path in uploaded_paths)
+    elif primary_files_total:
+        primary_files_uploaded = min(artifact_files_uploaded, primary_files_total)
+    else:
+        primary_files_uploaded = artifact_files_uploaded
+        primary_files_total = max(registered_files_total, len(known_artifact_paths), primary_files_uploaded)
+    primary_files_uploaded = min(primary_files_uploaded, primary_files_total)
+    primary_files_encoded = min(max(primary_files_encoded, primary_files_uploaded), primary_files_total)
+    artifact_files_known = max(len(known_artifact_paths), registered_files_total, local_artifacts_total)
 
     started_at = safe_parse_iso(state.get("opened_at"))
     if started_at is None:
@@ -4206,21 +4268,48 @@ def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | No
     rate = recent_rate or average_rate
     state_name = str(state.get("riverhog_state") or state.get("state") or "not_started")
     completed = state_name in {"archiving", "finalized"} or (
-        files_total > 0 and files_uploaded == files_total and bool(state.get("completed_at"))
+        primary_files_total > 0
+        and primary_files_uploaded == primary_files_total
+        and bool(state.get("completed_at"))
     )
     return {
         "collection_id": str(state.get("collection_id") or ""),
         "state": state_name,
-        "files_total": files_total,
+        "files_total": primary_files_total,
         "registered_files_total": registered_files_total,
         "local_artifacts_total": local_artifacts_total,
         "expected_primary_files_total": expected_primary_files_total,
-        "files_uploaded": files_uploaded,
-        "files_deleted": files_deleted,
+        "files_uploaded": primary_files_uploaded,
+        "files_deleted": artifact_files_deleted,
+        "primary_files_total": primary_files_total,
+        "primary_files_encoded": primary_files_encoded,
+        "primary_files_uploaded": primary_files_uploaded,
+        "artifact_files_known": artifact_files_known,
+        "artifact_files_registered": registered_files_total,
+        "artifact_files_uploaded": artifact_files_uploaded,
+        "artifact_files_deleted": artifact_files_deleted,
+        "artifact_files_pending_local": local_artifacts_total,
         "bytes_total": bytes_total,
         "uploaded_bytes": uploaded_bytes,
         "percent_bytes": round((uploaded_bytes / bytes_total * 100.0) if bytes_total else 0.0, 2),
-        "percent_files": round((files_uploaded / files_total * 100.0) if files_total else 0.0, 2),
+        "percent_files": round(
+            (primary_files_uploaded / primary_files_total * 100.0)
+            if primary_files_total
+            else 0.0,
+            2,
+        ),
+        "percent_primary_files": round(
+            (primary_files_uploaded / primary_files_total * 100.0)
+            if primary_files_total
+            else 0.0,
+            2,
+        ),
+        "percent_artifact_files": round(
+            (artifact_files_uploaded / artifact_files_known * 100.0)
+            if artifact_files_known
+            else 0.0,
+            2,
+        ),
         "rate_bytes_per_second": rate,
         "average_rate_bytes_per_second": average_rate,
         "recent_rate_bytes_per_second": recent_rate,
