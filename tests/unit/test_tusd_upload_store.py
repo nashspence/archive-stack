@@ -6,6 +6,7 @@ import pytest
 
 from riverhog_core.domain.errors import NotFound
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.stores import tusd_upload_store
 from riverhog_core.stores.tusd_upload_store import TusdUploadStore
 from riverhog_core.tusd_ids import tusd_upload_id_for_target_path
 from tests.unit.db_helpers import sqlite_url
@@ -68,3 +69,68 @@ def test_filesystem_tusd_upload_store_raises_not_found_for_missing_target(
 
     with pytest.raises(NotFound, match="upload target not found"):
         store.read_target(".riverhog/uploads/collections/2025/demo/missing.mov")
+
+
+def test_tusd_upload_store_reuses_http_clients_by_request_class(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    instances: list[FakeClient] = []
+
+    class FakeResponse:
+        def __init__(self, status_code: int, headers: dict[str, str] | None = None) -> None:
+            self.status_code = status_code
+            self.headers = headers or {}
+
+        def raise_for_status(self) -> None:
+            return
+
+    class FakeClient:
+        def __init__(self, *, timeout: float) -> None:
+            self.timeout = timeout
+            self.closed = False
+            instances.append(self)
+
+        def post(self, *_args: object, **_kwargs: object) -> FakeResponse:
+            return FakeResponse(201, {"Location": "upload-a"})
+
+        def head(self, *_args: object, **_kwargs: object) -> FakeResponse:
+            return FakeResponse(204, {"Upload-Offset": "3"})
+
+        def patch(self, *_args: object, **_kwargs: object) -> FakeResponse:
+            return FakeResponse(204, {"Upload-Offset": "4"})
+
+        def delete(self, *_args: object, **_kwargs: object) -> FakeResponse:
+            return FakeResponse(204)
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(tusd_upload_store.httpx, "Client", FakeClient)
+    store = TusdUploadStore(_config(tmp_path))
+
+    assert store.create_upload(".riverhog/uploads/collections/demo/a.webm", 10).endswith(
+        "/files/upload-a"
+    )
+    assert store.get_offset("http://example.invalid:1080/files/upload-a") == 3
+    store.cancel_upload("http://example.invalid:1080/files/upload-a")
+
+    assert len(instances) == 1
+    assert instances[0].timeout == 300.0
+
+    offset, _expires = store.append_upload_chunk(
+        "http://example.invalid:1080/files/upload-a",
+        offset=0,
+        checksum="sha256 abc",
+        content=b"data",
+    )
+    assert offset == 4
+    store.append_upload_chunk(
+        "http://example.invalid:1080/files/upload-a",
+        offset=4,
+        checksum="sha256 def",
+        content=b"more",
+    )
+
+    assert len(instances) == 2
+    assert instances[1].timeout == store._append_timeout_seconds

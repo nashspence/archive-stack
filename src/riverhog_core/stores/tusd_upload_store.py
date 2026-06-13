@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
@@ -25,6 +26,7 @@ class _TusdHttpUploadStore:
         self._tusd_base_url = config.tusd_base_url.rstrip("/")
         self._hook_secret = config.tusd_hook_secret
         self._append_timeout_seconds = config.tusd_append_timeout_seconds
+        self._clients = threading.local()
 
     def _metadata_header(self, target_path: str) -> str:
         target_path_b64 = base64.b64encode(target_path.encode("utf-8")).decode("ascii")
@@ -51,9 +53,28 @@ class _TusdHttpUploadStore:
             (parsed.scheme, parsed.netloc, normalized_path, parsed.query, parsed.fragment)
         )
 
+    def _client(self, name: str, *, timeout: float) -> httpx.Client:
+        clients = getattr(self._clients, "items", None)
+        if clients is None:
+            clients = {}
+            self._clients.items = clients
+        client = clients.get(name)
+        if client is None:
+            client = httpx.Client(timeout=timeout)
+            clients[name] = client
+        return client
+
+    def _drop_client(self, name: str) -> None:
+        clients = getattr(self._clients, "items", None)
+        if not isinstance(clients, dict):
+            return
+        client = clients.pop(name, None)
+        if client is not None:
+            client.close()
+
     def create_upload(self, target_path: str, length: int) -> str:
-        with httpx.Client(timeout=_TIMEOUT) as client:
-            response = client.post(
+        try:
+            response = self._client("control", timeout=_TIMEOUT).post(
                 self._tusd_base_url,
                 headers=self._tus_headers(
                     **{
@@ -62,15 +83,24 @@ class _TusdHttpUploadStore:
                     }
                 ),
             )
-            response.raise_for_status()
-            location = response.headers["Location"]
-            return self._normalize_tusd_location(location)
+        except httpx.TransportError:
+            self._drop_client("control")
+            raise
+        response.raise_for_status()
+        location = response.headers["Location"]
+        return self._normalize_tusd_location(location)
 
     def get_offset(self, tus_url: str) -> int:
-        with httpx.Client(timeout=_TIMEOUT) as client:
-            response = client.head(tus_url, headers=self._tus_headers())
-            if response.status_code == 404:
-                return -1
+        try:
+            response = self._client("control", timeout=_TIMEOUT).head(
+                tus_url,
+                headers=self._tus_headers(),
+            )
+        except httpx.TransportError:
+            self._drop_client("control")
+            raise
+        if response.status_code == 404:
+            return -1
         response.raise_for_status()
         return int(response.headers["Upload-Offset"])
 
@@ -83,19 +113,19 @@ class _TusdHttpUploadStore:
         content: bytes,
     ) -> tuple[int, str | None]:
         try:
-            with httpx.Client(timeout=self._append_timeout_seconds) as client:
-                response = client.patch(
-                    tus_url,
-                    headers=self._tus_headers(
-                        **{
-                            "Content-Type": "application/offset+octet-stream",
-                            "Upload-Offset": str(offset),
-                            "Upload-Checksum": checksum,
-                        }
-                    ),
-                    content=content,
-                )
+            response = self._client("append", timeout=self._append_timeout_seconds).patch(
+                tus_url,
+                headers=self._tus_headers(
+                    **{
+                        "Content-Type": "application/offset+octet-stream",
+                        "Upload-Offset": str(offset),
+                        "Upload-Checksum": checksum,
+                    }
+                ),
+                content=content,
+            )
         except httpx.TransportError as exc:
+            self._drop_client("append")
             raise ServiceUnavailable(
                 "upload backend did not accept the chunk before the server-side timeout; "
                 "retry the chunk after resyncing the offset"
@@ -107,8 +137,15 @@ class _TusdHttpUploadStore:
         return int(response.headers["Upload-Offset"]), response.headers.get("Upload-Expires")
 
     def cancel_upload(self, tus_url: str) -> None:
-        with httpx.Client(timeout=_TIMEOUT) as client:
-            _ok_or_raise(client.delete(tus_url, headers=self._tus_headers()))
+        try:
+            response = self._client("control", timeout=_TIMEOUT).delete(
+                tus_url,
+                headers=self._tus_headers(),
+            )
+        except httpx.TransportError:
+            self._drop_client("control")
+            raise
+        _ok_or_raise(response)
 
     def _upload_id_from_tus_url(self, tus_url: str) -> str | None:
         parsed = urlsplit(tus_url)
