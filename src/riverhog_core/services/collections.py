@@ -324,14 +324,11 @@ class SqlAlchemyCollectionService:
             upload = session.get(CollectionUploadRecord, normalized_collection_id)
             if upload is None:
                 raise NotFound(f"collection upload session not found: {normalized_collection_id}")
-            upload = _sync_and_expire_collection_upload(
-                session,
+            _expire_open_collection_upload_if_idle(
                 upload,
                 upload_store=self._upload_store,
                 session_idle_ttl=self._upload_session_idle_ttl,
             )
-            if upload is None:
-                raise NotFound(f"collection upload session not found: {normalized_collection_id}")
             if upload.state != "open":
                 raise Conflict(
                     f"collection upload session is not open: {normalized_collection_id}"
@@ -562,14 +559,11 @@ class SqlAlchemyCollectionService:
             upload = session.get(CollectionUploadRecord, normalized_collection_id)
             if upload is None:
                 raise NotFound(f"collection upload not found: {normalized_collection_id}")
-            upload = _sync_and_expire_collection_upload(
-                session,
+            _expire_open_collection_upload_if_idle(
                 upload,
                 upload_store=self._upload_store,
                 session_idle_ttl=self._upload_session_idle_ttl,
             )
-            if upload is None:
-                raise NotFound(f"collection upload not found: {normalized_collection_id}")
             if upload.state not in {"open", "uploading", None}:
                 raise Conflict(
                     f"collection upload is not accepting file bytes: {normalized_collection_id}"
@@ -611,14 +605,11 @@ class SqlAlchemyCollectionService:
             upload = session.get(CollectionUploadRecord, normalized_collection_id)
             if upload is None:
                 raise NotFound(f"collection upload not found: {normalized_collection_id}")
-            upload = _sync_and_expire_collection_upload(
-                session,
+            _expire_open_collection_upload_if_idle(
                 upload,
                 upload_store=self._upload_store,
                 session_idle_ttl=self._upload_session_idle_ttl,
             )
-            if upload is None:
-                raise NotFound(f"collection upload not found: {normalized_collection_id}")
             if upload.state not in {"open", "uploading", None}:
                 raise Conflict(
                     f"collection upload is not accepting file bytes: {normalized_collection_id}"
@@ -1489,6 +1480,22 @@ def _sync_and_expire_collection_upload(
         session.delete(upload)
         return None
     return upload
+
+
+def _expire_open_collection_upload_if_idle(
+    upload: CollectionUploadRecord,
+    *,
+    upload_store: UploadStore,
+    session_idle_ttl: timedelta | None = None,
+) -> None:
+    if not _collection_upload_session_is_idle_expired(upload, ttl=session_idle_ttl):
+        return
+    _forget_collection_upload(upload, upload_store)
+    upload.files.clear()
+    now = _utc_now()
+    upload.state = "expired"
+    upload.closed_at = now
+    upload.last_activity_at = now
 
 
 def _touch_collection_upload(upload: CollectionUploadRecord) -> None:

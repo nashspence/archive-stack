@@ -4,6 +4,7 @@ from enum import StrEnum
 from typing import Annotated
 
 from fastapi import APIRouter, Query, Request, Response
+from starlette.concurrency import run_in_threadpool
 
 from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_collection, map_collection_list_page
@@ -165,7 +166,8 @@ async def append_collection_file_upload_chunk(
     container: ContainerDep,
 ) -> Response:
     offset, checksum = validate_tus_chunk_request(request)
-    payload = container.collections.append_upload_chunk(
+    payload = await run_in_threadpool(
+        container.collections.append_upload_chunk,
         collection_id,
         path,
         offset=offset,

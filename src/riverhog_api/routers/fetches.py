@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Request, Response
+from starlette.concurrency import run_in_threadpool
 
 from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_fetch
@@ -57,7 +58,8 @@ async def append_fetch_entry_upload_chunk(
     container: ContainerDep,
 ) -> Response:
     offset, checksum = validate_tus_chunk_request(request)
-    payload = container.fetches.append_upload_chunk(
+    payload = await run_in_threadpool(
+        container.fetches.append_upload_chunk,
         fetch_id,
         entry_id,
         offset=offset,
