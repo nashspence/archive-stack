@@ -2424,6 +2424,10 @@ def cleanup_terminal_job(job: dict[str, Any]) -> list[str]:
             job["input_upload_deleted_at"] = now_iso()
             job.pop("input_upload_progress", None)
     append_cleanup_removed(job, removed)
+    if removed and int(job.get("cleanup_removed_count") or 0) < len(removed):
+        job["cleanup_removed"] = removed
+        job["cleanup_removed_count"] = len(removed)
+        job["cleanup_removed_sample"] = removed[:8]
     job["cleanup_completed_at"] = now_iso()
     return removed
 
@@ -3026,6 +3030,14 @@ def wait_gpu_job(
 def riverhog_config_enabled(job: dict[str, Any]) -> bool:
     riverhog = job.get("riverhog")
     return isinstance(riverhog, dict) and bool(riverhog.get("enabled"))
+
+
+def derived_riverhog_collection_id(job: dict[str, Any]) -> str | None:
+    timestamp = str(job.get("collection_timestamp") or "").strip()
+    slug = str(job.get("collection_slug") or "").strip()
+    if len(timestamp) < 4 or not slug:
+        return None
+    return f"{timestamp[:4]}/{timestamp}__{slug}"
 
 
 def riverhog_session_state(job: dict[str, Any]) -> dict[str, Any]:
@@ -3710,10 +3722,11 @@ def cancel_riverhog_upload_session(job: dict[str, Any], *, reason: str) -> None:
         return
     state = job.get("riverhog_session_upload")
     if not isinstance(state, dict):
-        return
-    collection_id = str(state.get("collection_id") or "")
+        state = riverhog_session_state(job)
+    collection_id = str(state.get("collection_id") or derived_riverhog_collection_id(job) or "")
     if not collection_id:
         return
+    state["collection_id"] = collection_id
     if state.get("state") in {"canceled", "archiving", "finalized"} or state.get("cancelled_at"):
         return
     state["cancel_reason"] = reason
@@ -3731,6 +3744,18 @@ def cancel_riverhog_upload_session(job: dict[str, Any], *, reason: str) -> None:
         state["cancel_reason"] = reason
         log.info(
             "cancelled riverhog upload session job=%s collection=%s reason=%s",
+            job.get("job_id"),
+            collection_id,
+            reason,
+        )
+    except NotFound:
+        state["state"] = "canceled"
+        state["riverhog_state"] = "absent"
+        state["cancelled_at"] = now_iso()
+        state["cancel_reason"] = reason
+        state["cancel_not_found"] = True
+        log.info(
+            "riverhog upload session already absent job=%s collection=%s reason=%s",
             job.get("job_id"),
             collection_id,
             reason,

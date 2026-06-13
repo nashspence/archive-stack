@@ -2051,6 +2051,125 @@ def test_cancel_riverhog_upload_session_cancels_open_session(
     assert stored["riverhog_session_upload"]["cancel_reason"] == "test"
 
 
+def test_cancel_riverhog_upload_session_derives_unpersisted_session_id(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("MUNCHY_RUNNER_RIVERHOG_UPLOAD_ENABLED", "1")
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+
+    job = {
+        "job_id": "job-1",
+        "state": "running",
+        "phase": "cancel_requested",
+        "collection_slug": "camera-archive",
+        "collection_timestamp": "20260101T000000Z",
+        "riverhog": {"enabled": True, "wait": "staged"},
+    }
+    runner.save_job(job)
+
+    class FakeRiverhogApi:
+        def __init__(self) -> None:
+            self.cancelled: list[str] = []
+
+        def close(self) -> None:
+            return
+
+        def cancel_collection_upload_session(self, collection_id: str) -> dict[str, object]:
+            self.cancelled.append(collection_id)
+            return {
+                "collection_id": collection_id,
+                "state": "canceled",
+                "files_total": 0,
+                "files_uploaded": 0,
+                "bytes_total": 0,
+                "uploaded_bytes": 0,
+                "missing_bytes": 0,
+                "files": [],
+            }
+
+    fake = FakeRiverhogApi()
+    monkeypatch.setattr(runner, "ApiClient", lambda: fake)
+
+    runner.cancel_riverhog_upload_session(job, reason="test")
+
+    assert fake.cancelled == ["2026/20260101T000000Z__camera-archive"]
+    stored = runner.load_job("job-1")
+    assert stored["riverhog_session_upload"]["collection_id"] == (
+        "2026/20260101T000000Z__camera-archive"
+    )
+    assert stored["riverhog_session_upload"]["state"] == "canceled"
+    assert stored["riverhog_session_upload"]["cancelled_at"]
+    assert stored["riverhog_session_upload"]["cancel_reason"] == "test"
+
+
+def test_cancel_riverhog_upload_session_treats_missing_session_as_clean(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("MUNCHY_RUNNER_RIVERHOG_UPLOAD_ENABLED", "1")
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+
+    job = runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "running",
+            "phase": "cancel_requested",
+            "collection_slug": "camera-archive",
+            "collection_timestamp": "20260101T000000Z",
+            "riverhog": {"enabled": True, "wait": "staged"},
+        }
+    )
+
+    class FakeRiverhogApi:
+        def close(self) -> None:
+            return
+
+        def cancel_collection_upload_session(self, collection_id: str) -> dict[str, object]:
+            raise runner.NotFound("missing")
+
+    monkeypatch.setattr(runner, "ApiClient", FakeRiverhogApi)
+
+    runner.cancel_riverhog_upload_session(job, reason="test")
+
+    stored = runner.load_job("job-1")
+    assert stored["riverhog_session_upload"]["state"] == "canceled"
+    assert stored["riverhog_session_upload"]["riverhog_state"] == "absent"
+    assert stored["riverhog_session_upload"]["cancel_not_found"] is True
+    assert stored["riverhog_session_upload"]["cancelled_at"]
+
+
+def test_repeated_cleanup_updates_empty_cleanup_summary(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    work_dir = runner.GPU_RUNTIME_DIR / "jobs" / "job-1"
+    work_dir.mkdir(parents=True)
+    (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
+    job = {
+        "job_id": "job-1",
+        "state": "cancelled",
+        "phase": "cancelled",
+        "cleanup_completed_at": "2026-01-01T00:00:00Z",
+        "cleanup_removed": [],
+        "cleanup_removed_count": 0,
+    }
+
+    runner.cleanup_terminal_job(job)
+    runner.compact_terminal_job_state(job)
+
+    assert job["cleanup_removed_count"] == 1
+    assert job["cleanup_removed"] == [str(work_dir)]
+    assert job["local_work_removed_count"] == 1
+
+
 def test_encoding_failure_cleans_job_work_and_input_upload(
     tmp_path: Path,
     monkeypatch,
