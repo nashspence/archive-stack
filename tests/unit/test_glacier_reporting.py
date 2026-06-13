@@ -8,6 +8,8 @@ from riverhog_core.catalog_models import (
     CollectionArchiveRecord,
     CollectionFileRecord,
     CollectionRecord,
+    CollectionUploadFileRecord,
+    CollectionUploadRecord,
     FinalizedImageCollectionArtifactRecord,
     FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
@@ -219,6 +221,46 @@ def test_get_report_counts_manifest_and_proof_as_standard_s3_storage(
     assert collection.collection_manifest is not None
     assert collection.collection_manifest.object_path.endswith("/manifest.yml.age")
     assert collection.collection_manifest.ots_object_path.endswith("/manifest.yml.ots.age")
+
+
+def test_get_report_ignores_terminal_upload_sessions(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_db(config.database_url)
+    session_factory = make_session_factory(config.database_url)
+    with session_scope(session_factory) as session:
+        for state in ("canceled", "expired", "uploading"):
+            collection_id = f"2026/20260613T000000Z__{state}-upload"
+            session.add(
+                CollectionUploadRecord(
+                    collection_id=collection_id,
+                    ingest_source="/archive",
+                    state=state,
+                    opened_at="2026-06-13T00:00:00Z",
+                    last_activity_at="2026-06-13T00:00:00Z",
+                    closed_at=(
+                        "2026-06-13T00:01:00Z"
+                        if state in {"canceled", "expired"}
+                        else None
+                    ),
+                )
+            )
+            session.add(
+                CollectionUploadFileRecord(
+                    collection_id=collection_id,
+                    path="file.txt",
+                    file_order=0,
+                    bytes=123,
+                    sha256="a" * 64,
+                    uploaded_bytes=123,
+                )
+            )
+
+    report = SqlAlchemyGlacierReportingService(config).get_report()
+
+    assert [str(collection.id) for collection in report.collections] == [
+        "2026/20260613T000000Z__uploading-upload"
+    ]
+    assert report.collections[0].bytes == 123
 
 
 def test_initialize_db_backfills_coverage_parts_for_existing_finalized_images(

@@ -193,7 +193,9 @@ def _direct_collection_usage_reports(
         )
     ).all()
     uploads = session.scalars(
-        select(CollectionUploadRecord).options(selectinload(CollectionUploadRecord.files))
+        select(CollectionUploadRecord)
+        .options(selectinload(CollectionUploadRecord.files))
+        .where(~CollectionUploadRecord.state.in_(("canceled", "expired")))
     ).all()
 
     file_bytes_by_path = {
