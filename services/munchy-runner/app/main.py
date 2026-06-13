@@ -14,6 +14,7 @@ import subprocess
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager, closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -117,6 +118,10 @@ RIVERHOG_UPLOAD_CHUNK_BYTES = int(
         "MUNCHY_RUNNER_RIVERHOG_UPLOAD_CHUNK_BYTES",
         os.getenv("RIVERHOG_UPLOAD_CHUNK_BYTES", str(8 * 1024 * 1024)),
     )
+)
+RIVERHOG_UPLOAD_WORKERS = max(
+    1,
+    int(os.getenv("MUNCHY_RUNNER_RIVERHOG_UPLOAD_WORKERS", "8")),
 )
 RIVERHOG_EAGER_UPLOAD_FILES_PER_TICK = max(
     1,
@@ -298,8 +303,10 @@ active_jobs: set[str] = set()
 scheduled_jobs: set[str] = set()
 shared_input_tree_locks: dict[str, threading.Lock] = {}
 shared_input_tree_locks_guard = threading.Lock()
-riverhog_upload_locks: dict[str, threading.Lock] = {}
+riverhog_upload_locks: dict[str, threading.RLock] = {}
 riverhog_upload_locks_guard = threading.Lock()
+riverhog_upload_call_locks: dict[str, threading.Lock] = {}
+riverhog_upload_call_locks_guard = threading.Lock()
 
 
 def shared_input_tree_lock(upload_id: str) -> threading.Lock:
@@ -311,12 +318,21 @@ def shared_input_tree_lock(upload_id: str) -> threading.Lock:
         return lock
 
 
-def riverhog_upload_lock(job_id: str) -> threading.Lock:
+def riverhog_upload_lock(job_id: str) -> threading.RLock:
     with riverhog_upload_locks_guard:
         lock = riverhog_upload_locks.get(job_id)
         if lock is None:
-            lock = threading.Lock()
+            lock = threading.RLock()
             riverhog_upload_locks[job_id] = lock
+        return lock
+
+
+def riverhog_upload_call_lock(job_id: str) -> threading.Lock:
+    with riverhog_upload_call_locks_guard:
+        lock = riverhog_upload_call_locks.get(job_id)
+        if lock is None:
+            lock = threading.Lock()
+            riverhog_upload_call_locks[job_id] = lock
         return lock
 
 
@@ -2954,42 +2970,46 @@ def update_riverhog_state_from_payload(
     job: dict[str, Any],
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    state = riverhog_session_state(job)
-    if payload.get("collection_id"):
-        state["collection_id"] = str(payload["collection_id"])
-    if payload.get("state"):
-        state["riverhog_state"] = str(payload["state"])
-        state["state"] = str(payload["state"])
-    state["last_payload"] = compact_riverhog_payload(payload)
-    state["updated_at"] = now_iso()
+    with riverhog_upload_lock(str(job.get("job_id") or "")):
+        state = riverhog_session_state(job)
+        if payload.get("collection_id"):
+            state["collection_id"] = str(payload["collection_id"])
+        if payload.get("state"):
+            state["riverhog_state"] = str(payload["state"])
+            state["state"] = str(payload["state"])
+        state["last_payload"] = compact_riverhog_payload(payload)
+        state["updated_at"] = now_iso()
 
-    files = state.setdefault("files", {})
-    if isinstance(files, dict):
-        for item in payload.get("files") or []:
-            if not isinstance(item, dict) or not item.get("path"):
-                continue
-            rel_path = str(item["path"])
-            record = files.setdefault(rel_path, {"path": rel_path})
-            if not isinstance(record, dict):
-                record = {"path": rel_path}
-                files[rel_path] = record
-            record["bytes"] = int(item.get("bytes") or record.get("bytes") or 0)
-            if item.get("sha256"):
-                record["sha256"] = str(item["sha256"])
-            record["uploaded_bytes"] = int(item.get("uploaded_bytes") or 0)
-            record["upload_state"] = str(item.get("upload_state") or "")
-            if (
-                int(record.get("bytes") or 0) > 0
-                and int(record.get("uploaded_bytes") or 0) >= int(record.get("bytes") or 0)
-                and record.get("state") not in {"deleted", "uploaded"}
-            ):
-                record["state"] = "uploaded"
-                record["uploaded_at"] = record.get("uploaded_at") or now_iso()
-    return state
+        files = state.setdefault("files", {})
+        if isinstance(files, dict):
+            for item in payload.get("files") or []:
+                if not isinstance(item, dict) or not item.get("path"):
+                    continue
+                rel_path = str(item["path"])
+                record = files.setdefault(rel_path, {"path": rel_path})
+                if not isinstance(record, dict):
+                    record = {"path": rel_path}
+                    files[rel_path] = record
+                record["bytes"] = int(item.get("bytes") or record.get("bytes") or 0)
+                if item.get("sha256"):
+                    record["sha256"] = str(item["sha256"])
+                existing_uploaded = int(record.get("uploaded_bytes") or 0)
+                incoming_uploaded = int(item.get("uploaded_bytes") or 0)
+                record["uploaded_bytes"] = max(existing_uploaded, incoming_uploaded)
+                record["upload_state"] = str(item.get("upload_state") or "")
+                if (
+                    int(record.get("bytes") or 0) > 0
+                    and int(record.get("uploaded_bytes") or 0) >= int(record.get("bytes") or 0)
+                    and record.get("state") not in {"deleted", "uploaded"}
+                ):
+                    record["state"] = "uploaded"
+                    record["uploaded_at"] = record.get("uploaded_at") or now_iso()
+        return state
 
 
 def touch_riverhog_session_state(job: dict[str, Any]) -> None:
-    riverhog_session_state(job)["updated_at"] = now_iso()
+    with riverhog_upload_lock(str(job.get("job_id") or "")):
+        riverhog_session_state(job)["updated_at"] = now_iso()
 
 
 def ensure_riverhog_session(
@@ -3005,24 +3025,26 @@ def ensure_riverhog_session(
     if not timestamp:
         raise RuntimeError("riverhog upload requires collection_timestamp")
 
-    state = riverhog_session_state(job)
-    collection_id = str(state.get("collection_id") or "")
-    if collection_id:
-        return collection_id
+    lock = riverhog_upload_lock(str(job.get("job_id") or ""))
+    with lock:
+        state = riverhog_session_state(job)
+        collection_id = str(state.get("collection_id") or "")
+        if collection_id:
+            return collection_id
 
-    payload = api.create_or_resume_collection_upload_session(
-        str(job["collection_slug"]),
-        ingest_source=str(archive_dir),
-        upload_timestamp=str(timestamp),
-    )
-    update_riverhog_state_from_payload(job, payload)
-    state = riverhog_session_state(job)
-    state["opened_at"] = state.get("opened_at") or now_iso()
-    save_job(job)
-    collection_id = str(state.get("collection_id") or "")
-    if not collection_id:
-        raise RuntimeError("riverhog upload session did not return a collection_id")
-    return collection_id
+        payload = api.create_or_resume_collection_upload_session(
+            str(job["collection_slug"]),
+            ingest_source=str(archive_dir),
+            upload_timestamp=str(timestamp),
+        )
+        update_riverhog_state_from_payload(job, payload)
+        state = riverhog_session_state(job)
+        state["opened_at"] = state.get("opened_at") or now_iso()
+        save_job(job)
+        collection_id = str(state.get("collection_id") or "")
+        if not collection_id:
+            raise RuntimeError("riverhog upload session did not return a collection_id")
+        return collection_id
 
 
 def riverhog_file_record(
@@ -3031,31 +3053,45 @@ def riverhog_file_record(
     source_path: Path,
 ) -> dict[str, Any]:
     rel_path = source_path.relative_to(archive_dir).as_posix()
-    state = riverhog_session_state(job)
-    files = state.setdefault("files", {})
-    if not isinstance(files, dict):
-        files = {}
-        state["files"] = files
-    record = files.setdefault(rel_path, {"path": rel_path})
-    if not isinstance(record, dict):
-        record = {"path": rel_path}
-        files[rel_path] = record
-    if record.get("state") in {"uploaded", "deleted"}:
-        return record
     if not source_path.exists():
         raise RuntimeError(f"riverhog upload source file disappeared before upload: {source_path}")
     stat = source_path.stat()
-    existing_bytes = int(record.get("bytes") or 0)
-    if existing_bytes and existing_bytes != stat.st_size:
-        raise RuntimeError(f"riverhog upload file size changed after registration: {rel_path}")
-    record["path"] = rel_path
-    record["source"] = str(source_path)
-    record["bytes"] = stat.st_size
-    if not record.get("sha256"):
-        record["sha256"] = file_sha256(source_path)
-    record["state"] = record.get("state") or "pending"
-    touch_riverhog_session_state(job)
-    return record
+    lock = riverhog_upload_lock(str(job.get("job_id") or ""))
+    with lock:
+        state = riverhog_session_state(job)
+        files = state.setdefault("files", {})
+        if not isinstance(files, dict):
+            files = {}
+            state["files"] = files
+        record = files.setdefault(rel_path, {"path": rel_path})
+        if not isinstance(record, dict):
+            record = {"path": rel_path}
+            files[rel_path] = record
+        if record.get("state") in {"uploaded", "deleted"}:
+            return record
+        existing_bytes = int(record.get("bytes") or 0)
+        if existing_bytes and existing_bytes != stat.st_size:
+            raise RuntimeError(f"riverhog upload file size changed after registration: {rel_path}")
+        record["path"] = rel_path
+        record["source"] = str(source_path)
+        record["bytes"] = stat.st_size
+        needs_sha256 = not record.get("sha256")
+        record["state"] = record.get("state") or "pending"
+        touch_riverhog_session_state(job)
+    if needs_sha256:
+        digest = file_sha256(source_path)
+        with lock:
+            state = riverhog_session_state(job)
+            files = state.setdefault("files", {})
+            if not isinstance(files, dict):
+                files = {}
+                state["files"] = files
+            record = files.setdefault(rel_path, {"path": rel_path})
+            if isinstance(record, dict) and not record.get("sha256"):
+                record["sha256"] = digest
+                touch_riverhog_session_state(job)
+    with lock:
+        return riverhog_session_state(job)["files"][rel_path]
 
 
 def riverhog_upload_file_complete(record: dict[str, Any]) -> bool:
@@ -3080,9 +3116,10 @@ def remove_uploaded_riverhog_artifact(
         except OSError:
             break
         parent = parent.parent
-    record["state"] = "deleted"
-    record["deleted_at"] = record.get("deleted_at") or now_iso()
-    touch_riverhog_session_state(job)
+    with riverhog_upload_lock(str(job.get("job_id") or "")):
+        record["state"] = "deleted"
+        record["deleted_at"] = record.get("deleted_at") or now_iso()
+        touch_riverhog_session_state(job)
     log.info(
         "riverhog upload accepted; removed local artifact job=%s path=%s bytes=%s",
         job.get("job_id"),
@@ -3117,19 +3154,23 @@ def riverhog_upload_artifact(
     payload = api.register_collection_upload_session_file(collection_id, file_payload)
     update_riverhog_state_from_payload(job, payload)
     record = riverhog_file_record(job, archive_dir, source_path)
-    record["registered_at"] = record.get("registered_at") or now_iso()
-    record["state"] = "registered"
+    with riverhog_upload_lock(job_id):
+        record["registered_at"] = record.get("registered_at") or now_iso()
+        record["state"] = "registered"
+        touch_riverhog_session_state(job)
 
     session = api.create_or_resume_collection_file_upload(collection_id, rel_path)
     offset = int(session["offset"])
     if offset > length:
         raise RuntimeError(f"riverhog upload offset for {rel_path} is past expected length")
-    record["uploaded_bytes"] = offset
-    record["state"] = "uploading" if offset < length else "uploaded"
-    touch_riverhog_session_state(job)
+    with riverhog_upload_lock(job_id):
+        record["uploaded_bytes"] = max(int(record.get("uploaded_bytes") or 0), offset)
+        record["state"] = "uploading" if offset < length else "uploaded"
+        touch_riverhog_session_state(job)
 
     if offset >= length:
-        record["uploaded_at"] = record.get("uploaded_at") or now_iso()
+        with riverhog_upload_lock(job_id):
+            record["uploaded_at"] = record.get("uploaded_at") or now_iso()
         remove_uploaded_riverhog_artifact(job, archive_dir, source_path, record)
         return True
 
@@ -3169,24 +3210,27 @@ def riverhog_upload_artifact(
                 if recovered_offset == offset:
                     continue
                 offset = recovered_offset
-                record["uploaded_bytes"] = offset
-                touch_riverhog_session_state(job)
+                with riverhog_upload_lock(job_id):
+                    record["uploaded_bytes"] = max(int(record.get("uploaded_bytes") or 0), offset)
+                    touch_riverhog_session_state(job)
                 continue
 
             next_offset = int(upload_result["offset"])
             if next_offset != offset + len(chunk):
                 raise RuntimeError(f"riverhog upload offset advanced unexpectedly for {rel_path}")
             offset = next_offset
-            record["uploaded_bytes"] = offset
-            record["state"] = "uploading"
-            touch_riverhog_session_state(job)
+            with riverhog_upload_lock(job_id):
+                record["uploaded_bytes"] = max(int(record.get("uploaded_bytes") or 0), offset)
+                record["state"] = "uploading"
+                touch_riverhog_session_state(job)
 
     if offset != length:
         raise RuntimeError(f"riverhog upload for {rel_path} stopped at {offset} of {length} bytes")
-    record["uploaded_bytes"] = length
-    record["state"] = "uploaded"
-    record["uploaded_at"] = record.get("uploaded_at") or now_iso()
-    touch_riverhog_session_state(job)
+    with riverhog_upload_lock(job_id):
+        record["uploaded_bytes"] = length
+        record["state"] = "uploaded"
+        record["uploaded_at"] = record.get("uploaded_at") or now_iso()
+        touch_riverhog_session_state(job)
     remove_uploaded_riverhog_artifact(job, archive_dir, source_path, record)
     return True
 
@@ -3306,7 +3350,7 @@ def upload_riverhog_artifacts(
             "elapsed_seconds": 0.0,
         }
     job_id = str(job["job_id"])
-    lock = riverhog_upload_lock(job_id)
+    lock = riverhog_upload_call_lock(job_id)
     with lock:
         return _upload_riverhog_artifacts_unlocked(
             job,
@@ -3331,22 +3375,59 @@ def _upload_riverhog_artifacts_unlocked(
     processed = 0
     uploaded_bytes = 0
     started = time.monotonic()
+    selected: list[tuple[Path, int]] = []
+    for source_path in riverhog_artifact_paths(job, archive_dir, final=final):
+        elapsed = time.monotonic() - started
+        if max_files is not None and len(selected) >= max_files:
+            break
+        if max_seconds is not None and selected and elapsed >= max_seconds:
+            break
+        source_bytes = source_path.stat().st_size if source_path.exists() else 0
+        if (
+            max_bytes is not None
+            and selected
+            and sum(item[1] for item in selected) + source_bytes > max_bytes
+        ):
+            break
+        selected.append((source_path, source_bytes))
+    if not selected:
+        return {
+            "processed_files": 0,
+            "uploaded_files": 0,
+            "uploaded_bytes": 0,
+            "elapsed_seconds": round(max(0.0, time.monotonic() - started), 6),
+        }
+
+    worker_count = min(max(1, RIVERHOG_UPLOAD_WORKERS), len(selected))
+
+    def upload_one(item: tuple[Path, int]) -> tuple[int, int, int]:
+        source_path, source_bytes = item
+        worker_api = ApiClient()
+        try:
+            did_upload = riverhog_upload_artifact(job, worker_api, archive_dir, source_path)
+            return 1, 1 if did_upload else 0, source_bytes if did_upload else 0
+        finally:
+            worker_api.close()
+
+    if worker_count > 1:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [executor.submit(upload_one, item) for item in selected]
+            for future in as_completed(futures):
+                item_processed, item_uploaded, item_bytes = future.result()
+                processed += item_processed
+                uploaded += item_uploaded
+                uploaded_bytes += item_bytes
+        return {
+            "processed_files": processed,
+            "uploaded_files": uploaded,
+            "uploaded_bytes": uploaded_bytes,
+            "elapsed_seconds": round(max(0.0, time.monotonic() - started), 6),
+        }
+
     api = ApiClient()
     try:
         ensure_riverhog_session(job, api, archive_dir)
-        for source_path in riverhog_artifact_paths(job, archive_dir, final=final):
-            elapsed = time.monotonic() - started
-            if max_files is not None and processed >= max_files:
-                break
-            if max_seconds is not None and processed > 0 and elapsed >= max_seconds:
-                break
-            source_bytes = source_path.stat().st_size if source_path.exists() else 0
-            if (
-                max_bytes is not None
-                and processed > 0
-                and uploaded_bytes + source_bytes > max_bytes
-            ):
-                break
+        for source_path, source_bytes in selected:
             if riverhog_upload_artifact(job, api, archive_dir, source_path):
                 uploaded += 1
                 uploaded_bytes += source_bytes
@@ -5037,6 +5118,7 @@ def health_ready() -> dict[str, Any]:
         "running_job_limit": MAX_RUNNING_JOBS,
         "running_jobs": len(active_jobs),
         "scheduled_jobs": len(scheduled_jobs),
+        "riverhog_upload_workers": RIVERHOG_UPLOAD_WORKERS,
         "riverhog_upload_worker": bool(
             riverhog_upload_thread is not None and riverhog_upload_thread.is_alive()
         ),
