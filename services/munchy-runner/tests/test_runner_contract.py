@@ -723,6 +723,62 @@ def test_compact_job_response_includes_cleanup_metadata(
     assert "eager_archive" not in compact
 
 
+def test_save_job_preserves_terminal_cleanup_metadata(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "cancelled",
+            "phase": "cancelled",
+            "cleanup_completed_at": "2026-01-01T00:00:00Z",
+            "cleanup_removed_count": 25,
+            "cleanup_removed_sample": ["job-work:job-1"],
+            "input_upload_deleted_at": "2026-01-01T00:00:00Z",
+        }
+    )
+
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "cancelled",
+            "phase": "cancelled",
+            "finished_at": "2026-01-01T00:00:01Z",
+        }
+    )
+
+    stored = runner.load_job("job-1")
+    assert stored["cleanup_completed_at"] == "2026-01-01T00:00:00Z"
+    assert stored["cleanup_removed_count"] == 25
+    assert stored["cleanup_removed_sample"] == ["job-work:job-1"]
+    assert stored["input_upload_deleted_at"] == "2026-01-01T00:00:00Z"
+
+
+def test_cleanup_terminal_job_records_empty_cleanup_completion(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    job = {
+        "job_id": "job-1",
+        "state": "cancelled",
+        "phase": "cancelled",
+    }
+
+    removed = runner.cleanup_terminal_job(job)
+    runner.compact_terminal_job_state(job)
+
+    assert removed == []
+    assert job["cleanup_completed_at"]
+    assert job["cleanup_removed_count"] == 0
+
+
 def test_compact_terminal_job_state_keeps_summaries_and_drops_heavy_payloads(
     tmp_path: Path,
     monkeypatch,

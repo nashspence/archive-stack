@@ -142,6 +142,8 @@ def cancel_job(
             except Exception as exc:
                 _exit_runner_error(exc)
             typer.echo(format_job_status_line(final), err=True)
+            if not final.get("cleanup_completed_at"):
+                raise typer.Exit(1)
         if final.get("state") != "cancelled":
             raise typer.Exit(1)
 

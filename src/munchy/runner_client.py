@@ -25,6 +25,7 @@ UPLOAD_RETRY_INITIAL_DELAY_SECONDS = 1.0
 UPLOAD_RETRY_MAX_DELAY_SECONDS = 60.0
 UPLOAD_RETRY_NOTICE_SECONDS = 60.0
 TRANSIENT_ISSUE_RECOVERY_DISPLAY_SECONDS = 8.0
+CLEANUP_REQUEST_TIMEOUT_SECONDS = 900.0
 TRANSIENT_UPLOAD_HTTP_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504, 507}
 TRANSIENT_UPLOAD_ERRNOS = {
     errno.ECONNABORTED,
@@ -1498,7 +1499,8 @@ class MunchyRunnerClient:
         path = f"/v1/jobs/{urllib.parse.quote(job_id)}/cancel"
         if cleanup:
             path += "?cleanup=true"
-        return self.json("POST", path, expect={202})
+        timeout = CLEANUP_REQUEST_TIMEOUT_SECONDS if cleanup else 60.0
+        return self.json("POST", path, expect={202}, timeout=timeout)
 
     def wait_for_job(self, job_id: str, *, interval: float = 10.0) -> dict[str, Any]:
         retry_delay = UPLOAD_RETRY_INITIAL_DELAY_SECONDS

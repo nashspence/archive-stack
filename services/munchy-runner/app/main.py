@@ -1544,6 +1544,32 @@ def save_job(job: dict[str, Any]) -> dict[str, Any]:
             payload["cancel_requested_at"] = current.get("cancel_requested_at") or now_iso()
             if current.get("phase") == "cancel_requested":
                 payload["phase"] = "cancel_requested"
+        if (
+            isinstance(current, dict)
+            and current.get("state") in TERMINAL_JOB_STATES
+            and payload.get("state") in TERMINAL_JOB_STATES
+        ):
+            for key in (
+                "cleanup_completed_at",
+                "cleanup_removed",
+                "cleanup_removed_count",
+                "cleanup_removed_sample",
+                "cleanup_failed_at",
+                "cleanup_error",
+                "input_upload_deleted_at",
+                "local_work_cleaned_at",
+                "local_work_removed",
+                "local_work_removed_count",
+                "local_work_removed_sample",
+                "riverhog_cancel_failed_at",
+                "riverhog_cancel_error",
+                "terminal_state_compacted_at",
+                "debug_bundle_dir",
+                "debug_bundle_created_at",
+                "debug_bundle_reason",
+            ):
+                if key in current and key not in payload:
+                    payload[key] = current[key]
         return write_state("job", job_id, payload)
 
 
@@ -2372,9 +2398,8 @@ def cleanup_terminal_job(job: dict[str, Any]) -> list[str]:
             removed.append(f"input-upload:{upload_id}")
             job["input_upload_deleted_at"] = now_iso()
             job.pop("input_upload_progress", None)
-    if removed:
-        job["cleanup_removed"] = removed
-        job["cleanup_completed_at"] = now_iso()
+    job["cleanup_removed"] = removed
+    job["cleanup_completed_at"] = now_iso()
     return removed
 
 

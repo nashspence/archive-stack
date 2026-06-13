@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from munchy.runner_client import (
+    CLEANUP_REQUEST_TIMEOUT_SECONDS,
     MunchyRunnerClient,
     RichProgressRenderer,
     RunnerHttpError,
@@ -495,6 +496,33 @@ def test_wait_for_job_polls_compact_status() -> None:
 
     assert client.wait_for_job("job-1", interval=0)["state"] == "succeeded"
     assert calls == [True]
+
+
+def test_cancel_job_cleanup_uses_long_timeout() -> None:
+    client = MunchyRunnerClient("http://runner")
+    seen: dict[str, object] = {}
+
+    def fake_json(
+        method: str,
+        path: str,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        seen["method"] = method
+        seen["path"] = path
+        seen["timeout"] = kwargs.get("timeout")
+        seen["expect"] = kwargs.get("expect")
+        return {"job_id": "job-1", "state": "cancelled"}
+
+    client.json = fake_json  # type: ignore[method-assign]
+
+    client.cancel_job("job-1", cleanup=True)
+
+    assert seen == {
+        "method": "POST",
+        "path": "/v1/jobs/job-1/cancel?cleanup=true",
+        "timeout": CLEANUP_REQUEST_TIMEOUT_SECONDS,
+        "expect": {202},
+    }
 
 
 def test_runner_http_error_formats_insufficient_storage_concisely() -> None:
