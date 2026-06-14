@@ -138,6 +138,42 @@ def test_post_finish_hook_syncs_finished_target(monkeypatch) -> None:
     assert calls == [target_path]
 
 
+def test_post_finish_hook_accepts_forwarded_bearer_token(monkeypatch) -> None:
+    monkeypatch.setenv("RIVERHOG_API_TOKEN", "api-token")
+    monkeypatch.setenv("RIVERHOG_TUSD_HOOK_SECRET", "hook-secret")
+    target_path = ".riverhog/uploads/collections/2026/demo/camera/a.webm"
+    calls: list[str] = []
+
+    class FakeCollections:
+        def sync_finished_upload_target(self, value: str) -> None:
+            calls.append(value)
+
+    monkeypatch.setattr(
+        "riverhog_api.routers.internal.default_container",
+        lambda: SimpleNamespace(collections=FakeCollections()),
+    )
+    client = _client()
+
+    response = client.post(
+        "/internal/tusd/hooks",
+        headers={"Authorization": "Bearer api-token"},
+        json={
+            "Type": "post-finish",
+            "Event": {
+                "Upload": {
+                    "MetaData": {
+                        "target_path": target_path,
+                    }
+                }
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {}
+    assert calls == [target_path]
+
+
 def test_tusd_upload_store_sends_signature_safe_target_metadata() -> None:
     target_path = (
         ".riverhog/uploads/collections/2025/demo/Logos/Plane Tail -  logo2a.jpg"

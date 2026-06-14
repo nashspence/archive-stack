@@ -55,6 +55,13 @@ def _authorized_bearer(request: Request) -> bool:
     return scheme.casefold() == "bearer" and secrets.compare_digest(token, expected)
 
 
+def _authorized_tusd_hook(request: Request) -> bool:
+    config = load_runtime_config()
+    if request.headers.get(_HOOK_SECRET_HEADER) == config.tusd_hook_secret:
+        return True
+    return _authorized_bearer(request)
+
+
 @router.get("/internal/tusd/auth")
 def authorize_tusd_data_plane(request: Request) -> Response:
     if not _authorized_bearer(request):
@@ -75,8 +82,7 @@ def authorize_tusd_data_plane(request: Request) -> Response:
 
 @router.post("/internal/tusd/hooks")
 async def handle_tusd_hook(request: Request) -> JSONResponse:
-    config = load_runtime_config()
-    if request.headers.get(_HOOK_SECRET_HEADER) != config.tusd_hook_secret:
+    if not _authorized_tusd_hook(request):
         return _json_response({"RejectUpload": True}, status_code=403)
 
     payload = await request.json()
