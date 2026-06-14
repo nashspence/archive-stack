@@ -8,7 +8,9 @@ import os
 import pathlib
 import platform
 import pwd
+import shutil
 import stat as stat_module
+import subprocess
 from datetime import UTC, datetime
 from typing import Any
 
@@ -107,29 +109,54 @@ def _stat_payload(path: pathlib.Path) -> dict[str, Any]:
 
 def _list_xattrs(path: pathlib.Path) -> list[str]:
     listxattr = getattr(os, "listxattr", None)
-    if listxattr is None:
+    if listxattr is not None:
+        try:
+            names = listxattr(path, follow_symlinks=True)
+        except TypeError:
+            names = listxattr(path)
+        return sorted(str(name) for name in names)
+    if shutil.which("xattr") is None:
         return []
-    try:
-        names = listxattr(path, follow_symlinks=True)
-    except TypeError:
-        names = listxattr(path)
+    proc = subprocess.run(
+        ["xattr", str(path)],
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.decode("utf-8", "replace").strip()
+        raise OSError(detail or f"xattr exited with {proc.returncode}")
+    names = proc.stdout.decode("utf-8", "surrogateescape").splitlines()
     return sorted(str(name) for name in names)
 
 
 def _get_xattr(path: pathlib.Path, name: str) -> bytes:
     getxattr = getattr(os, "getxattr", None)
-    if getxattr is None:
-        raise OSError("os.getxattr is not available")
+    if getxattr is not None:
+        try:
+            return getxattr(path, name, follow_symlinks=True)
+        except TypeError:
+            return getxattr(path, name)
+    if shutil.which("xattr") is None:
+        raise OSError("xattr support is not available")
+    proc = subprocess.run(
+        ["xattr", "-px", name, str(path)],
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.decode("utf-8", "replace").strip()
+        raise OSError(detail or f"xattr exited with {proc.returncode}")
+    hex_text = b"".join(proc.stdout.split())
     try:
-        return getxattr(path, name, follow_symlinks=True)
-    except TypeError:
-        return getxattr(path, name)
+        return bytes.fromhex(hex_text.decode("ascii"))
+    except ValueError as exc:
+        raise OSError(f"xattr returned non-hex data for {name}") from exc
 
 
 def _xattrs_payload(path: pathlib.Path) -> dict[str, Any]:
     listxattr = getattr(os, "listxattr", None)
     getxattr = getattr(os, "getxattr", None)
-    if listxattr is None or getxattr is None:
+    if (listxattr is None or getxattr is None) and shutil.which("xattr") is None:
         return {"available": False, "items": []}
     items: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
