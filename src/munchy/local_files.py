@@ -4,10 +4,12 @@ import hashlib
 import sqlite3
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
+
+from munchy.filesystem_metadata import collect_filesystem_metadata
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
 SQLITE_CACHE_TIMEOUT_SECONDS = 60.0
@@ -40,6 +42,7 @@ class HashedLocalFile:
     rel_path: str
     bytes: int
     sha256: str
+    filesystem_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -231,6 +234,7 @@ def hash_local_file_candidates(
     files: list[HashedLocalFile] = []
     progress = HashProgress(len(candidates), total_bytes, renderer=renderer)
     for candidate in candidates:
+        filesystem_metadata = collect_filesystem_metadata(candidate.source)
         sha256 = sha256_file_cached(
             candidate.source,
             size=candidate.bytes,
@@ -243,6 +247,7 @@ def hash_local_file_candidates(
                 rel_path=candidate.rel_path,
                 bytes=candidate.bytes,
                 sha256=sha256,
+                filesystem_metadata=filesystem_metadata,
             )
         )
         progress.mark_complete(candidate.bytes, stats)

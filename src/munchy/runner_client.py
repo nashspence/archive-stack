@@ -11,7 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -46,6 +46,7 @@ class RunnerInputFile:
     rel_path: str
     bytes: int
     sha256: str
+    filesystem_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1290,7 +1291,12 @@ class MunchyRunnerClient:
 
     def create_or_get_input_upload(self, request: RunnerUploadRequest) -> dict[str, Any]:
         files = [
-            {"path": item.rel_path, "bytes": item.bytes, "sha256": item.sha256}
+            {
+                "path": item.rel_path,
+                "bytes": item.bytes,
+                "sha256": item.sha256,
+                "filesystem_metadata": item.filesystem_metadata or None,
+            }
             for item in request.files
         ]
         status, body, _ = self.request(
@@ -1324,7 +1330,10 @@ class MunchyRunnerClient:
             if isinstance(item, dict)
         }
         expected = {
-            str(item["path"]): {"bytes": int(item["bytes"]), "sha256": item.get("sha256")}
+            str(item["path"]): {
+                "bytes": int(item["bytes"]),
+                "sha256": item.get("sha256"),
+            }
             for item in files
         }
         if existing != expected:

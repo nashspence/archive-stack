@@ -38,6 +38,37 @@ def test_hash_local_file_candidates_reuses_cached_hash(tmp_path: Path) -> None:
     assert second.hash_cache.writes == 0
 
 
+def test_hash_local_file_candidates_captures_filesystem_metadata(tmp_path: Path) -> None:
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    stat = source.stat()
+    candidate = LocalFileCandidate(
+        source=source,
+        rel_path="camera/clip.mp4",
+        bytes=stat.st_size,
+        mtime_ns=stat.st_mtime_ns,
+    )
+
+    discovery = hash_local_file_candidates([candidate], cache=None)
+
+    metadata = discovery.files[0].filesystem_metadata
+    assert metadata["kind"] == "munchy.source-filesystem-metadata"
+    assert metadata["captured_from"] == str(source)
+    stat_metadata = metadata["stat"]
+    raw_stat = stat_metadata["raw_stat"]
+    assert stat_metadata["size"] == stat.st_size
+    assert stat_metadata["mode"] == stat.st_mode
+    assert stat_metadata["mtime_ns"] == stat.st_mtime_ns
+    assert stat_metadata["atime_ns"] == stat.st_atime_ns
+    assert raw_stat["st_size"] == stat.st_size
+    if hasattr(stat, "st_birthtime"):
+        assert "birthtime" in stat_metadata
+        assert "st_birthtime" in raw_stat
+    if hasattr(stat, "st_birthtime_ns"):
+        assert stat_metadata["birthtime_ns"] == stat.st_birthtime_ns
+        assert raw_stat["st_birthtime_ns"] == stat.st_birthtime_ns
+
+
 def test_hash_local_file_candidates_reports_local_hash_progress(tmp_path: Path) -> None:
     source = tmp_path / "clip.mp4"
     source.write_bytes(b"video")

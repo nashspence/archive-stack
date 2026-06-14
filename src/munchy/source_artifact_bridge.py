@@ -192,7 +192,13 @@ def build_strict_source_artifacts(
     archive_mkv: pathlib.Path,
     encode_command: Sequence[str],
     encode_profile: Mapping[str, Any] | None,
+    source_filesystem_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if not isinstance(source_filesystem_metadata, Mapping):
+        raise RuntimeError(
+            "unresumable: source filesystem metadata sidecar is missing for "
+            f"{source.name}"
+        )
     profile = dict(encode_profile or {})
     drop_policy = source_artifacts.SourceArtifactDropPolicy(_artifact_drop_reason_map(profile))
     work_dir = archive_mkv.parent / f".{archive_mkv.name}.source-artifacts-work"
@@ -317,6 +323,7 @@ def build_strict_source_artifacts(
             encode_cmd=list(encode_command),
             selected_output_path=archive_mkv,
             encode_output_path=archive_mkv,
+            source_filesystem_metadata=source_filesystem_metadata,
         )
 
         created = source_artifacts._build_source_artifacts_bundle(

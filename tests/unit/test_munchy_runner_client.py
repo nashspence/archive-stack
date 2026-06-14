@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -627,6 +628,59 @@ def test_runner_http_error_formats_insufficient_storage_concisely() -> None:
     assert "need 2.00 GiB free" in str(error)
     assert "have 1.00 GiB" in str(error)
     assert "512.00 MiB reserved by active uploads" in str(error)
+
+
+def test_create_input_upload_sends_filesystem_metadata(tmp_path: Path) -> None:
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    metadata = {
+        "kind": "munchy.source-filesystem-metadata",
+        "stat": {"st_birthtime": 1.25},
+    }
+    item = RunnerInputFile(
+        source=source,
+        rel_path="video/clip.mp4",
+        bytes=source.stat().st_size,
+        sha256="0" * 64,
+        filesystem_metadata=metadata,
+    )
+    request = RunnerUploadRequest(
+        upload_id="upload-1",
+        job_id="job-1",
+        files=(item,),
+        storage_hint={"source_bytes": item.bytes},
+        job_payload={"job_id": "job-1", "input_upload_id": "upload-1"},
+    )
+    client = MunchyRunnerClient("http://runner")
+    seen_payload: dict[str, object] = {}
+
+    def fake_request(
+        method: str,
+        path: str,
+        **kwargs: object,
+    ) -> tuple[int, bytes, object]:
+        assert method == "POST"
+        assert path == "/v1/input-uploads"
+        seen_payload.update(kwargs["payload"])  # type: ignore[arg-type]
+        return (
+            201,
+            json.dumps({"upload_id": "upload-1", "files": seen_payload["files"]}).encode(),
+            object(),
+        )
+
+    client.request = fake_request  # type: ignore[method-assign]
+
+    upload = client.create_or_get_input_upload(request)
+
+    assert upload["upload_id"] == "upload-1"
+    assert seen_payload["files"] == [
+        {
+            "path": "video/clip.mp4",
+            "bytes": item.bytes,
+            "sha256": "0" * 64,
+            "filesystem_metadata": metadata,
+        }
+    ]
 
 
 def test_upload_file_retries_transient_error_and_refreshes_offset(tmp_path: Path) -> None:

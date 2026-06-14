@@ -1835,16 +1835,25 @@ def _assemble_source_artifact_bundle_inputs(
     encode_cmd: Sequence[str],
     selected_output_path: pathlib.Path,
     encode_output_path: pathlib.Path,
+    source_filesystem_metadata: Mapping[str, Any] | None = None,
 ) -> list[SourceArtifact]:
     inventory_root = work_dir / "inventory"
     encoding_root = work_dir / "encoding"
     rebuild_root = work_dir / "rebuild"
     source_ffprobe_path = inventory_root / "source-ffprobe.json"
+    source_filesystem_path = inventory_root / "source-filesystem.json"
     source_inventory_path = inventory_root / "source-inventory.json"
     stream_transforms_path = encoding_root / "stream-transforms.json"
     rebuild_plan_path = rebuild_root / "rebuild-plan.json"
+    if not isinstance(source_filesystem_metadata, Mapping):
+        raise RuntimeError(
+            "unresumable: source filesystem metadata sidecar is missing for "
+            f"{os.path.basename(src)}"
+        )
+    filesystem_metadata = dict(source_filesystem_metadata)
 
     _write_json_artifact(source_ffprobe_path, source_metadata)
+    _write_json_artifact(source_filesystem_path, filesystem_metadata)
     _write_json_artifact(
         source_inventory_path,
         _source_inventory_payload(
@@ -1892,6 +1901,13 @@ def _assemble_source_artifact_bundle_inputs(
             "inventory/source-ffprobe.json",
             "source_ffprobe",
             "Raw ffprobe metadata for original source",
+            "application/json",
+        ),
+        (
+            source_filesystem_path,
+            "inventory/source-filesystem.json",
+            "source_filesystem",
+            "Original source filesystem metadata",
             "application/json",
         ),
         (

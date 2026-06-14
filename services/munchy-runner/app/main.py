@@ -27,6 +27,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from munchy.filesystem_metadata import write_filesystem_metadata_map
 from munchy.profiles import (
     MUNCHY_PROFILE_TARGET,
     normalize_artifact_drop_selector,
@@ -366,6 +367,7 @@ class InputFileSpec(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
     bytes: int = Field(ge=0)
     sha256: str | None = Field(default=None, min_length=64, max_length=64)
+    filesystem_metadata: dict[str, Any] | None = None
 
     @field_validator("path")
     @classmethod
@@ -1999,6 +2001,21 @@ def materialize_upload_groups(
         materialize_upload_file(file_state, dest_root)
 
 
+def write_group_filesystem_metadata(
+    root: Path,
+    group_name: str,
+    file_states: list[dict[str, Any]],
+) -> None:
+    records: dict[str, dict[str, Any]] = {}
+    for file_state in file_states:
+        metadata = file_state.get("filesystem_metadata")
+        if not isinstance(metadata, dict):
+            continue
+        rel_path = upload_file_group_rel(str(file_state["path"]), group_name).as_posix()
+        records[rel_path] = metadata
+    write_filesystem_metadata_map(root / group_name, records, created_at=now_iso())
+
+
 def sync_shared_input_tree(
     upload: dict[str, Any],
     group_names: set[str] | None = None,
@@ -2032,6 +2049,9 @@ def sync_shared_input_tree(
                 job["phase"] = f"preparing_input:{progress['input_tree_files_ready']}/{len(files)}"
                 job["input_upload_progress"] = upload_group_progress(upload, selected_groups)
                 save_job(job)
+        for group_name in selected_groups:
+            group_files = upload_files_for_groups(upload, {group_name})
+            write_group_filesystem_metadata(root, group_name, group_files)
         return {"linked": linked, "skipped": skipped, "files": len(files)}
 
 
@@ -5119,6 +5139,7 @@ def start_eager_batch(
     batch_root.mkdir(parents=True, exist_ok=True)
     for file_state in file_states:
         materialize_upload_file(file_state, batch_root)
+    write_group_filesystem_metadata(batch_root, group_name, file_states)
     gpu_tasks: list[TaskName] = ["archive_video"]
     payload = build_eager_gpu_payload(
         job,
@@ -5825,6 +5846,7 @@ def create_input_upload(req: CreateInputUploadRequest) -> dict[str, Any]:
                     "path": item.path,
                     "bytes": item.bytes,
                     "sha256": item.sha256,
+                    "filesystem_metadata": item.filesystem_metadata,
                     "target_path": target_path,
                     "input_upload_id": upload_id,
                     "upload_id": tusd_upload_id_for_target_path(target_path),

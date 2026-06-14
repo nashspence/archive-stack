@@ -57,11 +57,13 @@ class SourceArtifactsTests(unittest.TestCase):
                 archive_mkv: Path,
                 encode_command: list[str],
                 encode_profile: dict,
+                source_filesystem_metadata: dict,
             ) -> dict:
                 self.assertEqual(source.name, "clip.mp4")
                 self.assertEqual(archive_mkv, output)
                 self.assertEqual(encode_command, ["ffmpeg", "-i", "clip.mp4", "clip.mkv"])
                 self.assertEqual(encode_profile["name"], "test-profile")
+                self.assertEqual(source_filesystem_metadata["stat"]["st_birthtime"], 1.25)
                 archive_mkv.write_bytes(b"after-source-artifacts")
                 return {"output": str(archive_mkv) + ".source-artifacts.tar.zst"}
 
@@ -76,6 +78,7 @@ class SourceArtifactsTests(unittest.TestCase):
                     dry_run=False,
                     source_artifacts_source=source,
                     source_artifacts_profile={"name": "test-profile"},
+                    source_filesystem_metadata={"stat": {"st_birthtime": 1.25}},
                 )
 
             self.assertEqual(result["bytes"], len(b"after-source-artifacts"))
@@ -87,6 +90,28 @@ class SourceArtifactsTests(unittest.TestCase):
                 result["source_artifacts"],
                 {"output": str(output) + ".source-artifacts.tar.zst"},
             )
+
+    def test_archive_batch_requires_source_filesystem_metadata_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_root = root / "input"
+            output_root = root / "output"
+            input_root.mkdir()
+            source = input_root / "clip.mp4"
+            source.write_bytes(b"source")
+
+            with self.assertRaisesRegex(RuntimeError, "unresumable.*filesystem metadata"):
+                av1.run_batch(
+                    sources=[source],
+                    input_root=input_root,
+                    output_root=output_root,
+                    suffix=".webm",
+                    command_builder=lambda src, dest: ["ffmpeg", "-i", str(src), str(dest)],
+                    label="archive video encode",
+                    dry_run=True,
+                    source_artifacts=True,
+                    source_artifacts_profile={"name": "test-profile"},
+                )
 
 
 if __name__ == "__main__":

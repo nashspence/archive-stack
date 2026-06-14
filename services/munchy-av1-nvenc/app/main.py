@@ -14,15 +14,17 @@ import subprocess
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from munchy.filesystem_metadata import load_filesystem_metadata_map
 from munchy.profiles import (
     MUNCHY_PROFILE_TARGET,
     normalize_artifact_drop_selector,
@@ -1147,7 +1149,11 @@ def av1_archive_command(source: Path, dest: Path, archive: ArchiveEncodeProfile)
     validate_archive_container_source(source, archive)
     decoder_args = archive_decoder_args(source)
     hardware_scale_filter = archive_hardware_scale_filter(source, archive, decoder_args)
-    filters = [hardware_scale_filter] if hardware_scale_filter else archive_video_filters(source, archive)
+    filters = (
+        [hardware_scale_filter]
+        if hardware_scale_filter
+        else archive_video_filters(source, archive)
+    )
     hardware_frames = hardware_scale_filter is not None
     if hardware_frames:
         decoder_args = [
@@ -1273,6 +1279,7 @@ def run_encode_item(
     dry_run: bool,
     source_artifacts_source: Path | None = None,
     source_artifacts_profile: dict[str, Any] | None = None,
+    source_filesystem_metadata: dict[str, Any] | None = None,
     on_start: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     with encode_semaphore:
@@ -1292,6 +1299,7 @@ def run_encode_item(
             archive_mkv=output_path,
             encode_command=result["command"],
             encode_profile=source_artifacts_profile,
+            source_filesystem_metadata=source_filesystem_metadata,
         )
     payload["bytes"] = output_path.stat().st_size if output_path.exists() else 0
     if output_path.exists():
@@ -1313,11 +1321,27 @@ def run_batch(
     source_artifacts_profile: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
+    filesystem_metadata = load_filesystem_metadata_map(input_root)
+    if source_artifacts:
+        missing_metadata: list[str] = []
+        for source in sources:
+            rel_path = source.relative_to(input_root).as_posix()
+            if rel_path not in filesystem_metadata:
+                missing_metadata.append(rel_path)
+        if missing_metadata:
+            sample = ", ".join(missing_metadata[:5])
+            if len(missing_metadata) > 5:
+                sample += f", ... ({len(missing_metadata)} total)"
+            raise RuntimeError(
+                "unresumable: source filesystem metadata sidecar is missing entries for "
+                f"{sample}"
+            )
     with ThreadPoolExecutor(max_workers=MAX_PARALLEL_ENCODES) as pool:
         futures = {}
         for source in sources:
             dest = output_for(source, input_root, output_root, suffix)
             cmd = command_builder(source, dest)
+            rel_path = source.relative_to(input_root).as_posix()
             futures[
                 pool.submit(
                     run_encode_item,
@@ -1327,6 +1351,7 @@ def run_batch(
                     dry_run=dry_run,
                     source_artifacts_source=source if source_artifacts else None,
                     source_artifacts_profile=source_artifacts_profile,
+                    source_filesystem_metadata=filesystem_metadata.get(rel_path),
                 )
             ] = source
         for future in as_completed(futures):

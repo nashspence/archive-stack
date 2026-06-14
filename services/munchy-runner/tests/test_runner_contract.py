@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 from types import ModuleType
 
+from munchy.filesystem_metadata import SOURCE_FILESYSTEM_METADATA_FILENAME
 from munchy.uvicorn_logging import DropHealthAccessLogFilter
 
 
@@ -1032,8 +1033,18 @@ def test_sync_shared_input_tree_links_completed_files_incrementally(
     upload = {
         "upload_id": "upload-1",
         "files": [
-            {"path": "camera/a.mp4", "bytes": 7, "upload_id": "upload-a"},
-            {"path": "camera/b.mp4", "bytes": 7, "upload_id": "upload-b"},
+            {
+                "path": "camera/a.mp4",
+                "bytes": 7,
+                "upload_id": "upload-a",
+                "filesystem_metadata": {"stat": {"st_birthtime": 1.25}},
+            },
+            {
+                "path": "camera/b.mp4",
+                "bytes": 7,
+                "upload_id": "upload-b",
+                "filesystem_metadata": {"stat": {"st_birthtime": 2.5}},
+            },
         ],
     }
 
@@ -1058,6 +1069,11 @@ def test_sync_shared_input_tree_links_completed_files_incrementally(
     assert not partial_path.exists()
     assert progress["files_uploaded"] == 2
     assert progress["input_tree_files_ready"] == 2
+    metadata_path = root / "camera" / SOURCE_FILESYSTEM_METADATA_FILENAME
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["kind"] == "munchy.input-filesystem-metadata-map"
+    assert metadata["files"]["a.mp4"]["stat"]["st_birthtime"] == 1.25
+    assert metadata["files"]["b.mp4"]["stat"]["st_birthtime"] == 2.5
 
 
 def test_consume_input_upload_file_removes_only_that_shared_input_file(
@@ -1090,11 +1106,14 @@ def test_consume_input_upload_file_removes_only_that_shared_input_file(
     (root / "camera").mkdir(parents=True)
     (root / "camera" / "a.mp4").write_bytes(b"video-a")
     (root / "camera" / "b.mp4").write_bytes(b"video-b")
+    metadata_path = root / "camera" / SOURCE_FILESYSTEM_METADATA_FILENAME
+    metadata_path.write_text("{}", encoding="utf-8")
 
     upload = runner.consume_input_upload_files("upload-1", {"camera/a.mp4"})
 
     assert not (root / "camera" / "a.mp4").exists()
     assert (root / "camera" / "b.mp4").read_bytes() == b"video-b"
+    assert metadata_path.exists()
     by_path = {str(item["path"]): item for item in upload["files"]}
     assert by_path["camera/a.mp4"]["consumed_at"]
     assert by_path["camera/a.mp4"]["complete"] is True
