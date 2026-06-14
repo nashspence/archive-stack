@@ -26,6 +26,7 @@ from riverhog_core.collection_archives import (
     CollectionArchivePackage,
     build_collection_archive_package_from_chunk_reader,
     build_collection_archive_package_from_prebuilt_artifacts,
+    collection_archive_size,
 )
 from riverhog_core.domain.enums import FetchState
 from riverhog_core.ports.archive_store import (
@@ -192,7 +193,6 @@ class SqlAlchemyGlacierUploadService:
         receipt: CollectionArchiveUploadReceipt | None = None
         manifest_bytes: bytes | None = None
         proof_bytes: bytes | None = None
-        packaged_archive_size: int | None = None
         packaged_archive_sha256: str | None = None
         package: CollectionArchivePackage | None = None
         with session_scope(self._session_factory) as session:
@@ -206,9 +206,6 @@ class SqlAlchemyGlacierUploadService:
             receipt = _archive_receipt_from_json(upload.archive_receipt_json)
             manifest_bytes = _decode_b64(upload.collection_manifest_bytes_b64)
             proof_bytes = _decode_b64(upload.collection_manifest_proof_bytes_b64)
-            packaged_archive_size = _positive_int_or_none(
-                upload.archive_multipart_content_length
-            )
             packaged_archive_sha256 = upload.archive_multipart_sha256
             archive_storage_prefix = _ensure_archive_storage_prefix(
                 session,
@@ -223,7 +220,6 @@ class SqlAlchemyGlacierUploadService:
             elif (
                 manifest_bytes is not None
                 and proof_bytes is not None
-                and packaged_archive_size is not None
                 and packaged_archive_sha256 is not None
             ):
                 upload.archive_phase = "packaged"
@@ -272,7 +268,6 @@ class SqlAlchemyGlacierUploadService:
                 if (
                     manifest_bytes is not None
                     and proof_bytes is not None
-                    and packaged_archive_size is not None
                     and packaged_archive_sha256 is not None
                 ):
                     package = build_collection_archive_package_from_prebuilt_artifacts(
@@ -282,7 +277,7 @@ class SqlAlchemyGlacierUploadService:
                         read_file_chunks_range=_read_archive_file_chunks,
                         manifest_bytes=manifest_bytes,
                         proof_bytes=proof_bytes,
-                        archive_size=packaged_archive_size,
+                        archive_size=collection_archive_size(package_files),
                         archive_sha256=packaged_archive_sha256,
                     )
                 else:

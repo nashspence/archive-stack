@@ -1246,6 +1246,97 @@ def test_packaged_archive_artifacts_are_reused_after_upload_failure(tmp_path: Pa
         assert len(collection.files) == 1
 
 
+def test_packaged_archive_artifacts_reuse_survives_multipart_content_length(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+
+    hot_store = _FakeHotStore()
+    upload_store = _StreamingOnlyUploadStore()
+    config = _config(sqlite_path, glacier_upload_retry_delay=timedelta(seconds=0))
+    service = SqlAlchemyCollectionService(config, hot_store, upload_store)
+
+    content = b"hello restartable multipart archive\n" * 8
+    relpath = "albums/day-01.txt"
+    sha256 = hashlib.sha256(content).hexdigest()
+    payload = service.create_or_resume_upload(
+        upload_slug="photos 2024",
+        files=[
+            {
+                "path": relpath,
+                "bytes": len(content),
+                "sha256": sha256,
+            }
+        ],
+        ingest_source="/tmp/source",
+    )
+    collection_id = str(payload["collection_id"])
+    upload_session = service.create_or_resume_file_upload(collection_id, relpath)
+    service.append_upload_chunk(
+        collection_id,
+        relpath,
+        offset=int(upload_session["offset"]),
+        checksum=_chunk_checksum(content),
+        content=content,
+    )
+
+    package = build_collection_archive_package(
+        collection_id=collection_id,
+        files=[
+            CollectionArchiveFile(
+                path=relpath,
+                content=content,
+                sha256=sha256,
+            )
+        ],
+        stamper=FixtureProofStamper(),
+    )
+
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
+    with session_scope(session_factory) as session:
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is not None
+        upload.state = "archiving"
+        upload.archive_phase = "uploading"
+        upload.archive_next_attempt_at = "2026-04-20T04:00:00Z"
+        upload.collection_manifest_bytes_b64 = base64.b64encode(package.manifest_bytes).decode(
+            "ascii"
+        )
+        upload.collection_manifest_proof_bytes_b64 = base64.b64encode(
+            package.proof_bytes
+        ).decode("ascii")
+        upload.archive_object_path = f"glacier/archives/{collection_id}/archive.tar.age"
+        upload.archive_multipart_upload_id = "archive-upload-1"
+        upload.archive_multipart_part_size = 64 * 1024 * 1024
+        upload.archive_multipart_content_length = package.archive_size + 123
+        upload.archive_multipart_sha256 = package.archive_sha256
+        upload.archive_multipart_uploaded_bytes = 64
+        upload.archive_multipart_uploaded_parts = 1
+        upload.archive_multipart_total_parts = 2
+
+    archive_store = _CountingArchiveStore()
+    proof_stamper = _CountingProofStamper()
+    upload_service = SqlAlchemyGlacierUploadService(
+        config,
+        archive_store,
+        hot_store,
+        upload_store,
+        proof_stamper=proof_stamper,
+        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
+    )
+
+    assert upload_service.process_due_uploads() == 1
+    assert archive_store.uploads == 1
+    assert proof_stamper.stamps == 0
+
+    with session_scope(session_factory) as session:
+        assert session.get(CollectionUploadRecord, collection_id) is None
+        collection = session.get(CollectionRecord, collection_id)
+        assert collection is not None
+        assert len(collection.files) == 1
+
+
 def test_archive_failures_retry_indefinitely_with_throttled_operator_notifications(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
