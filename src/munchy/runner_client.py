@@ -403,6 +403,92 @@ def format_riverhog_upload_progress(progress: dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
+def riverhog_archive_progress(progress: dict[str, Any]) -> dict[str, Any] | None:
+    total_bytes = int(progress.get("archive_total_bytes") or 0)
+    uploaded_bytes = int(progress.get("archive_uploaded_bytes") or 0)
+    if total_bytes <= 0 and not progress.get("archive_phase"):
+        return None
+    uploaded_bytes = min(uploaded_bytes, total_bytes) if total_bytes else uploaded_bytes
+    return {
+        "bytes_done": uploaded_bytes,
+        "bytes_total": total_bytes,
+        "percent_bytes": (uploaded_bytes / total_bytes * 100.0) if total_bytes else 0.0,
+        "archive_phase": progress.get("archive_phase"),
+        "archive_uploaded_parts": progress.get("archive_uploaded_parts"),
+        "archive_total_parts": progress.get("archive_total_parts"),
+    }
+
+
+def format_riverhog_archive_progress(progress: dict[str, Any]) -> str:
+    phase = str(progress.get("archive_phase") or "waiting").strip()
+    uploaded_bytes = int(progress.get("bytes_done") or 0)
+    total_bytes = int(progress.get("bytes_total") or 0)
+    parts = ["riverhog archive", phase, format_progress_bytes(uploaded_bytes, total_bytes)]
+    uploaded_parts = progress.get("archive_uploaded_parts")
+    total_parts = progress.get("archive_total_parts")
+    if isinstance(uploaded_parts, int) and isinstance(total_parts, int) and total_parts > 0:
+        parts.append(f"parts {uploaded_parts}/{total_parts}")
+    return ", ".join(parts)
+
+
+def riverhog_promotion_progress(progress: dict[str, Any]) -> dict[str, Any] | None:
+    total_files = int(
+        progress.get("riverhog_files_total") or progress.get("primary_files_total") or 0
+    )
+    promoted_files = int(progress.get("hot_promoted_files") or 0)
+    total_bytes = int(progress.get("riverhog_bytes_total") or progress.get("bytes_total") or 0)
+    promoted_bytes = int(progress.get("hot_promoted_bytes") or 0)
+    if total_files <= 0 and total_bytes <= 0:
+        return None
+    promoted_files = min(promoted_files, total_files) if total_files else promoted_files
+    promoted_bytes = min(promoted_bytes, total_bytes) if total_bytes else promoted_bytes
+    return {
+        "files_done": promoted_files,
+        "files_total": total_files,
+        "bytes_done": promoted_bytes,
+        "bytes_total": total_bytes,
+        "percent_bytes": (promoted_bytes / total_bytes * 100.0) if total_bytes else 0.0,
+        "percent_files": (promoted_files / total_files * 100.0) if total_files else 0.0,
+    }
+
+
+def format_riverhog_promotion_progress(progress: dict[str, Any]) -> str:
+    files_done = int(progress.get("files_done") or 0)
+    files_total = int(progress.get("files_total") or 0)
+    bytes_done = int(progress.get("bytes_done") or 0)
+    bytes_total = int(progress.get("bytes_total") or 0)
+    pct = progress_percent(progress, percent_key="percent_bytes")
+    return (
+        f"riverhog promotion {files_done}/{files_total} files, "
+        f"{format_progress_bytes(bytes_done, bytes_total)}, {pct:.2f}%"
+    )
+
+
+def riverhog_progress_requires_finalization(job: dict[str, Any]) -> bool:
+    progress = job.get("riverhog_upload_progress")
+    return isinstance(progress, dict) and bool(progress.get("collection_id"))
+
+
+def riverhog_progress_safe_to_delete(job: dict[str, Any]) -> bool:
+    progress = job.get("riverhog_upload_progress")
+    return isinstance(progress, dict) and bool(progress.get("safe_to_delete"))
+
+
+def riverhog_progress_failed(job: dict[str, Any]) -> bool:
+    progress = job.get("riverhog_upload_progress")
+    return isinstance(progress, dict) and str(progress.get("state") or "") == "failed"
+
+
+def job_finished_cleanly(job: dict[str, Any]) -> bool:
+    if job.get("state") != "succeeded":
+        return False
+    if riverhog_progress_failed(job):
+        return False
+    if riverhog_progress_requires_finalization(job):
+        return riverhog_progress_safe_to_delete(job)
+    return True
+
+
 def input_tree_progress(upload_progress: dict[str, Any]) -> dict[str, Any] | None:
     if (
         "input_tree_files_ready" not in upload_progress
@@ -582,6 +668,12 @@ def format_progress_status_line(job: dict[str, Any]) -> str:
     riverhog_progress = job.get("riverhog_upload_progress")
     if isinstance(riverhog_progress, dict):
         pieces.append(format_riverhog_upload_progress(riverhog_progress))
+        archive_progress = riverhog_archive_progress(riverhog_progress)
+        if archive_progress is not None:
+            pieces.append(format_riverhog_archive_progress(archive_progress))
+        promotion_progress = riverhog_promotion_progress(riverhog_progress)
+        if promotion_progress is not None:
+            pieces.append(format_riverhog_promotion_progress(promotion_progress))
     issue = job.get("transient_issue")
     if isinstance(issue, dict):
         pieces.append(format_transient_issue(issue))
@@ -640,6 +732,7 @@ JOB_FAILURE_DETAIL_KEYS = {
     "error",
     "error_code",
     "failed_reason",
+    "latest_failure",
     "message",
     "reason",
 }
@@ -890,6 +983,20 @@ class RichProgressRenderer(ProgressRenderer):
                 self._bar(riverhog_progress, percent_key="percent_primary_files"),
             )
             table.add_row("", format_riverhog_upload_progress(riverhog_progress))
+            archive_progress = riverhog_archive_progress(riverhog_progress)
+            if archive_progress is not None:
+                table.add_row(
+                    "Riverhog Archive",
+                    self._bar(archive_progress, percent_key="percent_bytes"),
+                )
+                table.add_row("", format_riverhog_archive_progress(archive_progress))
+            promotion_progress = riverhog_promotion_progress(riverhog_progress)
+            if promotion_progress is not None:
+                table.add_row(
+                    "Riverhog Promotion",
+                    self._bar(promotion_progress, percent_key="percent_bytes"),
+                )
+                table.add_row("", format_riverhog_promotion_progress(promotion_progress))
 
         issue = job.get("transient_issue")
         issue = issue if isinstance(issue, dict) else None
@@ -1502,7 +1609,13 @@ class MunchyRunnerClient:
         timeout = CLEANUP_REQUEST_TIMEOUT_SECONDS if cleanup else 60.0
         return self.json("POST", path, expect={202}, timeout=timeout)
 
-    def wait_for_job(self, job_id: str, *, interval: float = 10.0) -> dict[str, Any]:
+    def wait_for_job(
+        self,
+        job_id: str,
+        *,
+        interval: float = 10.0,
+        wait_for_safe_delete: bool = True,
+    ) -> dict[str, Any]:
         retry_delay = UPLOAD_RETRY_INITIAL_DELAY_SECONDS
         retry_reporter = UploadRetryReporter(label="remote job status")
         renderer = make_progress_renderer(
@@ -1529,8 +1642,18 @@ class MunchyRunnerClient:
                     retry_delay = next_upload_retry_delay(retry_delay)
                     continue
                 state = str(job.get("state") or "")
-                renderer.update(job, force=state in {"succeeded", "failed", "cancelled"})
-                if state in {"succeeded", "failed", "cancelled"}:
+                terminal = state in {"succeeded", "failed", "cancelled"}
+                riverhog_pending = (
+                    wait_for_safe_delete
+                    and state == "succeeded"
+                    and riverhog_progress_requires_finalization(job)
+                    and not riverhog_progress_safe_to_delete(job)
+                )
+                renderer.update(job, force=terminal and not riverhog_pending)
+                if riverhog_progress_failed(job):
+                    retry_reporter.finish()
+                    return job
+                if terminal and not riverhog_pending:
                     retry_reporter.finish()
                     return job
                 time.sleep(interval)

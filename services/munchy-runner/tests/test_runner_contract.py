@@ -1791,8 +1791,8 @@ def test_eager_riverhog_upload_reuses_client_per_worker_thread(
         },
     }
 
-    created: list["FakeRiverhogApi"] = []
-    closed: list["FakeRiverhogApi"] = []
+    created: list[object] = []
+    closed: list[object] = []
 
     class FakeRiverhogApi:
         def __init__(self) -> None:
@@ -2188,6 +2188,49 @@ def test_riverhog_upload_progress_uses_expected_archive_output_count(
     assert progress["artifact_files_uploaded"] == 6
     assert progress["percent_files"] == 0.17
     assert progress["percent_primary_files"] == 0.17
+
+
+def test_sync_riverhog_session_uses_finalized_collection_when_upload_is_gone(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    job = {
+        "job_id": "job-1",
+        "riverhog": {"enabled": True},
+        "riverhog_session_upload": {
+            "state": "archiving",
+            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "files": {},
+        },
+    }
+
+    class FakeApi:
+        def get_collection_upload(self, collection_id: str) -> dict[str, object]:
+            assert collection_id == "2026/20260101T000000Z__camera-archive"
+            raise runner.NotFound("already finalized")
+
+        def get_collection(self, collection_id: str) -> dict[str, object]:
+            assert collection_id == "2026/20260101T000000Z__camera-archive"
+            return {
+                "id": collection_id,
+                "files": 7,
+                "bytes": 1234,
+                "glacier": {"state": "uploaded", "stored_bytes": 567},
+            }
+
+    payload = runner.sync_riverhog_session_from_remote(job, FakeApi())  # type: ignore[arg-type]
+    progress = runner.riverhog_upload_progress_for_job(job)
+
+    assert payload is not None
+    assert payload["state"] == "finalized"
+    assert progress["state"] == "finalized"
+    assert progress["safe_to_delete"] is True
+    assert progress["hot_promoted_files"] == 7
+    assert progress["riverhog_bytes_total"] == 1234
+    assert progress["archive_uploaded_bytes"] == 567
 
 
 def test_riverhog_upload_progress_prefers_recent_burst_rate(

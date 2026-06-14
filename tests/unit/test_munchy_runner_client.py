@@ -20,8 +20,13 @@ from munchy.runner_client import (
     format_job_status_line,
     format_job_summary_line,
     format_progress_status_line,
+    format_riverhog_archive_progress,
+    format_riverhog_promotion_progress,
     format_riverhog_upload_progress,
+    job_finished_cleanly,
     progress_percent,
+    riverhog_archive_progress,
+    riverhog_promotion_progress,
 )
 
 
@@ -81,6 +86,32 @@ def test_format_riverhog_upload_progress_uses_expected_file_total() -> None:
     assert "6/7 artifacts" in line
     assert "1.54 MiB uploaded" in line
     assert "72." not in line
+
+
+def test_format_riverhog_archive_and_promotion_progress_are_separate() -> None:
+    progress = {
+        "collection_id": "2026/camera",
+        "archive_phase": "uploading",
+        "archive_uploaded_bytes": 4_000,
+        "archive_total_bytes": 10_000,
+        "archive_uploaded_parts": 2,
+        "archive_total_parts": 5,
+        "hot_promoted_files": 3,
+        "riverhog_files_total": 10,
+        "hot_promoted_bytes": 6_000,
+        "riverhog_bytes_total": 20_000,
+    }
+
+    archive = riverhog_archive_progress(progress)
+    promotion = riverhog_promotion_progress(progress)
+
+    assert archive is not None
+    assert promotion is not None
+    assert format_riverhog_archive_progress(archive).startswith("riverhog archive, uploading")
+    assert "parts 2/5" in format_riverhog_archive_progress(archive)
+    assert format_riverhog_promotion_progress(promotion).startswith(
+        "riverhog promotion 3/10 files"
+    )
 
 
 def test_format_job_summary_line_renders_review_clip_progress() -> None:
@@ -496,6 +527,55 @@ def test_wait_for_job_polls_compact_status() -> None:
 
     assert client.wait_for_job("job-1", interval=0)["state"] == "succeeded"
     assert calls == [True]
+
+
+def test_wait_for_job_continues_until_riverhog_safe_to_delete() -> None:
+    client = MunchyRunnerClient("http://runner")
+    responses: list[dict[str, object]] = [
+        {
+            "job_id": "job-1",
+            "state": "succeeded",
+            "riverhog_upload_progress": {
+                "collection_id": "2026/camera",
+                "state": "archiving",
+                "safe_to_delete": False,
+            },
+        },
+        {
+            "job_id": "job-1",
+            "state": "succeeded",
+            "riverhog_upload_progress": {
+                "collection_id": "2026/camera",
+                "state": "finalized",
+                "safe_to_delete": True,
+            },
+        },
+    ]
+
+    def fake_get_job(job_id: str, *, compact: bool = False) -> dict[str, object]:
+        assert compact is True
+        assert job_id == "job-1"
+        return responses.pop(0)
+
+    client.get_job = fake_get_job  # type: ignore[method-assign]
+
+    final = client.wait_for_job("job-1", interval=0)
+
+    assert job_finished_cleanly(final)
+    assert responses == []
+
+
+def test_job_finished_cleanly_rejects_unfinalized_riverhog_job() -> None:
+    assert not job_finished_cleanly(
+        {
+            "state": "succeeded",
+            "riverhog_upload_progress": {
+                "collection_id": "2026/camera",
+                "state": "archiving",
+                "safe_to_delete": False,
+            },
+        }
+    )
 
 
 def test_cancel_job_cleanup_uses_long_timeout() -> None:

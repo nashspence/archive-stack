@@ -12,6 +12,7 @@ from munchy.runner_client import (
     MunchyRunnerClient,
     format_job_status_line,
     format_job_summary_line,
+    job_finished_cleanly,
     runner_url_setting,
 )
 
@@ -93,7 +94,7 @@ def watch_job(
     ] = None,
     interval: Annotated[float, typer.Option("--interval", min=0.5)] = 10.0,
 ) -> None:
-    """Monitor a runner job until it reaches a terminal state."""
+    """Monitor a runner job until it is safe to delete local sources."""
 
     try:
         final = MunchyRunnerClient(runner_url_setting(runner_url)).wait_for_job(
@@ -102,7 +103,7 @@ def watch_job(
         )
     except Exception as exc:
         _exit_runner_error(exc)
-    if final.get("state") != "succeeded":
+    if not job_finished_cleanly(final):
         raise typer.Exit(1)
 
 

@@ -767,6 +767,32 @@ def test_wait_for_finalized_collection_waits_through_archiving(
     assert payload["collection"]["glacier"]["state"] == "uploaded"  # type: ignore[index]
 
 
+def test_wait_for_finalized_collection_supports_reattach_without_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeApi:
+        def get_collection(self, collection_id: str) -> dict[str, object]:
+            return {
+                "id": collection_id,
+                "files": 7,
+                "bytes": 1234,
+                "glacier": {"state": "uploaded", "stored_bytes": 567},
+            }
+
+    monkeypatch.setattr(riverhog_main, "_upload_finalize_timeout_seconds", lambda: 1.0)
+
+    payload, state = riverhog_main._wait_for_finalized_collection(
+        FakeApi(),  # type: ignore[arg-type]
+        "2026/camera",
+        None,
+    )
+
+    assert state == "finalized"
+    assert payload["files_total"] == 7
+    assert payload["hot_promoted_files"] == 7
+    assert payload["archive_uploaded_bytes"] == 567
+
+
 def test_wait_for_finalized_collection_retries_transient_poll_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -868,3 +894,9 @@ def test_staged_collection_upload_payload_returns_archiving_session() -> None:
 def test_normalize_upload_wait_mode_rejects_unknown_value() -> None:
     with pytest.raises(typer.BadParameter):
         riverhog_main._normalize_upload_wait_mode("forever")
+
+
+def test_default_upload_wait_mode_is_finalized(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("RIVERHOG_UPLOAD_WAIT", raising=False)
+
+    assert riverhog_main._default_upload_wait_mode() == "finalized"

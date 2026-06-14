@@ -185,7 +185,7 @@ def _upload_finalize_timeout_seconds() -> float | None:
 
 
 def _default_upload_wait_mode() -> str:
-    return os.getenv("RIVERHOG_UPLOAD_WAIT", "staged").strip().lower() or "staged"
+    return os.getenv("RIVERHOG_UPLOAD_WAIT", "finalized").strip().lower() or "finalized"
 
 
 def _normalize_upload_wait_mode(value: str) -> UploadWaitMode:
@@ -546,35 +546,51 @@ def _upload_collection_files(
 
 def _finalized_collection_upload_payload(
     collection_id: str,
-    manifest: list[CollectionManifestEntry],
+    manifest: list[CollectionManifestEntry] | None,
     collection: dict[str, object],
 ) -> dict[str, object]:
-    bytes_total = sum(item["bytes"] for item in manifest)
-    files = [
-        {
-            "path": item["path"],
-            "bytes": item["bytes"],
-            "sha256": item["sha256"],
-            "upload_state": "uploaded",
-            "uploaded_bytes": item["bytes"],
-            "upload_state_expires_at": None,
-        }
-        for item in manifest
-    ]
+    if manifest is None:
+        bytes_total = int(collection.get("bytes") or 0)
+        files_total = int(collection.get("files") or 0)
+        files: list[dict[str, object]] = []
+    else:
+        bytes_total = sum(item["bytes"] for item in manifest)
+        files = [
+            {
+                "path": item["path"],
+                "bytes": item["bytes"],
+                "sha256": item["sha256"],
+                "upload_state": "uploaded",
+                "uploaded_bytes": item["bytes"],
+                "upload_state_expires_at": None,
+            }
+            for item in manifest
+        ]
+        files_total = len(files)
+    glacier = collection.get("glacier")
+    archived_bytes = 0
+    if isinstance(glacier, dict):
+        archived_bytes = int(glacier.get("stored_bytes") or 0)
     return {
         "collection_id": collection_id,
         "ingest_source": collection.get("ingest_source"),
         "state": "finalized",
-        "files_total": len(files),
+        "files_total": files_total,
         "files_pending": 0,
         "files_partial": 0,
-        "files_uploaded": len(files),
-        "hot_promoted_files": len(files),
+        "files_uploaded": files_total,
+        "hot_promoted_files": files_total,
         "bytes_total": bytes_total,
         "uploaded_bytes": bytes_total,
         "hot_promoted_bytes": bytes_total,
         "missing_bytes": 0,
         "upload_state_expires_at": None,
+        "latest_failure": None,
+        "archive_phase": "completed",
+        "archive_uploaded_bytes": archived_bytes or bytes_total,
+        "archive_total_bytes": archived_bytes or bytes_total,
+        "archive_uploaded_parts": None,
+        "archive_total_parts": None,
         "files": files,
         "collection": collection,
     }
@@ -583,7 +599,7 @@ def _finalized_collection_upload_payload(
 def _wait_for_finalized_collection(
     api: ApiClient,
     collection_id: str,
-    manifest: list[CollectionManifestEntry],
+    manifest: list[CollectionManifestEntry] | None,
 ) -> tuple[dict[str, object], str]:
     poll_seconds = _upload_finalize_poll_seconds()
     timeout_seconds = _upload_finalize_timeout_seconds()
@@ -893,7 +909,7 @@ def upload_cmd(
         str,
         typer.Option(
             "--wait",
-            help="Wait until 'staged' server handoff or full 'finalized' collection archival",
+            help="Wait until 'finalized' safe-to-delete archival or only 'staged' server handoff",
         ),
     ] = _default_upload_wait_mode(),
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
@@ -1011,6 +1027,26 @@ def upload_cancel_cmd(
 ) -> None:
     payload = client().cancel_collection_upload_session(collection_id)
     emit(payload if json_mode else format_collection_upload(payload), json_mode=json_mode)
+
+
+@app.command("upload-watch")
+def upload_watch_cmd(
+    collection_id: Annotated[
+        str,
+        typer.Argument(help="Collection upload/session id to monitor until finalized"),
+    ],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    payload, completion_state = _wait_for_finalized_collection(
+        client(),
+        collection_id,
+        None,
+    )
+    emit(payload if json_mode else format_collection_upload(payload), json_mode=json_mode)
+    if completion_state == "failed":
+        raise typer.Exit(1)
+    if completion_state == "timeout":
+        raise typer.Exit(124)
 
 
 @app.command("find")

@@ -3185,8 +3185,43 @@ def compact_riverhog_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "archive_total_bytes",
         "archive_uploaded_parts",
         "archive_total_parts",
+        "hot_promoted_files",
+        "hot_promoted_bytes",
     ]
     return {key: payload[key] for key in keep_keys if key in payload}
+
+
+def finalized_riverhog_payload_from_collection(
+    collection_id: str,
+    collection: dict[str, Any],
+) -> dict[str, Any]:
+    files_total = int(collection.get("files") or 0)
+    bytes_total = int(collection.get("bytes") or 0)
+    glacier = collection.get("glacier")
+    archived_bytes = 0
+    if isinstance(glacier, dict):
+        archived_bytes = int(glacier.get("stored_bytes") or 0)
+    return {
+        "collection_id": collection_id,
+        "state": "finalized",
+        "files_total": files_total,
+        "files_pending": 0,
+        "files_partial": 0,
+        "files_uploaded": files_total,
+        "hot_promoted_files": files_total,
+        "bytes_total": bytes_total,
+        "uploaded_bytes": bytes_total,
+        "hot_promoted_bytes": bytes_total,
+        "missing_bytes": 0,
+        "upload_state_expires_at": None,
+        "latest_failure": None,
+        "archive_phase": "completed",
+        "archive_uploaded_bytes": archived_bytes or bytes_total,
+        "archive_total_bytes": archived_bytes or bytes_total,
+        "archive_uploaded_parts": None,
+        "archive_total_parts": None,
+        "collection": collection,
+    }
 
 
 def update_riverhog_state_from_payload(
@@ -3242,9 +3277,31 @@ def sync_riverhog_session_from_remote(job: dict[str, Any], api: ApiClient) -> di
     collection_id = str(state.get("collection_id") or "")
     if not collection_id:
         return None
-    payload = api.get_collection_upload(collection_id)
+    try:
+        payload = api.get_collection_upload(collection_id)
+    except NotFound:
+        collection = api.get_collection(collection_id)
+        payload = finalized_riverhog_payload_from_collection(collection_id, collection)
     update_riverhog_state_from_payload(job, payload)
     return payload
+
+
+def refresh_riverhog_session_from_remote(job: dict[str, Any]) -> None:
+    if not riverhog_config_enabled(job):
+        return
+    state = job.get("riverhog_session_upload")
+    if not isinstance(state, dict) or not state.get("collection_id"):
+        return
+    api = ApiClient()
+    try:
+        sync_riverhog_session_from_remote(job, api)
+        save_job(job)
+    except Exception as exc:
+        log.debug("riverhog session status refresh failed for %s: %s", job.get("job_id"), exc)
+    finally:
+        close = getattr(api, "close", None)
+        if callable(close):
+            close()
 
 
 def touch_riverhog_session_state(job: dict[str, Any]) -> None:
@@ -3823,6 +3880,15 @@ def compact_riverhog_progress_metrics(progress: dict[str, Any] | None) -> dict[s
         "percent_bytes",
         "percent_files",
         "state",
+        "archive_phase",
+        "archive_uploaded_bytes",
+        "archive_total_bytes",
+        "archive_uploaded_parts",
+        "archive_total_parts",
+        "hot_promoted_files",
+        "hot_promoted_bytes",
+        "finalized",
+        "safe_to_delete",
     )
     return {key: progress[key] for key in keys if key in progress}
 
@@ -3836,11 +3902,7 @@ def wait_for_riverhog_finalized(
         raise_if_job_cancelled(str(job["job_id"]))
         try:
             collection = api.get_collection(collection_id)
-            payload = {
-                "collection_id": collection_id,
-                "state": "finalized",
-                "collection": collection,
-            }
+            payload = finalized_riverhog_payload_from_collection(collection_id, collection)
             state = riverhog_session_state(job)
             state["riverhog_state"] = "finalized"
             state["state"] = "finalized"
@@ -4745,11 +4807,22 @@ def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | No
             recent_rate = int(recent_bytes / recent_elapsed)
     rate = recent_rate or average_rate
     state_name = str(state.get("riverhog_state") or state.get("state") or "not_started")
-    completed = state_name in {"archiving", "finalized"} or (
+    handoff_completed = state_name in {"archiving", "finalized"} or (
         primary_files_total > 0
         and primary_files_uploaded == primary_files_total
         and bool(state.get("completed_at"))
     )
+    last_payload = state.get("last_payload")
+    last_payload = last_payload if isinstance(last_payload, dict) else {}
+    archive_uploaded_bytes = int(last_payload.get("archive_uploaded_bytes") or 0)
+    archive_total_bytes = int(last_payload.get("archive_total_bytes") or 0)
+    archive_uploaded_parts = last_payload.get("archive_uploaded_parts")
+    archive_total_parts = last_payload.get("archive_total_parts")
+    hot_promoted_files = int(last_payload.get("hot_promoted_files") or 0)
+    hot_promoted_bytes = int(last_payload.get("hot_promoted_bytes") or 0)
+    riverhog_files_total = int(last_payload.get("files_total") or primary_files_total)
+    riverhog_bytes_total = int(last_payload.get("bytes_total") or bytes_total)
+    finalized = state_name == "finalized" or str(last_payload.get("state") or "") == "finalized"
     return {
         "collection_id": str(state.get("collection_id") or ""),
         "state": state_name,
@@ -4787,7 +4860,19 @@ def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | No
         "rate_bytes_per_second": rate,
         "average_rate_bytes_per_second": average_rate,
         "recent_rate_bytes_per_second": recent_rate,
-        "completed": completed,
+        "completed": handoff_completed,
+        "handoff_completed": handoff_completed,
+        "archive_phase": str(last_payload.get("archive_phase") or ""),
+        "archive_uploaded_bytes": archive_uploaded_bytes,
+        "archive_total_bytes": archive_total_bytes,
+        "archive_uploaded_parts": archive_uploaded_parts,
+        "archive_total_parts": archive_total_parts,
+        "hot_promoted_files": hot_promoted_files,
+        "hot_promoted_bytes": hot_promoted_bytes,
+        "riverhog_files_total": riverhog_files_total,
+        "riverhog_bytes_total": riverhog_bytes_total,
+        "finalized": finalized,
+        "safe_to_delete": finalized,
     }
 
 
@@ -5896,6 +5981,7 @@ def list_jobs(include_terminal: bool = False, limit: int = 50) -> dict[str, Any]
 @app.get("/v1/jobs/{job_id}")
 def get_job(job_id: str, compact: bool = False) -> dict[str, Any]:
     job = load_job(job_id)
+    refresh_riverhog_session_from_remote(job)
     return compact_job_response(job) if compact else job_response(job)
 
 
