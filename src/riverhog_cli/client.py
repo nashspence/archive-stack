@@ -84,7 +84,9 @@ class ApiClient:
         )
 
     def _client(self) -> httpx.Client:
-        return self._make_client(timeout_seconds=_HTTP_TIMEOUT_SECONDS)
+        return self._make_client(
+            timeout_seconds=_timeout_seconds("RIVERHOG_HTTP_TIMEOUT_SECONDS", _HTTP_TIMEOUT_SECONDS)
+        )
 
     def _persistent_client(self) -> httpx.Client:
         if self._request_client is None:

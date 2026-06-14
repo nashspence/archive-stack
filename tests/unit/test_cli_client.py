@@ -13,6 +13,25 @@ from riverhog_core.domain.errors import ServiceUnavailable
 from riverhog_core.tus_upload import TusHttpClient
 
 
+def test_api_client_uses_env_configured_control_timeout(monkeypatch) -> None:
+    captured: list[float] = []
+
+    def fake_make_client(self: ApiClient, *, timeout_seconds: float) -> httpx.Client:
+        captured.append(timeout_seconds)
+        return httpx.Client(base_url=self.base_url)
+
+    monkeypatch.setenv("RIVERHOG_HTTP_TIMEOUT_SECONDS", "12.5")
+    monkeypatch.setattr(ApiClient, "_make_client", fake_make_client)
+
+    client = ApiClient(base_url="https://api.test")
+    try:
+        client._client()
+    finally:
+        client.close()
+
+    assert captured == [12.5]
+
+
 def test_create_or_resume_collection_upload_uses_collection_upload_endpoint(monkeypatch) -> None:
     captured: list[tuple[str, str, object]] = []
 

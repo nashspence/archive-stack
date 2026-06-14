@@ -8,6 +8,7 @@ from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from riverhog_api.deps import default_container
 from riverhog_core.domain.errors import BadRequest
@@ -112,7 +113,10 @@ async def handle_tusd_hook(request: Request) -> JSONResponse:
         )
 
     try:
-        default_container().collections.sync_finished_upload_target(raw_target_path)
+        await run_in_threadpool(
+            default_container().collections.sync_finished_upload_target,
+            raw_target_path,
+        )
     except BadRequest as exc:
         return _hook_error(exc.message)
     return _json_response({})

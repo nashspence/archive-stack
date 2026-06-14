@@ -232,6 +232,20 @@ class _StreamingOnlyUploadStore(_FakeUploadStore):
         yield content[midpoint:]
 
 
+def _set_upload_last_activity(sqlite_path: Path, collection_id: str, value: str) -> None:
+    with session_scope(make_session_factory(sqlite_url(sqlite_path))) as session:
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is not None
+        upload.last_activity_at = value
+
+
+def _get_upload_last_activity(sqlite_path: Path, collection_id: str) -> str | None:
+    with session_scope(make_session_factory(sqlite_url(sqlite_path))) as session:
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is not None
+        return upload.last_activity_at
+
+
 class _FakeArchiveStore:
     def upload_collection_archive_package(
         self,
@@ -638,6 +652,59 @@ def test_collection_upload_session_can_register_file_and_open_upload_in_one_call
     assert staged["uploaded_bytes"] == len(content)
 
 
+def test_collection_upload_file_hot_paths_do_not_touch_parent_session_activity(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+
+    upload_store = _StreamingOnlyUploadStore()
+    service = SqlAlchemyCollectionService(
+        _config(sqlite_path),
+        _FakeHotStore(),
+        upload_store,
+    )
+
+    content = b"hot path session bytes\n"
+    relpath = "camera/day-01.webm"
+    opened = service.create_or_resume_upload_session(
+        upload_slug="Camera 2024",
+        ingest_source="/tmp/source",
+        upload_timestamp="20250712T213200Z",
+    )
+    collection_id = str(opened["collection_id"])
+    stable_activity = "2035-01-01T00:00:00Z"
+    _set_upload_last_activity(sqlite_path, collection_id, stable_activity)
+
+    file_upload = service.create_or_resume_registered_file_upload(
+        collection_id,
+        {
+            "path": relpath,
+            "bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        },
+    )
+    assert _get_upload_last_activity(sqlite_path, collection_id) == stable_activity
+
+    upload_store.append_upload_chunk(
+        str(file_upload["upload_url"]),
+        offset=int(file_upload["offset"]),
+        checksum=_chunk_checksum(content),
+        content=content,
+    )
+    synced = service.sync_finished_upload_target(
+        f".riverhog/uploads/collections/{collection_id}/{relpath}"
+    )
+
+    assert synced is not None
+    assert synced["file"]["upload_state"] == "uploaded"
+    assert _get_upload_last_activity(sqlite_path, collection_id) == stable_activity
+
+    completed = service.complete_upload_session(collection_id)
+    assert completed["state"] == "archiving"
+    assert _get_upload_last_activity(sqlite_path, collection_id) != stable_activity
+
+
 def test_collection_upload_session_complete_force_syncs_direct_tusd_bytes(
     tmp_path: Path,
 ) -> None:
@@ -732,7 +799,7 @@ def test_collection_upload_post_finish_syncs_registered_direct_tusd_file(
     assert staged["uploaded_bytes"] == len(content)
 
 
-def test_collection_upload_post_finish_only_syncs_offset_before_promotion_hash(
+def test_collection_upload_post_finish_marks_uploaded_without_extra_offset_sync(
     tmp_path: Path,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
@@ -768,6 +835,7 @@ def test_collection_upload_post_finish_only_syncs_offset_before_promotion_hash(
         checksum=_chunk_checksum(content),
         content=content,
     )
+    upload_store.get_offset_calls = 0
 
     synced = service.sync_finished_upload_target(
         f".riverhog/uploads/collections/{collection_id}/{relpath}"
@@ -775,6 +843,7 @@ def test_collection_upload_post_finish_only_syncs_offset_before_promotion_hash(
 
     assert synced is not None
     assert synced["file"]["upload_state"] == "uploaded"
+    assert upload_store.get_offset_calls == 0
     staged = service.get_upload(collection_id)
     assert staged["files_uploaded"] == 1
     assert staged["uploaded_bytes"] == len(content)

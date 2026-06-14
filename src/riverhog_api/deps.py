@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Annotated
 
 from fastapi import Depends
@@ -51,6 +52,7 @@ class ServiceContainer:
     files: FileService
 
 
+@lru_cache(maxsize=1)
 def default_container() -> ServiceContainer:
     config = load_runtime_config()
     initialize_db(config.database_url)

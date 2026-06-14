@@ -325,7 +325,6 @@ class SqlAlchemyCollectionService:
                 normalized_collection_id=normalized_collection_id,
                 normalized_file=normalized_file,
             )
-            _touch_collection_upload(upload)
             return _collection_upload_file_registration_payload(upload, file_record)
 
     def create_or_resume_registered_file_upload(
@@ -355,7 +354,6 @@ class SqlAlchemyCollectionService:
                 ttl=self._upload_ttl,
             )
             _apply_upload_lifecycle_state(file_record, updated)
-            _touch_collection_upload(upload)
 
             return {
                 **_collection_upload_file_registration_payload(upload, file_record),
@@ -380,28 +378,8 @@ class SqlAlchemyCollectionService:
             if file_record is None:
                 return None
 
-            updated = sync_upload_state(
-                current=_upload_lifecycle_state(file_record),
-                target_path=_collection_upload_target_path(
-                    normalized_collection_id,
-                    normalized_path,
-                ),
-                length=file_record.bytes,
-                upload_store=self._upload_store,
-                force=True,
-            )
-            _apply_upload_lifecycle_state(file_record, updated)
-            if (
-                upload_state_name(
-                    uploaded_bytes=file_record.uploaded_bytes,
-                    length=file_record.bytes,
-                )
-                != "uploaded"
-            ):
-                return _collection_upload_file_registration_payload(upload, file_record)
-
+            file_record.uploaded_bytes = file_record.bytes
             file_record.upload_expires_at = None
-            _touch_collection_upload(upload)
             if upload.state != "open" and _collection_upload_is_complete_for_session(
                 session,
                 normalized_collection_id,
@@ -678,7 +656,6 @@ class SqlAlchemyCollectionService:
                 ttl=self._upload_ttl,
             )
             _apply_upload_lifecycle_state(file_record, updated)
-            _touch_collection_upload(upload)
 
             return _collection_file_upload_payload(file_record, tus_url=tus_url)
 
@@ -746,7 +723,6 @@ class SqlAlchemyCollectionService:
             else:
                 file_record.upload_expires_at = upload_expiry_timestamp(self._upload_ttl)
 
-            _touch_collection_upload(upload)
             if upload.state != "open" and _collection_upload_is_complete_for_session(
                 session, normalized_collection_id
             ):
