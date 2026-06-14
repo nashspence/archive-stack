@@ -371,7 +371,6 @@ class SqlAlchemyGlacierUploadService:
                 )
             return
 
-        cleanup_targets: list[str] = []
         try:
             if receipt is None:
                 raise RuntimeError("collection archive receipt was not recorded")
@@ -383,7 +382,10 @@ class SqlAlchemyGlacierUploadService:
                     byte_count=_bytes,
                     sha256=sha256,
                 )
-                cleanup_targets.append(target_path)
+                self._delete_promoted_upload_target(
+                    collection_id=collection_id,
+                    target_path=target_path,
+                )
             self._finalize_archived_collection(
                 collection_id=collection_id,
                 receipt=receipt,
@@ -425,17 +427,6 @@ class SqlAlchemyGlacierUploadService:
                     retryable=False,
                 )
             return
-
-        for target_path in cleanup_targets:
-            try:
-                upload_store.delete_target(target_path)
-            except Exception:
-                _LOG.warning(
-                    "failed to delete staged collection upload target after finalizing %s: %s",
-                    collection_id,
-                    target_path,
-                    exc_info=True,
-                )
 
         try:
             refresh_provisional_plan(
@@ -520,6 +511,20 @@ class SqlAlchemyGlacierUploadService:
         ):
             raise ValueError(f"promoted collection file metadata mismatch: {collection_id}/{path}")
         self._mark_collection_upload_file_promoted(collection_id=collection_id, path=path)
+
+    def _delete_promoted_upload_target(self, *, collection_id: str, target_path: str) -> None:
+        upload_store = self._upload_store
+        if upload_store is None:
+            return
+        try:
+            upload_store.delete_target(target_path)
+        except Exception:
+            _LOG.warning(
+                "failed to delete promoted collection upload target for %s: %s",
+                collection_id,
+                target_path,
+                exc_info=True,
+            )
 
     def _mark_collection_upload_file_promoted(self, *, collection_id: str, path: str) -> None:
         with session_scope(self._session_factory) as session:

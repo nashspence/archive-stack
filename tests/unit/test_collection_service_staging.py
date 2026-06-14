@@ -206,8 +206,9 @@ class _FakeUploadStore:
         yield content[offset:] if size is None else content[offset : offset + size]
 
     def delete_target(self, target_path: str) -> None:
-        self.deleted_targets.append(target_path)
-        self._content_by_target.pop(target_path, None)
+        if target_path in self._content_by_target:
+            self.deleted_targets.append(target_path)
+            self._content_by_target.pop(target_path, None)
 
     def cancel_upload(self, tus_url: str) -> None:
         self._target_by_url.pop(tus_url, None)
@@ -1146,7 +1147,7 @@ def test_failed_hot_promotion_keeps_staging_for_retry(tmp_path: Path) -> None:
 
     first_target = f"/.riverhog/uploads/collections/{collection_id}/albums/day-01.txt"
     second_target = f"/.riverhog/uploads/collections/{collection_id}/albums/day-02.txt"
-    assert upload_store.deleted_targets == []
+    assert upload_store.deleted_targets == [first_target]
     assert hot_store.get_collection_file(collection_id, "albums/day-01.txt") == files[0][1]
     assert archive_store.uploads == 1
     session_factory = make_session_factory(sqlite_url(sqlite_path))
@@ -1161,6 +1162,8 @@ def test_failed_hot_promotion_keeps_staging_for_retry(tmp_path: Path) -> None:
         upload_files_by_path = {file_record.path: file_record for file_record in upload.files}
         assert upload_files_by_path["albums/day-01.txt"].hot_promoted_at is not None
         assert upload_files_by_path["albums/day-02.txt"].hot_promoted_at is None
+        assert first_target not in upload_store._content_by_target
+        assert second_target in upload_store._content_by_target
         assert session.get(CollectionRecord, collection_id) is None
         upload.archive_next_attempt_at = "2026-04-20T04:00:00Z"
 
