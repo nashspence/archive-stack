@@ -1875,6 +1875,76 @@ def test_save_job_preserves_newer_riverhog_upload_state(
     }
 
 
+def test_handoff_retry_refreshes_persisted_job_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    monkeypatch.setattr(runner, "HANDOFF_RETRY_INITIAL_SECONDS", 0.01)
+    monkeypatch.setattr(runner, "HANDOFF_RETRY_MAX_SECONDS", 0.01)
+
+    stale_job = {
+        "job_id": "job-1",
+        "state": "running",
+        "phase": "riverhog_upload_retrying",
+        "riverhog_session_upload": {
+            "state": "open",
+            "updated_at": "2026-01-01T00:00:01Z",
+            "files": {
+                "camera/a.webm": {
+                    "path": "camera/a.webm",
+                    "bytes": 10,
+                    "uploaded_bytes": 0,
+                    "state": "registered",
+                }
+            },
+        },
+    }
+    runner.save_job(stale_job)
+    attempts = 0
+
+    def operation() -> dict[str, object]:
+        nonlocal attempts
+        attempts += 1
+        if not runner.all_riverhog_session_files_uploaded(stale_job):
+            runner.save_job(
+                {
+                    "job_id": "job-1",
+                    "state": "running",
+                    "phase": "riverhog_upload_retrying",
+                    "riverhog_session_upload": {
+                        "state": "open",
+                        "updated_at": "2026-01-01T00:00:02Z",
+                        "files": {
+                            "camera/a.webm": {
+                                "path": "camera/a.webm",
+                                "bytes": 10,
+                                "uploaded_bytes": 10,
+                                "state": "deleted",
+                            }
+                        },
+                    },
+                }
+            )
+            raise RuntimeError("riverhog upload did not upload every registered file")
+        return {"ok": True}
+
+    result = runner.retry_handoff_until_success(
+        stale_job,
+        result_key="riverhog_upload_result",
+        phase="riverhog_upload",
+        action="riverhog upload",
+        component="riverhog_upload",
+        operation=operation,
+    )
+
+    assert result["ok"] is True
+    assert attempts == 2
+    assert stale_job["riverhog_session_upload"]["files"]["camera/a.webm"]["state"] == "deleted"
+
+
 def test_save_job_compacts_gpu_results_before_persisting(
     tmp_path: Path,
     monkeypatch,

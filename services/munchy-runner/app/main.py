@@ -2910,6 +2910,13 @@ def retry_handoff_until_success(
     job_id = str(job["job_id"])
     while True:
         raise_if_job_cancelled(job_id)
+        latest = read_state("job", job_id)
+        if isinstance(latest, dict):
+            job.clear()
+            job.update(latest)
+            existing = job.get(result_key)
+            if isinstance(existing, dict):
+                return existing
         attempts = job.setdefault("handoff_attempts", {})
         attempt = int(attempts.get(result_key) or 0) + 1
         attempts[result_key] = attempt
