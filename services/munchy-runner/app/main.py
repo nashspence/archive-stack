@@ -3848,6 +3848,7 @@ def maybe_upload_riverhog_artifacts(job: dict[str, Any], archive_dir: Path) -> N
             state["last_eager_upload_files"] = int(result["uploaded_files"])
             state["last_eager_upload_bytes"] = int(result["uploaded_bytes"])
             state["last_eager_upload_elapsed_seconds"] = float(result["elapsed_seconds"])
+            touch_riverhog_session_state(job)
             save_job(job)
     except JobCancelled:
         raise

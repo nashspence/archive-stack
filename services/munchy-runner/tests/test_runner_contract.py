@@ -2287,6 +2287,62 @@ def test_riverhog_upload_progress_prefers_recent_burst_rate(
     assert progress["rate_bytes_per_second"] == 1024
 
 
+def test_eager_handoff_metrics_survive_newer_persisted_job_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    monkeypatch.setattr(runner, "RIVERHOG_UPLOAD_ENABLED", True)
+    monkeypatch.setattr(runner, "now_iso", lambda: "2026-01-01T00:00:03Z")
+    monkeypatch.setattr(
+        runner,
+        "upload_riverhog_artifacts",
+        lambda *args, **kwargs: {  # noqa: ARG005
+            "processed_files": 1,
+            "uploaded_files": 1,
+            "uploaded_bytes": 2048,
+            "elapsed_seconds": 2.0,
+        },
+    )
+
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "running",
+            "phase": "gpu-eager:pipeline=3/3",
+            "riverhog": {"enabled": True},
+            "riverhog_session_upload": {
+                "state": "open",
+                "updated_at": "2026-01-01T00:00:02Z",
+                "files": {},
+            },
+        }
+    )
+    stale_worker_job = {
+        "job_id": "job-1",
+        "state": "running",
+        "phase": "gpu-eager:pipeline=3/3",
+        "riverhog": {"enabled": True},
+        "riverhog_session_upload": {
+            "state": "open",
+            "updated_at": "2026-01-01T00:00:01Z",
+            "files": {},
+        },
+    }
+
+    runner.maybe_upload_riverhog_artifacts(stale_worker_job, tmp_path / "archive")
+    stored = runner.load_job("job-1")
+    state = stored["riverhog_session_upload"]
+
+    assert state["last_eager_upload_at"] == "2026-01-01T00:00:03Z"
+    assert state["last_eager_upload_files"] == 1
+    assert state["last_eager_upload_bytes"] == 2048
+    assert state["last_eager_upload_elapsed_seconds"] == 2.0
+    assert state["updated_at"] == "2026-01-01T00:00:03Z"
+
+
 def test_riverhog_upload_progress_counts_known_local_sidecars(
     tmp_path: Path,
     monkeypatch,
