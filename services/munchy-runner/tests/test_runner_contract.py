@@ -2338,6 +2338,63 @@ def test_sync_riverhog_session_uses_finalized_collection_when_upload_is_gone(
     assert progress["archive_uploaded_bytes"] == 567
 
 
+def test_refresh_riverhog_session_uses_compacted_upload_result(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    job = {
+        "job_id": "job-1",
+        "state": "succeeded",
+        "riverhog": {"enabled": True, "wait": "staged"},
+        "riverhog_upload_result": {
+            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "wait": "staged",
+        },
+    }
+    runner.save_job(job)
+
+    class FakeApi:
+        def get_collection_upload(self, collection_id: str) -> dict[str, object]:
+            assert collection_id == "2026/20260101T000000Z__camera-archive"
+            return {
+                "collection_id": collection_id,
+                "state": "archiving",
+                "files_total": 14,
+                "files_uploaded": 14,
+                "bytes_total": 1234,
+                "uploaded_bytes": 1234,
+                "hot_promoted_files": 0,
+                "hot_promoted_bytes": 0,
+                "archive_phase": "uploading",
+                "archive_uploaded_bytes": 256,
+                "archive_total_bytes": 1024,
+                "archive_uploaded_parts": 1,
+                "archive_total_parts": 4,
+            }
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(runner, "ApiClient", FakeApi)
+
+    job = runner.load_job("job-1")
+    runner.refresh_riverhog_session_from_remote(job)
+    refreshed = runner.job_response(job)
+    progress = refreshed["riverhog_upload_progress"]
+
+    assert progress["collection_id"] == "2026/20260101T000000Z__camera-archive"
+    assert progress["state"] == "archiving"
+    assert progress["archive_phase"] == "uploading"
+    assert progress["archive_uploaded_bytes"] == 256
+    assert progress["archive_total_bytes"] == 1024
+    assert progress["archive_uploaded_parts"] == 1
+    assert progress["archive_total_parts"] == 4
+    assert progress["safe_to_delete"] is False
+
+
 def test_riverhog_upload_progress_prefers_recent_burst_rate(
     tmp_path: Path,
     monkeypatch,

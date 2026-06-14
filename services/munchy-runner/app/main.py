@@ -121,7 +121,7 @@ RIVERHOG_UPLOAD_ENABLED = os.getenv("MUNCHY_RUNNER_RIVERHOG_UPLOAD_ENABLED", "0"
     "yes",
     "on",
 }
-RIVERHOG_WAIT = os.getenv("MUNCHY_RUNNER_RIVERHOG_WAIT", "staged").strip() or "staged"
+RIVERHOG_WAIT = os.getenv("MUNCHY_RUNNER_RIVERHOG_WAIT", "finalized").strip() or "finalized"
 RIVERHOG_UPLOAD_CHUNK_BYTES = int(
     os.getenv(
         "MUNCHY_RUNNER_RIVERHOG_UPLOAD_CHUNK_BYTES",
@@ -398,7 +398,7 @@ class InputFileSpec(BaseModel):
 
 class RiverhogConfig(BaseModel):
     enabled: bool = False
-    wait: Literal["staged", "finalized"] = "staged"
+    wait: Literal["staged", "finalized"] = "finalized"
 
 
 class ReviewUploadConfig(BaseModel):
@@ -3250,6 +3250,17 @@ def riverhog_config_enabled(job: dict[str, Any]) -> bool:
     return isinstance(riverhog, dict) and bool(riverhog.get("enabled"))
 
 
+def riverhog_collection_id_for_job(job: dict[str, Any]) -> str | None:
+    state = job.get("riverhog_session_upload")
+    if isinstance(state, dict) and state.get("collection_id"):
+        return str(state["collection_id"])
+    for key in ("riverhog_upload_result", "riverhog_upload_progress"):
+        value = job.get(key)
+        if isinstance(value, dict) and value.get("collection_id"):
+            return str(value["collection_id"])
+    return derived_riverhog_collection_id(job)
+
+
 def derived_riverhog_collection_id(job: dict[str, Any]) -> str | None:
     timestamp = str(job.get("collection_timestamp") or "").strip()
     slug = str(job.get("collection_slug") or "").strip()
@@ -3375,10 +3386,11 @@ def update_riverhog_state_from_payload(
 
 
 def sync_riverhog_session_from_remote(job: dict[str, Any], api: ApiClient) -> dict[str, Any] | None:
-    state = riverhog_session_state(job)
-    collection_id = str(state.get("collection_id") or "")
+    collection_id = riverhog_collection_id_for_job(job) or ""
     if not collection_id:
         return None
+    state = riverhog_session_state(job)
+    state["collection_id"] = collection_id
     try:
         payload = api.get_collection_upload(collection_id)
     except NotFound:
@@ -3391,9 +3403,11 @@ def sync_riverhog_session_from_remote(job: dict[str, Any], api: ApiClient) -> di
 def refresh_riverhog_session_from_remote(job: dict[str, Any]) -> None:
     if not riverhog_config_enabled(job):
         return
-    state = job.get("riverhog_session_upload")
-    if not isinstance(state, dict) or not state.get("collection_id"):
+    collection_id = riverhog_collection_id_for_job(job)
+    if not collection_id:
         return
+    state = riverhog_session_state(job)
+    state["collection_id"] = collection_id
     api = ApiClient()
     try:
         sync_riverhog_session_from_remote(job, api)
