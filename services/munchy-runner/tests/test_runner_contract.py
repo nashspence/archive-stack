@@ -2348,6 +2348,55 @@ def test_eager_handoff_metrics_survive_newer_persisted_job_state(
     assert state["updated_at"] == "2026-01-01T00:00:04Z"
 
 
+def test_stale_eager_handoff_metrics_do_not_replace_newer_persisted_metrics(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "running",
+            "riverhog": {"enabled": True},
+            "riverhog_session_upload": {
+                "state": "open",
+                "updated_at": "2026-01-01T00:00:04Z",
+                "last_eager_upload_at": "2026-01-01T00:00:04Z",
+                "last_eager_upload_files": 4,
+                "last_eager_upload_bytes": 4096,
+                "last_eager_upload_elapsed_seconds": 1.0,
+                "files": {},
+            },
+        }
+    )
+
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "running",
+            "riverhog": {"enabled": True},
+            "riverhog_session_upload": {
+                "state": "open",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "last_eager_upload_at": "2026-01-01T00:00:02Z",
+                "last_eager_upload_files": 1,
+                "last_eager_upload_bytes": 1024,
+                "last_eager_upload_elapsed_seconds": 3.0,
+                "files": {},
+            },
+        }
+    )
+    state = runner.load_job("job-1")["riverhog_session_upload"]
+
+    assert state["last_eager_upload_at"] == "2026-01-01T00:00:04Z"
+    assert state["last_eager_upload_files"] == 4
+    assert state["last_eager_upload_bytes"] == 4096
+    assert state["last_eager_upload_elapsed_seconds"] == 1.0
+
+
 def test_riverhog_upload_progress_counts_known_local_sidecars(
     tmp_path: Path,
     monkeypatch,

@@ -1613,6 +1613,28 @@ def merge_riverhog_files(
     return merged
 
 
+def merge_last_eager_upload_metrics(
+    merged: dict[str, Any],
+    current_riverhog: dict[str, Any],
+    payload_riverhog: dict[str, Any],
+) -> None:
+    current_at = safe_parse_iso(current_riverhog.get("last_eager_upload_at"))
+    payload_at = safe_parse_iso(payload_riverhog.get("last_eager_upload_at"))
+    if current_at is None and payload_at is None:
+        return
+    source = payload_riverhog if current_at is None or (
+        payload_at is not None and payload_at >= current_at
+    ) else current_riverhog
+    for key in (
+        "last_eager_upload_at",
+        "last_eager_upload_files",
+        "last_eager_upload_bytes",
+        "last_eager_upload_elapsed_seconds",
+    ):
+        if key in source:
+            merged[key] = source[key]
+
+
 def merge_riverhog_session_upload_state(
     current_riverhog: dict[str, Any],
     payload_riverhog: dict[str, Any],
@@ -1621,16 +1643,9 @@ def merge_riverhog_session_upload_state(
     payload_updated = safe_parse_iso(payload_riverhog.get("updated_at"))
     if current_updated and (payload_updated is None or current_updated > payload_updated):
         merged = {**payload_riverhog, **current_riverhog}
-        for key in (
-            "last_eager_upload_at",
-            "last_eager_upload_files",
-            "last_eager_upload_bytes",
-            "last_eager_upload_elapsed_seconds",
-        ):
-            if key in payload_riverhog:
-                merged[key] = payload_riverhog[key]
     else:
         merged = {**current_riverhog, **payload_riverhog}
+    merge_last_eager_upload_metrics(merged, current_riverhog, payload_riverhog)
     merged["files"] = merge_riverhog_files(
         current_riverhog.get("files"),
         payload_riverhog.get("files"),
