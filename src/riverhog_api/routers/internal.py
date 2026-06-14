@@ -10,7 +10,7 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
 from riverhog_api.deps import default_container
-from riverhog_core.domain.errors import BadRequest, HashMismatch
+from riverhog_core.domain.errors import BadRequest
 from riverhog_core.runtime_config import load_runtime_config
 from riverhog_core.tusd_ids import tusd_upload_id_for_target_path
 
@@ -114,7 +114,5 @@ async def handle_tusd_hook(request: Request) -> JSONResponse:
     try:
         default_container().collections.sync_finished_upload_target(raw_target_path)
     except BadRequest as exc:
-        return _hook_error(exc.message)
-    except HashMismatch as exc:
         return _hook_error(exc.message)
     return _json_response({})

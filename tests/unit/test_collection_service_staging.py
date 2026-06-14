@@ -28,7 +28,7 @@ from riverhog_core.collection_archives import (
     CollectionArchiveFile,
     build_collection_archive_package,
 )
-from riverhog_core.domain.errors import Conflict, HashMismatch, NotFound
+from riverhog_core.domain.errors import Conflict, NotFound
 from riverhog_core.finalized_image_coverage import (
     read_finalized_image_collection_artifacts,
     read_finalized_image_coverage_parts,
@@ -732,7 +732,7 @@ def test_collection_upload_post_finish_syncs_registered_direct_tusd_file(
     assert staged["uploaded_bytes"] == len(content)
 
 
-def test_collection_upload_post_finish_rejects_wrong_hash(
+def test_collection_upload_post_finish_only_syncs_offset_before_promotion_hash(
     tmp_path: Path,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
@@ -769,14 +769,16 @@ def test_collection_upload_post_finish_rejects_wrong_hash(
         content=content,
     )
 
-    with pytest.raises(HashMismatch):
-        service.sync_finished_upload_target(
-            f".riverhog/uploads/collections/{collection_id}/{relpath}"
-        )
+    synced = service.sync_finished_upload_target(
+        f".riverhog/uploads/collections/{collection_id}/{relpath}"
+    )
 
+    assert synced is not None
+    assert synced["file"]["upload_state"] == "uploaded"
     staged = service.get_upload(collection_id)
-    assert staged["files_uploaded"] == 0
-    assert staged["uploaded_bytes"] == 0
+    assert staged["files_uploaded"] == 1
+    assert staged["uploaded_bytes"] == len(content)
+
 
 
 def test_incremental_collection_upload_session_cancel_cleans_staged_files(

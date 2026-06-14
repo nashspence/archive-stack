@@ -400,14 +400,6 @@ class SqlAlchemyCollectionService:
             ):
                 return _collection_upload_file_registration_payload(upload, file_record)
 
-            content_digest = _sha256_hex_chunks(
-                self._upload_store.iter_target(
-                    _collection_upload_target_path(normalized_collection_id, normalized_path)
-                )
-            )
-            if content_digest != file_record.sha256:
-                raise HashMismatch(f"sha256 did not match expected file hash: {normalized_path}")
-
             file_record.upload_expires_at = None
             _touch_collection_upload(upload)
             if upload.state != "open" and _collection_upload_is_complete_for_session(
