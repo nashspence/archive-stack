@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import errno
+import faulthandler
 import gzip
 import hashlib
 import json
@@ -9,6 +10,7 @@ import logging
 import logging.config
 import os
 import shutil
+import signal
 import sqlite3
 import subprocess
 import threading
@@ -65,6 +67,11 @@ LOGGING = {
 }
 logging.config.dictConfig(LOGGING)
 log = logging.getLogger("munchy_runner")
+
+try:
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
+except (RuntimeError, ValueError):
+    log.debug("SIGUSR1 thread dumps are not available in this runtime")
 
 
 def env_flag(name: str, default: str = "0") -> bool:
@@ -309,6 +316,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="munchy-runner", version="0.1.0", lifespan=lifespan)
 state_lock = threading.RLock()
+job_state_lock = threading.RLock()
 active_jobs: set[str] = set()
 scheduled_jobs: set[str] = set()
 shared_input_tree_locks: dict[str, threading.Lock] = {}
@@ -1708,7 +1716,7 @@ def save_job(job: dict[str, Any]) -> dict[str, Any]:
     payload = dict(job)
     allow_clear_cancel = bool(payload.pop("_allow_clear_cancel", False))
     job_id = str(payload["job_id"])
-    with state_lock:
+    with job_state_lock:
         current = read_state("job", job_id)
         if (
             not allow_clear_cancel
