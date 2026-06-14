@@ -946,6 +946,18 @@ def upload_id_from_target_path(target_path: str) -> str | None:
     return upload_id
 
 
+def rel_path_from_target_path(target_path: str) -> str | None:
+    normalized = target_path.lstrip("/")
+    prefix = ".munchy-runner/uploads/"
+    if not normalized.startswith(prefix):
+        return None
+    rest = normalized.removeprefix(prefix)
+    _upload_id, sep, rel_path = rest.partition("/")
+    if not sep or not rel_path:
+        return None
+    return rel_path
+
+
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as fh:
@@ -2154,6 +2166,22 @@ def sync_shared_input_tree(
             group_files = upload_files_for_groups(upload, {group_name})
             write_group_filesystem_metadata(root, group_name, group_files)
         return {"linked": linked, "skipped": skipped, "files": len(files)}
+
+
+def sync_shared_input_file(upload_id: str, rel_path: str) -> bool:
+    upload = load_input_upload_raw(upload_id)
+    file_state = find_upload_file(upload, rel_path)
+    with shared_input_tree_lock(upload_id):
+        root = shared_input_upload_root(upload_id)
+        root.mkdir(parents=True, exist_ok=True)
+        status = upload_file_status(file_state)
+        if status["upload_state"] == "consumed":
+            remove_shared_input_file_data(file_state)
+            return False
+        if not status["complete"]:
+            return False
+        materialize_upload_file(file_state, root, consume_upload_source=True)
+        return True
 
 
 def shared_input_tree_metadata(
@@ -5958,11 +5986,12 @@ async def tusd_hooks(request: Request) -> JSONResponse:
     if payload.get("Type") == "post-finish":
         target_path = str(metadata.get("target_path", "")).lstrip("/")
         upload_id = upload_id_from_target_path(target_path)
-        if upload_id:
+        rel_path = rel_path_from_target_path(target_path)
+        if upload_id and rel_path:
             try:
-                sync_shared_input_tree(load_input_upload(upload_id))
+                sync_shared_input_file(upload_id, rel_path)
             except Exception:
-                log.exception("failed to sync shared input tree after tusd post-finish")
+                log.exception("failed to sync shared input file after tusd post-finish")
         return JSONResponse({})
     if payload.get("Type") != "pre-create":
         return JSONResponse({})

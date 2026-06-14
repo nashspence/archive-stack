@@ -1211,6 +1211,57 @@ def test_create_file_upload_does_not_sync_entire_shared_tree(
     assert stored["files"][0]["upload_url"] == response["upload_url"]
 
 
+def test_sync_shared_input_file_materializes_only_completed_file(
+    tmp_path: Path,
+    monkeypatch,
+    ) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    upload_id = "upload-1"
+    complete_path = runner.tusd_data_path("upload-a")
+    partial_path = runner.tusd_data_path("upload-b")
+    complete_path.parent.mkdir(parents=True, exist_ok=True)
+    complete_path.write_bytes(b"video-a")
+    partial_path.write_bytes(b"vid")
+    runner.write_state(
+        "input-upload",
+        upload_id,
+        {
+            "upload_id": upload_id,
+            "state": "uploading",
+            "created_at": runner.now_iso(),
+            "files": [
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 7,
+                    "upload_id": "upload-a",
+                    "target_path": runner.target_path_for(upload_id, "camera/a.mp4"),
+                    "input_upload_id": upload_id,
+                    "filesystem_metadata": {"stat": {"st_birthtime": 1.25}},
+                },
+                {
+                    "path": "camera/b.mp4",
+                    "bytes": 7,
+                    "upload_id": "upload-b",
+                    "target_path": runner.target_path_for(upload_id, "camera/b.mp4"),
+                    "input_upload_id": upload_id,
+                    "filesystem_metadata": {"stat": {"st_birthtime": 2.5}},
+                },
+            ],
+        },
+    )
+
+    assert runner.sync_shared_input_file(upload_id, "camera/a.mp4") is True
+
+    root = runner.shared_input_upload_root(upload_id)
+    assert (root / "camera" / "a.mp4").read_bytes() == b"video-a"
+    assert not complete_path.exists()
+    assert not (root / "camera" / "b.mp4").exists()
+    assert partial_path.exists()
+    assert not (root / "camera" / SOURCE_FILESYSTEM_METADATA_FILENAME).exists()
+
+
 def test_consume_input_upload_file_removes_only_that_shared_input_file(
     tmp_path: Path,
     monkeypatch,
