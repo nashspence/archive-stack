@@ -3061,13 +3061,6 @@ def retry_handoff_until_success(
             attempts[f"{result_key}_next_retry_at"] = next_retry_at
             job["phase"] = f"{phase}_retrying"
             save_job(job)
-            notify_job_issue(
-                job,
-                component=component,
-                error=exc,
-                attempt=attempt,
-                next_retry_at=next_retry_at,
-            )
             log.warning(
                 "%s attempt %s failed; retrying at %s: %s", action, attempt, next_retry_at, exc
             )
@@ -3222,13 +3215,11 @@ def wait_gpu_job(
         try:
             status = gpu_target_request("GET", f"/v1/jobs/{gpu_job_id}")
         except Exception as exc:
-            notify_job_issue(job, component="gpu_target", error=exc)
             log.warning("gpu target status check failed; retrying: %s", exc)
             retry_sleep(15)
             try:
                 start_gpu_job(gpu_payload)
             except Exception as start_exc:
-                notify_job_issue(job, component="gpu_target", error=start_exc)
                 log.warning("gpu target restart attempt failed; retrying: %s", start_exc)
             continue
         record_gpu_status(job, gpu_job_id, status)
@@ -3249,7 +3240,6 @@ def wait_gpu_job(
             try:
                 start_gpu_job(gpu_payload)
             except Exception as exc:
-                notify_job_issue(job, component="gpu_target", error=exc)
                 log.warning("gpu target re-submit failed; retrying: %s", exc)
             next_repost = time.monotonic() + max(30.0, GPU_REPOST_SECONDS)
         time.sleep(5)
@@ -3982,11 +3972,12 @@ def maybe_upload_riverhog_artifacts(job: dict[str, Any], archive_dir: Path) -> N
             save_job(job)
     except JobCancelled:
         raise
-    except (HashMismatch, RuntimeError) as exc:
-        notify_job_issue(job, component="riverhog_upload", error=exc, severity="error")
-        log.warning("riverhog eager upload failed: %s", exc)
+    except HashMismatch as exc:
+        notify_job_issue(job, component="riverhog_upload", error=exc, severity="critical")
+        log.error("riverhog eager upload failed integrity check: %s", exc)
+    except RuntimeError as exc:
+        log.warning("riverhog eager upload failed; will retry later: %s", exc)
     except Exception as exc:
-        notify_job_issue(job, component="riverhog_upload", error=exc)
         log.warning("riverhog eager upload issue; will retry later: %s", exc)
 
 
@@ -5307,7 +5298,6 @@ def start_eager_batch(
     try:
         submit_eager_gpu_job(job, batch, force=True)
     except Exception as exc:
-        notify_job_issue(job, component="gpu_target", error=exc)
         log.warning("gpu target eager submit failed; retrying: %s", exc)
     return upload
 
@@ -5326,7 +5316,6 @@ def poll_eager_batch(
     try:
         status = gpu_target_request("GET", f"/v1/jobs/{gpu_job_id}")
     except Exception as exc:
-        notify_job_issue(job, component="gpu_target", error=exc)
         log.warning(
             "gpu target status check failed for eager batch %s; retrying: %s",
             gpu_job_id,
@@ -5335,7 +5324,6 @@ def poll_eager_batch(
         try:
             submit_eager_gpu_job(job, batch, force=True)
         except Exception as start_exc:
-            notify_job_issue(job, component="gpu_target", error=start_exc)
             log.warning("gpu target eager re-submit failed; retrying: %s", start_exc)
         return upload
 

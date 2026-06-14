@@ -299,6 +299,87 @@ def test_upload_waiting_reminder_is_time_sensitive_and_paced(
     assert calls[0]["extra"]["upload_progress"]["files_uploaded"] == 1
 
 
+def test_retry_handoff_transient_failure_does_not_notify(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    monkeypatch.setattr(runner, "retry_sleep", lambda *args, **kwargs: None)
+    notify_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        runner,
+        "notify_job_issue",
+        lambda *args, **kwargs: notify_calls.append(dict(kwargs)),
+    )
+    job = {
+        "job_id": "job-1",
+        "state": "running",
+        "phase": "riverhog_upload",
+    }
+    runner.save_job(job)
+    attempts = 0
+
+    def operation() -> dict[str, object]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("Connection reset by peer")
+        return {"ok": True}
+
+    result = runner.retry_handoff_until_success(
+        job,
+        result_key="riverhog_upload_result",
+        phase="riverhog_upload",
+        action="riverhog upload",
+        component="riverhog_upload",
+        operation=operation,
+    )
+
+    assert result["ok"] is True
+    assert result["attempt"] == 2
+    assert isinstance(result["succeeded_at"], str)
+    assert notify_calls == []
+
+
+def test_eager_gpu_transient_failure_does_not_notify(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    notify_calls: list[dict[str, object]] = []
+    submit_calls: list[str] = []
+    monkeypatch.setattr(
+        runner,
+        "notify_job_issue",
+        lambda *args, **kwargs: notify_calls.append(dict(kwargs)),
+    )
+
+    def fail_gpu_request(method: str, path: str, payload=None):  # type: ignore[no-untyped-def]
+        raise RuntimeError("Server disconnected without sending a response.")
+
+    monkeypatch.setattr(runner, "gpu_target_request", fail_gpu_request)
+    monkeypatch.setattr(
+        runner,
+        "submit_eager_gpu_job",
+        lambda job, batch, force=False: submit_calls.append(str(batch["gpu_job_id"])),
+    )
+    job = {"job_id": "job-1"}
+    upload = {"upload_id": "upload-1"}
+    batch = {
+        "batch_id": "batch-1",
+        "gpu_job_id": "gpu-1",
+        "payload": {"job_id": "gpu-1"},
+    }
+
+    result = runner.poll_eager_batch(job, upload, batch, {}, tmp_path / "archive")
+
+    assert result is upload
+    assert submit_calls == ["gpu-1"]
+    assert notify_calls == []
+
+
 def test_load_input_upload_does_not_refresh_state_timestamp(
     tmp_path: Path,
     monkeypatch,
