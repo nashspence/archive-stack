@@ -236,6 +236,17 @@ class ApiClient:
             f"{quote(path, safe='/')}/upload",
         )
 
+    def create_or_resume_registered_collection_file_upload(
+        self,
+        collection_id: str,
+        file: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/collection-upload-sessions/{quote(collection_id, safe='/')}/files/upload",
+            json=dict(file),
+        )
+
     def search(self, query: str, limit: int = 25) -> dict[str, Any]:
         return self._json("GET", "/v1/search", params={"q": query, "limit": limit})
 

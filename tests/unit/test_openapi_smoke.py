@@ -938,6 +938,21 @@ def test_access_log_filter_suppresses_noisy_successes_only() -> None:
         ("127.0.0.1:12345", "POST", "/internal/tusd/hooks", "1.1", 200),
         None,
     )
+    session_file_record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %s',
+        (
+            "127.0.0.1:12345",
+            "POST",
+            "/v1/collection-upload-sessions/docs/files/upload",
+            "1.1",
+            200,
+        ),
+        None,
+    )
     upload_error_record = logging.LogRecord(
         "uvicorn.access",
         logging.INFO,
@@ -964,7 +979,8 @@ def test_access_log_filter_suppresses_noisy_successes_only() -> None:
     )
 
     assert not access_filter.filter(health_record)
-    assert access_filter.filter(upload_start_record)
+    assert not access_filter.filter(upload_start_record)
     assert not access_filter.filter(hook_record)
+    assert not access_filter.filter(session_file_record)
     assert access_filter.filter(upload_error_record)
     assert access_filter.filter(api_record)

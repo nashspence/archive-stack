@@ -11,6 +11,7 @@ from riverhog_api.schemas.collections import (
     CollectionFileUploadSessionOut,
     CollectionSummaryOut,
     CollectionUploadSessionFileRegistrationOut,
+    CollectionUploadSessionFileUploadOut,
     CollectionUploadSessionOut,
     CreateOrResumeCollectionUploadRequest,
     CreateOrResumeCollectionUploadSessionRequest,
@@ -101,6 +102,31 @@ def register_collection_upload_session_file(
         request.model_dump(),
     )
     return CollectionUploadSessionFileRegistrationOut.model_validate(payload)
+
+
+@router.post(
+    "/collection-upload-sessions/{collection_id:path}/files/upload",
+    response_model=CollectionUploadSessionFileUploadOut,
+)
+def create_or_resume_registered_collection_file_upload(
+    collection_id: str,
+    request: RegisterCollectionUploadSessionFileRequest,
+    req: Request,
+    response: Response,
+    container: ContainerDep,
+) -> CollectionUploadSessionFileUploadOut:
+    payload = container.collections.create_or_resume_registered_file_upload(
+        collection_id,
+        request.model_dump(),
+    )
+    payload["upload_url"] = public_tusd_upload_url(
+        str(payload["upload_url"]),
+        expires_at=str(payload["expires_at"]) if payload.get("expires_at") is not None else None,
+    )
+    response.headers.update(
+        tus_upload_headers(payload, request=req, location=str(payload["upload_url"]))
+    )
+    return CollectionUploadSessionFileUploadOut.model_validate(payload)
 
 
 @router.post(

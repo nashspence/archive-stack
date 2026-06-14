@@ -1447,7 +1447,11 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
             assert upload_timestamp == "20260101T000000Z"
             return self.payload(state="open")
 
-        def register_collection_upload_session_file(
+        def get_collection_upload(self, collection_id: str) -> dict[str, object]:
+            assert collection_id == "2026/20260101T000000Z__camera-archive"
+            return self.payload(state="open")
+
+        def create_or_resume_registered_collection_file_upload(
             self,
             collection_id: str,
             file: dict[str, object],
@@ -1455,18 +1459,21 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
             assert collection_id == "2026/20260101T000000Z__camera-archive"
             self.registered[str(file["path"])] = dict(file)
             self.offsets.setdefault(str(file["path"]), 0)
-            return self.payload(state="open")
-
-        def create_or_resume_collection_file_upload(
-            self,
-            collection_id: str,
-            path: str,
-        ) -> dict[str, object]:
-            assert collection_id == "2026/20260101T000000Z__camera-archive"
             return {
-                "upload_url": f"upload://{path}",
-                "offset": self.offsets.get(path, 0),
+                **self.payload(state="open"),
+                "path": str(file["path"]),
+                "protocol": "tus",
+                "upload_url": f"upload://{file['path']}",
+                "offset": self.offsets.get(str(file["path"]), 0),
+                "length": int(file["bytes"]),
                 "checksum_algorithm": "sha256",
+                "expires_at": "2026-01-01T00:00:00Z",
+                "file": {
+                    **dict(file),
+                    "upload_state": "partial",
+                    "uploaded_bytes": self.offsets.get(str(file["path"]), 0),
+                    "upload_state_expires_at": "2026-01-01T00:00:00Z",
+                },
             }
 
         def complete_collection_upload_session(self, collection_id: str) -> dict[str, object]:
@@ -1752,6 +1759,80 @@ def test_eager_riverhog_upload_uses_parallel_workers(
     assert result["processed_files"] == 2
     assert sorted(seen) == ["a.webm", "b.webm"]
     assert max_active == 2
+
+
+def test_eager_riverhog_upload_reuses_client_per_worker_thread(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    monkeypatch.setattr(runner, "RIVERHOG_UPLOAD_WORKERS", 2)
+
+    archive_dir = tmp_path / "archive"
+    outputs = [archive_dir / "camera" / f"{name}.webm" for name in ("a", "b", "c", "d")]
+    outputs[0].parent.mkdir(parents=True)
+    for output in outputs:
+        output.write_bytes(b"x")
+    job = {
+        "job_id": "job-1",
+        "riverhog": {"enabled": True},
+        "riverhog_session_upload": {
+            "state": "open",
+            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "files": {},
+        },
+        "eager_archive": {
+            "files": {
+                f"camera/{output.stem}.mp4": {"state": "encoded", "output": str(output)}
+                for output in outputs
+            },
+        },
+    }
+
+    created: list["FakeRiverhogApi"] = []
+    closed: list["FakeRiverhogApi"] = []
+
+    class FakeRiverhogApi:
+        def __init__(self) -> None:
+            created.append(self)
+
+        def close(self) -> None:
+            closed.append(self)
+
+    monkeypatch.setattr(runner, "ApiClient", FakeRiverhogApi)
+    monkeypatch.setattr(
+        runner,
+        "ensure_riverhog_session",
+        lambda job, api, archive_dir: "2026/20260101T000000Z__camera-archive",
+    )
+
+    barrier = threading.Barrier(2)
+    started = 0
+    lock = threading.Lock()
+    api_ids_by_thread: dict[int, set[int]] = {}
+
+    def fake_upload_artifact(job, api, archive_dir, source_path, **_kwargs):  # type: ignore[no-untyped-def]
+        nonlocal started
+        thread_id = threading.get_ident()
+        with lock:
+            started += 1
+            api_ids_by_thread.setdefault(thread_id, set()).add(id(api))
+            should_wait = started <= 2
+        if should_wait:
+            barrier.wait(timeout=2)
+        return True
+
+    monkeypatch.setattr(runner, "riverhog_upload_artifact", fake_upload_artifact)
+
+    result = runner.upload_riverhog_artifacts(job, archive_dir, final=False, max_files=4)
+
+    assert result["uploaded_files"] == 4
+    assert result["processed_files"] == 4
+    assert len(created) == 2
+    assert sorted(id(client) for client in closed) == sorted(id(client) for client in created)
+    assert all(len(api_ids) == 1 for api_ids in api_ids_by_thread.values())
 
 
 def test_save_job_preserves_newer_riverhog_upload_state(

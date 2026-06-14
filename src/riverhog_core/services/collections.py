@@ -320,57 +320,104 @@ class SqlAlchemyCollectionService:
         normalized_file = _normalize_upload_files([file])[0]
 
         with session_scope(self._session_factory) as session:
-            upload = session.get(CollectionUploadRecord, normalized_collection_id)
-            if upload is None:
-                raise NotFound(f"collection upload session not found: {normalized_collection_id}")
-            _expire_open_collection_upload_if_idle(
-                upload,
-                upload_store=self._upload_store,
-                session_idle_ttl=self._upload_session_idle_ttl,
-            )
-            if upload.state != "open":
-                raise Conflict(f"collection upload session is not open: {normalized_collection_id}")
-
-            existing = session.get(
-                CollectionUploadFileRecord,
-                (normalized_collection_id, normalized_file["path"]),
-            )
-            if existing is not None:
-                current = _manifest_entry_payload(existing)
-                if current != normalized_file:
-                    raise Conflict(
-                        "collection upload session file already exists with different metadata: "
-                        f"{normalized_file['path']}"
-                    )
-                _touch_collection_upload(upload)
-                return _collection_upload_file_registration_payload(upload, existing)
-
-            _ensure_active_upload_limit_allows(
+            upload, file_record = self._register_upload_session_file_record(
                 session,
-                incoming_bytes=int(normalized_file["bytes"]),
-                limit_bytes=self._config.unburned_collection_bytes_limit,
+                normalized_collection_id=normalized_collection_id,
+                normalized_file=normalized_file,
             )
-            file_order = (
-                session.scalar(
-                    select(func.max(CollectionUploadFileRecord.file_order)).where(
-                        CollectionUploadFileRecord.collection_id == normalized_collection_id
-                    )
-                )
-                or 0
-            ) + 1
-            file_record = CollectionUploadFileRecord(
-                collection_id=normalized_collection_id,
-                path=normalized_file["path"],
-                file_order=file_order,
-                bytes=normalized_file["bytes"],
-                sha256=normalized_file["sha256"],
-                uploaded_bytes=0,
-                upload_expires_at=None,
-                tus_url=None,
-            )
-            session.add(file_record)
             _touch_collection_upload(upload)
             return _collection_upload_file_registration_payload(upload, file_record)
+
+    def create_or_resume_registered_file_upload(
+        self,
+        collection_id: str,
+        file: dict[str, object],
+    ) -> dict[str, object]:
+        normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
+        normalized_file = _normalize_upload_files([file])[0]
+
+        with session_scope(self._session_factory) as session:
+            upload, file_record = self._register_upload_session_file_record(
+                session,
+                normalized_collection_id=normalized_collection_id,
+                normalized_file=normalized_file,
+            )
+            target_path = _collection_upload_target_path(
+                normalized_collection_id,
+                str(normalized_file["path"]),
+            )
+            _expire_collection_upload_file(file_record, self._upload_store)
+            updated, tus_url = create_or_resume_upload_state(
+                current=_upload_lifecycle_state(file_record),
+                target_path=target_path,
+                length=file_record.bytes,
+                upload_store=self._upload_store,
+                ttl=self._upload_ttl,
+            )
+            _apply_upload_lifecycle_state(file_record, updated)
+            _touch_collection_upload(upload)
+
+            return {
+                **_collection_upload_file_registration_payload(upload, file_record),
+                **_collection_file_upload_payload(file_record, tus_url=tus_url),
+            }
+
+    def _register_upload_session_file_record(
+        self,
+        session: Session,
+        *,
+        normalized_collection_id: str,
+        normalized_file: dict[str, object],
+    ) -> tuple[CollectionUploadRecord, CollectionUploadFileRecord]:
+        upload = session.get(CollectionUploadRecord, normalized_collection_id)
+        if upload is None:
+            raise NotFound(f"collection upload session not found: {normalized_collection_id}")
+        _expire_open_collection_upload_if_idle(
+            upload,
+            upload_store=self._upload_store,
+            session_idle_ttl=self._upload_session_idle_ttl,
+        )
+        if upload.state != "open":
+            raise Conflict(f"collection upload session is not open: {normalized_collection_id}")
+
+        existing = session.get(
+            CollectionUploadFileRecord,
+            (normalized_collection_id, normalized_file["path"]),
+        )
+        if existing is not None:
+            current = _manifest_entry_payload(existing)
+            if current != normalized_file:
+                raise Conflict(
+                    "collection upload session file already exists with different metadata: "
+                    f"{normalized_file['path']}"
+                )
+            return upload, existing
+
+        _ensure_active_upload_limit_allows(
+            session,
+            incoming_bytes=int(normalized_file["bytes"]),
+            limit_bytes=self._config.unburned_collection_bytes_limit,
+        )
+        file_order = (
+            session.scalar(
+                select(func.max(CollectionUploadFileRecord.file_order)).where(
+                    CollectionUploadFileRecord.collection_id == normalized_collection_id
+                )
+            )
+            or 0
+        ) + 1
+        file_record = CollectionUploadFileRecord(
+            collection_id=normalized_collection_id,
+            path=normalized_file["path"],
+            file_order=file_order,
+            bytes=normalized_file["bytes"],
+            sha256=normalized_file["sha256"],
+            uploaded_bytes=0,
+            upload_expires_at=None,
+            tus_url=None,
+        )
+        session.add(file_record)
+        return upload, file_record
 
     def complete_upload_session(self, collection_id: str) -> dict[str, object]:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
@@ -1324,39 +1371,72 @@ def _active_collection_upload_bytes(session: Session) -> int:
 
 
 def _unburned_collection_bytes(session: Session) -> int:
-    upload_bytes = 0
-    uploads = session.scalars(
-        select(CollectionUploadRecord).options(selectinload(CollectionUploadRecord.files))
-    ).all()
-    for upload in uploads:
-        if upload.state == "finalized":
-            continue
-        upload_bytes += sum(file_record.bytes for file_record in upload.files)
-
-    committed_unprotected_bytes = 0
-    collections = session.scalars(
-        select(CollectionRecord)
-        .options(selectinload(CollectionRecord.files))
-        .options(selectinload(CollectionRecord.archive))
-        .order_by(CollectionRecord.id.asc())
-    ).all()
-    for collection in collections:
-        (
-            image_coverage,
-            covered_paths,
-            recovery_parts_by_image_path,
-        ) = _collection_image_coverage(session, collection.id)
-        summary = _summary_from_records(
-            collection.id,
-            collection.files,
-            archive=collection.archive,
-            image_coverage=image_coverage,
-            covered_paths=covered_paths,
-            recovery_parts_by_image_path=recovery_parts_by_image_path,
-        )
-        committed_unprotected_bytes += max(summary.bytes - summary.protected_bytes, 0)
-
+    upload_bytes = _active_collection_upload_bytes(session)
+    committed_unprotected_bytes = _committed_unprotected_collection_bytes(session)
     return upload_bytes + committed_unprotected_bytes
+
+
+def _committed_unprotected_collection_bytes(session: Session) -> int:
+    file_rows = session.execute(
+        select(
+            CollectionFileRecord.collection_id,
+            CollectionFileRecord.path,
+            CollectionFileRecord.bytes,
+        )
+    ).all()
+    if not file_rows:
+        return 0
+
+    coverage_rows = session.execute(
+        select(
+            FinalizedImageCoveredPathRecord.collection_id,
+            FinalizedImageCoveredPathRecord.path,
+            FinalizedImageCoveredPathRecord.image_id,
+        )
+    ).all()
+    if not coverage_rows:
+        return int(sum(row.bytes for row in file_rows))
+
+    image_ids = sorted({row.image_id for row in coverage_rows})
+    image_rows = session.execute(
+        select(
+            FinalizedImageRecord.image_id,
+            FinalizedImageRecord.required_copy_count,
+        ).where(FinalizedImageRecord.image_id.in_(image_ids))
+    ).all()
+    copy_rows = session.execute(
+        select(
+            ImageCopyRecord.image_id,
+            ImageCopyRecord.state,
+        ).where(ImageCopyRecord.image_id.in_(image_ids))
+    ).all()
+
+    registered_copy_counts: dict[str, int] = defaultdict(int)
+    for copy_row in copy_rows:
+        if copy_counts_toward_protection(copy_row.state):
+            registered_copy_counts[copy_row.image_id] += 1
+
+    image_states = {
+        image_row.image_id: image_protection_state(
+            required_copy_count=normalize_required_copy_count(image_row.required_copy_count),
+            registered_copy_count=registered_copy_counts.get(image_row.image_id, 0),
+        )
+        for image_row in image_rows
+    }
+    coverage_by_file: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for coverage_row in coverage_rows:
+        coverage_by_file[(coverage_row.collection_id, coverage_row.path)].add(
+            coverage_row.image_id
+        )
+
+    unprotected_bytes = 0
+    for file_row in file_rows:
+        covered_image_ids = coverage_by_file.get((file_row.collection_id, file_row.path), set())
+        if covered_image_ids and all(image_id in image_states for image_id in covered_image_ids):
+            if all(image_states[image_id].value == "protected" for image_id in covered_image_ids):
+                continue
+        unprotected_bytes += file_row.bytes
+    return int(unprotected_bytes)
 
 
 def _validate_existing_upload_manifest(

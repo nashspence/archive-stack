@@ -3355,7 +3355,7 @@ def remove_uploaded_riverhog_artifact(
         record["state"] = "deleted"
         record["deleted_at"] = record.get("deleted_at") or now_iso()
         touch_riverhog_session_state(job)
-    log.info(
+    log.debug(
         "riverhog upload accepted; removed local artifact job=%s path=%s bytes=%s",
         job.get("job_id"),
         record.get("path"),
@@ -3395,15 +3395,19 @@ def riverhog_upload_artifact(
         "bytes": length,
         "sha256": str(record["sha256"]),
     }
-    payload = api.register_collection_upload_session_file(collection_id, file_payload)
-    update_riverhog_state_from_payload(job, payload)
-    record = riverhog_file_record(job, archive_dir, source_path)
+    session = api.create_or_resume_registered_collection_file_upload(collection_id, file_payload)
+    update_riverhog_state_from_payload(job, session)
     with riverhog_upload_lock(job_id):
+        record = riverhog_session_state(job).setdefault("files", {}).setdefault(
+            rel_path,
+            {"path": rel_path},
+        )
+        if not isinstance(record, dict):
+            record = {"path": rel_path}
+            riverhog_session_state(job).setdefault("files", {})[rel_path] = record
         record["registered_at"] = record.get("registered_at") or now_iso()
         record["state"] = "registered"
         touch_riverhog_session_state(job)
-
-    session = api.create_or_resume_collection_file_upload(collection_id, rel_path)
     offset = int(session["offset"])
     if offset > length:
         raise RuntimeError(f"riverhog upload offset for {rel_path} is past expected length")
@@ -3668,30 +3672,46 @@ def _upload_riverhog_artifacts_unlocked(
             save_job(job)
             last_save_at = now
 
+    worker_clients: list[ApiClient] = []
+    worker_clients_lock = threading.Lock()
+    worker_local = threading.local()
+
+    def api_for_worker() -> ApiClient:
+        worker_api = getattr(worker_local, "riverhog_api", None)
+        if worker_api is None:
+            worker_api = ApiClient()
+            worker_local.riverhog_api = worker_api
+            with worker_clients_lock:
+                worker_clients.append(worker_api)
+        return worker_api
+
     def upload_one(item: tuple[Path, int]) -> tuple[int, int, int]:
         source_path, source_bytes = item
-        worker_api = ApiClient()
-        try:
-            did_upload = riverhog_upload_artifact(
-                job,
-                worker_api,
-                archive_dir,
-                source_path,
-                persist=False,
-            )
-            return 1, 1 if did_upload else 0, source_bytes if did_upload else 0
-        finally:
-            worker_api.close()
+        did_upload = riverhog_upload_artifact(
+            job,
+            api_for_worker(),
+            archive_dir,
+            source_path,
+            persist=False,
+        )
+        return 1, 1 if did_upload else 0, source_bytes if did_upload else 0
 
     if worker_count > 1:
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            futures = [executor.submit(upload_one, item) for item in selected]
-            for future in as_completed(futures):
-                item_processed, item_uploaded, item_bytes = future.result()
-                processed += item_processed
-                uploaded += item_uploaded
-                uploaded_bytes += item_bytes
-                persist_progress_if_due()
+        try:
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = [executor.submit(upload_one, item) for item in selected]
+                for future in as_completed(futures):
+                    item_processed, item_uploaded, item_bytes = future.result()
+                    processed += item_processed
+                    uploaded += item_uploaded
+                    uploaded_bytes += item_bytes
+                    persist_progress_if_due()
+        finally:
+            with worker_clients_lock:
+                clients = list(worker_clients)
+                worker_clients.clear()
+            for worker_api in clients:
+                worker_api.close()
         persist_progress_if_due(force=True)
         return {
             "processed_files": processed,

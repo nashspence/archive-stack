@@ -21,6 +21,7 @@ from riverhog_core.catalog_models import (
     FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
+    ImageCopyRecord,
     PlannedCandidateRecord,
 )
 from riverhog_core.collection_archives import (
@@ -579,6 +580,61 @@ def test_incremental_collection_upload_session_requires_explicit_complete(
     completed = service.complete_upload_session(collection_id)
     assert completed["state"] == "archiving"
     assert completed["files_uploaded"] == 1
+
+
+def test_collection_upload_session_can_register_file_and_open_upload_in_one_call(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+
+    upload_store = _StreamingOnlyUploadStore()
+    service = SqlAlchemyCollectionService(
+        _config(sqlite_path),
+        _FakeHotStore(),
+        upload_store,
+    )
+
+    content = b"hello combined session\n"
+    relpath = "albums/day-01.txt"
+    opened = service.create_or_resume_upload_session(
+        upload_slug="Photos 2024",
+        ingest_source="/tmp/source",
+        upload_timestamp="20250712T213200Z",
+    )
+    collection_id = str(opened["collection_id"])
+
+    file_upload = service.create_or_resume_registered_file_upload(
+        collection_id,
+        {
+            "path": relpath,
+            "bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        },
+    )
+
+    assert file_upload["collection_id"] == collection_id
+    assert file_upload["state"] == "open"
+    assert file_upload["file"]["path"] == relpath
+    assert file_upload["file"]["upload_state"] == "pending"
+    assert file_upload["path"] == relpath
+    assert file_upload["protocol"] == "tus"
+    assert file_upload["offset"] == 0
+    assert file_upload["length"] == len(content)
+    assert file_upload["upload_url"]
+
+    service.append_upload_chunk(
+        collection_id,
+        relpath,
+        offset=int(file_upload["offset"]),
+        checksum=_chunk_checksum(content),
+        content=content,
+    )
+
+    staged = service.get_upload(collection_id)
+    assert staged["state"] == "open"
+    assert staged["files_uploaded"] == 1
+    assert staged["uploaded_bytes"] == len(content)
 
 
 def test_collection_upload_session_complete_force_syncs_direct_tusd_bytes(
@@ -2435,6 +2491,109 @@ def test_new_collection_uploads_are_blocked_over_unburned_limit(tmp_path: Path) 
                 }
             ],
         )
+
+
+def test_new_collection_upload_limit_uses_fast_committed_byte_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
+    with session_scope(session_factory) as session:
+        collection = CollectionRecord(id="2026/20260101T000000Z__docs")
+        collection.files.append(
+            CollectionFileRecord(
+                collection_id=collection.id,
+                path="a.txt",
+                bytes=8,
+                sha256="0" * 64,
+                hot=True,
+                archived=False,
+            )
+        )
+        session.add(collection)
+
+    def fail_summary(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("unburned admission check must not build collection summaries")
+
+    monkeypatch.setattr(collections_service, "_summary_from_records", fail_summary)
+    monkeypatch.setattr(collections_service, "_collection_image_coverage", fail_summary)
+
+    service = SqlAlchemyCollectionService(
+        _config(sqlite_path, unburned_collection_bytes_limit=7),
+        _FakeHotStore(),
+        _FakeUploadStore(),
+    )
+
+    with pytest.raises(Conflict, match="unburned collection limit exceeded"):
+        service.create_or_resume_upload_session(
+            upload_slug="camera",
+            upload_timestamp="20260102T000000Z",
+        )
+
+
+def test_unburned_collection_bytes_excludes_protected_files(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
+    with session_scope(session_factory) as session:
+        collection = CollectionRecord(id="2026/20260101T000000Z__docs")
+        collection.files.append(
+            CollectionFileRecord(
+                collection_id=collection.id,
+                path="protected.txt",
+                bytes=8,
+                sha256="0" * 64,
+                hot=True,
+                archived=False,
+            )
+        )
+        collection.files.append(
+            CollectionFileRecord(
+                collection_id=collection.id,
+                path="loose.txt",
+                bytes=5,
+                sha256="1" * 64,
+                hot=True,
+                archived=False,
+            )
+        )
+        session.add(collection)
+        session.add(
+            FinalizedImageRecord(
+                image_id="20260103T000000Z",
+                candidate_id="candidate",
+                filename="disc.iso",
+                bytes=8,
+                image_root="/tmp/disc",
+                target_bytes=8,
+                required_copy_count=1,
+            )
+        )
+        session.add(
+            FinalizedImageCoveredPathRecord(
+                image_id="20260103T000000Z",
+                collection_id=collection.id,
+                path="protected.txt",
+            )
+        )
+        session.add(
+            ImageCopyRecord(
+                image_id="20260103T000000Z",
+                copy_id="copy-1",
+                label_text="disc",
+                location=None,
+                created_at="2026-01-03T00:00:00Z",
+                state="registered",
+                verification_state="pending",
+            )
+        )
+
+    with session_scope(session_factory) as session:
+        assert collections_service._unburned_collection_bytes(session) == 5
 
 
 def test_existing_collection_upload_can_resume_when_over_unburned_limit(tmp_path: Path) -> None:

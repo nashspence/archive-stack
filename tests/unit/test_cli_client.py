@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from pathlib import Path
 
 import httpx
@@ -257,6 +258,68 @@ def test_create_or_resume_collection_file_upload_quotes_collection_and_path(monk
         (
             "POST",
             "https://api.test/v1/collection-uploads/tax/2022/files/reports/invoice%20123.pdf/upload",
+        )
+    ]
+
+
+def test_create_or_resume_registered_collection_file_upload_posts_manifest_file(
+    monkeypatch,
+) -> None:
+    captured: list[tuple[str, str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append((request.method, str(request.url), json.loads(request.content)))
+        return httpx.Response(
+            200,
+            json={
+                "collection_id": "tax/2022",
+                "ingest_source": "/tmp/source",
+                "state": "open",
+                "file": {
+                    "path": "reports/invoice 123.pdf",
+                    "bytes": 12,
+                    "sha256": "0" * 64,
+                    "upload_state": "pending",
+                    "uploaded_bytes": 0,
+                    "upload_state_expires_at": None,
+                },
+                "path": "reports/invoice 123.pdf",
+                "protocol": "tus",
+                "upload_url": "https://uploads.test/collections/tax/2022/e1",
+                "offset": 0,
+                "length": 12,
+                "checksum_algorithm": "sha256",
+                "expires_at": "2026-04-23T00:00:00Z",
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_client(self: ApiClient) -> httpx.Client:
+        return httpx.Client(base_url=self.base_url, transport=transport)
+
+    monkeypatch.setattr(ApiClient, "_client", fake_client)
+
+    client = ApiClient(base_url="https://api.test")
+    payload = client.create_or_resume_registered_collection_file_upload(
+        "tax/2022",
+        {
+            "path": "reports/invoice 123.pdf",
+            "bytes": 12,
+            "sha256": "0" * 64,
+        },
+    )
+
+    assert payload["upload_url"] == "https://uploads.test/collections/tax/2022/e1"
+    assert captured == [
+        (
+            "POST",
+            "https://api.test/v1/collection-upload-sessions/tax/2022/files/upload",
+            {
+                "path": "reports/invoice 123.pdf",
+                "bytes": 12,
+                "sha256": "0" * 64,
+            },
         )
     ]
 

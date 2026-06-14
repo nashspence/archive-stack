@@ -134,3 +134,10 @@ class CollectionFileUploadSessionOut(RiverhogModel):
     length: int
     checksum_algorithm: str
     expires_at: str | None
+
+
+class CollectionUploadSessionFileUploadOut(CollectionFileUploadSessionOut):
+    collection_id: str
+    ingest_source: str | None
+    state: Literal["open", "uploading"]
+    file: CollectionUploadFileOut

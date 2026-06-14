@@ -58,6 +58,17 @@ class _RiverhogAccessLogFilter(logging.Filter):
         successful = status_code is not None and status_code < 400
         if successful and path == "/internal/tusd/hooks":
             return False
+        if successful and path is not None:
+            if path.startswith("/v1/collection-upload-sessions/") and (
+                path.endswith("/files") or path.endswith("/files/upload")
+            ):
+                return False
+            if (
+                path.startswith("/v1/collection-uploads/")
+                and "/files/" in path
+                and path.endswith("/upload")
+            ):
+                return False
         return True
 
 
@@ -69,6 +80,8 @@ def _configure_logging(level_name: str) -> None:
     )
     for logger_name in ("riverhog_api", "riverhog_core"):
         logging.getLogger(logger_name).setLevel(level)
+    for logger_name in ("httpx", "httpcore"):
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
     access_logger = logging.getLogger("uvicorn.access")
     if not any(isinstance(current, _RiverhogAccessLogFilter) for current in access_logger.filters):
         access_logger.addFilter(_RiverhogAccessLogFilter())
