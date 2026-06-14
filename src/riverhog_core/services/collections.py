@@ -362,6 +362,72 @@ class SqlAlchemyCollectionService:
                 **_collection_file_upload_payload(file_record, tus_url=tus_url),
             }
 
+    def sync_finished_upload_target(self, target_path: str) -> dict[str, object] | None:
+        parsed = _collection_upload_target_parts(target_path)
+        if parsed is None:
+            return None
+        normalized_collection_id, normalized_path = parsed
+        staged_webhook_details: dict[str, object] | None = None
+
+        with session_scope(self._session_factory) as session:
+            upload = session.get(CollectionUploadRecord, normalized_collection_id)
+            if upload is None or upload.state in {"canceled", "expired"}:
+                return None
+            file_record = session.get(
+                CollectionUploadFileRecord,
+                (normalized_collection_id, normalized_path),
+            )
+            if file_record is None:
+                return None
+
+            updated = sync_upload_state(
+                current=_upload_lifecycle_state(file_record),
+                target_path=_collection_upload_target_path(
+                    normalized_collection_id,
+                    normalized_path,
+                ),
+                length=file_record.bytes,
+                upload_store=self._upload_store,
+                force=True,
+            )
+            _apply_upload_lifecycle_state(file_record, updated)
+            if (
+                upload_state_name(
+                    uploaded_bytes=file_record.uploaded_bytes,
+                    length=file_record.bytes,
+                )
+                != "uploaded"
+            ):
+                return _collection_upload_file_registration_payload(upload, file_record)
+
+            content_digest = _sha256_hex_chunks(
+                self._upload_store.iter_target(
+                    _collection_upload_target_path(normalized_collection_id, normalized_path)
+                )
+            )
+            if content_digest != file_record.sha256:
+                raise HashMismatch(f"sha256 did not match expected file hash: {normalized_path}")
+
+            file_record.upload_expires_at = None
+            _touch_collection_upload(upload)
+            if upload.state != "open" and _collection_upload_is_complete_for_session(
+                session,
+                normalized_collection_id,
+            ):
+                was_archiving = upload.state == "archiving"
+                _ensure_collection_upload_archiving(upload)
+                if not was_archiving:
+                    staged_webhook_details = _collection_upload_webhook_details(upload)
+            payload = _collection_upload_file_registration_payload(upload, file_record)
+        if staged_webhook_details is not None:
+            _post_collection_operator_webhook(
+                self._config,
+                event="collections.upload_staged",
+                collection_id=normalized_collection_id,
+                details=staged_webhook_details,
+            )
+        return payload
+
     def _register_upload_session_file_record(
         self,
         session: Session,
@@ -1492,6 +1558,23 @@ def _apply_upload_lifecycle_state(
 
 def _collection_upload_target_path(collection_id: str, path: str) -> str:
     return f"/.riverhog/uploads/collections/{collection_id}/{path}"
+
+
+def _collection_upload_target_parts(target_path: str) -> tuple[str, str] | None:
+    normalized = target_path.lstrip("/")
+    prefix = ".riverhog/uploads/collections/"
+    if not normalized.startswith(prefix):
+        return None
+    rest = normalized.removeprefix(prefix)
+    parts = rest.split("/", 2)
+    if len(parts) != 3:
+        return None
+    collection_id = _normalize_collection_id_or_raise(f"{parts[0]}/{parts[1]}")
+    relpath = _normalize_relpath_or_raise(parts[2])
+    expected = _collection_upload_target_path(collection_id, relpath).lstrip("/")
+    if normalized != expected:
+        raise BadRequest("collection upload target path is not normalized")
+    return collection_id, relpath
 
 
 def _collection_file_upload_payload(

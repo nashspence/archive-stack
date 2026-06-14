@@ -28,7 +28,7 @@ from riverhog_core.collection_archives import (
     CollectionArchiveFile,
     build_collection_archive_package,
 )
-from riverhog_core.domain.errors import Conflict, NotFound
+from riverhog_core.domain.errors import Conflict, HashMismatch, NotFound
 from riverhog_core.finalized_image_coverage import (
     read_finalized_image_collection_artifacts,
     read_finalized_image_coverage_parts,
@@ -680,6 +680,103 @@ def test_collection_upload_session_complete_force_syncs_direct_tusd_bytes(
 
     assert completed["state"] == "archiving"
     assert completed["files_uploaded"] == 1
+
+
+def test_collection_upload_post_finish_syncs_registered_direct_tusd_file(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+
+    upload_store = _StreamingOnlyUploadStore()
+    service = SqlAlchemyCollectionService(
+        _config(sqlite_path),
+        _FakeHotStore(),
+        upload_store,
+    )
+
+    content = b"post finish direct tusd bytes\n"
+    relpath = "camera/day-01.webm"
+    opened = service.create_or_resume_upload_session(
+        upload_slug="Camera 2024",
+        ingest_source="/tmp/source",
+        upload_timestamp="20250712T213200Z",
+    )
+    collection_id = str(opened["collection_id"])
+    service.register_upload_session_file(
+        collection_id,
+        {
+            "path": relpath,
+            "bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        },
+    )
+    file_upload = service.create_or_resume_file_upload(collection_id, relpath)
+
+    upload_store.append_upload_chunk(
+        str(file_upload["upload_url"]),
+        offset=int(file_upload["offset"]),
+        checksum=_chunk_checksum(content),
+        content=content,
+    )
+
+    synced = service.sync_finished_upload_target(
+        f".riverhog/uploads/collections/{collection_id}/{relpath}"
+    )
+    assert synced is not None
+    assert synced["file"]["upload_state"] == "uploaded"
+    assert synced["file"]["uploaded_bytes"] == len(content)
+
+    staged = service.get_upload(collection_id)
+    assert staged["files_uploaded"] == 1
+    assert staged["uploaded_bytes"] == len(content)
+
+
+def test_collection_upload_post_finish_rejects_wrong_hash(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+
+    upload_store = _StreamingOnlyUploadStore()
+    service = SqlAlchemyCollectionService(
+        _config(sqlite_path),
+        _FakeHotStore(),
+        upload_store,
+    )
+
+    content = b"actual bytes\n"
+    relpath = "camera/day-01.webm"
+    opened = service.create_or_resume_upload_session(
+        upload_slug="Camera 2024",
+        ingest_source="/tmp/source",
+        upload_timestamp="20250712T213200Z",
+    )
+    collection_id = str(opened["collection_id"])
+    service.register_upload_session_file(
+        collection_id,
+        {
+            "path": relpath,
+            "bytes": len(content),
+            "sha256": hashlib.sha256(b"different bytes").hexdigest(),
+        },
+    )
+    file_upload = service.create_or_resume_file_upload(collection_id, relpath)
+    upload_store.append_upload_chunk(
+        str(file_upload["upload_url"]),
+        offset=int(file_upload["offset"]),
+        checksum=_chunk_checksum(content),
+        content=content,
+    )
+
+    with pytest.raises(HashMismatch):
+        service.sync_finished_upload_target(
+            f".riverhog/uploads/collections/{collection_id}/{relpath}"
+        )
+
+    staged = service.get_upload(collection_id)
+    assert staged["files_uploaded"] == 0
+    assert staged["uploaded_bytes"] == 0
 
 
 def test_incremental_collection_upload_session_cancel_cleans_staged_files(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from types import SimpleNamespace
 from urllib.parse import quote
 
 from fastapi import FastAPI
@@ -100,6 +101,41 @@ def test_precreate_hook_accepts_signature_safe_base64_target_metadata(monkeypatc
     assert response.json() == {
         "ChangeFileInfo": {"ID": tusd_upload_id_for_target_path(target_path)}
     }
+
+
+def test_post_finish_hook_syncs_finished_target(monkeypatch) -> None:
+    monkeypatch.setenv("RIVERHOG_TUSD_HOOK_SECRET", "hook-secret")
+    target_path = ".riverhog/uploads/collections/2026/demo/camera/a.webm"
+    calls: list[str] = []
+
+    class FakeCollections:
+        def sync_finished_upload_target(self, value: str) -> None:
+            calls.append(value)
+
+    monkeypatch.setattr(
+        "riverhog_api.routers.internal.default_container",
+        lambda: SimpleNamespace(collections=FakeCollections()),
+    )
+    client = _client()
+
+    response = client.post(
+        "/internal/tusd/hooks",
+        headers={"X-Riverhog-Tusd-Hook-Secret": "hook-secret"},
+        json={
+            "Type": "post-finish",
+            "Event": {
+                "Upload": {
+                    "MetaData": {
+                        "target_path": target_path,
+                    }
+                }
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {}
+    assert calls == [target_path]
 
 
 def test_tusd_upload_store_sends_signature_safe_target_metadata() -> None:

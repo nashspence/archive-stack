@@ -9,6 +9,8 @@ from urllib.parse import unquote, urlsplit
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
+from riverhog_api.deps import default_container
+from riverhog_core.domain.errors import BadRequest, HashMismatch
 from riverhog_core.runtime_config import load_runtime_config
 from riverhog_core.tusd_ids import tusd_upload_id_for_target_path
 
@@ -78,7 +80,8 @@ async def handle_tusd_hook(request: Request) -> JSONResponse:
         return _json_response({"RejectUpload": True}, status_code=403)
 
     payload = await request.json()
-    if payload.get("Type") != "pre-create":
+    hook_type = payload.get("Type")
+    if hook_type not in {"pre-create", "post-finish"}:
         return _json_response({})
 
     event = payload.get("Event", {})
@@ -97,6 +100,15 @@ async def handle_tusd_hook(request: Request) -> JSONResponse:
     if any(part in {"", ".", ".."} for part in raw_target_path.split("/")):
         return _hook_error("target_path must be normalized")
 
-    return _json_response(
-        {"ChangeFileInfo": {"ID": tusd_upload_id_for_target_path(raw_target_path)}}
-    )
+    if hook_type == "pre-create":
+        return _json_response(
+            {"ChangeFileInfo": {"ID": tusd_upload_id_for_target_path(raw_target_path)}}
+        )
+
+    try:
+        default_container().collections.sync_finished_upload_target(raw_target_path)
+    except BadRequest as exc:
+        return _hook_error(exc.message)
+    except HashMismatch as exc:
+        return _hook_error(exc.message)
+    return _json_response({})

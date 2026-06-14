@@ -1476,22 +1476,27 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
             file: dict[str, object],
         ) -> dict[str, object]:
             assert collection_id == "2026/20260101T000000Z__camera-archive"
-            self.registered[str(file["path"])] = dict(file)
-            self.offsets.setdefault(str(file["path"]), 0)
+            path = str(file["path"])
+            self.registered[path] = dict(file)
+            self.offsets.setdefault(path, 0)
+            uploaded = self.offsets.get(path, 0)
+            upload_state = "uploaded" if uploaded >= int(file["bytes"]) else "partial"
             return {
                 **self.payload(state="open"),
-                "path": str(file["path"]),
+                "path": path,
                 "protocol": "tus",
                 "upload_url": f"upload://{file['path']}",
-                "offset": self.offsets.get(str(file["path"]), 0),
+                "offset": uploaded,
                 "length": int(file["bytes"]),
                 "checksum_algorithm": "sha256",
                 "expires_at": "2026-01-01T00:00:00Z",
                 "file": {
                     **dict(file),
-                    "upload_state": "partial",
-                    "uploaded_bytes": self.offsets.get(str(file["path"]), 0),
-                    "upload_state_expires_at": "2026-01-01T00:00:00Z",
+                    "upload_state": upload_state,
+                    "uploaded_bytes": uploaded,
+                    "upload_state_expires_at": None
+                    if upload_state == "uploaded"
+                    else "2026-01-01T00:00:00Z",
                 },
             }
 

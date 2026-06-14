@@ -3487,6 +3487,42 @@ def riverhog_upload_file_complete(record: dict[str, Any]) -> bool:
     )
 
 
+def riverhog_payload_confirms_file_uploaded(
+    payload: dict[str, Any],
+    rel_path: str,
+    length: int,
+) -> bool:
+    items: list[dict[str, Any]] = []
+    single_file = payload.get("file")
+    if isinstance(single_file, dict):
+        items.append(single_file)
+    files = payload.get("files")
+    if isinstance(files, list):
+        items.extend(item for item in files if isinstance(item, dict))
+    for item in items:
+        if str(item.get("path") or "") != rel_path:
+            continue
+        uploaded = int(item.get("uploaded_bytes") or 0)
+        state = str(item.get("upload_state") or "")
+        return uploaded >= length and state == "uploaded"
+    return False
+
+
+def confirm_riverhog_artifact_uploaded(
+    job: dict[str, Any],
+    api: ApiClient,
+    collection_id: str,
+    file_payload: dict[str, object],
+) -> dict[str, Any]:
+    rel_path = str(file_payload["path"])
+    length = int(file_payload["bytes"])
+    payload = api.create_or_resume_registered_collection_file_upload(collection_id, file_payload)
+    update_riverhog_state_from_payload(job, payload)
+    if not riverhog_payload_confirms_file_uploaded(payload, rel_path, length):
+        raise RuntimeError(f"riverhog did not acknowledge completed upload for {rel_path}")
+    return payload
+
+
 def remove_uploaded_riverhog_artifact(
     job: dict[str, Any],
     archive_dir: Path,
@@ -3570,6 +3606,7 @@ def riverhog_upload_artifact(
         touch_riverhog_session_state(job)
 
     if offset >= length:
+        confirm_riverhog_artifact_uploaded(job, api, collection_id, file_payload)
         with riverhog_upload_lock(job_id):
             record["uploaded_at"] = record.get("uploaded_at") or now_iso()
         remove_uploaded_riverhog_artifact(
@@ -3633,6 +3670,7 @@ def riverhog_upload_artifact(
 
     if offset != length:
         raise RuntimeError(f"riverhog upload for {rel_path} stopped at {offset} of {length} bytes")
+    confirm_riverhog_artifact_uploaded(job, api, collection_id, file_payload)
     with riverhog_upload_lock(job_id):
         record["uploaded_bytes"] = length
         record["state"] = "uploaded"
