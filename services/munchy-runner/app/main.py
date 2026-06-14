@@ -1567,6 +1567,77 @@ def merge_eager_archive_state(
     return merged
 
 
+RIVERHOG_FILE_STATE_RANK = {
+    "": 0,
+    "pending": 1,
+    "registered": 2,
+    "uploading": 3,
+    "uploaded": 4,
+    "deleted": 5,
+}
+
+
+def merge_riverhog_file_record(
+    current_record: dict[str, Any],
+    payload_record: dict[str, Any],
+) -> dict[str, Any]:
+    merged = {**current_record, **payload_record}
+    for key in ("bytes", "uploaded_bytes"):
+        merged[key] = max(int(current_record.get(key) or 0), int(payload_record.get(key) or 0))
+    current_state = str(current_record.get("state") or "")
+    payload_state = str(payload_record.get("state") or "")
+    if RIVERHOG_FILE_STATE_RANK.get(current_state, 0) > RIVERHOG_FILE_STATE_RANK.get(
+        payload_state,
+        0,
+    ):
+        merged["state"] = current_state
+    return merged
+
+
+def merge_riverhog_files(
+    current_files: Any,
+    payload_files: Any,
+) -> dict[str, Any]:
+    current = current_files if isinstance(current_files, dict) else {}
+    payload = payload_files if isinstance(payload_files, dict) else {}
+    merged: dict[str, Any] = {}
+    for rel_path in sorted(set(current) | set(payload)):
+        current_record = current.get(rel_path)
+        payload_record = payload.get(rel_path)
+        if isinstance(current_record, dict) and isinstance(payload_record, dict):
+            merged[str(rel_path)] = merge_riverhog_file_record(current_record, payload_record)
+        elif isinstance(payload_record, dict):
+            merged[str(rel_path)] = dict(payload_record)
+        elif isinstance(current_record, dict):
+            merged[str(rel_path)] = dict(current_record)
+    return merged
+
+
+def merge_riverhog_session_upload_state(
+    current_riverhog: dict[str, Any],
+    payload_riverhog: dict[str, Any],
+) -> dict[str, Any]:
+    current_updated = safe_parse_iso(current_riverhog.get("updated_at"))
+    payload_updated = safe_parse_iso(payload_riverhog.get("updated_at"))
+    if current_updated and (payload_updated is None or current_updated > payload_updated):
+        merged = {**payload_riverhog, **current_riverhog}
+        for key in (
+            "last_eager_upload_at",
+            "last_eager_upload_files",
+            "last_eager_upload_bytes",
+            "last_eager_upload_elapsed_seconds",
+        ):
+            if key in payload_riverhog:
+                merged[key] = payload_riverhog[key]
+    else:
+        merged = {**current_riverhog, **payload_riverhog}
+    merged["files"] = merge_riverhog_files(
+        current_riverhog.get("files"),
+        payload_riverhog.get("files"),
+    )
+    return merged
+
+
 GPU_RESULT_STORAGE_KEYS = {
     "job_id",
     "state",
@@ -1635,12 +1706,10 @@ def save_job(job: dict[str, Any]) -> dict[str, Any]:
             current_riverhog = current.get("riverhog_session_upload")
             payload_riverhog = payload.get("riverhog_session_upload")
             if isinstance(current_riverhog, dict) and isinstance(payload_riverhog, dict):
-                current_updated = safe_parse_iso(current_riverhog.get("updated_at"))
-                payload_updated = safe_parse_iso(payload_riverhog.get("updated_at"))
-                if current_updated and (
-                    payload_updated is None or current_updated > payload_updated
-                ):
-                    payload["riverhog_session_upload"] = current_riverhog
+                payload["riverhog_session_upload"] = merge_riverhog_session_upload_state(
+                    current_riverhog,
+                    payload_riverhog,
+                )
             elif isinstance(current_riverhog, dict) and "riverhog_session_upload" not in payload:
                 payload["riverhog_session_upload"] = current_riverhog
             current_eager = current.get("eager_archive")

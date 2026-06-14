@@ -2315,7 +2315,7 @@ def test_eager_handoff_metrics_survive_newer_persisted_job_state(
             "riverhog": {"enabled": True},
             "riverhog_session_upload": {
                 "state": "open",
-                "updated_at": "2026-01-01T00:00:02Z",
+                "updated_at": "2026-01-01T00:00:04Z",
                 "files": {},
             },
         }
@@ -2340,7 +2340,7 @@ def test_eager_handoff_metrics_survive_newer_persisted_job_state(
     assert state["last_eager_upload_files"] == 1
     assert state["last_eager_upload_bytes"] == 2048
     assert state["last_eager_upload_elapsed_seconds"] == 2.0
-    assert state["updated_at"] == "2026-01-01T00:00:03Z"
+    assert state["updated_at"] == "2026-01-01T00:00:04Z"
 
 
 def test_riverhog_upload_progress_counts_known_local_sidecars(
