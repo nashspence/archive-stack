@@ -4899,8 +4899,16 @@ def upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
     files_uploaded = int(upload.get("files_uploaded") or 0)
     bytes_total = int(upload.get("bytes_total") or 0)
     uploaded_bytes = int(upload.get("uploaded_bytes") or 0)
+    tree_progress: dict[str, int] = {}
     group_names = set(input_upload_groups(upload))
-    tree_progress = shared_input_tree_progress(upload, group_names)
+    groups = job.get("groups")
+    if isinstance(groups, dict):
+        eager_groups = eager_archive_group_names(groups)
+        shared_tree_groups = group_names - eager_groups
+    else:
+        shared_tree_groups = group_names
+    if shared_tree_groups:
+        tree_progress = shared_input_tree_progress(upload, shared_tree_groups)
     return {
         "files_total": files_total,
         "files_uploaded": files_uploaded,

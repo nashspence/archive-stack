@@ -1158,6 +1158,95 @@ def test_sync_shared_input_tree_links_completed_files_incrementally(
     assert metadata["files"]["b.mp4"]["stat"]["st_birthtime"] == 2.5
 
 
+def test_eager_archive_upload_progress_does_not_report_shared_input_tree(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "files": [
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 7,
+                    "upload_id": "upload-a",
+                    "input_upload_id": "upload-1",
+                }
+            ],
+        }
+    )
+    runner.tusd_data_path("upload-a").parent.mkdir(parents=True, exist_ok=True)
+    runner.tusd_data_path("upload-a").write_bytes(b"video-a")
+    monkeypatch.setattr(
+        runner,
+        "shared_input_tree_progress",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("eager archive progress should not scan shared input tree")
+        ),
+    )
+
+    progress = runner.upload_progress_for_job(
+        {
+            "input_upload_id": "upload-1",
+            "groups": {
+                "camera": {
+                    "archive_mode": "av1_nvenc",
+                    "gpu_tasks": ["archive_video"],
+                }
+            },
+        }
+    )
+
+    assert progress is not None
+    assert progress["files_uploaded"] == 1
+    assert "input_tree_files_ready" not in progress
+    assert "input_tree_bytes_ready" not in progress
+
+
+def test_non_eager_upload_progress_still_reports_shared_input_tree(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "files": [
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 7,
+                    "upload_id": "upload-a",
+                    "input_upload_id": "upload-1",
+                }
+            ],
+        }
+    )
+    root = runner.shared_input_upload_root("upload-1")
+    (root / "camera").mkdir(parents=True)
+    (root / "camera" / "a.mp4").write_bytes(b"video-a")
+
+    progress = runner.upload_progress_for_job(
+        {
+            "input_upload_id": "upload-1",
+            "groups": {
+                "camera": {
+                    "archive_mode": "av1_nvenc",
+                    "gpu_tasks": ["qcut_video"],
+                }
+            },
+        }
+    )
+
+    assert progress is not None
+    assert progress["input_tree_files_ready"] == 1
+    assert progress["input_tree_bytes_ready"] == 7
+
+
 def test_create_file_upload_does_not_sync_entire_shared_tree(
     tmp_path: Path,
     monkeypatch,

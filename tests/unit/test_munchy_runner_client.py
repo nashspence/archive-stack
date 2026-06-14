@@ -910,6 +910,43 @@ def test_upload_progress_can_merge_remote_upload_and_encode_progress() -> None:
     assert "encode_progress" in renderer_jobs[0]
 
 
+def test_upload_progress_does_not_regress_when_remote_status_lags() -> None:
+    item = RunnerInputFile(
+        source=Path("clip-2.mp4"),
+        rel_path="video/clip-2.mp4",
+        bytes=10,
+        sha256="0" * 64,
+    )
+    renderer_jobs: list[dict[str, object]] = []
+
+    class Renderer:
+        def update(self, job: dict[str, object], *, force: bool = False) -> None:
+            renderer_jobs.append(job)
+
+    progress = UploadProgress(
+        total_files=3,
+        total_bytes=30,
+        completed_files=1,
+        completed_bytes=10,
+        renderer=Renderer(),  # type: ignore[arg-type]
+        job_status_provider=lambda: {
+            "upload_progress": {
+                "files_uploaded": 1,
+                "files_total": 3,
+                "uploaded_bytes": 10,
+                "bytes_total": 30,
+            },
+        },
+    )
+    progress.last_printed_at -= 20
+
+    progress.mark_complete(item)
+
+    upload = renderer_jobs[0]["upload_progress"]
+    assert upload["files_uploaded"] == 2  # type: ignore[index]
+    assert upload["uploaded_bytes"] == 20  # type: ignore[index]
+
+
 def test_upload_progress_fallback_uses_full_upload_baseline_on_resume() -> None:
     item = RunnerInputFile(
         source=Path("pending.mp4"),

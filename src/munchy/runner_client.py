@@ -1141,9 +1141,27 @@ class UploadProgress:
         merged = dict(remote_upload_progress)
         merged.pop("rate_bytes_per_second", None)
         try:
-            uploaded_bytes = int(merged.get("uploaded_bytes") or 0)
+            files_total = int(merged.get("files_total") or self.total_files)
         except (TypeError, ValueError):
-            uploaded_bytes = 0
+            files_total = self.total_files
+        try:
+            bytes_total = int(merged.get("bytes_total") or self.total_bytes)
+        except (TypeError, ValueError):
+            bytes_total = self.total_bytes
+        try:
+            remote_files = int(merged.get("files_uploaded") or 0)
+        except (TypeError, ValueError):
+            remote_files = 0
+        try:
+            remote_uploaded_bytes = int(merged.get("uploaded_bytes") or 0)
+        except (TypeError, ValueError):
+            remote_uploaded_bytes = 0
+        uploaded_files = min(max(remote_files, self.completed_files), files_total)
+        uploaded_bytes = min(max(remote_uploaded_bytes, self.completed_bytes), bytes_total)
+        merged["files_uploaded"] = uploaded_files
+        merged["files_total"] = files_total
+        merged["uploaded_bytes"] = uploaded_bytes
+        merged["bytes_total"] = bytes_total
         if (
             self.last_remote_uploaded_bytes is not None
             and self.last_remote_rate_at is not None
