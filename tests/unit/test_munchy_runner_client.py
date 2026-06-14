@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+from threading import Event
 from unittest.mock import patch
 
 import pytest
@@ -14,6 +15,7 @@ from munchy.runner_client import (
     RichProgressRenderer,
     RunnerHttpError,
     RunnerInputFile,
+    RunnerJobTerminalDuringUpload,
     RunnerUploadRequest,
     UploadProgress,
     UploadRetryReporter,
@@ -837,6 +839,7 @@ def test_upload_files_skips_completed_paths(tmp_path: Path) -> None:
         *,
         chunk_bytes: int,
         retry_reporter: object | None = None,
+        stop_event: object | None = None,
     ) -> None:
         uploaded.append(item.rel_path)
 
@@ -935,3 +938,39 @@ def test_upload_progress_fallback_uses_full_upload_baseline_on_resume() -> None:
     assert upload["files_total"] == 3  # type: ignore[index]
     assert upload["uploaded_bytes"] == 12  # type: ignore[index]
     assert upload["bytes_total"] == 12  # type: ignore[index]
+
+
+def test_upload_progress_stops_when_runner_job_fails() -> None:
+    item = RunnerInputFile(
+        source=Path("clip.mp4"),
+        rel_path="video/clip.mp4",
+        bytes=4,
+        sha256="0" * 64,
+    )
+    stop_event = Event()
+    renderer_jobs: list[dict[str, object]] = []
+
+    class Renderer:
+        def update(self, job: dict[str, object], *, force: bool = False) -> None:
+            renderer_jobs.append(job)
+
+    progress = UploadProgress(
+        total_files=2,
+        total_bytes=8,
+        renderer=Renderer(),  # type: ignore[arg-type]
+        stop_event=stop_event,
+        job_status_provider=lambda: {
+            "job_id": "job-1",
+            "state": "failed",
+            "phase": "gpu-eager:pipeline=3/3",
+            "error": "archive video encode failed",
+        },
+    )
+    progress.last_printed_at -= 20
+
+    with pytest.raises(RunnerJobTerminalDuringUpload) as exc_info:
+        progress.mark_complete(item)
+
+    assert stop_event.is_set()
+    assert "archive video encode failed" in str(exc_info.value)
+    assert renderer_jobs[-1]["state"] == "failed"

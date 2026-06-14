@@ -1285,6 +1285,7 @@ def run_encode_item(
     with encode_semaphore:
         if on_start is not None:
             on_start()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         result = run_command(cmd, action=action, dry_run=dry_run)
     payload: dict[str, Any] = {
         "output": str(output_path),

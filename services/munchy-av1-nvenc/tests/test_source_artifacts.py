@@ -91,6 +91,39 @@ class SourceArtifactsTests(unittest.TestCase):
                 {"output": str(output) + ".source-artifacts.tar.zst"},
             )
 
+    def test_encode_item_recreates_output_parent_immediately_before_ffmpeg(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "clip.mp4"
+            output = root / "archive" / "nested" / "clip.mkv"
+            source.write_bytes(b"source")
+            output.parent.mkdir(parents=True)
+
+            def remove_output_parent() -> None:
+                output.parent.rmdir()
+
+            def fake_run_command(cmd: list[str], *, action: str, dry_run: bool = False) -> dict:
+                self.assertTrue(output.parent.is_dir())
+                output.write_bytes(b"encoded")
+                return {
+                    "command": cmd,
+                    "duration_s": 1.0,
+                    "returncode": 0,
+                    "stdout": "",
+                    "stderr": "",
+                }
+
+            with patch.object(av1, "run_command", fake_run_command):
+                result = av1.run_encode_item(
+                    ["ffmpeg", "-i", str(source), str(output)],
+                    output_path=output,
+                    action="archive video encode",
+                    dry_run=False,
+                    on_start=remove_output_parent,
+                )
+
+            self.assertEqual(result["bytes"], len(b"encoded"))
+
     def test_archive_batch_requires_source_filesystem_metadata_sidecar(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

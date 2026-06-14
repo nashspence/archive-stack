@@ -2422,6 +2422,11 @@ def gpu_job_work_roots(job: dict[str, Any]) -> list[Path]:
         roots.append(root)
 
     add_gpu_job_root(job_id)
+    jobs_root = GPU_RUNTIME_DIR / "jobs"
+    if jobs_root.exists():
+        for root in jobs_root.iterdir():
+            if root.name.startswith(f"{job_id}__"):
+                add_gpu_job_root(root.name)
     groups = job.get("groups")
     if isinstance(groups, dict):
         for group_name in groups:

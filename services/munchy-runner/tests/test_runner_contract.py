@@ -618,6 +618,7 @@ def test_terminal_cleanup_removes_eager_batch_gpu_work_roots(
         runner.GPU_RUNTIME_DIR / "jobs" / "explicit-eager-gpu-job",
         runner.GPU_RUNTIME_DIR / "jobs" / "payload-eager-gpu-job",
         runner.GPU_RUNTIME_DIR / "jobs" / computed_id,
+        runner.GPU_RUNTIME_DIR / "jobs" / "job-1__eager__orphaned-old-batch__abcdef0123",
     ]
     for root in roots:
         root.mkdir(parents=True)
