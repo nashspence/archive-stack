@@ -1196,11 +1196,23 @@ def test_create_file_upload_does_not_sync_entire_shared_tree(
         "sync_shared_input_tree",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("full sync")),
     )
-    monkeypatch.setattr(
-        runner,
-        "create_tusd_upload",
-        lambda target_path, length: f"{runner.TUSD_PUBLIC_BASE_URL}/{target_path}",
-    )
+    class TrackingLock:
+        active = False
+
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            self.active = True
+
+        def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+            self.active = False
+
+    tracking_lock = TrackingLock()
+
+    def fake_create_tusd_upload(target_path: str, _length: int) -> str:
+        assert tracking_lock.active is False
+        return f"{runner.TUSD_PUBLIC_BASE_URL}/{target_path}"
+
+    monkeypatch.setattr(runner, "state_lock", tracking_lock)
+    monkeypatch.setattr(runner, "create_tusd_upload", fake_create_tusd_upload)
 
     response = runner.create_or_resume_input_file_upload(upload_id, rel_path)
 
@@ -1211,10 +1223,69 @@ def test_create_file_upload_does_not_sync_entire_shared_tree(
     assert stored["files"][0]["upload_url"] == response["upload_url"]
 
 
+def test_resume_file_upload_heads_tusd_outside_state_lock(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    upload_id = "upload-1"
+    rel_path = "camera/a.mp4"
+    target_path = runner.target_path_for(upload_id, rel_path)
+    upload_url = f"{runner.TUSD_PUBLIC_BASE_URL}/{target_path}"
+    runner.write_state(
+        "input-upload",
+        upload_id,
+        {
+            "upload_id": upload_id,
+            "state": "uploading",
+            "created_at": runner.now_iso(),
+            "files": [
+                {
+                    "path": rel_path,
+                    "bytes": 10,
+                    "sha256": None,
+                    "filesystem_metadata": {},
+                    "target_path": target_path,
+                    "input_upload_id": upload_id,
+                    "upload_id": runner.tusd_upload_id_for_target_path(target_path),
+                    "upload_url": upload_url,
+                }
+            ],
+            "storage_hint": {"source_bytes": 10},
+            "tusd_creation_url": runner.TUSD_PUBLIC_BASE_URL,
+        },
+    )
+
+    class TrackingLock:
+        active = False
+
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            self.active = True
+
+        def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+            self.active = False
+
+    tracking_lock = TrackingLock()
+
+    def fake_head_tusd_upload(_upload_url: str) -> int:
+        assert tracking_lock.active is False
+        return 4
+
+    monkeypatch.setattr(runner, "state_lock", tracking_lock)
+    monkeypatch.setattr(runner, "head_tusd_upload", fake_head_tusd_upload)
+
+    response = runner.create_or_resume_input_file_upload(upload_id, rel_path)
+
+    assert response["offset"] == 4
+    assert response["length"] == 10
+
+
 def test_sync_shared_input_file_materializes_only_completed_file(
     tmp_path: Path,
     monkeypatch,
-    ) -> None:  # type: ignore[no-untyped-def]
+) -> None:  # type: ignore[no-untyped-def]
     runner = load_runner(tmp_path, monkeypatch)
     runner.ensure_dirs()
     runner.init_state_store()

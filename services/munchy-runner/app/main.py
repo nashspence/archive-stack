@@ -6087,24 +6087,72 @@ def create_or_resume_input_file_upload(upload_id: str, rel_path: str) -> dict[st
                 "file": status,
             }
         upload_url = file_state.get("upload_url")
-        offset = -1
-        if upload_url:
-            offset = head_tusd_upload(str(upload_url))
-        if offset < 0:
-            upload_url = create_tusd_upload(
-                str(file_state["target_path"]), int(file_state["bytes"])
-            )
-            offset = 0
+        target_path = str(file_state["target_path"])
+        length = int(file_state["bytes"])
+
+    offset = head_tusd_upload(str(upload_url)) if upload_url else -1
+    if offset < 0:
+        created_upload_url = create_tusd_upload(target_path, length)
+        with state_lock:
+            upload = load_input_upload_raw(upload_id)
+            file_state = find_upload_file(upload, rel_path)
+            if file_state.get("consumed_at"):
+                status = upload_file_status(file_state)
+                return {
+                    "protocol": "tus",
+                    "upload_url": file_state.get("upload_url") or created_upload_url,
+                    "offset": file_state["bytes"],
+                    "length": file_state["bytes"],
+                    "checksum_algorithm": "sha256",
+                    "headers": {"Tus-Resumable": "1.0.0"},
+                    "file": status,
+                }
+            existing_upload_url = file_state.get("upload_url")
+            if existing_upload_url:
+                upload_url = str(existing_upload_url)
+                should_head_existing = True
+            else:
+                upload_url = created_upload_url
+                offset = 0
+                should_head_existing = False
+                file_state["upload_url"] = upload_url
+                upload = save_input_upload_raw(upload)
+        if should_head_existing:
+            offset = head_tusd_upload(upload_url)
+            if offset < 0:
+                offset = 0
+
+    with state_lock:
+        upload = load_input_upload_raw(upload_id)
+        file_state = find_upload_file(upload, rel_path)
+        if file_state.get("consumed_at"):
+            status = upload_file_status(file_state)
+            return {
+                "protocol": "tus",
+                "upload_url": file_state.get("upload_url") or upload_url,
+                "offset": file_state["bytes"],
+                "length": file_state["bytes"],
+                "checksum_algorithm": "sha256",
+                "headers": {"Tus-Resumable": "1.0.0"},
+                "file": status,
+            }
+        if upload_url and not file_state.get("upload_url"):
             file_state["upload_url"] = upload_url
             upload = save_input_upload_raw(upload)
+        status = upload_file_status(file_state)
+        length = int(file_state["bytes"])
+    if offset < 0 and upload_url:
+        offset = head_tusd_upload(upload_url)
+    if offset < 0:
+        offset = 0
     return {
         "protocol": "tus",
         "upload_url": upload_url,
         "offset": offset,
-        "length": file_state["bytes"],
+        "length": length,
         "checksum_algorithm": "sha256",
         "headers": {"Tus-Resumable": "1.0.0"},
-        "file": upload_file_status(file_state),
+        "file": status,
     }
 
 
