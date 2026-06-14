@@ -1158,6 +1158,59 @@ def test_sync_shared_input_tree_links_completed_files_incrementally(
     assert metadata["files"]["b.mp4"]["stat"]["st_birthtime"] == 2.5
 
 
+def test_create_file_upload_does_not_sync_entire_shared_tree(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    upload_id = "upload-1"
+    rel_path = "camera/a.mp4"
+    target_path = runner.target_path_for(upload_id, rel_path)
+    runner.write_state(
+        "input-upload",
+        upload_id,
+        {
+            "upload_id": upload_id,
+            "state": "uploading",
+            "created_at": runner.now_iso(),
+            "files": [
+                {
+                    "path": rel_path,
+                    "bytes": 10,
+                    "sha256": None,
+                    "filesystem_metadata": {},
+                    "target_path": target_path,
+                    "input_upload_id": upload_id,
+                    "upload_id": runner.tusd_upload_id_for_target_path(target_path),
+                    "upload_url": None,
+                }
+            ],
+            "storage_hint": {"source_bytes": 10},
+            "tusd_creation_url": runner.TUSD_PUBLIC_BASE_URL,
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "sync_shared_input_tree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("full sync")),
+    )
+    monkeypatch.setattr(
+        runner,
+        "create_tusd_upload",
+        lambda target_path, length: f"{runner.TUSD_PUBLIC_BASE_URL}/{target_path}",
+    )
+
+    response = runner.create_or_resume_input_file_upload(upload_id, rel_path)
+
+    assert response["offset"] == 0
+    assert response["length"] == 10
+    stored = runner.read_state("input-upload", upload_id)
+    assert stored is not None
+    assert stored["files"][0]["upload_url"] == response["upload_url"]
+
+
 def test_consume_input_upload_file_removes_only_that_shared_input_file(
     tmp_path: Path,
     monkeypatch,

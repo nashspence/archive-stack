@@ -1383,6 +1383,18 @@ def save_input_upload(upload: dict[str, Any]) -> dict[str, Any]:
     return write_state("input-upload", str(upload["upload_id"]), upload)
 
 
+def load_input_upload_raw(upload_id: str) -> dict[str, Any]:
+    upload = read_state("input-upload", upload_id)
+    if upload is None:
+        raise HTTPException(status_code=404, detail=f"unknown input upload: {upload_id}")
+    return normalized_input_upload(upload)
+
+
+def save_input_upload_raw(upload: dict[str, Any]) -> dict[str, Any]:
+    upload = normalized_input_upload(upload)
+    return write_state("input-upload", str(upload["upload_id"]), upload)
+
+
 def remove_input_upload_data(upload: dict[str, Any]) -> None:
     upload = normalized_input_upload(upload)
     for file_state in upload.get("files", []):
@@ -1463,10 +1475,7 @@ def input_upload_data_last_activity(upload: dict[str, Any]) -> datetime:
 
 def load_input_upload(upload_id: str) -> dict[str, Any]:
     with state_lock:
-        upload = read_state("input-upload", upload_id)
-        if upload is None:
-            raise HTTPException(status_code=404, detail=f"unknown input upload: {upload_id}")
-        return refresh_input_upload(upload)
+        return refresh_input_upload(load_input_upload_raw(upload_id))
 
 
 def item_lifecycle_time(item: dict[str, Any]) -> datetime | None:
@@ -6035,7 +6044,7 @@ def delete_input_upload(upload_id: str) -> dict[str, Any]:
 @app.post("/v1/input-uploads/{upload_id}/files/{rel_path:path}/upload", status_code=201)
 def create_or_resume_input_file_upload(upload_id: str, rel_path: str) -> dict[str, Any]:
     with state_lock:
-        upload = load_input_upload(upload_id)
+        upload = load_input_upload_raw(upload_id)
         file_state = find_upload_file(upload, rel_path)
         if file_state.get("consumed_at"):
             status = upload_file_status(file_state)
@@ -6048,7 +6057,6 @@ def create_or_resume_input_file_upload(upload_id: str, rel_path: str) -> dict[st
                 "headers": {"Tus-Resumable": "1.0.0"},
                 "file": status,
             }
-        sync_shared_input_tree(upload)
         upload_url = file_state.get("upload_url")
         offset = -1
         if upload_url:
@@ -6059,7 +6067,7 @@ def create_or_resume_input_file_upload(upload_id: str, rel_path: str) -> dict[st
             )
             offset = 0
             file_state["upload_url"] = upload_url
-        upload = save_input_upload(upload)
+            upload = save_input_upload_raw(upload)
     return {
         "protocol": "tus",
         "upload_url": upload_url,
