@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
+import threading
+import time
 from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -152,6 +154,40 @@ class _FailingHotStore(_FakeHotStore):
             content_length=content_length,
             sha256=sha256,
         )
+
+
+class _SlowHotStore(_FakeHotStore):
+    def __init__(self, *, delay_seconds: float) -> None:
+        super().__init__()
+        self._delay_seconds = delay_seconds
+        self._lock = threading.Lock()
+        self._active = 0
+        self.max_active = 0
+
+    def put_collection_file_stream(
+        self,
+        collection_id: str,
+        path: str,
+        chunks: Iterable[bytes],
+        *,
+        content_length: int,
+        sha256: str | None = None,
+    ) -> None:
+        with self._lock:
+            self._active += 1
+            self.max_active = max(self.max_active, self._active)
+        try:
+            time.sleep(self._delay_seconds)
+            super().put_collection_file_stream(
+                collection_id,
+                path,
+                chunks,
+                content_length=content_length,
+                sha256=sha256,
+            )
+        finally:
+            with self._lock:
+                self._active -= 1
 
 
 class _FakeUploadStore:
@@ -1346,6 +1382,54 @@ def test_failed_hot_promotion_keeps_staging_for_retry(tmp_path: Path) -> None:
         collection = session.get(CollectionRecord, collection_id)
         assert collection is not None
         assert len(collection.files) == 2
+
+
+def test_hot_promotion_uses_bounded_concurrency(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+
+    hot_store = _SlowHotStore(delay_seconds=0.03)
+    upload_store = _StreamingOnlyUploadStore()
+    config = _config(sqlite_path, hot_promotion_concurrency=3)
+    service = SqlAlchemyCollectionService(config, hot_store, upload_store)
+
+    files = [(f"albums/day-{index:02}.txt", f"content {index}\n".encode()) for index in range(6)]
+    payload = service.create_or_resume_upload(
+        upload_slug="photos 2024",
+        files=[
+            {"path": path, "bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+            for path, content in files
+        ],
+        ingest_source="/tmp/source",
+    )
+    collection_id = str(payload["collection_id"])
+    for relpath, content in files:
+        upload_session = service.create_or_resume_file_upload(collection_id, relpath)
+        service.append_upload_chunk(
+            collection_id,
+            relpath,
+            offset=int(upload_session["offset"]),
+            checksum="sha256 " + base64.b64encode(hashlib.sha256(content).digest()).decode("ascii"),
+            content=content,
+        )
+
+    upload_service = SqlAlchemyGlacierUploadService(
+        config,
+        _CountingArchiveStore(),
+        hot_store,
+        upload_store,
+        proof_stamper=FixtureProofStamper(),
+        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
+    )
+
+    assert upload_service.process_due_uploads() == 1
+
+    assert 1 < hot_store.max_active <= 3
+    with session_scope(make_session_factory(sqlite_url(sqlite_path))) as session:
+        assert session.get(CollectionUploadRecord, collection_id) is None
+        collection = session.get(CollectionRecord, collection_id)
+        assert collection is not None
+        assert len(collection.files) == len(files)
 
 
 def test_packaged_archive_artifacts_are_reused_after_upload_failure(tmp_path: Path) -> None:

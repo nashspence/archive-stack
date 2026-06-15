@@ -6,6 +6,7 @@ import json
 import logging
 import secrets
 from collections.abc import Iterator
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import case, func, or_, select
@@ -60,6 +61,8 @@ from riverhog_core.webhooks import (
 )
 
 _LOG = logging.getLogger(__name__)
+
+CollectionUploadFileEntry = tuple[str, int, str, str]
 
 
 class SqlAlchemyGlacierUploadService:
@@ -374,18 +377,10 @@ class SqlAlchemyGlacierUploadService:
         try:
             if receipt is None:
                 raise RuntimeError("collection archive receipt was not recorded")
-            for path, _bytes, sha256, target_path in upload_files:
-                self._promote_one_collection_file(
-                    collection_id=collection_id,
-                    path=path,
-                    target_path=target_path,
-                    byte_count=_bytes,
-                    sha256=sha256,
-                )
-                self._delete_promoted_upload_target(
-                    collection_id=collection_id,
-                    target_path=target_path,
-                )
+            self._promote_collection_files(
+                collection_id=collection_id,
+                upload_files=upload_files,
+            )
             self._finalize_archived_collection(
                 collection_id=collection_id,
                 receipt=receipt,
@@ -456,11 +451,6 @@ class SqlAlchemyGlacierUploadService:
         upload_store = self._upload_store
         if hot_store is None or upload_store is None:
             return
-        self._record_archive_phase(
-            collection_id=collection_id,
-            phase="promoting",
-            updated_at=_isoformat_z(utcnow()),
-        )
         if _hot_file_matches(
             hot_store,
             collection_id=collection_id,
@@ -511,6 +501,105 @@ class SqlAlchemyGlacierUploadService:
         ):
             raise ValueError(f"promoted collection file metadata mismatch: {collection_id}/{path}")
         self._mark_collection_upload_file_promoted(collection_id=collection_id, path=path)
+
+    def _promote_collection_files(
+        self,
+        *,
+        collection_id: str,
+        upload_files: list[CollectionUploadFileEntry],
+    ) -> None:
+        remaining = self._unpromoted_collection_upload_files(
+            collection_id=collection_id,
+            upload_files=upload_files,
+        )
+        if not remaining:
+            return
+        self._record_archive_phase(
+            collection_id=collection_id,
+            phase="promoting",
+            updated_at=_isoformat_z(utcnow()),
+        )
+        max_workers = min(self._config.hot_promotion_concurrency, len(remaining))
+        _LOG.info(
+            "promoting collection files for %s: files=%s concurrency=%s",
+            collection_id,
+            len(remaining),
+            max_workers,
+        )
+        if max_workers == 1:
+            for path, _bytes, sha256, target_path in remaining:
+                self._promote_collection_file_and_cleanup(
+                    collection_id=collection_id,
+                    path=path,
+                    target_path=target_path,
+                    byte_count=_bytes,
+                    sha256=sha256,
+                )
+            return
+
+        executor = ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="riverhog-hot-promote",
+        )
+        futures: list[Future[None]] = []
+        try:
+            for path, _bytes, sha256, target_path in remaining:
+                futures.append(
+                    executor.submit(
+                        self._promote_collection_file_and_cleanup,
+                        collection_id=collection_id,
+                        path=path,
+                        target_path=target_path,
+                        byte_count=_bytes,
+                        sha256=sha256,
+                    )
+                )
+            for future in as_completed(futures):
+                future.result()
+        except Exception:
+            for future in futures:
+                future.cancel()
+            raise
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
+
+    def _promote_collection_file_and_cleanup(
+        self,
+        *,
+        collection_id: str,
+        path: str,
+        target_path: str,
+        byte_count: int,
+        sha256: str,
+    ) -> None:
+        self._promote_one_collection_file(
+            collection_id=collection_id,
+            path=path,
+            target_path=target_path,
+            byte_count=byte_count,
+            sha256=sha256,
+        )
+        self._delete_promoted_upload_target(
+            collection_id=collection_id,
+            target_path=target_path,
+        )
+
+    def _unpromoted_collection_upload_files(
+        self,
+        *,
+        collection_id: str,
+        upload_files: list[CollectionUploadFileEntry],
+    ) -> list[CollectionUploadFileEntry]:
+        with session_scope(self._session_factory) as session:
+            promoted_paths = set(
+                session.scalars(
+                    select(CollectionUploadFileRecord.path).where(
+                        CollectionUploadFileRecord.collection_id == collection_id,
+                        CollectionUploadFileRecord.hot_promoted_at.is_not(None),
+                    )
+                ).all()
+            )
+        return [entry for entry in upload_files if entry[0] not in promoted_paths]
 
     def _delete_promoted_upload_target(self, *, collection_id: str, target_path: str) -> None:
         upload_store = self._upload_store
