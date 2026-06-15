@@ -81,6 +81,7 @@ def test_archive_admission_uses_eager_batch_peak_for_gpu_scratch(
     monkeypatch.setattr(runner, "EAGER_ARCHIVE_BATCH_FILES", 2)
     monkeypatch.setattr(runner, "EAGER_ARCHIVE_PIPELINE_BATCHES", 2)
     monkeypatch.setattr(runner, "GPU_SCRATCH_MULTIPLIER", 2.5)
+    monkeypatch.setattr(runner, "EAGER_ARCHIVE_SCRATCH_MULTIPLIER", 0.5)
     monkeypatch.setattr(runner, "gpu_input_copy_multiplier", lambda: 0.0)
     files = [
         runner.InputFileSpec(path=f"camera/{index}.mp4", bytes=size)
@@ -98,7 +99,7 @@ def test_archive_admission_uses_eager_batch_peak_for_gpu_scratch(
 
     required = runner.gpu_scratch_admission_required_bytes(files, hint)
 
-    assert required == int((100 + 90 + 80 + 70) * 2.5)
+    assert required == int((100 + 90 + 80 + 70) * 0.5)
     assert required < runner.gpu_scratch_required_bytes(sum(item.bytes for item in files), hint)
 
 

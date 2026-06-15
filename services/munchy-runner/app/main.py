@@ -107,6 +107,9 @@ GPU_WAIT_S = int(os.getenv("MUNCHY_RUNNER_GPU_WAIT_S", "300"))
 GPU_REPOST_SECONDS = float(os.getenv("MUNCHY_RUNNER_GPU_REPOST_SECONDS", "120"))
 MIN_FREE_BYTES = int(os.getenv("MUNCHY_RUNNER_MIN_FREE_BYTES", str(10 * 1024 * 1024 * 1024)))
 GPU_SCRATCH_MULTIPLIER = float(os.getenv("MUNCHY_RUNNER_GPU_SCRATCH_MULTIPLIER", "2.5"))
+EAGER_ARCHIVE_SCRATCH_MULTIPLIER = float(
+    os.getenv("MUNCHY_RUNNER_EAGER_ARCHIVE_SCRATCH_MULTIPLIER", "0.5")
+)
 REVIEW_SCRATCH_EXTRA_MULTIPLIER = float(
     os.getenv("MUNCHY_RUNNER_REVIEW_SCRATCH_EXTRA_MULTIPLIER", "0.35")
 )
@@ -1255,8 +1258,12 @@ def gpu_scratch_admission_required_bytes(
         else:
             non_eager_gpu_bytes += int(item.bytes)
 
-    required_source_bytes = non_eager_gpu_bytes + eager_archive_admission_bytes(eager_files)
-    return int(required_source_bytes * (gpu_input_copy_multiplier() + multiplier))
+    eager_required = int(
+        eager_archive_admission_bytes(eager_files)
+        * (gpu_input_copy_multiplier() + EAGER_ARCHIVE_SCRATCH_MULTIPLIER)
+    )
+    non_eager_required = int(non_eager_gpu_bytes * (gpu_input_copy_multiplier() + multiplier))
+    return eager_required + non_eager_required
 
 
 def input_upload_storage_hint(upload: dict[str, Any]) -> InputUploadStorageHint:

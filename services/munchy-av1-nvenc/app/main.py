@@ -152,6 +152,10 @@ class RiverhogConfig(BaseModel):
     wait: Literal["staged", "finalized"] = "staged"
 
 
+class InputVanishedDuringJob(RuntimeError):
+    pass
+
+
 class ReviewUploadConfig(BaseModel):
     enabled: bool = False
 
@@ -1286,7 +1290,18 @@ def run_encode_item(
         if on_start is not None:
             on_start()
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        result = run_command(cmd, action=action, dry_run=dry_run)
+        if source_artifacts_source is not None and not source_artifacts_source.exists():
+            raise InputVanishedDuringJob(
+                f"source disappeared during job cleanup: {source_artifacts_source}"
+            )
+        try:
+            result = run_command(cmd, action=action, dry_run=dry_run)
+        except RuntimeError as exc:
+            if source_artifacts_source is not None and not source_artifacts_source.exists():
+                raise InputVanishedDuringJob(
+                    f"source disappeared during job cleanup: {source_artifacts_source}"
+                ) from exc
+            raise
     payload: dict[str, Any] = {
         "output": str(output_path),
         "command": result["command"],
@@ -1295,6 +1310,10 @@ def run_encode_item(
     if result.get("dry_run"):
         payload["dry_run"] = True
     elif source_artifacts_source is not None:
+        if not source_artifacts_source.exists():
+            raise InputVanishedDuringJob(
+                f"source disappeared during job cleanup: {source_artifacts_source}"
+            )
         payload["source_artifacts"] = build_strict_source_artifacts(
             source=source_artifacts_source,
             archive_mkv=output_path,
@@ -1884,6 +1903,13 @@ def run_job(job_id: str, req: JobRequest) -> None:
         status["riverhog_upload"] = maybe_upload_riverhog(req)
         status["review_upload"] = maybe_upload_review(req)
         status["state"] = "succeeded"
+        status["finished_at"] = now_iso()
+        write_status(job_id, status)
+    except InputVanishedDuringJob as exc:
+        log.warning("job %s input vanished while finishing: %s", job_id, exc)
+        status["state"] = "failed"
+        status["error_code"] = "input_vanished"
+        status["error"] = str(exc)
         status["finished_at"] = now_iso()
         write_status(job_id, status)
     except Exception as exc:

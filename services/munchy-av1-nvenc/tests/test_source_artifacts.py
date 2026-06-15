@@ -91,6 +91,29 @@ class SourceArtifactsTests(unittest.TestCase):
                 {"output": str(output) + ".source-artifacts.tar.zst"},
             )
 
+    def test_archive_item_reports_source_vanished_during_encode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "clip.mp4"
+            output = root / "clip.webm"
+            source.write_bytes(b"source")
+
+            def fake_run_command(cmd: list[str], *, action: str, dry_run: bool = False) -> dict:
+                source.unlink()
+                raise RuntimeError("ffmpeg failed with 1: No such file or directory")
+
+            with patch.object(av1, "run_command", fake_run_command):
+                with self.assertRaisesRegex(av1.InputVanishedDuringJob, "source disappeared"):
+                    av1.run_encode_item(
+                        ["ffmpeg", "-i", str(source), str(output)],
+                        output_path=output,
+                        action="archive video encode",
+                        dry_run=False,
+                        source_artifacts_source=source,
+                        source_artifacts_profile={"name": "test-profile"},
+                        source_filesystem_metadata={"stat": {"st_birthtime": 1.25}},
+                    )
+
     def test_encode_item_recreates_output_parent_immediately_before_ffmpeg(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
