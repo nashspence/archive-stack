@@ -148,6 +148,14 @@ class BrokenRunner:
 
 
 @dataclass
+class UnexpectedBrokenRunner:
+    message: str = "target rejected upload request"
+
+    def advance(self, collector: Collector, batch_id: str) -> None:
+        raise RuntimeError(self.message)
+
+
+@dataclass
 class RecordingNotifier:
     messages: list[str]
 
@@ -274,6 +282,24 @@ def test_unrecoverable_errors_send_daily_critical_reminders(tmp_path: Path) -> N
 
     assert len(notifier.messages) == 2
     assert collector.load_batch(batch_id)["state"] == "failed_notified"
+
+
+def test_unexpected_target_errors_mark_batch_failed_without_crashing(tmp_path: Path) -> None:
+    config = _base_config(tmp_path)
+    _write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4")
+    notifier = RecordingNotifier([])
+    collector = Collector(
+        config,
+        target_runners={"munchy": UnexpectedBrokenRunner()},
+        notifier=notifier,
+    )
+
+    collector.run_once()
+    batch_id = _single_batch_id(collector)
+    collector.run_once()
+
+    assert collector.load_batch(batch_id)["state"] == "failed_notified"
+    assert notifier.messages == [f"{batch_id}:target:target rejected upload request"]
 
 
 def test_munchy_payload_uses_structured_routing(tmp_path: Path) -> None:

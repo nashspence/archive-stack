@@ -15,6 +15,7 @@ services:
       FTPD_USERS: ${FTPD_USERS:?set FTPD_USERS}
       FTPD_MAX_CLIENTS: ${FTPD_MAX_CLIENTS:-40}
       FTPD_MAX_CONNECTIONS: ${FTPD_MAX_CONNECTIONS:-8}
+      FTP_PASSIVE_PORTS: ${FTPD_PASSIVE_PORT_START:-30000}:${FTPD_PASSIVE_PORT_END:-30039}
     volumes:
       - type: bind
         source: ./bootstrap-users.sh

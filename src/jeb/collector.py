@@ -653,6 +653,13 @@ class Collector:
         except TransientJebError as exc:
             LOG.warning("batch %s hit transient issue; will retry: %s", batch_id, exc)
             self.set_batch_fields(batch_id, last_error=str(exc))
+        except Exception as exc:
+            if is_transient_error(exc):
+                LOG.warning("batch %s hit transient issue; will retry: %s", batch_id, exc)
+                self.set_batch_fields(batch_id, last_error=str(exc))
+                return
+            LOG.exception("batch %s failed with unrecoverable target error", batch_id)
+            self.mark_unrecoverable(batch_id, str(exc), component="target")
 
     def move_batch_files(self, batch_id: str) -> None:
         for row in self.batch_files(batch_id):
