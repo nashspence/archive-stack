@@ -427,7 +427,7 @@ def format_riverhog_upload_progress(progress: dict[str, Any]) -> str:
 def riverhog_archive_progress(progress: dict[str, Any]) -> dict[str, Any] | None:
     total_bytes = int(progress.get("archive_total_bytes") or 0)
     uploaded_bytes = int(progress.get("archive_uploaded_bytes") or 0)
-    if total_bytes <= 0 and not progress.get("archive_phase"):
+    if total_bytes <= 0 and not progress.get("archive_phase") and not progress.get("collection_id"):
         return None
     uploaded_bytes = min(uploaded_bytes, total_bytes) if total_bytes else uploaded_bytes
     return {
@@ -444,7 +444,7 @@ def format_riverhog_archive_progress(progress: dict[str, Any]) -> str:
     phase = str(progress.get("archive_phase") or "waiting").strip()
     uploaded_bytes = int(progress.get("bytes_done") or 0)
     total_bytes = int(progress.get("bytes_total") or 0)
-    parts = ["riverhog archive", phase, format_progress_bytes(uploaded_bytes, total_bytes)]
+    parts = ["riverhog deep archive", phase, format_progress_bytes(uploaded_bytes, total_bytes)]
     uploaded_parts = progress.get("archive_uploaded_parts")
     total_parts = progress.get("archive_total_parts")
     if isinstance(uploaded_parts, int) and isinstance(total_parts, int) and total_parts > 0:
@@ -1012,7 +1012,7 @@ class RichProgressRenderer(ProgressRenderer):
             archive_progress = riverhog_archive_progress(riverhog_progress)
             if archive_progress is not None:
                 table.add_row(
-                    "Riverhog Archive",
+                    "Riverhog Deep Archive",
                     self._bar(archive_progress, percent_key="percent_bytes"),
                 )
                 table.add_row("", format_riverhog_archive_progress(archive_progress))

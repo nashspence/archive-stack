@@ -132,10 +132,27 @@ def test_format_riverhog_archive_and_promotion_progress_are_separate() -> None:
 
     assert archive is not None
     assert promotion is not None
-    assert format_riverhog_archive_progress(archive).startswith("riverhog archive, uploading")
+    assert format_riverhog_archive_progress(archive).startswith("riverhog deep archive, uploading")
     assert "parts 2/5" in format_riverhog_archive_progress(archive)
     assert format_riverhog_promotion_progress(promotion).startswith(
         "riverhog promotion 3/10 files"
+    )
+
+
+def test_riverhog_archive_progress_waits_when_collection_exists() -> None:
+    progress = riverhog_archive_progress(
+        {
+            "collection_id": "2026/camera",
+            "archive_phase": "",
+            "archive_uploaded_bytes": 0,
+            "archive_total_bytes": 0,
+        }
+    )
+
+    assert progress is not None
+    assert progress["percent_bytes"] == 0.0
+    assert format_riverhog_archive_progress(progress).startswith(
+        "riverhog deep archive, waiting"
     )
 
 
@@ -449,6 +466,38 @@ def test_rich_renderer_clears_transient_issue_when_upload_advances() -> None:
     )
 
     assert renderer.transient_issue is None
+
+
+def test_rich_renderer_reserves_riverhog_deep_archive_row_before_archive_starts() -> None:
+    pytest.importorskip("rich")
+    from rich.console import Console
+
+    renderer = RichProgressRenderer(include_job=True, title="Test")
+    job = {
+        "state": "running",
+        "phase": "gpu-eager:pipeline=3/3",
+        "riverhog_upload_progress": {
+            "collection_id": "2026/camera",
+            "primary_files_uploaded": 3,
+            "primary_files_total": 10,
+            "percent_primary_files": 30.0,
+            "archive_phase": "",
+            "archive_uploaded_bytes": 0,
+            "archive_total_bytes": 0,
+            "hot_promoted_files": 0,
+            "riverhog_files_total": 10,
+            "hot_promoted_bytes": 0,
+            "riverhog_bytes_total": 1000,
+        },
+    }
+    console = Console(record=True, width=100, color_system=None)
+
+    console.print(renderer._render(job))
+    text = console.export_text()
+
+    assert "Riverhog Deep Archive" in text
+    assert "riverhog deep archive, waiting" in text
+    assert "Riverhog Promotion" in text
 
 
 def test_format_job_summary_line_includes_encoder_queue_position() -> None:
