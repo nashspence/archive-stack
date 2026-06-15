@@ -74,6 +74,7 @@ class S3HotStore:
     def __init__(self, config: RuntimeConfig) -> None:
         self._bucket = config.s3_bucket
         self._client = create_s3_client(config)
+        self._single_put_max_bytes = config.hot_single_put_max_bytes
 
     def _key(self, collection_id: str, path: str) -> str:
         return f"collections/{collection_id}/{path}"
@@ -118,15 +119,15 @@ class S3HotStore:
     ) -> None:
         final_key = self._key(collection_id, path)
         metadata = _file_metadata(content_length=content_length, sha256=sha256)
-        if content_length == 0:
-            size = sum(len(chunk) for chunk in chunks)
-            if size != 0:
+        if content_length <= self._single_put_max_bytes:
+            body = b"".join(chunks)
+            if len(body) != content_length:
                 raise ValueError(f"collection file stream byte count mismatch: {path}")
             self._client.put_object(
                 Bucket=self._bucket,
                 Key=final_key,
-                Body=b"",
-                ContentLength=0,
+                Body=body,
+                ContentLength=content_length,
                 Metadata=metadata,
             )
             return

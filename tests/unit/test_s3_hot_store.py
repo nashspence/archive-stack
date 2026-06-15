@@ -140,7 +140,7 @@ class _FakeS3Client:
             ) from exc
 
 
-def _config(tmp_path: Path) -> RuntimeConfig:
+def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
     config = RuntimeConfig(
         object_store="s3",
         s3_endpoint_url="http://example.invalid:9000",
@@ -152,6 +152,7 @@ def _config(tmp_path: Path) -> RuntimeConfig:
         tusd_base_url="http://example.invalid:1080/files",
         tusd_hook_secret="hook-secret",
         database_url=sqlite_url(tmp_path / "state.sqlite3"),
+        **overrides,
     )
     return config
 
@@ -160,12 +161,34 @@ def _store_with_client(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     client: _FakeS3Client,
+    **config_overrides: object,
 ) -> S3HotStore:
     monkeypatch.setattr(
         "riverhog_core.stores.s3_hot_store.create_s3_client",
         lambda config: client,
     )
-    return S3HotStore(_config(tmp_path))
+    return S3HotStore(_config(tmp_path, **config_overrides))
+
+
+def test_put_collection_file_stream_uses_single_put_for_small_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    store = _store_with_client(monkeypatch, tmp_path, client)
+
+    store.put_collection_file_stream(
+        "docs",
+        "small.bin",
+        (chunk for chunk in [b"abc", b"defg", b"hi"]),
+        content_length=9,
+        sha256="19cc02f26df43cc571bc9ed7b0c4d29224a3ec229529221725ef76d021c8326f",
+    )
+
+    assert store.get_collection_file("docs", "small.bin") == b"abcdefghi"
+    assert client.uploaded_part_sizes == []
+    assert client.completed_uploads == []
+    assert client.uploads == {}
 
 
 def test_put_collection_file_stream_completes_multipart_upload(
@@ -173,7 +196,7 @@ def test_put_collection_file_stream_completes_multipart_upload(
     tmp_path: Path,
 ) -> None:
     client = _FakeS3Client()
-    store = _store_with_client(monkeypatch, tmp_path, client)
+    store = _store_with_client(monkeypatch, tmp_path, client, hot_single_put_max_bytes=0)
     monkeypatch.setattr("riverhog_core.stores.s3_hot_store._MIN_MULTIPART_PART_SIZE", 4)
 
     store.put_collection_file_stream(
@@ -201,7 +224,7 @@ def test_put_collection_file_stream_aborts_multipart_upload_after_failed_stream(
     tmp_path: Path,
 ) -> None:
     client = _FakeS3Client()
-    store = _store_with_client(monkeypatch, tmp_path, client)
+    store = _store_with_client(monkeypatch, tmp_path, client, hot_single_put_max_bytes=0)
     monkeypatch.setattr("riverhog_core.stores.s3_hot_store._MIN_MULTIPART_PART_SIZE", 3)
 
     def chunks() -> Iterable[bytes]:
@@ -280,7 +303,7 @@ def test_put_collection_file_stream_resumes_tracked_multipart_upload(
     tmp_path: Path,
 ) -> None:
     client = _FakeS3Client()
-    store = _store_with_client(monkeypatch, tmp_path, client)
+    store = _store_with_client(monkeypatch, tmp_path, client, hot_single_put_max_bytes=0)
     tracker = _MemoryMultipartTracker()
     monkeypatch.setattr("riverhog_core.stores.s3_hot_store._MIN_MULTIPART_PART_SIZE", 4)
 

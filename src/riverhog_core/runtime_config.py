@@ -18,6 +18,7 @@ DEFAULT_UNBURNED_COLLECTION_BYTES_LIMIT = 500_000_000_000
 DEFAULT_GLACIER_MULTIPART_PART_BYTES = 64 * 1024 * 1024
 DEFAULT_GLACIER_MULTIPART_CONCURRENCY = 4
 DEFAULT_HOT_PROMOTION_CONCURRENCY = 8
+DEFAULT_HOT_SINGLE_PUT_MAX_BYTES = 64 * 1024 * 1024
 DEFAULT_GLACIER_ARCHIVE_WORK_FACTOR = 18
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_RECOVERY_PAYLOAD_WORK_FACTOR = 12
@@ -154,6 +155,7 @@ class RuntimeConfig:
     glacier_multipart_part_bytes: int = DEFAULT_GLACIER_MULTIPART_PART_BYTES
     glacier_multipart_concurrency: int = DEFAULT_GLACIER_MULTIPART_CONCURRENCY
     hot_promotion_concurrency: int = DEFAULT_HOT_PROMOTION_CONCURRENCY
+    hot_single_put_max_bytes: int = DEFAULT_HOT_SINGLE_PUT_MAX_BYTES
     glacier_archive_encryption: str = "age_scrypt"
     glacier_archive_passphrase: str = DEV_RECOVERY_PAYLOAD_PASSPHRASE
     glacier_archive_require_explicit_passphrase: bool = False
@@ -243,6 +245,8 @@ class RuntimeConfig:
             raise ValueError("RIVERHOG_GLACIER_MULTIPART_CONCURRENCY must be >= 1")
         if self.hot_promotion_concurrency < 1:
             raise ValueError("RIVERHOG_HOT_PROMOTION_CONCURRENCY must be >= 1")
+        if self.hot_single_put_max_bytes < 0:
+            raise ValueError("RIVERHOG_HOT_SINGLE_PUT_MAX_BYTES must be >= 0")
         if self.glacier_archive_encryption != "age_scrypt":
             raise ValueError("RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION must be age_scrypt")
         if self.glacier_archive_work_factor < 1 or self.glacier_archive_work_factor > 22:
@@ -346,6 +350,11 @@ def load_runtime_config() -> RuntimeConfig:
         ),
         name="RIVERHOG_HOT_PROMOTION_CONCURRENCY",
         minimum=1,
+    )
+    hot_single_put_max_bytes = _parse_bytes(
+        os.getenv("RIVERHOG_HOT_SINGLE_PUT_MAX_BYTES", "64MiB"),
+        name="RIVERHOG_HOT_SINGLE_PUT_MAX_BYTES",
+        minimum=0,
     )
     glacier_archive_encryption = _parse_choice(
         os.getenv("RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION", "age_scrypt"),
@@ -664,6 +673,7 @@ def load_runtime_config() -> RuntimeConfig:
         glacier_multipart_part_bytes=glacier_multipart_part_bytes,
         glacier_multipart_concurrency=glacier_multipart_concurrency,
         hot_promotion_concurrency=hot_promotion_concurrency,
+        hot_single_put_max_bytes=hot_single_put_max_bytes,
         glacier_archive_encryption=glacier_archive_encryption,
         glacier_archive_passphrase=glacier_archive_passphrase,
         glacier_archive_require_explicit_passphrase=glacier_archive_require_explicit_passphrase,

@@ -181,6 +181,7 @@ def test_load_runtime_config_parses_planner_runtime_settings(
     monkeypatch.setenv("RIVERHOG_GLACIER_MULTIPART_PART_BYTES", "128MiB")
     monkeypatch.setenv("RIVERHOG_GLACIER_MULTIPART_CONCURRENCY", "8")
     monkeypatch.setenv("RIVERHOG_HOT_PROMOTION_CONCURRENCY", "6")
+    monkeypatch.setenv("RIVERHOG_HOT_SINGLE_PUT_MAX_BYTES", "32MiB")
     monkeypatch.setenv("RIVERHOG_OPERATOR_WEBHOOK_URL", "http://example.invalid/webhook/riverhog")
     monkeypatch.setenv("RIVERHOG_OPERATOR_WEBHOOK_TIMEOUT", "2s")
     monkeypatch.setenv("RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY", "3s")
@@ -202,6 +203,7 @@ def test_load_runtime_config_parses_planner_runtime_settings(
     assert config.glacier_multipart_part_bytes == 128 * 1024**2
     assert config.glacier_multipart_concurrency == 8
     assert config.hot_promotion_concurrency == 6
+    assert config.hot_single_put_max_bytes == 32 * 1024**2
     assert config.log_level == "DEBUG"
     assert config.operator_webhook_url == "http://example.invalid/webhook/riverhog"
     assert config.operator_webhook_timeout == timedelta(seconds=2)
