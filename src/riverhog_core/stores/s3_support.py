@@ -25,6 +25,7 @@ def _create_s3_client(
     access_key_id: str,
     secret_access_key: str,
     force_path_style: bool,
+    max_pool_connections: int,
 ) -> Any:
     boto3, Config = _require_boto3()
     return boto3.client(
@@ -33,7 +34,10 @@ def _create_s3_client(
         region_name=region,
         aws_access_key_id=access_key_id,
         aws_secret_access_key=secret_access_key,
-        config=Config(s3={"addressing_style": "path" if force_path_style else "virtual"}),
+        config=Config(
+            max_pool_connections=max_pool_connections,
+            s3={"addressing_style": "path" if force_path_style else "virtual"},
+        ),
     )
 
 
@@ -44,6 +48,7 @@ def create_s3_client(config: RuntimeConfig) -> Any:
         access_key_id=config.s3_access_key_id,
         secret_access_key=config.s3_secret_access_key,
         force_path_style=config.s3_force_path_style,
+        max_pool_connections=config.s3_max_pool_connections,
     )
 
 
@@ -54,6 +59,7 @@ def create_glacier_s3_client(config: RuntimeConfig) -> Any:
         access_key_id=config.glacier_access_key_id,
         secret_access_key=config.glacier_secret_access_key,
         force_path_style=config.glacier_force_path_style,
+        max_pool_connections=config.s3_max_pool_connections,
     )
 
 

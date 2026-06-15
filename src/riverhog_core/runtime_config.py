@@ -19,6 +19,7 @@ DEFAULT_GLACIER_MULTIPART_PART_BYTES = 64 * 1024 * 1024
 DEFAULT_GLACIER_MULTIPART_CONCURRENCY = 4
 DEFAULT_HOT_PROMOTION_CONCURRENCY = 8
 DEFAULT_HOT_SINGLE_PUT_MAX_BYTES = 64 * 1024 * 1024
+DEFAULT_S3_MAX_POOL_CONNECTIONS = 32
 DEFAULT_GLACIER_ARCHIVE_WORK_FACTOR = 18
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_RECOVERY_PAYLOAD_WORK_FACTOR = 12
@@ -134,6 +135,7 @@ class RuntimeConfig:
     s3_force_path_style: bool
     tusd_base_url: str
     tusd_hook_secret: str
+    s3_max_pool_connections: int = DEFAULT_S3_MAX_POOL_CONNECTIONS
     tusd_public_base_url: str | None = None
     tusd_public_signing_secret: str | None = None
     upload_staging_root: Path = field(default_factory=lambda: Path(".riverhog/uploads"))
@@ -237,6 +239,8 @@ class RuntimeConfig:
         object.__setattr__(self, "log_level", log_level)
         if self.tusd_append_timeout_seconds <= 0.0:
             raise ValueError("RIVERHOG_TUSD_APPEND_TIMEOUT_SECONDS must be > 0")
+        if self.s3_max_pool_connections < 1:
+            raise ValueError("RIVERHOG_S3_MAX_POOL_CONNECTIONS must be >= 1")
         if self.upload_session_idle_ttl.total_seconds() <= 0.0:
             raise ValueError("RIVERHOG_UPLOAD_SESSION_IDLE_TTL must be > 0")
         if self.glacier_multipart_part_bytes < 1:
@@ -325,6 +329,11 @@ def load_runtime_config() -> RuntimeConfig:
     s3_access_key_id = os.getenv("RIVERHOG_S3_ACCESS_KEY_ID", "minioadmin")
     s3_secret_access_key = os.getenv("RIVERHOG_S3_SECRET_ACCESS_KEY", "minioadmin")
     s3_force_path_style = _parse_bool(os.getenv("RIVERHOG_S3_FORCE_PATH_STYLE", "true"))
+    s3_max_pool_connections = _parse_int(
+        os.getenv("RIVERHOG_S3_MAX_POOL_CONNECTIONS", str(DEFAULT_S3_MAX_POOL_CONNECTIONS)),
+        name="RIVERHOG_S3_MAX_POOL_CONNECTIONS",
+        minimum=1,
+    )
     upload_staging_root = Path(
         os.getenv("RIVERHOG_UPLOAD_STAGING_ROOT", ".riverhog/uploads").strip()
         or ".riverhog/uploads"
@@ -632,6 +641,7 @@ def load_runtime_config() -> RuntimeConfig:
         s3_access_key_id=s3_access_key_id,
         s3_secret_access_key=s3_secret_access_key,
         s3_force_path_style=s3_force_path_style,
+        s3_max_pool_connections=s3_max_pool_connections,
         upload_staging_root=upload_staging_root,
         tusd_base_url=os.getenv("RIVERHOG_TUSD_BASE_URL", "http://127.0.0.1:1080/files").rstrip(
             "/"

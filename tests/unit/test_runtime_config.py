@@ -178,6 +178,7 @@ def test_load_runtime_config_parses_planner_runtime_settings(
     monkeypatch.setenv("RIVERHOG_PLANNER_IMAGE_ROOT", str(tmp_path / "planner"))
     monkeypatch.setenv("RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT", "500GB")
     monkeypatch.setenv("RIVERHOG_TUSD_APPEND_TIMEOUT_SECONDS", "45.5")
+    monkeypatch.setenv("RIVERHOG_S3_MAX_POOL_CONNECTIONS", "40")
     monkeypatch.setenv("RIVERHOG_GLACIER_MULTIPART_PART_BYTES", "128MiB")
     monkeypatch.setenv("RIVERHOG_GLACIER_MULTIPART_CONCURRENCY", "8")
     monkeypatch.setenv("RIVERHOG_HOT_PROMOTION_CONCURRENCY", "6")
@@ -200,6 +201,7 @@ def test_load_runtime_config_parses_planner_runtime_settings(
     assert config.planner_image_root == tmp_path / "planner"
     assert config.unburned_collection_bytes_limit == 500_000_000_000
     assert config.tusd_append_timeout_seconds == 45.5
+    assert config.s3_max_pool_connections == 40
     assert config.glacier_multipart_part_bytes == 128 * 1024**2
     assert config.glacier_multipart_concurrency == 8
     assert config.hot_promotion_concurrency == 6
