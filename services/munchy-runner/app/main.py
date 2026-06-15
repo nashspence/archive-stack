@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import errno
 import faulthandler
+import fnmatch
 import gzip
 import hashlib
 import json
@@ -19,6 +20,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager, closing
 from datetime import UTC, datetime, timedelta
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
@@ -214,7 +216,7 @@ STORAGE_WAIT_SECONDS = max(
 )
 
 UploadState = Literal["pending", "partial", "uploaded", "consumed"]
-ArchiveMode = Literal["av1_nvenc", "originals"]
+ArchiveMode = Literal["av1_nvenc", "originals", "passthrough"]
 WorkflowMode = Literal["archive", "review_only", "collection_preview"]
 TaskName = Literal["archive_video", "qcut_video", "audio_review"]
 ArchiveContainer = Literal["mkv", "webm"]
@@ -262,6 +264,18 @@ def input_path_group(path: str) -> str:
     return validate_profile_group_name(parts[0])
 
 
+def normalize_posix(value: str) -> str:
+    path = str(value).strip().lstrip("/")
+    if not path or any(part in {"", ".", ".."} for part in path.split("/")):
+        raise ValueError("path must be normalized and relative")
+    return path
+
+
+def normalize_archive_mode(value: str | None) -> str:
+    mode = str(value or "av1_nvenc")
+    return "originals" if mode == "passthrough" else mode
+
+
 class InsufficientStorage(RuntimeError):
     def __init__(
         self,
@@ -280,6 +294,10 @@ class InsufficientStorage(RuntimeError):
 
 
 class EncodingFailed(RuntimeError):
+    pass
+
+
+class RoutingFailed(RuntimeError):
     pass
 
 
@@ -633,6 +651,13 @@ class ProfileGroupConfig(BaseModel):
     def normalize_tasks(cls, value: list[TaskName]) -> list[TaskName]:
         return list(dict.fromkeys(value))
 
+    @model_validator(mode="after")
+    def normalize_passthrough(self) -> ProfileGroupConfig:
+        if self.archive_mode == "passthrough":
+            self.archive_mode = "originals"
+            self.gpu_tasks = []
+        return self
+
 
 class StorageGroupHint(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -645,6 +670,13 @@ class StorageGroupHint(BaseModel):
     def normalize_tasks(cls, value: list[TaskName]) -> list[TaskName]:
         return list(dict.fromkeys(value))
 
+    @model_validator(mode="after")
+    def normalize_passthrough(self) -> StorageGroupHint:
+        if self.archive_mode == "passthrough":
+            self.archive_mode = "originals"
+            self.gpu_tasks = []
+        return self
+
 
 class InputUploadStorageHint(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -653,6 +685,7 @@ class InputUploadStorageHint(BaseModel):
     archive_mode: ArchiveMode = "av1_nvenc"
     gpu_tasks: list[TaskName] = Field(default_factory=list)
     groups: dict[str, StorageGroupHint] = Field(default_factory=dict)
+    structured_routing: bool = False
 
     @field_validator("gpu_tasks")
     @classmethod
@@ -666,6 +699,114 @@ class InputUploadStorageHint(BaseModel):
         value: dict[str, StorageGroupHint],
     ) -> dict[str, StorageGroupHint]:
         return {validate_profile_group_name(name): group for name, group in value.items()}
+
+    @model_validator(mode="after")
+    def normalize_passthrough(self) -> InputUploadStorageHint:
+        if self.archive_mode == "passthrough":
+            self.archive_mode = "originals"
+            self.gpu_tasks = []
+        return self
+
+
+class ProfileRoute(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=120)
+    group: str = Field(min_length=1, max_length=120)
+    path_prefix: str | None = Field(default=None, min_length=1, max_length=2048)
+    path_glob: str | None = Field(default=None, min_length=1, max_length=2048)
+    filename_glob: str | None = Field(default=None, min_length=1, max_length=512)
+    suffixes: list[str] = Field(default_factory=list)
+    format_name_contains: list[str] = Field(default_factory=list)
+    codec_names: list[str] = Field(default_factory=list)
+    width: int | None = Field(default=None, ge=1)
+    height: int | None = Field(default=None, ge=1)
+    min_width: int | None = Field(default=None, ge=1)
+    max_width: int | None = Field(default=None, ge=1)
+    min_height: int | None = Field(default=None, ge=1)
+    max_height: int | None = Field(default=None, ge=1)
+    fps: float | None = Field(default=None, gt=0)
+    min_fps: float | None = Field(default=None, gt=0)
+    max_fps: float | None = Field(default=None, gt=0)
+    format_tags: dict[str, str] = Field(default_factory=dict)
+    stream_tags: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("group")
+    @classmethod
+    def validate_group(cls, value: str) -> str:
+        return validate_profile_group_name(value)
+
+    @field_validator("path_prefix")
+    @classmethod
+    def normalize_path_prefix(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return normalize_posix(value.rstrip("/"))
+
+    @field_validator("path_glob", "filename_glob")
+    @classmethod
+    def normalize_glob(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = value.strip().lstrip("/")
+        if not text or any(part in {"", ".", ".."} for part in text.split("/")):
+            raise ValueError("glob must be normalized and relative")
+        return text
+
+    @field_validator("suffixes")
+    @classmethod
+    def normalize_suffixes(cls, value: list[str]) -> list[str]:
+        suffixes: list[str] = []
+        for item in value:
+            suffix = str(item).strip().lower()
+            if not suffix:
+                continue
+            if not suffix.startswith("."):
+                suffix = f".{suffix}"
+            if suffix not in suffixes:
+                suffixes.append(suffix)
+        return suffixes
+
+    @field_validator("format_name_contains", "codec_names")
+    @classmethod
+    def normalize_string_list(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(str(item).strip().lower() for item in value if str(item).strip()))
+
+    @field_validator("format_tags", "stream_tags")
+    @classmethod
+    def normalize_tag_matches(cls, value: dict[str, str]) -> dict[str, str]:
+        return {
+            str(key).strip().lower(): str(match).strip().lower()
+            for key, match in value.items()
+            if str(key).strip() and str(match).strip()
+        }
+
+    @model_validator(mode="after")
+    def validate_ranges(self) -> ProfileRoute:
+        for low, high, label in (
+            (self.min_width, self.max_width, "width"),
+            (self.min_height, self.max_height, "height"),
+            (self.min_fps, self.max_fps, "fps"),
+        ):
+            if low is not None and high is not None and low > high:
+                raise ValueError(f"route {label} range has min greater than max")
+        return self
+
+
+class ProfileRoutingConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    routes: list[ProfileRoute] = Field(default_factory=list)
+
+    @field_validator("routes")
+    @classmethod
+    def require_routes(cls, value: list[ProfileRoute]) -> list[ProfileRoute]:
+        if not value:
+            raise ValueError("profile_routing.routes must contain at least one route")
+        ids = [route.id for route in value]
+        if len(ids) != len(set(ids)):
+            raise ValueError("profile_routing route ids must be unique")
+        return value
 
 
 class CreateInputUploadRequest(BaseModel):
@@ -681,9 +822,15 @@ class CreateInputUploadRequest(BaseModel):
         paths = [item.path for item in value]
         if len(paths) != len(set(paths)):
             raise ValueError("file paths must be unique")
-        for path in paths:
-            input_path_group(path)
         return value
+
+    @model_validator(mode="after")
+    def validate_path_shape(self) -> CreateInputUploadRequest:
+        if self.storage_hint.structured_routing:
+            return self
+        for item in self.files:
+            input_path_group(item.path)
+        return self
 
 
 class CreateJobRequest(BaseModel):
@@ -698,6 +845,7 @@ class CreateJobRequest(BaseModel):
     )
     encode_profile: EncodeProfile | None = None
     groups: dict[str, ProfileGroupConfig] = Field(default_factory=dict)
+    profile_routing: ProfileRoutingConfig | None = None
     riverhog: RiverhogConfig = Field(default_factory=RiverhogConfig)
     review_upload: ReviewUploadConfig = Field(default_factory=ReviewUploadConfig)
     notify: NotifyConfig = Field(default_factory=NotifyConfig)
@@ -718,6 +866,19 @@ class CreateJobRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_workflow_mode(self) -> CreateJobRequest:
+        if self.archive_mode == "passthrough":
+            self.archive_mode = "originals"
+            self.gpu_tasks = []
+        if self.profile_routing is not None:
+            if not self.groups:
+                raise ValueError("profile_routing requires explicit groups")
+            group_names = set(self.groups)
+            route_groups = {route.group for route in self.profile_routing.routes}
+            missing = sorted(route_groups - group_names)
+            if missing:
+                raise ValueError(
+                    "profile_routing references unknown group(s): " + ", ".join(missing)
+                )
         if self.workflow_mode == "archive":
             return self
         if self.riverhog.enabled:
@@ -1210,6 +1371,11 @@ def storage_group_hint_for_path(
     path: str,
     hint: InputUploadStorageHint,
 ) -> StorageGroupHint:
+    if hint.structured_routing:
+        return StorageGroupHint(
+            archive_mode=hint.archive_mode,
+            gpu_tasks=hint.gpu_tasks,
+        )
     group_name = input_path_group(path)
     if hint.groups:
         group = hint.groups.get(group_name)
@@ -1222,7 +1388,7 @@ def storage_group_hint_for_path(
 
 
 def storage_group_hint_is_eager_archive_only(group: StorageGroupHint) -> bool:
-    if str(group.archive_mode or "av1_nvenc") != "av1_nvenc":
+    if normalize_archive_mode(str(group.archive_mode or "av1_nvenc")) != "av1_nvenc":
         return False
     return set(str(task) for task in group.gpu_tasks) == {"archive_video"}
 
@@ -1244,7 +1410,7 @@ def gpu_scratch_admission_required_bytes(
     multiplier = storage_hint_scratch_extra_multiplier(hint)
     if multiplier <= 0:
         return 0
-    if hint.workflow_mode != "archive":
+    if hint.workflow_mode != "archive" or hint.structured_routing:
         return gpu_scratch_required_bytes(sum(item.bytes for item in files), hint)
 
     eager_files: list[InputFileSpec] = []
@@ -1323,6 +1489,36 @@ def require_input_upload_capacity(
                 free=free,
                 reserved_bytes=int(entry["reserved"]),
             )
+
+
+def upload_file_resolved_group(file_state: dict[str, Any]) -> str:
+    group = file_state.get("resolved_group")
+    if isinstance(group, str) and group.strip():
+        return validate_profile_group_name(group)
+    if file_state.get("structured_routing"):
+        return ""
+    try:
+        return input_path_group(str(file_state["path"]))
+    except ValueError:
+        return ""
+
+
+def upload_file_group_rel_for_state(file_state: dict[str, Any], group_name: str) -> Path:
+    resolved = file_state.get("resolved_group_rel")
+    if isinstance(resolved, str) and resolved.strip():
+        if upload_file_resolved_group(file_state) != group_name:
+            raise RuntimeError(
+                f"input file {file_state.get('path')!r} is not in group {group_name!r}"
+            )
+        return Path(normalize_posix(resolved))
+    return upload_file_group_rel(str(file_state["path"]), group_name)
+
+
+def materialized_input_rel_path(file_state: dict[str, Any]) -> Path:
+    group_name = upload_file_resolved_group(file_state)
+    if not group_name:
+        raise RuntimeError(f"input file has not been routed yet: {file_state.get('path')!r}")
+    return Path(group_name) / upload_file_group_rel_for_state(file_state, group_name)
 
 
 def shared_input_file_path(file_state: dict[str, Any]) -> Path | None:
@@ -1962,7 +2158,7 @@ def upload_files_for_groups(
     return [
         file_state
         for file_state in upload.get("files", [])
-        if upload_file_group(str(file_state["path"])) in group_names
+        if upload_file_resolved_group(file_state) in group_names
     ]
 
 
@@ -1987,7 +2183,7 @@ def shared_input_tree_progress(upload: dict[str, Any], group_names: set[str]) ->
             files_ready += 1
             bytes_ready += expected_bytes
             continue
-        dest = root / str(file_state["path"])
+        dest = root / materialized_input_rel_path(file_state)
         if file_matches_expected(dest, expected_bytes):
             files_ready += 1
             bytes_ready += expected_bytes
@@ -2036,15 +2232,22 @@ def wait_for_upload_groups(
     job: dict[str, Any],
     upload_id: str,
     group_names: set[str],
+    groups: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     job_id = str(job["job_id"])
     while True:
         raise_if_job_cancelled(job_id)
         upload = load_input_upload(upload_id)
+        if groups is not None:
+            upload = route_completed_input_files(job, upload, groups)
         sync_shared_input_tree(upload, group_names)
         progress = upload_group_progress(upload, group_names)
         job["input_upload_progress"] = progress
-        if upload_groups_complete(upload, group_names):
+        structured_pending = (
+            isinstance(job.get("profile_routing"), dict)
+            and str(upload.get("state") or "") != "uploaded"
+        )
+        if not structured_pending and upload_groups_complete(upload, group_names):
             save_job(job)
             return upload
         job["phase"] = f"waiting_for_upload:{progress['files_uploaded']}/{progress['files_total']}"
@@ -2062,7 +2265,7 @@ def materialize_upload_file(
     rel_path = str(file_state["path"])
     expected_bytes = int(file_state["bytes"])
     expected_sha256 = file_state.get("sha256")
-    dest = dest_root / rel_path
+    dest = dest_root / materialized_input_rel_path(file_state)
     if file_matches_expected(
         dest,
         expected_bytes,
@@ -2142,7 +2345,7 @@ def write_group_filesystem_metadata(
         metadata = file_state.get("filesystem_metadata")
         if not isinstance(metadata, dict):
             continue
-        rel_path = upload_file_group_rel(str(file_state["path"]), group_name).as_posix()
+        rel_path = upload_file_group_rel_for_state(file_state, group_name).as_posix()
         records[rel_path] = metadata
     write_filesystem_metadata_map(root / group_name, records, created_at=now_iso())
 
@@ -2189,6 +2392,11 @@ def sync_shared_input_tree(
 def sync_shared_input_file(upload_id: str, rel_path: str) -> bool:
     upload = load_input_upload_raw(upload_id)
     file_state = find_upload_file(upload, rel_path)
+    if (
+        input_upload_storage_hint(upload).structured_routing
+        and not file_state.get("resolved_group")
+    ):
+        return False
     with shared_input_tree_lock(upload_id):
         root = shared_input_upload_root(upload_id)
         root.mkdir(parents=True, exist_ok=True)
@@ -2335,7 +2543,11 @@ def materialize_upload(upload: dict[str, Any], dest_root: Path) -> None:
 
 def input_upload_groups(upload: dict[str, Any]) -> list[str]:
     groups = sorted(
-        {input_path_group(str(file_state["path"])) for file_state in upload.get("files", [])}
+        group
+        for group in {
+            upload_file_resolved_group(file_state) for file_state in upload.get("files", [])
+        }
+        if group
     )
     if not groups:
         raise RuntimeError("input upload does not contain any files")
@@ -2383,6 +2595,7 @@ def storage_hint_for_job_request(req: CreateJobRequest) -> InputUploadStorageHin
         archive_mode=req.archive_mode,
         gpu_tasks=req.gpu_tasks,
         groups=groups,
+        structured_routing=req.profile_routing is not None,
     )
 
 
@@ -2415,6 +2628,8 @@ def resolve_job_groups(
     upload: dict[str, Any],
     req: CreateJobRequest,
 ) -> dict[str, dict[str, Any]]:
+    if req.profile_routing is not None:
+        return {name: profile_group_dump(group) for name, group in req.groups.items()}
     try:
         input_groups = input_upload_groups(upload)
     except ValueError as exc:
@@ -2437,6 +2652,264 @@ def resolve_job_groups(
 
     default_group = profile_group_dump(default_profile_group(req))
     return {name: dict(default_group) for name in input_groups}
+
+
+def parse_rate(value: Any) -> float | None:
+    text = str(value or "").strip()
+    if not text or text in {"0/0", "N/A"}:
+        return None
+    try:
+        return float(Fraction(text))
+    except (ValueError, ZeroDivisionError):
+        try:
+            return float(text)
+        except ValueError:
+            return None
+
+
+def lower_mapping(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(key).lower(): str(item).lower() for key, item in value.items()}
+
+
+def ffprobe_for_routing(path: Path) -> dict[str, Any]:
+    proc = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            str(path),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "ffprobe failed")[-1000:]
+        raise RoutingFailed(f"ffprobe failed for {path.name}: {detail}")
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise RoutingFailed(f"ffprobe returned invalid JSON for {path.name}") from exc
+    if not isinstance(payload, dict):
+        raise RoutingFailed(f"ffprobe returned non-object JSON for {path.name}")
+    return payload
+
+
+def routing_probe_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    streams = payload.get("streams") if isinstance(payload.get("streams"), list) else []
+    video_stream = next(
+        (
+            stream
+            for stream in streams
+            if isinstance(stream, dict) and stream.get("codec_type") == "video"
+        ),
+        {},
+    )
+    format_info = payload.get("format") if isinstance(payload.get("format"), dict) else {}
+    return {
+        "format_name": str(format_info.get("format_name") or ""),
+        "format_tags": lower_mapping(format_info.get("tags")),
+        "stream_tags": lower_mapping(video_stream.get("tags")),
+        "codec_name": str(video_stream.get("codec_name") or "").lower(),
+        "width": int(video_stream.get("width") or 0),
+        "height": int(video_stream.get("height") or 0),
+        "fps": parse_rate(video_stream.get("avg_frame_rate"))
+        or parse_rate(video_stream.get("r_frame_rate"))
+        or 0.0,
+    }
+
+
+def route_requires_probe(route: dict[str, Any]) -> bool:
+    probe_keys = {
+        "format_name_contains",
+        "codec_names",
+        "width",
+        "height",
+        "min_width",
+        "max_width",
+        "min_height",
+        "max_height",
+        "fps",
+        "min_fps",
+        "max_fps",
+        "format_tags",
+        "stream_tags",
+    }
+    return any(route.get(key) for key in probe_keys)
+
+
+def route_matches_path(route: dict[str, Any], rel_path: str) -> bool:
+    filename = rel_path.rsplit("/", 1)[-1]
+    prefix = route.get("path_prefix")
+    if isinstance(prefix, str) and prefix:
+        normalized = prefix.rstrip("/")
+        if rel_path != normalized and not rel_path.startswith(f"{normalized}/"):
+            return False
+    path_glob = route.get("path_glob")
+    if isinstance(path_glob, str) and path_glob and not fnmatch.fnmatchcase(rel_path, path_glob):
+        return False
+    filename_glob = route.get("filename_glob")
+    if (
+        isinstance(filename_glob, str)
+        and filename_glob
+        and not fnmatch.fnmatchcase(filename, filename_glob)
+    ):
+        return False
+    suffixes = [str(item).lower() for item in route.get("suffixes") or []]
+    if suffixes and not any(filename.lower().endswith(suffix) for suffix in suffixes):
+        return False
+    return True
+
+
+def route_matches_probe(route: dict[str, Any], summary: dict[str, Any]) -> bool:
+    format_needles = [str(item).lower() for item in route.get("format_name_contains") or []]
+    format_name = str(summary.get("format_name") or "").lower()
+    if format_needles and not all(needle in format_name for needle in format_needles):
+        return False
+    codec_names = [str(item).lower() for item in route.get("codec_names") or []]
+    if codec_names and str(summary.get("codec_name") or "").lower() not in codec_names:
+        return False
+    width = int(summary.get("width") or 0)
+    height = int(summary.get("height") or 0)
+    fps = float(summary.get("fps") or 0.0)
+    for key, actual in (("width", width), ("height", height)):
+        expected = route.get(key)
+        if expected is not None and actual != int(expected):
+            return False
+    for key, actual, op in (
+        ("min_width", width, "min"),
+        ("max_width", width, "max"),
+        ("min_height", height, "min"),
+        ("max_height", height, "max"),
+        ("min_fps", fps, "min"),
+        ("max_fps", fps, "max"),
+    ):
+        expected = route.get(key)
+        if expected is None:
+            continue
+        if op == "min" and actual < float(expected):
+            return False
+        if op == "max" and actual > float(expected):
+            return False
+    expected_fps = route.get("fps")
+    if expected_fps is not None and abs(fps - float(expected_fps)) > 0.01:
+        return False
+
+    for tag_scope in ("format_tags", "stream_tags"):
+        expected_tags = route.get(tag_scope) or {}
+        if not expected_tags:
+            continue
+        actual_tags = summary.get(tag_scope) if isinstance(summary.get(tag_scope), dict) else {}
+        lower_actual = lower_mapping(actual_tags)
+        for key, expected in expected_tags.items():
+            actual_value = str(lower_actual.get(str(key).lower()) or "")
+            if str(expected).lower() not in actual_value:
+                return False
+    return True
+
+
+def upload_file_data_path(file_state: dict[str, Any]) -> Path:
+    tusd_source = tusd_data_path(str(file_state["upload_id"]))
+    if tusd_source.exists():
+        return tusd_source
+    shared_source = shared_input_file_path(file_state)
+    if shared_source is not None and shared_source.exists():
+        return shared_source
+    raise RoutingFailed(f"input file data is missing for routing: {file_state.get('path')}")
+
+
+def route_completed_file(
+    job: dict[str, Any],
+    file_state: dict[str, Any],
+    groups: dict[str, dict[str, Any]],
+) -> bool:
+    if file_state.get("resolved_group"):
+        return False
+    routing = job.get("profile_routing")
+    if not isinstance(routing, dict):
+        return False
+    routes = routing.get("routes")
+    if not isinstance(routes, list) or not routes:
+        raise RoutingFailed("profile routing is missing routes")
+    rel_path = str(file_state["path"])
+    matches: list[dict[str, Any]] = []
+    probe_summary: dict[str, Any] | None = None
+    for route in routes:
+        if not isinstance(route, dict):
+            continue
+        if not route_matches_path(route, rel_path):
+            continue
+        if route_requires_probe(route):
+            if probe_summary is None:
+                probe_summary = routing_probe_summary(
+                    ffprobe_for_routing(upload_file_data_path(file_state))
+                )
+            if not route_matches_probe(route, probe_summary):
+                continue
+        matches.append(route)
+    if len(matches) != 1:
+        route_ids = [str(route.get("id") or "") for route in matches]
+        reason = "no matching route" if not matches else f"multiple matching routes: {route_ids}"
+        raise RoutingFailed(f"profile routing failed for {rel_path}: {reason}")
+    route = matches[0]
+    group = validate_profile_group_name(str(route.get("group") or ""))
+    if group not in groups:
+        raise RoutingFailed(f"profile routing failed for {rel_path}: unknown group {group}")
+    file_state["resolved_group"] = group
+    file_state["resolved_group_rel"] = rel_path
+    file_state["profile_route_id"] = str(route.get("id") or "")
+    file_state["profile_routed_at"] = now_iso()
+    return True
+
+
+def route_completed_input_files(
+    job: dict[str, Any],
+    upload: dict[str, Any],
+    groups: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    if not isinstance(job.get("profile_routing"), dict):
+        return upload
+    changed = False
+    for file_state in upload.get("files", []):
+        if file_state.get("resolved_group"):
+            continue
+        status = upload_file_status(file_state)
+        if not status["complete"]:
+            continue
+        changed = route_completed_file(job, file_state, groups) or changed
+    if not changed:
+        return upload
+
+    group_counts: dict[str, int] = {}
+    route_counts: dict[str, int] = {}
+    for file_state in upload.get("files", []):
+        group = file_state.get("resolved_group")
+        route_id = file_state.get("profile_route_id")
+        if isinstance(group, str) and group:
+            group_counts[group] = group_counts.get(group, 0) + 1
+        if isinstance(route_id, str) and route_id:
+            route_counts[route_id] = route_counts.get(route_id, 0) + 1
+    job["profile_routing_result"] = {
+        "updated_at": now_iso(),
+        "files": sum(group_counts.values()),
+        "groups": group_counts,
+        "routes": route_counts,
+    }
+    job["riverhog_expected_primary_files_total"] = expected_riverhog_primary_files_total(
+        upload,
+        groups,
+    )
+    with state_lock:
+        save_input_upload_raw(upload)
+        save_job(job)
+    return load_input_upload(str(upload["upload_id"]))
 
 
 def grouped_task_union(groups: dict[str, dict[str, Any]]) -> list[TaskName]:
@@ -2524,20 +2997,22 @@ def archive_output_for_upload_file(
     group_config: dict[str, Any],
     archive_dir: Path,
 ) -> Path:
-    group_rel = upload_file_group_rel(str(file_state["path"]), group_name)
+    group_rel = upload_file_group_rel_for_state(file_state, group_name)
     return (archive_dir / group_name / group_rel).with_suffix(
         archive_container_suffix(group_config)
     )
 
 
 def group_is_eager_archive_only(group_config: dict[str, Any]) -> bool:
-    if str(group_config.get("archive_mode") or "av1_nvenc") != "av1_nvenc":
+    if normalize_archive_mode(str(group_config.get("archive_mode") or "av1_nvenc")) != "av1_nvenc":
         return False
     tasks = set(str(task) for task in group_config.get("gpu_tasks") or [])
     return tasks == {"archive_video"}
 
 
 def group_produces_primary_archive_output(group_config: dict[str, Any]) -> bool:
+    if normalize_archive_mode(str(group_config.get("archive_mode") or "av1_nvenc")) == "originals":
+        return True
     tasks = set(str(task) for task in group_config.get("gpu_tasks") or [])
     return "archive_video" in tasks
 
@@ -4703,6 +5178,11 @@ def eager_groups_complete(
     upload: dict[str, Any],
     eager_groups: set[str],
 ) -> bool:
+    if (
+        isinstance(job.get("profile_routing"), dict)
+        and str(upload.get("state") or "") != "uploaded"
+    ):
+        return False
     files = upload_files_for_groups(upload, eager_groups)
     return bool(files) and all(
         eager_file_encoded(job, str(file_state["path"])) for file_state in files
@@ -5439,6 +5919,7 @@ def run_eager_archive_groups(
         while True:
             raise_if_job_cancelled(job_id)
             upload = load_input_upload(str(job["input_upload_id"]))
+            upload = route_completed_input_files(job, upload, groups)
             cleanup_consumed_shared_input_files(upload, eager_groups)
             upload, _ = mark_existing_eager_outputs(job, upload, groups, eager_groups, archive_dir)
             claim_running_eager_batch_files(job, upload, groups, archive_dir)
@@ -5555,6 +6036,7 @@ def run_job(job_id: str) -> None:
                 job,
                 str(job["input_upload_id"]),
                 non_eager_groups,
+                groups,
             )
             non_eager_bytes = upload_bytes_for_groups(input_upload, non_eager_groups)
             required_gpu_free = (
@@ -5575,7 +6057,9 @@ def run_job(job_id: str) -> None:
             if str(group_name) in eager_groups:
                 continue
             validate_profile_group_name(str(group_name))
-            group_archive_mode = str(group_config.get("archive_mode") or "av1_nvenc")
+            group_archive_mode = normalize_archive_mode(
+                str(group_config.get("archive_mode") or "av1_nvenc")
+            )
             if group_archive_mode not in {"av1_nvenc", "originals"}:
                 raise RuntimeError(
                     f"unsupported archive_mode for group {group_name}: {group_archive_mode}"
@@ -5726,6 +6210,8 @@ def run_job(job_id: str) -> None:
             cleanup_terminal_job(job)
             compact_terminal_job_state(job)
             save_job(job)
+        elif isinstance(exc, RoutingFailed):
+            notify_job_issue(job, component="profile_routing", error=exc, severity="critical")
         else:
             notify_job_issue(job, component="job", error=exc, severity="error")
     finally:
@@ -5819,7 +6305,7 @@ def health_ready() -> dict[str, Any]:
 def capabilities() -> dict[str, Any]:
     return {
         "workflow_modes": ["archive", "review_only", "collection_preview"],
-        "archive_modes": ["av1_nvenc", "originals"],
+        "archive_modes": ["av1_nvenc", "originals", "passthrough"],
         "gpu_tasks": ["archive_video", "qcut_video", "audio_review"],
         "encode_profile": {
             "schema_versions": [1],
@@ -5837,6 +6323,21 @@ def capabilities() -> dict[str, Any]:
         },
         "profile_groups": {
             "input_path_shape": "<profile-group>/<file>",
+            "structured_input_path_shape": "<source-or-device>/<original-relative-path>",
+            "structured_routing": True,
+            "routing_match_fields": [
+                "path_prefix",
+                "path_glob",
+                "filename_glob",
+                "suffixes",
+                "format_name_contains",
+                "codec_names",
+                "width",
+                "height",
+                "fps",
+                "format_tags",
+                "stream_tags",
+            ],
             "group_name_chars": "letters, digits, dots, underscores, dashes",
             "job_groups": True,
         },
@@ -6053,6 +6554,7 @@ def create_input_upload(req: CreateInputUploadRequest) -> dict[str, Any]:
                     "input_upload_id": upload_id,
                     "upload_id": tusd_upload_id_for_target_path(target_path),
                     "upload_url": None,
+                    "structured_routing": req.storage_hint.structured_routing,
                 }
             )
         upload = {
@@ -6210,12 +6712,16 @@ def create_job(req: CreateJobRequest, background_tasks: BackgroundTasks) -> dict
             if req.encode_profile is not None
             else None,
             "groups": groups,
-            "riverhog_expected_primary_files_total": expected_riverhog_primary_files_total(
-                input_upload,
-                groups,
-            )
-            if req.riverhog.enabled
-            else 0,
+            "profile_routing": req.profile_routing.model_dump(exclude_none=True)
+            if req.profile_routing is not None
+            else None,
+            "riverhog_expected_primary_files_total": 0
+            if req.profile_routing is not None
+            else (
+                expected_riverhog_primary_files_total(input_upload, groups)
+                if req.riverhog.enabled
+                else 0
+            ),
             "riverhog": req.riverhog.model_dump(),
             "review_upload": req.review_upload.model_dump(),
             "notify": req.notify.model_dump(),

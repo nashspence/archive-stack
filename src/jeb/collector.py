@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import errno
 import hashlib
 import logging
 import os
@@ -10,11 +11,9 @@ import sqlite3
 import time
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
-from threading import Event, Lock
 from typing import Any, Literal, Protocol, cast
 
 import httpx
@@ -29,9 +28,7 @@ from munchy.runner_client import (
 from munchy.runner_client import (
     is_transient_upload_error as munchy_is_transient_upload_error,
 )
-from riverhog_cli.client import ApiClient
 from riverhog_core.domain.errors import Conflict, ServiceUnavailable
-from riverhog_core.tus_upload import TusUploadLease, upload_path_to_tus
 from riverhog_core.webhooks import (
     WebhookConfig,
     build_jeb_event_payload,
@@ -45,6 +42,11 @@ TERMINAL_STATES = {"target_succeeded", "cleanup_done"}
 TRANSIENT_RETRY_INITIAL_SECONDS = 1.0
 TRANSIENT_RETRY_MAX_SECONDS = 300.0
 DEFAULT_GPU_TASKS = ("archive_video", "qcut_video")
+LINK_COPY_FALLBACK_ERRNOS = {errno.EXDEV, errno.EPERM, errno.EACCES}
+if hasattr(errno, "ENOTSUP"):
+    LINK_COPY_FALLBACK_ERRNOS.add(errno.ENOTSUP)
+if hasattr(errno, "EOPNOTSUPP"):
+    LINK_COPY_FALLBACK_ERRNOS.add(errno.EOPNOTSUPP)
 
 
 class JebError(RuntimeError):
@@ -126,6 +128,22 @@ def normalize_posix(path: str | PurePosixPath) -> str:
     return rel.as_posix()
 
 
+def link_or_copy(source: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(str(dest).encode()).hexdigest()[:12]
+    part = dest.with_name(f".{dest.name}.{digest}.part")
+    try:
+        try:
+            os.link(source, part)
+        except OSError as exc:
+            if exc.errno not in LINK_COPY_FALLBACK_ERRNOS:
+                raise
+            shutil.copy2(source, part)
+        part.replace(dest)
+    finally:
+        part.unlink(missing_ok=True)
+
+
 def env_value(env_name: str | None, fallback: str | None) -> str | None:
     if env_name:
         value = os.getenv(env_name)
@@ -154,18 +172,14 @@ class NotifySettings:
 @dataclass(frozen=True)
 class TargetConfig:
     name: str
-    type: Literal["munchy", "riverhog"]
     url: str = ""
-    token: str | None = None
     upload_workers: int = 4
     upload_chunk_bytes: int = 64 * 1024 * 1024
-    wait: Literal["staged", "finalized"] = "finalized"
     wait_for_safe_delete: bool = True
-    ingest_source: str = "jeb"
 
 
 @dataclass(frozen=True)
-class SourceGroup:
+class ProfileGroup:
     profile: str | None = None
     archive_mode: str = "av1_nvenc"
     gpu_tasks: tuple[str, ...] = DEFAULT_GPU_TASKS
@@ -176,15 +190,24 @@ class SourceConfig:
     id: str
     enabled: bool
     path: Path
+    upload_prefix: str
+    stable_seconds: int
+    include_extensions: frozenset[str]
+
+
+@dataclass(frozen=True)
+class CollectionConfig:
+    id: str
+    enabled: bool
     collection_slug: str
     target: str
     threshold_bytes: int
-    stable_seconds: int
-    max_age_seconds: int
-    root_group: str | None
     cleanup: Literal["never", "after_target_success"]
-    include_extensions: frozenset[str]
-    groups: Mapping[str, SourceGroup]
+    source_ids: tuple[str, ...]
+    schedule: Literal["always", "weekly"]
+    weekday: int
+    hour: int
+    minute: int
 
 
 @dataclass(frozen=True)
@@ -193,7 +216,9 @@ class JebConfig:
     notify: NotifySettings
     targets: Mapping[str, TargetConfig]
     sources: tuple[SourceConfig, ...]
+    collections: tuple[CollectionConfig, ...]
     profiles: Mapping[str, Mapping[str, Any]]
+    profile_groups: Mapping[str, ProfileGroup]
     munchy_job_defaults: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -287,7 +312,6 @@ class Collector:
         )
         self.target_runners: dict[str, TargetRunner] = {
             "munchy": MunchyTargetRunner(),
-            "riverhog": RiverhogTargetRunner(),
         }
         if target_runners:
             self.target_runners.update(target_runners)
@@ -307,15 +331,13 @@ class Collector:
                 """
                 CREATE TABLE IF NOT EXISTS batches (
                     id TEXT PRIMARY KEY,
-                    source_id TEXT NOT NULL,
+                    collection_id TEXT NOT NULL,
                     state TEXT NOT NULL,
                     target_name TEXT NOT NULL,
-                    target_type TEXT NOT NULL,
                     collection_slug TEXT NOT NULL,
                     collection_timestamp TEXT NOT NULL,
                     input_upload_id TEXT,
                     job_id TEXT,
-                    riverhog_collection_id TEXT,
                     cleanup TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -335,8 +357,7 @@ class Collector:
                     bytes INTEGER NOT NULL,
                     mtime_ns INTEGER NOT NULL,
                     sha256 TEXT,
-                    moved_at TEXT,
-                    uploaded_at TEXT,
+                    staged_at TEXT,
                     PRIMARY KEY (batch_id, target_path)
                 )
                 """
@@ -346,8 +367,8 @@ class Collector:
                 "ON batches(state, created_at)"
             )
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_jeb_batches_source_state "
-                "ON batches(source_id, state)"
+                "CREATE INDEX IF NOT EXISTS idx_jeb_batches_collection_state "
+                "ON batches(collection_id, state)"
             )
 
     def run_forever(self) -> None:
@@ -360,10 +381,10 @@ class Collector:
         self.init_db()
         for batch_id in self.active_batch_ids():
             self.process_batch(batch_id)
-        active_sources = {str(row["source_id"]) for row in self.active_batches()}
-        for source in self.config.sources:
-            if source.enabled and source.id not in active_sources:
-                self.discover_source(source)
+        active_collections = {str(row["collection_id"]) for row in self.active_batches()}
+        for collection in self.config.collections:
+            if collection.enabled and collection.id not in active_collections:
+                self.discover_collection(collection)
 
     def active_batches(self) -> list[sqlite3.Row]:
         with self.connect() as conn:
@@ -380,6 +401,12 @@ class Collector:
             if source.id == source_id:
                 return source
         raise KeyError(source_id)
+
+    def collection_by_id(self, collection_id: str) -> CollectionConfig:
+        for collection in self.config.collections:
+            if collection.id == collection_id:
+                return collection
+        raise KeyError(collection_id)
 
     def target_by_name(self, target_name: str) -> TargetConfig:
         try:
@@ -415,7 +442,6 @@ class Collector:
             "state",
             "input_upload_id",
             "job_id",
-            "riverhog_collection_id",
             "last_error",
             "notified_error_fingerprint",
             "notified_error_at",
@@ -434,28 +460,74 @@ class Collector:
                 values,
             )
 
-    def discover_source(self, source: SourceConfig) -> None:
-        files = self.eligible_files(source)
+    def discover_collection(self, collection: CollectionConfig) -> None:
+        period = self.collection_period(collection)
+        if collection.schedule == "weekly" and self.batch_exists_for_period(
+            collection.id,
+            period,
+        ):
+            return
+        sources = [self.source_by_id(source_id) for source_id in collection.source_ids]
+        files: list[EligibleFile] = []
+        before = period if collection.schedule == "weekly" else None
+        for source in sources:
+            if source.enabled:
+                files.extend(self.eligible_files(source, before=before))
         if not files:
             return
+        target_paths = [item.target_path for item in files]
+        if len(target_paths) != len(set(target_paths)):
+            duplicates = sorted(
+                path for path in set(target_paths) if target_paths.count(path) > 1
+            )
+            raise UnrecoverableJebError(
+                f"collection {collection.id} has duplicate upload path(s): "
+                + ", ".join(duplicates[:5])
+            )
         total = sum(item.bytes for item in files)
-        oldest_age = max(0, int(time.time() - min(item.mtime for item in files)))
-        if total < source.threshold_bytes and not (
-            source.max_age_seconds and oldest_age >= source.max_age_seconds
-        ):
+        if total < collection.threshold_bytes:
             LOG.info(
-                "source %s below threshold: %.2fGB eligible, oldest %ss",
-                source.id,
+                "collection %s below threshold: %.2fGB eligible",
+                collection.id,
                 total / 1_000_000_000,
-                oldest_age,
             )
             return
-        self.create_batch(source, files)
+        self.create_batch(collection, files, period=period)
 
-    def eligible_files(self, source: SourceConfig) -> list[EligibleFile]:
+    def collection_period(self, collection: CollectionConfig) -> datetime:
+        if collection.schedule == "always":
+            return now()
+        current = now()
+        days_since = (current.weekday() - collection.weekday) % 7
+        candidate = current.replace(
+            hour=collection.hour,
+            minute=collection.minute,
+            second=0,
+            microsecond=0,
+        ) - timedelta(days=days_since)
+        if candidate > current:
+            candidate -= timedelta(days=7)
+        return candidate.astimezone(UTC)
+
+    def batch_exists_for_period(self, collection_id: str, period: datetime) -> bool:
+        timestamp = period.strftime("%Y%m%dT%H%M%SZ")
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM batches WHERE collection_id = ? AND collection_timestamp = ?",
+                (collection_id, timestamp),
+            ).fetchone()
+        return row is not None
+
+    def eligible_files(
+        self,
+        source: SourceConfig,
+        *,
+        before: datetime | None = None,
+    ) -> list[EligibleFile]:
         if not source.path.exists():
             return []
         cutoff = time.time() - source.stable_seconds
+        before_ts = before.timestamp() if before is not None else None
         out: list[EligibleFile] = []
         seen_target_paths: set[str] = set()
         for path in sorted(source.path.rglob("*")):
@@ -469,7 +541,9 @@ class Collector:
             stat = path.stat()
             if stat.st_mtime > cutoff:
                 continue
-            target_path = self.target_path_for(source, rel)
+            if before_ts is not None and stat.st_mtime >= before_ts:
+                continue
+            target_path = normalize_posix(PurePosixPath(source.upload_prefix, *rel.parts))
             if target_path in seen_target_paths:
                 raise UnrecoverableJebError(
                     f"duplicate target path for source {source.id}: {target_path}"
@@ -487,24 +561,21 @@ class Collector:
             )
         return out
 
-    def target_path_for(self, source: SourceConfig, rel: Path) -> str:
-        first = rel.parts[0] if rel.parts else ""
-        if first in source.groups:
-            return normalize_posix(PurePosixPath(*rel.parts))
-        if source.root_group:
-            return normalize_posix(PurePosixPath(source.root_group, *rel.parts))
-        raise UnrecoverableJebError(f"source {source.id} has file outside configured groups: {rel}")
-
-    def create_batch(self, source: SourceConfig, files: Sequence[EligibleFile]) -> None:
-        first_mtime = min(item.mtime for item in files)
-        collection_timestamp = datetime.fromtimestamp(first_mtime, UTC).strftime("%Y%m%dT%H%M%SZ")
+    def create_batch(
+        self,
+        collection: CollectionConfig,
+        files: Sequence[EligibleFile],
+        *,
+        period: datetime,
+    ) -> None:
+        collection_timestamp = period.strftime("%Y%m%dT%H%M%SZ")
         manifest = "\n".join(
             f"{item.target_path} {item.bytes} {item.mtime_ns}" for item in files
         )
         digest = hashlib.sha256(manifest.encode("utf-8")).hexdigest()[:12]
-        batch_id = f"{collection_timestamp}__{source.id}__{digest}"
-        target = self.target_by_name(source.target)
-        input_upload_id = f"jeb-{source.id}-{collection_timestamp.lower()}-{digest}"
+        batch_id = f"{collection_timestamp}__{collection.id}__{digest}"
+        target = self.target_by_name(collection.target)
+        input_upload_id = f"jeb-{collection.id}-{collection_timestamp.lower()}-{digest}"
         job_id = f"{input_upload_id}-job"
         batch_root = self.config.collector.batch_dir / batch_id / "input"
         created_at = iso()
@@ -514,22 +585,21 @@ class Collector:
                 return
             conn.execute(
                 """
-                INSERT INTO batches(
-                    id, source_id, state, target_name, target_type, collection_slug,
+                    INSERT INTO batches(
+                    id, collection_id, state, target_name, collection_slug,
                     collection_timestamp, input_upload_id, job_id, cleanup, created_at, updated_at
                 )
-                VALUES(?, ?, 'batching', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, 'batching', ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     batch_id,
-                    source.id,
+                    collection.id,
                     target.name,
-                    target.type,
-                    source.collection_slug,
+                    collection.collection_slug,
                     collection_timestamp,
                     input_upload_id,
                     job_id,
-                    source.cleanup,
+                    collection.cleanup,
                     created_at,
                     created_at,
                 ),
@@ -552,7 +622,12 @@ class Collector:
                         item.mtime_ns,
                     ),
                 )
-        LOG.info("created batch %s for source %s with %d files", batch_id, source.id, len(files))
+        LOG.info(
+            "created batch %s for collection %s with %d files",
+            batch_id,
+            collection.id,
+            len(files),
+        )
 
     def process_batch(self, batch_id: str) -> None:
         try:
@@ -569,8 +644,7 @@ class Collector:
             if self.load_batch(batch_id)["state"] == "batched":
                 self.ensure_hashes(batch_id)
             batch = self.load_batch(batch_id)
-            target = self.target_by_name(str(batch["target_name"]))
-            runner = self.target_runners[target.type]
+            runner = self.target_runners["munchy"]
             runner.advance(self, batch_id)
             self.finish_target_success(batch_id)
         except UnrecoverableJebError as exc:
@@ -582,24 +656,28 @@ class Collector:
 
     def move_batch_files(self, batch_id: str) -> None:
         for row in self.batch_files(batch_id):
-            if row["moved_at"]:
+            if row["staged_at"]:
                 continue
             source = Path(str(row["source_path"]))
             staging = Path(str(row["staging_path"]))
             if source.exists():
-                staging.parent.mkdir(parents=True, exist_ok=True)
                 if staging.exists():
                     if staging.is_dir():
                         raise UnrecoverableJebError(f"staging path is a directory: {staging}")
-                    staging.unlink()
-                shutil.move(str(source), str(staging))
+                    if staging.stat().st_size == source.stat().st_size:
+                        pass
+                    else:
+                        staging.unlink()
+                        link_or_copy(source, staging)
+                else:
+                    link_or_copy(source, staging)
             elif not staging.exists():
                 raise UnrecoverableJebError(
                     f"source and staging file are both missing: {source} -> {staging}"
                 )
             with self.connect() as conn:
                 conn.execute(
-                    "UPDATE files SET moved_at = ? WHERE batch_id = ? AND target_path = ?",
+                    "UPDATE files SET staged_at = ? WHERE batch_id = ? AND target_path = ?",
                     (iso(), batch_id, row["target_path"]),
                 )
         self.set_batch_state(batch_id, "batched")
@@ -637,6 +715,8 @@ class Collector:
 
     def cleanup_batch(self, batch_id: str) -> None:
         try:
+            for row in self.batch_files(batch_id):
+                Path(str(row["source_path"])).unlink(missing_ok=True)
             shutil.rmtree(self.config.collector.batch_dir / batch_id)
         except FileNotFoundError:
             pass
@@ -701,23 +781,14 @@ class Collector:
         age = max(0.0, (now() - sent_at.astimezone(UTC)).total_seconds())
         return age >= self.config.notify.reminder_interval_seconds
 
-    def mark_file_uploaded(self, batch_id: str, target_path: str) -> None:
-        with self.connect() as conn:
-            conn.execute(
-                "UPDATE files SET uploaded_at = ? WHERE batch_id = ? AND target_path = ?",
-                (iso(), batch_id, target_path),
-            )
-
-
 class MunchyTargetRunner:
     def advance(self, collector: Collector, batch_id: str) -> None:
         batch = collector.load_batch(batch_id)
         if batch["state"] == "target_complete":
             return
         target = collector.target_by_name(str(batch["target_name"]))
-        source = collector.source_by_id(str(batch["source_id"]))
         client = MunchyRunnerClient(target.url)
-        request = munchy_upload_request(collector, batch_id, source, target)
+        request = munchy_upload_request(collector, batch_id, target)
 
         state = str(batch["state"])
         if state == "hashed":
@@ -749,199 +820,9 @@ class MunchyTargetRunner:
             collector.set_batch_state(batch_id, "target_complete")
 
 
-class RiverhogTargetRunner:
-    def advance(self, collector: Collector, batch_id: str) -> None:
-        batch = collector.load_batch(batch_id)
-        if batch["state"] == "target_complete":
-            return
-        target = collector.target_by_name(str(batch["target_name"]))
-        api = ApiClient(base_url=target.url, token=target.token)
-        try:
-            state = str(batch["state"])
-            if state == "hashed":
-                session = retry_forever(
-                    collector,
-                    "riverhog session setup",
-                    lambda: api.create_or_resume_collection_upload_session(
-                        str(batch["collection_slug"]),
-                        ingest_source=target.ingest_source,
-                        upload_timestamp=str(batch["collection_timestamp"]),
-                    ),
-                )
-                collector.set_batch_fields(
-                    batch_id,
-                    state="riverhog_session_open",
-                    riverhog_collection_id=str(session["collection_id"]),
-                )
-                state = "riverhog_session_open"
-            batch = collector.load_batch(batch_id)
-            collection_id = str(batch["riverhog_collection_id"] or "")
-            if not collection_id:
-                raise UnrecoverableJebError("riverhog collection id was not recorded")
-            if state in {"riverhog_session_open", "riverhog_uploading"}:
-                collector.set_batch_state(batch_id, "riverhog_uploading")
-                self.upload_files(collector, api, target, batch_id, collection_id)
-                collector.set_batch_state(batch_id, "riverhog_uploaded")
-                state = "riverhog_uploaded"
-            if state == "riverhog_uploaded":
-                retry_forever(
-                    collector,
-                    "riverhog session complete",
-                    lambda: api.complete_collection_upload_session(collection_id),
-                )
-                collector.set_batch_state(batch_id, "riverhog_completed")
-                state = "riverhog_completed"
-            if state == "riverhog_completed":
-                final = self.wait_for_riverhog(collector, api, target, collection_id)
-                if str(final.get("state") or "") == "failed":
-                    raise UnrecoverableJebError(
-                        f"riverhog upload failed: {final.get('latest_failure')}"
-                    )
-                collector.set_batch_state(batch_id, "target_complete")
-        finally:
-            api.close()
-
-    def upload_files(
-        self,
-        collector: Collector,
-        api: ApiClient,
-        target: TargetConfig,
-        batch_id: str,
-        collection_id: str,
-    ) -> None:
-        files = collector.batch_files(batch_id)
-        if target.upload_workers <= 1 or len(files) <= 1:
-            for row in files:
-                self.upload_one(collector, api, target, batch_id, collection_id, row)
-            return
-
-        stop_event = Event()
-        next_lock = Lock()
-        pending = iter(files)
-
-        def worker() -> None:
-            worker_api = ApiClient(base_url=target.url, token=target.token)
-            try:
-                while not stop_event.is_set():
-                    with next_lock:
-                        try:
-                            row = next(pending)
-                        except StopIteration:
-                            return
-                    self.upload_one(
-                        collector,
-                        worker_api,
-                        target,
-                        batch_id,
-                        collection_id,
-                        row,
-                    )
-            finally:
-                worker_api.close()
-
-        with ThreadPoolExecutor(max_workers=target.upload_workers) as executor:
-            futures = [
-                executor.submit(worker)
-                for _ in range(min(target.upload_workers, len(files)))
-            ]
-            try:
-                for future in as_completed(futures):
-                    future.result()
-            except Exception:
-                stop_event.set()
-                for future in futures:
-                    future.cancel()
-                raise
-
-    def upload_one(
-        self,
-        collector: Collector,
-        api: ApiClient,
-        target: TargetConfig,
-        batch_id: str,
-        collection_id: str,
-        row: sqlite3.Row,
-    ) -> None:
-        path = Path(str(row["staging_path"]))
-        if not path.exists():
-            raise UnrecoverableJebError(f"staged file disappeared before upload: {path}")
-        file_payload = {
-            "path": str(row["target_path"]),
-            "bytes": int(row["bytes"]),
-            "sha256": str(row["sha256"]),
-        }
-        while True:
-            try:
-                lease_payload = retry_forever(
-                    collector,
-                    f"riverhog file setup {row['target_path']}",
-                    lambda: api.create_or_resume_registered_collection_file_upload(
-                        collection_id,
-                        file_payload,
-                    ),
-                )
-                lease = TusUploadLease(
-                    upload_url=str(lease_payload["upload_url"]),
-                    offset=int(lease_payload.get("offset") or 0),
-                    length=int(lease_payload.get("length") or row["bytes"]),
-                    checksum_algorithm=str(lease_payload.get("checksum_algorithm") or "sha256"),
-                )
-                upload_path_to_tus(
-                    client=api.tus_client(),
-                    source_path=path,
-                    lease=lease,
-                    chunk_bytes=target.upload_chunk_bytes,
-                )
-                collector.mark_file_uploaded(batch_id, str(row["target_path"]))
-                return
-            except Exception as exc:
-                if not is_transient_error(exc):
-                    raise
-                LOG.warning(
-                    "transient riverhog upload issue for %s; retrying: %s",
-                    row["target_path"],
-                    exc,
-                )
-                collector.sleep(TRANSIENT_RETRY_INITIAL_SECONDS)
-
-    def wait_for_riverhog(
-        self,
-        collector: Collector,
-        api: ApiClient,
-        target: TargetConfig,
-        collection_id: str,
-    ) -> dict[str, Any]:
-        if target.wait == "staged":
-            return cast(
-                dict[str, Any],
-                retry_forever(
-                    collector,
-                    "riverhog staged status",
-                    lambda: api.get_collection_upload(collection_id),
-                ),
-            )
-        while True:
-            try:
-                return api.get_collection(collection_id)
-            except Exception as exc:
-                if not is_transient_error(exc):
-                    try:
-                        upload = api.get_collection_upload(collection_id)
-                    except Exception as upload_exc:
-                        if not is_transient_error(upload_exc):
-                            raise exc from upload_exc
-                        raise TransientJebError(str(upload_exc)) from upload_exc
-                    state = str(upload.get("state") or "")
-                    if state == "failed":
-                        return upload
-                    LOG.info("riverhog collection %s waiting: state=%s", collection_id, state)
-                collector.sleep(10.0)
-
-
 def munchy_upload_request(
     collector: Collector,
     batch_id: str,
-    source: SourceConfig,
     target: TargetConfig,
 ) -> RunnerUploadRequest:
     batch = collector.load_batch(batch_id)
@@ -955,7 +836,10 @@ def munchy_upload_request(
         )
         for row in rows
     )
-    groups = munchy_groups_payload(collector.config, source)
+    groups = munchy_groups_payload(collector.config)
+    profile_routing = mapping(collector.config.munchy_job_defaults.get("profile_routing"))
+    if not profile_routing:
+        raise UnrecoverableJebError("Munchy target requires munchy_job_defaults.profile_routing")
     job_payload = {
         "job_id": str(batch["job_id"]),
         "input_upload_id": str(batch["input_upload_id"]),
@@ -966,12 +850,14 @@ def munchy_upload_request(
         "riverhog": dict(collector.config.munchy_job_defaults.get("riverhog") or {}),
         "review_upload": dict(collector.config.munchy_job_defaults.get("review_upload") or {}),
         "notify": dict(collector.config.munchy_job_defaults.get("notify") or {}),
+        "profile_routing": dict(profile_routing),
         "cleanup_local_on_success": bool(
             collector.config.munchy_job_defaults.get("cleanup_local_on_success", False)
         ),
     }
     storage_hint = {
         "workflow_mode": job_payload["workflow_mode"],
+        "structured_routing": bool(job_payload.get("profile_routing")),
         "groups": {
             name: {
                 "archive_mode": str(group.get("archive_mode") or "av1_nvenc"),
@@ -991,9 +877,9 @@ def munchy_upload_request(
     )
 
 
-def munchy_groups_payload(config: JebConfig, source: SourceConfig) -> dict[str, dict[str, Any]]:
+def munchy_groups_payload(config: JebConfig) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
-    for name, group in source.groups.items():
+    for name, group in config.profile_groups.items():
         payload: dict[str, Any] = {
             "archive_mode": group.archive_mode,
             "gpu_tasks": list(group.gpu_tasks),
@@ -1070,16 +956,31 @@ def config_from_mapping(raw: Mapping[str, Any]) -> JebConfig:
         for name, profile in mapping(raw.get("profiles")).items()
     }
     targets = load_targets(mapping(raw.get("targets")))
-    sources = tuple(load_source(source, targets) for source in sequence(raw.get("sources")))
+    sources = tuple(load_source(source) for source in sequence(raw.get("sources")))
     if not sources:
         raise ValueError("at least one source is required")
+    source_ids = {source.id for source in sources}
+    collections = tuple(
+        load_collection(collection, targets, source_ids)
+        for collection in sequence(raw.get("collections"))
+    )
+    if not collections:
+        raise ValueError("at least one collection is required")
+    profile_groups = load_profile_groups(mapping(raw.get("profile_groups")))
+    if not profile_groups:
+        raise ValueError("collections require profile_groups")
+    munchy_job_defaults = mapping(raw.get("munchy_job_defaults"))
+    if not mapping(munchy_job_defaults.get("profile_routing")):
+        raise ValueError("munchy_job_defaults.profile_routing is required")
     return JebConfig(
         collector=collector,
         notify=notify,
         targets=targets,
         sources=sources,
+        collections=collections,
         profiles=profiles,
-        munchy_job_defaults=mapping(raw.get("munchy_job_defaults")),
+        profile_groups=profile_groups,
+        munchy_job_defaults=munchy_job_defaults,
     )
 
 
@@ -1090,97 +991,148 @@ def load_targets(raw_targets: Mapping[str, Any]) -> dict[str, TargetConfig]:
     for name, raw_any in raw_targets.items():
         raw = mapping(raw_any)
         target_type = str(raw.get("type") or "").strip()
-        if target_type not in {"munchy", "riverhog"}:
+        if target_type != "munchy":
             raise ValueError(f"target {name} has unsupported type {target_type!r}")
         url = env_value(
-            optional_str(raw.get("url_env")) or (
-                "JEB_MUNCHY_URL" if target_type == "munchy" else "JEB_RIVERHOG_URL"
-            ),
+            optional_str(raw.get("url_env")) or "JEB_MUNCHY_URL",
             optional_str(raw.get("url")) or optional_str(raw.get("base_url")),
         )
         if not url:
             raise ValueError(f"target {name} requires url")
         chunk_mib = int(raw.get("upload_chunk_mib") or 64)
-        token = env_value(optional_str(raw.get("token_env")) or "RIVERHOG_TOKEN", None)
-        wait = str(raw.get("wait") or "finalized")
-        if wait not in {"staged", "finalized"}:
-            raise ValueError(f"target {name} has invalid wait mode {wait!r}")
         out[str(name)] = TargetConfig(
             name=str(name),
-            type=cast(Literal["munchy", "riverhog"], target_type),
             url=url.rstrip("/"),
-            token=token if target_type == "riverhog" else None,
             upload_workers=max(1, int(raw.get("upload_workers") or 4)),
             upload_chunk_bytes=max(1, chunk_mib) * 1024 * 1024,
-            wait=cast(Literal["staged", "finalized"], wait),
             wait_for_safe_delete=bool(raw.get("wait_for_safe_delete", True)),
-            ingest_source=optional_str(raw.get("ingest_source")) or "jeb",
         )
     return out
 
 
-def load_source(raw_any: Any, targets: Mapping[str, TargetConfig]) -> SourceConfig:
+def load_source(raw_any: Any) -> SourceConfig:
     raw = mapping(raw_any)
     source_id = str(raw["id"])
     if not SAFE_NAME.fullmatch(source_id):
         raise ValueError(f"invalid source id {source_id!r}")
-    target_name = str(raw["target"])
-    if target_name not in targets:
-        raise ValueError(f"source {source_id} references unknown target {target_name!r}")
-    groups = {
-        str(name): load_source_group(group)
-        for name, group in mapping(raw.get("groups")).items()
-    }
-    if not groups:
-        raise ValueError(f"source {source_id} has no groups")
-    for name in groups:
-        if not SAFE_NAME.fullmatch(name):
-            raise ValueError(f"source {source_id} has invalid group name {name!r}")
-    root_group = optional_str(raw.get("root_group"))
-    if root_group and root_group not in groups:
-        raise ValueError(f"source {source_id} root_group is not configured")
-    cleanup = str(raw.get("cleanup", "never"))
-    if cleanup not in {"never", "after_target_success"}:
-        raise ValueError(f"source {source_id} has invalid cleanup mode {cleanup!r}")
-    target = targets[target_name]
-    if cleanup == "after_target_success":
-        if target.type == "riverhog" and target.wait != "finalized":
-            raise ValueError(
-                f"source {source_id} cannot cleanup after a non-finalized Riverhog target"
-            )
-        if target.type == "munchy" and not target.wait_for_safe_delete:
-            raise ValueError(
-                f"source {source_id} cannot cleanup until Munchy waits for safe delete"
-            )
+    upload_prefix = normalize_posix(optional_str(raw.get("upload_prefix")) or source_id)
     return SourceConfig(
         id=source_id,
         enabled=bool(raw.get("enabled", True)),
         path=Path(os.path.expandvars(str(raw["path"]))),
-        collection_slug=str(raw["collection_slug"]),
-        target=target_name,
-        threshold_bytes=parse_size(raw.get("threshold", "25GB")),
+        upload_prefix=upload_prefix,
         stable_seconds=parse_duration(raw.get("stable_age"), 600),
-        max_age_seconds=parse_duration(raw.get("max_age"), 0),
-        root_group=root_group,
-        cleanup=cast(Literal["never", "after_target_success"], cleanup),
         include_extensions=frozenset(
             str(item).lower() for item in sequence(raw.get("include_extensions"))
         ),
-        groups=groups,
     )
 
 
-def load_source_group(raw_any: Any) -> SourceGroup:
+def load_collection(
+    raw_any: Any,
+    targets: Mapping[str, TargetConfig],
+    source_ids: set[str],
+) -> CollectionConfig:
     raw = mapping(raw_any)
+    collection_id = str(raw["id"])
+    if not SAFE_NAME.fullmatch(collection_id):
+        raise ValueError(f"invalid collection id {collection_id!r}")
+    target_name = str(raw["target"])
+    if target_name not in targets:
+        raise ValueError(f"collection {collection_id} references unknown target {target_name!r}")
+    collection_sources = tuple(str(item) for item in sequence(raw.get("sources")))
+    if not collection_sources:
+        raise ValueError(f"collection {collection_id} must list at least one source")
+    missing = sorted(set(collection_sources) - source_ids)
+    if missing:
+        raise ValueError(
+            f"collection {collection_id} references unknown source(s): {', '.join(missing)}"
+        )
+    cleanup = str(raw.get("cleanup", "never"))
+    if cleanup not in {"never", "after_target_success"}:
+        raise ValueError(f"collection {collection_id} has invalid cleanup mode {cleanup!r}")
+    target = targets[target_name]
+    if cleanup == "after_target_success" and not target.wait_for_safe_delete:
+        raise ValueError(
+            f"collection {collection_id} cannot cleanup until Munchy waits for safe delete"
+        )
+    schedule = str(raw.get("schedule") or "weekly").strip().lower()
+    if schedule not in {"always", "weekly"}:
+        raise ValueError(f"collection {collection_id} has invalid schedule {schedule!r}")
+    hour = int(raw.get("hour", 0))
+    minute = int(raw.get("minute", 0))
+    if not 0 <= hour <= 23:
+        raise ValueError(f"collection {collection_id} hour must be 0..23")
+    if not 0 <= minute <= 59:
+        raise ValueError(f"collection {collection_id} minute must be 0..59")
+    return CollectionConfig(
+        id=collection_id,
+        enabled=bool(raw.get("enabled", True)),
+        collection_slug=str(raw["collection_slug"]),
+        target=target_name,
+        threshold_bytes=parse_size(raw.get("threshold", "25GB")),
+        cleanup=cast(Literal["never", "after_target_success"], cleanup),
+        source_ids=collection_sources,
+        schedule=cast(Literal["always", "weekly"], schedule),
+        weekday=parse_weekday(raw.get("weekday", 0)),
+        hour=hour,
+        minute=minute,
+    )
+
+
+def parse_weekday(value: Any) -> int:
+    if isinstance(value, int):
+        if 0 <= value <= 6:
+            return value
+        raise ValueError("weekday must be 0..6")
+    text = str(value).strip().lower()
+    names = {
+        "monday": 0,
+        "mon": 0,
+        "tuesday": 1,
+        "tue": 1,
+        "wednesday": 2,
+        "wed": 2,
+        "thursday": 3,
+        "thu": 3,
+        "friday": 4,
+        "fri": 4,
+        "saturday": 5,
+        "sat": 5,
+        "sunday": 6,
+        "sun": 6,
+    }
+    if text in names:
+        return names[text]
+    return parse_weekday(int(text))
+
+
+def load_profile_groups(raw_groups: Mapping[str, Any]) -> dict[str, ProfileGroup]:
+    out: dict[str, ProfileGroup] = {}
+    for name, raw in raw_groups.items():
+        group_name = str(name)
+        if not SAFE_NAME.fullmatch(group_name):
+            raise ValueError(f"invalid profile group name {group_name!r}")
+        out[group_name] = load_source_group(raw)
+    return out
+
+
+def load_source_group(raw_any: Any) -> ProfileGroup:
+    raw = mapping(raw_any)
+    archive_mode = str(raw.get("archive_mode") or "av1_nvenc")
     tasks = raw.get("gpu_tasks")
-    return SourceGroup(
-        profile=optional_str(raw.get("profile")),
-        archive_mode=str(raw.get("archive_mode") or "av1_nvenc"),
-        gpu_tasks=(
+    if tasks is None and archive_mode in {"originals", "passthrough"}:
+        gpu_tasks: tuple[str, ...] = ()
+    else:
+        gpu_tasks = (
             tuple(str(item) for item in sequence(tasks))
             if tasks is not None
             else DEFAULT_GPU_TASKS
-        ),
+        )
+    return ProfileGroup(
+        profile=optional_str(raw.get("profile")),
+        archive_mode=archive_mode,
+        gpu_tasks=gpu_tasks,
     )
 
 

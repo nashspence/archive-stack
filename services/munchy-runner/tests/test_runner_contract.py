@@ -11,6 +11,8 @@ import uuid
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 from munchy.filesystem_metadata import SOURCE_FILESYSTEM_METADATA_FILENAME
 from munchy.uvicorn_logging import DropHealthAccessLogFilter
 
@@ -63,6 +65,7 @@ def test_capabilities_advertise_munchy_profile_target(tmp_path: Path, monkeypatc
 
     assert capabilities["encode_profile"]["targets"] == ["munchy-av1-nvenc"]
     assert capabilities["profile_groups"]["input_path_shape"] == "<profile-group>/<file>"
+    assert capabilities["profile_groups"]["structured_routing"] is True
     assert capabilities["storage"]["eager_archive_only_encoding"] is True
     assert "MUNCHY_RUNNER_NOTIFY_WEBHOOKS" in capabilities["notify"]["webhook_config"]
     assert capabilities["storage"]["eager_archive_pipeline_batches"] == 3
@@ -71,6 +74,241 @@ def test_capabilities_advertise_munchy_profile_target(tmp_path: Path, monkeypatc
     assert capabilities["notify"]["default_recipients"] == []
     assert capabilities["notify"]["client_preflight_failed"] is True
     assert capabilities["operations"]["notify_preflight_failed"] is True
+
+
+def test_structured_input_upload_accepts_source_prefixed_paths(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+
+    req = runner.CreateInputUploadRequest(
+        files=[runner.InputFileSpec(path="front-door/telephoto/clip.mp4", bytes=12)],
+        storage_hint=runner.InputUploadStorageHint(
+            workflow_mode="archive",
+            structured_routing=True,
+            groups={
+                "video": runner.StorageGroupHint(
+                    archive_mode="av1_nvenc",
+                    gpu_tasks=["archive_video"],
+                )
+            },
+        ),
+    )
+
+    assert req.files[0].path == "front-door/telephoto/clip.mp4"
+    assert runner.upload_file_resolved_group(
+        {"path": "front-door/telephoto/clip.mp4", "structured_routing": True}
+    ) == ""
+
+
+def test_passthrough_profile_groups_normalize_to_copy_only(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+
+    group = runner.ProfileGroupConfig(
+        archive_mode="passthrough",
+        gpu_tasks=["archive_video"],
+    )
+    storage_group = runner.StorageGroupHint(
+        archive_mode="passthrough",
+        gpu_tasks=["archive_video"],
+    )
+
+    assert group.archive_mode == "originals"
+    assert group.gpu_tasks == []
+    assert storage_group.archive_mode == "originals"
+    assert storage_group.gpu_tasks == []
+
+
+def test_completed_structured_file_routes_by_path_without_full_upload(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    shared_file = runner.shared_input_upload_root("upload-1") / "front-door/clip.mp4"
+    shared_file.parent.mkdir(parents=True, exist_ok=True)
+    shared_file.write_bytes(b"video")
+    upload = runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "state": "uploading",
+            "storage_hint": {
+                "workflow_mode": "archive",
+                "structured_routing": True,
+                "groups": {
+                    "video": {"archive_mode": "av1_nvenc", "gpu_tasks": ["archive_video"]},
+                    "passthrough": {"archive_mode": "passthrough", "gpu_tasks": []},
+                },
+            },
+            "files": [
+                {
+                    "path": "front-door/clip.mp4",
+                    "bytes": 5,
+                    "upload_id": "front-door-clip",
+                    "input_upload_id": "upload-1",
+                    "structured_routing": True,
+                },
+                {
+                    "path": "front-door/pending.mp4",
+                    "bytes": 5,
+                    "upload_id": "front-door-pending",
+                    "input_upload_id": "upload-1",
+                    "structured_routing": True,
+                },
+            ],
+        }
+    )
+    job = {
+        "job_id": "job-1",
+        "input_upload_id": "upload-1",
+        "profile_routing": {
+            "routes": [
+                {
+                    "id": "front-door-video",
+                    "group": "video",
+                    "path_prefix": "front-door",
+                    "suffixes": [".mp4"],
+                }
+            ]
+        },
+    }
+    groups = {
+        "video": {"archive_mode": "av1_nvenc", "gpu_tasks": ["archive_video"]},
+        "passthrough": {"archive_mode": "originals", "gpu_tasks": []},
+    }
+
+    routed = runner.route_completed_input_files(job, upload, groups)
+    video_files = runner.upload_files_for_groups(routed, {"video"})
+
+    assert [item["path"] for item in video_files] == ["front-door/clip.mp4"]
+    assert video_files[0]["resolved_group"] == "video"
+    assert video_files[0]["resolved_group_rel"] == "front-door/clip.mp4"
+    assert runner.upload_file_group_rel_for_state(video_files[0], "video") == Path(
+        "front-door/clip.mp4"
+    )
+
+
+def test_completed_structured_file_can_route_by_probe_metadata(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    shared_file = runner.shared_input_upload_root("upload-1") / "phone/IMG_0001.MOV"
+    shared_file.parent.mkdir(parents=True, exist_ok=True)
+    shared_file.write_bytes(b"video")
+    upload = runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "state": "uploading",
+            "storage_hint": {
+                "workflow_mode": "archive",
+                "structured_routing": True,
+                "groups": {"phone-video": {"archive_mode": "av1_nvenc", "gpu_tasks": []}},
+            },
+            "files": [
+                {
+                    "path": "phone/IMG_0001.MOV",
+                    "bytes": 5,
+                    "upload_id": "phone-img-1",
+                    "input_upload_id": "upload-1",
+                    "structured_routing": True,
+                }
+            ],
+        }
+    )
+
+    def fake_ffprobe_for_routing(path: Path) -> dict[str, object]:
+        assert path == shared_file
+        return {
+            "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2", "tags": {"make": "Apple"}},
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "hevc",
+                    "width": 3840,
+                    "height": 2160,
+                    "avg_frame_rate": "60000/1001",
+                    "tags": {"handler_name": "Core Media Video"},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(runner, "ffprobe_for_routing", fake_ffprobe_for_routing)
+    job = {
+        "job_id": "job-1",
+        "input_upload_id": "upload-1",
+        "profile_routing": {
+            "routes": [
+                {
+                    "id": "iphone-4k",
+                    "group": "phone-video",
+                    "path_prefix": "phone",
+                    "suffixes": [".mov"],
+                    "min_width": 3000,
+                    "format_tags": {"make": "apple"},
+                }
+            ]
+        },
+    }
+    groups = {"phone-video": {"archive_mode": "av1_nvenc", "gpu_tasks": []}}
+
+    routed = runner.route_completed_input_files(job, upload, groups)
+
+    assert (
+        runner.upload_files_for_groups(routed, {"phone-video"})[0]["profile_route_id"]
+        == "iphone-4k"
+    )
+
+
+def test_completed_structured_file_fails_when_no_route_matches(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    shared_file = runner.shared_input_upload_root("upload-1") / "unknown/clip.mp4"
+    shared_file.parent.mkdir(parents=True, exist_ok=True)
+    shared_file.write_bytes(b"video")
+    upload = runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "state": "uploading",
+            "storage_hint": {"workflow_mode": "archive", "structured_routing": True},
+            "files": [
+                {
+                    "path": "unknown/clip.mp4",
+                    "bytes": 5,
+                    "upload_id": "unknown-clip",
+                    "input_upload_id": "upload-1",
+                    "structured_routing": True,
+                }
+            ],
+        }
+    )
+    job = {
+        "job_id": "job-1",
+        "input_upload_id": "upload-1",
+        "profile_routing": {
+            "routes": [
+                {"id": "front-door-video", "group": "video", "path_prefix": "front-door"}
+            ]
+        },
+    }
+
+    with pytest.raises(runner.RoutingFailed, match="no matching route"):
+        runner.route_completed_input_files(
+            job,
+            upload,
+            {"video": {"archive_mode": "av1_nvenc", "gpu_tasks": []}},
+        )
 
 
 def test_archive_admission_uses_eager_batch_peak_for_gpu_scratch(
@@ -1301,6 +1539,15 @@ def test_create_file_upload_does_not_sync_entire_shared_tree(
             "upload_id": upload_id,
             "state": "uploading",
             "created_at": runner.now_iso(),
+            "storage_hint": {
+                "workflow_mode": "archive",
+                "groups": {
+                    "camera": {
+                        "archive_mode": "av1_nvenc",
+                        "gpu_tasks": ["archive_video"],
+                    }
+                },
+            },
             "files": [
                 {
                     "path": rel_path,
@@ -1313,7 +1560,6 @@ def test_create_file_upload_does_not_sync_entire_shared_tree(
                     "upload_url": None,
                 }
             ],
-            "storage_hint": {"source_bytes": 10},
             "tusd_creation_url": runner.TUSD_PUBLIC_BASE_URL,
         },
     )
@@ -1428,6 +1674,15 @@ def test_sync_shared_input_file_materializes_only_completed_file(
             "upload_id": upload_id,
             "state": "uploading",
             "created_at": runner.now_iso(),
+            "storage_hint": {
+                "workflow_mode": "archive",
+                "groups": {
+                    "camera": {
+                        "archive_mode": "av1_nvenc",
+                        "gpu_tasks": ["archive_video"],
+                    }
+                },
+            },
             "files": [
                 {
                     "path": "camera/a.mp4",

@@ -11,21 +11,12 @@ recipients = ["operator"]
 timeout = "10s"
 reminder_interval = "24h"
 
-[targets.munchy-runner]
+[targets.munchy]
 type = "munchy"
 url_env = "JEB_MUNCHY_URL"
 upload_workers = 4
 upload_chunk_mib = 64
 wait_for_safe_delete = true
-
-[targets.riverhog-direct]
-type = "riverhog"
-url_env = "JEB_RIVERHOG_URL"
-token_env = "RIVERHOG_TOKEN"
-upload_workers = 4
-upload_chunk_mib = 64
-wait = "finalized"
-ingest_source = "jeb"
 
 [profiles.security-camera]
 schema_version = 1
@@ -54,6 +45,14 @@ cutoff = 12000
 compression_level = 10
 vbr = "on"
 
+[profile_groups.video]
+profile = "security-camera"
+archive_mode = "av1_nvenc"
+gpu_tasks = ["archive_video"]
+
+[profile_groups.passthrough]
+archive_mode = "passthrough"
+
 [munchy_job_defaults]
 workflow_mode = "archive"
 cleanup_local_on_success = false
@@ -65,20 +64,34 @@ enabled = true
 enabled = true
 recipients = ["operator"]
 
+[[munchy_job_defaults.profile_routing.routes]]
+id = "example-camera-video"
+group = "video"
+path_prefix = "example-camera"
+suffixes = [".mp4", ".mov", ".mkv", ".webm"]
+
+[[munchy_job_defaults.profile_routing.routes]]
+id = "passthrough-artifacts"
+group = "passthrough"
+suffixes = [".xml", ".json", ".txt", ".srt", ".vtt", ".nfo"]
+
 [[sources]]
 id = "example-camera"
 enabled = false
 path = "/landing/example-camera"
-collection_slug = "example-camera-archive"
-target = "munchy-runner"
-threshold = "25GB"
+upload_prefix = "example-camera"
 stable_age = "10m"
-max_age = "0s"
-root_group = "video"
-cleanup = "after_target_success"
-include_extensions = [".mp4", ".mov", ".mkv", ".webm"]
+include_extensions = [".mp4", ".mov", ".mkv", ".webm", ".xml", ".json", ".txt"]
 
-[sources.groups.video]
-profile = "security-camera"
-archive_mode = "av1_nvenc"
-gpu_tasks = ["archive_video", "qcut_video"]
+[[collections]]
+id = "weekly-device-artifacts"
+enabled = true
+collection_slug = "weekly-device-artifacts"
+target = "munchy"
+threshold = "25GB"
+cleanup = "after_target_success"
+schedule = "weekly"
+weekday = "monday"
+hour = 3
+minute = 0
+sources = ["example-camera"]

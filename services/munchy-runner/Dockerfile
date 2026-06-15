@@ -4,7 +4,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl git rclone tini \
+ && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg git rclone tini \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,9 +19,16 @@ from jeb.collector import (
 )
 
 
-def _base_config(tmp_path: Path, *, cleanup: str = "never") -> JebConfig:
+def _base_config(
+    tmp_path: Path,
+    *,
+    cleanup: str = "never",
+    wait_for_safe_delete: bool = True,
+    source_ids: list[str] | None = None,
+) -> JebConfig:
     landing = tmp_path / "landing"
-    landing.mkdir()
+    landing.mkdir(exist_ok=True)
+    sources = source_ids or ["camera"]
     return config_from_mapping(
         {
             "collector": {
@@ -34,6 +42,7 @@ def _base_config(tmp_path: Path, *, cleanup: str = "never") -> JebConfig:
                     "url": "http://runner.test",
                     "upload_workers": 2,
                     "upload_chunk_mib": 16,
+                    "wait_for_safe_delete": wait_for_safe_delete,
                 }
             },
             "profiles": {
@@ -50,29 +59,64 @@ def _base_config(tmp_path: Path, *, cleanup: str = "never") -> JebConfig:
                     },
                 }
             },
+            "profile_groups": {
+                "video": {
+                    "profile": "security",
+                    "archive_mode": "av1_nvenc",
+                    "gpu_tasks": ["archive_video"],
+                },
+                "passthrough": {
+                    "archive_mode": "passthrough",
+                },
+            },
             "munchy_job_defaults": {
                 "workflow_mode": "archive",
                 "riverhog": {"enabled": True},
                 "notify": {"enabled": True, "recipients": ["operator"]},
+                "profile_routing": {
+                    "routes": [
+                        {
+                            "id": "camera-video",
+                            "group": "video",
+                            "path_prefix": "camera",
+                            "suffixes": [".mp4", ".mov", ".mkv", ".webm"],
+                        },
+                        {
+                            "id": "phone-video",
+                            "group": "video",
+                            "path_prefix": "phone",
+                            "suffixes": [".mp4", ".mov", ".mkv", ".webm"],
+                        },
+                        {
+                            "id": "passthrough-artifacts",
+                            "group": "passthrough",
+                            "suffixes": [".xml", ".json", ".txt"],
+                        },
+                    ]
+                },
             },
             "sources": [
                 {
-                    "id": "camera",
-                    "path": str(landing),
-                    "collection_slug": "camera-archive",
+                    "id": source_id,
+                    "path": str(landing / source_id),
+                    "upload_prefix": source_id,
+                    "stable_age": "0s",
+                    "include_extensions": [".mp4", ".mov", ".mkv", ".webm", ".xml", ".json"],
+                }
+                for source_id in sources
+            ],
+            "collections": [
+                {
+                    "id": "weekly-device-artifacts",
+                    "collection_slug": "weekly-device-artifacts",
                     "target": "runner",
                     "threshold": "1B",
-                    "stable_age": "0s",
-                    "root_group": "video",
                     "cleanup": cleanup,
-                    "include_extensions": [".mp4"],
-                    "groups": {
-                        "video": {
-                            "profile": "security",
-                            "archive_mode": "av1_nvenc",
-                            "gpu_tasks": ["archive_video", "qcut_video"],
-                        }
-                    },
+                    "schedule": "weekly",
+                    "weekday": "monday",
+                    "hour": 0,
+                    "minute": 0,
+                    "sources": sources,
                 }
             ],
         }
@@ -121,17 +165,7 @@ class RecordingNotifier:
 def _write_stable_file(path: Path, content: bytes = b"video") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
-    old = time.time() - 3600
-    path.touch()
-    path.chmod(0o644)
-    path.parent.touch()
-    path.stat()
-    path.write_bytes(content)
-    path.touch()
-    path.stat()
-    # os.utime keeps the test deterministic across filesystems.
-    import os
-
+    old = time.time() - 14 * 86_400
     os.utime(path, (old, old))
 
 
@@ -148,16 +182,35 @@ def test_parse_helpers_support_human_units() -> None:
     assert parse_duration("24h") == 86_400
 
 
-def test_restartable_batch_moves_hashes_and_cleans_after_success(tmp_path: Path) -> None:
+def test_weekly_collection_batches_multiple_sources_once(tmp_path: Path) -> None:
+    config = _base_config(tmp_path, source_ids=["camera", "phone"])
+    _write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4")
+    _write_stable_file(tmp_path / "landing" / "phone" / "IMG_0001.MOV")
+    collector = Collector(config, target_runners={"munchy": CompleteRunner()})
+
+    collector.run_once()
+    batch_id = _single_batch_id(collector)
+    target_paths = [str(row["target_path"]) for row in collector.batch_files(batch_id)]
+
+    assert target_paths == ["camera/clip.mp4", "phone/IMG_0001.MOV"]
+
+    collector.run_once()
+    assert collector.load_batch(batch_id)["state"] == "target_succeeded"
+
+    collector.run_once()
+    assert collector.active_batch_ids() == []
+
+
+def test_restartable_batch_stages_hashes_and_cleans_after_success(tmp_path: Path) -> None:
     config = _base_config(tmp_path, cleanup="after_target_success")
-    source_file = tmp_path / "landing" / "clip.mp4"
+    source_file = tmp_path / "landing" / "camera" / "clip.mp4"
     _write_stable_file(source_file)
     collector = Collector(config, target_runners={"munchy": CompleteRunner()})
 
     collector.run_once()
     batch_id = _single_batch_id(collector)
-    assert not (tmp_path / "batches" / batch_id).exists()
     assert source_file.exists()
+    assert not (tmp_path / "batches" / batch_id).exists()
 
     collector.run_once()
 
@@ -168,7 +221,7 @@ def test_restartable_batch_moves_hashes_and_cleans_after_success(tmp_path: Path)
 
 def test_transient_target_errors_retry_without_notification(tmp_path: Path) -> None:
     config = _base_config(tmp_path)
-    _write_stable_file(tmp_path / "landing" / "clip.mp4")
+    _write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4")
     notifier = RecordingNotifier([])
     runner = FlakyRunner()
     collector = Collector(config, target_runners={"munchy": runner}, notifier=notifier)
@@ -191,7 +244,7 @@ def test_transient_target_errors_retry_without_notification(tmp_path: Path) -> N
 
 def test_unrecoverable_errors_send_daily_critical_reminders(tmp_path: Path) -> None:
     config = _base_config(tmp_path)
-    _write_stable_file(tmp_path / "landing" / "clip.mp4")
+    _write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4")
     notifier = RecordingNotifier([])
     collector = Collector(
         config,
@@ -223,9 +276,10 @@ def test_unrecoverable_errors_send_daily_critical_reminders(tmp_path: Path) -> N
     assert collector.load_batch(batch_id)["state"] == "failed_notified"
 
 
-def test_munchy_payload_uses_profile_group_subdirectory(tmp_path: Path) -> None:
+def test_munchy_payload_uses_structured_routing(tmp_path: Path) -> None:
     config = _base_config(tmp_path)
-    _write_stable_file(tmp_path / "landing" / "clip.mp4", b"camera data")
+    _write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4", b"camera data")
+    _write_stable_file(tmp_path / "landing" / "camera" / "clip.xml", b"<meta />")
     collector = Collector(config, target_runners={"munchy": CompleteRunner()})
 
     collector.run_once()
@@ -235,28 +289,36 @@ def test_munchy_payload_uses_profile_group_subdirectory(tmp_path: Path) -> None:
     request = munchy_upload_request(
         collector,
         batch_id,
-        config.sources[0],
         config.targets["runner"],
     )
 
-    assert request.files[0].rel_path == "video/clip.mp4"
+    assert [item.rel_path for item in request.files] == ["camera/clip.mp4", "camera/clip.xml"]
     assert request.storage_hint == {
         "workflow_mode": "archive",
+        "structured_routing": True,
         "groups": {
             "video": {
                 "archive_mode": "av1_nvenc",
-                "gpu_tasks": ["archive_video", "qcut_video"],
-            }
+                "gpu_tasks": ["archive_video"],
+            },
+            "passthrough": {
+                "archive_mode": "passthrough",
+                "gpu_tasks": [],
+            },
         },
     }
     assert request.job_payload["groups"]["video"]["encode_profile"]["archive"]["quality"] == 38
-    assert request.job_payload["groups"]["video"]["encode_profile"]["archive"]["max_height"] == 720
+    assert request.job_payload["groups"]["passthrough"]["archive_mode"] == "passthrough"
+    assert request.job_payload["profile_routing"]["routes"][0]["group"] == "video"
 
 
-def test_cleanup_after_success_requires_safe_target(tmp_path: Path) -> None:
-    landing = tmp_path / "landing"
-    landing.mkdir()
-    with pytest.raises(ValueError, match="non-finalized Riverhog"):
+def test_cleanup_after_success_requires_safe_munchy_target(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="cannot cleanup until Munchy waits for safe delete"):
+        _base_config(tmp_path, cleanup="after_target_success", wait_for_safe_delete=False)
+
+
+def test_jeb_only_accepts_munchy_targets(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="unsupported type 'riverhog'"):
         config_from_mapping(
             {
                 "collector": {
@@ -267,19 +329,40 @@ def test_cleanup_after_success_requires_safe_target(tmp_path: Path) -> None:
                     "archive": {
                         "type": "riverhog",
                         "url": "http://riverhog.test",
-                        "wait": "staged",
                     }
                 },
-                "sources": [
+                "sources": [{"id": "camera", "path": str(tmp_path / "landing")}],
+                "collections": [
                     {
-                        "id": "camera",
-                        "path": str(landing),
-                        "collection_slug": "camera-archive",
+                        "id": "weekly-device-artifacts",
+                        "collection_slug": "weekly-device-artifacts",
                         "target": "archive",
-                        "root_group": "video",
-                        "cleanup": "after_target_success",
-                        "groups": {"video": {}},
+                        "sources": ["camera"],
                     }
                 ],
+                "profile_groups": {"video": {}},
+                "munchy_job_defaults": {
+                    "profile_routing": {"routes": [{"id": "r", "group": "video"}]}
+                },
             }
         )
+
+
+def test_config_requires_munchy_profile_routing(tmp_path: Path) -> None:
+    raw = {
+        "targets": {"runner": {"type": "munchy", "url": "http://runner.test"}},
+        "sources": [{"id": "camera", "path": str(tmp_path / "landing")}],
+        "collections": [
+            {
+                "id": "weekly-device-artifacts",
+                "collection_slug": "weekly-device-artifacts",
+                "target": "runner",
+                "sources": ["camera"],
+            }
+        ],
+        "profile_groups": {"video": {}},
+        "munchy_job_defaults": {},
+    }
+
+    with pytest.raises(ValueError, match="munchy_job_defaults.profile_routing is required"):
+        config_from_mapping(raw)
