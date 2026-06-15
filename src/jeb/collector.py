@@ -1077,7 +1077,7 @@ def load_collection(
         enabled=bool(raw.get("enabled", True)),
         collection_slug=str(raw["collection_slug"]),
         target=target_name,
-        threshold_bytes=parse_size(raw.get("threshold", "25GB")),
+        threshold_bytes=parse_size(raw.get("threshold", "0B")),
         cleanup=cast(Literal["never", "after_target_success"], cleanup),
         source_ids=collection_sources,
         schedule=cast(Literal["always", "weekly"], schedule),

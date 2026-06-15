@@ -110,7 +110,6 @@ def _base_config(
                     "id": "weekly-device-artifacts",
                     "collection_slug": "weekly-device-artifacts",
                     "target": "runner",
-                    "threshold": "1B",
                     "cleanup": cleanup,
                     "schedule": "weekly",
                     "weekday": "monday",
@@ -184,7 +183,7 @@ def _single_batch_id(collector: Collector) -> str:
 
 
 def test_parse_helpers_support_human_units() -> None:
-    assert parse_size("25GB") == 25_000_000_000
+    assert parse_size("10GB") == 10_000_000_000
     assert parse_size("1GiB") == 1024**3
     assert parse_duration("10m") == 600
     assert parse_duration("24h") == 86_400
@@ -192,6 +191,7 @@ def test_parse_helpers_support_human_units() -> None:
 
 def test_weekly_collection_batches_multiple_sources_once(tmp_path: Path) -> None:
     config = _base_config(tmp_path, source_ids=["camera", "phone"])
+    assert config.collections[0].threshold_bytes == 0
     _write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4")
     _write_stable_file(tmp_path / "landing" / "phone" / "IMG_0001.MOV")
     collector = Collector(config, target_runners={"munchy": CompleteRunner()})

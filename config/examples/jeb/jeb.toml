@@ -88,7 +88,6 @@ id = "weekly-device-artifacts"
 enabled = true
 collection_slug = "weekly-device-artifacts"
 target = "munchy"
-threshold = "25GB"
 cleanup = "after_target_success"
 schedule = "weekly"
 weekday = "monday"
