@@ -1556,6 +1556,45 @@ def test_materialize_upload_file_reuses_existing_dest_when_tusd_data_is_gone(
     assert dest.read_bytes() == b"video-a"
 
 
+def test_materialize_upload_file_retries_shared_source_when_tusd_disappears(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    upload_id = "upload-1"
+    file_state = {
+        "path": "camera/a.mp4",
+        "bytes": 7,
+        "upload_id": "upload-a",
+        "input_upload_id": upload_id,
+    }
+    tusd_source = runner.tusd_data_path("upload-a")
+    shared_source = runner.shared_input_file_path(file_state)
+    assert shared_source is not None
+    tusd_source.parent.mkdir(parents=True, exist_ok=True)
+    tusd_source.write_bytes(b"video-a")
+    dest_root = tmp_path / "batch"
+    calls: list[Path] = []
+
+    def fake_link_or_copy(source: Path, dest: Path) -> None:
+        calls.append(source)
+        if source == tusd_source:
+            tusd_source.unlink()
+            shared_source.parent.mkdir(parents=True, exist_ok=True)
+            shared_source.write_bytes(b"video-a")
+            raise RuntimeError("failed to copy missing tusd source")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(source.read_bytes())
+
+    monkeypatch.setattr(runner, "link_or_copy", fake_link_or_copy)
+
+    runner.materialize_upload_file(file_state, dest_root)
+
+    assert calls == [tusd_source, shared_source]
+    assert (dest_root / "camera" / "a.mp4").read_bytes() == b"video-a"
+
+
 def test_run_job_points_gpu_payload_at_shared_input_tree(
     tmp_path: Path,
     monkeypatch,

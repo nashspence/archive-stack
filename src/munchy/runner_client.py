@@ -1406,14 +1406,44 @@ class MunchyRunnerClient:
                 "a different storage hint"
             )
 
+    def _json_with_transient_retries(
+        self,
+        method: str,
+        path: str,
+        *,
+        label: str,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        retry_delay = UPLOAD_RETRY_INITIAL_DELAY_SECONDS
+        retry_count = 0
+        retry_reporter = UploadRetryReporter(label=label)
+        while True:
+            try:
+                payload = self.json(method, path, timeout=timeout)
+                retry_reporter.finish()
+                return payload
+            except Exception as exc:
+                if not is_transient_upload_error(exc):
+                    raise
+                retry_count += 1
+                retry_reporter.mark_retry(
+                    rel_path=path,
+                    retry_count=retry_count,
+                    retry_delay=retry_delay,
+                    exc=exc,
+                )
+                time.sleep(retry_delay)
+                retry_delay = next_upload_retry_delay(retry_delay)
+
     def upload_files(self, request: RunnerUploadRequest) -> dict[str, Any]:
         total_files = len(request.files)
         total_bytes = sum(item.bytes for item in request.files)
         chunk_mib = request.upload_chunk_mib
         retry_reporter = UploadRetryReporter(label="remote upload")
-        current_upload = self.json(
+        current_upload = self._json_with_transient_retries(
             "GET",
             f"/v1/input-uploads/{urllib.parse.quote(request.upload_id)}",
+            label="remote upload status",
         )
         completed_paths = {
             str(item.get("path"))
@@ -1462,7 +1492,11 @@ class MunchyRunnerClient:
                         completed_bytes=completed_bytes,
                     )
                     retry_reporter.finish()
-        upload = self.json("GET", f"/v1/input-uploads/{urllib.parse.quote(request.upload_id)}")
+        upload = self._json_with_transient_retries(
+            "GET",
+            f"/v1/input-uploads/{urllib.parse.quote(request.upload_id)}",
+            label="remote upload status",
+        )
         if upload.get("state") != "uploaded":
             raise RuntimeError(f"input upload did not complete: {upload}")
         return upload

@@ -2090,7 +2090,18 @@ def materialize_upload_file(
         raise RuntimeError(f"input file is incomplete: {rel_path}")
     if verify_sha256 and expected_sha256 and file_sha256(source) != expected_sha256:
         raise RuntimeError(f"input file sha256 mismatch: {rel_path}")
-    link_or_copy(source, dest)
+    try:
+        link_or_copy(source, dest)
+    except RuntimeError:
+        alternate_source = shared_source if source == tusd_source else tusd_source
+        if (
+            not source.exists()
+            and alternate_source is not None
+            and alternate_source.exists()
+        ):
+            link_or_copy(alternate_source, dest)
+        else:
+            raise
     if not file_matches_expected(
         dest,
         expected_bytes,

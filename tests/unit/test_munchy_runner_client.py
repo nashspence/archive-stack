@@ -870,6 +870,62 @@ def test_upload_files_skips_completed_paths(tmp_path: Path) -> None:
     assert "skipped 2 already complete files" in stderr.getvalue()
 
 
+def test_upload_files_retries_final_status_timeout(tmp_path: Path) -> None:
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    file = RunnerInputFile(
+        source=source,
+        rel_path="video/clip.mp4",
+        bytes=source.stat().st_size,
+        sha256="0" * 64,
+    )
+    request = RunnerUploadRequest(
+        upload_id="upload-1",
+        job_id="job-1",
+        files=(file,),
+        storage_hint={"source_bytes": file.bytes},
+        job_payload={"job_id": "job-1", "input_upload_id": "upload-1"},
+        upload_workers=1,
+        upload_chunk_mib=9,
+    )
+    client = MunchyRunnerClient("http://runner")
+    uploaded: list[str] = []
+    input_upload_gets = 0
+
+    def fake_upload_file(
+        upload_id: str,
+        item: RunnerInputFile,
+        *,
+        chunk_bytes: int,
+        retry_reporter: object | None = None,
+        stop_event: object | None = None,
+    ) -> None:
+        uploaded.append(item.rel_path)
+
+    def fake_json(method: str, path: str, **_kwargs: object) -> dict[str, object]:
+        nonlocal input_upload_gets
+        if path.startswith("/v1/jobs/"):
+            return {}
+        if path.startswith("/v1/input-uploads/"):
+            input_upload_gets += 1
+            if input_upload_gets == 1:
+                return {"state": "uploading", "files": []}
+            if input_upload_gets == 2:
+                raise TimeoutError("timed out")
+            return {"state": "uploaded", "files": [{"path": file.rel_path, "complete": True}]}
+        raise AssertionError(path)
+
+    client.upload_file = fake_upload_file  # type: ignore[method-assign]
+    client.json = fake_json  # type: ignore[method-assign]
+
+    with patch("munchy.runner_client.time.sleep"):
+        upload = client.upload_files(request)
+
+    assert uploaded == [file.rel_path]
+    assert upload["state"] == "uploaded"
+    assert input_upload_gets == 3
+
+
 def test_upload_progress_can_merge_remote_upload_and_encode_progress() -> None:
     item = RunnerInputFile(
         source=Path("clip.mp4"),
