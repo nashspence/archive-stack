@@ -4,6 +4,8 @@ services:
       context: ../..
       dockerfile: services/jeb/Dockerfile
     image: jeb:latest
+    profiles:
+      - jeb
     restart: unless-stopped
     env_file:
       - .env
