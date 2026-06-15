@@ -1158,6 +1158,42 @@ def test_sync_shared_input_tree_links_completed_files_incrementally(
     assert metadata["files"]["b.mp4"]["stat"]["st_birthtime"] == 2.5
 
 
+def test_get_input_upload_does_not_sync_shared_input_tree(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    data_path = runner.tusd_data_path("upload-a")
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.write_bytes(b"video")
+    upload = {
+        "upload_id": "upload-1",
+        "files": [
+            {
+                "path": "camera/a.mp4",
+                "bytes": 5,
+                "upload_id": "upload-a",
+            },
+        ],
+    }
+    runner.save_input_upload_raw(upload)
+
+    monkeypatch.setattr(
+        runner,
+        "sync_shared_input_tree",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("status read must not materialize input tree")
+        ),
+    )
+
+    status = runner.get_input_upload("upload-1")
+
+    assert status["files_uploaded"] == 1
+    assert not (runner.shared_input_upload_root("upload-1") / "camera" / "a.mp4").exists()
+
+
 def test_eager_archive_upload_progress_does_not_report_shared_input_tree(
     tmp_path: Path,
     monkeypatch,

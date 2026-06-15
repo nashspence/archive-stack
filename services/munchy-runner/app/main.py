@@ -6062,7 +6062,6 @@ def create_input_upload(req: CreateInputUploadRequest) -> dict[str, Any]:
 @app.get("/v1/input-uploads/{upload_id}")
 def get_input_upload(upload_id: str) -> dict[str, Any]:
     upload = load_input_upload(upload_id)
-    sync_shared_input_tree(upload)
     return refresh_input_upload(upload)
 
 
