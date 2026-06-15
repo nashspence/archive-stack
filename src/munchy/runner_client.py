@@ -334,7 +334,8 @@ def format_encode_progress(progress: dict[str, Any]) -> str:
     files_encoded = int(progress.get("files_encoded") or 0)
     files_encoding = int(progress.get("files_encoding") or 0)
     files_failed = int(progress.get("files_failed") or 0)
-    pct = float(progress.get("percent_input_bytes") or progress.get("percent_files") or 0.0)
+    file_pct = float(progress.get("percent_files") or 0.0)
+    input_pct = float(progress.get("percent_input_bytes") or file_pct)
     input_done = int(progress.get("input_bytes_encoded") or 0)
     input_total = int(progress.get("input_bytes_total") or 0)
     output_bytes = int(progress.get("output_bytes") or 0)
@@ -345,8 +346,9 @@ def format_encode_progress(progress: dict[str, Any]) -> str:
     pipeline_batches = int(progress.get("pipeline_batches") or 0)
     parts = [
         f"remote encode {files_encoded}/{files_total} files",
+        f"{file_pct:.2f}% files",
         f"{format_progress_bytes(input_done, input_total)} input",
-        f"{pct:.2f}%",
+        f"{input_pct:.2f}% input",
         f"{format_rate(input_rate)} input",
         f"{format_rate(output_rate)} output",
         f"{format_bytes(output_bytes)} written",
@@ -992,7 +994,12 @@ class RichProgressRenderer(ProgressRenderer):
                 if int(encode_progress.get("clips_total") or 0)
                 else "Remote Encode"
             )
-            table.add_row(label, self._bar(encode_progress, percent_key="percent_input_bytes"))
+            encode_percent_key = (
+                "percent_clips"
+                if int(encode_progress.get("clips_total") or 0)
+                else "percent_files"
+            )
+            table.add_row(label, self._bar(encode_progress, percent_key=encode_percent_key))
             table.add_row("", format_encode_progress(encode_progress))
 
         riverhog_progress = job.get("riverhog_upload_progress")

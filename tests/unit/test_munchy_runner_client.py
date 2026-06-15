@@ -22,6 +22,7 @@ from munchy.runner_client import (
     format_job_failure,
     format_job_status_line,
     format_job_summary_line,
+    format_encode_progress,
     format_progress_status_line,
     format_riverhog_archive_progress,
     format_riverhog_promotion_progress,
@@ -89,6 +90,27 @@ def test_format_riverhog_upload_progress_uses_expected_file_total() -> None:
     assert "6/7 artifacts" in line
     assert "1.54 MiB uploaded" in line
     assert "72." not in line
+
+
+def test_format_encode_progress_distinguishes_file_and_input_byte_percent() -> None:
+    line = format_encode_progress(
+        {
+            "files_total": 20,
+            "files_encoded": 7,
+            "files_encoding": 3,
+            "input_bytes_total": 1000,
+            "input_bytes_encoded": 213,
+            "percent_files": 35.0,
+            "percent_input_bytes": 21.3,
+            "input_rate_bytes_per_second": 10_000,
+            "output_rate_bytes_per_second": 1_000,
+            "output_bytes": 2_000,
+        }
+    )
+
+    assert line.startswith("remote encode 7/20 files, 35.00% files")
+    assert "213 B / 1000 B input" in line
+    assert "21.30% input" in line
 
 
 def test_format_riverhog_archive_and_promotion_progress_are_separate() -> None:
