@@ -1127,6 +1127,7 @@ class UploadProgress:
         self.lock = Lock()
         self.job_status_provider = job_status_provider
         self.renderer = renderer or ProgressRenderer.plain(include_job=False)
+        self.last_remote_uploaded_files: int | None = None
         self.last_remote_uploaded_bytes: int | None = None
         self.last_remote_rate_at: float | None = None
         self.last_job_checked_at = 0.0
@@ -1156,23 +1157,32 @@ class UploadProgress:
             remote_uploaded_bytes = int(merged.get("uploaded_bytes") or 0)
         except (TypeError, ValueError):
             remote_uploaded_bytes = 0
-        uploaded_files = min(max(remote_files, self.completed_files), files_total)
-        uploaded_bytes = min(max(remote_uploaded_bytes, self.completed_bytes), bytes_total)
+        previous_files = self.last_remote_uploaded_files
+        previous_bytes = self.last_remote_uploaded_bytes
+        uploaded_files = min(
+            max(remote_files, self.completed_files, previous_files or 0),
+            files_total,
+        )
+        uploaded_bytes = min(
+            max(remote_uploaded_bytes, self.completed_bytes, previous_bytes or 0),
+            bytes_total,
+        )
         merged["files_uploaded"] = uploaded_files
         merged["files_total"] = files_total
         merged["uploaded_bytes"] = uploaded_bytes
         merged["bytes_total"] = bytes_total
         if (
-            self.last_remote_uploaded_bytes is not None
+            previous_bytes is not None
             and self.last_remote_rate_at is not None
-            and uploaded_bytes > self.last_remote_uploaded_bytes
+            and uploaded_bytes > previous_bytes
         ):
             elapsed = max(now - self.last_remote_rate_at, 0.001)
-            merged["rate_bytes_per_second"] = int(
-                (uploaded_bytes - self.last_remote_uploaded_bytes) / elapsed
-            )
-        self.last_remote_uploaded_bytes = uploaded_bytes
-        self.last_remote_rate_at = now
+            merged["rate_bytes_per_second"] = int((uploaded_bytes - previous_bytes) / elapsed)
+        if previous_bytes is None or uploaded_bytes > previous_bytes:
+            self.last_remote_uploaded_bytes = uploaded_bytes
+            self.last_remote_rate_at = now
+        if previous_files is None or uploaded_files > previous_files:
+            self.last_remote_uploaded_files = uploaded_files
         return merged
 
     def mark_complete(self, item: RunnerInputFile) -> None:

@@ -947,6 +947,52 @@ def test_upload_progress_does_not_regress_when_remote_status_lags() -> None:
     assert upload["uploaded_bytes"] == 20  # type: ignore[index]
 
 
+def test_upload_progress_does_not_regress_from_previous_remote_sample() -> None:
+    progress = UploadProgress(
+        total_files=10,
+        total_bytes=100,
+        completed_files=2,
+        completed_bytes=20,
+    )
+
+    first = progress.remote_upload_progress_with_rate(
+        {
+            "files_uploaded": 5,
+            "files_total": 10,
+            "uploaded_bytes": 60,
+            "bytes_total": 100,
+        },
+        now=10.0,
+    )
+    second = progress.remote_upload_progress_with_rate(
+        {
+            "files_uploaded": 4,
+            "files_total": 10,
+            "uploaded_bytes": 40,
+            "bytes_total": 100,
+        },
+        now=20.0,
+    )
+    third = progress.remote_upload_progress_with_rate(
+        {
+            "files_uploaded": 6,
+            "files_total": 10,
+            "uploaded_bytes": 75,
+            "bytes_total": 100,
+        },
+        now=25.0,
+    )
+
+    assert first["files_uploaded"] == 5
+    assert first["uploaded_bytes"] == 60
+    assert second["files_uploaded"] == 5
+    assert second["uploaded_bytes"] == 60
+    assert "rate_bytes_per_second" not in second
+    assert third["files_uploaded"] == 6
+    assert third["uploaded_bytes"] == 75
+    assert third["rate_bytes_per_second"] == 1
+
+
 def test_upload_progress_fallback_uses_full_upload_baseline_on_resume() -> None:
     item = RunnerInputFile(
         source=Path("pending.mp4"),
