@@ -165,6 +165,8 @@ def job_should_stop_upload(job: dict[str, Any]) -> bool:
 
 def is_transient_upload_error(exc: BaseException) -> bool:
     if isinstance(exc, RunnerHttpError):
+        if exc.status == 400 and b"ERR_UPLOAD_INTERRUPTED" in exc.body:
+            return True
         return exc.status in TRANSIENT_UPLOAD_HTTP_STATUSES
     if isinstance(exc, urllib.error.URLError):
         return True

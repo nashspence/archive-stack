@@ -857,6 +857,56 @@ def test_upload_file_retries_temporary_insufficient_storage(tmp_path: Path) -> N
     assert request_calls == 1
 
 
+def test_upload_file_retries_tusd_interrupted_request(tmp_path: Path) -> None:
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    item = RunnerInputFile(
+        source=source,
+        rel_path="video/clip.mp4",
+        bytes=source.stat().st_size,
+        sha256="0" * 64,
+    )
+
+    client = MunchyRunnerClient("http://runner")
+    json_calls = 0
+    request_calls = 0
+
+    def fake_json(method: str, path: str, **_kwargs: object) -> dict[str, object]:
+        nonlocal json_calls
+        assert method == "POST"
+        json_calls += 1
+        offset = 0 if json_calls == 1 else item.bytes
+        return {
+            "upload_url": "http://uploads.test/file",
+            "offset": offset,
+            "length": item.bytes,
+        }
+
+    def fake_request(
+        method: str,
+        path_or_url: str,
+        **_kwargs: object,
+    ) -> tuple[int, bytes, object]:
+        nonlocal request_calls
+        request_calls += 1
+        raise RunnerHttpError(
+            method,
+            path_or_url,
+            400,
+            b"ERR_UPLOAD_INTERRUPTED: upload has been interrupted by another request",
+        )
+
+    client.json = fake_json  # type: ignore[method-assign]
+    client.request = fake_request  # type: ignore[method-assign]
+
+    with patch("munchy.runner_client.time.sleep"):
+        with contextlib.redirect_stderr(io.StringIO()):
+            client.upload_file("upload", item, chunk_bytes=1024)
+
+    assert json_calls == 2
+    assert request_calls == 1
+
+
 def test_upload_file_does_not_retry_non_transient_http_error(tmp_path: Path) -> None:
     source = tmp_path / "clip.mp4"
     source.write_bytes(b"video")
