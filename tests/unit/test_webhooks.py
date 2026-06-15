@@ -12,6 +12,7 @@ from riverhog_core.webhooks import (
     build_copy_label_needed_payload,
     build_fetch_waiting_payload,
     build_images_ready_payload,
+    build_jeb_event_payload,
     build_munchy_job_payload,
     build_recovery_completed_payload,
     build_recovery_ready_payload,
@@ -37,6 +38,7 @@ def test_operator_webhook_contract_covers_current_events() -> None:
         "riverhog": "🐷",
         "djdan": "👨🏻‍🎤",
         "munchy": "🤤",
+        "jeb": "🤖",
     }
     assert set(events) == {
         "job.received",
@@ -45,6 +47,7 @@ def test_operator_webhook_contract_covers_current_events() -> None:
         "job.issue",
         "job.upload_waiting.reminder",
         "job.succeeded",
+        "jeb.issue",
         "collections.upload_staged",
         "collections.finalized",
         "collections.archive_retrying",
@@ -72,6 +75,9 @@ def test_operator_webhook_contract_covers_current_events() -> None:
     assert events["collections.planner_failed"]["operator_urgency"] == "critical"
     assert events["collections.archive_failed"]["operator_urgency"] == "critical"
     assert events["job.issue"]["canonical_notification"]["actor"] == "munchy"
+    assert events["jeb.issue"]["canonical_notification"]["actor"] == "jeb"
+    assert events["jeb.issue"]["operator_urgency"] == "critical"
+    assert events["jeb.issue"]["delivery"]["reminder"] is True
     assert events["job.upload_waiting.reminder"]["operator_urgency"] == "time_sensitive"
     assert events["job.upload_waiting.reminder"]["delivery"]["reminder"] is True
     assert events["fetches.waiting_media"]["delivery"]["mode"] == "durable"
@@ -372,6 +378,38 @@ def test_build_munchy_upload_waiting_reminder_payload() -> None:
     assert payload["notification"] == {
         "title": "🤤 camera-collection-preview-q49",
         "body": "Upload paused: 3031/5006 files. Resume or cancel.",
+    }
+
+
+def test_build_jeb_issue_payload_uses_robot_actor_and_concise_error() -> None:
+    payload = build_jeb_event_payload(
+        event="jeb.issue",
+        batch={
+            "id": "20260615T120000Z__camera__abc123",
+            "source_id": "camera",
+            "target_name": "munchy",
+            "target_type": "munchy",
+            "collection_slug": "camera-archive",
+            "collection_timestamp": "20260615T120000Z",
+            "state": "failed",
+        },
+        message="cleanup failed: permission denied",
+        severity="critical",
+        delivered_at=datetime(2026, 6, 15, 12, 0, tzinfo=UTC),
+        recipient="operator",
+        details={"component": "cleanup", "error": "permission denied"},
+    )
+
+    assert payload["event"] == "jeb.issue"
+    assert payload["type"] == "jeb_batch"
+    assert payload["source"] == "jeb"
+    assert payload["actor"] == "jeb"
+    assert payload["operator_urgency"] == "critical"
+    assert payload["operator_action"] == "inspect Jeb batch details immediately"
+    assert payload["recipient"] == "operator"
+    assert payload["notification"] == {
+        "title": "🤖 camera-archive",
+        "body": "permission denied",
     }
 
 

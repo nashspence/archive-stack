@@ -1,0 +1,84 @@
+[collector]
+interval = "5m"
+state_db = "/state/jeb.sqlite3"
+batch_dir = "/landing/.jeb-batches"
+
+[notify]
+enabled = false
+url_env = "JEB_WEBHOOK_URL"
+base_url = "https://archive.example.invalid"
+recipients = ["operator"]
+timeout = "10s"
+reminder_interval = "24h"
+
+[targets.munchy-runner]
+type = "munchy"
+url_env = "JEB_MUNCHY_URL"
+upload_workers = 4
+upload_chunk_mib = 64
+wait_for_safe_delete = true
+
+[targets.riverhog-direct]
+type = "riverhog"
+url_env = "JEB_RIVERHOG_URL"
+token_env = "RIVERHOG_TOKEN"
+upload_workers = 4
+upload_chunk_mib = 64
+wait = "finalized"
+ingest_source = "jeb"
+
+[profiles.security-camera]
+schema_version = 1
+target = "munchy-av1-nvenc"
+name = "security-camera"
+
+[profiles.security-camera.archive]
+codec = "av1_nvenc"
+container = "webm"
+quality = 38
+max_height = 720
+fps_mode = "passthrough"
+scale_flags = "lanczos"
+pix_fmt = "p010le"
+preset = "p7"
+tune = "uhq"
+
+[profiles.security-camera.archive.audio]
+codec = "opus"
+bitrate = "28k"
+sample_rate = 24000
+channels = 1
+application = "audio"
+frame_duration = 40
+cutoff = 12000
+compression_level = 10
+vbr = "on"
+
+[munchy_job_defaults]
+workflow_mode = "archive"
+cleanup_local_on_success = false
+
+[munchy_job_defaults.riverhog]
+enabled = true
+
+[munchy_job_defaults.notify]
+enabled = true
+recipients = ["operator"]
+
+[[sources]]
+id = "example-camera"
+enabled = false
+path = "/landing/example-camera"
+collection_slug = "example-camera-archive"
+target = "munchy-runner"
+threshold = "25GB"
+stable_age = "10m"
+max_age = "0s"
+root_group = "video"
+cleanup = "after_target_success"
+include_extensions = [".mp4", ".mov", ".mkv", ".webm"]
+
+[sources.groups.video]
+profile = "security-camera"
+archive_mode = "av1_nvenc"
+gpu_tasks = ["archive_video", "qcut_video"]

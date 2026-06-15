@@ -31,7 +31,8 @@
     "actors": {
       "riverhog": "🐷",
       "djdan": "👨🏻‍🎤",
-      "munchy": "🤤"
+      "munchy": "🤤",
+      "jeb": "🤖"
     },
     "interruption_level_template": "critical when operator_urgency is critical; otherwise time-sensitive"
   },
@@ -290,6 +291,49 @@
         "recipient",
         "message",
         "severity"
+      ]
+    },
+    {
+      "event": "jeb.issue",
+      "category": "jeb_batch",
+      "source": "services.jeb",
+      "purpose": "Jeb encountered an unrecoverable or operator-blocking batch issue.",
+      "operator_urgency": "critical",
+      "operator_action": "inspect Jeb batch details immediately",
+      "delivery": {
+        "mode": "paced_best_effort",
+        "retry": false,
+        "reminder": true,
+        "reminder_interval_env": "JEB_NOTIFY_REMINDER_INTERVAL_SECONDS"
+      },
+      "canonical_notification": {
+        "actor": "jeb",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "{error_120}"
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "source",
+        "actor",
+        "batch_id",
+        "source_id",
+        "target_name",
+        "target_type",
+        "delivered_at",
+        "operator_urgency",
+        "operator_action",
+        "state",
+        "severity",
+        "message",
+        "notification"
+      ],
+      "optional_payload_fields": [
+        "collection_slug",
+        "collection_timestamp",
+        "recipient",
+        "component",
+        "error"
       ]
     },
     {

@@ -1,0 +1,20 @@
+services:
+  jeb:
+    build:
+      context: ../..
+      dockerfile: services/jeb/Dockerfile
+    image: jeb:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - type: bind
+        source: ${JEB_CONFIG_FILE:-./config.toml}
+        target: /config/jeb.toml
+        read_only: true
+      - type: bind
+        source: ${JEB_LANDING_DIR:-./runtime/landing}
+        target: /landing
+      - type: bind
+        source: ${JEB_STATE_DIR:-./runtime/state}
+        target: /state

@@ -26,7 +26,7 @@ The public Riverhog repository may contain:
 - `src/munchy_cli` for the `munchy` CLI.
 - `services/munchy-runner` for the non-GPU orchestration service.
 - `services/munchy-av1-nvenc` for the GPU encode target.
-- `services/munchy-watchdir-collector` when the generic watch-directory collector is added.
+- `src/jeb` and `services/jeb` for the generic watched-drop collector.
 - fake examples under `config/examples/munchy`.
 
 The public repository must not contain real personal devices, real hostnames, real rclone remotes,

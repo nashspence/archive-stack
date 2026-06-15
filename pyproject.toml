@@ -46,11 +46,13 @@ riverhog-api = "riverhog_api.app:main"
 riverhog = "riverhog_cli.main:main"
 munchy = "munchy_cli.main:main"
 djdan = "djdan.main:main"
+jeb = "jeb.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = [
   "src/munchy",
   "src/munchy_cli",
+  "src/jeb",
   "src/riverhog_age",
   "src/riverhog_api",
   "src/riverhog_cli",
@@ -85,6 +87,7 @@ strict = true
 packages = [
   "munchy",
   "munchy_cli",
+  "jeb",
   "riverhog_age",
   "riverhog_api",
   "riverhog_cli",

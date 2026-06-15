@@ -81,9 +81,13 @@ src/
     source_artifacts.py
   munchy_cli/
     main.py
+  jeb/
+    collector.py
+    cli.py
   djdan/
     main.py
 services/
+  jeb/
   munchy-runner/
   munchy-av1-nvenc/
 tests/
@@ -102,3 +106,5 @@ tests/
 - Keep explanation docs aligned to the actual repository layout rather than an aspirational one.
 - Keep Munchy generic: tests and examples should use role-based names, not private devices,
   hostnames, remotes, or deployment overlays.
+- Keep Jeb generic: watched-directory source configs can describe roles and target types, but real
+  FTP users, hostnames, webhook URLs, and private source mappings belong outside this repository.
