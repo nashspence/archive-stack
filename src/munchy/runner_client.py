@@ -1227,7 +1227,6 @@ class UploadProgress:
                 "bytes_total": self.total_bytes,
                 "rate_bytes_per_second": int(session_uploaded_bytes / elapsed),
             }
-            upload_progress = self.remote_upload_progress_with_rate(upload_progress, now=now)
             job: dict[str, Any] = {"upload_progress": upload_progress}
             if remote_job is not None:
                 remote_upload_progress = job_upload_progress(remote_job)
@@ -1242,6 +1241,11 @@ class UploadProgress:
                 riverhog_progress = remote_job.get("riverhog_upload_progress")
                 if isinstance(riverhog_progress, dict):
                     job["riverhog_upload_progress"] = riverhog_progress
+            else:
+                job["upload_progress"] = self.remote_upload_progress_with_rate(
+                    upload_progress,
+                    now=now,
+                )
             self.renderer.update(
                 job,
                 force=self.completed_files == self.total_files,

@@ -1048,6 +1048,44 @@ def test_upload_progress_can_merge_remote_upload_and_encode_progress() -> None:
     assert "encode_progress" in renderer_jobs[0]
 
 
+def test_upload_progress_uses_one_remote_sample_per_tick_for_rate() -> None:
+    item = RunnerInputFile(
+        source=Path("clip.mp4"),
+        rel_path="video/clip.mp4",
+        bytes=20,
+        sha256="0" * 64,
+    )
+    renderer_jobs: list[dict[str, object]] = []
+
+    class Renderer:
+        def update(self, job: dict[str, object], *, force: bool = False) -> None:
+            renderer_jobs.append(job)
+
+    progress = UploadProgress(
+        total_files=10,
+        total_bytes=100,
+        completed_files=1,
+        completed_bytes=20,
+        renderer=Renderer(),  # type: ignore[arg-type]
+        job_status_provider=lambda: {
+            "upload_progress": {
+                "files_uploaded": 5,
+                "files_total": 10,
+                "uploaded_bytes": 60,
+                "bytes_total": 100,
+            },
+        },
+    )
+    progress.last_printed_at -= 20
+
+    progress.mark_complete(item)
+
+    upload = renderer_jobs[0]["upload_progress"]
+    assert upload["files_uploaded"] == 5  # type: ignore[index]
+    assert upload["uploaded_bytes"] == 60  # type: ignore[index]
+    assert "rate_bytes_per_second" not in upload
+
+
 def test_upload_progress_does_not_regress_when_remote_status_lags() -> None:
     item = RunnerInputFile(
         source=Path("clip-2.mp4"),
