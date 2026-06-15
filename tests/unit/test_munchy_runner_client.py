@@ -1049,6 +1049,44 @@ def test_upload_progress_does_not_regress_from_previous_remote_sample() -> None:
     assert third["rate_bytes_per_second"] == 1
 
 
+def test_upload_progress_does_not_regress_when_local_sample_lags_remote() -> None:
+    item = RunnerInputFile(
+        source=Path("clip-3.mp4"),
+        rel_path="video/clip-3.mp4",
+        bytes=20,
+        sha256="0" * 64,
+    )
+    renderer_jobs: list[dict[str, object]] = []
+
+    class Renderer:
+        def update(self, job: dict[str, object], *, force: bool = False) -> None:
+            renderer_jobs.append(job)
+
+    progress = UploadProgress(
+        total_files=10,
+        total_bytes=100,
+        completed_files=1,
+        completed_bytes=20,
+        renderer=Renderer(),  # type: ignore[arg-type]
+    )
+    progress.remote_upload_progress_with_rate(
+        {
+            "files_uploaded": 5,
+            "files_total": 10,
+            "uploaded_bytes": 60,
+            "bytes_total": 100,
+        },
+        now=10.0,
+    )
+    progress.last_printed_at -= 20
+
+    progress.mark_complete(item)
+
+    upload = renderer_jobs[0]["upload_progress"]
+    assert upload["files_uploaded"] == 5  # type: ignore[index]
+    assert upload["uploaded_bytes"] == 60  # type: ignore[index]
+
+
 def test_upload_progress_fallback_uses_full_upload_baseline_on_resume() -> None:
     item = RunnerInputFile(
         source=Path("pending.mp4"),

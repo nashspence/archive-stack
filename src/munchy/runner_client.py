@@ -1140,7 +1140,7 @@ class UploadProgress:
         now: float,
     ) -> dict[str, Any]:
         merged = dict(remote_upload_progress)
-        merged.pop("rate_bytes_per_second", None)
+        existing_rate = merged.pop("rate_bytes_per_second", None)
         try:
             files_total = int(merged.get("files_total") or self.total_files)
         except (TypeError, ValueError):
@@ -1178,6 +1178,11 @@ class UploadProgress:
         ):
             elapsed = max(now - self.last_remote_rate_at, 0.001)
             merged["rate_bytes_per_second"] = int((uploaded_bytes - previous_bytes) / elapsed)
+        elif existing_rate:
+            try:
+                merged["rate_bytes_per_second"] = int(existing_rate)
+            except (TypeError, ValueError):
+                pass
         if previous_bytes is None or uploaded_bytes > previous_bytes:
             self.last_remote_uploaded_bytes = uploaded_bytes
             self.last_remote_rate_at = now
@@ -1222,6 +1227,7 @@ class UploadProgress:
                 "bytes_total": self.total_bytes,
                 "rate_bytes_per_second": int(session_uploaded_bytes / elapsed),
             }
+            upload_progress = self.remote_upload_progress_with_rate(upload_progress, now=now)
             job: dict[str, Any] = {"upload_progress": upload_progress}
             if remote_job is not None:
                 remote_upload_progress = job_upload_progress(remote_job)
