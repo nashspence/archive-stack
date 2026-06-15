@@ -87,6 +87,7 @@ src/
   djdan/
     main.py
 services/
+  ftpd/
   jeb/
   munchy-runner/
   munchy-av1-nvenc/

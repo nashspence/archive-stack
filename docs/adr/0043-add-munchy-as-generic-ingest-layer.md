@@ -27,14 +27,15 @@ The public Riverhog repository may contain:
 - `services/munchy-runner` for the non-GPU orchestration service.
 - `services/munchy-av1-nvenc` for the GPU encode target.
 - `src/jeb` and `services/jeb` for the generic watched-drop collector.
+- `services/ftpd` for a generic FTP landing service that can feed Jeb.
 - fake examples under `config/examples/munchy`.
 
 The public repository must not contain real personal devices, real hostnames, real rclone remotes,
 Home Assistant recipients, SMB paths, or deployment overlays for a specific machine.
 
-Munchy jobs require uploaded paths to be shaped as `<profile-group>/<file>`. Profile-group names
-are the stable boundary between device-specific private configuration and generic public encode
-behavior.
+Munchy jobs may either use explicit `<profile-group>/<file>` paths or structured uploads with
+server-side profile routing. Profile-group names and routing rules are the stable boundary between
+device-specific private configuration and generic public encode behavior.
 
 Munchy operator webhook payloads identify themselves with `source = "munchy"` and the canonical
 emoji `🤤`.

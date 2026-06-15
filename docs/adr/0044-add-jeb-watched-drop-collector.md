@@ -23,8 +23,7 @@ Jeb may:
 
 - watch configured landing directories
 - create durable SQLite-backed batches
-- map source subdirectories into Munchy profile groups
-- submit batches to Munchy or directly to Riverhog collection-upload sessions
+- submit source-prefixed weekly batches to Munchy
 - delete staged files only after configured target success
 - send Riverhog-format operator webhooks with `source = "jeb"` and emoji `🤖`
 
@@ -34,8 +33,9 @@ configuration.
 
 ## Consequences
 
-Riverhog remains the custody boundary. Munchy remains the media conversion layer.
-Jeb becomes the generic bridge from watched landing directories into those targets.
+Riverhog remains the custody boundary. Munchy remains the media conversion and
+profile-routing layer. Jeb becomes the generic bridge from watched landing
+directories into Munchy.
 
 Transient failures are operationally normal and retry silently. Unrecoverable
 failures are durable, block the affected source, and send paced critical reminders
