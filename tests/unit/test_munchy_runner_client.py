@@ -685,6 +685,88 @@ def test_create_input_upload_sends_filesystem_metadata(tmp_path: Path) -> None:
     ]
 
 
+def test_create_input_upload_retries_transient_setup_timeout(tmp_path: Path) -> None:
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    item = RunnerInputFile(
+        source=source,
+        rel_path="video/clip.mp4",
+        bytes=source.stat().st_size,
+        sha256="0" * 64,
+    )
+    request = RunnerUploadRequest(
+        upload_id="upload-1",
+        job_id="job-1",
+        files=(item,),
+        storage_hint={"source_bytes": item.bytes},
+        job_payload={"job_id": "job-1", "input_upload_id": "upload-1"},
+    )
+    client = MunchyRunnerClient("http://runner")
+    post_calls = 0
+
+    def fake_request(
+        method: str,
+        path: str,
+        **_kwargs: object,
+    ) -> tuple[int, bytes, object]:
+        nonlocal post_calls
+        assert method == "POST"
+        assert path == "/v1/input-uploads"
+        post_calls += 1
+        if post_calls == 1:
+            raise TimeoutError("timed out")
+        return (
+            201,
+            json.dumps({"upload_id": "upload-1", "files": []}).encode(),
+            object(),
+        )
+
+    client.request = fake_request  # type: ignore[method-assign]
+
+    with patch("munchy.runner_client.time.sleep"):
+        upload = client.create_or_get_input_upload(request)
+
+    assert upload["upload_id"] == "upload-1"
+    assert post_calls == 2
+
+
+def test_create_job_retries_transient_setup_timeout() -> None:
+    request = RunnerUploadRequest(
+        upload_id="upload-1",
+        job_id="job-1",
+        files=(),
+        storage_hint={"source_bytes": 0},
+        job_payload={"job_id": "job-1", "input_upload_id": "upload-1"},
+    )
+    client = MunchyRunnerClient("http://runner")
+    post_calls = 0
+
+    def fake_request(
+        method: str,
+        path: str,
+        **_kwargs: object,
+    ) -> tuple[int, bytes, object]:
+        nonlocal post_calls
+        assert method == "POST"
+        assert path == "/v1/jobs"
+        post_calls += 1
+        if post_calls == 1:
+            raise TimeoutError("timed out")
+        return (
+            202,
+            json.dumps({"job_id": "job-1", "input_upload_id": "upload-1"}).encode(),
+            object(),
+        )
+
+    client.request = fake_request  # type: ignore[method-assign]
+
+    with patch("munchy.runner_client.time.sleep"):
+        job = client.create_job(request)
+
+    assert job["job_id"] == "job-1"
+    assert post_calls == 2
+
+
 def test_upload_file_retries_transient_error_and_refreshes_offset(tmp_path: Path) -> None:
     source = tmp_path / "clip.mp4"
     source.write_bytes(b"video")

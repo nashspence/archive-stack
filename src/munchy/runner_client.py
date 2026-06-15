@@ -1365,7 +1365,7 @@ class MunchyRunnerClient:
             }
             for item in request.files
         ]
-        status, body, _ = self.request(
+        status, body, _ = self._request_with_transient_retries(
             "POST",
             "/v1/input-uploads",
             payload={
@@ -1374,10 +1374,15 @@ class MunchyRunnerClient:
                 "storage_hint": request.storage_hint,
             },
             expect={201, 409},
+            label="remote upload setup",
         )
         if status == 201:
             return json.loads(body.decode("utf-8"))
-        existing = self.json("GET", f"/v1/input-uploads/{urllib.parse.quote(request.upload_id)}")
+        existing = self._json_with_transient_retries(
+            "GET",
+            f"/v1/input-uploads/{urllib.parse.quote(request.upload_id)}",
+            label="remote upload status",
+        )
         self._validate_existing_upload(existing, files, request.storage_hint)
         return existing
 
@@ -1412,12 +1417,51 @@ class MunchyRunnerClient:
                 "a different storage hint"
             )
 
+    def _request_with_transient_retries(
+        self,
+        method: str,
+        path: str,
+        *,
+        label: str,
+        payload: dict[str, Any] | None = None,
+        expect: set[int] | None = None,
+        timeout: float | None = None,
+    ) -> tuple[int, bytes, Any]:
+        retry_delay = UPLOAD_RETRY_INITIAL_DELAY_SECONDS
+        retry_count = 0
+        retry_reporter = UploadRetryReporter(label=label)
+        while True:
+            try:
+                result = self.request(
+                    method,
+                    path,
+                    payload=payload,
+                    expect=expect,
+                    timeout=timeout if timeout is not None else 60.0,
+                )
+                retry_reporter.finish()
+                return result
+            except Exception as exc:
+                if not is_transient_upload_error(exc):
+                    raise
+                retry_count += 1
+                retry_reporter.mark_retry(
+                    rel_path=path,
+                    retry_count=retry_count,
+                    retry_delay=retry_delay,
+                    exc=exc,
+                )
+                time.sleep(retry_delay)
+                retry_delay = next_upload_retry_delay(retry_delay)
+
     def _json_with_transient_retries(
         self,
         method: str,
         path: str,
         *,
         label: str,
+        payload: dict[str, Any] | None = None,
+        expect: set[int] | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
         retry_delay = UPLOAD_RETRY_INITIAL_DELAY_SECONDS
@@ -1425,9 +1469,15 @@ class MunchyRunnerClient:
         retry_reporter = UploadRetryReporter(label=label)
         while True:
             try:
-                payload = self.json(method, path, timeout=timeout)
+                payload_doc = self.json(
+                    method,
+                    path,
+                    payload=payload,
+                    expect=expect,
+                    timeout=timeout if timeout is not None else 60.0,
+                )
                 retry_reporter.finish()
-                return payload
+                return payload_doc
             except Exception as exc:
                 if not is_transient_upload_error(exc):
                     raise
@@ -1691,21 +1741,27 @@ class MunchyRunnerClient:
             raise RuntimeError(f"incomplete upload for {item.rel_path}: {offset} of {item.bytes}")
 
     def create_job(self, request: RunnerUploadRequest) -> dict[str, Any]:
-        status, body, _ = self.request(
+        status, body, _ = self._request_with_transient_retries(
             "POST",
             "/v1/jobs",
             payload=request.job_payload,
             expect={202, 409},
+            label="runner job setup",
         )
         if status == 202:
             return json.loads(body.decode("utf-8"))
-        existing = self.json("GET", f"/v1/jobs/{urllib.parse.quote(request.job_id)}")
+        existing = self._json_with_transient_retries(
+            "GET",
+            f"/v1/jobs/{urllib.parse.quote(request.job_id)}",
+            label="runner job status",
+        )
         if existing.get("input_upload_id") != request.upload_id:
             raise RuntimeError(f"job {request.job_id} already exists for a different upload")
         if existing.get("state") in {"failed", "cancelled"}:
-            return self.json(
+            return self._json_with_transient_retries(
                 "POST",
                 f"/v1/jobs/{urllib.parse.quote(request.job_id)}/resume",
+                label="runner job resume",
                 expect={202},
             )
         return existing
