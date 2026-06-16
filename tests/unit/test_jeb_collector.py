@@ -457,12 +457,14 @@ def test_media_preflight_repairs_or_quarantines_before_munchy_upload(
     _write_stable_file(repairable, b"repairable")
     _write_stable_file(dead, b"dead")
     runner = CountingRunner()
+    preflight_calls: list[list[str]] = []
 
     def fake_run_media_preflight(
         files: list[MediaPreflightFile],
         *,
         progress: bool = True,
     ) -> MediaPreflightReport:
+        preflight_calls.append([file.label for file in files])
         results = []
         for file in files:
             content = file.source.read_bytes()
@@ -495,6 +497,11 @@ def test_media_preflight_repairs_or_quarantines_before_munchy_upload(
     rows = collector.batch_files(batch_id)
     assert [row["target_path"] for row in rows] == ["camera/good.mp4", "camera/repairable.mov"]
     assert [Path(str(row["staging_path"])).read_bytes() for row in rows] == [b"good", b"fixed"]
+    assert preflight_calls == [
+        ["camera/dead.webm", "camera/good.mp4", "camera/repairable.mov"],
+        ["camera/dead.webm"],
+        ["camera/repairable.mov"],
+    ]
 
 
 def test_safe_remux_uses_container_specific_flags(

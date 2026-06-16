@@ -23,6 +23,7 @@ from munchy.preflight import (
     MP4_LIKE_EXTENSIONS,
     MediaPreflightFile,
     MediaPreflightReport,
+    MediaPreflightResult,
     run_media_preflight,
 )
 from munchy.runner_client import (
@@ -847,6 +848,11 @@ class Collector:
         report: MediaPreflightReport,
     ) -> tuple[MediaPreflightReport, list[str]]:
         rows = {str(row["target_path"]): row for row in self.batch_files(batch_id)}
+        results_by_label = {
+            result.file.label: result
+            for result in report.results
+            if result.ok
+        }
         notes: list[str] = []
         repaired = 0
         quarantined = 0
@@ -860,7 +866,7 @@ class Collector:
                 notes.append(f"{label}: batch row disappeared")
                 continue
             try:
-                self.safe_remux_batch_file(batch_id, row)
+                results_by_label[label] = self.safe_remux_batch_file(batch_id, row)
             except PreflightJebError as exc:
                 LOG.warning("safe remux repair failed for %s in %s: %s", label, batch_id, exc)
                 notes.append(f"{label}: {exc}")
@@ -872,9 +878,24 @@ class Collector:
             LOG.info("safe remux repaired %d file(s) for batch %s", repaired, batch_id)
         if quarantined:
             LOG.info("quarantined %d unrepaired media file(s) for batch %s", quarantined, batch_id)
-        return run_media_preflight(self.media_preflight_files(batch_id), progress=False), notes
+        remaining_labels = {
+            str(row["target_path"])
+            for row in self.batch_files(batch_id)
+            if Path(str(row["target_path"])).suffix.lower() in PREFLIGHT_MEDIA_EXTENSIONS
+        }
+        final_results: list[MediaPreflightResult] = []
+        for result in report.results:
+            label = result.file.label
+            if label not in remaining_labels:
+                continue
+            final_results.append(results_by_label.get(label, result))
+        return MediaPreflightReport(final_results, elapsed_seconds=report.elapsed_seconds), notes
 
-    def safe_remux_batch_file(self, batch_id: str, row: sqlite3.Row) -> None:
+    def safe_remux_batch_file(
+        self,
+        batch_id: str,
+        row: sqlite3.Row,
+    ) -> MediaPreflightResult:
         target_path = str(row["target_path"])
         source = Path(str(row["source_path"]))
         staging = Path(str(row["staging_path"]))
@@ -939,6 +960,14 @@ class Collector:
                     """,
                     (stat.st_size, stat.st_mtime_ns, digest, iso(), batch_id, target_path),
                 )
+            return MediaPreflightResult(
+                file=MediaPreflightFile(
+                    source=staging,
+                    label=target_path,
+                    bytes=stat.st_size,
+                ),
+                issues=[],
+            )
         finally:
             temp.unlink(missing_ok=True)
 
