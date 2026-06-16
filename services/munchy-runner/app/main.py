@@ -4618,6 +4618,15 @@ def all_riverhog_session_files_uploaded(job: dict[str, Any]) -> bool:
     )
 
 
+def can_resume_preserving_riverhog_session(job: dict[str, Any]) -> bool:
+    state = job.get("riverhog_session_upload")
+    if not riverhog_config_enabled(job) or not isinstance(state, dict):
+        return False
+    if state.get("cancelled_at") or state.get("state") in {"canceled", "cancelled"}:
+        return False
+    return all_riverhog_session_files_uploaded(job)
+
+
 def complete_riverhog_session(
     job: dict[str, Any],
     api: ApiClient,
@@ -6287,10 +6296,13 @@ def run_job(job_id: str) -> None:
             reason="encoding_failed" if isinstance(exc, EncodingFailed) else "job_failed",
             error=exc,
         )
-        cancel_riverhog_upload_session(
-            job,
-            reason="encoding_failed" if isinstance(exc, EncodingFailed) else "job_failed",
-        )
+        if isinstance(exc, EncodingFailed) or not can_resume_preserving_riverhog_session(job):
+            cancel_riverhog_upload_session(
+                job,
+                reason="encoding_failed" if isinstance(exc, EncodingFailed) else "job_failed",
+            )
+        else:
+            riverhog_session_state(job)["preserved_after_failure_at"] = now_iso()
         save_job(job)
         if isinstance(exc, EncodingFailed):
             cleanup_terminal_job(job)
@@ -6853,8 +6865,20 @@ def resume_job(job_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]
         job = load_job(job_id)
         if job.get("state") == "succeeded":
             return job
-        cancel_riverhog_upload_session(job, reason="job_resume_reset")
-        reset_resumable_job_runtime_state(job)
+        preserve_riverhog_session = can_resume_preserving_riverhog_session(job)
+        if preserve_riverhog_session:
+            for key in (
+                "debug_bundle_created_at",
+                "debug_bundle_dir",
+                "debug_bundle_reason",
+                "terminal_progress",
+                "terminal_state_compacted_at",
+            ):
+                job.pop(key, None)
+            job["riverhog_resume_preserved_at"] = now_iso()
+        else:
+            cancel_riverhog_upload_session(job, reason="job_resume_reset")
+            reset_resumable_job_runtime_state(job)
         job["state"] = "queued"
         job["phase"] = "queued"
         job.pop("cancel_requested", None)
@@ -6863,7 +6887,7 @@ def resume_job(job_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]
         job.pop("error", None)
         job.pop("finished_at", None)
         job["_allow_clear_cancel"] = True
-        job["_reset_runtime_state"] = True
+        job["_reset_runtime_state"] = not preserve_riverhog_session
         save_job(job)
     schedule_pending_jobs(background_tasks)
     return job

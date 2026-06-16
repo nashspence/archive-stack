@@ -689,6 +689,70 @@ def test_resume_job_clears_failed_runtime_state(
     }
 
 
+def test_resume_job_preserves_fully_uploaded_riverhog_session(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    monkeypatch.setattr(runner, "schedule_pending_jobs", lambda _background_tasks: None)
+    monkeypatch.setattr(
+        runner,
+        "cancel_riverhog_upload_session",
+        lambda _job, _reason: (_ for _ in ()).throw(
+            AssertionError("resume should preserve a fully uploaded Riverhog session")
+        ),
+    )
+    riverhog_session = {
+        "collection_id": "2026/20260615T030000Z__weekly-device-artifacts",
+        "state": "open",
+        "files": {
+            "camera/a.webm": {
+                "path": "camera/a.webm",
+                "bytes": 7,
+                "uploaded_bytes": 7,
+                "state": "uploaded",
+            },
+            "camera/a.source-artifacts.tar.zst": {
+                "path": "camera/a.source-artifacts.tar.zst",
+                "bytes": 3,
+                "uploaded_bytes": 3,
+                "state": "uploaded",
+            },
+        },
+    }
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "failed",
+            "phase": "copying_originals:passthrough",
+            "input_upload_id": "upload-1",
+            "collection_slug": "weekly-device-artifacts",
+            "collection_timestamp": "20260615T030000Z",
+            "workflow_mode": "archive",
+            "riverhog": {"enabled": True, "wait": "finalized"},
+            "error": "old error",
+            "finished_at": "2026-01-01T00:00:00Z",
+            "eager_archive": {"files": {"camera/a.mp4": {"state": "encoded"}}},
+            "riverhog_session_upload": riverhog_session,
+            "debug_bundle_dir": "/debug/old",
+        }
+    )
+
+    resumed = runner.resume_job("job-1", runner.BackgroundTasks())
+    stored = runner.load_job("job-1")
+
+    assert resumed["state"] == "queued"
+    assert stored["phase"] == "queued"
+    assert "error" not in stored
+    assert "finished_at" not in stored
+    assert "debug_bundle_dir" not in stored
+    assert stored["eager_archive"]["files"] == {"camera/a.mp4": {"state": "encoded"}}
+    assert stored["riverhog_session_upload"]["files"] == riverhog_session["files"]
+    assert stored["riverhog_resume_preserved_at"]
+
+
 def test_cancel_job_with_cleanup_removes_local_work_and_input_upload(
     tmp_path: Path,
     monkeypatch,
