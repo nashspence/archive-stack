@@ -53,6 +53,17 @@ DEFAULT_GPU_TASKS = ("archive_video", "qcut_video")
 PREFLIGHT_MEDIA_EXTENSIONS = frozenset(MP4_LIKE_EXTENSIONS | {".mkv", ".webm"})
 
 
+def format_progress_bytes(value: int) -> str:
+    amount = float(value)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if amount < 1024.0 or unit == "TiB":
+            if unit == "B":
+                return f"{int(amount)} {unit}"
+            return f"{amount:.2f} {unit}"
+        amount /= 1024.0
+    return f"{amount:.2f} TiB"
+
+
 class JebError(RuntimeError):
     """Base class for Jeb operational errors."""
 
@@ -800,19 +811,58 @@ class Collector:
     def ensure_hashes(self, batch_id: str) -> None:
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT target_path, staging_path FROM files WHERE batch_id = ? AND sha256 IS NULL",
+                """
+                SELECT target_path, staging_path, bytes
+                FROM files
+                WHERE batch_id = ? AND sha256 IS NULL
+                ORDER BY target_path
+                """,
                 (batch_id,),
             ).fetchall()
-        for row in rows:
+        if not rows:
+            self.set_batch_state(batch_id, "hashed")
+            return
+        started_at = time.monotonic()
+        last_logged_at = started_at
+        total_files = len(rows)
+        total_bytes = sum(int(row["bytes"] or 0) for row in rows)
+        done_bytes = 0
+        LOG.info(
+            "batch %s hashing %d file(s), %s",
+            batch_id,
+            total_files,
+            format_progress_bytes(total_bytes),
+        )
+        for index, row in enumerate(rows, start=1):
             path = Path(str(row["staging_path"]))
             if not path.exists():
                 raise UnrecoverableJebError(f"staged file disappeared before hashing: {path}")
             digest = file_sha256(path)
+            done_bytes += int(row["bytes"] or 0)
             with self.connect() as conn:
                 conn.execute(
                     "UPDATE files SET sha256 = ? WHERE batch_id = ? AND target_path = ?",
                     (digest, batch_id, row["target_path"]),
                 )
+            now = time.monotonic()
+            is_final = index == total_files
+            if is_final or now - last_logged_at >= 15:
+                elapsed = max(now - started_at, 0.001)
+                percent = (done_bytes / total_bytes * 100.0) if total_bytes else 100.0
+                LOG.info(
+                    (
+                        "batch %s hash progress: %d/%d file(s), %s/%s, "
+                        "%.2f%%, %.1fs"
+                    ),
+                    batch_id,
+                    index,
+                    total_files,
+                    format_progress_bytes(done_bytes),
+                    format_progress_bytes(total_bytes),
+                    percent,
+                    elapsed,
+                )
+                last_logged_at = now
         self.set_batch_state(batch_id, "hashed")
 
     def ensure_media_preflight(self, batch_id: str) -> None:
@@ -820,15 +870,55 @@ class Collector:
         if not files:
             self.set_batch_state(batch_id, "preflighted")
             return
-        report = run_media_preflight(files, progress=False)
+        total_bytes = sum(file.bytes for file in files)
+        LOG.info(
+            "batch %s media preflight starting: %d file(s), %s",
+            batch_id,
+            len(files),
+            format_progress_bytes(total_bytes),
+        )
+
+        def log_preflight_progress(payload: dict[str, Any]) -> None:
+            LOG.info(
+                (
+                    "batch %s media preflight progress: %d/%d file(s), %s/%s, "
+                    "%.2f%%, %d failed, %.1fs"
+                ),
+                batch_id,
+                int(payload.get("files_done") or 0),
+                int(payload.get("files_total") or 0),
+                format_progress_bytes(int(payload.get("bytes_done") or 0)),
+                format_progress_bytes(int(payload.get("bytes_total") or 0)),
+                float(payload.get("percent_bytes") or 0.0),
+                int(payload.get("failures") or 0),
+                float(payload.get("elapsed_seconds") or 0.0),
+            )
+
+        report = run_media_preflight(
+            files,
+            progress=False,
+            progress_callback=log_preflight_progress,
+        )
         repair_notes: list[str] = []
         if not report.ok and self.config.collector.preflight_repair == "safe_remux":
+            LOG.info(
+                "batch %s media preflight found %d failed file(s); attempting safe remux repair",
+                batch_id,
+                len(report.failed_results),
+            )
             report, repair_notes = self.repair_media_preflight_failures(batch_id, report)
         if not report.ok:
             message = format_media_preflight_error(report)
             if repair_notes:
                 message = f"{message}; safe remux repair failed: {repair_notes[0]}"
             raise PreflightJebError(message)
+        LOG.info(
+            "batch %s media preflight ok: %d file(s), %s, %.1fs",
+            batch_id,
+            len(report.results),
+            format_progress_bytes(sum(result.file.bytes for result in report.results)),
+            report.elapsed_seconds,
+        )
         self.set_batch_state(batch_id, "preflighted")
 
     def media_preflight_files(self, batch_id: str) -> list[MediaPreflightFile]:
@@ -856,7 +946,8 @@ class Collector:
         notes: list[str] = []
         repaired = 0
         quarantined = 0
-        for result in report.failed_results:
+        failed_results = report.failed_results
+        for index, result in enumerate(failed_results, start=1):
             label = result.file.label
             if Path(label).suffix.lower() not in PREFLIGHT_MEDIA_EXTENSIONS:
                 notes.append(f"{label}: not a preflighted media file")
@@ -866,6 +957,13 @@ class Collector:
                 notes.append(f"{label}: batch row disappeared")
                 continue
             try:
+                LOG.info(
+                    "batch %s safe remux repair %d/%d: %s",
+                    batch_id,
+                    index,
+                    len(failed_results),
+                    label,
+                )
                 results_by_label[label] = self.safe_remux_batch_file(batch_id, row)
             except PreflightJebError as exc:
                 LOG.warning("safe remux repair failed for %s in %s: %s", label, batch_id, exc)

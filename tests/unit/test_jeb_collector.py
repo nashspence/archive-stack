@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -203,6 +206,7 @@ def _accept_media_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
         files: list[MediaPreflightFile],
         *,
         progress: bool = True,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> MediaPreflightReport:
         return MediaPreflightReport(
             [MediaPreflightResult(file=file, issues=[]) for file in files],
@@ -291,6 +295,51 @@ def test_transient_target_errors_retry_without_notification(tmp_path: Path) -> N
     assert notifier.messages == []
 
 
+def test_media_preflight_logs_batch_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    config = _base_config(tmp_path)
+    _write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4", b"video")
+
+    def fake_run_media_preflight(
+        files: list[MediaPreflightFile],
+        *,
+        progress: bool = True,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> MediaPreflightReport:
+        assert progress is False
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "files_done": len(files),
+                    "files_total": len(files),
+                    "bytes_done": sum(file.bytes for file in files),
+                    "bytes_total": sum(file.bytes for file in files),
+                    "percent_bytes": 100.0,
+                    "failures": 0,
+                    "elapsed_seconds": 1.25,
+                }
+            )
+        return MediaPreflightReport(
+            [MediaPreflightResult(file=file, issues=[]) for file in files],
+            elapsed_seconds=1.25,
+        )
+
+    monkeypatch.setattr("jeb.collector.run_media_preflight", fake_run_media_preflight)
+    collector = Collector(config, target_runners={"munchy": CompleteRunner()})
+    caplog.set_level(logging.INFO, logger="jeb")
+
+    collector.run_once()
+    collector.run_once()
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("media preflight starting" in message for message in messages)
+    assert any("media preflight progress" in message for message in messages)
+    assert any("media preflight ok" in message for message in messages)
+
+
 def test_media_preflight_failure_notifies_before_munchy_upload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -304,6 +353,7 @@ def test_media_preflight_failure_notifies_before_munchy_upload(
         files: list[MediaPreflightFile],
         *,
         progress: bool = True,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> MediaPreflightReport:
         return MediaPreflightReport(
             [
@@ -356,6 +406,7 @@ def test_media_preflight_safe_remux_repair_keeps_original_by_default(
         files: list[MediaPreflightFile],
         *,
         progress: bool = True,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> MediaPreflightReport:
         results = []
         for file in files:
@@ -407,6 +458,7 @@ def test_media_preflight_safe_remux_repair_can_delete_original(
         files: list[MediaPreflightFile],
         *,
         progress: bool = True,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> MediaPreflightReport:
         return MediaPreflightReport(
             [
@@ -463,6 +515,7 @@ def test_media_preflight_repairs_or_quarantines_before_munchy_upload(
         files: list[MediaPreflightFile],
         *,
         progress: bool = True,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> MediaPreflightReport:
         preflight_calls.append([file.label for file in files])
         results = []
