@@ -563,7 +563,7 @@ class Collector:
         for row in rows:
             if str(row["id"]) == candidate_batch_id:
                 return True
-            if str(row["state"]) not in {"failed", "failed_notified"}:
+            if str(row["state"]) not in {"failed", "failed_notified", "superseded"}:
                 return True
         return False
 

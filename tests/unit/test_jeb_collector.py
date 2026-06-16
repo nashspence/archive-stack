@@ -358,6 +358,17 @@ def test_failed_weekly_batch_allows_new_batch_after_source_manifest_changes(
     assert collector.load_batch(failed_batch_id)["state"] == "superseded"
     assert not (tmp_path / "batches" / failed_batch_id).exists()
     assert len(batch_ids) == 1
+    second_batch_id = batch_ids[0]
+    assert collector.load_batch(second_batch_id)["state"] == "batching"
+
+    collector.set_batch_state(second_batch_id, "failed_notified", "another repair needed")
+    _write_stable_file(tmp_path / "landing" / "camera" / "better.mp4")
+    collector.run_once()
+
+    batch_ids = collector.active_batch_ids()
+    assert second_batch_id not in batch_ids
+    assert collector.load_batch(second_batch_id)["state"] == "superseded"
+    assert len(batch_ids) == 1
     assert collector.load_batch(batch_ids[0])["state"] == "batching"
 
 
