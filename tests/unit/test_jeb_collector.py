@@ -203,6 +203,11 @@ def test_weekly_collection_batches_multiple_sources_once(tmp_path: Path) -> None
     assert target_paths == ["camera/clip.mp4", "phone/IMG_0001.MOV"]
 
     collector.run_once()
+    for row in collector.batch_files(batch_id):
+        source = Path(str(row["source_path"]))
+        staging = Path(str(row["staging_path"]))
+        assert source.stat().st_ino == staging.stat().st_ino
+        assert source.stat().st_dev == staging.stat().st_dev
     assert collector.load_batch(batch_id)["state"] == "target_succeeded"
 
     collector.run_once()

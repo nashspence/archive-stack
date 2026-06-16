@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import errno
 import hashlib
 import logging
 import os
@@ -42,11 +41,6 @@ TERMINAL_STATES = {"target_succeeded", "cleanup_done"}
 TRANSIENT_RETRY_INITIAL_SECONDS = 1.0
 TRANSIENT_RETRY_MAX_SECONDS = 300.0
 DEFAULT_GPU_TASKS = ("archive_video", "qcut_video")
-LINK_COPY_FALLBACK_ERRNOS = {errno.EXDEV, errno.EPERM, errno.EACCES}
-if hasattr(errno, "ENOTSUP"):
-    LINK_COPY_FALLBACK_ERRNOS.add(errno.ENOTSUP)
-if hasattr(errno, "EOPNOTSUPP"):
-    LINK_COPY_FALLBACK_ERRNOS.add(errno.EOPNOTSUPP)
 
 
 class JebError(RuntimeError):
@@ -128,18 +122,30 @@ def normalize_posix(path: str | PurePosixPath) -> str:
     return rel.as_posix()
 
 
-def link_or_copy(source: Path, dest: Path) -> None:
+def same_file_inode(left: Path, right: Path) -> bool:
+    left_stat = left.stat()
+    right_stat = right.stat()
+    return left_stat.st_dev == right_stat.st_dev and left_stat.st_ino == right_stat.st_ino
+
+
+def hardlink_stage_file(source: Path, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256(str(dest).encode()).hexdigest()[:12]
     part = dest.with_name(f".{dest.name}.{digest}.part")
+    if dest.exists():
+        if dest.is_dir():
+            raise UnrecoverableJebError(f"staging path is a directory: {dest}")
+        if same_file_inode(source, dest):
+            return
+        dest.unlink()
     try:
-        try:
-            os.link(source, part)
-        except OSError as exc:
-            if exc.errno not in LINK_COPY_FALLBACK_ERRNOS:
-                raise
-            shutil.copy2(source, part)
+        os.link(source, part)
         part.replace(dest)
+    except OSError as exc:
+        raise UnrecoverableJebError(
+            "could not hardlink source into Jeb batch; keep collector.batch_dir "
+            f"on the same filesystem as source landing directories: {source} -> {dest}"
+        ) from exc
     finally:
         part.unlink(missing_ok=True)
 
@@ -668,16 +674,7 @@ class Collector:
             source = Path(str(row["source_path"]))
             staging = Path(str(row["staging_path"]))
             if source.exists():
-                if staging.exists():
-                    if staging.is_dir():
-                        raise UnrecoverableJebError(f"staging path is a directory: {staging}")
-                    if staging.stat().st_size == source.stat().st_size:
-                        pass
-                    else:
-                        staging.unlink()
-                        link_or_copy(source, staging)
-                else:
-                    link_or_copy(source, staging)
+                hardlink_stage_file(source, staging)
             elif not staging.exists():
                 raise UnrecoverableJebError(
                     f"source and staging file are both missing: {source} -> {staging}"
