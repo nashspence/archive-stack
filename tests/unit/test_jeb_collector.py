@@ -439,6 +439,64 @@ def test_media_preflight_safe_remux_repair_can_delete_original(
     assert not (tmp_path / "landing" / "_corrupt").exists()
 
 
+def test_media_preflight_repairs_or_quarantines_before_munchy_upload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _base_config(
+        tmp_path,
+        collector_overrides={
+            "preflight_repair_original": "delete",
+            "preflight_repair_corrupt_dir": str(tmp_path / "landing" / "_corrupt"),
+        },
+    )
+    good = tmp_path / "landing" / "camera" / "good.mp4"
+    repairable = tmp_path / "landing" / "camera" / "repairable.mov"
+    dead = tmp_path / "landing" / "camera" / "dead.webm"
+    _write_stable_file(good, b"good")
+    _write_stable_file(repairable, b"repairable")
+    _write_stable_file(dead, b"dead")
+    runner = CountingRunner()
+
+    def fake_run_media_preflight(
+        files: list[MediaPreflightFile],
+        *,
+        progress: bool = True,
+    ) -> MediaPreflightReport:
+        results = []
+        for file in files:
+            content = file.source.read_bytes()
+            issues = []
+            if content in {b"repairable", b"dead", b"still-dead"}:
+                issues = [MediaPreflightIssue("ffprobe_no_video_stream", "no video")]
+            results.append(MediaPreflightResult(file=file, issues=issues))
+        return MediaPreflightReport(results, elapsed_seconds=0.01)
+
+    def fake_safe_remux(*, ffmpeg_path: str, source: Path, dest: Path) -> None:
+        if source.name == "repairable.mov":
+            dest.write_bytes(b"fixed")
+        else:
+            dest.write_bytes(b"still-dead")
+
+    monkeypatch.setattr("jeb.collector.run_media_preflight", fake_run_media_preflight)
+    monkeypatch.setattr("jeb.collector.run_safe_remux", fake_safe_remux)
+    collector = Collector(config, target_runners={"munchy": runner})
+
+    collector.run_once()
+    batch_id = _single_batch_id(collector)
+    collector.run_once()
+
+    assert runner.calls == 1
+    assert collector.load_batch(batch_id)["state"] == "target_succeeded"
+    assert good.read_bytes() == b"good"
+    assert repairable.read_bytes() == b"fixed"
+    assert not dead.exists()
+    assert (tmp_path / "landing" / "_corrupt" / "camera" / "dead.webm").read_bytes() == b"dead"
+    rows = collector.batch_files(batch_id)
+    assert [row["target_path"] for row in rows] == ["camera/good.mp4", "camera/repairable.mov"]
+    assert [Path(str(row["staging_path"])).read_bytes() for row in rows] == [b"good", b"fixed"]
+
+
 def test_safe_remux_uses_container_specific_flags(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

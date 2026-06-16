@@ -831,6 +831,7 @@ class Collector:
         rows = {str(row["target_path"]): row for row in self.batch_files(batch_id)}
         notes: list[str] = []
         repaired = 0
+        quarantined = 0
         for result in report.failed_results:
             label = result.file.label
             if Path(label).suffix.lower() not in PREFLIGHT_MEDIA_EXTENSIONS:
@@ -842,13 +843,17 @@ class Collector:
                 continue
             try:
                 self.safe_remux_batch_file(batch_id, row)
-            except Exception as exc:
+            except PreflightJebError as exc:
                 LOG.warning("safe remux repair failed for %s in %s: %s", label, batch_id, exc)
                 notes.append(f"{label}: {exc}")
+                self.quarantine_batch_file(batch_id, row)
+                quarantined += 1
                 continue
             repaired += 1
         if repaired:
             LOG.info("safe remux repaired %d file(s) for batch %s", repaired, batch_id)
+        if quarantined:
+            LOG.info("quarantined %d unrepaired media file(s) for batch %s", quarantined, batch_id)
         return run_media_preflight(self.media_preflight_files(batch_id), progress=False), notes
 
     def safe_remux_batch_file(self, batch_id: str, row: sqlite3.Row) -> None:
@@ -918,6 +923,29 @@ class Collector:
                 )
         finally:
             temp.unlink(missing_ok=True)
+
+    def quarantine_batch_file(self, batch_id: str, row: sqlite3.Row) -> None:
+        target_path = str(row["target_path"])
+        source = Path(str(row["source_path"]))
+        staging = Path(str(row["staging_path"]))
+        corrupt_dest = unique_corrupt_path(
+            self.config.collector.preflight_repair_corrupt_dir / PurePosixPath(target_path)
+        )
+        corrupt_dest.parent.mkdir(parents=True, exist_ok=True)
+        if source.exists():
+            source.replace(corrupt_dest)
+            staging.unlink(missing_ok=True)
+        elif staging.exists():
+            staging.replace(corrupt_dest)
+        else:
+            raise UnrecoverableJebError(
+                f"source and staging file are both missing: {source} -> {staging}"
+            )
+        with self.connect() as conn:
+            conn.execute(
+                "DELETE FROM files WHERE batch_id = ? AND target_path = ?",
+                (batch_id, target_path),
+            )
 
 
     def finish_target_success(self, batch_id: str) -> None:
