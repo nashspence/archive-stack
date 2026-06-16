@@ -6140,6 +6140,8 @@ def run_job(job_id: str) -> None:
         for group_name, group_config in groups.items():
             if str(group_name) in eager_groups:
                 continue
+            if str(group_name) not in non_eager_groups:
+                continue
             validate_profile_group_name(str(group_name))
             group_archive_mode = normalize_archive_mode(
                 str(group_config.get("archive_mode") or "av1_nvenc")
