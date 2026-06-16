@@ -122,6 +122,10 @@ def normalize_posix(path: str | PurePosixPath) -> str:
     return rel.as_posix()
 
 
+def munchy_archive_mode(value: str) -> str:
+    return "originals" if value == "passthrough" else value
+
+
 def same_file_inode(left: Path, right: Path) -> bool:
     left_stat = left.stat()
     right_stat = right.stat()
@@ -865,7 +869,9 @@ def munchy_upload_request(
         "structured_routing": bool(job_payload.get("profile_routing")),
         "groups": {
             name: {
-                "archive_mode": str(group.get("archive_mode") or "av1_nvenc"),
+                "archive_mode": munchy_archive_mode(
+                    str(group.get("archive_mode") or "av1_nvenc")
+                ),
                 "gpu_tasks": list(group.get("gpu_tasks") or []),
             }
             for name, group in groups.items()
@@ -886,7 +892,7 @@ def munchy_groups_payload(config: JebConfig) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for name, group in config.profile_groups.items():
         payload: dict[str, Any] = {
-            "archive_mode": group.archive_mode,
+            "archive_mode": munchy_archive_mode(group.archive_mode),
             "gpu_tasks": list(group.gpu_tasks),
         }
         if group.profile:
