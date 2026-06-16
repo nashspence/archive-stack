@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import time
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
@@ -179,6 +180,10 @@ class CollectorSettings:
     interval_seconds: int = 300
     state_db: Path = Path("/state/jeb.sqlite3")
     batch_dir: Path = Path("/landing/.jeb-batches")
+    preflight_repair: Literal["off", "safe_remux"] = "safe_remux"
+    preflight_repair_original: Literal["keep_corrupt", "delete"] = "keep_corrupt"
+    preflight_repair_corrupt_dir: Path = Path("/landing/_corrupt")
+    preflight_repair_ffmpeg: str = "ffmpeg"
 
 
 @dataclass(frozen=True)
@@ -792,7 +797,23 @@ class Collector:
         self.set_batch_state(batch_id, "hashed")
 
     def ensure_media_preflight(self, batch_id: str) -> None:
-        files = [
+        files = self.media_preflight_files(batch_id)
+        if not files:
+            self.set_batch_state(batch_id, "preflighted")
+            return
+        report = run_media_preflight(files, progress=False)
+        repair_notes: list[str] = []
+        if not report.ok and self.config.collector.preflight_repair == "safe_remux":
+            report, repair_notes = self.repair_media_preflight_failures(batch_id, report)
+        if not report.ok:
+            message = format_media_preflight_error(report)
+            if repair_notes:
+                message = f"{message}; safe remux repair failed: {repair_notes[0]}"
+            raise PreflightJebError(message)
+        self.set_batch_state(batch_id, "preflighted")
+
+    def media_preflight_files(self, batch_id: str) -> list[MediaPreflightFile]:
+        return [
             MediaPreflightFile(
                 source=Path(str(row["staging_path"])),
                 label=str(row["target_path"]),
@@ -801,13 +822,102 @@ class Collector:
             for row in self.batch_files(batch_id)
             if Path(str(row["target_path"])).suffix.lower() in PREFLIGHT_MEDIA_EXTENSIONS
         ]
-        if not files:
-            self.set_batch_state(batch_id, "preflighted")
-            return
-        report = run_media_preflight(files, progress=False)
-        if not report.ok:
-            raise PreflightJebError(format_media_preflight_error(report))
-        self.set_batch_state(batch_id, "preflighted")
+
+    def repair_media_preflight_failures(
+        self,
+        batch_id: str,
+        report: MediaPreflightReport,
+    ) -> tuple[MediaPreflightReport, list[str]]:
+        rows = {str(row["target_path"]): row for row in self.batch_files(batch_id)}
+        notes: list[str] = []
+        repaired = 0
+        for result in report.failed_results:
+            label = result.file.label
+            if Path(label).suffix.lower() not in PREFLIGHT_MEDIA_EXTENSIONS:
+                notes.append(f"{label}: not a preflighted media file")
+                continue
+            row = rows.get(label)
+            if row is None:
+                notes.append(f"{label}: batch row disappeared")
+                continue
+            try:
+                self.safe_remux_batch_file(batch_id, row)
+            except Exception as exc:
+                LOG.warning("safe remux repair failed for %s in %s: %s", label, batch_id, exc)
+                notes.append(f"{label}: {exc}")
+                continue
+            repaired += 1
+        if repaired:
+            LOG.info("safe remux repaired %d file(s) for batch %s", repaired, batch_id)
+        return run_media_preflight(self.media_preflight_files(batch_id), progress=False), notes
+
+    def safe_remux_batch_file(self, batch_id: str, row: sqlite3.Row) -> None:
+        target_path = str(row["target_path"])
+        source = Path(str(row["source_path"]))
+        staging = Path(str(row["staging_path"]))
+        input_path = source if source.exists() else staging
+        if not input_path.exists():
+            raise UnrecoverableJebError(
+                f"source and staging file are both missing: {source} -> {staging}"
+            )
+        source_stat = input_path.stat()
+        suffix = Path(target_path).suffix or staging.suffix or ".mkv"
+        temp = staging.with_name(f".{staging.name}.safe-remux-{os.getpid()}{suffix}")
+        temp.unlink(missing_ok=True)
+        try:
+            run_safe_remux(
+                ffmpeg_path=self.config.collector.preflight_repair_ffmpeg,
+                source=input_path,
+                dest=temp,
+            )
+            os.utime(temp, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
+            repair_report = run_media_preflight(
+                [
+                    MediaPreflightFile(
+                        source=temp,
+                        label=target_path,
+                        bytes=temp.stat().st_size,
+                    )
+                ],
+                progress=False,
+            )
+            if not repair_report.ok:
+                raise PreflightJebError(format_media_preflight_error(repair_report))
+
+            if source.exists():
+                if self.config.collector.preflight_repair_original == "keep_corrupt":
+                    corrupt_dest = unique_corrupt_path(
+                        self.config.collector.preflight_repair_corrupt_dir
+                        / PurePosixPath(target_path)
+                    )
+                    corrupt_dest.parent.mkdir(parents=True, exist_ok=True)
+                    source.replace(corrupt_dest)
+                else:
+                    source.unlink()
+            elif self.config.collector.preflight_repair_original == "keep_corrupt":
+                corrupt_dest = unique_corrupt_path(
+                    self.config.collector.preflight_repair_corrupt_dir
+                    / PurePosixPath(target_path)
+                )
+                corrupt_dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(input_path, corrupt_dest)
+            source.parent.mkdir(parents=True, exist_ok=True)
+            temp.replace(source)
+            os.utime(source, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
+            hardlink_stage_file(source, staging)
+            stat = source.stat()
+            digest = file_sha256(staging)
+            with self.connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE files
+                    SET bytes = ?, mtime_ns = ?, sha256 = ?, staged_at = ?
+                    WHERE batch_id = ? AND target_path = ?
+                    """,
+                    (stat.st_size, stat.st_mtime_ns, digest, iso(), batch_id, target_path),
+                )
+        finally:
+            temp.unlink(missing_ok=True)
 
 
     def finish_target_success(self, batch_id: str) -> None:
@@ -1008,6 +1118,50 @@ def filesystem_metadata_source(row: sqlite3.Row) -> Path:
     )
 
 
+def run_safe_remux(*, ffmpeg_path: str, source: Path, dest: Path) -> None:
+    command = [
+        ffmpeg_path,
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-i",
+        str(source),
+        "-map",
+        "0",
+        "-c",
+        "copy",
+        "-copy_unknown",
+    ]
+    if dest.suffix.lower() in MP4_LIKE_EXTENSIONS:
+        command.extend(["-movflags", "+faststart"])
+    command.append(str(dest))
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise UnrecoverableJebError(f"{ffmpeg_path} was not found for safe remux repair") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "no ffmpeg details").strip()
+        raise PreflightJebError(f"ffmpeg safe remux failed: {detail}")
+    if not dest.exists() or dest.stat().st_size <= 0:
+        raise PreflightJebError("ffmpeg safe remux produced no output")
+
+
+def unique_corrupt_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    for index in range(1, 10_000):
+        candidate = path.with_name(f"{path.stem}.{index}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise UnrecoverableJebError(f"could not choose unique corrupt path for {path}")
+
+
 def munchy_groups_payload(config: JebConfig) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for name, group in config.profile_groups.items():
@@ -1077,11 +1231,33 @@ def load_config(path: Path) -> JebConfig:
 
 def config_from_mapping(raw: Mapping[str, Any]) -> JebConfig:
     collector_raw = mapping(raw.get("collector"))
+    preflight_repair = str(collector_raw.get("preflight_repair") or "safe_remux")
+    if preflight_repair not in {"off", "safe_remux"}:
+        raise ValueError("collector.preflight_repair must be off or safe_remux")
+    preflight_repair_original = str(
+        collector_raw.get("preflight_repair_original") or "keep_corrupt"
+    )
+    if preflight_repair_original not in {"keep_corrupt", "delete"}:
+        raise ValueError(
+            "collector.preflight_repair_original must be keep_corrupt or delete"
+        )
     collector = CollectorSettings(
         interval_seconds=parse_duration(collector_raw.get("interval"), 300),
         state_db=Path(os.path.expandvars(str(collector_raw.get("state_db", "/state/jeb.sqlite3")))),
         batch_dir=Path(
             os.path.expandvars(str(collector_raw.get("batch_dir", "/landing/.jeb-batches")))
+        ),
+        preflight_repair=cast(Literal["off", "safe_remux"], preflight_repair),
+        preflight_repair_original=cast(
+            Literal["keep_corrupt", "delete"], preflight_repair_original
+        ),
+        preflight_repair_corrupt_dir=Path(
+            os.path.expandvars(
+                str(collector_raw.get("preflight_repair_corrupt_dir", "/landing/_corrupt"))
+            )
+        ),
+        preflight_repair_ffmpeg=str(
+            collector_raw.get("preflight_repair_ffmpeg") or "ffmpeg"
         ),
     )
     notify_raw = mapping(raw.get("notify"))

@@ -2,6 +2,9 @@
 interval = "5m"
 state_db = "/state/jeb.sqlite3"
 batch_dir = "/landing/.jeb-batches"
+preflight_repair = "safe_remux"
+preflight_repair_original = "keep_corrupt"
+preflight_repair_corrupt_dir = "/landing/_corrupt"
 
 [notify]
 enabled = false

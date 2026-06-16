@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import os
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +18,7 @@ from jeb.collector import (
     munchy_upload_request,
     parse_duration,
     parse_size,
+    run_safe_remux,
 )
 from munchy.preflight import (
     MediaPreflightFile,
@@ -31,17 +34,20 @@ def _base_config(
     cleanup: str = "never",
     wait_for_safe_delete: bool = True,
     source_ids: list[str] | None = None,
+    collector_overrides: dict[str, object] | None = None,
 ) -> JebConfig:
     landing = tmp_path / "landing"
     landing.mkdir(exist_ok=True)
     sources = source_ids or ["camera"]
+    collector = {
+        "interval": "5m",
+        "state_db": str(tmp_path / "state.sqlite3"),
+        "batch_dir": str(tmp_path / "batches"),
+    }
+    collector.update(collector_overrides or {})
     return config_from_mapping(
         {
-            "collector": {
-                "interval": "5m",
-                "state_db": str(tmp_path / "state.sqlite3"),
-                "batch_dir": str(tmp_path / "batches"),
-            },
+            "collector": collector,
             "targets": {
                 "runner": {
                     "type": "munchy",
@@ -289,7 +295,7 @@ def test_media_preflight_failure_notifies_before_munchy_upload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = _base_config(tmp_path)
+    config = _base_config(tmp_path, collector_overrides={"preflight_repair": "off"})
     _write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4")
     notifier = RecordingNotifier([])
     runner = CountingRunner()
@@ -330,6 +336,135 @@ def test_media_preflight_failure_notifies_before_munchy_upload(
             "top-level atom b'mdat' extends past EOF"
         )
     ]
+
+
+def test_media_preflight_safe_remux_repair_keeps_original_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _base_config(
+        tmp_path,
+        collector_overrides={
+            "preflight_repair_corrupt_dir": str(tmp_path / "landing" / "_corrupt"),
+        },
+    )
+    source = tmp_path / "landing" / "camera" / "clip.mkv"
+    _write_stable_file(source, b"bad")
+    runner = CountingRunner()
+
+    def fake_run_media_preflight(
+        files: list[MediaPreflightFile],
+        *,
+        progress: bool = True,
+    ) -> MediaPreflightReport:
+        results = []
+        for file in files:
+            issues = []
+            if file.source.read_bytes() == b"bad":
+                issues = [MediaPreflightIssue("ffprobe_failed", "truncated")]
+            results.append(MediaPreflightResult(file=file, issues=issues))
+        return MediaPreflightReport(results, elapsed_seconds=0.01)
+
+    def fake_safe_remux(*, ffmpeg_path: str, source: Path, dest: Path) -> None:
+        dest.write_bytes(b"fixed")
+
+    monkeypatch.setattr("jeb.collector.run_media_preflight", fake_run_media_preflight)
+    monkeypatch.setattr("jeb.collector.run_safe_remux", fake_safe_remux)
+    collector = Collector(config, target_runners={"munchy": runner})
+
+    collector.run_once()
+    batch_id = _single_batch_id(collector)
+    collector.run_once()
+
+    assert runner.calls == 1
+    assert collector.load_batch(batch_id)["state"] == "target_succeeded"
+    assert source.read_bytes() == b"fixed"
+    corrupt = tmp_path / "landing" / "_corrupt" / "camera" / "clip.mkv"
+    assert corrupt.read_bytes() == b"bad"
+    [row] = collector.batch_files(batch_id)
+    staging = Path(str(row["staging_path"]))
+    assert staging.read_bytes() == b"fixed"
+    assert source.stat().st_ino == staging.stat().st_ino
+    assert row["bytes"] == len(b"fixed")
+    assert row["sha256"] == hashlib.sha256(b"fixed").hexdigest()
+
+
+def test_media_preflight_safe_remux_repair_can_delete_original(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _base_config(
+        tmp_path,
+        collector_overrides={
+            "preflight_repair_original": "delete",
+            "preflight_repair_corrupt_dir": str(tmp_path / "landing" / "_corrupt"),
+        },
+    )
+    source = tmp_path / "landing" / "camera" / "clip.webm"
+    _write_stable_file(source, b"bad")
+
+    def fake_run_media_preflight(
+        files: list[MediaPreflightFile],
+        *,
+        progress: bool = True,
+    ) -> MediaPreflightReport:
+        return MediaPreflightReport(
+            [
+                MediaPreflightResult(
+                    file=file,
+                    issues=(
+                        [MediaPreflightIssue("ffprobe_failed", "truncated")]
+                        if file.source.read_bytes() == b"bad"
+                        else []
+                    ),
+                )
+                for file in files
+            ],
+            elapsed_seconds=0.01,
+        )
+
+    def fake_safe_remux(*, ffmpeg_path: str, source: Path, dest: Path) -> None:
+        dest.write_bytes(b"fixed")
+
+    monkeypatch.setattr("jeb.collector.run_media_preflight", fake_run_media_preflight)
+    monkeypatch.setattr("jeb.collector.run_safe_remux", fake_safe_remux)
+    collector = Collector(config, target_runners={"munchy": CompleteRunner()})
+
+    collector.run_once()
+    batch_id = _single_batch_id(collector)
+    collector.run_once()
+
+    assert collector.load_batch(batch_id)["state"] == "target_succeeded"
+    assert source.read_bytes() == b"fixed"
+    assert not (tmp_path / "landing" / "_corrupt").exists()
+
+
+def test_safe_remux_uses_container_specific_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    def fake_run(
+        command: list[str],
+        *,
+        check: bool,
+        capture_output: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        Path(command[-1]).write_bytes(b"remuxed")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("jeb.collector.subprocess.run", fake_run)
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"video")
+
+    run_safe_remux(ffmpeg_path="ffmpeg", source=source, dest=tmp_path / "out.mp4")
+    run_safe_remux(ffmpeg_path="ffmpeg", source=source, dest=tmp_path / "out.mkv")
+
+    assert "-movflags" in commands[0]
+    assert "-movflags" not in commands[1]
 
 
 def test_failed_weekly_batch_allows_new_batch_after_source_manifest_changes(
