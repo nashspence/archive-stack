@@ -324,6 +324,8 @@ def test_munchy_payload_uses_structured_routing(tmp_path: Path) -> None:
     )
 
     assert [item.rel_path for item in request.files] == ["camera/clip.mp4", "camera/clip.xml"]
+    assert request.files[0].filesystem_metadata["kind"] == "munchy.source-filesystem-metadata"
+    assert request.files[0].filesystem_metadata["basename"] == "clip.mp4"
     assert request.storage_hint == {
         "workflow_mode": "archive",
         "archive_mode": "av1_nvenc",

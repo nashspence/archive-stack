@@ -17,6 +17,7 @@ from typing import Any, Literal, Protocol, cast
 
 import httpx
 
+from munchy.filesystem_metadata import collect_filesystem_metadata
 from munchy.runner_client import (
     MunchyRunnerClient,
     RunnerInputFile,
@@ -841,6 +842,9 @@ def munchy_upload_request(
             rel_path=str(row["target_path"]),
             bytes=int(row["bytes"]),
             sha256=str(row["sha256"]),
+            filesystem_metadata=collect_filesystem_metadata(
+                filesystem_metadata_source(row)
+            ),
         )
         for row in rows
     )
@@ -888,6 +892,18 @@ def munchy_upload_request(
         job_payload=job_payload,
         upload_workers=target.upload_workers,
         upload_chunk_mib=max(1, target.upload_chunk_bytes // (1024 * 1024)),
+    )
+
+
+def filesystem_metadata_source(row: sqlite3.Row) -> Path:
+    source = Path(str(row["source_path"]))
+    if source.exists():
+        return source
+    staging = Path(str(row["staging_path"]))
+    if staging.exists():
+        return staging
+    raise UnrecoverableJebError(
+        f"source and staging file are both missing: {source} -> {staging}"
     )
 
 
