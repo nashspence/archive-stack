@@ -1936,6 +1936,23 @@ def compact_job_for_storage(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+TERMINAL_CLEANUP_JOB_KEYS = (
+    "cleanup_completed_at",
+    "cleanup_error",
+    "cleanup_failed_at",
+    "cleanup_removed",
+    "cleanup_removed_count",
+    "cleanup_removed_sample",
+    "input_upload_deleted_at",
+    "local_work_cleaned_at",
+    "local_work_removed",
+    "local_work_removed_count",
+    "local_work_removed_sample",
+    "riverhog_cancel_error",
+    "riverhog_cancel_failed_at",
+)
+
+
 def save_job(job: dict[str, Any]) -> dict[str, Any]:
     payload = dict(job)
     allow_clear_cancel = bool(payload.pop("_allow_clear_cancel", False))
@@ -2008,6 +2025,9 @@ def save_job(job: dict[str, Any]) -> dict[str, Any]:
             ):
                 if key in current and key not in payload:
                     payload[key] = current[key]
+        if payload.get("state") not in TERMINAL_JOB_STATES:
+            for key in TERMINAL_CLEANUP_JOB_KEYS:
+                payload.pop(key, None)
         payload = compact_job_for_storage(payload)
         return write_state("job", job_id, payload)
 
@@ -3181,12 +3201,7 @@ def compact_terminal_job_state(job: dict[str, Any]) -> bool:
 
 
 RESUMABLE_RUNTIME_JOB_KEYS = (
-    "cleanup_completed_at",
-    "cleanup_error",
-    "cleanup_failed_at",
-    "cleanup_removed",
-    "cleanup_removed_count",
-    "cleanup_removed_sample",
+    *TERMINAL_CLEANUP_JOB_KEYS,
     "collection_preview_upload_result",
     "debug_bundle_created_at",
     "debug_bundle_dir",
@@ -3198,15 +3213,8 @@ RESUMABLE_RUNTIME_JOB_KEYS = (
     "gpu_statuses",
     "group_results",
     "input_upload_progress",
-    "input_upload_deleted_at",
-    "local_work_cleaned_at",
-    "local_work_removed",
-    "local_work_removed_count",
-    "local_work_removed_sample",
     "profile_routing_result",
     "review_upload_result",
-    "riverhog_cancel_error",
-    "riverhog_cancel_failed_at",
     "riverhog_handoff_metrics",
     "riverhog_session_upload",
     "riverhog_upload_result",
