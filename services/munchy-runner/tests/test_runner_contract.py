@@ -1573,6 +1573,51 @@ def test_structured_unrouted_upload_progress_does_not_require_groups(
     assert "input_tree_bytes_ready" not in progress
 
 
+def test_wait_for_upload_groups_skips_configured_group_with_no_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "state": "uploaded",
+            "files": [
+                {
+                    "path": "front-door/clip.mp4",
+                    "bytes": 7,
+                    "upload_id": "upload-a",
+                    "input_upload_id": "upload-1",
+                    "resolved_group": "camera",
+                    "resolved_group_rel": "front-door/clip.mp4",
+                }
+            ],
+        }
+    )
+    runner.tusd_data_path("upload-a").parent.mkdir(parents=True, exist_ok=True)
+    runner.tusd_data_path("upload-a").write_bytes(b"video-a")
+    job = {
+        "job_id": "job-1",
+        "state": "running",
+        "input_upload_id": "upload-1",
+        "profile_routing": {"routes": []},
+    }
+    runner.save_job(job)
+
+    upload = runner.wait_for_upload_groups(
+        job,
+        "upload-1",
+        {"passthrough"},
+        {"passthrough": {"archive_mode": "originals", "gpu_tasks": []}},
+    )
+
+    assert upload["upload_id"] == "upload-1"
+    assert job["input_upload_progress"]["files_total"] == 0
+    assert job["input_upload_progress"]["files_uploaded"] == 0
+
+
 def test_non_eager_upload_progress_still_reports_shared_input_tree(
     tmp_path: Path,
     monkeypatch,

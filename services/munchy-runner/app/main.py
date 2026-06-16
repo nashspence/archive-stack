@@ -2193,6 +2193,11 @@ def upload_bytes_for_groups(upload: dict[str, Any], group_names: set[str]) -> in
     )
 
 
+def upload_group_names_with_files(upload: dict[str, Any], group_names: set[str]) -> set[str]:
+    present_groups = input_upload_routed_groups(upload)
+    return {str(group_name) for group_name in group_names if str(group_name) in present_groups}
+
+
 def upload_groups_complete(upload: dict[str, Any], group_names: set[str]) -> bool:
     files = upload_files_for_groups(upload, group_names)
     return bool(files) and all(upload_file_status(file_state)["complete"] for file_state in files)
@@ -2260,19 +2265,27 @@ def wait_for_upload_groups(
     groups: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     job_id = str(job["job_id"])
+    requested_group_names = {str(group_name) for group_name in group_names}
     while True:
         raise_if_job_cancelled(job_id)
         upload = load_input_upload(upload_id)
         if groups is not None:
             upload = route_completed_input_files(job, upload, groups)
-        sync_shared_input_tree(upload, group_names)
-        progress = upload_group_progress(upload, group_names)
-        job["input_upload_progress"] = progress
         structured_pending = (
             isinstance(job.get("profile_routing"), dict)
             and str(upload.get("state") or "") != "uploaded"
         )
-        if not structured_pending and upload_groups_complete(upload, group_names):
+        active_group_names = requested_group_names
+        if not structured_pending:
+            active_group_names = upload_group_names_with_files(upload, requested_group_names)
+            if not active_group_names:
+                job["input_upload_progress"] = upload_group_progress(upload, active_group_names)
+                save_job(job)
+                return upload
+        sync_shared_input_tree(upload, active_group_names)
+        progress = upload_group_progress(upload, active_group_names)
+        job["input_upload_progress"] = progress
+        if not structured_pending and upload_groups_complete(upload, active_group_names):
             save_job(job)
             return upload
         job["phase"] = f"waiting_for_upload:{progress['files_uploaded']}/{progress['files_total']}"
@@ -6093,6 +6106,12 @@ def run_job(job_id: str) -> None:
             raise_if_job_cancelled(job_id)
 
         non_eager_groups = set(str(group_name) for group_name in groups) - eager_groups
+        if non_eager_groups and (
+            not isinstance(job.get("profile_routing"), dict)
+            or str(input_upload.get("state") or "") == "uploaded"
+        ):
+            input_upload = route_completed_input_files(job, input_upload, groups)
+            non_eager_groups = upload_group_names_with_files(input_upload, non_eager_groups)
         input_dir = gpu_job_root / "input"
         if non_eager_groups:
             input_upload = wait_for_upload_groups(
@@ -6101,6 +6120,8 @@ def run_job(job_id: str) -> None:
                 non_eager_groups,
                 groups,
             )
+            non_eager_groups = upload_group_names_with_files(input_upload, non_eager_groups)
+        if non_eager_groups:
             non_eager_bytes = upload_bytes_for_groups(input_upload, non_eager_groups)
             required_gpu_free = (
                 gpu_scratch_required_bytes(non_eager_bytes, storage_hint) + MIN_FREE_BYTES
