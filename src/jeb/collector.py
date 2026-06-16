@@ -18,6 +18,12 @@ from typing import Any, Literal, Protocol, cast
 import httpx
 
 from munchy.filesystem_metadata import collect_filesystem_metadata
+from munchy.preflight import (
+    MP4_LIKE_EXTENSIONS,
+    MediaPreflightFile,
+    MediaPreflightReport,
+    run_media_preflight,
+)
 from munchy.runner_client import (
     MunchyRunnerClient,
     RunnerInputFile,
@@ -38,10 +44,11 @@ from riverhog_core.webhooks import (
 
 LOG = logging.getLogger("jeb")
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
-TERMINAL_STATES = {"target_succeeded", "cleanup_done"}
+TERMINAL_STATES = {"target_succeeded", "cleanup_done", "superseded"}
 TRANSIENT_RETRY_INITIAL_SECONDS = 1.0
 TRANSIENT_RETRY_MAX_SECONDS = 300.0
 DEFAULT_GPU_TASKS = ("archive_video", "qcut_video")
+PREFLIGHT_MEDIA_EXTENSIONS = frozenset(MP4_LIKE_EXTENSIONS | {".mkv", ".webm"})
 
 
 class JebError(RuntimeError):
@@ -50,6 +57,10 @@ class JebError(RuntimeError):
 
 class UnrecoverableJebError(JebError):
     """An operator-visible error that cannot be solved by retrying the same operation."""
+
+
+class PreflightJebError(UnrecoverableJebError):
+    """A pre-target media validation failure that needs operator repair."""
 
 
 class TransientJebError(JebError):
@@ -392,16 +403,22 @@ class Collector:
         self.init_db()
         for batch_id in self.active_batch_ids():
             self.process_batch(batch_id)
-        active_collections = {str(row["collection_id"]) for row in self.active_batches()}
+        active_collections = {
+            str(row["collection_id"])
+            for row in self.active_batches()
+            if str(row["state"]) not in {"failed", "failed_notified"}
+        }
         for collection in self.config.collections:
             if collection.enabled and collection.id not in active_collections:
                 self.discover_collection(collection)
 
     def active_batches(self) -> list[sqlite3.Row]:
+        terminal = tuple(sorted(TERMINAL_STATES))
+        placeholders = ", ".join("?" for _ in terminal)
         with self.connect() as conn:
             return conn.execute(
-                "SELECT * FROM batches WHERE state NOT IN (?, ?) ORDER BY created_at",
-                tuple(sorted(TERMINAL_STATES)),
+                f"SELECT * FROM batches WHERE state NOT IN ({placeholders}) ORDER BY created_at",
+                terminal,
             ).fetchall()
 
     def active_batch_ids(self) -> list[str]:
@@ -473,11 +490,6 @@ class Collector:
 
     def discover_collection(self, collection: CollectionConfig) -> None:
         period = self.collection_period(collection)
-        if collection.schedule == "weekly" and self.batch_exists_for_period(
-            collection.id,
-            period,
-        ):
-            return
         sources = [self.source_by_id(source_id) for source_id in collection.source_ids]
         files: list[EligibleFile] = []
         before = period if collection.schedule == "weekly" else None
@@ -503,7 +515,19 @@ class Collector:
                 total / 1_000_000_000,
             )
             return
-        self.create_batch(collection, files, period=period)
+        batch_id, digest = self.batch_identity(collection, files, period=period)
+        if collection.schedule == "weekly" and self.batch_exists_for_period(
+            collection.id,
+            period,
+            candidate_batch_id=batch_id,
+        ):
+            return
+        self.supersede_failed_batches_for_period(
+            collection.id,
+            period,
+            excluding_batch_id=batch_id,
+        )
+        self.create_batch(collection, files, period=period, batch_id=batch_id, digest=digest)
 
     def collection_period(self, collection: CollectionConfig) -> datetime:
         if collection.schedule == "always":
@@ -520,14 +544,54 @@ class Collector:
             candidate -= timedelta(days=7)
         return candidate.astimezone(UTC)
 
-    def batch_exists_for_period(self, collection_id: str, period: datetime) -> bool:
+    def batch_exists_for_period(
+        self,
+        collection_id: str,
+        period: datetime,
+        *,
+        candidate_batch_id: str,
+    ) -> bool:
         timestamp = period.strftime("%Y%m%dT%H%M%SZ")
         with self.connect() as conn:
-            row = conn.execute(
-                "SELECT 1 FROM batches WHERE collection_id = ? AND collection_timestamp = ?",
+            rows = conn.execute(
+                """
+                SELECT id, state FROM batches
+                WHERE collection_id = ? AND collection_timestamp = ?
+                """,
                 (collection_id, timestamp),
-            ).fetchone()
-        return row is not None
+            ).fetchall()
+        for row in rows:
+            if str(row["id"]) == candidate_batch_id:
+                return True
+            if str(row["state"]) not in {"failed", "failed_notified"}:
+                return True
+        return False
+
+    def supersede_failed_batches_for_period(
+        self,
+        collection_id: str,
+        period: datetime,
+        *,
+        excluding_batch_id: str,
+    ) -> None:
+        timestamp = period.strftime("%Y%m%dT%H%M%SZ")
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id FROM batches
+                WHERE collection_id = ?
+                  AND collection_timestamp = ?
+                  AND state IN ('failed', 'failed_notified')
+                  AND id != ?
+                """,
+                (collection_id, timestamp, excluding_batch_id),
+            ).fetchall()
+            conn.executemany(
+                "UPDATE batches SET state = 'superseded', updated_at = ? WHERE id = ?",
+                [(iso(), str(row["id"])) for row in rows],
+            )
+        for row in rows:
+            shutil.rmtree(self.config.collector.batch_dir / str(row["id"]), ignore_errors=True)
 
     def eligible_files(
         self,
@@ -578,13 +642,12 @@ class Collector:
         files: Sequence[EligibleFile],
         *,
         period: datetime,
+        batch_id: str | None = None,
+        digest: str | None = None,
     ) -> None:
         collection_timestamp = period.strftime("%Y%m%dT%H%M%SZ")
-        manifest = "\n".join(
-            f"{item.target_path} {item.bytes} {item.mtime_ns}" for item in files
-        )
-        digest = hashlib.sha256(manifest.encode("utf-8")).hexdigest()[:12]
-        batch_id = f"{collection_timestamp}__{collection.id}__{digest}"
+        if batch_id is None or digest is None:
+            batch_id, digest = self.batch_identity(collection, files, period=period)
         target = self.target_by_name(collection.target)
         input_upload_id = f"jeb-{collection.id}-{collection_timestamp.lower()}-{digest}"
         job_id = f"{input_upload_id}-job"
@@ -640,6 +703,20 @@ class Collector:
             len(files),
         )
 
+    def batch_identity(
+        self,
+        collection: CollectionConfig,
+        files: Sequence[EligibleFile],
+        *,
+        period: datetime,
+    ) -> tuple[str, str]:
+        collection_timestamp = period.strftime("%Y%m%dT%H%M%SZ")
+        manifest = "\n".join(
+            f"{item.target_path} {item.bytes} {item.mtime_ns}" for item in files
+        )
+        digest = hashlib.sha256(manifest.encode("utf-8")).hexdigest()[:12]
+        return f"{collection_timestamp}__{collection.id}__{digest}", digest
+
     def process_batch(self, batch_id: str) -> None:
         try:
             batch = self.load_batch(batch_id)
@@ -654,10 +731,15 @@ class Collector:
                 self.move_batch_files(batch_id)
             if self.load_batch(batch_id)["state"] == "batched":
                 self.ensure_hashes(batch_id)
+            if self.load_batch(batch_id)["state"] == "hashed":
+                self.ensure_media_preflight(batch_id)
             batch = self.load_batch(batch_id)
             runner = self.target_runners["munchy"]
             runner.advance(self, batch_id)
             self.finish_target_success(batch_id)
+        except PreflightJebError as exc:
+            LOG.exception("batch %s failed media preflight", batch_id)
+            self.mark_unrecoverable(batch_id, str(exc), component="preflight")
         except UnrecoverableJebError as exc:
             LOG.exception("batch %s has unrecoverable error", batch_id)
             self.mark_unrecoverable(batch_id, str(exc), component="target")
@@ -708,6 +790,25 @@ class Collector:
                     (digest, batch_id, row["target_path"]),
                 )
         self.set_batch_state(batch_id, "hashed")
+
+    def ensure_media_preflight(self, batch_id: str) -> None:
+        files = [
+            MediaPreflightFile(
+                source=Path(str(row["staging_path"])),
+                label=str(row["target_path"]),
+                bytes=int(row["bytes"]),
+            )
+            for row in self.batch_files(batch_id)
+            if Path(str(row["target_path"])).suffix.lower() in PREFLIGHT_MEDIA_EXTENSIONS
+        ]
+        if not files:
+            self.set_batch_state(batch_id, "preflighted")
+            return
+        report = run_media_preflight(files, progress=False)
+        if not report.ok:
+            raise PreflightJebError(format_media_preflight_error(report))
+        self.set_batch_state(batch_id, "preflighted")
+
 
     def finish_target_success(self, batch_id: str) -> None:
         batch = self.load_batch(batch_id)
@@ -800,7 +901,7 @@ class MunchyTargetRunner:
         request = munchy_upload_request(collector, batch_id, target)
 
         state = str(batch["state"])
-        if state == "hashed":
+        if state == "preflighted":
             client.create_or_get_input_upload(request)
             collector.set_batch_state(batch_id, "munchy_input_registered")
             state = "munchy_input_registered"
@@ -921,6 +1022,24 @@ def munchy_groups_payload(config: JebConfig) -> dict[str, dict[str, Any]]:
             payload["encode_profile"] = copy.deepcopy(dict(profile))
         out[name] = payload
     return out
+
+
+def format_media_preflight_error(report: MediaPreflightReport) -> str:
+    failed = report.failed_results
+    message = (
+        f"media preflight failed for {len(failed)}/{len(report.results)} file(s); "
+        "no upload started"
+    )
+    if not failed:
+        return message
+    first = failed[0]
+    issue = first.issues[0] if first.issues else None
+    detail = (
+        f"{issue.code}: {issue.message}"
+        if issue is not None
+        else "preflight failed without details"
+    )
+    return f"{message}: {first.file.label}: {detail}"
 
 
 def retry_forever(collector: Collector, label: str, action: Callable[[], Any]) -> Any:

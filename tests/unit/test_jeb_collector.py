@@ -17,6 +17,12 @@ from jeb.collector import (
     parse_duration,
     parse_size,
 )
+from munchy.preflight import (
+    MediaPreflightFile,
+    MediaPreflightIssue,
+    MediaPreflightReport,
+    MediaPreflightResult,
+)
 
 
 def _base_config(
@@ -128,6 +134,15 @@ class CompleteRunner:
 
 
 @dataclass
+class CountingRunner:
+    calls: int = 0
+
+    def advance(self, collector: Collector, batch_id: str) -> None:
+        self.calls += 1
+        collector.set_batch_state(batch_id, "target_complete")
+
+
+@dataclass
 class FlakyRunner:
     calls: int = 0
 
@@ -174,6 +189,21 @@ def _write_stable_file(path: Path, content: bytes = b"video") -> None:
     path.write_bytes(content)
     old = time.time() - 14 * 86_400
     os.utime(path, (old, old))
+
+
+@pytest.fixture(autouse=True)
+def _accept_media_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run_media_preflight(
+        files: list[MediaPreflightFile],
+        *,
+        progress: bool = True,
+    ) -> MediaPreflightReport:
+        return MediaPreflightReport(
+            [MediaPreflightResult(file=file, issues=[]) for file in files],
+            elapsed_seconds=0.01,
+        )
+
+    monkeypatch.setattr("jeb.collector.run_media_preflight", fake_run_media_preflight)
 
 
 def _single_batch_id(collector: Collector) -> str:
@@ -244,7 +274,7 @@ def test_transient_target_errors_retry_without_notification(tmp_path: Path) -> N
     collector.run_once()
 
     assert runner.calls == 1
-    assert collector.load_batch(batch_id)["state"] == "hashed"
+    assert collector.load_batch(batch_id)["state"] == "preflighted"
     assert collector.load_batch(batch_id)["last_error"] == "connection reset by peer"
     assert notifier.messages == []
 
@@ -253,6 +283,82 @@ def test_transient_target_errors_retry_without_notification(tmp_path: Path) -> N
     assert runner.calls == 2
     assert collector.load_batch(batch_id)["state"] == "target_succeeded"
     assert notifier.messages == []
+
+
+def test_media_preflight_failure_notifies_before_munchy_upload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _base_config(tmp_path)
+    _write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4")
+    notifier = RecordingNotifier([])
+    runner = CountingRunner()
+
+    def fake_run_media_preflight(
+        files: list[MediaPreflightFile],
+        *,
+        progress: bool = True,
+    ) -> MediaPreflightReport:
+        return MediaPreflightReport(
+            [
+                MediaPreflightResult(
+                    file=files[0],
+                    issues=[
+                        MediaPreflightIssue(
+                            "mp4_atom_extends_past_eof",
+                            "top-level atom b'mdat' extends past EOF",
+                        )
+                    ],
+                )
+            ],
+            elapsed_seconds=0.01,
+        )
+
+    monkeypatch.setattr("jeb.collector.run_media_preflight", fake_run_media_preflight)
+    collector = Collector(config, target_runners={"munchy": runner}, notifier=notifier)
+
+    collector.run_once()
+    batch_id = _single_batch_id(collector)
+    collector.run_once()
+
+    assert runner.calls == 0
+    assert collector.load_batch(batch_id)["state"] == "failed_notified"
+    assert notifier.messages == [
+        (
+            f"{batch_id}:preflight:media preflight failed for 1/1 file(s); "
+            "no upload started: camera/clip.mp4: mp4_atom_extends_past_eof: "
+            "top-level atom b'mdat' extends past EOF"
+        )
+    ]
+
+
+def test_failed_weekly_batch_allows_new_batch_after_source_manifest_changes(
+    tmp_path: Path,
+) -> None:
+    config = _base_config(tmp_path)
+    _write_stable_file(tmp_path / "landing" / "camera" / "bad.mp4")
+    notifier = RecordingNotifier([])
+    collector = Collector(
+        config,
+        target_runners={"munchy": BrokenRunner("unrepairable media")},
+        notifier=notifier,
+    )
+
+    collector.run_once()
+    failed_batch_id = _single_batch_id(collector)
+    collector.run_once()
+    assert collector.load_batch(failed_batch_id)["state"] == "failed_notified"
+
+    _write_stable_file(tmp_path / "landing" / "camera" / "good.mp4")
+    collector.target_runners["munchy"] = CompleteRunner()
+    collector.run_once()
+
+    batch_ids = collector.active_batch_ids()
+    assert failed_batch_id not in batch_ids
+    assert collector.load_batch(failed_batch_id)["state"] == "superseded"
+    assert not (tmp_path / "batches" / failed_batch_id).exists()
+    assert len(batch_ids) == 1
+    assert collector.load_batch(batch_ids[0])["state"] == "batching"
 
 
 def test_unrecoverable_errors_send_daily_critical_reminders(tmp_path: Path) -> None:
