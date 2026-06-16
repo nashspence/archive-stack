@@ -854,6 +854,7 @@ def munchy_upload_request(
         "collection_slug": str(batch["collection_slug"]),
         "collection_timestamp": str(batch["collection_timestamp"]),
         "workflow_mode": collector.config.munchy_job_defaults.get("workflow_mode", "archive"),
+        "archive_mode": "av1_nvenc",
         "gpu_tasks": [],
         "groups": groups,
         "riverhog": dict(collector.config.munchy_job_defaults.get("riverhog") or {}),
@@ -866,6 +867,8 @@ def munchy_upload_request(
     }
     storage_hint = {
         "workflow_mode": job_payload["workflow_mode"],
+        "archive_mode": job_payload["archive_mode"],
+        "gpu_tasks": job_payload["gpu_tasks"],
         "structured_routing": bool(job_payload.get("profile_routing")),
         "groups": {
             name: {

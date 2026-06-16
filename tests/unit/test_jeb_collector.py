@@ -326,6 +326,8 @@ def test_munchy_payload_uses_structured_routing(tmp_path: Path) -> None:
     assert [item.rel_path for item in request.files] == ["camera/clip.mp4", "camera/clip.xml"]
     assert request.storage_hint == {
         "workflow_mode": "archive",
+        "archive_mode": "av1_nvenc",
+        "gpu_tasks": [],
         "structured_routing": True,
         "groups": {
             "video": {
@@ -338,6 +340,7 @@ def test_munchy_payload_uses_structured_routing(tmp_path: Path) -> None:
             },
         },
     }
+    assert request.job_payload["archive_mode"] == "av1_nvenc"
     assert request.job_payload["gpu_tasks"] == []
     assert request.job_payload["groups"]["video"]["encode_profile"]["archive"]["quality"] == 38
     assert request.job_payload["groups"]["passthrough"]["archive_mode"] == "originals"
