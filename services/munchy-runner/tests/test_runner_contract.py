@@ -642,6 +642,53 @@ def test_load_input_upload_does_not_refresh_state_timestamp(
     assert after == before
 
 
+def test_resume_job_clears_failed_runtime_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    cancelled: list[str] = []
+    monkeypatch.setattr(runner, "schedule_pending_jobs", lambda _background_tasks: None)
+    monkeypatch.setattr(
+        runner,
+        "cancel_riverhog_upload_session",
+        lambda job, reason: cancelled.append(f"{job['job_id']}:{reason}"),
+    )
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "failed",
+            "phase": "gpu-eager:pipeline=1/3",
+            "input_upload_id": "upload-1",
+            "error": "old error",
+            "finished_at": "2026-01-01T00:00:00Z",
+            "groups": {"camera": {"archive_mode": "av1_nvenc", "gpu_tasks": ["archive_video"]}},
+            "profile_routing_result": {"files": 1},
+            "eager_archive": {"files": {"camera/a.mp4": {"state": "failed"}}},
+            "riverhog_session_upload": {"collection_id": "collection-1", "files": {}},
+            "debug_bundle_dir": "/debug/old",
+        }
+    )
+
+    resumed = runner.resume_job("job-1", runner.BackgroundTasks())
+    stored = runner.load_job("job-1")
+
+    assert resumed["state"] == "queued"
+    assert stored["phase"] == "queued"
+    assert cancelled == ["job-1:job_resume_reset"]
+    assert "error" not in stored
+    assert "finished_at" not in stored
+    assert "eager_archive" not in stored
+    assert "riverhog_session_upload" not in stored
+    assert "profile_routing_result" not in stored
+    assert "debug_bundle_dir" not in stored
+    assert stored["groups"] == {
+        "camera": {"archive_mode": "av1_nvenc", "gpu_tasks": ["archive_video"]}
+    }
+
+
 def test_cancel_job_with_cleanup_removes_local_work_and_input_upload(
     tmp_path: Path,
     monkeypatch,
@@ -1477,6 +1524,51 @@ def test_eager_archive_upload_progress_does_not_report_shared_input_tree(
 
     assert progress is not None
     assert progress["files_uploaded"] == 1
+    assert "input_tree_files_ready" not in progress
+    assert "input_tree_bytes_ready" not in progress
+
+
+def test_structured_unrouted_upload_progress_does_not_require_groups(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "storage_hint": {"workflow_mode": "archive", "structured_routing": True},
+            "files": [
+                {
+                    "path": "front-door/clip.mp4",
+                    "bytes": 7,
+                    "upload_id": "upload-a",
+                    "input_upload_id": "upload-1",
+                    "structured_routing": True,
+                }
+            ],
+        }
+    )
+    runner.tusd_data_path("upload-a").parent.mkdir(parents=True, exist_ok=True)
+    runner.tusd_data_path("upload-a").write_bytes(b"video-a")
+
+    progress = runner.upload_progress_for_job(
+        {
+            "input_upload_id": "upload-1",
+            "groups": {
+                "video": {
+                    "archive_mode": "av1_nvenc",
+                    "gpu_tasks": ["archive_video"],
+                },
+                "passthrough": {"archive_mode": "passthrough", "gpu_tasks": []},
+            },
+        }
+    )
+
+    assert progress is not None
+    assert progress["files_uploaded"] == 1
+    assert progress["uploaded_bytes"] == 7
     assert "input_tree_files_ready" not in progress
     assert "input_tree_bytes_ready" not in progress
 

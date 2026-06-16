@@ -1939,6 +1939,7 @@ def compact_job_for_storage(payload: dict[str, Any]) -> dict[str, Any]:
 def save_job(job: dict[str, Any]) -> dict[str, Any]:
     payload = dict(job)
     allow_clear_cancel = bool(payload.pop("_allow_clear_cancel", False))
+    reset_runtime_state = bool(payload.pop("_reset_runtime_state", False))
     job_id = str(payload["job_id"])
     with job_state_lock:
         current = read_state("job", job_id)
@@ -1949,7 +1950,11 @@ def save_job(job: dict[str, Any]) -> dict[str, Any]:
             and payload.get("state") not in TERMINAL_JOB_STATES
         ):
             return current
-        if isinstance(current, dict) and payload.get("state") not in TERMINAL_JOB_STATES:
+        if (
+            isinstance(current, dict)
+            and payload.get("state") not in TERMINAL_JOB_STATES
+            and not reset_runtime_state
+        ):
             current_riverhog = current.get("riverhog_session_upload")
             payload_riverhog = payload.get("riverhog_session_upload")
             if isinstance(current_riverhog, dict) and isinstance(payload_riverhog, dict):
@@ -2552,6 +2557,16 @@ def input_upload_groups(upload: dict[str, Any]) -> list[str]:
     if not groups:
         raise RuntimeError("input upload does not contain any files")
     return groups
+
+
+def input_upload_routed_groups(upload: dict[str, Any]) -> set[str]:
+    return {
+        group
+        for group in {
+            upload_file_resolved_group(file_state) for file_state in upload.get("files", [])
+        }
+        if group
+    }
 
 
 def profile_name_for(encode_profile: dict[str, Any] | None) -> str:
@@ -3163,6 +3178,33 @@ def compact_terminal_job_state(job: dict[str, Any]) -> bool:
     if changed and not job.get("terminal_state_compacted_at"):
         job["terminal_state_compacted_at"] = now_iso()
     return changed
+
+
+RESUMABLE_RUNTIME_JOB_KEYS = (
+    "collection_preview_upload_result",
+    "debug_bundle_created_at",
+    "debug_bundle_dir",
+    "debug_bundle_reason",
+    "eager_archive",
+    "gpu_payloads",
+    "gpu_result",
+    "gpu_results",
+    "gpu_statuses",
+    "group_results",
+    "input_upload_progress",
+    "profile_routing_result",
+    "review_upload_result",
+    "riverhog_handoff_metrics",
+    "riverhog_session_upload",
+    "riverhog_upload_result",
+    "terminal_progress",
+    "terminal_state_compacted_at",
+)
+
+
+def reset_resumable_job_runtime_state(job: dict[str, Any]) -> None:
+    for key in RESUMABLE_RUNTIME_JOB_KEYS:
+        job.pop(key, None)
 
 
 def cleanup_terminal_job(job: dict[str, Any]) -> list[str]:
@@ -5398,7 +5440,7 @@ def upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
     bytes_total = int(upload.get("bytes_total") or 0)
     uploaded_bytes = int(upload.get("uploaded_bytes") or 0)
     tree_progress: dict[str, int] = {}
-    group_names = set(input_upload_groups(upload))
+    group_names = input_upload_routed_groups(upload)
     groups = job.get("groups")
     if isinstance(groups, dict):
         eager_groups = eager_archive_group_names(groups)
@@ -6767,6 +6809,8 @@ def resume_job(job_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]
         job = load_job(job_id)
         if job.get("state") == "succeeded":
             return job
+        cancel_riverhog_upload_session(job, reason="job_resume_reset")
+        reset_resumable_job_runtime_state(job)
         job["state"] = "queued"
         job["phase"] = "queued"
         job.pop("cancel_requested", None)
@@ -6775,6 +6819,7 @@ def resume_job(job_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]
         job.pop("error", None)
         job.pop("finished_at", None)
         job["_allow_clear_cancel"] = True
+        job["_reset_runtime_state"] = True
         save_job(job)
     schedule_pending_jobs(background_tasks)
     return job
