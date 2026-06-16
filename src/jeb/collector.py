@@ -850,6 +850,7 @@ def munchy_upload_request(
         "collection_slug": str(batch["collection_slug"]),
         "collection_timestamp": str(batch["collection_timestamp"]),
         "workflow_mode": collector.config.munchy_job_defaults.get("workflow_mode", "archive"),
+        "gpu_tasks": [],
         "groups": groups,
         "riverhog": dict(collector.config.munchy_job_defaults.get("riverhog") or {}),
         "review_upload": dict(collector.config.munchy_job_defaults.get("review_upload") or {}),

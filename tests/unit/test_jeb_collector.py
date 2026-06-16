@@ -338,6 +338,7 @@ def test_munchy_payload_uses_structured_routing(tmp_path: Path) -> None:
             },
         },
     }
+    assert request.job_payload["gpu_tasks"] == []
     assert request.job_payload["groups"]["video"]["encode_profile"]["archive"]["quality"] == 38
     assert request.job_payload["groups"]["passthrough"]["archive_mode"] == "passthrough"
     assert request.job_payload["profile_routing"]["routes"][0]["group"] == "video"

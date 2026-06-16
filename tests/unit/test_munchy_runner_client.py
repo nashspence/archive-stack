@@ -19,10 +19,10 @@ from munchy.runner_client import (
     RunnerUploadRequest,
     UploadProgress,
     UploadRetryReporter,
+    format_encode_progress,
     format_job_failure,
     format_job_status_line,
     format_job_summary_line,
-    format_encode_progress,
     format_progress_status_line,
     format_riverhog_archive_progress,
     format_riverhog_promotion_progress,
@@ -836,6 +836,42 @@ def test_create_job_retries_transient_setup_timeout() -> None:
 
     assert job["job_id"] == "job-1"
     assert post_calls == 2
+
+
+def test_create_job_preserves_non_existing_job_conflict() -> None:
+    request = RunnerUploadRequest(
+        upload_id="upload-1",
+        job_id="job-1",
+        files=(),
+        storage_hint={"source_bytes": 0},
+        job_payload={"job_id": "job-1", "input_upload_id": "upload-1"},
+    )
+    client = MunchyRunnerClient("http://runner")
+
+    def fake_request(
+        method: str,
+        path: str,
+        **_kwargs: object,
+    ) -> tuple[int, bytes, object]:
+        assert method == "POST"
+        assert path == "/v1/jobs"
+        return (
+            409,
+            json.dumps(
+                {
+                    "detail": {
+                        "error": "storage_hint_mismatch",
+                        "message": "input upload storage_hint does not match requested job",
+                    }
+                }
+            ).encode(),
+            object(),
+        )
+
+    client.request = fake_request  # type: ignore[method-assign]
+
+    with pytest.raises(RunnerHttpError, match="storage_hint_mismatch"):
+        client.create_job(request)
 
 
 def test_upload_file_retries_transient_error_and_refreshes_offset(tmp_path: Path) -> None:

@@ -134,6 +134,24 @@ def format_runner_http_body(status: int, body: bytes) -> str:
     return text
 
 
+def job_conflict_means_existing_job(body: bytes) -> bool:
+    text = body.decode("utf-8", "replace").strip()
+    if not text:
+        return False
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    detail = parsed.get("detail")
+    if isinstance(detail, str):
+        return detail.startswith("job already exists:")
+    if isinstance(detail, dict):
+        return str(detail.get("error") or "") == "job_already_exists"
+    return False
+
+
 class RunnerHttpError(RuntimeError):
     def __init__(self, method: str, url: str, status: int, body: bytes) -> None:
         text = format_runner_http_body(status, body)
@@ -1763,6 +1781,8 @@ class MunchyRunnerClient:
         )
         if status == 202:
             return json.loads(body.decode("utf-8"))
+        if not job_conflict_means_existing_job(body):
+            raise RunnerHttpError("POST", f"{self.base_url}/v1/jobs", status, body)
         existing = self._json_with_transient_retries(
             "GET",
             f"/v1/jobs/{urllib.parse.quote(request.job_id)}",
