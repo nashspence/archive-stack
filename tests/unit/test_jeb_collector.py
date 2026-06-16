@@ -565,6 +565,23 @@ def test_failed_weekly_batch_allows_new_batch_after_source_manifest_changes(
     assert collector.load_batch(batch_ids[0])["state"] == "batching"
 
 
+def test_superseded_weekly_batch_can_retry_same_source_manifest(tmp_path: Path) -> None:
+    config = _base_config(tmp_path)
+    _write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4")
+    collector = Collector(config, target_runners={"munchy": CompleteRunner()})
+
+    collector.run_once()
+    first_batch_id = _single_batch_id(collector)
+    collector.set_batch_state(first_batch_id, "superseded", "operator canceled")
+    collector.run_once()
+
+    batch_ids = collector.active_batch_ids()
+    assert batch_ids == [f"{first_batch_id}-r2"]
+    retry_batch = collector.load_batch(batch_ids[0])
+    assert retry_batch["input_upload_id"].endswith("-r2")
+    assert retry_batch["job_id"].endswith("-r2-job")
+
+
 def test_unrecoverable_errors_send_daily_critical_reminders(tmp_path: Path) -> None:
     config = _base_config(tmp_path)
     _write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4")

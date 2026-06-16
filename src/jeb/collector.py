@@ -520,13 +520,14 @@ class Collector:
                 total / 1_000_000_000,
             )
             return
-        batch_id, digest = self.batch_identity(collection, files, period=period)
+        base_batch_id, base_digest = self.batch_identity(collection, files, period=period)
         if collection.schedule == "weekly" and self.batch_exists_for_period(
             collection.id,
             period,
-            candidate_batch_id=batch_id,
+            candidate_batch_id=base_batch_id,
         ):
             return
+        batch_id, digest = self.available_batch_identity(base_batch_id, base_digest)
         self.supersede_failed_batches_for_period(
             collection.id,
             period,
@@ -566,11 +567,28 @@ class Collector:
                 (collection_id, timestamp),
             ).fetchall()
         for row in rows:
-            if str(row["id"]) == candidate_batch_id:
+            if str(row["id"]) == candidate_batch_id and str(row["state"]) != "superseded":
                 return True
             if str(row["state"]) not in {"failed", "failed_notified", "superseded"}:
                 return True
         return False
+
+    def available_batch_identity(self, batch_id: str, digest: str) -> tuple[str, str]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, state FROM batches WHERE id = ? OR id GLOB ? ORDER BY id",
+                (batch_id, f"{batch_id}-r*"),
+            ).fetchall()
+        existing = {str(row["id"]): str(row["state"]) for row in rows}
+        if batch_id not in existing:
+            return batch_id, digest
+        if existing[batch_id] != "superseded":
+            return batch_id, digest
+        for attempt in range(2, 10_000):
+            candidate = f"{batch_id}-r{attempt}"
+            if candidate not in existing:
+                return candidate, f"{digest}-r{attempt}"
+        raise UnrecoverableJebError(f"could not choose retry batch id for {batch_id}")
 
     def supersede_failed_batches_for_period(
         self,
