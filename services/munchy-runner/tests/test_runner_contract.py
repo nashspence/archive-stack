@@ -697,6 +697,7 @@ def test_resume_job_preserves_fully_uploaded_riverhog_session(
     runner.ensure_dirs()
     runner.init_state_store()
     monkeypatch.setattr(runner, "schedule_pending_jobs", lambda _background_tasks: None)
+    monkeypatch.setattr(runner, "riverhog_session_visible_for_resume", lambda _job: True)
     monkeypatch.setattr(
         runner,
         "cancel_riverhog_upload_session",

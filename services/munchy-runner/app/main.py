@@ -4627,6 +4627,26 @@ def can_resume_preserving_riverhog_session(job: dict[str, Any]) -> bool:
     return all_riverhog_session_files_uploaded(job)
 
 
+def riverhog_session_visible_for_resume(job: dict[str, Any]) -> bool:
+    if not RIVERHOG_UPLOAD_ENABLED:
+        return True
+    api = ApiClient()
+    try:
+        sync_riverhog_session_from_remote(job, api)
+        return True
+    except NotFound:
+        return False
+    except Exception as exc:
+        log.warning(
+            "could not verify riverhog session before preserving resume for %s: %s",
+            job.get("job_id"),
+            exc,
+        )
+        return True
+    finally:
+        api.close()
+
+
 def complete_riverhog_session(
     job: dict[str, Any],
     api: ApiClient,
@@ -6865,7 +6885,10 @@ def resume_job(job_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]
         job = load_job(job_id)
         if job.get("state") == "succeeded":
             return job
-        preserve_riverhog_session = can_resume_preserving_riverhog_session(job)
+        preserve_riverhog_session = (
+            can_resume_preserving_riverhog_session(job)
+            and riverhog_session_visible_for_resume(job)
+        )
         if preserve_riverhog_session:
             for key in (
                 "debug_bundle_created_at",
