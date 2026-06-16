@@ -3181,6 +3181,12 @@ def compact_terminal_job_state(job: dict[str, Any]) -> bool:
 
 
 RESUMABLE_RUNTIME_JOB_KEYS = (
+    "cleanup_completed_at",
+    "cleanup_error",
+    "cleanup_failed_at",
+    "cleanup_removed",
+    "cleanup_removed_count",
+    "cleanup_removed_sample",
     "collection_preview_upload_result",
     "debug_bundle_created_at",
     "debug_bundle_dir",
@@ -3192,8 +3198,15 @@ RESUMABLE_RUNTIME_JOB_KEYS = (
     "gpu_statuses",
     "group_results",
     "input_upload_progress",
+    "input_upload_deleted_at",
+    "local_work_cleaned_at",
+    "local_work_removed",
+    "local_work_removed_count",
+    "local_work_removed_sample",
     "profile_routing_result",
     "review_upload_result",
+    "riverhog_cancel_error",
+    "riverhog_cancel_failed_at",
     "riverhog_handoff_metrics",
     "riverhog_session_upload",
     "riverhog_upload_result",
