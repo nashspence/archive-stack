@@ -7,7 +7,7 @@ FTP_ROOT="${FTP_ROOT:-/home/ftpusers}"
 FTPD_USERS="${FTPD_USERS:-}"
 FTPD_MAX_CLIENTS="${FTPD_MAX_CLIENTS:-40}"
 FTPD_MAX_CONNECTIONS="${FTPD_MAX_CONNECTIONS:-8}"
-PUBLICHOST="${PUBLICHOST:-${FTPD_PUBLICHOST:-}}"
+PUBLICHOST="${FTPD_PUBLICHOST:-${PUBLICHOST:-}}"
 
 password_var_for_user() {
     printf 'FTPD_PASSWORD_%s' "$(printf '%s' "$1" | tr '[:lower:].-' '[:upper:]__' | tr -c 'A-Z0-9_' '_')"
