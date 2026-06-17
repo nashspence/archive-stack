@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from riverhog_core.crypto_age import encrypted_size_for_plaintext_size
 from riverhog_core.domain.errors import NotYetImplemented
@@ -11,6 +12,7 @@ from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.planning import (
     ImageRootPlanningService,
     ImageRootRecord,
+    SqlAlchemyPlanningService,
     _build_plan_piece_groups,
     _candidate_metadata_pad,
     _CollectionPieceGroup,
@@ -216,6 +218,42 @@ def test_image_root_planning_service_requires_finalize_lookup_when_finalizing() 
 
     with pytest.raises(NotYetImplemented, match="finalize_image is not configured"):
         service.finalize_image("img_001")
+
+
+def test_sqlalchemy_planning_service_finalize_returns_concurrent_existing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = object.__new__(SqlAlchemyPlanningService)
+
+    def fake_finalize_once(candidate_id: str) -> dict[str, object]:
+        raise IntegrityError("insert finalized image", {}, Exception("duplicate image id"))
+
+    monkeypatch.setattr(service, "_finalize_image_once", fake_finalize_once)
+    monkeypatch.setattr(
+        service,
+        "_finalized_candidate_view",
+        lambda candidate_id: {"id": "20260420T040001Z", "candidate_id": candidate_id},
+    )
+
+    assert service.finalize_image("candidate-1") == {
+        "id": "20260420T040001Z",
+        "candidate_id": "candidate-1",
+    }
+
+
+def test_sqlalchemy_planning_service_finalize_reraises_unmatched_integrity_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = object.__new__(SqlAlchemyPlanningService)
+
+    def fake_finalize_once(candidate_id: str) -> dict[str, object]:
+        raise IntegrityError("insert finalized image", {}, Exception("duplicate image id"))
+
+    monkeypatch.setattr(service, "_finalize_image_once", fake_finalize_once)
+    monkeypatch.setattr(service, "_finalized_candidate_view", lambda candidate_id: None)
+
+    with pytest.raises(IntegrityError):
+        service.finalize_image("candidate-1")
 
 
 def test_image_root_planning_service_requires_list_lookup_when_listing_images() -> None:

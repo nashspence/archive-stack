@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from sqlalchemy import func, insert, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from riverhog_core.archive_compliance import (
@@ -399,6 +400,30 @@ class SqlAlchemyPlanningService:
             return _strip_internal(_finalized_image_view(record, session))
 
     def finalize_image(self, candidate_id: str) -> dict[str, object]:
+        try:
+            return self._finalize_image_once(candidate_id)
+        except IntegrityError:
+            existing = self._finalized_candidate_view(candidate_id)
+            if existing is None:
+                raise
+            _LOG.info(
+                "candidate %s was finalized concurrently; returning existing image",
+                candidate_id,
+            )
+            return existing
+
+    def _finalized_candidate_view(self, candidate_id: str) -> dict[str, object] | None:
+        with session_scope(self._session_factory) as session:
+            existing = session.scalar(
+                select(FinalizedImageRecord).where(
+                    FinalizedImageRecord.candidate_id == candidate_id
+                )
+            )
+            if existing is None:
+                return None
+            return _strip_internal(_finalized_image_view(existing, session))
+
+    def _finalize_image_once(self, candidate_id: str) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
             candidate = session.get(PlannedCandidateRecord, candidate_id)
             if candidate is None:
