@@ -4,6 +4,7 @@ set -eu
 FTP_UID="${FTP_UID:-${FTPD_UID:-1000}}"
 FTP_GID="${FTP_GID:-${FTPD_GID:-1000}}"
 FTP_ROOT="${FTP_ROOT:-/home/ftpusers}"
+PASSWD_FILE="${PASSWD_FILE:-/etc/pure-ftpd/passwd/pureftpd.passwd}"
 FTPD_USERS="${FTPD_USERS:-}"
 FTPD_MAX_CLIENTS="${FTPD_MAX_CLIENTS:-40}"
 FTPD_MAX_CONNECTIONS="${FTPD_MAX_CONNECTIONS:-8}"
@@ -27,11 +28,13 @@ create_user() {
     mkdir -p "$home"
     chown -R "$FTP_UID:$FTP_GID" "$home"
 
-    if pure-pw show "$username" >/dev/null 2>&1; then
-        printf '%s\n%s\n' "$password" "$password" | pure-pw passwd "$username" >/dev/null
+    if pure-pw show "$username" -f "$PASSWD_FILE" >/dev/null 2>&1; then
+        printf '%s\n%s\n' "$password" "$password" |
+            pure-pw passwd "$username" -f "$PASSWD_FILE" >/dev/null
     else
         printf '%s\n%s\n' "$password" "$password" |
-            pure-pw useradd "$username" -u "$FTP_UID" -g "$FTP_GID" -d "$home" >/dev/null
+            pure-pw useradd "$username" -f "$PASSWD_FILE" \
+                -u "$FTP_UID" -g "$FTP_GID" -d "$home" >/dev/null
     fi
 }
 
@@ -45,6 +48,8 @@ if [ -z "$PUBLICHOST" ]; then
     exit 1
 fi
 
+mkdir -p "$(dirname "$PASSWD_FILE")"
+
 old_ifs="$IFS"
 IFS=","
 for username in $FTPD_USERS; do
@@ -54,7 +59,7 @@ for username in $FTPD_USERS; do
 done
 IFS="$old_ifs"
 
-pure-pw mkdb
+pure-pw mkdb /etc/pure-ftpd/pureftpd.pdb -f "$PASSWD_FILE"
 exec /run.sh \
     -c "$FTPD_MAX_CLIENTS" \
     -C "$FTPD_MAX_CONNECTIONS" \
