@@ -1,12 +1,13 @@
 #!/usr/bin/env sh
 set -eu
 
-FTP_UID="${FTP_UID:-1000}"
-FTP_GID="${FTP_GID:-1000}"
+FTP_UID="${FTP_UID:-${FTPD_UID:-1000}}"
+FTP_GID="${FTP_GID:-${FTPD_GID:-1000}}"
 FTP_ROOT="${FTP_ROOT:-/home/ftpusers}"
 FTPD_USERS="${FTPD_USERS:-}"
 FTPD_MAX_CLIENTS="${FTPD_MAX_CLIENTS:-40}"
 FTPD_MAX_CONNECTIONS="${FTPD_MAX_CONNECTIONS:-8}"
+PUBLICHOST="${PUBLICHOST:-${FTPD_PUBLICHOST:-}}"
 
 password_var_for_user() {
     printf 'FTPD_PASSWORD_%s' "$(printf '%s' "$1" | tr '[:lower:].-' '[:upper:]__' | tr -c 'A-Z0-9_' '_')"
@@ -36,6 +37,11 @@ create_user() {
 
 if [ -z "$FTPD_USERS" ]; then
     echo "FTPD_USERS must list at least one FTP user" >&2
+    exit 1
+fi
+
+if [ -z "$PUBLICHOST" ]; then
+    echo "PUBLICHOST or FTPD_PUBLICHOST must be set" >&2
     exit 1
 fi
 
