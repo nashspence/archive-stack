@@ -1,32 +1,21 @@
 # Upload Transport Reference
 
-Riverhog uploads use two separate byte granularities:
-
-- the resumable request chunk, controlled by `RIVERHOG_UPLOAD_CHUNK_BYTES`
-- the client socket write slice, controlled by `RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES`
-
-The default request chunk is 8 MiB. The default socket write pacing is 256 KiB
-sub-writes with a 0.005 second delay between sub-writes.
+Riverhog uploads use bounded resumable request chunks, controlled by
+`RIVERHOG_UPLOAD_CHUNK_BYTES`. The default request chunk is 8 MiB, and the
+current CLI sends each chunk as one PATCH request body through the HTTP client.
 The CLI uploads one file at a time by default; operators may raise
 `RIVERHOG_UPLOAD_FILE_CONCURRENCY` for collections containing many small files.
 
-## Why Riverhog Paces Upload Writes
+## Current Upload Shape
 
-The CLI must not hand a whole upload request body to the local TCP stack as fast
-as possible. On some LAN and Wi-Fi paths, aggressive client-side writes can stall
-or lose progress below HTTP before the reverse proxy has received a complete
-request body. In that failure mode:
+The current upload contract is deliberately small:
 
-- nginx/SWAG may not log a `PATCH` because no complete HTTP request body reached
-  the proxy
-- the Riverhog app and tusd never see the chunk
-- curl may report `size_upload` equal to the body size even though those bytes
-  were only accepted by the local client socket, not by the server
-- the client can leave long-lived `FIN_WAIT_1` sockets with queued unsent data
-
-Paced writes let the network path and reverse proxy apply normal backpressure.
-Riverhog treats this pacing as part of the client upload contract, not as a
-debug workaround.
+- one bounded PATCH body per resumable chunk
+- one logical file worker by default
+- resumable retry after transient HTTP failures, dropped responses, and timeout
+- server-authoritative offset re-check before sending more bytes after an
+  interrupted chunk
+- one reused HTTP connection pool per CLI invocation
 
 ## Validated Defaults
 
@@ -36,16 +25,13 @@ The default upload profile is:
 RIVERHOG_UPLOAD_CHUNK_BYTES=8388608
 RIVERHOG_UPLOAD_FILE_CONCURRENCY=1
 RIVERHOG_UPLOAD_FILE_LOG_BYTES=1048576
-RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES=262144
-RIVERHOG_UPLOAD_WRITE_DELAY_SECONDS=0.005
-RIVERHOG_UPLOAD_TIMEOUT_SECONDS=60
+RIVERHOG_UPLOAD_TIMEOUT_SECONDS=300
 RIVERHOG_UPLOAD_FINALIZE_POLL_SECONDS=5
 RIVERHOG_UPLOAD_FINALIZE_TIMEOUT_SECONDS=0
 ```
 
-This profile keeps retry cost and proxy body size bounded while avoiding the
-observed low-level stall. Larger request chunks can improve throughput by
-reducing per-request overhead, but they also increase:
+This profile keeps retry cost and proxy body size bounded. Larger request chunks
+can improve throughput by reducing per-request overhead, but they also increase:
 
 - memory pressure in the CLI and API process
 - the size of a chunk that must be retried after a transient failure
@@ -79,18 +65,16 @@ then into committed hot storage for planning. The target path metadata sent to
 tusd is itself base64 text, not the raw path, so upload metadata remains safe
 for paths with literal spaces or other punctuation.
 
-Larger socket write slices or shorter write delays are riskier than larger
-request chunks. Do not benchmark more aggressive values after a failed or
-aborted bulk upload unless local stale sockets have cleared first; orphaned
-`FIN_WAIT_1` sockets with queued send data can make an otherwise stable profile
-look broken.
+Do not benchmark more aggressive request chunks after a failed or aborted bulk
+upload unless local stale sockets have cleared first; orphaned `FIN_WAIT_1`
+sockets with queued send data can make an otherwise stable profile look broken.
 
-After the final file chunk is accepted, the default `--wait staged` mode exits
-once server custody has begun and background archival continues through operator
-notifications and the API. Use `--wait finalized` when the CLI should remain
-attached until Riverhog uploads and verifies the collection-native Glacier
-archive package. `RIVERHOG_UPLOAD_FINALIZE_TIMEOUT_SECONDS=0` means no CLI-side
-deadline for that finalized handoff.
+After the final file chunk is accepted, the default `--wait finalized` mode
+remains attached until Riverhog uploads and verifies the collection-native
+Glacier archive package. Use `--wait staged` when the CLI should exit once
+server custody has begun and background archival continues through operator
+notifications and the API. `RIVERHOG_UPLOAD_FINALIZE_TIMEOUT_SECONDS=0` means
+no CLI-side deadline for that finalized handoff.
 
 ## Proxy Guidance
 
@@ -106,18 +90,19 @@ For nginx/SWAG deployments:
 - keep proxy read timeouts long enough for ISO download preparation; xorriso can
   spend more than a minute building metadata for images with many small files
   before the first response byte is available
-- preserve HTTP/2 support, but expect HTTP/1.1 to work with paced writes too
+- preserve HTTP/2 support, but expect HTTP/1.1 to work with the same bounded
+  request bodies too
 
 Example values:
 
 ```nginx
 client_max_body_size 16m;
-client_body_timeout 75s;
-send_timeout 75s;
+client_body_timeout 330s;
+send_timeout 330s;
 
 proxy_request_buffering on;
 proxy_read_timeout 1h;
-proxy_send_timeout 75s;
+proxy_send_timeout 330s;
 ```
 
 Operators who raise `RIVERHOG_UPLOAD_CHUNK_BYTES` must raise the proxy body
@@ -137,16 +122,16 @@ Use several layers together:
 - local socket state when aborted uploads leave queued `FIN_WAIT_1` connections
 
 A stalled upload where nginx has no `PATCH` access-log entry is below the HTTP
-application layer. Tune client write pacing or the network path before changing
-Riverhog API logic.
+application layer. Investigate the network path, local socket state, request
+chunk size, and timeout profile before changing Riverhog API logic.
 
 ## Debug Findings
 
-The upload transport issue that drove these defaults was reproduced and narrowed
-as follows:
+The upload transport issue that shaped the current conservative chunk and
+timeout defaults was reproduced and narrowed as follows:
 
-- paced httpx uploads succeeded through the public SWAG endpoint over both
-  HTTP/1.1 and HTTP/2
+- diagnostic paced httpx uploads succeeded through the public SWAG endpoint over
+  both HTTP/1.1 and HTTP/2
 - server-local curl through the same SWAG config succeeded with and without
   `Expect: 100-continue`
 - unpaced curl from the Mac to the server could time out before nginx logged a
@@ -157,17 +142,16 @@ as follows:
 - disabling macOS TCP segmentation offload did not fix the unpaced failure
 - ten consecutive raw 64 MiB transfers succeeded with 64 KiB writes and a 0.01
   second delay
-- Riverhog soak tests with 8 MiB request chunks and 64 KiB paced writes completed
-  20 chunks over HTTP/1.1 and 20 chunks over HTTP/2 with exact offset progression
+- Riverhog soak tests with 8 MiB request chunks and diagnostic 64 KiB paced
+  writes completed 20 chunks over HTTP/1.1 and 20 chunks over HTTP/2 with exact
+  offset progression
 - later real-upload and synthetic probes exposed that previous failed attempts
   had left 73 orphaned local sockets to the SWAG endpoint, with about 103 MB of
   queued unsent data; those stale sockets survived Wi-Fi and interface toggles
   and required a reboot to clear
-- after rebooting into a clean local TCP state, the same HTTP/2 path completed a
-  100-chunk 8 MiB soak with the conservative 64 KiB/0.01s pacing profile
-- clean-state tuning then completed 100-chunk and 200-chunk soaks with
-  256 KiB/0.005s socket pacing, averaging about 10 MiB/s with no retries and no
-  stale local sockets afterward
+- after rebooting into a clean local TCP state, the same HTTP/2 path completed
+  repeated 8 MiB chunk soak tests without Riverhog changing server-side upload
+  semantics
 
 This points to aggressive client-to-server bulk writes on the local network path,
 not an nginx/SWAG HTTP body-size limitation and not a Riverhog/tusd partial-chunk

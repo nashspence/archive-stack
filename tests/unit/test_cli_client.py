@@ -32,6 +32,16 @@ def test_api_client_uses_env_configured_control_timeout(monkeypatch) -> None:
     assert captured == [12.5]
 
 
+def test_upload_client_default_timeout_is_tuned_for_large_chunks(monkeypatch) -> None:
+    monkeypatch.delenv("RIVERHOG_UPLOAD_TIMEOUT_SECONDS", raising=False)
+
+    client = ApiClient(base_url="https://api.test")
+    try:
+        assert client.tus_client()._timeout_seconds == 300.0
+    finally:
+        client.close()
+
+
 def test_create_or_resume_collection_upload_uses_collection_upload_endpoint(monkeypatch) -> None:
     captured: list[tuple[str, str, object]] = []
 

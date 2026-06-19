@@ -76,6 +76,17 @@ def test_capabilities_advertise_munchy_profile_target(tmp_path: Path, monkeypatc
     assert capabilities["operations"]["notify_preflight_failed"] is True
 
 
+def test_riverhog_handoff_wait_defaults_to_finalized(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.delenv("MUNCHY_RUNNER_RIVERHOG_WAIT", raising=False)
+    runner = load_runner(tmp_path, monkeypatch)
+
+    assert runner.RIVERHOG_WAIT == "finalized"
+    assert runner.RiverhogConfig(enabled=True).wait == "finalized"
+
+
 def test_structured_input_upload_accepts_source_prefixed_paths(
     tmp_path: Path,
     monkeypatch,

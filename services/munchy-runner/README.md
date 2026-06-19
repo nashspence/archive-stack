@@ -62,8 +62,6 @@ Important environment variables:
 - `MUNCHY_RUNNER_RIVERHOG_WAIT`
 - `MUNCHY_RUNNER_RIVERHOG_UPLOAD_CHUNK_BYTES`
 - `MUNCHY_RUNNER_RIVERHOG_UPLOAD_HTTP2`
-- `MUNCHY_RUNNER_RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES`
-- `MUNCHY_RUNNER_RIVERHOG_UPLOAD_WRITE_DELAY_SECONDS`
 - `MUNCHY_RUNNER_NOTIFY_ENABLED`
 - `MUNCHY_RUNNER_NOTIFY_WEBHOOKS`
 - `MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS`
@@ -120,14 +118,14 @@ The runner rejects ambiguous uploads that omit the profile-group directory.
 Archive jobs may enable Riverhog upload with:
 
 ```json
-{"riverhog": {"enabled": true, "wait": "staged"}}
+{"riverhog": {"enabled": true, "wait": "finalized"}}
 ```
 
 When enabled, the runner opens or resumes a Riverhog collection-upload session
 and uploads finished archive artifacts through Riverhog's session file-upload
-API. `wait = "staged"` waits until all session files have been accepted and the
-session has been completed. `wait = "finalized"` also waits for Riverhog to make
-the collection visible as finalized.
+API. `wait = "finalized"` is the default and waits for Riverhog to make the
+collection visible as finalized. `wait = "staged"` waits only until all session
+files have been accepted and the session has been completed.
 
 Archive-only profile groups are encoded eagerly as uploaded source files become
 complete. This lets the runner overlap source upload, GPU encode work, and

@@ -1295,6 +1295,115 @@ class AcceptanceCollectionService:
         return self._upload_payload(upload, state="open", collection=None)
 
     @_with_state_lock
+    def create_or_resume_registered_file_upload(
+        self,
+        collection_id: str,
+        file: dict[str, object],
+    ) -> dict[str, object]:
+        normalized_collection_id = normalize_collection_id(collection_id)
+        collection_key = CollectionId(normalized_collection_id)
+        upload = self.state.collection_uploads.get(collection_key)
+        if upload is None:
+            raise NotFound(f"collection upload session not found: {normalized_collection_id}")
+        if upload.state != "open":
+            raise Conflict(f"collection upload session is not open: {normalized_collection_id}")
+        normalized_file = self._normalize_files([file])[0]
+        path = str(normalized_file["path"])
+        file_record = upload.files.get(path)
+        if file_record is not None:
+            if {
+                "path": file_record.path,
+                "bytes": file_record.bytes,
+                "sha256": str(file_record.sha256),
+            } != normalized_file:
+                raise Conflict(
+                    "collection upload session file already exists with different metadata: "
+                    f"{path}"
+                )
+        else:
+            file_record = CollectionUploadFileRecord(
+                path=path,
+                bytes=int(normalized_file["bytes"]),
+                sha256=Sha256Hex(str(normalized_file["sha256"])),
+            )
+            upload.files[path] = file_record
+
+        if file_record.upload_url is None:
+            file_record.upload_url = (
+                f"/files/collections/{quote(normalized_collection_id, safe='')}/"
+                f"{quote(path, safe='/')}"
+            )
+        if self._file_upload_state(file_record) != "uploaded":
+            file_record.upload_expires_at = FIXTURE_UPLOAD_EXPIRES_AT
+
+        return {
+            "collection_id": str(upload.collection_id),
+            "ingest_source": upload.ingest_source,
+            "state": upload.state,
+            "file": {
+                "path": file_record.path,
+                "bytes": file_record.bytes,
+                "sha256": str(file_record.sha256),
+                "upload_state": self._file_upload_state(file_record),
+                "uploaded_bytes": file_record.uploaded_bytes,
+                "upload_state_expires_at": file_record.upload_expires_at,
+            },
+            "path": file_record.path,
+            "protocol": "tus",
+            "upload_url": file_record.upload_url,
+            "offset": file_record.uploaded_bytes,
+            "length": file_record.bytes,
+            "checksum_algorithm": "sha256",
+            "expires_at": file_record.upload_expires_at,
+        }
+
+    @_with_state_lock
+    def sync_finished_upload_target(self, target_path: str) -> dict[str, object] | None:
+        normalized = target_path.lstrip("/")
+        prefix = ".riverhog/uploads/collections/"
+        if not normalized.startswith(prefix):
+            return None
+        rest = normalized.removeprefix(prefix)
+        parts = rest.split("/", 2)
+        if len(parts) != 3:
+            return None
+        normalized_collection_id = normalize_collection_id(f"{parts[0]}/{parts[1]}")
+        normalized_path = normalize_relpath(parts[2])
+        if normalized != f"{prefix}{normalized_collection_id}/{normalized_path}":
+            return None
+
+        upload = self.state.collection_uploads.get(CollectionId(normalized_collection_id))
+        if upload is None or upload.state in {"canceled", "expired"}:
+            return None
+        file_record = upload.files.get(normalized_path)
+        if file_record is None:
+            return None
+
+        file_record.uploaded_bytes = file_record.bytes
+        file_record.upload_expires_at = None
+
+        if (
+            upload.state != "open"
+            and upload.state != "archiving"
+            and self._is_complete(upload)
+        ):
+            upload.state = "archiving"
+
+        return {
+            "collection_id": str(upload.collection_id),
+            "ingest_source": upload.ingest_source,
+            "state": upload.state,
+            "file": {
+                "path": file_record.path,
+                "bytes": file_record.bytes,
+                "sha256": str(file_record.sha256),
+                "upload_state": self._file_upload_state(file_record),
+                "uploaded_bytes": file_record.uploaded_bytes,
+                "upload_state_expires_at": file_record.upload_expires_at,
+            },
+        }
+
+    @_with_state_lock
     def complete_upload_session(self, collection_id: str) -> dict[str, object]:
         normalized_collection_id = normalize_collection_id(collection_id)
         collection_key = CollectionId(normalized_collection_id)
@@ -1713,10 +1822,7 @@ class AcceptanceCollectionService:
 
     @staticmethod
     def _file_upload_state(file_record: CollectionUploadFileRecord) -> str:
-        if (
-            file_record.uploaded_content is not None
-            and file_record.uploaded_bytes >= file_record.bytes
-        ):
+        if file_record.bytes > 0 and file_record.uploaded_bytes >= file_record.bytes:
             return "uploaded"
         if file_record.uploaded_bytes > 0:
             return "partial"

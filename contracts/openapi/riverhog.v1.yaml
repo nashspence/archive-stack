@@ -73,6 +73,45 @@ paths:
                 $ref: "#/components/schemas/CollectionUploadSessionFileRegistration"
         default:
           $ref: "#/components/responses/Error"
+  /collection-upload-sessions/{collection_id}/files/upload:
+    post:
+      summary: Register one file and create or resume its upload resource
+      description: Adds one logical file metadata entry to an open incremental upload session, then creates or resumes that file's Riverhog-managed tus-compatible upload resource. Re-registering the same path with identical metadata is idempotent; conflicting metadata is rejected.
+      operationId: createOrResumeRegisteredCollectionFileUpload
+      parameters:
+        - in: path
+          name: collection_id
+          required: true
+          description: Server-minted canonical collection id returned by incremental session creation. Slash-bearing ids occupy multiple path segments.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterCollectionUploadSessionFileRequest"
+      responses:
+        "200":
+          description: Registered file upload session
+          headers:
+            Tus-Resumable:
+              schema: { type: string }
+            Cache-Control:
+              schema: { type: string }
+            Upload-Offset:
+              schema: { type: integer, minimum: 0 }
+            Upload-Length:
+              schema: { type: integer, minimum: 0 }
+            Upload-Expires:
+              schema: { type: string, format: date-time }
+            Location:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionUploadSessionFileUpload"
+        default:
+          $ref: "#/components/responses/Error"
   /collection-upload-sessions/{collection_id}/complete:
     post:
       summary: Complete one incremental collection upload session
@@ -2029,6 +2068,10 @@ components:
           enum: [open, uploading]
         file:
           $ref: "#/components/schemas/CollectionUploadFileState"
+    CollectionUploadSessionFileUpload:
+      allOf:
+        - $ref: "#/components/schemas/CollectionUploadSessionFileRegistration"
+        - $ref: "#/components/schemas/CollectionFileUploadSession"
     CollectionUploadSession:
       type: object
       required:

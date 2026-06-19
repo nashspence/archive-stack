@@ -964,28 +964,10 @@ Minimum logical file size that gets per-file start/completion log lines during
 logs, and retries/errors always name the affected path. Set this to `0` for
 full per-file logging while debugging a small collection.
 
-### `RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES`
-
-- type: positive integer byte count
-- default: `262144`
-
-Maximum sub-write size used while the CLI streams one upload request body into
-the HTTP client. This is intentionally much smaller than
-`RIVERHOG_UPLOAD_CHUNK_BYTES` so the TCP path can apply backpressure.
-
-### `RIVERHOG_UPLOAD_WRITE_DELAY_SECONDS`
-
-- type: non-negative number of seconds
-- default: `0.005`
-
-Delay inserted between CLI upload sub-writes. Setting this to `0` can improve
-throughput on a proven stable wired path, but it can also reproduce stalls where
-the client socket accepts bytes faster than the server receives them.
-
 ### `RIVERHOG_UPLOAD_TIMEOUT_SECONDS`
 
 - type: positive number of seconds
-- default: `60`
+- default: `300`
 
 Per-chunk client timeout for the public upload `PATCH`. Proxy request-body and
 proxy send/read timeouts should be slightly higher than this value so abandoned
@@ -1040,7 +1022,7 @@ API calls, so the default is intentionally long enough for normal operation.
 - default: `true`
 
 Whether the CLI attempts HTTP/2 for HTTPS API requests. Uploads must work over
-HTTP/1.1 and HTTP/2 when write pacing and proxy limits are correct.
+HTTP/1.1 and HTTP/2 when chunk sizing, proxy limits, and timeouts are correct.
 
 ### `RIVERHOG_UPLOAD_BASE_URL`
 

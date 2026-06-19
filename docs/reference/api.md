@@ -804,7 +804,7 @@ The `riverhog` CLI is a thin API client and should provide at least:
 - `riverhog find QUERY`
 - `riverhog show COLLECTION`
 - `riverhog show COLLECTION --files`
-- `riverhog status [TARGET]`
+- `riverhog status TARGET`
 - `riverhog get TARGET [-o FILE]`
 - `riverhog plan [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--iso-ready|--not-ready]`
 - `riverhog images [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--has-copies|--no-copies]`
@@ -825,14 +825,10 @@ chunk size is 8 MiB; operators may set `RIVERHOG_UPLOAD_CHUNK_BYTES` to a
 positive byte count when a specific deployment path needs smaller or larger
 request bodies. HTTPS API clients prefer HTTP/2 by default; set
 `RIVERHOG_HTTP2=false` to force HTTP/1.1 for deployments that cannot negotiate
-HTTP/2. Each PATCH body is also written to the HTTP client in smaller
-sub-writes so reverse proxies and client TCP stacks can apply backpressure
-without dropping the resumable chunk. The default write size is 256 KiB with a
-0.005 second delay between writes; operators may tune these with
-`RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES` and `RIVERHOG_UPLOAD_WRITE_DELAY_SECONDS`
-when a deployment path needs different pacing. The default pacing favors
-stability on LAN/Wi-Fi paths that drop or stall aggressive bulk writes; increase
-it only after repeated end-to-end upload tests on the target network.
+HTTP/2. The current CLI sends each resumable request chunk as one bounded PATCH
+request body through the HTTP client. Upload throughput and retry cost are
+tuned with the request chunk size, file concurrency, HTTP version, proxy body
+limits, and per-chunk timeout.
 The CLI uploads one file at a time by default. Operators may set
 `RIVERHOG_UPLOAD_FILE_CONCURRENCY` to upload multiple logical files in parallel
 from one process, which is primarily useful for collections with thousands of
@@ -852,7 +848,7 @@ uploads the CLI
 prints manifest, resume, per-file, and throttled total progress messages to
 stderr; `--json` output remains reserved for the final machine-readable payload
 on stdout. `RIVERHOG_UPLOAD_TIMEOUT_SECONDS` controls the per-chunk PATCH
-timeout, defaulting to 60 seconds. If a chunk response is lost after the server
+timeout, defaulting to 300 seconds. If a chunk response is lost after the server
 accepted the data, the CLI re-queries the resumable file offset and continues
 from the server-confirmed position. A single CLI invocation reuses one HTTP
 connection pool for API and upload requests, avoiding per-chunk TCP/TLS setup.
@@ -864,14 +860,14 @@ Server-side upload expiry sweeps do not poll tusd offsets for live,
 non-expired uploads because tusd interrupts an active PATCH when another
 request, including HEAD, targets the same upload resource.
 
-`riverhog upload` defaults to `--wait staged`: it exits successfully once every
-source file is verified and staged on the server, while Glacier archive upload,
-hot-file promotion, and planner refresh continue in the background. Operators
-should track those longer phases with the configured operator webhook or
-`riverhog show`. Use `riverhog upload --wait finalized` for acceptance tests or
-terminal sessions that should keep polling until the collection is fully
-finalized. `RIVERHOG_UPLOAD_WAIT` may be set to `staged` or `finalized` to
-change the default.
+`riverhog upload` defaults to `--wait finalized`: it exits successfully after
+every source file is verified and staged on the server and the background
+archive finalization has completed. Use `riverhog upload --wait staged` when a
+terminal session should detach after server custody begins while Glacier archive
+upload, hot-file promotion, and planner refresh continue in the background.
+Operators should track those longer phases with the configured operator webhook
+or `riverhog show`. `RIVERHOG_UPLOAD_WAIT` may be set to `staged` or
+`finalized` to change the default.
 
 Glacier recovery notifications are deliberately explicit because bulk restores
 are rare and slow. `glacier_recovery.started` confirms Riverhog has requested a
@@ -897,7 +893,7 @@ phone text directly.
 - direct collection Glacier object paths, manifest/OTS proof state, measured
   storage footprint, and monthly cost estimate
 
-`riverhog status [TARGET]` should show file availability for either the whole projected namespace or one target selector.
+`riverhog status TARGET` should show file availability for one explicit target selector.
 
 `riverhog get TARGET [-o FILE]` should download one hot file target and fail clearly when the target is archived-only or does not select exactly one file.
 

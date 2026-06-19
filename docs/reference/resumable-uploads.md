@@ -22,10 +22,10 @@ For collection ingest specifically:
 - archival finalization failures leave the collection upload `archiving` with a
   retry phase, keep retrying indefinitely, notify the operator on a paced
   cadence, and keep the collection invisible until retry succeeds
-- `riverhog upload` waits for staged handoff by default, which means all files
-  have reached Riverhog and the server has accepted responsibility for archive
-  finalization; operators can use `--wait finalized` when a stricter blocking
-  client run is desired
+- `riverhog upload` waits for finalized handoff by default, which means all
+  files have reached Riverhog and the collection archive has completed
+  finalization; operators can use `--wait staged` when a shorter blocking
+  client run is desired after server custody begins
 - staged collection bytes are retained until the finalized collection and
   archive records commit; post-finalization staging cleanup is best-effort, so a
   restart cannot make a retry depend on already-deleted staged bytes
@@ -306,16 +306,13 @@ The server records exact encrypted payload length for every registered disc copy
 payload SHA-256 metadata before returning a fetch manifest, so cold-only fetches can publish their manifest, resume
 uploads, and complete verification without using hot plaintext as an input.
 
-CLI uploads use bounded request chunks plus paced socket writes. The default
-request chunk size is 8 MiB. The default write pacing is 256 KiB sub-writes with
-a 0.005 second delay, which keeps upload progress stable on paths where
-aggressive client-side bulk writes can stall below HTTP. Operators may tune
-`RIVERHOG_UPLOAD_CHUNK_BYTES`, `RIVERHOG_UPLOAD_WRITE_CHUNK_BYTES`, and
-`RIVERHOG_UPLOAD_WRITE_DELAY_SECONDS` after validating the target network and
-reverse-proxy body limits. After all files are staged, `riverhog upload` exits
-by default; `--wait finalized` polls until the collection finalizes, and
-`RIVERHOG_UPLOAD_FINALIZE_TIMEOUT_SECONDS` can bound that wait when automation
-needs a hard deadline. See
+CLI uploads use bounded request chunks. The default request chunk size is 8 MiB,
+and each resumable chunk is sent as one bounded PATCH request body. Operators may
+tune `RIVERHOG_UPLOAD_CHUNK_BYTES` after validating the target network and
+reverse-proxy body limits. After all files are staged, `riverhog upload` waits
+for finalization by default; `--wait staged` exits once server custody begins,
+and `RIVERHOG_UPLOAD_FINALIZE_TIMEOUT_SECONDS` can bound the finalized wait when
+automation needs a hard deadline. See
 [Upload Transport Reference](upload-transport.md) for the operational findings
 and tuning guidance.
 
