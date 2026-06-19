@@ -469,13 +469,10 @@ def format_collection_summary(
         )
 
     if isinstance(collection_glacier, Mapping):
-        estimated_cost = collection_glacier.get("estimated_monthly_cost_usd", 0.0)
         lines.append(
             "glacier_footprint: "
             f"bytes={collection_glacier.get('bytes', 0)} "
-            f"measured_storage_bytes={collection_glacier.get('measured_storage_bytes', 0)} "
-            f"estimated_billable_bytes={collection_glacier.get('estimated_billable_bytes', 0)} "
-            f"estimated_monthly_cost_usd={estimated_cost}"
+            f"measured_storage_bytes={collection_glacier.get('measured_storage_bytes', 0)}"
         )
 
     lines.append("coverage:")
@@ -539,7 +536,6 @@ def format_collection_summary(
 
 def format_glacier_report(payload: Mapping[str, Any]) -> str:
     totals = payload.get("totals")
-    pricing_basis = payload.get("pricing_basis")
     lines = [
         "glacier: "
         f"scope={payload.get('scope', 'all')} "
@@ -550,30 +546,7 @@ def format_glacier_report(payload: Mapping[str, Any]) -> str:
             "totals: "
             f"collections={totals.get('collections', 0)} "
             f"uploaded_collections={totals.get('uploaded_collections', 0)} "
-            f"measured_storage_bytes={totals.get('measured_storage_bytes', 0)} "
-            f"estimated_billable_bytes={totals.get('estimated_billable_bytes', 0)} "
-            f"estimated_monthly_cost_usd={totals.get('estimated_monthly_cost_usd', 0.0)}"
-        )
-    if isinstance(pricing_basis, Mapping):
-        lines.extend(
-            [
-                "pricing_basis: "
-                f"{pricing_basis.get('label', 'unknown')} "
-                f"source={pricing_basis.get('source', 'unknown')} "
-                f"storage_class={pricing_basis.get('storage_class', 'unknown')} "
-                f"region={pricing_basis.get('region_code') or 'unknown'} "
-                f"effective_at={pricing_basis.get('effective_at') or 'unknown'} "
-                f"glacier_rate={pricing_basis.get('glacier_storage_rate_usd_per_gib_month', 0.0)} "
-                "standard_rate="
-                f"{pricing_basis.get('standard_storage_rate_usd_per_gib_month', 0.0)}",
-                "pricing_details: "
-                f"archived_metadata_bytes_per_object="
-                f"{pricing_basis.get('archived_metadata_bytes_per_object', 0)} "
-                f"standard_metadata_bytes_per_object="
-                f"{pricing_basis.get('standard_metadata_bytes_per_object', 0)} "
-                f"minimum_storage_duration_days="
-                f"{pricing_basis.get('minimum_storage_duration_days', 0)}",
-            ]
+            f"measured_storage_bytes={totals.get('measured_storage_bytes', 0)}"
         )
 
     images = payload.get("images")
@@ -612,155 +585,12 @@ def format_glacier_report(payload: Mapping[str, Any]) -> str:
                 f"bytes={collection.get('bytes', 0)} "
                 f"glacier={glacier_state} "
                 f"ots={ots_state} "
-                f"measured_storage_bytes={collection.get('measured_storage_bytes', 0)} "
-                f"estimated_billable_bytes={collection.get('estimated_billable_bytes', 0)} "
-                f"estimated_monthly_cost_usd={collection.get('estimated_monthly_cost_usd', 0.0)}"
+                f"measured_storage_bytes={collection.get('measured_storage_bytes', 0)}"
             )
             if isinstance(glacier, Mapping) and glacier.get("object_path"):
                 lines.append(f"  glacier_path: {glacier.get('object_path')}")
             if isinstance(manifest, Mapping) and manifest.get("object_path"):
                 lines.append(f"  collection_manifest: {manifest.get('object_path')}")
-
-    billing = payload.get("billing")
-    lines.append("billing:")
-    if not isinstance(billing, Mapping):
-        lines.append("- unavailable")
-    else:
-        actuals = billing.get("actuals")
-        lines.append("  actuals:")
-        if not isinstance(actuals, Mapping):
-            lines.append("  - unavailable")
-        else:
-            lines.append(
-                "  - "
-                f"source={actuals.get('source', 'unknown')} "
-                f"scope={actuals.get('scope', 'unknown')} "
-                f"filter={actuals.get('filter_label') or 'none'} "
-                f"granularity={actuals.get('granularity') or 'unknown'}"
-            )
-            if actuals.get("billing_view_arn"):
-                lines.append(f"    billing_view_arn: {actuals.get('billing_view_arn')}")
-            periods = actuals.get("periods")
-            if isinstance(periods, Sequence):
-                for actual in periods:
-                    if not isinstance(actual, Mapping):
-                        continue
-                    lines.append(
-                        "    period: "
-                        f"{actual.get('start', 'unknown')}..{actual.get('end', 'unknown')} "
-                        f"estimated={actual.get('estimated', False)} "
-                        f"unblended_cost_usd={actual.get('unblended_cost_usd', 0.0)} "
-                        f"usage_quantity={actual.get('usage_quantity', 0.0)} "
-                        f"usage_unit={actual.get('usage_unit') or 'unknown'}"
-                    )
-            notes = actuals.get("notes")
-            if isinstance(notes, Sequence):
-                for note in notes:
-                    lines.append(f"    note: {note}")
-
-        forecast = billing.get("forecast")
-        lines.append("  forecast:")
-        if not isinstance(forecast, Mapping):
-            lines.append("  - unavailable")
-        else:
-            lines.append(
-                "  - "
-                f"source={forecast.get('source', 'unknown')} "
-                f"scope={forecast.get('scope', 'unknown')} "
-                f"filter={forecast.get('filter_label') or 'none'} "
-                f"granularity={forecast.get('granularity') or 'unknown'}"
-            )
-            periods = forecast.get("periods")
-            if isinstance(periods, Sequence):
-                for period in periods:
-                    if not isinstance(period, Mapping):
-                        continue
-                    lines.append(
-                        "    period: "
-                        f"{period.get('start', 'unknown')}..{period.get('end', 'unknown')} "
-                        f"mean_cost_usd={period.get('mean_cost_usd', 0.0)} "
-                        f"lower_bound_cost_usd={period.get('lower_bound_cost_usd', 0.0)} "
-                        f"upper_bound_cost_usd={period.get('upper_bound_cost_usd', 0.0)}"
-                    )
-            notes = forecast.get("notes")
-            if isinstance(notes, Sequence):
-                for note in notes:
-                    lines.append(f"    note: {note}")
-
-        exports = billing.get("exports")
-        lines.append("  exports:")
-        if not isinstance(exports, Mapping):
-            lines.append("  - unavailable")
-        else:
-            lines.append(
-                "  - "
-                f"source={exports.get('source', 'unknown')} "
-                f"scope={exports.get('scope', 'unknown')} "
-                f"filter={exports.get('filter_label') or 'none'} "
-                f"object={exports.get('object_key') or 'none'}"
-            )
-            if exports.get("export_arn"):
-                lines.append(f"    export_arn: {exports.get('export_arn')}")
-            if exports.get("export_name"):
-                lines.append(f"    export_name: {exports.get('export_name')}")
-            if exports.get("execution_id"):
-                lines.append(f"    execution_id: {exports.get('execution_id')}")
-            if exports.get("manifest_key"):
-                lines.append(f"    manifest_key: {exports.get('manifest_key')}")
-            if exports.get("billing_period"):
-                lines.append(f"    billing_period: {exports.get('billing_period')}")
-            lines.append(f"    files_read: {exports.get('files_read', 0)}")
-            breakdowns = exports.get("breakdowns")
-            if isinstance(breakdowns, Sequence):
-                for breakdown in breakdowns:
-                    if not isinstance(breakdown, Mapping):
-                        continue
-                    lines.append(
-                        "    breakdown: "
-                        f"usage_type={breakdown.get('usage_type') or 'unknown'} "
-                        f"operation={breakdown.get('operation') or 'unknown'} "
-                        f"resource_id={breakdown.get('resource_id') or 'unknown'} "
-                        f"tag_value={breakdown.get('tag_value') or 'unknown'} "
-                        f"unblended_cost_usd={breakdown.get('unblended_cost_usd', 0.0)}"
-                    )
-            notes = exports.get("notes")
-            if isinstance(notes, Sequence):
-                for note in notes:
-                    lines.append(f"    note: {note}")
-
-        invoices = billing.get("invoices")
-        lines.append("  invoices:")
-        if not isinstance(invoices, Mapping):
-            lines.append("  - unavailable")
-        else:
-            lines.append(
-                "  - "
-                f"source={invoices.get('source', 'unknown')} "
-                f"scope={invoices.get('scope', 'unknown')} "
-                f"account_id={invoices.get('account_id') or 'unknown'}"
-            )
-            items = invoices.get("invoices")
-            if isinstance(items, Sequence):
-                for invoice in items:
-                    if not isinstance(invoice, Mapping):
-                        continue
-                    lines.append(
-                        "    invoice: "
-                        f"id={invoice.get('invoice_id') or 'unknown'} "
-                        f"period={invoice.get('billing_period_start') or 'unknown'}.."
-                        f"{invoice.get('billing_period_end') or 'unknown'} "
-                        f"base_total_amount={invoice.get('base_total_amount', 0.0)} "
-                        f"payment_total_amount={invoice.get('payment_total_amount', 0.0)}"
-                    )
-            notes = invoices.get("notes")
-            if isinstance(notes, Sequence):
-                for note in notes:
-                    lines.append(f"    note: {note}")
-
-        notes = billing.get("notes")
-        if isinstance(notes, Sequence):
-            for note in notes:
-                lines.append(f"  note: {note}")
 
     history = payload.get("history")
     if isinstance(history, Sequence) and history:
@@ -771,8 +601,7 @@ def format_glacier_report(payload: Mapping[str, Any]) -> str:
             lines.append(
                 f"- {item.get('captured_at', 'unknown')} "
                 f"uploaded_collections={item.get('uploaded_collections', 0)} "
-                f"measured_storage_bytes={item.get('measured_storage_bytes', 0)} "
-                f"estimated_monthly_cost_usd={item.get('estimated_monthly_cost_usd', 0.0)}"
+                f"measured_storage_bytes={item.get('measured_storage_bytes', 0)}"
             )
     return "\n".join(lines)
 

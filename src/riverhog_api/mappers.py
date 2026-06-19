@@ -10,24 +10,13 @@ from riverhog_core.domain.models import (
     CopySummary,
     FetchSummary,
     GlacierArchiveStatus,
-    GlacierBillingActual,
-    GlacierBillingActualsView,
-    GlacierBillingExportBreakdown,
-    GlacierBillingExportView,
-    GlacierBillingForecast,
-    GlacierBillingForecastView,
-    GlacierBillingInvoiceSummary,
-    GlacierBillingInvoicesView,
-    GlacierBillingSummary,
     GlacierCollectionContribution,
-    GlacierPricingBasis,
     GlacierUsageCollection,
     GlacierUsageImage,
     GlacierUsageReport,
     GlacierUsageSnapshot,
     GlacierUsageTotals,
     PinSummary,
-    RecoveryCostEstimate,
     RecoveryCoverage,
     RecoveryNotificationStatus,
     RecoverySessionCollection,
@@ -63,30 +52,11 @@ def map_collection_manifest(
     }
 
 
-def map_glacier_pricing_basis(summary: GlacierPricingBasis) -> dict[str, object]:
-    return {
-        "label": summary.label,
-        "source": summary.source,
-        "storage_class": summary.storage_class,
-        "glacier_storage_rate_usd_per_gib_month": summary.glacier_storage_rate_usd_per_gib_month,
-        "standard_storage_rate_usd_per_gib_month": summary.standard_storage_rate_usd_per_gib_month,
-        "archived_metadata_bytes_per_object": summary.archived_metadata_bytes_per_object,
-        "standard_metadata_bytes_per_object": summary.standard_metadata_bytes_per_object,
-        "minimum_storage_duration_days": summary.minimum_storage_duration_days,
-        "currency_code": summary.currency_code,
-        "region_code": summary.region_code,
-        "effective_at": summary.effective_at,
-        "price_list_arn": summary.price_list_arn,
-    }
-
-
 def map_glacier_usage_totals(summary: GlacierUsageTotals) -> dict[str, object]:
     return {
         "collections": summary.collections,
         "uploaded_collections": summary.uploaded_collections,
         "measured_storage_bytes": summary.measured_storage_bytes,
-        "estimated_billable_bytes": summary.estimated_billable_bytes,
-        "estimated_monthly_cost_usd": summary.estimated_monthly_cost_usd,
     }
 
 
@@ -117,8 +87,6 @@ def map_glacier_usage_collection(summary: GlacierUsageCollection) -> dict[str, o
         "archive_format": summary.archive_format,
         "compression": summary.compression,
         "measured_storage_bytes": summary.measured_storage_bytes,
-        "estimated_billable_bytes": summary.estimated_billable_bytes,
-        "estimated_monthly_cost_usd": summary.estimated_monthly_cost_usd,
         "images": [map_glacier_collection_contribution(image) for image in summary.images],
     }
 
@@ -128,150 +96,6 @@ def map_glacier_usage_snapshot(summary: GlacierUsageSnapshot) -> dict[str, objec
         "captured_at": summary.captured_at,
         "uploaded_collections": summary.uploaded_collections,
         "measured_storage_bytes": summary.measured_storage_bytes,
-        "estimated_billable_bytes": summary.estimated_billable_bytes,
-        "estimated_monthly_cost_usd": summary.estimated_monthly_cost_usd,
-    }
-
-
-def map_glacier_billing_actual(summary: GlacierBillingActual) -> dict[str, object]:
-    return {
-        "start": summary.start,
-        "end": summary.end,
-        "estimated": summary.estimated,
-        "unblended_cost_usd": summary.unblended_cost_usd,
-        "usage_quantity": summary.usage_quantity,
-        "usage_unit": summary.usage_unit,
-    }
-
-
-def map_glacier_billing_actuals_view(
-    summary: GlacierBillingActualsView | None,
-) -> dict[str, object] | None:
-    if summary is None:
-        return None
-    return {
-        "source": summary.source,
-        "scope": summary.scope,
-        "filter_label": summary.filter_label,
-        "service": summary.service,
-        "billing_view_arn": summary.billing_view_arn,
-        "granularity": summary.granularity,
-        "measured_at": summary.measured_at,
-        "periods": [map_glacier_billing_actual(item) for item in summary.periods],
-        "notes": list(summary.notes),
-    }
-
-
-def map_glacier_billing_forecast(summary: GlacierBillingForecast) -> dict[str, object]:
-    return {
-        "start": summary.start,
-        "end": summary.end,
-        "mean_cost_usd": summary.mean_cost_usd,
-        "lower_bound_cost_usd": summary.lower_bound_cost_usd,
-        "upper_bound_cost_usd": summary.upper_bound_cost_usd,
-        "currency_code": summary.currency_code,
-    }
-
-
-def map_glacier_billing_forecast_view(
-    summary: GlacierBillingForecastView | None,
-) -> dict[str, object] | None:
-    if summary is None:
-        return None
-    return {
-        "source": summary.source,
-        "scope": summary.scope,
-        "filter_label": summary.filter_label,
-        "service": summary.service,
-        "currency_code": summary.currency_code,
-        "granularity": summary.granularity,
-        "periods": [map_glacier_billing_forecast(item) for item in summary.periods],
-        "notes": list(summary.notes),
-    }
-
-
-def map_glacier_billing_export_breakdown(
-    summary: GlacierBillingExportBreakdown,
-) -> dict[str, object]:
-    return {
-        "usage_type": summary.usage_type,
-        "operation": summary.operation,
-        "resource_id": summary.resource_id,
-        "tag_value": summary.tag_value,
-        "unblended_cost_usd": summary.unblended_cost_usd,
-        "usage_quantity": summary.usage_quantity,
-        "usage_unit": summary.usage_unit,
-    }
-
-
-def map_glacier_billing_export_view(
-    summary: GlacierBillingExportView | None,
-) -> dict[str, object] | None:
-    if summary is None:
-        return None
-    return {
-        "source": summary.source,
-        "scope": summary.scope,
-        "filter_label": summary.filter_label,
-        "service": summary.service,
-        "export_arn": summary.export_arn,
-        "export_name": summary.export_name,
-        "execution_id": summary.execution_id,
-        "manifest_key": summary.manifest_key,
-        "billing_period": summary.billing_period,
-        "bucket": summary.bucket,
-        "prefix": summary.prefix,
-        "object_key": summary.object_key,
-        "exported_at": summary.exported_at,
-        "currency_code": summary.currency_code,
-        "files_read": summary.files_read,
-        "rows_scanned": summary.rows_scanned,
-        "breakdowns": [map_glacier_billing_export_breakdown(item) for item in summary.breakdowns],
-        "notes": list(summary.notes),
-    }
-
-
-def map_glacier_billing_invoice(summary: GlacierBillingInvoiceSummary) -> dict[str, object]:
-    return {
-        "invoice_id": summary.invoice_id,
-        "account_id": summary.account_id,
-        "billing_period_start": summary.billing_period_start,
-        "billing_period_end": summary.billing_period_end,
-        "invoice_type": summary.invoice_type,
-        "invoicing_entity": summary.invoicing_entity,
-        "issued_at": summary.issued_at,
-        "due_at": summary.due_at,
-        "base_currency_code": summary.base_currency_code,
-        "base_total_amount": summary.base_total_amount,
-        "payment_currency_code": summary.payment_currency_code,
-        "payment_total_amount": summary.payment_total_amount,
-        "original_invoice_id": summary.original_invoice_id,
-    }
-
-
-def map_glacier_billing_invoices_view(
-    summary: GlacierBillingInvoicesView | None,
-) -> dict[str, object] | None:
-    if summary is None:
-        return None
-    return {
-        "source": summary.source,
-        "scope": summary.scope,
-        "account_id": summary.account_id,
-        "invoices": [map_glacier_billing_invoice(item) for item in summary.invoices],
-        "notes": list(summary.notes),
-    }
-
-
-def map_glacier_billing_summary(summary: GlacierBillingSummary | None) -> dict[str, object] | None:
-    if summary is None:
-        return None
-    return {
-        "actuals": map_glacier_billing_actuals_view(summary.actuals),
-        "forecast": map_glacier_billing_forecast_view(summary.forecast),
-        "exports": map_glacier_billing_export_view(summary.exports),
-        "invoices": map_glacier_billing_invoices_view(summary.invoices),
-        "notes": list(summary.notes),
     }
 
 
@@ -279,12 +103,10 @@ def map_glacier_usage_report(summary: GlacierUsageReport) -> dict[str, object]:
     return {
         "scope": summary.scope,
         "measured_at": summary.measured_at,
-        "pricing_basis": map_glacier_pricing_basis(summary.pricing_basis),
         "totals": map_glacier_usage_totals(summary.totals),
         "images": [map_glacier_usage_image(image) for image in summary.images],
         "collections": [map_glacier_usage_collection(item) for item in summary.collections],
         "history": [map_glacier_usage_snapshot(item) for item in summary.history],
-        "billing": map_glacier_billing_summary(summary.billing),
     }
 
 
@@ -351,27 +173,6 @@ def map_collection_protection_state(summary: CollectionSummary) -> str:
     return "cloud_only"
 
 
-def map_recovery_cost_estimate(summary: RecoveryCostEstimate) -> dict[str, object]:
-    return {
-        "currency_code": summary.currency_code,
-        "retrieval_tier": summary.retrieval_tier,
-        "hold_days": summary.hold_days,
-        "collection_count": summary.image_count,
-        "total_bytes": summary.total_bytes,
-        "restore_request_count": summary.restore_request_count,
-        "retrieval_rate_usd_per_gib": summary.retrieval_rate_usd_per_gib,
-        "request_rate_usd_per_1000": summary.request_rate_usd_per_1000,
-        "standard_storage_rate_usd_per_gib_month": (
-            summary.standard_storage_rate_usd_per_gib_month
-        ),
-        "retrieval_cost_usd": summary.retrieval_cost_usd,
-        "request_fees_usd": summary.request_fees_usd,
-        "temporary_storage_cost_usd": summary.temporary_storage_cost_usd,
-        "total_estimated_cost_usd": summary.total_estimated_cost_usd,
-        "assumptions": list(summary.assumptions),
-    }
-
-
 def map_recovery_notification(summary: RecoveryNotificationStatus) -> dict[str, object]:
     return {
         "webhook_configured": summary.webhook_configured,
@@ -420,7 +221,6 @@ def map_recovery_session(summary: RecoverySessionSummary) -> dict[str, object]:
         "completed_at": summary.completed_at,
         "latest_message": summary.latest_message,
         "warnings": list(summary.warnings),
-        "cost_estimate": map_recovery_cost_estimate(summary.cost_estimate),
         "notification": map_recovery_notification(summary.notification),
         "progress": map_recovery_session_progress(summary.progress),
         "collections": [

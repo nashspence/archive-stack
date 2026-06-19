@@ -548,7 +548,6 @@ def test_get_glacier_report_uses_glacier_endpoint_with_filters(monkeypatch) -> N
             json={
                 "scope": "image",
                 "measured_at": "2026-04-28T00:00:00Z",
-                "pricing_basis": {},
                 "totals": {},
                 "images": [],
                 "collections": [],

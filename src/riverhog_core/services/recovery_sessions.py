@@ -5,9 +5,8 @@ import logging
 import subprocess
 import tempfile
 from collections.abc import Iterable, Iterator, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timedelta
-from decimal import ROUND_HALF_UP, Decimal
 from math import ceil
 from pathlib import Path
 from typing import cast
@@ -47,7 +46,6 @@ from riverhog_core.domain.errors import Conflict, InvalidState, NotFound
 from riverhog_core.domain.models import (
     CollectionManifestStatus,
     GlacierArchiveStatus,
-    RecoveryCostEstimate,
     RecoveryNotificationStatus,
     RecoverySessionCollection,
     RecoverySessionImage,
@@ -78,7 +76,6 @@ from riverhog_core.recovery_payloads import (
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.compliance import file_has_registered_disc_coverage
-from riverhog_core.services.glacier_pricing import resolve_glacier_pricing
 from riverhog_core.services.target_selection import selected_collection_files
 from riverhog_core.webhooks import (
     WebhookConfig,
@@ -939,7 +936,6 @@ def _create_recovery_session(
         raise InvalidState(
             f"image has no collection archives and cannot be rebuilt: {image.image_id}"
         )
-    estimate = _estimate_collection_recovery_costs(config=config, collections=collections)
     warnings = _build_warnings(config=config)
     record = GlacierRecoverySessionRecord(
         session_id=session_id,
@@ -953,11 +949,10 @@ def _create_recovery_session(
         restore_expires_at=None,
         completed_at=None,
         latest_message=(
-            "Approve the estimated restore cost before Riverhog requests archive restore."
+            "Approve the archive restore before Riverhog requests archived collection data."
         ),
         retrieval_tier=config.glacier_recovery_retrieval_tier,
         hold_days=_restore_hold_days(config),
-        estimate_json=json.dumps(asdict(estimate), sort_keys=True),
         warnings_json=json.dumps(list(warnings)),
         reminder_count=0,
         next_reminder_at=None,
@@ -997,7 +992,6 @@ def _create_collection_restore_session(
         existing_ids=existing_ids,
     )
     created_at = _isoformat_z(utcnow())
-    estimate = _estimate_collection_recovery_costs(config=config, collections=(collection,))
     warnings = _build_warnings(config=config)
     record = GlacierRecoverySessionRecord(
         session_id=session_id,
@@ -1011,11 +1005,10 @@ def _create_collection_restore_session(
         restore_expires_at=None,
         completed_at=None,
         latest_message=(
-            "Approve the estimated restore cost before Riverhog requests archive restore."
+            "Approve the archive restore before Riverhog requests archived collection data."
         ),
         retrieval_tier=config.glacier_recovery_retrieval_tier,
         hold_days=_restore_hold_days(config),
-        estimate_json=json.dumps(asdict(estimate), sort_keys=True),
         warnings_json=json.dumps(list(warnings)),
         reminder_count=0,
         next_reminder_at=None,
@@ -1748,7 +1741,6 @@ def _session_summary(
                 rebuild_state=_recovery_session_image_rebuild_state(record),
             )
         )
-    estimate = RecoveryCostEstimate(**json.loads(record.estimate_json))
     notification = RecoveryNotificationStatus(
         webhook_configured=bool(config.operator_webhook_url),
         reminder_count=record.reminder_count,
@@ -1773,7 +1765,6 @@ def _session_summary(
         completed_at=record.completed_at,
         latest_message=record.latest_message,
         warnings=warnings,
-        cost_estimate=estimate,
         notification=notification,
         progress=progress,
         collections=tuple(collections),
@@ -1842,62 +1833,10 @@ def _refresh_recovery_session_metadata(
 ) -> None:
     collections = _session_collections(session, record=record)
     if not collections:
-        raise InvalidState("recovery session has no collection archives to estimate")
-    estimate = _estimate_collection_recovery_costs(config=config, collections=collections)
-    record.estimate_json = json.dumps(asdict(estimate), sort_keys=True)
+        raise InvalidState("recovery session has no collection archives")
     record.warnings_json = json.dumps(list(_build_warnings(config=config)))
     record.hold_days = _restore_hold_days(config)
     record.retrieval_tier = config.glacier_recovery_retrieval_tier
-
-
-def _estimate_collection_recovery_costs(
-    *,
-    config: RuntimeConfig,
-    collections: Iterable[CollectionRecord],
-) -> RecoveryCostEstimate:
-    pricing_basis = resolve_glacier_pricing(config)
-    collection_list = list(collections)
-    total_bytes = sum(
-        _collection_stored_bytes(collection.archive) for collection in collection_list
-    )
-    total_gib = Decimal(total_bytes) / Decimal(1024**3)
-    hold_days = _restore_hold_days(config)
-    retrieval_rate, request_rate = _retrieval_rates(config)
-    retrieval_cost = _usd(total_gib * Decimal(str(retrieval_rate)))
-    restore_request_count = max(len(collection_list), 1)
-    request_fees = _usd(
-        Decimal("0.001") * Decimal(str(request_rate)) * Decimal(restore_request_count)
-    )
-    temporary_storage_cost = _usd(
-        total_gib
-        * Decimal(str(pricing_basis.standard_storage_rate_usd_per_gib_month))
-        * Decimal(hold_days)
-        / Decimal(30)
-    )
-    return RecoveryCostEstimate(
-        currency_code=pricing_basis.currency_code or "USD",
-        retrieval_tier=config.glacier_recovery_retrieval_tier,
-        hold_days=hold_days,
-        image_count=len(collection_list),
-        total_bytes=total_bytes,
-        restore_request_count=restore_request_count,
-        retrieval_rate_usd_per_gib=retrieval_rate,
-        request_rate_usd_per_1000=request_rate,
-        standard_storage_rate_usd_per_gib_month=(
-            pricing_basis.standard_storage_rate_usd_per_gib_month
-        ),
-        retrieval_cost_usd=float(retrieval_cost),
-        request_fees_usd=float(request_fees),
-        temporary_storage_cost_usd=float(temporary_storage_cost),
-        total_estimated_cost_usd=float(
-            _usd(retrieval_cost + request_fees + temporary_storage_cost)
-        ),
-        assumptions=(
-            "Excludes network egress or operator-local media costs.",
-            "Uses the configured ready-to-download cleanup window.",
-            "Assumes one archive restore request per collection.",
-        ),
-    )
 
 
 def _build_warnings(config: RuntimeConfig) -> tuple[str, ...]:
@@ -2134,18 +2073,6 @@ def _generated_collection_restore_session_id(
             return candidate
 
 
-def _retrieval_rates(config: RuntimeConfig) -> tuple[float, float]:
-    if config.glacier_recovery_retrieval_tier == "standard":
-        return (
-            config.glacier_standard_retrieval_rate_usd_per_gib,
-            config.glacier_standard_request_rate_usd_per_1000,
-        )
-    return (
-        config.glacier_bulk_retrieval_rate_usd_per_gib,
-        config.glacier_bulk_request_rate_usd_per_1000,
-    )
-
-
 def _restore_hold_days(config: RuntimeConfig) -> int:
     return max(ceil(config.glacier_recovery_ready_ttl.total_seconds() / 86400), 1)
 
@@ -2166,10 +2093,6 @@ def _format_timedelta(value: timedelta) -> str:
 
 def _isoformat_z(value: datetime) -> str:
     return value.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _usd(value: Decimal) -> Decimal:
-    return value.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
 
 
 def _max_timestamp(values: Iterable[str]) -> str | None:

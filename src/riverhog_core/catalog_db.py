@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from sqlalchemy import create_engine, event, inspect, text
-from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.engine import Connection, Engine, make_url
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 
@@ -14,6 +14,21 @@ class Base(DeclarativeBase):
 
 
 SCHEMA_BASELINE_VERSION = 1
+SCHEMA_LATEST_VERSION = 2
+_SUPPORTED_SCHEMA_VERSIONS = {SCHEMA_BASELINE_VERSION, SCHEMA_LATEST_VERSION}
+_SCHEMA_V2_DROPPED_COLUMNS = {
+    "glacier_usage_snapshots": (
+        "estimated_billable_bytes",
+        "estimated_monthly_cost_usd",
+        "pricing_label",
+        "glacier_storage_rate_usd_per_gib_month",
+        "standard_storage_rate_usd_per_gib_month",
+        "archived_metadata_bytes_per_object",
+        "standard_metadata_bytes_per_object",
+        "minimum_storage_duration_days",
+    ),
+    "glacier_recovery_sessions": ("estimate_json",),
+}
 
 
 def _normalize_database_url(database_url: str) -> str:
@@ -58,7 +73,7 @@ def _check_database_is_baseline_compatible(engine: Engine) -> None:
         )
 
 
-def _mark_schema_baseline(engine: Engine) -> None:
+def _apply_schema_migrations(engine: Engine) -> None:
     with engine.begin() as conn:
         conn.execute(
             text("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)")
@@ -66,7 +81,7 @@ def _mark_schema_baseline(engine: Engine) -> None:
         applied_versions = {
             row[0] for row in conn.execute(text("SELECT version FROM schema_migrations")).fetchall()
         }
-        if applied_versions - {SCHEMA_BASELINE_VERSION}:
+        if applied_versions - _SUPPORTED_SCHEMA_VERSIONS:
             raise RuntimeError(
                 "unsupported pre-baseline catalog schema detected; reset the Riverhog "
                 "database before starting this greenfield build"
@@ -76,6 +91,36 @@ def _mark_schema_baseline(engine: Engine) -> None:
                 text("INSERT INTO schema_migrations (version) VALUES (:v)"),
                 {"v": SCHEMA_BASELINE_VERSION},
             )
+            applied_versions.add(SCHEMA_BASELINE_VERSION)
+        if SCHEMA_LATEST_VERSION not in applied_versions:
+            _migrate_schema_v2(conn)
+            conn.execute(
+                text("INSERT INTO schema_migrations (version) VALUES (:v)"),
+                {"v": SCHEMA_LATEST_VERSION},
+            )
+
+
+def _migrate_schema_v2(conn: Connection) -> None:
+    inspector = inspect(conn)
+    table_names = set(inspector.get_table_names())
+    for table_name, column_names in _SCHEMA_V2_DROPPED_COLUMNS.items():
+        if table_name not in table_names:
+            continue
+        existing_columns = {column["name"] for column in inspector.get_columns(table_name)}
+        for column_name in column_names:
+            if column_name in existing_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE "
+                        f"{_quote_identifier(conn, table_name)} "
+                        "DROP COLUMN "
+                        f"{_quote_identifier(conn, column_name)}"
+                    )
+                )
+
+
+def _quote_identifier(conn: Connection, identifier: str) -> str:
+    return conn.dialect.identifier_preparer.quote(identifier)
 
 
 def _ensure_schema_indexes(engine: Engine) -> None:
@@ -143,7 +188,7 @@ def initialize_db(database_url: str) -> None:
     _check_database_is_baseline_compatible(engine)
     Base.metadata.create_all(engine)
     _ensure_schema_indexes(engine)
-    _mark_schema_baseline(engine)
+    _apply_schema_migrations(engine)
 
 
 def make_session_factory(database_url: str) -> sessionmaker[Session]:

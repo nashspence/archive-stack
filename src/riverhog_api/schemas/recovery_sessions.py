@@ -2,32 +2,10 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import AliasChoices, ConfigDict, Field
+from pydantic import ConfigDict, Field
 
 from riverhog_api.schemas.archive import CollectionManifestOut, GlacierArchiveOut
 from riverhog_api.schemas.common import RiverhogModel
-
-
-class RecoveryCostEstimateOut(RiverhogModel):
-    model_config = ConfigDict(extra="ignore")
-
-    currency_code: str
-    retrieval_tier: Literal["bulk", "standard"]
-    hold_days: int
-    collection_count: int = Field(
-        default=0,
-        validation_alias=AliasChoices("collection_count", "image_count"),
-    )
-    total_bytes: int
-    restore_request_count: int
-    retrieval_rate_usd_per_gib: float
-    request_rate_usd_per_1000: float
-    standard_storage_rate_usd_per_gib_month: float
-    retrieval_cost_usd: float
-    request_fees_usd: float
-    temporary_storage_cost_usd: float
-    total_estimated_cost_usd: float
-    assumptions: list[str]
 
 
 class RecoveryNotificationStatusOut(RiverhogModel):
@@ -75,7 +53,6 @@ class RecoverySessionOut(RiverhogModel):
     completed_at: str | None
     latest_message: str | None
     warnings: list[str]
-    cost_estimate: RecoveryCostEstimateOut
     notification: RecoveryNotificationStatusOut
     progress: RecoverySessionProgressOut
     collections: list[RecoverySessionCollectionOut] = Field(default_factory=list)

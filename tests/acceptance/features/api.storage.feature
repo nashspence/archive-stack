@@ -50,18 +50,17 @@ Feature: Read-only hot storage browsing
       And the archive credentials cannot list prefix "collections/" in the hot bucket
       And the archive credentials cannot list prefix ".riverhog/uploads/" in the hot bucket
 
-  Rule: Glacier usage reporting distinguishes measured collection storage from estimated billing
-    Scenario: Glacier usage report shows totals, direct collection cost, manifest proof state, and pricing basis
+  Rule: Glacier usage reporting exposes measured collection storage
+    Scenario: Glacier usage report shows totals, direct collection storage, and manifest proof state
       Given an archive with planner fixtures
       And an archive with split planner fixtures
       And collection "docs" has uploaded Glacier archive package
       And collection "photos-2024" has uploaded Glacier archive package
       When the client gets "/v1/glacier"
       Then the response status is 200
-      And the response contains "scope", "measured_at", "pricing_basis", "totals", "images", "collections", "billing", and "history"
+      And the response contains "scope", "measured_at", "totals", "images", "collections", and "history"
       And the response Glacier totals uploaded_collections is greater than 0
       And the response Glacier totals measured_storage_bytes is greater than 0
-      And the response Glacier totals estimated_monthly_cost_usd is greater than 0
       And the response Glacier collection "docs" glacier state is "uploaded"
       And the response Glacier collection "docs" measured_storage_bytes is greater than 0
       And the response Glacier collection "docs" collection manifest state is "uploaded"
@@ -73,10 +72,3 @@ Feature: Read-only hot storage browsing
       Then the response status is 200
       And the response Glacier collections contain only "docs"
       And the response Glacier collection "docs" glacier state is "uploaded"
-    Scenario: Glacier usage report exposes resource-level and manifest-aware billing metadata in the spec harness
-      Given an archive with split planner fixtures
-      And collection "docs" has uploaded Glacier archive package
-      And the spec harness exposes controlled Glacier billing metadata
-      When the client gets "/v1/glacier"
-      Then the response status is 200
-      And the response Glacier billing surface exposes resource-level and manifest metadata

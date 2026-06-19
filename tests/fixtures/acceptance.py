@@ -16,7 +16,6 @@ from collections import defaultdict
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from decimal import ROUND_HALF_UP, Decimal
 from functools import wraps
 from pathlib import Path
 from typing import Any, cast
@@ -26,6 +25,8 @@ import httpx
 import pytest
 import uvicorn
 import yaml
+from fastapi import Request, Response
+from fastapi.responses import JSONResponse
 
 from riverhog_api.app import create_app
 from riverhog_api.deps import ServiceContainer
@@ -59,24 +60,13 @@ from riverhog_core.domain.models import (
     FetchCopyHint,
     FetchSummary,
     GlacierArchiveStatus,
-    GlacierBillingActual,
-    GlacierBillingActualsView,
-    GlacierBillingExportBreakdown,
-    GlacierBillingExportView,
-    GlacierBillingForecast,
-    GlacierBillingForecastView,
-    GlacierBillingInvoiceSummary,
-    GlacierBillingInvoicesView,
-    GlacierBillingSummary,
     GlacierCollectionContribution,
-    GlacierPricingBasis,
     GlacierUsageCollection,
     GlacierUsageImage,
     GlacierUsageReport,
     GlacierUsageSnapshot,
     GlacierUsageTotals,
     PinSummary,
-    RecoveryCostEstimate,
     RecoveryCoverage,
     RecoveryNotificationStatus,
     RecoverySessionCollection,
@@ -103,7 +93,6 @@ from riverhog_core.fs_paths import (
 )
 from riverhog_core.iso.streaming import IsoStream, build_iso_cmd_from_root
 from riverhog_core.planner.manifest import MANIFEST_FILENAME
-from riverhog_core.runtime_config import load_runtime_config
 from riverhog_core.webhooks import (
     WebhookConfig,
     build_fetch_waiting_payload,
@@ -146,6 +135,8 @@ _GLACIER_RECOVERY_RESTORE_LATENCY_SECONDS = 0.2
 _GLACIER_RECOVERY_READY_TTL_SECONDS = 4.0
 _OPERATOR_WEBHOOK_RETRY_DELAY_SECONDS = 1.0
 _OPERATOR_WEBHOOK_REMINDER_INTERVAL_SECONDS = 2.0
+_CLI_SUBPROCESS_TIMEOUT_SECONDS = 30.0
+_CLI_TIMEOUT_OUTPUT_CHARS = 4_000
 
 
 def _generated_copy_id(image_id: str, ordinal: int) -> str:
@@ -432,12 +423,14 @@ class AcceptanceState:
         default_factory=dict
     )
     glacier_upload_failures_by_collection: dict[CollectionId, str] = field(default_factory=dict)
+    glacier_upload_defer_until_by_collection: dict[CollectionId, float] = field(
+        default_factory=dict
+    )
     webhook_deliveries: list[dict[str, object]] = field(default_factory=list)
     webhook_attempts: list[dict[str, object]] = field(default_factory=list)
     webhook_behaviors: list[dict[str, object]] = field(default_factory=list)
     lock: Any = field(default_factory=threading.RLock, repr=False)
     public_base_url: str = ""
-    glacier_billing_metadata_available: bool = False
     real_iso_streams_enabled: bool = False
     next_fetch_number: int = 0
 
@@ -650,7 +643,7 @@ class AcceptanceState:
             image_ids=(image_key,),
             collection_ids=required_collection_ids,
             latest_message=(
-                "Approve the estimated restore cost before Riverhog requests archive restore."
+                "Approve the archive restore before Riverhog requests archived collection data."
             ),
         )
 
@@ -2317,6 +2310,11 @@ class AcceptanceGlacierUploadService:
                 self.state
             )._is_complete(upload):
                 continue
+            defer_until = self.state.glacier_upload_defer_until_by_collection.get(collection_id)
+            if defer_until is not None:
+                if time.monotonic() < defer_until:
+                    continue
+                self.state.glacier_upload_defer_until_by_collection.pop(collection_id, None)
             failure = self.state.glacier_upload_failures_by_collection.get(collection_id)
             upload.archive_attempt_count += 1
             if failure is not None:
@@ -2419,7 +2417,7 @@ class AcceptanceRecoverySessionService:
             image_ids=(),
             collection_ids=(normalized_collection_id,),
             latest_message=(
-                "Approve the estimated restore cost before Riverhog requests archive restore."
+                "Approve the archive restore before Riverhog requests archived collection data."
             ),
         )
         self.state.recovery_sessions_by_id[session_id] = record
@@ -2739,48 +2737,6 @@ class AcceptanceRecoverySessionService:
                 {collection_id for image in images for collection_id, _path in image.covered_paths}
             )
         )
-        collection_statuses = [
-            self.state.collection_glacier_status(str(collection_id))
-            for collection_id in collection_ids
-        ]
-        pricing_basis = _acceptance_pricing_basis()
-        stored_bytes = sum(int(status.stored_bytes or 0) for status in collection_statuses)
-        if stored_bytes == 0:
-            stored_bytes = sum(image.bytes for image in images)
-        total_gib = Decimal(stored_bytes) / _BYTES_PER_GIB
-        hold_days = 1
-        retrieval_cost = (total_gib * Decimal("0.0025")).quantize(_USD_QUANTUM)
-        request_fees = Decimal("0.000025").quantize(_USD_QUANTUM)
-        temporary_storage_cost = (
-            total_gib
-            * Decimal(str(pricing_basis.standard_storage_rate_usd_per_gib_month))
-            * Decimal(hold_days)
-            / Decimal(30)
-        ).quantize(_USD_QUANTUM)
-        estimate = RecoveryCostEstimate(
-            currency_code=pricing_basis.currency_code or "USD",
-            retrieval_tier="bulk",
-            hold_days=hold_days,
-            image_count=len(collection_ids),
-            total_bytes=stored_bytes,
-            restore_request_count=max(1, len(collection_ids)),
-            retrieval_rate_usd_per_gib=0.0025,
-            request_rate_usd_per_1000=0.025,
-            standard_storage_rate_usd_per_gib_month=(
-                pricing_basis.standard_storage_rate_usd_per_gib_month
-            ),
-            retrieval_cost_usd=float(retrieval_cost),
-            request_fees_usd=float(request_fees),
-            temporary_storage_cost_usd=float(temporary_storage_cost),
-            total_estimated_cost_usd=float(
-                (retrieval_cost + request_fees + temporary_storage_cost).quantize(_USD_QUANTUM)
-            ),
-            assumptions=(
-                "Excludes network egress or operator-local media costs.",
-                "Uses the configured ready-to-download cleanup window.",
-                "Assumes one archive restore request per collection archive.",
-            ),
-        )
         warnings = (
             "Archive restore requests take time; the configured restore latency "
             "estimate is short in test fixtures.",
@@ -2801,7 +2757,6 @@ class AcceptanceRecoverySessionService:
             completed_at=record.completed_at,
             latest_message=record.latest_message,
             warnings=warnings,
-            cost_estimate=estimate,
             notification=RecoveryNotificationStatus(
                 webhook_configured=True,
                 reminder_count=record.reminder_count,
@@ -2861,7 +2816,6 @@ class AcceptanceGlacierReportingService:
         image_id: str | None = None,
         collection: str | None = None,
     ) -> GlacierUsageReport:
-        pricing_basis = _acceptance_pricing_basis()
         images = [
             image
             for image in self.state.finalized_images_by_id.values()
@@ -2881,7 +2835,6 @@ class AcceptanceGlacierReportingService:
                 images=images,
                 state=self.state,
                 collection_filter=collection,
-                pricing_basis=pricing_basis,
             )
         )
         totals = GlacierUsageTotals(
@@ -2892,31 +2845,19 @@ class AcceptanceGlacierReportingService:
             measured_storage_bytes=sum(
                 report.measured_storage_bytes for report in collection_reports
             ),
-            estimated_billable_bytes=sum(
-                report.estimated_billable_bytes for report in collection_reports
-            ),
-            estimated_monthly_cost_usd=_round_usd(
-                sum(report.estimated_monthly_cost_usd for report in collection_reports)
-            ),
         )
         history = (
             tuple(self.state.glacier_usage_snapshots)
             if image_id is None and collection is None
             else ()
         )
-        billing = _acceptance_glacier_billing(
-            self.state,
-            include=image_id is None and collection is None,
-        )
         return GlacierUsageReport(
             scope=_acceptance_glacier_scope(image_id=image_id, collection=collection),
             measured_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            pricing_basis=pricing_basis,
             totals=totals,
             images=image_reports,
             collections=collection_reports,
             history=history,
-            billing=billing,
         )
 
 
@@ -2936,10 +2877,6 @@ def _acceptance_rebuild_state(record: AcceptanceRecoverySessionRecord) -> str:
     return "pending"
 
 
-_BYTES_PER_GIB = Decimal(1024**3)
-_USD_QUANTUM = Decimal("0.000000000001")
-
-
 def _acceptance_glacier_scope(*, image_id: str | None, collection: str | None) -> str:
     if image_id is not None and collection is not None:
         return "filtered"
@@ -2948,175 +2885,6 @@ def _acceptance_glacier_scope(*, image_id: str | None, collection: str | None) -
     if collection is not None:
         return "collection"
     return "all"
-
-
-def _acceptance_glacier_billing(
-    state: AcceptanceState,
-    *,
-    include: bool,
-) -> GlacierBillingSummary | None:
-    if not include:
-        return None
-    if not state.glacier_billing_metadata_available:
-        return GlacierBillingSummary(
-            actuals=GlacierBillingActualsView(
-                source="unavailable",
-                scope="unavailable",
-                notes=("AWS Cost Explorer billing is unavailable for this runtime.",),
-            ),
-            forecast=GlacierBillingForecastView(
-                source="unavailable",
-                scope="unavailable",
-                notes=("AWS Cost Explorer forecast is unavailable for this runtime.",),
-            ),
-            exports=GlacierBillingExportView(
-                source="unavailable",
-                scope="unavailable",
-                notes=("CUR or Data Exports billing detail is unavailable for this runtime.",),
-            ),
-            invoices=GlacierBillingInvoicesView(
-                source="unavailable",
-                scope="unavailable",
-                notes=("AWS invoice summaries are unavailable for this runtime.",),
-            ),
-            notes=("AWS Cost Explorer billing is unavailable for this runtime.",),
-        )
-    config = load_runtime_config()
-    return GlacierBillingSummary(
-        actuals=GlacierBillingActualsView(
-            source="aws_cost_explorer_resource",
-            scope="bucket",
-            filter_label=config.glacier_bucket,
-            service="Amazon Simple Storage Service",
-            billing_view_arn="arn:aws:billing::123456789012:billingview/primary",
-            granularity="DAILY",
-            periods=(
-                GlacierBillingActual(
-                    start="2026-04-14",
-                    end="2026-04-15",
-                    estimated=False,
-                    unblended_cost_usd=0.44,
-                    usage_quantity=11.0,
-                    usage_unit="GB-Mo",
-                ),
-            ),
-            notes=(
-                (
-                    "Bucket-scoped Cost Explorer actuals use AWS resource-level daily "
-                    "data and are limited to the last 14 days."
-                ),
-                "Riverhog queried bucket-scoped actuals through the resolved AWS billing view.",
-            ),
-        ),
-        forecast=GlacierBillingForecastView(
-            source="aws_cost_explorer",
-            scope="service",
-            filter_label=f"Amazon Simple Storage Service in {config.glacier_pricing_region_code}",
-            service="Amazon Simple Storage Service",
-            currency_code=config.glacier_billing_currency_code,
-            granularity="MONTHLY",
-            periods=(
-                GlacierBillingForecast(
-                    start="2026-05-01",
-                    end="2026-06-01",
-                    mean_cost_usd=14.5,
-                    lower_bound_cost_usd=11.0,
-                    upper_bound_cost_usd=18.0,
-                    currency_code=config.glacier_billing_currency_code,
-                ),
-            ),
-            notes=(
-                (
-                    "AWS Cost Explorer forecast does not expose bucket-resource "
-                    "forecasting, so Riverhog falls back to tag-scoped or "
-                    "service-scoped forecast data."
-                ),
-            ),
-        ),
-        exports=GlacierBillingExportView(
-            source="aws_data_exports_s3",
-            scope="bucket",
-            filter_label=config.glacier_bucket,
-            service="Amazon Simple Storage Service",
-            export_arn="arn:aws:bcm-data-exports:us-east-1:123456789012:export/glacier",
-            export_name="glacier-export",
-            execution_id="execution-0002",
-            manifest_key="billing/glacier-export/metadata/execution-0002/manifest.json",
-            billing_period="2026-04-01..2026-05-01",
-            bucket="billing-bucket",
-            prefix="billing",
-            object_key=None,
-            exported_at="2026-04-28T08:00:00Z",
-            currency_code=config.glacier_billing_currency_code,
-            files_read=2,
-            rows_scanned=4,
-            breakdowns=(
-                GlacierBillingExportBreakdown(
-                    usage_type="TimedStorage-GlacierByteHrs",
-                    operation="StandardStorage",
-                    resource_id=f"arn:aws:s3:::{config.glacier_bucket}",
-                    tag_value=None,
-                    unblended_cost_usd=2.0,
-                    usage_quantity=150.0,
-                    usage_unit="GB-Mo",
-                ),
-            ),
-            notes=(
-                (
-                    "Riverhog selected the AWS Data Exports manifest for the latest "
-                    "successful execution."
-                ),
-            ),
-        ),
-        invoices=GlacierBillingInvoicesView(
-            source="aws_invoicing",
-            scope="account",
-            account_id="123456789012",
-            invoices=(
-                GlacierBillingInvoiceSummary(
-                    invoice_id="INV-001",
-                    account_id="123456789012",
-                    billing_period_start="2026-04-01",
-                    billing_period_end="2026-05-01",
-                    invoice_type="Invoice",
-                    invoicing_entity="Amazon Web Services, Inc.",
-                    issued_at="2026-05-01T00:00:00Z",
-                    due_at="2026-05-08T00:00:00Z",
-                    base_currency_code="USD",
-                    base_total_amount=99.5,
-                    payment_currency_code="USD",
-                    payment_total_amount=99.5,
-                    original_invoice_id=None,
-                ),
-            ),
-            notes=(
-                (
-                    "AWS invoice summaries are account-level totals and do not "
-                    "attribute cost to a single Glacier bucket."
-                ),
-            ),
-        ),
-        notes=(),
-    )
-
-
-def _acceptance_pricing_basis() -> GlacierPricingBasis:
-    config = load_runtime_config()
-    return GlacierPricingBasis(
-        label=config.glacier_pricing_label,
-        source="manual",
-        storage_class=config.glacier_storage_class,
-        currency_code=config.glacier_pricing_currency_code,
-        region_code=config.glacier_pricing_region_code,
-        effective_at=None,
-        price_list_arn=None,
-        glacier_storage_rate_usd_per_gib_month=config.glacier_storage_rate_usd_per_gib_month,
-        standard_storage_rate_usd_per_gib_month=config.glacier_standard_rate_usd_per_gib_month,
-        archived_metadata_bytes_per_object=config.glacier_archived_metadata_bytes_per_object,
-        standard_metadata_bytes_per_object=config.glacier_standard_metadata_bytes_per_object,
-        minimum_storage_duration_days=config.glacier_minimum_storage_duration_days,
-    )
-
 
 def _acceptance_glacier_image(image: CandidateRecord) -> GlacierUsageImage:
     return GlacierUsageImage(
@@ -3131,7 +2899,6 @@ def _acceptance_glacier_collections(
     images: list[CandidateRecord],
     state: AcceptanceState,
     collection_filter: str | None,
-    pricing_basis: GlacierPricingBasis,
 ) -> list[GlacierUsageCollection]:
     contributions_by_collection: dict[str, list[GlacierCollectionContribution]] = defaultdict(list)
     for image in images:
@@ -3165,25 +2932,11 @@ def _acceptance_glacier_collections(
         measured_storage_bytes = (
             int(glacier.stored_bytes or 0) if glacier.state == GlacierState.UPLOADED else 0
         )
-        archived_object_count = 1 if measured_storage_bytes > 0 else 0
-        billable_bytes = _acceptance_billable_bytes(
-            measured_storage_bytes,
-            archived_object_count=archived_object_count,
-            pricing_basis=pricing_basis,
-        )
         reports.append(
             GlacierUsageCollection(
                 id=normalized_collection_id,
                 bytes=sum(record.bytes for record in records.values()),
                 measured_storage_bytes=measured_storage_bytes,
-                estimated_billable_bytes=billable_bytes,
-                estimated_monthly_cost_usd=_round_usd(
-                    _acceptance_estimated_monthly_cost_usd(
-                        measured_storage_bytes,
-                        object_count=archived_object_count,
-                        pricing_basis=pricing_basis,
-                    )
-                ),
                 images=tuple(contributions),
                 glacier=glacier,
                 collection_manifest=(
@@ -3329,13 +3082,11 @@ def _partial_recoverable_bytes(
 
 
 def _acceptance_glacier_snapshot(state: AcceptanceState) -> GlacierUsageSnapshot:
-    pricing_basis = _acceptance_pricing_basis()
     collection_reports = tuple(
         _acceptance_glacier_collections(
             images=list(state.finalized_images_by_id.values()),
             state=state,
             collection_filter=None,
-            pricing_basis=pricing_basis,
         )
     )
     return GlacierUsageSnapshot(
@@ -3346,73 +3097,12 @@ def _acceptance_glacier_snapshot(state: AcceptanceState) -> GlacierUsageSnapshot
         measured_storage_bytes=sum(
             collection.measured_storage_bytes for collection in collection_reports
         ),
-        estimated_billable_bytes=sum(
-            collection.estimated_billable_bytes for collection in collection_reports
-        ),
-        estimated_monthly_cost_usd=_round_usd(
-            sum(collection.estimated_monthly_cost_usd for collection in collection_reports)
-        ),
-    )
-
-
-def _acceptance_billable_bytes(
-    measured_storage_bytes: int,
-    *,
-    archived_object_count: int,
-    pricing_basis: GlacierPricingBasis,
-) -> int:
-    if measured_storage_bytes <= 0:
-        return 0
-    return (
-        measured_storage_bytes
-        + pricing_basis.archived_metadata_bytes_per_object * archived_object_count
-        + pricing_basis.standard_metadata_bytes_per_object * archived_object_count
-    )
-
-
-def _acceptance_estimated_monthly_cost_usd(
-    measured_storage_bytes: int,
-    *,
-    object_count: int,
-    pricing_basis: GlacierPricingBasis,
-    archived_metadata_bytes: float | None = None,
-    standard_metadata_bytes: float | None = None,
-) -> float:
-    archived_bytes = Decimal(measured_storage_bytes) + Decimal(
-        str(
-            archived_metadata_bytes
-            if archived_metadata_bytes is not None
-            else pricing_basis.archived_metadata_bytes_per_object * object_count
-        )
-    )
-    standard_bytes = Decimal(
-        str(
-            standard_metadata_bytes
-            if standard_metadata_bytes is not None
-            else pricing_basis.standard_metadata_bytes_per_object * object_count
-        )
-    )
-    glacier_rate = Decimal(str(pricing_basis.glacier_storage_rate_usd_per_gib_month))
-    standard_rate = Decimal(str(pricing_basis.standard_storage_rate_usd_per_gib_month))
-    return float(
-        (
-            (archived_bytes / _BYTES_PER_GIB * glacier_rate)
-            + (standard_bytes / _BYTES_PER_GIB * standard_rate)
-        ).quantize(_USD_QUANTUM, rounding=ROUND_HALF_UP)
     )
 
 
 def _split_part_length(total_bytes: int, *, part_count: int, part_index: int) -> int:
     base, remainder = divmod(total_bytes, part_count)
     return base + int(part_index < remainder)
-
-
-def _round_usd(value: float) -> float:
-    return float(Decimal(str(value)).quantize(_USD_QUANTUM, rounding=ROUND_HALF_UP))
-
-
-def _round_int(value: float) -> int:
-    return int(Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 class AcceptanceCopyService:
@@ -4414,6 +4104,84 @@ def _fixture_tus_upload_headers(payload: Mapping[str, object]) -> dict[str, str]
     return headers
 
 
+def _install_live_collection_upload_routes(
+    app: Any,
+    container_slot: _ContainerSlot,
+) -> None:
+    @app.api_route(
+        "/files/collections/{tail:path}",
+        methods=["PATCH", "HEAD", "DELETE", "OPTIONS"],
+        include_in_schema=False,
+    )
+    async def direct_collection_upload(
+        tail: str,
+        request: Request,
+    ) -> Response:
+        method = request.method.upper()
+        raw_path = request.scope.get("raw_path", b"")
+        if isinstance(raw_path, bytes):
+            parsed_path = raw_path.decode("ascii", errors="ignore")
+        else:
+            parsed_path = str(raw_path or request.url.path)
+        path_tail = parsed_path.removeprefix("/files/collections/")
+        encoded_collection_id, separator, encoded_relpath = path_tail.partition("/")
+        if not separator:
+            return JSONResponse(status_code=404, content={"error": {"code": "not_found"}})
+        collection_id = unquote(encoded_collection_id)
+        relpath = unquote(encoded_relpath)
+        _ = tail
+        collections = container_slot.container.collections
+        try:
+            if method == "PATCH":
+                payload = collections.append_upload_chunk(
+                    collection_id,
+                    relpath,
+                    offset=int(request.headers.get("Upload-Offset", "0")),
+                    checksum=str(request.headers.get("Upload-Checksum", "")),
+                    content=await request.body(),
+                )
+                return Response(status_code=204, headers=_fixture_tus_upload_headers(payload))
+            if method == "HEAD":
+                payload = collections.get_file_upload(collection_id, relpath)
+                return Response(status_code=204, headers=_fixture_tus_upload_headers(payload))
+            if method == "DELETE":
+                collections.cancel_file_upload(collection_id, relpath)
+                return Response(status_code=204, headers={"Tus-Resumable": "1.0.0"})
+            return Response(
+                status_code=204,
+                headers={
+                    "Tus-Resumable": "1.0.0",
+                    "Tus-Version": "1.0.0",
+                    "Tus-Extension": "checksum,expiration,termination",
+                    "Tus-Checksum-Algorithm": "sha256",
+                },
+            )
+        except Exception as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "bad_request", "message": str(exc)}},
+            )
+
+
+def _timeout_text(value: bytes | str | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", errors="replace")
+    else:
+        text = value
+    if len(text) <= _CLI_TIMEOUT_OUTPUT_CHARS:
+        return text
+    return text[:_CLI_TIMEOUT_OUTPUT_CHARS] + "\n... output truncated ..."
+
+
+def _set_or_restore_env(key: str, value: str | None) -> None:
+    if value is None:
+        os.environ.pop(key, None)
+    else:
+        os.environ[key] = value
+
+
 @dataclass(slots=True)
 class AcceptanceSystem:
     workspace: Path
@@ -4433,6 +4201,7 @@ class AcceptanceSystem:
     fetches: AcceptanceFetchService
     files: AcceptanceFileService
     _container_slot: _ContainerSlot
+    _runtime_env_overrides: dict[str, str | None]
 
     @classmethod
     def create(cls, workspace: Path) -> AcceptanceSystem:
@@ -4441,6 +4210,7 @@ class AcceptanceSystem:
             state = AcceptanceState()
             system = cls._build_runtime(workspace, state)
             system.server.start()
+            system._apply_live_server_env()
             system.state.public_base_url = system.server.base_url
             return system
 
@@ -4476,6 +4246,7 @@ class AcceptanceSystem:
             glacier_upload_reaper_interval=_GLACIER_UPLOAD_SWEEP_INTERVAL_SECONDS,
             glacier_recovery_reaper_interval=_GLACIER_RECOVERY_SWEEP_INTERVAL_SECONDS,
         )
+        _install_live_collection_upload_routes(app, container_slot)
         fixture_path = workspace / "djdan_fixture.json"
         with _reserve_local_port() as reserved:
             server = _LiveServerHandle(app, host="127.0.0.1", port=reserved.port)
@@ -4497,7 +4268,23 @@ class AcceptanceSystem:
             fetches=fetches,
             files=files,
             _container_slot=container_slot,
+            _runtime_env_overrides={},
         )
+
+    def _apply_live_server_env(self) -> None:
+        updates = {
+            "RIVERHOG_TUSD_BASE_URL": f"{self.base_url}/files",
+            "RIVERHOG_TUSD_PUBLIC_BASE_URL": f"{self.base_url}/files",
+        }
+        for key, value in updates.items():
+            if key not in self._runtime_env_overrides:
+                self._runtime_env_overrides[key] = os.environ.get(key)
+            os.environ[key] = value
+
+    def _restore_live_server_env(self) -> None:
+        for key, value in self._runtime_env_overrides.items():
+            _set_or_restore_env(key, value)
+        self._runtime_env_overrides.clear()
 
     def restart(self) -> None:
         with time_block("fixture.acceptance_system.restart"):
@@ -4509,6 +4296,7 @@ class AcceptanceSystem:
             self.app = restarted.app
             self.server = restarted.server
             self.base_url = restarted.base_url
+            self._apply_live_server_env()
             self.collections = restarted.collections
             self.search = restarted.search
             self.planning = restarted.planning
@@ -4541,7 +4329,10 @@ class AcceptanceSystem:
 
     def close(self) -> None:
         with time_block("fixture.acceptance_system.close"):
-            self.server.close()
+            try:
+                self.server.close()
+            finally:
+                self._restore_live_server_env()
 
     def request(
         self,
@@ -4670,7 +4461,7 @@ class AcceptanceSystem:
                 image_ids=(ImageId(image_id),),
                 collection_ids=collection_ids,
                 latest_message=(
-                    "Approve the estimated restore cost before Riverhog requests archive restore."
+                    "Approve the archive restore before Riverhog requests archived collection data."
                 ),
             )
 
@@ -4738,9 +4529,13 @@ class AcceptanceSystem:
         self,
         collection_id: str,
         *,
-        seconds: float = 60.0,
+        seconds: float = 1.0,
     ) -> None:
-        _ = collection_id, seconds
+        normalized_collection_id = normalize_collection_id(collection_id)
+        with self.state.lock:
+            self.state.glacier_upload_defer_until_by_collection[
+                CollectionId(normalized_collection_id)
+            ] = time.monotonic() + seconds
 
     def wait_for_recovery_session_state(
         self,
@@ -4893,14 +4688,27 @@ class AcceptanceSystem:
 
     def run_riverhog(self, *args: str) -> subprocess.CompletedProcess[str]:
         with time_block("subprocess riverhog"):
-            return subprocess.run(
-                [sys.executable, "-m", "riverhog_cli.main", *args],
-                cwd=REPO_ROOT,
-                env=self._subprocess_env(),
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+            try:
+                return subprocess.run(
+                    [sys.executable, "-m", "riverhog_cli.main", *args],
+                    cwd=REPO_ROOT,
+                    env=self._subprocess_env(),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=_CLI_SUBPROCESS_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired as exc:
+                command_text = " ".join([sys.executable, "-m", "riverhog_cli.main", *args])
+                stdout = _timeout_text(exc.stdout)
+                stderr = _timeout_text(exc.stderr)
+                raise AssertionError(
+                    "riverhog subprocess timed out after "
+                    f"{_CLI_SUBPROCESS_TIMEOUT_SECONDS:.0f}s\n"
+                    f"command: {command_text}\n"
+                    f"stdout:\n{stdout}\n"
+                    f"stderr:\n{stderr}"
+                ) from exc
 
     def run_djdan(
         self, *args: str, input_text: str = "\n" * 16
@@ -5138,7 +4946,9 @@ class AcceptanceSystem:
                     content=content,
                 )
                 assert response.status_code == 204, response.text
-            return self.wait_for_collection_upload_state(minted_collection_id, "archiving")
+            payload = self.wait_for_collection_upload_state(minted_collection_id, "archiving")
+            self.defer_collection_glacier_archiving(minted_collection_id)
+            return payload
 
     def seed_photos_hot(self) -> None:
         self._seed_hot_fixture_collection(PHOTOS_COLLECTION_ID, PHOTOS_2024_FILES)

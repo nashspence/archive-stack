@@ -178,23 +178,14 @@ Feature: riverhog CLI
       Then the command exits with code 0
       And stdout mentions "glacier: uploaded"
       And stdout mentions "disc_coverage=partial"
-    Scenario: riverhog glacier prints pricing basis and direct collection usage
+    Scenario: riverhog glacier prints direct collection usage
       Given an archive with split planner fixtures
       And collection "docs" has uploaded Glacier archive package
       When the operator runs 'riverhog glacier --collection docs'
       Then the command exits with code 0
-      And stdout mentions "pricing_basis:"
-      And stdout mentions "billing:"
       And stdout mentions "glacier=uploaded"
       And stdout mentions "ots=uploaded"
-      And stdout mentions "estimated_monthly_cost_usd="
-    Scenario: riverhog glacier prints resource-level and manifest-aware billing metadata in the spec harness
-      Given an archive with split planner fixtures
-      And collection "docs" has uploaded Glacier archive package
-      And the spec harness exposes controlled Glacier billing metadata
-      When the operator runs 'riverhog glacier'
-      Then the command exits with code 0
-      And stdout exposes Glacier billing resource-level and manifest metadata
+      And stdout mentions "measured_storage_bytes="
 
     Scenario: riverhog copy add prints the generated label text and state
       Given candidate "img_2026-04-20_01" is finalized

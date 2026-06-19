@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime
-from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -22,8 +21,6 @@ from riverhog_core.domain.models import (
     CollectionManifestStatus,
     GlacierArchiveStatus,
     GlacierCollectionContribution,
-    GlacierPricingBasis,
-    GlacierReportingContext,
     GlacierUsageCollection,
     GlacierUsageImage,
     GlacierUsageReport,
@@ -32,12 +29,7 @@ from riverhog_core.domain.models import (
 )
 from riverhog_core.domain.types import CollectionId, ImageId
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.glacier_billing import resolve_glacier_billing
-from riverhog_core.services.glacier_pricing import resolve_glacier_pricing
 from riverhog_core.webhooks import utcnow
-
-_BYTES_PER_GIB = Decimal(1024**3)
-_USD_QUANTUM = Decimal("0.000000000001")
 
 
 class SqlAlchemyGlacierReportingService:
@@ -52,12 +44,6 @@ class SqlAlchemyGlacierReportingService:
         collection: str | None = None,
     ) -> GlacierUsageReport:
         measured_at = _isoformat_z(utcnow())
-        context = _reporting_context(
-            self._config,
-            include_billing=image_id is None and collection is None,
-        )
-        pricing_basis = context.pricing_basis
-        billing = context.billing
 
         with session_scope(self._session_factory) as session:
             image_records = session.scalars(
@@ -83,7 +69,6 @@ class SqlAlchemyGlacierReportingService:
                     session,
                     filtered_images=filtered_images,
                     collection_filter=collection,
-                    pricing_basis=pricing_basis,
                 )
             )
 
@@ -91,19 +76,13 @@ class SqlAlchemyGlacierReportingService:
 
             history: tuple[GlacierUsageSnapshot, ...] = ()
             if image_id is None and collection is None:
-                _ensure_usage_snapshot(
-                    session,
-                    totals=totals,
-                    pricing_basis=pricing_basis,
-                )
+                _ensure_usage_snapshot(session, totals=totals)
                 session.flush()
                 history = tuple(
                     GlacierUsageSnapshot(
                         captured_at=record.captured_at,
                         uploaded_collections=record.uploaded_images,
                         measured_storage_bytes=record.measured_storage_bytes,
-                        estimated_billable_bytes=record.estimated_billable_bytes,
-                        estimated_monthly_cost_usd=_round_usd(record.estimated_monthly_cost_usd),
                     )
                     for record in session.scalars(
                         select(GlacierUsageSnapshotRecord).order_by(
@@ -115,17 +94,15 @@ class SqlAlchemyGlacierReportingService:
         return GlacierUsageReport(
             scope=_scope_name(image_id=image_id, collection=collection),
             measured_at=measured_at,
-            pricing_basis=pricing_basis,
             totals=totals,
             images=image_reports,
             collections=collection_reports,
             history=history,
-            billing=billing,
         )
 
 
 def record_glacier_usage_snapshot(session: Session, *, config: RuntimeConfig) -> None:
-    pricing_basis = _pricing_basis(config)
+    _ = config
     image_records = session.scalars(
         select(FinalizedImageRecord).options(
             selectinload(FinalizedImageRecord.covered_paths),
@@ -136,11 +113,10 @@ def record_glacier_usage_snapshot(session: Session, *, config: RuntimeConfig) ->
             session,
             filtered_images=list(image_records),
             collection_filter=None,
-            pricing_basis=pricing_basis,
         )
     )
     totals = _totals_from_collections(collection_reports)
-    _ensure_usage_snapshot(session, totals=totals, pricing_basis=pricing_basis)
+    _ensure_usage_snapshot(session, totals=totals)
 
 
 def _scope_name(*, image_id: str | None, collection: str | None) -> str:
@@ -151,23 +127,6 @@ def _scope_name(*, image_id: str | None, collection: str | None) -> str:
     if collection is not None:
         return "collection"
     return "all"
-
-
-def _pricing_basis(config: RuntimeConfig) -> GlacierPricingBasis:
-    return resolve_glacier_pricing(config)
-
-
-def _reporting_context(
-    config: RuntimeConfig,
-    *,
-    include_billing: bool,
-) -> GlacierReportingContext:
-    pricing_basis = _pricing_basis(config)
-    billing = resolve_glacier_billing(config, include=include_billing)
-    return GlacierReportingContext(
-        pricing_basis=pricing_basis,
-        billing=billing,
-    )
 
 
 def _image_usage_report(record: FinalizedImageRecord) -> GlacierUsageImage:
@@ -184,7 +143,6 @@ def _direct_collection_usage_reports(
     *,
     filtered_images: list[FinalizedImageRecord],
     collection_filter: str | None,
-    pricing_basis: GlacierPricingBasis,
 ) -> list[GlacierUsageCollection]:
     collections = session.scalars(
         select(CollectionRecord).options(
@@ -215,27 +173,11 @@ def _direct_collection_usage_reports(
         seen.add(collection.id)
         archive = collection.archive
         measured_storage_bytes = _collection_measured_storage_bytes(archive)
-        archived_storage_bytes = _collection_archived_storage_bytes(archive)
-        standard_storage_bytes = _collection_standard_storage_bytes(archive)
-        archived_object_count = _collection_archived_object_count(archive)
-        billable_bytes = _billable_bytes_for_storage_classes(
-            archived_storage_bytes=archived_storage_bytes,
-            standard_storage_bytes=standard_storage_bytes,
-            archived_object_count=archived_object_count,
-            pricing_basis=pricing_basis,
-        )
         reports.append(
             GlacierUsageCollection(
                 id=CollectionId(collection.id),
                 bytes=sum(file.bytes for file in collection.files),
                 measured_storage_bytes=measured_storage_bytes,
-                estimated_billable_bytes=billable_bytes,
-                estimated_monthly_cost_usd=_estimate_monthly_cost_usd(
-                    archived_storage_bytes=archived_storage_bytes,
-                    standard_storage_bytes=standard_storage_bytes,
-                    archived_object_count=archived_object_count,
-                    pricing_basis=pricing_basis,
-                ),
                 images=tuple(image_contributions.get(collection.id, ())),
                 glacier=_collection_glacier_archive_status(archive),
                 collection_manifest=_collection_manifest_status(archive),
@@ -254,8 +196,6 @@ def _direct_collection_usage_reports(
                 id=CollectionId(upload.collection_id),
                 bytes=sum(file.bytes for file in upload.files),
                 measured_storage_bytes=0,
-                estimated_billable_bytes=0,
-                estimated_monthly_cost_usd=0.0,
                 images=(),
                 glacier=GlacierArchiveStatus(
                     state=_upload_glacier_state(upload),
@@ -311,38 +251,6 @@ def _collection_measured_storage_bytes(archive: CollectionArchiveRecord | None) 
     )
 
 
-def _collection_archived_storage_bytes(archive: CollectionArchiveRecord | None) -> int:
-    if archive is None or normalize_glacier_state(archive.state).value != "uploaded":
-        return 0
-    if _is_archival_storage_class(archive.storage_class):
-        return int(archive.stored_bytes or 0)
-    return 0
-
-
-def _collection_standard_storage_bytes(archive: CollectionArchiveRecord | None) -> int:
-    if archive is None or normalize_glacier_state(archive.state).value != "uploaded":
-        return 0
-    standard_bytes = int(archive.manifest_stored_bytes or 0) + int(
-        archive.ots_stored_bytes or 0
-    )
-    if not _is_archival_storage_class(archive.storage_class):
-        standard_bytes += int(archive.stored_bytes or 0)
-    return standard_bytes
-
-
-def _collection_archived_object_count(archive: CollectionArchiveRecord | None) -> int:
-    if archive is None or normalize_glacier_state(archive.state).value != "uploaded":
-        return 0
-    if archive.object_path and _is_archival_storage_class(archive.storage_class):
-        return 1
-    return 0
-
-
-def _is_archival_storage_class(storage_class: str | None) -> bool:
-    normalized = str(storage_class or "").strip().upper()
-    return normalized not in {"", "STANDARD", "REDUCED_REDUNDANCY", "INTELLIGENT_TIERING"}
-
-
 def _collection_glacier_archive_status(
     archive: CollectionArchiveRecord | None,
 ) -> GlacierArchiveStatus:
@@ -394,62 +302,6 @@ def _totals_from_collections(collections: tuple[GlacierUsageCollection, ...]) ->
             1 for collection in collections if collection.measured_storage_bytes > 0
         ),
         measured_storage_bytes=sum(collection.measured_storage_bytes for collection in collections),
-        estimated_billable_bytes=sum(
-            collection.estimated_billable_bytes for collection in collections
-        ),
-        estimated_monthly_cost_usd=_round_usd(
-            sum(collection.estimated_monthly_cost_usd for collection in collections)
-        ),
-    )
-
-
-def _billable_bytes_for_storage_classes(
-    *,
-    archived_storage_bytes: int,
-    standard_storage_bytes: int,
-    archived_object_count: int,
-    pricing_basis: GlacierPricingBasis,
-) -> int:
-    if archived_storage_bytes <= 0 and standard_storage_bytes <= 0:
-        return 0
-    return (
-        archived_storage_bytes
-        + standard_storage_bytes
-        + pricing_basis.archived_metadata_bytes_per_object * archived_object_count
-        + pricing_basis.standard_metadata_bytes_per_object * archived_object_count
-    )
-
-
-def _estimate_monthly_cost_usd(
-    *,
-    archived_storage_bytes: int,
-    standard_storage_bytes: int,
-    archived_object_count: int,
-    pricing_basis: GlacierPricingBasis,
-    archived_metadata_bytes: float | None = None,
-    standard_metadata_bytes: float | None = None,
-) -> float:
-    archived_bytes = Decimal(archived_storage_bytes) + Decimal(
-        str(
-            archived_metadata_bytes
-            if archived_metadata_bytes is not None
-            else pricing_basis.archived_metadata_bytes_per_object * archived_object_count
-        )
-    )
-    standard_bytes = Decimal(standard_storage_bytes) + Decimal(
-        str(
-            standard_metadata_bytes
-            if standard_metadata_bytes is not None
-            else pricing_basis.standard_metadata_bytes_per_object * archived_object_count
-        )
-    )
-    glacier_rate = Decimal(str(pricing_basis.glacier_storage_rate_usd_per_gib_month))
-    standard_rate = Decimal(str(pricing_basis.standard_storage_rate_usd_per_gib_month))
-    return float(
-        (
-            (archived_bytes / _BYTES_PER_GIB * glacier_rate)
-            + (standard_bytes / _BYTES_PER_GIB * standard_rate)
-        ).quantize(_USD_QUANTUM, rounding=ROUND_HALF_UP)
     )
 
 
@@ -457,26 +309,17 @@ def _ensure_usage_snapshot(
     session: Session,
     *,
     totals: GlacierUsageTotals,
-    pricing_basis: GlacierPricingBasis,
 ) -> None:
     latest = session.scalar(
         select(GlacierUsageSnapshotRecord).order_by(GlacierUsageSnapshotRecord.captured_at.desc())
     )
-    if latest is not None and _snapshot_matches(latest, totals=totals, pricing_basis=pricing_basis):
+    if latest is not None and _snapshot_matches(latest, totals=totals):
         return
     session.add(
         GlacierUsageSnapshotRecord(
             captured_at=_isoformat_z(utcnow()),
             uploaded_images=totals.uploaded_collections,
             measured_storage_bytes=totals.measured_storage_bytes,
-            estimated_billable_bytes=totals.estimated_billable_bytes,
-            estimated_monthly_cost_usd=totals.estimated_monthly_cost_usd,
-            pricing_label=pricing_basis.label,
-            glacier_storage_rate_usd_per_gib_month=pricing_basis.glacier_storage_rate_usd_per_gib_month,
-            standard_storage_rate_usd_per_gib_month=pricing_basis.standard_storage_rate_usd_per_gib_month,
-            archived_metadata_bytes_per_object=pricing_basis.archived_metadata_bytes_per_object,
-            standard_metadata_bytes_per_object=pricing_basis.standard_metadata_bytes_per_object,
-            minimum_storage_duration_days=pricing_basis.minimum_storage_duration_days,
         )
     )
 
@@ -485,28 +328,11 @@ def _snapshot_matches(
     latest: GlacierUsageSnapshotRecord,
     *,
     totals: GlacierUsageTotals,
-    pricing_basis: GlacierPricingBasis,
 ) -> bool:
     return (
         latest.uploaded_images == totals.uploaded_collections
         and latest.measured_storage_bytes == totals.measured_storage_bytes
-        and latest.estimated_billable_bytes == totals.estimated_billable_bytes
-        and _round_usd(latest.estimated_monthly_cost_usd) == totals.estimated_monthly_cost_usd
-        and latest.pricing_label == pricing_basis.label
-        and _round_usd(latest.glacier_storage_rate_usd_per_gib_month)
-        == _round_usd(pricing_basis.glacier_storage_rate_usd_per_gib_month)
-        and _round_usd(latest.standard_storage_rate_usd_per_gib_month)
-        == _round_usd(pricing_basis.standard_storage_rate_usd_per_gib_month)
-        and latest.archived_metadata_bytes_per_object
-        == pricing_basis.archived_metadata_bytes_per_object
-        and latest.standard_metadata_bytes_per_object
-        == pricing_basis.standard_metadata_bytes_per_object
-        and latest.minimum_storage_duration_days == pricing_basis.minimum_storage_duration_days
     )
-
-
-def _round_usd(value: float) -> float:
-    return float(Decimal(str(value)).quantize(_USD_QUANTUM, rounding=ROUND_HALF_UP))
 
 
 def _isoformat_z(value: datetime) -> str:

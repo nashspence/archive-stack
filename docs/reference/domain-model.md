@@ -214,41 +214,22 @@ A Glacier-usage report exposes at least:
 
 - `scope`
 - `measured_at`
-- `pricing_basis`
 - `totals`
 - `collections`
 - `images`
-- `billing`
 - `history`
 
 Glacier-usage-report rules:
 
 - `totals.measured_storage_bytes` sums measured uploaded archive-store bytes, including
   Standard S3 collection manifest and OTS proof objects
-- `totals.estimated_billable_bytes` adds configured Glacier metadata overhead for
-  archived tar objects while treating manifest/proof object bytes as Standard S3
-  storage
-- `totals.estimated_monthly_cost_usd` is a derived estimate from the emitted pricing basis
 - `totals.collections` counts collection archive records
 - `totals.uploaded_collections` counts collection archives in `uploaded` state
 - `collections` expose direct measured usage for whole-collection archive object
   sets, including manifest and OTS proof state
 - `images` may explain which finalized images physically cover reported
   collections
-- `billing.actuals` reports AWS-native actual cost periods separately from Riverhog's own storage snapshots
-- `billing.actuals.scope` records whether actuals are `bucket`-scoped, `tag`-scoped, `service`-scoped, or unavailable
-- `billing.actuals.billing_view_arn` records the AWS billing view Riverhog used for resource-level bucket actuals
-- `billing.forecast` reports AWS-native forecast periods and keeps forecast scope separate from actual scope
-- `billing.exports` exposes CUR or Data Exports-derived cost breakdowns when Riverhog can inspect a configured export
-- `billing.exports` records resolved export, execution, manifest, billing-period, and file-count metadata separately
-  from the aggregated breakdown rows
-- `billing.invoices` exposes AWS invoice summaries as account-level totals rather than archive-specific attribution
-- `history` stores overall Glacier-usage snapshots rather than collection-scoped estimates
-- `pricing_basis.source` distinguishes AWS-resolved storage rates from manual fallback
-- `pricing_basis.currency_code`, `pricing_basis.region_code`, and `pricing_basis.effective_at` identify the AWS
-  lookup basis when Riverhog resolves live pricing
-- `pricing_basis.archived_metadata_bytes_per_object`, `pricing_basis.standard_metadata_bytes_per_object`, and
-  `pricing_basis.minimum_storage_duration_days` remain explicit Glacier storage-class constants
+- `history` stores overall Glacier-usage snapshots rather than collection-scoped rows
 
 ### Recovery session
 
@@ -259,7 +240,6 @@ A recovery session exposes at least:
 - `state`
 - `collections`
 - `images`
-- `cost_estimate`
 - `notification`
 
 Recovery-session rules:

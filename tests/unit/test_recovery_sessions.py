@@ -20,6 +20,7 @@ from riverhog_core.catalog_models import (
     FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
+    GlacierRecoverySessionRecord,
 )
 from riverhog_core.collection_archives import (
     CollectionArchiveFile,
@@ -368,7 +369,6 @@ def test_double_copy_loss_creates_pending_recovery_session(tmp_path: Path) -> No
 
     assert session.id == "rs-20260420T040001Z-rebuild-1"
     assert session.state == RecoverySessionState.PENDING_APPROVAL
-    assert session.cost_estimate.total_estimated_cost_usd > 0
     assert session.notification.webhook_configured is False
     assert [str(image.id) for image in session.images] == ["20260420T040001Z"]
 
@@ -395,7 +395,10 @@ def test_recovery_ready_ttl_rounds_up_to_restore_hold_days(tmp_path: Path) -> No
 
     session = recovery_service.get_for_image("20260420T040001Z")
 
-    assert session.cost_estimate.hold_days == 2
+    with session_scope(make_session_factory(sqlite_url(sqlite_path))) as db_session:
+        record = db_session.get(GlacierRecoverySessionRecord, session.id)
+        assert record is not None
+        assert record.hold_days == 2
 
 
 def test_image_recovery_requires_uploaded_collection_archive(tmp_path: Path) -> None:
@@ -1341,5 +1344,4 @@ def test_pending_recovery_session_can_group_multiple_images_before_approval(
         "20260420T040001Z",
         "20260420T040003Z",
     ]
-    assert session.cost_estimate.image_count == 1
-    assert session.cost_estimate.restore_request_count == 1
+    assert [str(collection.id) for collection in session.collections] == ["docs"]

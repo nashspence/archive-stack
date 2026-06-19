@@ -696,8 +696,8 @@ paths:
           $ref: "#/components/responses/Error"
   /glacier:
     get:
-      summary: Get Glacier usage and cost reporting
-      description: Returns Glacier usage totals, direct per-collection archive state, collection manifest/OTS proof state, configured pricing assumptions, and overall usage snapshots.
+      summary: Get Glacier usage reporting
+      description: Returns Glacier usage totals, direct per-collection archive state, collection manifest/OTS proof state, image contribution metadata, and overall usage snapshots.
       operationId: getGlacierReport
       parameters:
         - in: query
@@ -1256,50 +1256,10 @@ components:
             - type: "null"
         ots_state:
           $ref: "#/components/schemas/CollectionManifestProofState"
-    GlacierPricingBasis:
-      type: object
-      required:
-        [
-          label,
-          source,
-          storage_class,
-          glacier_storage_rate_usd_per_gib_month,
-          standard_storage_rate_usd_per_gib_month,
-          archived_metadata_bytes_per_object,
-          standard_metadata_bytes_per_object,
-          minimum_storage_duration_days,
-        ]
-      properties:
-        label: { type: string }
-        source: { type: string }
-        storage_class: { type: string }
-        glacier_storage_rate_usd_per_gib_month: { type: number }
-        standard_storage_rate_usd_per_gib_month: { type: number }
-        archived_metadata_bytes_per_object: { type: integer }
-        standard_metadata_bytes_per_object: { type: integer }
-        minimum_storage_duration_days:
-          type: integer
-          minimum: 1
-        currency_code:
-          oneOf:
-            - type: string
-            - type: "null"
-        region_code:
-          oneOf:
-            - type: string
-            - type: "null"
-        effective_at:
-          oneOf:
-            - type: string
-            - type: "null"
-        price_list_arn:
-          oneOf:
-            - type: string
-            - type: "null"
     GlacierUsageTotals:
       type: object
       required:
-        [collections, uploaded_collections, measured_storage_bytes, estimated_billable_bytes, estimated_monthly_cost_usd]
+        [collections, uploaded_collections, measured_storage_bytes]
       properties:
         collections:
           type: integer
@@ -1309,12 +1269,6 @@ components:
           minimum: 0
         measured_storage_bytes:
           type: integer
-          minimum: 0
-        estimated_billable_bytes:
-          type: integer
-          minimum: 0
-        estimated_monthly_cost_usd:
-          type: number
           minimum: 0
     GlacierUsageImage:
       type: object
@@ -1359,8 +1313,6 @@ components:
           archive_format,
           compression,
           measured_storage_bytes,
-          estimated_billable_bytes,
-          estimated_monthly_cost_usd,
           images,
         ]
       properties:
@@ -1385,12 +1337,6 @@ components:
         measured_storage_bytes:
           type: integer
           minimum: 0
-        estimated_billable_bytes:
-          type: integer
-          minimum: 0
-        estimated_monthly_cost_usd:
-          type: number
-          minimum: 0
         images:
           type: array
           items:
@@ -1398,7 +1344,7 @@ components:
     GlacierUsageSnapshot:
       type: object
       required:
-        [captured_at, uploaded_collections, measured_storage_bytes, estimated_billable_bytes, estimated_monthly_cost_usd]
+        [captured_at, uploaded_collections, measured_storage_bytes]
       properties:
         captured_at:
           type: string
@@ -1409,341 +1355,17 @@ components:
         measured_storage_bytes:
           type: integer
           minimum: 0
-        estimated_billable_bytes:
-          type: integer
-          minimum: 0
-        estimated_monthly_cost_usd:
-          type: number
-          minimum: 0
-    GlacierBillingActual:
-      type: object
-      required: [start, end, estimated, unblended_cost_usd]
-      properties:
-        start:
-          type: string
-          format: date
-        end:
-          type: string
-          format: date
-        estimated:
-          type: boolean
-        unblended_cost_usd:
-          type: number
-          minimum: 0
-        usage_quantity:
-          oneOf:
-            - type: number
-            - type: "null"
-        usage_unit:
-          oneOf:
-            - type: string
-            - type: "null"
-    GlacierBillingForecast:
-      type: object
-      required: [start, end, mean_cost_usd]
-      properties:
-        start:
-          type: string
-          format: date
-        end:
-          type: string
-          format: date
-        mean_cost_usd:
-          type: number
-          minimum: 0
-        lower_bound_cost_usd:
-          oneOf:
-            - type: number
-              minimum: 0
-            - type: "null"
-        upper_bound_cost_usd:
-          oneOf:
-            - type: number
-              minimum: 0
-            - type: "null"
-        currency_code:
-          oneOf:
-            - type: string
-            - type: "null"
-    GlacierBillingActualsView:
-      type: object
-      required: [source, scope, periods, notes]
-      properties:
-        source:
-          type: string
-        scope:
-          type: string
-        filter_label:
-          oneOf:
-            - type: string
-            - type: "null"
-        service:
-          oneOf:
-            - type: string
-            - type: "null"
-        billing_view_arn:
-          oneOf:
-            - type: string
-            - type: "null"
-        granularity:
-          oneOf:
-            - type: string
-            - type: "null"
-        measured_at:
-          oneOf:
-            - type: string
-            - type: "null"
-        periods:
-          type: array
-          items:
-            $ref: "#/components/schemas/GlacierBillingActual"
-        notes:
-          type: array
-          items:
-            type: string
-    GlacierBillingForecastView:
-      type: object
-      required: [source, scope, periods, notes]
-      properties:
-        source:
-          type: string
-        scope:
-          type: string
-        filter_label:
-          oneOf:
-            - type: string
-            - type: "null"
-        service:
-          oneOf:
-            - type: string
-            - type: "null"
-        currency_code:
-          oneOf:
-            - type: string
-            - type: "null"
-        granularity:
-          oneOf:
-            - type: string
-            - type: "null"
-        periods:
-          type: array
-          items:
-            $ref: "#/components/schemas/GlacierBillingForecast"
-        notes:
-          type: array
-          items:
-            type: string
-    GlacierBillingExportBreakdown:
-      type: object
-      required: [unblended_cost_usd]
-      properties:
-        usage_type:
-          oneOf:
-            - type: string
-            - type: "null"
-        operation:
-          oneOf:
-            - type: string
-            - type: "null"
-        resource_id:
-          oneOf:
-            - type: string
-            - type: "null"
-        tag_value:
-          oneOf:
-            - type: string
-            - type: "null"
-        unblended_cost_usd:
-          type: number
-        usage_quantity:
-          oneOf:
-            - type: number
-            - type: "null"
-        usage_unit:
-          oneOf:
-            - type: string
-            - type: "null"
-    GlacierBillingExportView:
-      type: object
-      required: [source, scope, rows_scanned, breakdowns, notes]
-      properties:
-        source:
-          type: string
-        scope:
-          type: string
-        filter_label:
-          oneOf:
-            - type: string
-            - type: "null"
-        service:
-          oneOf:
-            - type: string
-            - type: "null"
-        export_arn:
-          oneOf:
-            - type: string
-            - type: "null"
-        export_name:
-          oneOf:
-            - type: string
-            - type: "null"
-        execution_id:
-          oneOf:
-            - type: string
-            - type: "null"
-        manifest_key:
-          oneOf:
-            - type: string
-            - type: "null"
-        billing_period:
-          oneOf:
-            - type: string
-            - type: "null"
-        bucket:
-          oneOf:
-            - type: string
-            - type: "null"
-        prefix:
-          oneOf:
-            - type: string
-            - type: "null"
-        object_key:
-          oneOf:
-            - type: string
-            - type: "null"
-        exported_at:
-          oneOf:
-            - type: string
-            - type: "null"
-        currency_code:
-          oneOf:
-            - type: string
-            - type: "null"
-        files_read:
-          type: integer
-          minimum: 0
-        rows_scanned:
-          type: integer
-        breakdowns:
-          type: array
-          items:
-            $ref: "#/components/schemas/GlacierBillingExportBreakdown"
-        notes:
-          type: array
-          items:
-            type: string
-    GlacierBillingInvoiceSummary:
-      type: object
-      properties:
-        invoice_id:
-          oneOf:
-            - type: string
-            - type: "null"
-        account_id:
-          oneOf:
-            - type: string
-            - type: "null"
-        billing_period_start:
-          oneOf:
-            - type: string
-            - type: "null"
-        billing_period_end:
-          oneOf:
-            - type: string
-            - type: "null"
-        invoice_type:
-          oneOf:
-            - type: string
-            - type: "null"
-        invoicing_entity:
-          oneOf:
-            - type: string
-            - type: "null"
-        issued_at:
-          oneOf:
-            - type: string
-            - type: "null"
-        due_at:
-          oneOf:
-            - type: string
-            - type: "null"
-        base_currency_code:
-          oneOf:
-            - type: string
-            - type: "null"
-        base_total_amount:
-          oneOf:
-            - type: number
-            - type: "null"
-        payment_currency_code:
-          oneOf:
-            - type: string
-            - type: "null"
-        payment_total_amount:
-          oneOf:
-            - type: number
-            - type: "null"
-        original_invoice_id:
-          oneOf:
-            - type: string
-            - type: "null"
-    GlacierBillingInvoicesView:
-      type: object
-      required: [source, scope, invoices, notes]
-      properties:
-        source:
-          type: string
-        scope:
-          type: string
-        account_id:
-          oneOf:
-            - type: string
-            - type: "null"
-        invoices:
-          type: array
-          items:
-            $ref: "#/components/schemas/GlacierBillingInvoiceSummary"
-        notes:
-          type: array
-          items:
-            type: string
-    GlacierBillingSummary:
-      type: object
-      required: [notes]
-      properties:
-        actuals:
-          oneOf:
-            - $ref: "#/components/schemas/GlacierBillingActualsView"
-            - type: "null"
-        forecast:
-          oneOf:
-            - $ref: "#/components/schemas/GlacierBillingForecastView"
-            - type: "null"
-        exports:
-          oneOf:
-            - $ref: "#/components/schemas/GlacierBillingExportView"
-            - type: "null"
-        invoices:
-          oneOf:
-            - $ref: "#/components/schemas/GlacierBillingInvoicesView"
-            - type: "null"
-        notes:
-          type: array
-          items:
-            type: string
     GlacierUsageReport:
       type: object
       required:
-        [scope, measured_at, pricing_basis, totals, images, collections, history]
+        [scope, measured_at, totals, images, collections, history]
       properties:
         scope:
           type: string
-          enum: [all, collection, filtered]
+          enum: [all, image, collection, filtered]
         measured_at:
           type: string
           format: date-time
-        pricing_basis:
-          $ref: "#/components/schemas/GlacierPricingBasis"
         totals:
           $ref: "#/components/schemas/GlacierUsageTotals"
         images:
@@ -1758,10 +1380,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/GlacierUsageSnapshot"
-        billing:
-          oneOf:
-            - $ref: "#/components/schemas/GlacierBillingSummary"
-            - type: "null"
     CollectionSummary:
       type: object
       required:
@@ -2383,7 +2001,7 @@ components:
     RecoverySession:
       type: object
       required:
-        [id, type, state, created_at, warnings, cost_estimate, notification, progress, collections, images]
+        [id, type, state, created_at, warnings, notification, progress, collections, images]
       properties:
         id:
           type: string
@@ -2429,8 +2047,6 @@ components:
           type: array
           items:
             type: string
-        cost_estimate:
-          $ref: "#/components/schemas/RecoveryCostEstimate"
         notification:
           $ref: "#/components/schemas/RecoveryNotificationStatus"
         progress:
@@ -2443,42 +2059,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RecoverySessionImage"
-    RecoveryCostEstimate:
-      type: object
-      required:
-        [currency_code, retrieval_tier, hold_days, collection_count, total_bytes, restore_request_count, retrieval_rate_usd_per_gib, request_rate_usd_per_1000, standard_storage_rate_usd_per_gib_month, retrieval_cost_usd, request_fees_usd, temporary_storage_cost_usd, total_estimated_cost_usd, assumptions]
-      properties:
-        currency_code:
-          type: string
-        retrieval_tier:
-          type: string
-          enum: [bulk, standard]
-        hold_days:
-          type: integer
-        collection_count:
-          type: integer
-        total_bytes:
-          type: integer
-        restore_request_count:
-          type: integer
-        retrieval_rate_usd_per_gib:
-          type: number
-        request_rate_usd_per_1000:
-          type: number
-        standard_storage_rate_usd_per_gib_month:
-          type: number
-        retrieval_cost_usd:
-          type: number
-        request_fees_usd:
-          type: number
-        temporary_storage_cost_usd:
-          type: number
-        total_estimated_cost_usd:
-          type: number
-        assumptions:
-          type: array
-          items:
-            type: string
     RecoveryNotificationStatus:
       type: object
       required: [webhook_configured, reminder_count, next_reminder_at, last_notified_at]

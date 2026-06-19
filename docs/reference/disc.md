@@ -277,7 +277,7 @@ after one or more finalized images lose all protected copies.
 
 - without a session id, `djdan recover` lists active image-rebuild recovery
   sessions and the finalized images attached to each one
-- with a session id in `pending_approval`, `djdan recover` approves the estimated restore cost and exits after the
+- with a session id in `pending_approval`, `djdan recover` approves the archive restore and exits after the
   restore request is submitted
 - recovery-session readiness is driven by archive-store restore status, not only by the operator-facing latency
   estimate

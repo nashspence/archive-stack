@@ -517,9 +517,8 @@ Required behavior:
 #### `GET /v1/glacier`
 
 Returns Glacier usage totals, direct per-collection archive state, collection
-manifest/OTS proof state, pricing assumptions, AWS-native billing
-actuals/forecast when available, optional CUR or Data Exports drill-down,
-optional invoice summaries, and overall usage snapshots.
+manifest/OTS proof state, image-to-collection contribution metadata, and
+overall usage snapshots.
 
 Supported query parameters:
 
@@ -527,32 +526,14 @@ Supported query parameters:
 
 Required behavior:
 
-- the response always exposes `scope`, `measured_at`, `pricing_basis`, `totals`, `images`, `collections`, `billing`,
-  and `history`
-- `pricing_basis` states the assumptions used for cost estimates, including whether Riverhog resolved the storage
-  rates from the AWS price-list API or from manual fallback values
-- `pricing_basis.currency_code`, `pricing_basis.region_code`, and `pricing_basis.effective_at` make the AWS lookup
-  basis explicit when Riverhog resolves live pricing
-- `totals.measured_storage_bytes` reports measured uploaded archive-store bytes, not billing overhead
-- `totals.estimated_billable_bytes` includes configured Glacier metadata overhead for archived tar objects and
-  Standard S3 bytes for manifest/proof objects
-- `totals.estimated_monthly_cost_usd` is derived from the emitted pricing basis rather than observed cloud bills
+- the response always exposes `scope`, `measured_at`, `totals`, `images`,
+  `collections`, and `history`
+- `totals.measured_storage_bytes` reports measured uploaded archive-store bytes
 - `totals.collections` counts collection archive records and
   `totals.uploaded_collections` counts those uploaded and verified
 - each returned collection exposes direct archive-store state, measured
-  uploaded bytes, estimated billable bytes, estimated monthly cost, manifest
-  state, and OTS proof state
+  uploaded bytes, manifest state, and OTS proof state
 - returned image entries, when present, explain physical coverage of collections
-- `billing` is separate from `history`: `history` tracks Riverhog's own stored-usage snapshots, while `billing`
-  reports AWS-native billing views when Riverhog can resolve them
-- `billing.actuals` prefers bucket-scoped AWS Cost Explorer daily actuals for the archive bucket when resource-level
-  cost data is enabled, then falls back to tag-scoped or service-scoped Cost Explorer attribution
-- `billing.actuals.billing_view_arn` is emitted when Riverhog resolves an AWS billing view for resource-level actuals
-- `billing.forecast` is separate from `billing.actuals` because AWS forecast support is broader-scope than bucket
-  resource actuals; Riverhog makes that forecast scope explicit
-- `billing.exports` exposes CUR or Data Exports-derived billing breakdowns from the selected manifest and makes the
-  resolved export ARN, execution id, manifest key, billing period, and file count explicit
-- `billing.invoices` exposes AWS invoice summaries as account-level totals rather than archive-specific attribution
 - unfiltered `GET /v1/glacier` returns overall usage snapshots that reflect changes in total uploaded Glacier usage over
   time
 
@@ -925,9 +906,8 @@ For finalized-image commands:
   of the full collection-summary listing so the operator view does not
   recompute per-image collection manifests or `image_coverage` details just to
   answer compliance state
-- non-JSON `riverhog glacier` output stays line-oriented while surfacing measured usage totals, configured pricing basis,
-  direct collection archive state, manifest/OTS proof state, and collection
-  cost estimates
+- non-JSON `riverhog glacier` output stays line-oriented while surfacing measured usage totals, direct collection
+  archive state, manifest/OTS proof state, and image contribution metadata
 
 ### `djdan`
 

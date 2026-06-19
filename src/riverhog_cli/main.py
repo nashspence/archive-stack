@@ -453,6 +453,11 @@ def _upload_collection_file(
                 )
                 recovered_offset = int(session["offset"])
                 if recovered_offset == offset:
+                    if isinstance(exc, Conflict):
+                        raise RuntimeError(
+                            f"server rejected upload chunk for {path_value} at "
+                            f"{_format_bytes(offset)} without advancing the offset"
+                        ) from exc
                     _log_upload(f"Server offset unchanged for {path_value}; retrying chunk")
                     continue
                 if recovered_offset < offset:

@@ -142,13 +142,8 @@ def test_get_report_does_not_count_finalized_images_in_glacier_totals(
 
     assert report.scope == "all"
     assert report.totals.measured_storage_bytes == 0
-    assert report.totals.estimated_billable_bytes == 0
-    assert report.totals.estimated_monthly_cost_usd == 0
     assert [image.id for image in report.images] == ["20260420T040001Z"]
     assert report.history
-    assert report.billing is not None
-    assert report.billing.actuals is not None
-    assert report.billing.actuals.source == "unavailable"
 
 
 def test_get_report_does_not_derive_collection_usage_from_finalized_image_coverage(
@@ -172,12 +167,11 @@ def test_get_report_does_not_derive_collection_usage_from_finalized_image_covera
     assert report.scope == "collection"
     assert [collection.id for collection in report.collections] == [DOCS_COLLECTION_ID]
     assert report.collections[0].measured_storage_bytes == 0
-    assert report.collections[0].estimated_billable_bytes == 0
     assert report.collections[0].images
     assert report.collections[0].images[0].represented_bytes > 0
 
 
-def test_get_report_counts_manifest_and_proof_as_standard_s3_storage(
+def test_get_report_counts_manifest_and_proof_in_measured_storage(
     tmp_path: Path,
 ) -> None:
     config = _config(tmp_path)
@@ -211,13 +205,7 @@ def test_get_report_counts_manifest_and_proof_as_standard_s3_storage(
     report = SqlAlchemyGlacierReportingService(config).get_report(collection=DOCS_COLLECTION_ID)
 
     collection = report.collections[0]
-    pricing = report.pricing_basis
     assert collection.measured_storage_bytes == 1220
-    assert collection.estimated_billable_bytes == (
-        1220
-        + pricing.archived_metadata_bytes_per_object
-        + pricing.standard_metadata_bytes_per_object
-    )
     assert collection.collection_manifest is not None
     assert collection.collection_manifest.object_path.endswith("/manifest.yml.age")
     assert collection.collection_manifest.ots_object_path.endswith("/manifest.yml.ots.age")

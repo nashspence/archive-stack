@@ -1397,7 +1397,7 @@ def _bucket_recovery_readme() -> str:
     return """# Encrypted Archive Recovery
 
 This bucket or prefix stores encrypted archive packages. Object paths are opaque
-on purpose so that bucket listings, access logs, billing exports, and screenshots
+on purpose so that bucket listings, access logs, and screenshots
 do not reveal private collection names.
 
 ## What You Need

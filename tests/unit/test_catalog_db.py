@@ -7,6 +7,7 @@ from sqlalchemy import inspect, text
 
 from riverhog_core.catalog_db import (
     SCHEMA_BASELINE_VERSION,
+    SCHEMA_LATEST_VERSION,
     create_catalog_engine,
     initialize_db,
 )
@@ -78,7 +79,62 @@ def test_initialize_db_creates_current_baseline_schema(tmp_path: Path) -> None:
         applied_versions = {
             row[0] for row in conn.execute(text("SELECT version FROM schema_migrations")).fetchall()
         }
-    assert applied_versions == {SCHEMA_BASELINE_VERSION}
+    assert applied_versions == {SCHEMA_BASELINE_VERSION, SCHEMA_LATEST_VERSION}
+
+
+def test_initialize_db_migrates_v1_catalog_billing_columns(tmp_path: Path) -> None:
+    database_url = sqlite_url(tmp_path / "catalog.sqlite3")
+    engine = create_catalog_engine(database_url)
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)"))
+        conn.execute(
+            text("INSERT INTO schema_migrations (version) VALUES (:v)"),
+            {"v": SCHEMA_BASELINE_VERSION},
+        )
+        conn.execute(
+            text(
+                "CREATE TABLE glacier_usage_snapshots ("
+                "captured_at TEXT PRIMARY KEY, "
+                "uploaded_images INTEGER NOT NULL, "
+                "measured_storage_bytes BIGINT NOT NULL, "
+                "estimated_billable_bytes BIGINT NOT NULL, "
+                "estimated_monthly_cost_usd FLOAT NOT NULL, "
+                "pricing_label TEXT NOT NULL, "
+                "glacier_storage_rate_usd_per_gib_month FLOAT NOT NULL, "
+                "standard_storage_rate_usd_per_gib_month FLOAT NOT NULL, "
+                "archived_metadata_bytes_per_object BIGINT NOT NULL, "
+                "standard_metadata_bytes_per_object BIGINT NOT NULL, "
+                "minimum_storage_duration_days INTEGER NOT NULL"
+                ")"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE TABLE glacier_recovery_sessions ("
+                "session_id TEXT PRIMARY KEY, "
+                "estimate_json TEXT NOT NULL"
+                ")"
+            )
+        )
+
+    initialize_db(database_url)
+
+    inspector = inspect(engine)
+    snapshot_columns = {
+        column["name"] for column in inspector.get_columns("glacier_usage_snapshots")
+    }
+    recovery_columns = {
+        column["name"] for column in inspector.get_columns("glacier_recovery_sessions")
+    }
+    assert "estimated_billable_bytes" not in snapshot_columns
+    assert "estimated_monthly_cost_usd" not in snapshot_columns
+    assert "pricing_label" not in snapshot_columns
+    assert "estimate_json" not in recovery_columns
+    with engine.begin() as conn:
+        applied_versions = {
+            row[0] for row in conn.execute(text("SELECT version FROM schema_migrations")).fetchall()
+        }
+    assert applied_versions == {SCHEMA_BASELINE_VERSION, SCHEMA_LATEST_VERSION}
 
 
 def test_create_catalog_engine_rejects_bare_database_paths(tmp_path: Path) -> None:

@@ -50,28 +50,10 @@ class CollectionManifestStatus:
 
 
 @dataclass(frozen=True)
-class GlacierPricingBasis:
-    label: str
-    storage_class: str
-    glacier_storage_rate_usd_per_gib_month: float
-    standard_storage_rate_usd_per_gib_month: float
-    archived_metadata_bytes_per_object: int
-    standard_metadata_bytes_per_object: int
-    minimum_storage_duration_days: int
-    source: str = "manual"
-    currency_code: str | None = None
-    region_code: str | None = None
-    effective_at: str | None = None
-    price_list_arn: str | None = None
-
-
-@dataclass(frozen=True)
 class GlacierUsageTotals:
     collections: int
     uploaded_collections: int
     measured_storage_bytes: int
-    estimated_billable_bytes: int
-    estimated_monthly_cost_usd: float
 
 
 @dataclass(frozen=True)
@@ -93,8 +75,6 @@ class GlacierUsageCollection:
     id: CollectionId
     bytes: int
     measured_storage_bytes: int
-    estimated_billable_bytes: int
-    estimated_monthly_cost_usd: float
     images: tuple[GlacierCollectionContribution, ...] = ()
     glacier: GlacierArchiveStatus = field(default_factory=GlacierArchiveStatus)
     collection_manifest: CollectionManifestStatus | None = None
@@ -107,157 +87,16 @@ class GlacierUsageSnapshot:
     captured_at: str
     uploaded_collections: int
     measured_storage_bytes: int
-    estimated_billable_bytes: int
-    estimated_monthly_cost_usd: float
-
-
-@dataclass(frozen=True)
-class GlacierBillingActual:
-    start: str
-    end: str
-    estimated: bool
-    unblended_cost_usd: float
-    usage_quantity: float | None = None
-    usage_unit: str | None = None
-
-
-@dataclass(frozen=True)
-class GlacierBillingForecast:
-    start: str
-    end: str
-    mean_cost_usd: float
-    lower_bound_cost_usd: float | None = None
-    upper_bound_cost_usd: float | None = None
-    currency_code: str | None = None
-
-
-@dataclass(frozen=True)
-class GlacierBillingActualsView:
-    source: str
-    scope: str
-    filter_label: str | None = None
-    service: str | None = None
-    billing_view_arn: str | None = None
-    granularity: str | None = None
-    measured_at: str | None = None
-    periods: tuple[GlacierBillingActual, ...] = ()
-    notes: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class GlacierBillingForecastView:
-    source: str
-    scope: str
-    filter_label: str | None = None
-    service: str | None = None
-    currency_code: str | None = None
-    granularity: str | None = None
-    periods: tuple[GlacierBillingForecast, ...] = ()
-    notes: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class GlacierBillingExportBreakdown:
-    usage_type: str | None
-    operation: str | None
-    resource_id: str | None
-    tag_value: str | None
-    unblended_cost_usd: float
-    usage_quantity: float | None = None
-    usage_unit: str | None = None
-
-
-@dataclass(frozen=True)
-class GlacierBillingExportView:
-    source: str
-    scope: str
-    filter_label: str | None = None
-    service: str | None = None
-    export_arn: str | None = None
-    export_name: str | None = None
-    execution_id: str | None = None
-    manifest_key: str | None = None
-    billing_period: str | None = None
-    bucket: str | None = None
-    prefix: str | None = None
-    object_key: str | None = None
-    exported_at: str | None = None
-    currency_code: str | None = None
-    files_read: int = 0
-    rows_scanned: int = 0
-    breakdowns: tuple[GlacierBillingExportBreakdown, ...] = ()
-    notes: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class GlacierBillingInvoiceSummary:
-    invoice_id: str | None
-    account_id: str | None
-    billing_period_start: str | None
-    billing_period_end: str | None
-    invoice_type: str | None
-    invoicing_entity: str | None
-    issued_at: str | None
-    due_at: str | None
-    base_currency_code: str | None = None
-    base_total_amount: float | None = None
-    payment_currency_code: str | None = None
-    payment_total_amount: float | None = None
-    original_invoice_id: str | None = None
-
-
-@dataclass(frozen=True)
-class GlacierBillingInvoicesView:
-    source: str
-    scope: str
-    account_id: str | None = None
-    invoices: tuple[GlacierBillingInvoiceSummary, ...] = ()
-    notes: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class GlacierBillingSummary:
-    actuals: GlacierBillingActualsView | None = None
-    forecast: GlacierBillingForecastView | None = None
-    exports: GlacierBillingExportView | None = None
-    invoices: GlacierBillingInvoicesView | None = None
-    notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class GlacierUsageReport:
     scope: str
     measured_at: str
-    pricing_basis: GlacierPricingBasis
     totals: GlacierUsageTotals
     images: tuple[GlacierUsageImage, ...]
     collections: tuple[GlacierUsageCollection, ...]
     history: tuple[GlacierUsageSnapshot, ...] = ()
-    billing: GlacierBillingSummary | None = None
-
-
-@dataclass(frozen=True)
-class GlacierReportingContext:
-    pricing_basis: GlacierPricingBasis
-    billing: GlacierBillingSummary | None = None
-
-
-@dataclass(frozen=True)
-class RecoveryCostEstimate:
-    currency_code: str
-    retrieval_tier: str
-    hold_days: int
-    image_count: int
-    total_bytes: int
-    restore_request_count: int
-    retrieval_rate_usd_per_gib: float
-    request_rate_usd_per_1000: float
-    standard_storage_rate_usd_per_gib_month: float
-    retrieval_cost_usd: float
-    request_fees_usd: float
-    temporary_storage_cost_usd: float
-    total_estimated_cost_usd: float
-    assumptions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -304,7 +143,6 @@ class RecoverySessionSummary:
     completed_at: str | None
     latest_message: str | None
     warnings: tuple[str, ...]
-    cost_estimate: RecoveryCostEstimate
     notification: RecoveryNotificationStatus
     progress: RecoverySessionProgress
     collections: tuple[RecoverySessionCollection, ...]

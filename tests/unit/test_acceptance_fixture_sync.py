@@ -69,6 +69,7 @@ LOCKED_HELPER_STATE_ACCESS = {
     ),
     "stage_collection_upload_archiving": "drives upload state to archiving for gating setup",
     "wait_for_collection_glacier_state": "polls collection Glacier fixture state directly",
+    "defer_collection_glacier_archiving": "temporarily holds collection Glacier upload state",
     "mark_collection_archive_uploaded": "mutates collection Glacier archive state directly",
     "collection_glacier_failure_configured": "reads collection Glacier failure fixture state",
     "collection_glacier_failure": "reads collection Glacier failure fixture state",

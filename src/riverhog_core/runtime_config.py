@@ -180,36 +180,6 @@ class RuntimeConfig:
     glacier_recovery_ready_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
     glacier_recovery_retrieval_tier: str = "bulk"
     glacier_recovery_restore_mode: str = "auto"
-    glacier_bulk_retrieval_rate_usd_per_gib: float = 0.0025
-    glacier_bulk_request_rate_usd_per_1000: float = 0.025
-    glacier_standard_retrieval_rate_usd_per_gib: float = 0.02
-    glacier_standard_request_rate_usd_per_1000: float = 0.10
-    glacier_pricing_label: str = "aws-s3-us-west-2-public"
-    glacier_pricing_mode: str = "auto"
-    glacier_pricing_api_region: str = "us-east-1"
-    glacier_pricing_region_code: str = "us-west-2"
-    glacier_pricing_currency_code: str = "USD"
-    glacier_pricing_cache_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
-    glacier_billing_mode: str = "auto"
-    glacier_billing_api_region: str = "us-east-1"
-    glacier_billing_currency_code: str = "USD"
-    glacier_billing_lookback_months: int = 3
-    glacier_billing_forecast_months: int = 1
-    glacier_billing_view_arn: str | None = None
-    glacier_billing_tag_key: str | None = None
-    glacier_billing_tag_value: str | None = None
-    glacier_billing_export_arn: str | None = None
-    glacier_billing_export_bucket: str | None = None
-    glacier_billing_export_prefix: str | None = None
-    glacier_billing_export_region: str = "us-east-1"
-    glacier_billing_export_max_items: int = 10
-    glacier_billing_invoice_account_id: str | None = None
-    glacier_billing_invoice_max_items: int = 6
-    glacier_storage_rate_usd_per_gib_month: float = 0.00099
-    glacier_standard_rate_usd_per_gib_month: float = 0.023
-    glacier_archived_metadata_bytes_per_object: int = 32 * 1024
-    glacier_standard_metadata_bytes_per_object: int = 8 * 1024
-    glacier_minimum_storage_duration_days: int = 180
     ots_stamp_command: tuple[str, ...] = ("ots",)
     ots_verify_command: tuple[str, ...] = ("ots",)
     recovery_payload_command: tuple[str, ...] = ("age",)
@@ -404,114 +374,6 @@ def load_runtime_config() -> RuntimeConfig:
         name="RIVERHOG_GLACIER_RECOVERY_RESTORE_MODE",
         allowed={"auto", "aws"},
     )
-    glacier_bulk_retrieval_rate_usd_per_gib = _parse_float(
-        os.getenv("RIVERHOG_GLACIER_BULK_RETRIEVAL_RATE_USD_PER_GIB", "0.0025"),
-        name="RIVERHOG_GLACIER_BULK_RETRIEVAL_RATE_USD_PER_GIB",
-    )
-    glacier_bulk_request_rate_usd_per_1000 = _parse_float(
-        os.getenv("RIVERHOG_GLACIER_BULK_REQUEST_RATE_USD_PER_1000", "0.025"),
-        name="RIVERHOG_GLACIER_BULK_REQUEST_RATE_USD_PER_1000",
-    )
-    glacier_standard_retrieval_rate_usd_per_gib = _parse_float(
-        os.getenv("RIVERHOG_GLACIER_STANDARD_RETRIEVAL_RATE_USD_PER_GIB", "0.02"),
-        name="RIVERHOG_GLACIER_STANDARD_RETRIEVAL_RATE_USD_PER_GIB",
-    )
-    glacier_standard_request_rate_usd_per_1000 = _parse_float(
-        os.getenv("RIVERHOG_GLACIER_STANDARD_REQUEST_RATE_USD_PER_1000", "0.10"),
-        name="RIVERHOG_GLACIER_STANDARD_REQUEST_RATE_USD_PER_1000",
-    )
-    glacier_pricing_label = (
-        os.getenv("RIVERHOG_GLACIER_PRICING_LABEL", "aws-s3-us-west-2-public").strip()
-        or "aws-s3-us-west-2-public"
-    )
-    glacier_pricing_mode = _parse_choice(
-        os.getenv("RIVERHOG_GLACIER_PRICING_MODE", "auto"),
-        name="RIVERHOG_GLACIER_PRICING_MODE",
-        allowed={"auto", "aws", "manual"},
-    )
-    glacier_pricing_api_region = (
-        os.getenv("RIVERHOG_GLACIER_PRICING_API_REGION", "us-east-1").strip() or "us-east-1"
-    )
-    glacier_pricing_region_code = os.getenv(
-        "RIVERHOG_GLACIER_PRICING_REGION_CODE",
-        os.getenv("RIVERHOG_GLACIER_REGION", s3_region),
-    ).strip() or os.getenv("RIVERHOG_GLACIER_REGION", s3_region)
-    glacier_pricing_currency_code = (
-        os.getenv("RIVERHOG_GLACIER_PRICING_CURRENCY_CODE", "USD").strip().upper() or "USD"
-    )
-    glacier_pricing_cache_ttl = _parse_duration(
-        os.getenv("RIVERHOG_GLACIER_PRICING_CACHE_TTL", "24h")
-    )
-    glacier_billing_mode = _parse_choice(
-        os.getenv("RIVERHOG_GLACIER_BILLING_MODE", "auto"),
-        name="RIVERHOG_GLACIER_BILLING_MODE",
-        allowed={"auto", "aws", "disabled"},
-    )
-    glacier_billing_api_region = (
-        os.getenv("RIVERHOG_GLACIER_BILLING_API_REGION", "us-east-1").strip() or "us-east-1"
-    )
-    glacier_billing_currency_code = (
-        os.getenv("RIVERHOG_GLACIER_BILLING_CURRENCY_CODE", "USD").strip().upper() or "USD"
-    )
-    glacier_billing_lookback_months = _parse_int(
-        os.getenv("RIVERHOG_GLACIER_BILLING_LOOKBACK_MONTHS", "3"),
-        name="RIVERHOG_GLACIER_BILLING_LOOKBACK_MONTHS",
-        minimum=1,
-    )
-    glacier_billing_forecast_months = _parse_int(
-        os.getenv("RIVERHOG_GLACIER_BILLING_FORECAST_MONTHS", "1"),
-        name="RIVERHOG_GLACIER_BILLING_FORECAST_MONTHS",
-        minimum=1,
-    )
-    glacier_billing_view_arn = os.getenv("RIVERHOG_GLACIER_BILLING_VIEW_ARN", "").strip() or None
-    glacier_billing_tag_key = os.getenv("RIVERHOG_GLACIER_BILLING_TAG_KEY", "").strip() or None
-    glacier_billing_tag_value = os.getenv("RIVERHOG_GLACIER_BILLING_TAG_VALUE", "").strip() or None
-    glacier_billing_export_arn = (
-        os.getenv("RIVERHOG_GLACIER_BILLING_EXPORT_ARN", "").strip() or None
-    )
-    glacier_billing_export_bucket = (
-        os.getenv("RIVERHOG_GLACIER_BILLING_EXPORT_BUCKET", "").strip() or None
-    )
-    glacier_billing_export_prefix = (
-        os.getenv("RIVERHOG_GLACIER_BILLING_EXPORT_PREFIX", "").strip().strip("/") or None
-    )
-    glacier_billing_export_region = (
-        os.getenv("RIVERHOG_GLACIER_BILLING_EXPORT_REGION", "us-east-1").strip() or "us-east-1"
-    )
-    glacier_billing_export_max_items = _parse_int(
-        os.getenv("RIVERHOG_GLACIER_BILLING_EXPORT_MAX_ITEMS", "10"),
-        name="RIVERHOG_GLACIER_BILLING_EXPORT_MAX_ITEMS",
-        minimum=1,
-    )
-    glacier_billing_invoice_account_id = (
-        os.getenv("RIVERHOG_GLACIER_BILLING_INVOICE_ACCOUNT_ID", "").strip() or None
-    )
-    glacier_billing_invoice_max_items = _parse_int(
-        os.getenv("RIVERHOG_GLACIER_BILLING_INVOICE_MAX_ITEMS", "6"),
-        name="RIVERHOG_GLACIER_BILLING_INVOICE_MAX_ITEMS",
-        minimum=1,
-    )
-    glacier_storage_rate_usd_per_gib_month = _parse_float(
-        os.getenv("RIVERHOG_GLACIER_STORAGE_RATE_USD_PER_GIB_MONTH", "0.00099"),
-        name="RIVERHOG_GLACIER_STORAGE_RATE_USD_PER_GIB_MONTH",
-    )
-    glacier_standard_rate_usd_per_gib_month = _parse_float(
-        os.getenv("RIVERHOG_GLACIER_STANDARD_RATE_USD_PER_GIB_MONTH", "0.023"),
-        name="RIVERHOG_GLACIER_STANDARD_RATE_USD_PER_GIB_MONTH",
-    )
-    glacier_archived_metadata_bytes_per_object = _parse_int(
-        os.getenv("RIVERHOG_GLACIER_ARCHIVED_METADATA_BYTES_PER_OBJECT", str(32 * 1024)),
-        name="RIVERHOG_GLACIER_ARCHIVED_METADATA_BYTES_PER_OBJECT",
-    )
-    glacier_standard_metadata_bytes_per_object = _parse_int(
-        os.getenv("RIVERHOG_GLACIER_STANDARD_METADATA_BYTES_PER_OBJECT", str(8 * 1024)),
-        name="RIVERHOG_GLACIER_STANDARD_METADATA_BYTES_PER_OBJECT",
-    )
-    glacier_minimum_storage_duration_days = _parse_int(
-        os.getenv("RIVERHOG_GLACIER_MINIMUM_STORAGE_DURATION_DAYS", "180"),
-        name="RIVERHOG_GLACIER_MINIMUM_STORAGE_DURATION_DAYS",
-        minimum=1,
-    )
     public_base_url = os.getenv("RIVERHOG_PUBLIC_BASE_URL", "").strip() or None
     ots_stamp_command = _parse_command(
         os.getenv("RIVERHOG_OTS_STAMP_COMMAND", "ots"),
@@ -700,36 +562,6 @@ def load_runtime_config() -> RuntimeConfig:
         glacier_recovery_ready_ttl=glacier_recovery_ready_ttl,
         glacier_recovery_retrieval_tier=glacier_recovery_retrieval_tier,
         glacier_recovery_restore_mode=glacier_recovery_restore_mode,
-        glacier_bulk_retrieval_rate_usd_per_gib=glacier_bulk_retrieval_rate_usd_per_gib,
-        glacier_bulk_request_rate_usd_per_1000=glacier_bulk_request_rate_usd_per_1000,
-        glacier_standard_retrieval_rate_usd_per_gib=glacier_standard_retrieval_rate_usd_per_gib,
-        glacier_standard_request_rate_usd_per_1000=glacier_standard_request_rate_usd_per_1000,
-        glacier_pricing_label=glacier_pricing_label,
-        glacier_pricing_mode=glacier_pricing_mode,
-        glacier_pricing_api_region=glacier_pricing_api_region,
-        glacier_pricing_region_code=glacier_pricing_region_code,
-        glacier_pricing_currency_code=glacier_pricing_currency_code,
-        glacier_pricing_cache_ttl=glacier_pricing_cache_ttl,
-        glacier_billing_mode=glacier_billing_mode,
-        glacier_billing_api_region=glacier_billing_api_region,
-        glacier_billing_currency_code=glacier_billing_currency_code,
-        glacier_billing_lookback_months=glacier_billing_lookback_months,
-        glacier_billing_forecast_months=glacier_billing_forecast_months,
-        glacier_billing_view_arn=glacier_billing_view_arn,
-        glacier_billing_tag_key=glacier_billing_tag_key,
-        glacier_billing_tag_value=glacier_billing_tag_value,
-        glacier_billing_export_arn=glacier_billing_export_arn,
-        glacier_billing_export_bucket=glacier_billing_export_bucket,
-        glacier_billing_export_prefix=glacier_billing_export_prefix,
-        glacier_billing_export_region=glacier_billing_export_region,
-        glacier_billing_export_max_items=glacier_billing_export_max_items,
-        glacier_billing_invoice_account_id=glacier_billing_invoice_account_id,
-        glacier_billing_invoice_max_items=glacier_billing_invoice_max_items,
-        glacier_storage_rate_usd_per_gib_month=glacier_storage_rate_usd_per_gib_month,
-        glacier_standard_rate_usd_per_gib_month=glacier_standard_rate_usd_per_gib_month,
-        glacier_archived_metadata_bytes_per_object=glacier_archived_metadata_bytes_per_object,
-        glacier_standard_metadata_bytes_per_object=glacier_standard_metadata_bytes_per_object,
-        glacier_minimum_storage_duration_days=glacier_minimum_storage_duration_days,
         ots_stamp_command=ots_stamp_command,
         ots_verify_command=ots_verify_command,
         recovery_payload_command=recovery_payload_command,

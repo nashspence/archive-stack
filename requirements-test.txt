@@ -695,10 +695,6 @@ mypy==1.20.1 \
     --hash=sha256:f8e945b872a05f4fbefabe2249c0b07b6b194e5e11a86ebee9edf855de09806c \
     --hash=sha256:fba3fb0968a7b48806b0c90f38d39296f10766885a94c83bd21399de1e14eb28
     # via riverhog-mvp-skeleton (pyproject.toml)
-mypy-boto3-pricing==1.42.82 \
-    --hash=sha256:a28d8ae44fb6fa66c981cabc16304975bbae585df1f0844fac211953e325d211 \
-    --hash=sha256:cd9994fc44fc9dcfe82f79693a0a0472d8eed421fd1df4bfd75673abe94eb29e
-    # via boto3-stubs
 mypy-boto3-s3==1.42.94 \
     --hash=sha256:1d92d722cf00573b8111e98493ab386e0c1b59a1530b7fee4af77f2d9a1c477d \
     --hash=sha256:d7c2111396d7ae344b241958b7df8ed33d478d746721202715f5c197f9cd0c83
@@ -1546,7 +1542,6 @@ typing-extensions==4.15.0 \
     #   boto3-stubs
     #   fastapi
     #   mypy
-    #   mypy-boto3-pricing
     #   mypy-boto3-s3
     #   optype
     #   psycopg

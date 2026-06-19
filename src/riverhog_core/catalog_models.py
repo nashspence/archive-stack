@@ -278,14 +278,6 @@ class GlacierUsageSnapshotRecord(Base):
     captured_at: Mapped[str] = mapped_column(String, primary_key=True)
     uploaded_images: Mapped[int] = mapped_column(Integer)
     measured_storage_bytes: Mapped[int] = mapped_column(BigInteger)
-    estimated_billable_bytes: Mapped[int] = mapped_column(BigInteger)
-    estimated_monthly_cost_usd: Mapped[float] = mapped_column()
-    pricing_label: Mapped[str] = mapped_column(String)
-    glacier_storage_rate_usd_per_gib_month: Mapped[float] = mapped_column()
-    standard_storage_rate_usd_per_gib_month: Mapped[float] = mapped_column()
-    archived_metadata_bytes_per_object: Mapped[int] = mapped_column(BigInteger)
-    standard_metadata_bytes_per_object: Mapped[int] = mapped_column(BigInteger)
-    minimum_storage_duration_days: Mapped[int] = mapped_column(Integer)
 
 
 class GlacierRecoverySessionRecord(Base):
@@ -304,7 +296,6 @@ class GlacierRecoverySessionRecord(Base):
     latest_message: Mapped[str | None] = mapped_column(String, nullable=True)
     retrieval_tier: Mapped[str] = mapped_column(String)
     hold_days: Mapped[int] = mapped_column(Integer)
-    estimate_json: Mapped[str] = mapped_column(String)
     warnings_json: Mapped[str] = mapped_column(String)
     reminder_count: Mapped[int] = mapped_column(Integer, default=0)
     next_reminder_at: Mapped[str | None] = mapped_column(String, nullable=True)

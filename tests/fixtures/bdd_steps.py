@@ -822,13 +822,6 @@ def given_archive_with_split_planner_fixtures(acceptance_system: AcceptanceSyste
     acceptance_system.seed_split_planner_fixtures()
 
 
-@given("the spec harness exposes controlled Glacier billing metadata")
-def given_spec_harness_exposes_controlled_glacier_billing_metadata(
-    acceptance_system: AcceptanceSystem,
-) -> None:
-    acceptance_system.state.glacier_billing_metadata_available = True
-
-
 @given("the planner has at least one candidate image")
 def given_planner_has_candidate_image(acceptance_system: AcceptanceSystem) -> None:
     plan = acceptance_system.planning.get_plan()
@@ -1939,12 +1932,16 @@ def when_operator_uploads_collection_source(
     collection_id: str,
 ) -> None:
     source_root = acceptance_system.collection_source_root(collection_id)
-    acceptance_context.command_text = f'riverhog upload {collection_id} "{source_root}"'
+    acceptance_context.command_text = (
+        f'riverhog upload {collection_id} "{source_root}" --wait staged'
+    )
     acceptance_context.command_argv = [
         "riverhog",
         "upload",
         collection_id,
         str(source_root),
+        "--wait",
+        "staged",
     ]
     acceptance_context.stdout_json = None
     acceptance_context.expected_api_endpoint = None
@@ -1953,6 +1950,8 @@ def when_operator_uploads_collection_source(
         "upload",
         collection_id,
         str(acceptance_system.collection_source_root(collection_id)),
+        "--wait",
+        "staged",
     )
 
 
@@ -3380,14 +3379,6 @@ def then_response_recovery_session_type_is(
     assert payload["type"] == session_type
 
 
-@then("the response recovery session estimated cost is greater than 0")
-def then_response_recovery_session_estimated_cost_is_greater_than_zero(
-    acceptance_context: AcceptanceScenarioContext,
-) -> None:
-    payload = _json_payload(_require_response(acceptance_context))
-    assert float(payload["cost_estimate"]["total_estimated_cost_usd"]) > 0
-
-
 @then(parsers.parse('the response recovery session images contain only "{image_id}"'))
 def then_response_recovery_session_images_contain_only(
     acceptance_context: AcceptanceScenarioContext,
@@ -3652,14 +3643,6 @@ def then_response_glacier_totals_uploaded_collections_is_greater_than_zero(
     assert int(payload["totals"]["uploaded_collections"]) > 0
 
 
-@then("the response Glacier totals estimated_monthly_cost_usd is greater than 0")
-def then_response_glacier_totals_estimated_monthly_cost_is_greater_than_zero(
-    acceptance_context: AcceptanceScenarioContext,
-) -> None:
-    payload = _json_payload(_require_response(acceptance_context))
-    assert float(payload["totals"]["estimated_monthly_cost_usd"]) > 0
-
-
 @then(parsers.parse('the response Glacier images contain only "{image_id}"'))
 def then_response_glacier_images_contain_only(
     acceptance_context: AcceptanceScenarioContext,
@@ -3736,58 +3719,6 @@ def then_response_glacier_collections_contain_only(
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     assert [item["id"] for item in payload["collections"]] == [collection_id]
-
-
-@then("the response Glacier billing surface exposes resource-level and manifest metadata")
-def then_response_glacier_billing_surface_exposes_resource_level_and_manifest_metadata(
-    acceptance_context: AcceptanceScenarioContext,
-) -> None:
-    payload = _json_payload(_require_response(acceptance_context))
-    billing = payload["billing"]
-    assert isinstance(billing, dict)
-    actuals = billing["actuals"]
-    exports = billing["exports"]
-    assert actuals["source"] == "aws_cost_explorer_resource"
-    assert actuals["scope"] == "bucket"
-    assert actuals["billing_view_arn"]
-    assert actuals["periods"]
-    assert exports["source"] == "aws_data_exports_s3"
-    assert exports["export_arn"]
-    assert exports["export_name"]
-    assert exports["execution_id"]
-    assert exports["manifest_key"]
-    assert exports["billing_period"]
-    assert int(exports["files_read"]) > 0
-    assert exports["breakdowns"]
-
-
-@then("stdout exposes Glacier billing resource-level and manifest metadata")
-def then_stdout_exposes_glacier_billing_resource_level_and_manifest_metadata(
-    acceptance_system: AcceptanceSystem,
-    acceptance_context: AcceptanceScenarioContext,
-) -> None:
-    params: dict[str, object] = {}
-    collection = _riverhog_option_value(acceptance_context.command_argv, "--collection")
-    if collection is not None:
-        params["collection"] = collection
-    payload = acceptance_system.request("GET", "/v1/glacier", params=params).json()
-    assert isinstance(payload, dict)
-    billing = payload["billing"]
-    assert isinstance(billing, dict)
-    stdout = _require_command(acceptance_context).stdout
-    actuals = billing["actuals"]
-    exports = billing["exports"]
-    assert actuals["source"] == "aws_cost_explorer_resource"
-    assert "source=aws_cost_explorer_resource scope=bucket" in stdout
-    assert f"billing_view_arn: {actuals['billing_view_arn']}" in stdout
-    assert exports["source"] == "aws_data_exports_s3"
-    assert "source=aws_data_exports_s3 scope=bucket" in stdout
-    assert f"export_arn: {exports['export_arn']}" in stdout
-    assert f"export_name: {exports['export_name']}" in stdout
-    assert f"execution_id: {exports['execution_id']}" in stdout
-    assert f"manifest_key: {exports['manifest_key']}" in stdout
-    assert f"billing_period: {exports['billing_period']}" in stdout
-    assert f"files_read: {exports['files_read']}" in stdout
 
 
 @then(parsers.parse('the response contains image id "{image_id}"'))

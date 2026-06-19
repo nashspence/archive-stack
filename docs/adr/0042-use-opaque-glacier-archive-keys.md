@@ -31,7 +31,7 @@ paths.
 ## Reason
 
 Archive encryption protects object contents, but S3 object keys are metadata.
-Object listings, access logs, billing exports, console screenshots, and support
+Object listings, access logs, console screenshots, and support
 contexts can expose collection slugs if keys include canonical collection ids.
 Random opaque ids avoid leaking those slugs while keeping each archive package's
 three objects grouped together.

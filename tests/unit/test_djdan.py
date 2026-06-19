@@ -1302,8 +1302,8 @@ def test_discover_recovery_handoffs_for_images_that_require_recovery() -> None:
                 "id": "rs-20260420T040001Z-1",
                 "state": "pending_approval",
                 "latest_message": (
-                    "Approve the estimated restore cost before Riverhog requests archive "
-                    "restore."
+                    "Approve the archive restore before Riverhog requests archived "
+                    "collection data."
                 ),
             }
 
@@ -1313,8 +1313,8 @@ def test_discover_recovery_handoffs_for_images_that_require_recovery() -> None:
             session_id="rs-20260420T040001Z-1",
             state="pending_approval",
             latest_message=(
-                "Approve the estimated restore cost before Riverhog requests archive "
-                "restore."
+                "Approve the archive restore before Riverhog requests archived "
+                "collection data."
             ),
         )
     ]
@@ -1359,8 +1359,8 @@ def test_discover_active_recovery_sessions_dedupes_multi_image_sessions() -> Non
                 "id": "rs-20260420T040001Z-1",
                 "state": "pending_approval",
                 "latest_message": (
-                    "Approve the estimated restore cost before Riverhog requests archive "
-                    "restore."
+                    "Approve the archive restore before Riverhog requests archived "
+                    "collection data."
                 ),
                 "images": [
                     {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"},
@@ -1376,8 +1376,8 @@ def test_discover_active_recovery_sessions_dedupes_multi_image_sessions() -> Non
             type="image_rebuild",
             state="pending_approval",
             latest_message=(
-                "Approve the estimated restore cost before Riverhog requests archive "
-                "restore."
+                "Approve the archive restore before Riverhog requests archived "
+                "collection data."
             ),
             images=(
                 djdan_main.RecoverySessionImageHint(
@@ -1449,8 +1449,8 @@ def test_djdan_recover_lists_active_sessions(monkeypatch) -> None:
                 "id": "rs-20260420T040001Z-1",
                 "state": "pending_approval",
                 "latest_message": (
-                    "Approve the estimated restore cost before Riverhog requests archive "
-                    "restore."
+                    "Approve the archive restore before Riverhog requests archived "
+                    "collection data."
                 ),
                 "images": [
                     {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"},
@@ -1478,8 +1478,8 @@ def test_djdan_recover_approves_waiting_session(monkeypatch, tmp_path: Path) -> 
                 "id": session_id,
                 "state": "pending_approval",
                 "latest_message": (
-                    "Approve the estimated restore cost before Riverhog requests archive "
-                    "restore."
+                    "Approve the archive restore before Riverhog requests archived "
+                    "collection data."
                 ),
                 "images": [
                     {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"},
@@ -2030,8 +2030,8 @@ def test_djdan_burn_reports_recovery_handoffs_when_no_standard_backlog_exists(
                 "id": "rs-20260420T040001Z-1",
                 "state": "pending_approval",
                 "latest_message": (
-                    "Approve the estimated restore cost before Riverhog requests archive "
-                    "restore."
+                    "Approve the archive restore before Riverhog requests archived "
+                    "collection data."
                 ),
             }
 
@@ -2048,7 +2048,7 @@ def test_djdan_burn_reports_recovery_handoffs_when_no_standard_backlog_exists(
     assert "image rebuild work remains" in result.stdout
     assert "rs-20260420T040001Z-1" in result.stdout
     assert "pending_approval" in result.stdout
-    assert "Approve the estimated restore cost" in result.stdout
+    assert "Approve the archive restore" in result.stdout
 
 
 def test_djdan_burn_cleans_stale_completed_staging_when_backlog_is_clear(

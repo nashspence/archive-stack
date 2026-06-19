@@ -537,6 +537,51 @@ def test_upload_collection_file_resyncs_after_offset_conflict(
     assert progress == [5, 5]
 
 
+def test_upload_collection_file_stops_after_unresolved_offset_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "clip.bin"
+    content = b"abcdefghij"
+    source.write_bytes(content)
+    uploaded: list[tuple[int, bytes]] = []
+
+    class FakeApi:
+        def create_or_resume_collection_file_upload(
+            self,
+            collection_id: str,
+            path: str,
+        ) -> dict[str, object]:
+            return {
+                "upload_url": "https://uploads.test/clip.bin",
+                "offset": 0,
+                "checksum_algorithm": "sha256",
+            }
+
+        def append_upload_chunk(
+            self,
+            upload_url: str,
+            *,
+            offset: int,
+            checksum_algorithm: str,
+            content: bytes,
+        ) -> dict[str, object]:
+            uploaded.append((offset, content))
+            raise Conflict("collection upload not found")
+
+    monkeypatch.setattr(riverhog_main, "UPLOAD_CHUNK_BYTES", 5)
+
+    with pytest.raises(RuntimeError, match="without advancing the offset"):
+        riverhog_main._upload_collection_file(
+            FakeApi(),  # type: ignore[arg-type]
+            "2025/collection",
+            source,
+            {"path": "clip.bin", "bytes": len(content)},
+        )
+
+    assert uploaded == [(0, b"abcde")]
+
+
 def test_upload_collection_file_retries_after_transient_http_status(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -11,7 +11,6 @@ Feature: Recovery sessions API
     And the response recovery session type is "collection_restore"
     And the response recovery session id is "rs-docs-restore-1"
     And the response recovery session state is "pending_approval"
-    And the response recovery session estimated cost is greater than 0
     And the response recovery session collections contain only "docs"
     And the response recovery session images are empty
     When the API process restarts
