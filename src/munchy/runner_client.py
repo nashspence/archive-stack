@@ -10,11 +10,12 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event, Lock
-from typing import Any
+from typing import Any, cast
 
 DEFAULT_RUNNER_URL = "http://127.0.0.1:8092"
 RUNNER_URL_ENV = "MUNCHY_RUNNER_URL"
@@ -1089,7 +1090,7 @@ class RichProgressRenderer(ProgressRenderer):
             TextColumn(f"{pct:.2f}%"),
             expand=True,
         )
-        bar.add_task("", total=100.0, completed=pct)
+        bar.add_task("", total=100, completed=int(pct))
         return bar
 
 
@@ -1140,7 +1141,7 @@ class UploadProgress:
         *,
         completed_files: int = 0,
         completed_bytes: int = 0,
-        job_status_provider: Any | None = None,
+        job_status_provider: Callable[[], dict[str, Any] | None] | None = None,
         renderer: ProgressRenderer | None = None,
         stop_event: Event | None = None,
     ) -> None:
@@ -1225,15 +1226,17 @@ class UploadProgress:
             should_print = (
                 self.completed_files == self.total_files or now - self.last_printed_at >= 15
             )
+            job_status_provider = self.job_status_provider
             should_check_job = (
-                self.job_status_provider is not None
+                job_status_provider is not None
                 and (should_print or now - self.last_job_checked_at >= 5)
             )
             remote_job: dict[str, Any] | None = None
             if should_check_job:
+                assert job_status_provider is not None
                 self.last_job_checked_at = now
                 try:
-                    maybe_job = self.job_status_provider()
+                    maybe_job = job_status_provider()
                 except Exception:
                     maybe_job = None
                 if isinstance(maybe_job, dict):
@@ -1408,7 +1411,7 @@ class MunchyRunnerClient:
             label="remote upload setup",
         )
         if status == 201:
-            return json.loads(body.decode("utf-8"))
+            return cast(dict[str, Any], json.loads(body.decode("utf-8")))
         existing = self._json_with_transient_retries(
             "GET",
             f"/v1/input-uploads/{urllib.parse.quote(request.upload_id)}",
@@ -1780,7 +1783,7 @@ class MunchyRunnerClient:
             label="runner job setup",
         )
         if status == 202:
-            return json.loads(body.decode("utf-8"))
+            return cast(dict[str, Any], json.loads(body.decode("utf-8")))
         if not job_conflict_means_existing_job(body):
             raise RunnerHttpError("POST", f"{self.base_url}/v1/jobs", status, body)
         existing = self._json_with_transient_retries(

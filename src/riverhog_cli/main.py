@@ -4,10 +4,10 @@ import hashlib
 import os
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypedDict
+from typing import Annotated, Any, Literal, TypedDict, cast
 
 import httpx
 import typer
@@ -62,8 +62,21 @@ class CollectionManifestEntry(TypedDict):
     sha256: str
 
 
+class CollectionUploadFilePayload(CollectionManifestEntry, total=False):
+    upload_state: str
+    uploaded_bytes: int
+    upload_state_expires_at: str | None
+
+
 def client() -> ApiClient:
     return ApiClient()
+
+
+def _response_upload_files(payload: dict[str, Any]) -> list[CollectionUploadFilePayload]:
+    files = payload.get("files")
+    if not isinstance(files, list):
+        return []
+    return cast(list[CollectionUploadFilePayload], files)
 
 
 def _optional_int(value: object) -> int | None:
@@ -381,7 +394,7 @@ def _upload_collection_file(
     api: ApiClient,
     collection_id: str,
     source_path: Path,
-    file_payload: dict[str, object],
+    file_payload: Mapping[str, object],
     *,
     progress: Callable[[int], None] | None = None,
 ) -> None:
@@ -483,7 +496,7 @@ def _upload_collection_files(
     api: ApiClient,
     collection_id: str,
     resolved_root: Path,
-    upload_files: list[dict[str, object]],
+    upload_files: list[CollectionUploadFilePayload],
     *,
     progress: Callable[[int], None],
     file_concurrency: int,
@@ -550,8 +563,10 @@ def _finalized_collection_upload_payload(
     collection: dict[str, object],
 ) -> dict[str, object]:
     if manifest is None:
-        bytes_total = int(collection.get("bytes") or 0)
-        files_total = int(collection.get("files") or 0)
+        bytes_value = collection.get("bytes")
+        files_value = collection.get("files")
+        bytes_total = int(bytes_value) if isinstance(bytes_value, (str, int, float)) else 0
+        files_total = int(files_value) if isinstance(files_value, (str, int, float)) else 0
         files: list[dict[str, object]] = []
     else:
         bytes_total = sum(item["bytes"] for item in manifest)
@@ -731,9 +746,9 @@ def _upload_collection_via_session(
     upload_timestamp: str | None,
     wait_mode: UploadWaitMode,
 ) -> dict[str, object]:
-    local_paths = _iter_local_collection_paths(resolved_root)
+    local_path_iter = _iter_local_collection_paths(resolved_root)
     try:
-        first_source_path = next(local_paths)
+        first_source_path = next(local_path_iter)
     except StopIteration as exc:
         raise typer.BadParameter("collection source must contain at least one file") from exc
 
@@ -788,16 +803,16 @@ def _upload_collection_via_session(
         file_payload = next(
             (
                 current
-                for current in registered_payload.get("files", [])
+                for current in _response_upload_files(registered_payload)
                 if isinstance(current, dict) and current.get("path") == rel_path
             ),
-            {
-                "path": rel_path,
-                "bytes": stat.st_size,
-                "sha256": entry["sha256"],
-                "upload_state": "pending",
-                "uploaded_bytes": 0,
-            },
+            CollectionUploadFilePayload(
+                path=rel_path,
+                bytes=stat.st_size,
+                sha256=entry["sha256"],
+                upload_state="pending",
+                uploaded_bytes=0,
+            ),
         )
         _upload_collection_file(
             api,
@@ -808,19 +823,19 @@ def _upload_collection_via_session(
         )
 
     upload_one(first_source_path)
-    for source_path in local_paths:
+    for source_path in local_path_iter:
         upload_one(source_path)
 
     latest_payload = api.get_collection_upload(collection_id)
-    local_paths = {item["path"] for item in manifest}
+    local_path_set = {item["path"] for item in manifest}
     registered_paths = {
         str(item.get("path"))
-        for item in latest_payload.get("files", [])
+        for item in _response_upload_files(latest_payload)
         if isinstance(item, dict)
     }
-    if registered_paths != local_paths:
-        extra = sorted(registered_paths - local_paths)
-        missing = sorted(local_paths - registered_paths)
+    if registered_paths != local_path_set:
+        extra = sorted(registered_paths - local_path_set)
+        missing = sorted(local_path_set - registered_paths)
         details: list[str] = []
         if extra:
             details.append(f"extra server files: {', '.join(extra[:5])}")
@@ -958,7 +973,7 @@ def upload_cmd(
         upload_timestamp=upload_timestamp,
     )
     collection_id = str(payload["collection_id"])
-    upload_files = payload["files"]
+    upload_files = _response_upload_files(payload)
     uploaded_bytes = sum(
         min(int(file_payload.get("uploaded_bytes", 0)), int(file_payload["bytes"]))
         for file_payload in upload_files

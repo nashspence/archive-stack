@@ -42,7 +42,7 @@ def _signed_tusd_query(path: str, *, expires_at: str | None, secret: str) -> dic
     if expires is None:
         return {}
     normalized_uri = unquote(path)
-    digest = hashlib.md5(f"{expires}{normalized_uri} {secret}".encode("utf-8")).digest()
+    digest = hashlib.md5(f"{expires}{normalized_uri} {secret}".encode()).digest()
     token = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
     return {"md5": token, "expires": str(expires)}
 

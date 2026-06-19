@@ -403,7 +403,7 @@ class SqlAlchemyCollectionService:
         session: Session,
         *,
         normalized_collection_id: str,
-        normalized_file: dict[str, object],
+        normalized_file: _UploadManifestEntry,
     ) -> tuple[CollectionUploadRecord, CollectionUploadFileRecord]:
         upload = session.get(CollectionUploadRecord, normalized_collection_id)
         if upload is None:

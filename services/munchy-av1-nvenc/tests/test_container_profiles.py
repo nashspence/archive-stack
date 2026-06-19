@@ -87,7 +87,11 @@ class ContainerProfileTests(unittest.TestCase):
                 patch.object(av1, "VIDEO_SCALE_MODE", "cuda"),
                 patch.object(av1, "validate_archive_container_source"),
                 patch.object(av1, "archive_decoder_args", return_value=["-c:v", "hevc_cuvid"]),
-                patch.object(av1, "archive_scale_target", return_value=(scale_details, (1280, 720))),
+                patch.object(
+                    av1,
+                    "archive_scale_target",
+                    return_value=(scale_details, (1280, 720)),
+                ),
                 patch.object(av1, "archive_frame_rate_filters", return_value=[]),
                 patch.object(av1, "ffmpeg_filter_available", return_value=True),
             ):
@@ -125,9 +129,17 @@ class ContainerProfileTests(unittest.TestCase):
                 patch.object(av1, "VIDEO_SCALE_MODE", "cuda"),
                 patch.object(av1, "validate_archive_container_source"),
                 patch.object(av1, "archive_decoder_args", return_value=[]),
-                patch.object(av1, "archive_scale_target", return_value=(scale_details, (1280, 720))),
+                patch.object(
+                    av1,
+                    "archive_scale_target",
+                    return_value=(scale_details, (1280, 720)),
+                ),
                 patch.object(av1, "archive_frame_rate_filters", return_value=[]),
-                patch.object(av1, "archive_video_filters", return_value=["scale=-2:720:flags=lanczos"]),
+                patch.object(
+                    av1,
+                    "archive_video_filters",
+                    return_value=["scale=-2:720:flags=lanczos"],
+                ),
                 patch.object(av1, "ffmpeg_filter_available", return_value=True),
             ):
                 cmd = av1.av1_archive_command(source, output, archive)

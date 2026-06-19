@@ -12,7 +12,7 @@ import shutil
 import stat as stat_module
 import subprocess
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 SOURCE_FILESYSTEM_METADATA_FILENAME = ".munchy-source-filesystem-metadata.json"
 
@@ -133,9 +133,9 @@ def _get_xattr(path: pathlib.Path, name: str) -> bytes:
     getxattr = getattr(os, "getxattr", None)
     if getxattr is not None:
         try:
-            return getxattr(path, name, follow_symlinks=True)
+            return cast(bytes, getxattr(path, name, follow_symlinks=True))
         except TypeError:
-            return getxattr(path, name)
+            return cast(bytes, getxattr(path, name))
     if shutil.which("xattr") is None:
         raise OSError("xattr support is not available")
     proc = subprocess.run(

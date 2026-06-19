@@ -299,7 +299,10 @@ def main() -> int:
             f"runner capabilities did not advertise required storage hints: {capabilities}"
         )
     if not storage.get("eager_archive_only_encoding"):
-        raise AssertionError(f"runner capabilities did not advertise eager archive encoding: {capabilities}")
+        raise AssertionError(
+            "runner capabilities did not advertise eager archive encoding: "
+            f"{capabilities}"
+        )
 
     root_upload = request(
         "POST",

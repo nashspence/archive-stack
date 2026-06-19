@@ -8,7 +8,7 @@ from riverhog_api.urls import public_tusd_upload_url
 
 
 def _secure_link_token(*, expires: str, path: str, secret: str) -> str:
-    digest = hashlib.md5(f"{expires}{unquote(path)} {secret}".encode("utf-8")).digest()
+    digest = hashlib.md5(f"{expires}{unquote(path)} {secret}".encode()).digest()
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
