@@ -6,10 +6,13 @@ from rich.console import Console
 from riverhog_cli.output import (
     format_collection_summary,
     format_collections,
+    format_disc,
     format_discs,
+    format_fetch,
     format_glacier_report,
     format_hot_pins,
     format_images,
+    format_pin,
 )
 
 
@@ -163,7 +166,10 @@ def test_format_hot_pins_uses_compact_pin_table(monkeypatch: pytest.MonkeyPatch)
     assert "33 B" in rendered
 
 
-def test_format_discs_uses_compact_disc_table() -> None:
+def test_format_discs_uses_compact_disc_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
     rendered = _render(
         format_discs(
             {
@@ -186,7 +192,102 @@ def test_format_discs_uses_compact_disc_table() -> None:
     assert "Shelf B1" in rendered
 
 
-def test_format_collection_summary_surfaces_recovery_paths_labels_and_glacier_costs() -> None:
+def test_format_disc_uses_detail_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    rendered = _render(
+        format_disc(
+            {
+                "id": "20260420T040001Z-1",
+                "image_id": "20260420T040001Z",
+                "volume_id": "20260420T040001Z",
+                "label_text": "20260420T040001Z-1",
+                "location": "Shelf B1",
+                "state": "verified",
+                "verification_state": "verified",
+                "history": [
+                    {
+                        "at": "2026-04-20T04:00:01Z",
+                        "event": "registered",
+                        "location": "Shelf B1",
+                        "state": "verified",
+                        "verification_state": "verified",
+                    }
+                ],
+            }
+        )
+    )
+
+    assert "disc" in rendered
+    assert "20260420T040001Z-1" in rendered
+    assert "Shelf B1" in rendered
+    assert "history" in rendered
+    assert "registered" in rendered
+
+
+def test_format_pin_uses_detail_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    rendered = _render(
+        format_pin(
+            {
+                "target": "docs/",
+                "pin": True,
+                "hot": {"state": "partial", "present_bytes": 12, "missing_bytes": 21},
+                "fetch": {
+                    "id": "fx-1",
+                    "state": "waiting_media",
+                    "files": 2,
+                    "bytes": 33,
+                    "missing_bytes": 21,
+                    "copies": [
+                        {
+                            "id": "copy-1",
+                            "label_text": "copy-1",
+                            "location": "Shelf B1",
+                            "verification_state": "verified",
+                        }
+                    ],
+                },
+            }
+        )
+    )
+
+    assert "hot pin" in rendered
+    assert "docs/" in rendered
+    assert "waiting_media" in rendered
+    assert "copy-1 @ Shelf B1" in rendered
+
+
+def test_format_fetch_uses_entry_preview(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    rendered = _render(
+        format_fetch(
+            {"id": "fx-1", "target": "docs/", "state": "waiting_media", "files": 10},
+            {
+                "entries": [
+                    {"path": f"file-{index}.txt", "bytes": 1, "upload_state": "pending"}
+                    for index in range(10)
+                ]
+            },
+        )
+    )
+
+    assert "fetch" in rendered
+    assert "docs/" in rendered
+    assert "file-0.txt" in rendered
+    assert "... 2 more" in rendered
+
+
+def test_format_collection_summary_surfaces_recovery_paths_labels_and_glacier_costs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
+
     rendered = format_collection_summary(
         {
             "id": "docs",
@@ -248,6 +349,86 @@ def test_format_collection_summary_surfaces_recovery_paths_labels_and_glacier_co
     assert "collection_archive_contribution: represented_bytes=33" in rendered
     assert "label=20260420T040001Z-1" in rendered
     assert "glacier/finalized-images" not in rendered
+
+
+def test_format_collection_summary_uses_rich_detail_preview(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    rendered = _render(
+        format_collection_summary(
+            {
+                "id": "docs",
+                "files": 6,
+                "bytes": 600,
+                "hot_bytes": 600,
+                "archived_bytes": 300,
+                "pending_bytes": 300,
+                "protection_state": "under_protected",
+                "protected_bytes": 300,
+                "recovery": {
+                    "available": ["verified_physical", "glacier"],
+                    "verified_physical": {"state": "partial", "bytes": 300},
+                    "glacier": {"state": "full", "bytes": 600},
+                },
+                "collection_manifest": {
+                    "object_path": "riverhog/archives/docs/manifest.yml.age",
+                    "ots_object_path": "riverhog/archives/docs/manifest.yml.ots.age",
+                    "ots_state": "uploaded",
+                    "sha256": "abc123",
+                },
+                "disc_coverage": {
+                    "state": "partial",
+                    "verified_physical_bytes": 300,
+                },
+                "image_coverage": [
+                    {
+                        "id": "20260420T040001Z",
+                        "filename": "20260420T040001Z.iso",
+                        "physical_protection_state": "partially_protected",
+                        "physical_copies_registered": 1,
+                        "physical_copies_verified": 1,
+                        "physical_copies_required": 2,
+                        "covered_paths": [f"path-{index}.txt" for index in range(6)],
+                        "copies": [
+                            {
+                                "id": "20260420T040001Z-1",
+                                "label_text": "20260420T040001Z-1",
+                                "location": "Shelf B1",
+                                "verification_state": "verified",
+                            }
+                        ],
+                    }
+                ],
+            },
+            {
+                "collections": [
+                    {
+                        "id": "docs",
+                        "bytes": 600,
+                        "measured_storage_bytes": 700,
+                        "images": [
+                            {
+                                "image_id": "20260420T040001Z",
+                                "represented_bytes": 300,
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+    )
+
+    assert "collection docs" in rendered
+    assert "under_protected" in rendered
+    assert "coverage" in rendered
+    assert "20260420T040001Z" in rendered
+    assert "path-0.txt" in rendered
+    assert "... 2 more" in rendered
+    assert "20260420T040001Z-1 @ Shelf B1" in rendered
+    assert "300 B" in rendered
 
 
 def test_format_glacier_report_surfaces_collection_storage() -> None:

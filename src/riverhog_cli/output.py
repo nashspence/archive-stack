@@ -85,11 +85,56 @@ def _quiet_table(*columns: str) -> Any:
     return table
 
 
+def _detail_table() -> Any:
+    table = RichTable(
+        box=None,
+        show_edge=False,
+        show_header=False,
+        padding=(0, 2),
+        collapse_padding=True,
+    )
+    table.add_column("Field", style="bold", no_wrap=True)
+    table.add_column("Value")
+    return table
+
+
+def _preview_lines(items: Sequence[str], *, limit: int = 5) -> str:
+    if not items:
+        return "none"
+    shown = list(items[:limit])
+    if len(items) > limit:
+        shown.append(f"... {len(items) - limit} more")
+    return "\n".join(shown)
+
+
+def _string_items(value: object) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return [str(item) for item in value]
+
+
 def _copy_label(copy: Mapping[str, object]) -> str:
     copy_id = str(copy.get("id", "unknown"))
     volume_id = str(copy.get("volume_id", "unknown"))
     location = str(copy.get("location") or "unassigned")
     return f"{copy_id} ({volume_id} @ {location})"
+
+
+def _copy_lines(value: object, *, limit: int = 5) -> str:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return "none"
+    copies = [copy for copy in value if isinstance(copy, Mapping)]
+    if not copies:
+        return "none"
+    lines = [
+        f"{copy.get('label_text') or copy.get('id', 'unknown')} @ "
+        f"{copy.get('location') or 'unassigned'} "
+        f"({copy.get('verification_state', copy.get('state', 'unknown'))})"
+        for copy in copies[:limit]
+    ]
+    if len(copies) > limit:
+        lines.append(f"... {len(copies) - limit} more")
+    return "\n".join(lines)
 
 
 def _collection_ids_text(collection_ids: object) -> str:
@@ -183,7 +228,7 @@ def format_copies(payload: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_pin(payload: Mapping[str, Any]) -> str:
+def _format_pin_plain(payload: Mapping[str, Any]) -> str:
     lines = [
         f"target: {payload['target']}",
         f"pin: {'true' if payload.get('pin') else 'false'}",
@@ -213,7 +258,33 @@ def format_pin(payload: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> str:
+def format_pin(payload: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        return _format_pin_plain(payload)
+
+    table = _detail_table()
+    table.add_row("target", str(payload.get("target", "unknown")))
+    table.add_row("pin", "yes" if payload.get("pin") else "no")
+
+    hot = payload.get("hot")
+    if isinstance(hot, Mapping):
+        table.add_row("hot", str(hot.get("state", "unknown")))
+        table.add_row("present", _bytes_text(hot.get("present_bytes", 0)))
+        table.add_row("missing", _bytes_text(hot.get("missing_bytes", 0)))
+
+    fetch = payload.get("fetch")
+    if isinstance(fetch, Mapping):
+        table.add_row("fetch", str(fetch.get("id", "unknown")))
+        table.add_row("fetch state", str(fetch.get("state", "unknown")))
+        table.add_row("fetch files", str(fetch.get("files", 0)))
+        table.add_row("fetch bytes", _bytes_text(fetch.get("bytes", 0)))
+        table.add_row("fetch missing", _bytes_text(fetch.get("missing_bytes", 0)))
+        table.add_row("candidate copies", _copy_lines(fetch.get("copies")))
+
+    return RichGroup(RichText("hot pin", style="bold"), table)
+
+
+def _fetch_status_lines(manifest: Mapping[str, Any]) -> tuple[list[str], list[str], list[str]]:
     pending: list[str] = []
     partial: list[str] = []
     byte_complete: list[str] = []
@@ -245,6 +316,12 @@ def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> str
                 continue
             pending.append(f"- {label}")
 
+    return pending, partial, byte_complete
+
+
+def _format_fetch_plain(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> str:
+    pending, partial, byte_complete = _fetch_status_lines(manifest)
+
     lines = [
         f"fetch: {summary.get('id', 'unknown')} ({summary.get('state', 'unknown')})",
         f"target: {summary.get('target', 'unknown')}",
@@ -256,6 +333,33 @@ def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> str
     lines.append("byte-complete:")
     lines.extend(byte_complete or ["- none"])
     return "\n".join(lines)
+
+
+def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        return _format_fetch_plain(summary, manifest)
+
+    pending, partial, byte_complete = _fetch_status_lines(manifest)
+    table = _detail_table()
+    table.add_row("fetch", str(summary.get("id", "unknown")))
+    table.add_row("target", str(summary.get("target", "unknown")))
+    table.add_row("state", str(summary.get("state", "unknown")))
+    table.add_row("files", str(summary.get("files", 0)))
+    table.add_row("bytes", _bytes_text(summary.get("bytes", 0)))
+    table.add_row("missing", _bytes_text(summary.get("missing_bytes", 0)))
+    table.add_row("copies", _copy_lines(summary.get("copies")))
+
+    status_table = _quiet_table("Status", "Items")
+    status_table.add_row("pending", _preview_lines(pending, limit=8))
+    status_table.add_row("partial", _preview_lines(partial, limit=8))
+    status_table.add_row("byte-complete", _preview_lines(byte_complete, limit=8))
+
+    return RichGroup(
+        RichText("fetch", style="bold"),
+        table,
+        RichText("entries", style="bold"),
+        status_table,
+    )
 
 
 def _format_collections_plain(payload: Mapping[str, Any]) -> str:
@@ -507,13 +611,22 @@ def format_image(image: Mapping[str, Any]) -> Any:
     return RichGroup(RichText("image", style="bold"), table)
 
 
-def format_release(payload: Mapping[str, Any]) -> str:
+def _format_release_plain(payload: Mapping[str, Any]) -> str:
     return "\n".join(
         [
             f"target: {payload.get('target', 'unknown')}",
             f"pin: {'true' if payload.get('pin') else 'false'}",
         ]
     )
+
+
+def format_release(payload: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        return _format_release_plain(payload)
+    table = _detail_table()
+    table.add_row("target", str(payload.get("target", "unknown")))
+    table.add_row("pin", "yes" if payload.get("pin") else "no")
+    return RichGroup(RichText("hot pin", style="bold"), table)
 
 
 def _disc_copy_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -523,7 +636,7 @@ def _disc_copy_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:
     return payload
 
 
-def format_disc(payload: Mapping[str, Any]) -> str:
+def _format_disc_plain(payload: Mapping[str, Any]) -> str:
     copy_payload = _disc_copy_payload(payload)
     lines = [
         f"disc: {copy_payload.get('id', 'unknown')}",
@@ -538,6 +651,40 @@ def format_disc(payload: Mapping[str, Any]) -> str:
     if isinstance(history, Sequence):
         lines.append(f"history: {len(history)} event(s)")
     return "\n".join(lines)
+
+
+def format_disc(payload: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        return _format_disc_plain(payload)
+
+    copy_payload = _disc_copy_payload(payload)
+    table = _detail_table()
+    table.add_row("disc", str(copy_payload.get("id", "unknown")))
+    table.add_row("image", str(payload.get("image_id", copy_payload.get("image_id", "unknown"))))
+    table.add_row("volume", str(copy_payload.get("volume_id", "unknown")))
+    table.add_row("label", str(copy_payload.get("label_text", "unknown")))
+    table.add_row("location", str(copy_payload.get("location") or "unassigned"))
+    table.add_row("state", str(copy_payload.get("state", "unknown")))
+    table.add_row("verification", str(copy_payload.get("verification_state", "unknown")))
+    if copy_payload.get("created_at"):
+        table.add_row("created", str(copy_payload.get("created_at")))
+
+    renderables: list[Any] = [RichText("disc", style="bold"), table]
+    history = copy_payload.get("history")
+    if isinstance(history, Sequence) and history:
+        history_table = _quiet_table("At", "Event", "State", "Verification", "Location")
+        for item in history:
+            if not isinstance(item, Mapping):
+                continue
+            history_table.add_row(
+                str(item.get("at", "unknown")),
+                str(item.get("event", "unknown")),
+                str(item.get("state", "unknown")),
+                str(item.get("verification_state", "unknown")),
+                str(item.get("location") or "unassigned"),
+            )
+        renderables.extend([RichText("history", style="bold"), history_table])
+    return RichGroup(*renderables)
 
 
 def _disc_items(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -584,7 +731,7 @@ def format_discs(payload: Mapping[str, Any]) -> Any:
     return RichGroup(RichText("discs", style="bold"), table)
 
 
-def format_collection_summary(
+def _format_collection_summary_plain(
     payload: Mapping[str, Any],
     glacier_payload: Mapping[str, Any],
 ) -> str:
@@ -707,6 +854,162 @@ def format_collection_summary(
                     f"verification={copy.get('verification_state', 'unknown')}"
                 )
     return "\n".join(lines)
+
+
+def _collection_recovery_rows(
+    table: Any,
+    recovery: object,
+    *,
+    total_bytes: int,
+) -> None:
+    if not isinstance(recovery, Mapping):
+        table.add_row("recovery", "unknown")
+        return
+
+    available = _string_items(recovery.get("available"))
+    table.add_row("available", ", ".join(available) if available else "none")
+
+    verified = recovery.get("verified_physical")
+    if isinstance(verified, Mapping):
+        table.add_row(
+            "verified physical",
+            f"{verified.get('state', 'unknown')} "
+            f"{_ratio_text(verified.get('bytes', 0), total_bytes)}",
+        )
+
+    glacier = recovery.get("glacier")
+    if isinstance(glacier, Mapping):
+        table.add_row(
+            "deep archive",
+            f"{glacier.get('state', 'unknown')} "
+            f"{_ratio_text(glacier.get('bytes', 0), total_bytes)}",
+        )
+
+
+def _collection_image_costs(
+    collection_glacier: Mapping[str, Any] | None,
+) -> dict[str, Mapping[str, Any]]:
+    if not isinstance(collection_glacier, Mapping):
+        return {}
+    contributions = collection_glacier.get("images")
+    if not isinstance(contributions, Sequence):
+        return {}
+    return {
+        str(item.get("image_id")): item
+        for item in contributions
+        if isinstance(item, Mapping)
+    }
+
+
+def _collection_coverage_table(
+    payload: Mapping[str, Any],
+    collection_glacier: Mapping[str, Any] | None,
+) -> Any:
+    table = _quiet_table("Image", "Protection", "Discs", "Paths", "Copies", "Archive")
+    image_costs = _collection_image_costs(collection_glacier)
+    images = payload.get("image_coverage")
+    if isinstance(images, Sequence):
+        for image in images:
+            if not isinstance(image, Mapping):
+                continue
+            image_id = str(image.get("id", "unknown"))
+            required = image.get("physical_copies_required", 0)
+            contribution = image_costs.get(image_id)
+            archive_text = (
+                _bytes_text(contribution.get("represented_bytes", 0))
+                if isinstance(contribution, Mapping)
+                else "unknown"
+            )
+            table.add_row(
+                image_id,
+                str(image.get("physical_protection_state", "unknown")),
+                (
+                    f"{image.get('physical_copies_verified', 0)}/"
+                    f"{image.get('physical_copies_registered', 0)}/"
+                    f"{required}"
+                ),
+                _preview_lines(_string_items(image.get("covered_paths")), limit=4),
+                _copy_lines(image.get("copies"), limit=4),
+                archive_text,
+            )
+    if not table.rows:
+        table.add_row("none", "", "", "", "", "")
+    return table
+
+
+def format_collection_summary(
+    payload: Mapping[str, Any],
+    glacier_payload: Mapping[str, Any],
+) -> Any:
+    if not _rich_enabled():
+        return _format_collection_summary_plain(payload, glacier_payload)
+
+    collection_id = str(payload.get("id", "unknown"))
+    total_bytes = _int_value(payload.get("bytes", 0))
+    collection_glacier = _find_collection_glacier_entry(collection_id, glacier_payload)
+
+    overview = _detail_table()
+    overview.add_row("protection", str(payload.get("protection_state", "unknown")))
+    overview.add_row("protected", _ratio_text(payload.get("protected_bytes", 0), total_bytes))
+    overview.add_row("files", str(payload.get("files", 0)))
+    overview.add_row("bytes", _bytes_text(total_bytes))
+    overview.add_row("hot", _ratio_text(payload.get("hot_bytes", 0), total_bytes))
+    overview.add_row("archive", _ratio_text(payload.get("archived_bytes", 0), total_bytes))
+    overview.add_row("pending", _bytes_text(payload.get("pending_bytes", 0)))
+    _collection_recovery_rows(overview, payload.get("recovery"), total_bytes=total_bytes)
+
+    disc_coverage = payload.get("disc_coverage")
+    if isinstance(disc_coverage, Mapping):
+        overview.add_row(
+            "disc",
+            f"{disc_coverage.get('state', 'unknown')} "
+            f"{_ratio_text(disc_coverage.get('verified_physical_bytes', 0), total_bytes)}",
+        )
+
+    direct_glacier = payload.get("glacier")
+    if isinstance(direct_glacier, Mapping):
+        overview.add_row(
+            "glacier",
+            f"{direct_glacier.get('state', 'unknown')} "
+            f"{_bytes_text(direct_glacier.get('stored_bytes', 0))} stored "
+            f"{direct_glacier.get('backend') or 'unknown'} "
+            f"{direct_glacier.get('storage_class') or 'unknown'}",
+        )
+        if direct_glacier.get("object_path"):
+            overview.add_row("glacier path", str(direct_glacier.get("object_path")))
+        if direct_glacier.get("failure"):
+            overview.add_row("glacier failure", str(direct_glacier.get("failure")))
+
+    collection_manifest = payload.get("collection_manifest")
+    if isinstance(collection_manifest, Mapping):
+        overview.add_row(
+            "manifest",
+            f"{collection_manifest.get('object_path') or 'missing'} "
+            f"sha256={collection_manifest.get('sha256') or 'unknown'}",
+        )
+        overview.add_row(
+            "ots",
+            (
+                f"{collection_manifest.get('ots_state') or 'uploaded'} "
+                f"{collection_manifest.get('ots_object_path')}"
+                if collection_manifest.get("ots_object_path")
+                else "missing"
+            ),
+        )
+
+    if isinstance(collection_glacier, Mapping):
+        overview.add_row(
+            "footprint",
+            f"{_bytes_text(collection_glacier.get('bytes', 0))} logical, "
+            f"{_bytes_text(collection_glacier.get('measured_storage_bytes', 0))} measured",
+        )
+
+    return RichGroup(
+        RichText(f"collection {collection_id}", style="bold"),
+        overview,
+        RichText("coverage", style="bold"),
+        _collection_coverage_table(payload, collection_glacier),
+    )
 
 
 def format_glacier_report(payload: Mapping[str, Any]) -> str:
