@@ -741,10 +741,10 @@ def format_disc(payload: Mapping[str, Any]) -> Any:
     table.add_row("disc", _entity_text(copy_payload.get("id", "unknown")))
     table.add_row(
         "image",
-        _entity_text(payload.get("image_id", copy_payload.get("image_id", "unknown"))),
+        str(payload.get("image_id", copy_payload.get("image_id", "unknown"))),
     )
-    table.add_row("volume", _entity_text(copy_payload.get("volume_id", "unknown")))
-    table.add_row("label", _entity_text(copy_payload.get("label_text", "unknown")))
+    table.add_row("volume", str(copy_payload.get("volume_id", "unknown")))
+    table.add_row("label", str(copy_payload.get("label_text", "unknown")))
     table.add_row("location", str(copy_payload.get("location") or "unassigned"))
     table.add_row("state", _attention_text(copy_payload.get("state", "unknown")))
     table.add_row(

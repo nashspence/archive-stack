@@ -358,6 +358,21 @@ def test_format_disc_uses_detail_table(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "history" in rendered
     assert "registered" in rendered
 
+    styled = _render_styled(
+        format_disc(
+            {
+                "id": "20260420T040001Z-1",
+                "image_id": "20260420T040001Z",
+                "volume_id": "20260420T040001Z",
+                "label_text": "20260420T040001Z-1",
+                "location": "Shelf B1",
+                "state": "verified",
+                "verification_state": "verified",
+            }
+        )
+    )
+    assert styled.count("38;2;142;201;204") == 1
+
 
 def test_format_pin_uses_detail_table(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
