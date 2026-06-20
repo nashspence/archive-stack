@@ -547,8 +547,42 @@ class _StubGlacierReporting:
 
 
 class _StubRecoverySessions:
+    def list(
+        self,
+        *,
+        page: int,
+        per_page: int,
+        sort: str,
+        order: str,
+        recovery_type: str | None = None,
+        state: str | None = None,
+        collection: str | None = None,
+        image: str | None = None,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            page=page,
+            per_page=per_page,
+            total=0,
+            pages=0,
+            sort=sort,
+            order=order,
+            type=recovery_type,
+            state=state,
+            collection=collection,
+            image=image,
+            sessions=[],
+        )
+
     def get(self, session_id: str) -> dict[str, object]:
         _ = session_id
+        return {}
+
+    def get_for_collection(self, collection_id: str) -> dict[str, object]:
+        _ = collection_id
+        return {}
+
+    def create_or_resume_for_collection(self, collection_id: str) -> dict[str, object]:
+        _ = collection_id
         return {}
 
     def get_for_image(self, image_id: str) -> dict[str, object]:

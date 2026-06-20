@@ -27,13 +27,17 @@ from riverhog_cli.output import (
     format_image,
     format_images,
     format_plan,
+    format_recovery_session,
+    format_recovery_sessions,
 )
 from riverhog_core.domain.errors import HashMismatch, NotFound, RiverhogError
 
 app = typer.Typer(help="riverhog optical media CLI")
 image_app = typer.Typer(help="image planning and download operations")
+image_rebuild_app = typer.Typer(help="image rebuild recovery operations")
 disc_app = typer.Typer(help="burned disc catalog operations")
 app.add_typer(image_app, name="image")
+image_app.add_typer(image_rebuild_app, name="rebuild")
 app.add_typer(disc_app, name="disc")
 
 
@@ -1170,16 +1174,27 @@ def _recovery_session_hint_from_payload(payload: dict[str, Any]) -> RecoverySess
 
 def _discover_active_recovery_sessions(client: ApiClient) -> list[RecoverySessionHint]:
     sessions_by_id: dict[str, RecoverySessionHint] = {}
-    for image in _images_missing_copy_coverage(client):
-        image_id = str(image["id"])
-        try:
-            payload = client.get_recovery_session_for_image(image_id)
-        except NotFound:
-            continue
-        hint = _recovery_session_hint_from_payload(payload)
-        if hint.state not in _ACTIVE_RECOVERY_SESSION_STATES:
-            continue
-        sessions_by_id.setdefault(hint.session_id, hint)
+    page = 1
+    while True:
+        payload = client.list_recovery_sessions(
+            page=page,
+            per_page=100,
+            sort="created_at",
+            order="desc",
+            recovery_type="image_rebuild",
+        )
+        sessions = payload.get("sessions", [])
+        if isinstance(sessions, list):
+            for session_payload in sessions:
+                if not isinstance(session_payload, dict):
+                    continue
+                hint = _recovery_session_hint_from_payload(session_payload)
+                if hint.state not in _ACTIVE_RECOVERY_SESSION_STATES:
+                    continue
+                sessions_by_id.setdefault(hint.session_id, hint)
+        if page >= int(payload.get("pages", 0) or 0):
+            break
+        page += 1
     return sorted(sessions_by_id.values(), key=lambda current: current.session_id)
 
 
@@ -2475,12 +2490,154 @@ def burn_cmd(
     _report_recovery_handoffs(recovery_handoffs)
 
 
-@image_app.command("rebuild")
-def recover_cmd(
-    session_id: Annotated[
+def _list_image_rebuild_sessions(
+    client: ApiClient,
+    *,
+    page: int,
+    per_page: int,
+    sort: str,
+    order: str,
+    state: str | None,
+    include_all: bool,
+) -> dict[str, Any]:
+    if state is not None or include_all:
+        return client.list_recovery_sessions(
+            page=page,
+            per_page=per_page,
+            sort=sort,
+            order=order,
+            recovery_type="image_rebuild",
+            state=state,
+        )
+
+    sessions: list[dict[str, Any]] = []
+    for active_state in sorted(_ACTIVE_RECOVERY_SESSION_STATES):
+        active_page = 1
+        while True:
+            payload = client.list_recovery_sessions(
+                page=active_page,
+                per_page=100,
+                sort=sort,
+                order=order,
+                recovery_type="image_rebuild",
+                state=active_state,
+            )
+            active_sessions = payload.get("sessions", [])
+            if isinstance(active_sessions, list):
+                sessions.extend(session for session in active_sessions if isinstance(session, dict))
+            if active_page >= int(payload.get("pages", 0) or 0):
+                break
+            active_page += 1
+
+    reverse = order == "desc"
+
+    def sort_value(session: dict[str, Any]) -> object:
+        if sort == "id":
+            return str(session.get("id", "")).casefold()
+        if sort == "type":
+            return str(session.get("type", "")).casefold()
+        if sort == "state":
+            return str(session.get("state", "")).casefold()
+        return str(session.get(sort) or "")
+
+    sessions.sort(key=lambda session: (sort_value(session), str(session.get("id", ""))))
+    if reverse:
+        sessions.reverse()
+
+    total = len(sessions)
+    pages = (total + per_page - 1) // per_page if total else 0
+    start = (page - 1) * per_page
+    return {
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "pages": pages,
+        "sort": sort,
+        "order": order,
+        "type": "image_rebuild",
+        "state": "active",
+        "collection": None,
+        "image": None,
+        "sessions": sessions[start : start + per_page],
+    }
+
+
+def _require_image_rebuild(payload: dict[str, Any]) -> None:
+    if str(payload.get("type", "image_rebuild")) != "image_rebuild":
+        raise RuntimeError("djdan image rebuild only handles image_rebuild recovery sessions")
+
+
+@image_rebuild_app.command("list")
+def image_rebuild_list_cmd(
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "created_at",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
+    state: Annotated[
         str | None,
-        typer.Argument(help="Recovery session id", show_default=False),
+        typer.Option(
+            "--state",
+            help="Filter by pending_approval, restore_requested, ready, expired, or completed",
+        ),
     ] = None,
+    include_all: Annotated[
+        bool,
+        typer.Option("--all", help="Include completed and expired rebuild sessions"),
+    ] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    try:
+        normalized_order = order.casefold()
+        payload = _list_image_rebuild_sessions(
+            ApiClient(),
+            page=page,
+            per_page=per_page,
+            sort=sort,
+            order=normalized_order,
+            state=state,
+            include_all=include_all,
+        )
+    except (RiverhogError, RuntimeError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    emit(payload if json_mode else format_recovery_sessions(payload), json_mode=json_mode)
+
+
+@image_rebuild_app.command("show")
+def image_rebuild_show_cmd(
+    session_id: Annotated[str, typer.Argument(help="Recovery session id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    try:
+        payload = ApiClient().get_recovery_session(session_id)
+        _require_image_rebuild(payload)
+    except (RiverhogError, RuntimeError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
+
+
+@image_rebuild_app.command("approve")
+def image_rebuild_approve_cmd(
+    session_id: Annotated[str, typer.Argument(help="Recovery session id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    try:
+        api = ApiClient()
+        _require_image_rebuild(api.get_recovery_session(session_id))
+        payload = api.approve_recovery_session(session_id)
+    except (RiverhogError, RuntimeError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
+
+
+@image_rebuild_app.command("burn")
+def image_rebuild_burn_cmd(
+    session_id: Annotated[
+        str,
+        typer.Argument(help="Recovery session id"),
+    ],
     device: Annotated[
         str | None,
         typer.Option(
@@ -2492,15 +2649,12 @@ def recover_cmd(
         Path | None,
         typer.Option("--staging-dir", help="Local staging directory for ISO downloads"),
     ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     try:
         client = ApiClient()
-        sessions = _discover_active_recovery_sessions(client)
-        if session_id is None:
-            _report_recovery_sessions(sessions)
-            return
-
         payload = client.get_recovery_session(session_id)
+        _require_image_rebuild(payload)
         recovery_session = _recovery_session_hint_from_payload(payload)
         iso_verifier = build_iso_verifier()
         burner = build_disc_burner()
@@ -2525,16 +2679,36 @@ def recover_cmd(
         raise typer.Exit(code=1) from exc
 
     if recovery_session.state == "restore_requested":
-        label = (
-            "rebuild session" if recovery_session.type == "image_rebuild" else "recovery session"
-        )
-        typer.echo(f"{label} {session_id} is restore_requested")
-        if recovery_session.latest_message:
-            typer.echo(recovery_session.latest_message)
+        if json_mode:
+            emit(
+                {
+                    "session_id": session_id,
+                    "type": recovery_session.type,
+                    "state": recovery_session.state,
+                    "latest_message": recovery_session.latest_message,
+                    "completed_copy_ids": completed_copy_ids,
+                },
+                json_mode=True,
+            )
+        else:
+            typer.echo(f"rebuild session {session_id} is restore_requested")
+            if recovery_session.latest_message:
+                typer.echo(recovery_session.latest_message)
         return
 
-    label = "rebuild session" if recovery_session.type == "image_rebuild" else "recovery session"
-    typer.echo(f"{label} {session_id} completed")
+    if json_mode:
+        emit(
+            {
+                "session_id": session_id,
+                "type": recovery_session.type,
+                "state": recovery_session.state,
+                "latest_message": recovery_session.latest_message,
+                "completed_copy_ids": completed_copy_ids,
+            },
+            json_mode=True,
+        )
+        return
+    typer.echo(f"rebuild session {session_id} completed")
     for copy_id in completed_copy_ids:
         typer.echo(copy_id)
 

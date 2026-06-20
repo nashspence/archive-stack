@@ -150,6 +150,21 @@ class RecoverySessionSummary:
 
 
 @dataclass(frozen=True)
+class RecoverySessionListPage:
+    page: int
+    per_page: int
+    total: int
+    pages: int
+    sort: str
+    order: str
+    type: str | None
+    state: str | None
+    collection: str | None
+    image: str | None
+    sessions: list[RecoverySessionSummary]
+
+
+@dataclass(frozen=True)
 class CollectionCoverageImage:
     id: ImageId
     filename: str

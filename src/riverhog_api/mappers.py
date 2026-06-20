@@ -21,6 +21,7 @@ from riverhog_core.domain.models import (
     RecoveryNotificationStatus,
     RecoverySessionCollection,
     RecoverySessionImage,
+    RecoverySessionListPage,
     RecoverySessionProgress,
     RecoverySessionSummary,
 )
@@ -250,6 +251,22 @@ def map_recovery_session(summary: RecoverySessionSummary) -> dict[str, object]:
             map_recovery_session_collection(collection) for collection in summary.collections
         ],
         "images": [map_recovery_session_image(image) for image in summary.images],
+    }
+
+
+def map_recovery_session_list(summary: RecoverySessionListPage) -> dict[str, object]:
+    return {
+        "page": summary.page,
+        "per_page": summary.per_page,
+        "total": summary.total,
+        "pages": summary.pages,
+        "sort": summary.sort,
+        "order": summary.order,
+        "type": summary.type,
+        "state": summary.state,
+        "collection": summary.collection,
+        "image": summary.image,
+        "sessions": [map_recovery_session(session) for session in summary.sessions],
     }
 
 

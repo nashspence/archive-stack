@@ -11,7 +11,7 @@ from math import ceil
 from pathlib import Path
 from typing import cast
 
-from sqlalchemy import or_, select
+from sqlalchemy import asc, desc, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from riverhog_core.archive_compliance import (
@@ -42,13 +42,14 @@ from riverhog_core.collection_archives import (
     verify_collection_manifest_proof,
 )
 from riverhog_core.domain.enums import CopyState, FetchState, GlacierState, RecoverySessionState
-from riverhog_core.domain.errors import Conflict, InvalidState, NotFound
+from riverhog_core.domain.errors import BadRequest, Conflict, InvalidState, NotFound
 from riverhog_core.domain.models import (
     CollectionManifestStatus,
     GlacierArchiveStatus,
     RecoveryNotificationStatus,
     RecoverySessionCollection,
     RecoverySessionImage,
+    RecoverySessionListPage,
     RecoverySessionProgress,
     RecoverySessionSummary,
 )
@@ -93,6 +94,15 @@ _ACTIVE_RECOVERY_STATES = {
     RecoverySessionState.RESTORE_REQUESTED.value,
     RecoverySessionState.READY.value,
 }
+_RECOVERY_SESSION_SORT_FIELDS = {
+    "created_at",
+    "id",
+    "type",
+    "state",
+    "restore_ready_at",
+    "restore_expires_at",
+}
+_RECOVERY_SESSION_TYPES = {"collection_restore", "image_rebuild"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +145,89 @@ class SqlAlchemyRecoverySessionService:
             )
         )
         self._session_factory = make_session_factory(config.database_url)
+
+    def list(
+        self,
+        *,
+        page: int,
+        per_page: int,
+        sort: str,
+        order: str,
+        recovery_type: str | None = None,
+        state: str | None = None,
+        collection: str | None = None,
+        image: str | None = None,
+    ) -> RecoverySessionListPage:
+        if page < 1:
+            raise BadRequest("page must be greater than or equal to 1")
+        if per_page < 1 or per_page > 100:
+            raise BadRequest("per_page must be between 1 and 100")
+        if sort not in _RECOVERY_SESSION_SORT_FIELDS:
+            raise BadRequest(
+                f"sort must be one of {', '.join(sorted(_RECOVERY_SESSION_SORT_FIELDS))}"
+            )
+        if order not in {"asc", "desc"}:
+            raise BadRequest("order must be asc or desc")
+        if recovery_type is not None and recovery_type not in _RECOVERY_SESSION_TYPES:
+            raise BadRequest(f"type must be one of {', '.join(sorted(_RECOVERY_SESSION_TYPES))}")
+        if state is not None and state not in {item.value for item in RecoverySessionState}:
+            raise BadRequest(
+                "state must be one of "
+                f"{', '.join(sorted(item.value for item in RecoverySessionState))}"
+            )
+
+        type_expr = func.coalesce(GlacierRecoverySessionRecord.type, "image_rebuild")
+        stmt = select(GlacierRecoverySessionRecord)
+        if recovery_type is not None:
+            stmt = stmt.where(type_expr == recovery_type)
+        if state is not None:
+            stmt = stmt.where(GlacierRecoverySessionRecord.state == state)
+        if collection is not None:
+            stmt = stmt.join(
+                GlacierRecoverySessionCollectionRecord,
+                GlacierRecoverySessionCollectionRecord.session_id
+                == GlacierRecoverySessionRecord.session_id,
+            ).where(GlacierRecoverySessionCollectionRecord.collection_id == collection)
+        if image is not None:
+            stmt = stmt.join(
+                GlacierRecoverySessionImageRecord,
+                GlacierRecoverySessionImageRecord.session_id
+                == GlacierRecoverySessionRecord.session_id,
+            ).where(GlacierRecoverySessionImageRecord.image_id == image)
+
+        sort_expr = {
+            "created_at": GlacierRecoverySessionRecord.created_at,
+            "id": GlacierRecoverySessionRecord.session_id,
+            "type": type_expr,
+            "state": GlacierRecoverySessionRecord.state,
+            "restore_ready_at": GlacierRecoverySessionRecord.restore_ready_at,
+            "restore_expires_at": GlacierRecoverySessionRecord.restore_expires_at,
+        }[sort]
+        direction = desc if order == "desc" else asc
+        order_by = [direction(sort_expr)]
+        if sort != "id":
+            order_by.append(asc(GlacierRecoverySessionRecord.session_id))
+
+        with session_scope(self._session_factory) as session:
+            total = int(session.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
+            records = session.scalars(
+                stmt.order_by(*order_by).offset((page - 1) * per_page).limit(per_page)
+            ).all()
+            return RecoverySessionListPage(
+                page=page,
+                per_page=per_page,
+                total=total,
+                pages=ceil(total / per_page) if total else 0,
+                sort=sort,
+                order=order,
+                type=recovery_type,
+                state=state,
+                collection=collection,
+                image=image,
+                sessions=[
+                    _session_summary(session, record, config=self._config) for record in records
+                ],
+            )
 
     def get(self, session_id: str) -> RecoverySessionSummary:
         with session_scope(self._session_factory) as session:

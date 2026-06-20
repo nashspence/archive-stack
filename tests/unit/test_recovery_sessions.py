@@ -373,6 +373,52 @@ def test_double_copy_loss_creates_pending_recovery_session(tmp_path: Path) -> No
     assert [str(image.id) for image in session.images] == ["20260420T040001Z"]
 
 
+def test_recovery_sessions_can_be_listed_and_filtered(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    image_root = tmp_path / "image-root"
+    initialize_db(sqlite_url(sqlite_path))
+    write_tree(image_root, IMAGE_ONE_FILES)
+    _seed_finalized_image(sqlite_path, image_root)
+    package = _seed_docs_collection_archive(sqlite_path)
+
+    config = _config(sqlite_path)
+    copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
+    recovery_service = SqlAlchemyRecoverySessionService(
+        config,
+        _FakeArchiveStore(collection_packages={"docs": package}),
+    )
+
+    copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
+    copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
+    copy_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
+    copy_service.update("20260420T040001Z", "20260420T040001Z-2", state="damaged")
+    recovery_service.create_or_resume_for_collection("docs")
+
+    restore_page = recovery_service.list(
+        page=1,
+        per_page=25,
+        sort="created_at",
+        order="desc",
+        recovery_type="collection_restore",
+        state="pending_approval",
+        collection="docs",
+    )
+    rebuild_page = recovery_service.list(
+        page=1,
+        per_page=25,
+        sort="id",
+        order="asc",
+        recovery_type="image_rebuild",
+        image="20260420T040001Z",
+    )
+
+    assert restore_page.total == 1
+    assert [session.id for session in restore_page.sessions] == ["rs-docs-restore-1"]
+    assert restore_page.collection == "docs"
+    assert rebuild_page.total == 1
+    assert [session.id for session in rebuild_page.sessions] == ["rs-20260420T040001Z-rebuild-1"]
+
+
 def test_recovery_ready_ttl_rounds_up_to_restore_hold_days(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"

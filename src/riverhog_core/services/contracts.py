@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterable, Awaitable, Iterable
+from collections.abc import AsyncIterable, Awaitable, Iterable, Sequence
 from typing import Protocol, TypedDict
 
 from riverhog_core.domain.models import (
@@ -10,6 +10,7 @@ from riverhog_core.domain.models import (
     FetchSummary,
     GlacierUsageReport,
     PinListPage,
+    RecoverySessionListPage,
     RecoverySessionSummary,
 )
 from riverhog_core.iso.streaming import IsoStream
@@ -160,6 +161,18 @@ class GlacierReportingService(Protocol):
 
 
 class RecoverySessionService(Protocol):
+    def list(
+        self,
+        *,
+        page: int,
+        per_page: int,
+        sort: str,
+        order: str,
+        recovery_type: str | None = None,
+        state: str | None = None,
+        collection: str | None = None,
+        image: str | None = None,
+    ) -> RecoverySessionListPage: ...
     def get(self, session_id: str) -> RecoverySessionSummary: ...
     def get_for_collection(self, collection_id: str) -> RecoverySessionSummary: ...
     def create_or_resume_for_collection(self, collection_id: str) -> RecoverySessionSummary: ...
@@ -172,7 +185,7 @@ class RecoverySessionService(Protocol):
         session_id: str,
         collection_id: str,
         *,
-        paths: list[str],
+        paths: Sequence[str],
     ) -> RecoverySessionSummary: ...
     def iter_restored_iso(self, session_id: str, image_id: str) -> IsoBody: ...
     def process_due_sessions(self, *, limit: int = 100) -> int: ...

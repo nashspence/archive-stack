@@ -272,24 +272,25 @@ Expected multipart flow:
 
 ## Recovery Sessions
 
-`djdan image rebuild` is the guided workflow for `image_rebuild` recovery sessions
-after one or more finalized images lose all protected copies.
+`djdan image rebuild` owns `image_rebuild` recovery sessions after one or more
+finalized images lose all protected copies.
 
-- without a session id, `djdan image rebuild` lists active image-rebuild recovery
+- `djdan image rebuild list` lists active image-rebuild recovery
   sessions and the finalized images attached to each one
-- with a session id in `pending_approval`, `djdan image rebuild` approves the archive restore and exits after the
+- `djdan image rebuild approve SESSION` approves the archive restore and exits after the
   restore request is submitted
 - recovery-session readiness is driven by archive-store restore status, not only by the operator-facing latency
   estimate
 - AWS S3 Glacier Deep Archive Bulk recovery should be expected to wait roughly
   48 hours; Riverhog polls S3 restore state and uses the configured ready TTL as
   the temporary-copy window once S3 reports the archive object restored
-- with a session id in `ready`, `djdan image rebuild` stages every still-needed
+- with a session id in `ready`, `djdan image rebuild burn SESSION` stages every still-needed
   rebuilt image ISO in that session before burn work starts so a later retry can
   resume from local artifacts
 - ready sessions stage ISO bytes rebuilt from restored collection archives and
   persisted image coverage metadata
-- if the restore window expires after local staging succeeded, `djdan image rebuild` can still resume from the staged ISO
+- if the restore window expires after local staging succeeded,
+  `djdan image rebuild burn SESSION` can still resume from the staged ISO
   artifacts already on disk
 - recovery burns reuse the same local checkpoint behavior as `djdan burn`, including resume from unfinished
   burned-media verification or label confirmation

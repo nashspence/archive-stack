@@ -643,6 +643,81 @@ paths:
                 $ref: "#/components/schemas/RecoverySession"
         default:
           $ref: "#/components/responses/Error"
+  /recovery-sessions:
+    get:
+      summary: List recovery sessions
+      description: Returns a paged inventory of Glacier-backed collection restore and image rebuild sessions, with filters for type, state, collection, and image.
+      operationId: listRecoverySessions
+      parameters:
+        - in: query
+          name: page
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: per_page
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+        - in: query
+          name: sort
+          required: false
+          schema:
+            type: string
+            enum:
+              [created_at, id, type, state, restore_ready_at, restore_expires_at]
+            default: created_at
+        - in: query
+          name: order
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+        - in: query
+          name: type
+          required: false
+          schema:
+            oneOf:
+              - type: string
+                enum: [collection_restore, image_rebuild]
+              - type: "null"
+        - in: query
+          name: state
+          required: false
+          schema:
+            oneOf:
+              - type: string
+                enum: [pending_approval, restore_requested, ready, expired, completed]
+              - type: "null"
+        - in: query
+          name: collection
+          required: false
+          schema:
+            oneOf:
+              - type: string
+              - type: "null"
+        - in: query
+          name: image
+          required: false
+          schema:
+            oneOf:
+              - type: string
+              - type: "null"
+      responses:
+        "200":
+          description: Paged recovery session inventory
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoverySessionList"
+        default:
+          $ref: "#/components/responses/Error"
   /recovery-sessions/{session_id}:
     get:
       summary: Get one recovery session
@@ -2065,6 +2140,51 @@ components:
         location:
           type: string
           nullable: true
+    RecoverySessionList:
+      type: object
+      required:
+        [page, per_page, total, pages, sort, order, type, state, collection, image, sessions]
+      properties:
+        page:
+          type: integer
+          minimum: 1
+        per_page:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+        pages:
+          type: integer
+          minimum: 0
+        sort:
+          type: string
+          enum: [created_at, id, type, state, restore_ready_at, restore_expires_at]
+        order:
+          type: string
+          enum: [asc, desc]
+        type:
+          oneOf:
+            - type: string
+              enum: [collection_restore, image_rebuild]
+            - type: "null"
+        state:
+          oneOf:
+            - type: string
+              enum: [pending_approval, restore_requested, ready, expired, completed]
+            - type: "null"
+        collection:
+          oneOf:
+            - type: string
+            - type: "null"
+        image:
+          oneOf:
+            - type: string
+            - type: "null"
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecoverySession"
     RecoverySession:
       type: object
       required:

@@ -422,6 +422,30 @@ Required behavior:
 - an expired or completed session does not block creating a new session id for
   the same collection
 
+#### `GET /v1/recovery-sessions`
+
+Returns a paged inventory of Glacier-backed collection restore and image rebuild
+sessions.
+
+Supported query parameters:
+
+- `page`, `per_page`
+- `sort`: `created_at`, `id`, `type`, `state`, `restore_ready_at`, or
+  `restore_expires_at`
+- `order`: `asc` or `desc`
+- `type`: `collection_restore` or `image_rebuild`
+- `state`: `pending_approval`, `restore_requested`, `ready`, `expired`, or
+  `completed`
+- `collection`: restricts results to sessions attached to one collection id
+- `image`: restricts results to sessions attached to one finalized image id
+
+Required behavior:
+
+- list views are bounded database lookups and do not scan archive objects or hot
+  storage
+- collection restore operator views filter with `type=collection_restore`
+- image rebuild operator views filter with `type=image_rebuild`
+
 #### `GET /v1/recovery-sessions/{session_id}`
 
 Returns one Glacier-backed collection restore or image rebuild session by durable
@@ -489,7 +513,7 @@ Required behavior:
 - the image must belong to that recovery session
 - the response streams bytes from the rebuilt image artifact produced from
   restored collection archives and persisted coverage metadata
-- `djdan image rebuild` uses this endpoint for replacement burns instead of
+- `djdan image rebuild burn` uses this endpoint for replacement burns instead of
   `GET /v1/images/{image_id}/iso`
 
 #### `GET /v1/glacier`
@@ -779,6 +803,7 @@ The `riverhog` CLI is collection-first and should provide:
 - `riverhog collection upload SLUG ROOT [--timestamp YYYYMMDDTHHMMSSZ] [--wait finalized|staged]`
 - `riverhog collection watch COLLECTION_UPLOAD_ID`
 - `riverhog collection cancel COLLECTION_UPLOAD_ID`
+- `riverhog collection restore list|show|start|approve|materialize|complete`
 - `riverhog hot list`
 - `riverhog hot show FETCH_ID`
 - `riverhog hot pin TARGET`
@@ -877,7 +902,8 @@ The `djdan` CLI is an optical-media client for a machine with an optical drive a
 - `djdan image list [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--has-discs|--no-discs]`
 - `djdan image show IMAGE_ID`
 - `djdan image download IMAGE_ID [-o FILE]`
-- `djdan image rebuild [SESSION_ID] [--device DEVICE] [--staging-dir DIR]`
+- `djdan image rebuild list|show|approve|burn`
+- `djdan image rebuild burn SESSION_ID [--device DEVICE] [--staging-dir DIR]`
 - `djdan disc list [IMAGE_ID] [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT]`
 - `djdan disc show COPY_ID`
 - `djdan disc add IMAGE_ID --at LOCATION [--copy-id GENERATED_ID]`

@@ -16,6 +16,8 @@ from riverhog_cli.output import (
     format_image,
     format_images,
     format_pin,
+    format_recovery_session,
+    format_recovery_sessions,
 )
 
 
@@ -110,6 +112,91 @@ def test_format_collection_upload_uses_upload_color_roles(
     assert "38;2;192;173;108" in rendered
     assert "38;2;142;201;204" in rendered
     assert "38;2;255;137;51" in rendered
+
+
+def test_format_recovery_sessions_use_session_as_primary_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    payload = {
+        "page": 1,
+        "pages": 1,
+        "per_page": 25,
+        "total": 1,
+        "sort": "created_at",
+        "order": "desc",
+        "type": "image_rebuild",
+        "state": "active",
+        "collection": None,
+        "image": None,
+        "sessions": [
+            {
+                "id": "rs-20260420T040001Z-rebuild-1",
+                "type": "image_rebuild",
+                "state": "pending_approval",
+                "restore_ready_at": None,
+                "restore_expires_at": None,
+                "collections": [{"id": "docs"}],
+                "images": [{"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"}],
+            }
+        ],
+    }
+
+    rendered = _render_styled(format_recovery_sessions(payload))
+
+    assert "rs-20260420T040001Z-rebuild-1" in rendered
+    assert "pending_approval" in rendered
+    assert rendered.count("38;2;142;201;204") == 1
+    assert "38;2;192;173;108" in rendered
+    assert "38;2;255;137;51" in rendered
+
+
+def test_format_recovery_session_keeps_related_ids_plain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    rendered = _render_styled(
+        format_recovery_session(
+            {
+                "id": "rs-docs-restore-1",
+                "type": "collection_restore",
+                "state": "ready",
+                "created_at": "2026-04-20T04:00:00Z",
+                "approved_at": "2026-04-20T04:00:01Z",
+                "restore_requested_at": "2026-04-20T04:00:01Z",
+                "restore_ready_at": "2026-04-20T04:00:02Z",
+                "restore_expires_at": "2026-04-21T04:00:02Z",
+                "completed_at": None,
+                "latest_message": "Restored collection files are ready.",
+                "warnings": [],
+                "progress": {
+                    "archive_verification": "completed",
+                    "extraction": "pending",
+                    "materialization": "pending",
+                },
+                "collections": [
+                    {
+                        "id": "docs",
+                        "stored_bytes": 120,
+                        "glacier": {"state": "uploaded"},
+                        "collection_manifest": {
+                            "object_path": "glacier/docs/manifest.yml.age",
+                            "ots_state": "uploaded",
+                        },
+                    }
+                ],
+                "images": [],
+            }
+        )
+    )
+
+    assert "rs-docs-restore-1" in rendered
+    assert "docs" in rendered
+    assert rendered.count("38;2;142;201;204") == 1
 
 
 def test_format_find_renders_long_targets_as_records(

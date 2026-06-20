@@ -24,6 +24,8 @@ from riverhog_cli.output import (
     format_find,
     format_hot_pins,
     format_pin,
+    format_recovery_session,
+    format_recovery_sessions,
     format_release,
 )
 from riverhog_cli.upload_progress import CollectionUploadProgress, make_collection_upload_progress
@@ -31,8 +33,10 @@ from riverhog_core.domain.errors import Conflict, NotFound, RiverhogError, Servi
 
 app = typer.Typer(help="riverhog collection and hot-storage CLI")
 collection_app = typer.Typer(help="collection catalog and upload operations")
+collection_restore_app = typer.Typer(help="collection deep-archive restore operations")
 hot_app = typer.Typer(help="pinned hot-storage set operations")
 app.add_typer(collection_app, name="collection")
+collection_app.add_typer(collection_restore_app, name="restore")
 app.add_typer(hot_app, name="hot")
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
@@ -1326,6 +1330,101 @@ def show_cmd(
     payload = api.get_collection(collection, coverage_path_limit=4)
     glacier_payload = api.get_glacier_report(collection=collection)
     emit(format_collection_summary(payload, glacier_payload), json_mode=False)
+
+
+@collection_restore_app.command("list")
+def collection_restore_list_cmd(
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "created_at",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
+    state: Annotated[
+        str | None,
+        typer.Option(
+            "--state",
+            help="Filter by pending_approval, restore_requested, ready, expired, or completed",
+        ),
+    ] = None,
+    collection: Annotated[
+        str | None,
+        typer.Option("--collection", help="Restrict restore sessions to one collection"),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    normalized_order = order.casefold()
+    payload = client().list_recovery_sessions(
+        page=page,
+        per_page=per_page,
+        sort=sort,
+        order=normalized_order,
+        recovery_type="collection_restore",
+        state=state,
+        collection=collection,
+    )
+    emit(payload if json_mode else format_recovery_sessions(payload), json_mode=json_mode)
+
+
+@collection_restore_app.command("show")
+def collection_restore_show_cmd(
+    session_or_collection: Annotated[
+        str,
+        typer.Argument(help="Recovery session id or collection id"),
+    ],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    api = client()
+    try:
+        payload = api.get_recovery_session(session_or_collection)
+    except NotFound:
+        payload = api.get_collection_restore_session(session_or_collection)
+    emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
+
+
+@collection_restore_app.command("start")
+def collection_restore_start_cmd(
+    collection: Annotated[str, typer.Argument(help="Collection id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    payload = client().create_or_resume_collection_restore_session(collection)
+    emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
+
+
+@collection_restore_app.command("approve")
+def collection_restore_approve_cmd(
+    session_id: Annotated[str, typer.Argument(help="Recovery session id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    payload = client().approve_recovery_session(session_id)
+    emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
+
+
+@collection_restore_app.command("materialize")
+def collection_restore_materialize_cmd(
+    session_id: Annotated[str, typer.Argument(help="Recovery session id")],
+    collection: Annotated[str, typer.Argument(help="Collection id in the recovery session")],
+    paths: Annotated[
+        list[str] | None,
+        typer.Option("--path", help="Collection file path to materialize; repeatable"),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    if not paths:
+        raise typer.BadParameter("at least one --path is required", param_hint="--path")
+    payload = client().materialize_collection_restore_files(
+        session_id,
+        collection,
+        paths=paths,
+    )
+    emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
+
+
+@collection_restore_app.command("complete")
+def collection_restore_complete_cmd(
+    session_id: Annotated[str, typer.Argument(help="Recovery session id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    payload = client().complete_recovery_session(session_id)
+    emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
 
 
 @hot_app.command("pin")

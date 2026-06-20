@@ -443,6 +443,280 @@ def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> Any
     return RichGroup(*renderables)
 
 
+def _recovery_state_text(value: object) -> Any:
+    text = str(value)
+    normalized = text.casefold().replace("-", "_")
+    if normalized in {"pending_approval", "expired", "failed"}:
+        return _styled_text(text, ATTENTION_STYLE)
+    return _attention_text(text)
+
+
+def _recovery_ids(
+    session: Mapping[str, Any],
+    key: str,
+    *,
+    id_key: str = "id",
+) -> list[str]:
+    payload = session.get(key)
+    if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes, bytearray)):
+        return []
+    return [str(item.get(id_key, "unknown")) for item in payload if isinstance(item, Mapping)]
+
+
+def _format_recovery_sessions_plain(payload: Mapping[str, Any]) -> str:
+    lines = [
+        "recovery sessions: "
+        f"page {payload.get('page', 1)}/{payload.get('pages', 0)} "
+        f"per_page={payload.get('per_page', 25)} "
+        f"total={payload.get('total', 0)} "
+        f"sort={payload.get('sort', 'created_at')} "
+        f"order={payload.get('order', 'desc')}",
+    ]
+    for label in ("type", "state", "collection", "image"):
+        if payload.get(label) is not None:
+            lines.append(f"{label}: {payload.get(label)}")
+    sessions = payload.get("sessions")
+    if not isinstance(sessions, Sequence) or not sessions:
+        lines.append("- none")
+        return "\n".join(lines)
+    for session in sessions:
+        if not isinstance(session, Mapping):
+            continue
+        lines.extend(
+            [
+                f"- {session.get('id', 'unknown')} "
+                f"type={session.get('type', 'unknown')} "
+                f"state={session.get('state', 'unknown')}",
+                f"  collections: {_collection_ids_text(_recovery_ids(session, 'collections'))}",
+                f"  images: {_collection_ids_text(_recovery_ids(session, 'images'))}",
+                f"  ready: {session.get('restore_ready_at') or 'unknown'}",
+                f"  expires: {session.get('restore_expires_at') or 'unknown'}",
+            ]
+        )
+        if session.get("latest_message"):
+            lines.append(f"  message: {session.get('latest_message')}")
+    return "\n".join(lines)
+
+
+def _recovery_scope_text(payload: Mapping[str, Any]) -> Any:
+    text = RichText()
+    fields: list[tuple[str, object]] = [
+        ("sort", f"{payload.get('sort', 'created_at')} {payload.get('order', 'desc')}")
+    ]
+    for label in ("type", "state", "collection", "image"):
+        if payload.get(label) is not None:
+            fields.append((label, payload.get(label)))
+    for index, (label, value) in enumerate(fields):
+        if index:
+            text.append("  ")
+        text.append(f"{label}:", style=FIELD_STYLE)
+        text.append(f" {value}")
+    return text
+
+
+def format_recovery_sessions(payload: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        return _format_recovery_sessions_plain(payload)
+    table = _quiet_table(
+        "Session",
+        "State",
+        "Type",
+        "Collections",
+        "Images",
+        "Ready",
+        "Expires",
+    )
+    sessions = payload.get("sessions")
+    if isinstance(sessions, Sequence):
+        for session in sessions:
+            if not isinstance(session, Mapping):
+                continue
+            table.add_row(
+                _entity_text(session.get("id", "unknown")),
+                _recovery_state_text(session.get("state", "unknown")),
+                str(session.get("type", "unknown")),
+                _preview_lines(_recovery_ids(session, "collections"), limit=3),
+                _preview_lines(_recovery_ids(session, "images"), limit=3),
+                str(session.get("restore_ready_at") or "unknown"),
+                str(session.get("restore_expires_at") or "unknown"),
+            )
+    if not table.rows:
+        table.add_row("none", "", "", "", "", "", "")
+    return RichGroup(_page_text("recovery sessions", payload), _recovery_scope_text(payload), table)
+
+
+def _format_recovery_session_plain(payload: Mapping[str, Any]) -> str:
+    lines = [
+        f"recovery session: {payload.get('id', 'unknown')}",
+        f"type: {payload.get('type', 'unknown')}",
+        f"state: {payload.get('state', 'unknown')}",
+        f"created_at: {payload.get('created_at', 'unknown')}",
+        f"approved_at: {payload.get('approved_at') or 'none'}",
+        f"restore_requested_at: {payload.get('restore_requested_at') or 'none'}",
+        f"restore_ready_at: {payload.get('restore_ready_at') or 'none'}",
+        f"restore_expires_at: {payload.get('restore_expires_at') or 'none'}",
+        f"completed_at: {payload.get('completed_at') or 'none'}",
+    ]
+    if payload.get("latest_message"):
+        lines.append(f"latest_message: {payload.get('latest_message')}")
+
+    progress = payload.get("progress")
+    if isinstance(progress, Mapping):
+        lines.append(
+            "progress: "
+            f"archive_verification={progress.get('archive_verification', 'unknown')} "
+            f"extraction={progress.get('extraction', 'unknown')} "
+            f"materialization={progress.get('materialization', 'unknown')}"
+        )
+
+    collections = payload.get("collections")
+    lines.append("collections:")
+    if not isinstance(collections, Sequence) or not collections:
+        lines.append("- none")
+    else:
+        for collection in collections:
+            if not isinstance(collection, Mapping):
+                continue
+            glacier = collection.get("glacier")
+            glacier_state = (
+                glacier.get("state", "unknown") if isinstance(glacier, Mapping) else "unknown"
+            )
+            manifest = collection.get("collection_manifest")
+            manifest_state = "uploaded" if isinstance(manifest, Mapping) else "missing"
+            lines.append(
+                f"- {collection.get('id', 'unknown')} "
+                f"glacier={glacier_state} "
+                f"stored_bytes={collection.get('stored_bytes', 0)} "
+                f"manifest={manifest_state}"
+            )
+
+    images = payload.get("images")
+    lines.append("images:")
+    if not isinstance(images, Sequence) or not images:
+        lines.append("- none")
+    else:
+        for image in images:
+            if not isinstance(image, Mapping):
+                continue
+            lines.append(
+                f"- {image.get('id', 'unknown')} "
+                f"rebuild_state={image.get('rebuild_state', 'unknown')} "
+                f"filename={image.get('filename', 'unknown')}"
+            )
+            lines.append(
+                f"  collections: {_collection_ids_text(_string_items(image.get('collection_ids')))}"
+            )
+
+    warnings = _string_items(payload.get("warnings"))
+    if warnings:
+        lines.append("warnings:")
+        lines.extend(f"- {warning}" for warning in warnings)
+    return "\n".join(lines)
+
+
+def _recovery_collections_table(payload: Mapping[str, Any]) -> Any:
+    table = _quiet_table("Collection", "Glacier", "Stored", "Manifest", "OTS")
+    collections = payload.get("collections")
+    if isinstance(collections, Sequence):
+        for collection in collections:
+            if not isinstance(collection, Mapping):
+                continue
+            glacier = collection.get("glacier")
+            glacier_state = (
+                str(glacier.get("state", "unknown")) if isinstance(glacier, Mapping) else "unknown"
+            )
+            manifest = collection.get("collection_manifest")
+            manifest_path = (
+                str(manifest.get("object_path") or "missing")
+                if isinstance(manifest, Mapping)
+                else "missing"
+            )
+            ots_state = (
+                str(manifest.get("ots_state", "missing"))
+                if isinstance(manifest, Mapping)
+                else "missing"
+            )
+            table.add_row(
+                str(collection.get("id", "unknown")),
+                _attention_text(glacier_state),
+                _bytes_text(collection.get("stored_bytes", 0)),
+                manifest_path,
+                _attention_text(ots_state),
+            )
+    if not table.rows:
+        table.add_row("none", "", "", "", "")
+    return table
+
+
+def _recovery_images_table(payload: Mapping[str, Any]) -> Any:
+    table = _quiet_table("Image", "Rebuild", "Filename", "Collections")
+    images = payload.get("images")
+    if isinstance(images, Sequence):
+        for image in images:
+            if not isinstance(image, Mapping):
+                continue
+            table.add_row(
+                str(image.get("id", "unknown")),
+                _recovery_state_text(image.get("rebuild_state", "unknown")),
+                str(image.get("filename", "unknown")),
+                _collection_ids_lines(image.get("collection_ids")),
+            )
+    if not table.rows:
+        table.add_row("none", "", "", "")
+    return table
+
+
+def format_recovery_session(payload: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        return _format_recovery_session_plain(payload)
+
+    overview = _detail_table()
+    overview.add_row("session", _entity_text(payload.get("id", "unknown")))
+    overview.add_row("type", str(payload.get("type", "unknown")))
+    overview.add_row("state", _recovery_state_text(payload.get("state", "unknown")))
+    overview.add_row("created", str(payload.get("created_at", "unknown")))
+    overview.add_row("approved", str(payload.get("approved_at") or "none"))
+    overview.add_row("restore requested", str(payload.get("restore_requested_at") or "none"))
+    overview.add_row("ready", str(payload.get("restore_ready_at") or "none"))
+    overview.add_row("expires", str(payload.get("restore_expires_at") or "none"))
+    overview.add_row("completed", str(payload.get("completed_at") or "none"))
+    if payload.get("latest_message"):
+        overview.add_row("message", str(payload.get("latest_message")))
+
+    progress = payload.get("progress")
+    if isinstance(progress, Mapping):
+        progress_table = _detail_table()
+        progress_table.add_row(
+            "archive verification",
+            _recovery_state_text(progress.get("archive_verification", "unknown")),
+        )
+        progress_table.add_row(
+            "extraction",
+            _recovery_state_text(progress.get("extraction", "unknown")),
+        )
+        progress_table.add_row(
+            "materialization",
+            _recovery_state_text(progress.get("materialization", "unknown")),
+        )
+    else:
+        progress_table = None
+
+    renderables: list[Any] = [
+        RichText(f"recovery session {payload.get('id', 'unknown')}", style="bold"),
+        overview,
+        RichText("collections", style="bold"),
+        _recovery_collections_table(payload),
+        RichText("images", style="bold"),
+        _recovery_images_table(payload),
+    ]
+    if progress_table is not None:
+        renderables.extend([RichText("progress", style="bold"), progress_table])
+    warnings = _string_items(payload.get("warnings"))
+    if warnings:
+        renderables.extend([RichText("warnings", style="bold"), _preview_lines(warnings, limit=5)])
+    return RichGroup(*renderables)
+
+
 def _format_collections_plain(payload: Mapping[str, Any]) -> str:
     lines = [
         "collections: "

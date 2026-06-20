@@ -72,6 +72,7 @@ from riverhog_core.domain.models import (
     RecoveryNotificationStatus,
     RecoverySessionCollection,
     RecoverySessionImage,
+    RecoverySessionListPage,
     RecoverySessionProgress,
     RecoverySessionSummary,
 )
@@ -2360,6 +2361,76 @@ class AcceptanceRecoverySessionService:
     ) -> int:
         _ = limit
         return 0
+
+    @_with_state_lock
+    def list(
+        self,
+        *,
+        page: int,
+        per_page: int,
+        sort: str,
+        order: str,
+        recovery_type: str | None = None,
+        state: str | None = None,
+        collection: str | None = None,
+        image: str | None = None,
+    ) -> RecoverySessionListPage:
+        if page < 1:
+            raise BadRequest("page must be greater than or equal to 1")
+        if per_page < 1 or per_page > 100:
+            raise BadRequest("per_page must be between 1 and 100")
+        if order not in {"asc", "desc"}:
+            raise BadRequest("order must be asc or desc")
+        normalized_collection = (
+            CollectionId(normalize_collection_id(collection)) if collection else None
+        )
+        image_id = ImageId(image) if image else None
+        records = [
+            record
+            for record in self.state.recovery_sessions_by_id.values()
+            if (recovery_type is None or record.type == recovery_type)
+            and (state is None or record.state.value == state)
+            and (normalized_collection is None or normalized_collection in record.collection_ids)
+            and (image_id is None or image_id in self.state._record_image_ids(record))
+        ]
+
+        def sort_value(record: AcceptanceRecoverySessionRecord) -> object:
+            if sort == "id":
+                return record.session_id
+            if sort == "type":
+                return record.type
+            if sort == "state":
+                return record.state.value
+            if sort == "restore_ready_at":
+                return record.restore_ready_at or ""
+            if sort == "restore_expires_at":
+                return record.restore_expires_at or ""
+            if sort == "created_at":
+                return record.created_at
+            raise BadRequest(
+                "sort must be one of created_at, id, restore_expires_at, "
+                "restore_ready_at, state, type"
+            )
+
+        records.sort(key=lambda record: (sort_value(record), record.session_id))
+        if order == "desc":
+            records.reverse()
+        total = len(records)
+        pages = (total + per_page - 1) // per_page if total else 0
+        start = (page - 1) * per_page
+        return RecoverySessionListPage(
+            page=page,
+            per_page=per_page,
+            total=total,
+            pages=pages,
+            sort=sort,
+            order=order,
+            type=recovery_type,
+            state=state,
+            collection=str(normalized_collection) if normalized_collection else None,
+            image=str(image_id) if image_id else None,
+            sessions=[self._summary(record) for record in records[start : start + per_page]],
+        )
 
     @_with_state_lock
     def get(self, session_id: str) -> RecoverySessionSummary:

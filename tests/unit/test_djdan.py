@@ -1427,48 +1427,44 @@ def test_discover_recovery_handoffs_for_images_that_require_recovery() -> None:
 
 def test_discover_active_recovery_sessions_dedupes_multi_image_sessions() -> None:
     class FakeClient:
-        def list_images(self, *, page: int, per_page: int, sort: str, order: str):
+        def list_recovery_sessions(
+            self,
+            *,
+            page: int,
+            per_page: int,
+            sort: str,
+            order: str,
+            recovery_type: str,
+        ) -> dict[str, object]:
+            assert (page, per_page, sort, order, recovery_type) == (
+                1,
+                100,
+                "created_at",
+                "desc",
+                "image_rebuild",
+            )
             return {
                 "page": 1,
                 "pages": 1,
-                "images": [
+                "sessions": [
                     {
-                        "id": "20260420T040001Z",
-                        "filename": "20260420T040001Z.iso",
-                        "fill": 0.9,
-                        "physical_copies_registered": 0,
-                        "physical_copies_required": 2,
+                        "id": "rs-20260420T040001Z-1",
+                        "state": "pending_approval",
+                        "latest_message": (
+                            "Approve the archive restore before Riverhog requests "
+                            "archived collection data."
+                        ),
+                        "images": [
+                            {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"},
+                            {"id": "20260420T040003Z", "filename": "20260420T040003Z.iso"},
+                        ],
                     },
                     {
-                        "id": "20260420T040003Z",
-                        "filename": "20260420T040003Z.iso",
-                        "fill": 0.7,
-                        "physical_copies_registered": 0,
-                        "physical_copies_required": 2,
+                        "id": "rs-completed",
+                        "state": "completed",
+                        "latest_message": "done",
+                        "images": [],
                     },
-                ],
-            }
-
-        def list_copies(self, image_id: str) -> dict[str, object]:
-            return {
-                "copies": [
-                    {"id": f"{image_id}-1", "state": "lost"},
-                    {"id": f"{image_id}-2", "state": "damaged"},
-                    {"id": f"{image_id}-3", "state": "needed"},
-                ]
-            }
-
-        def get_recovery_session_for_image(self, image_id: str) -> dict[str, object]:
-            assert image_id in {"20260420T040001Z", "20260420T040003Z"}
-            return {
-                "id": "rs-20260420T040001Z-1",
-                "state": "pending_approval",
-                "latest_message": (
-                    "Approve the archive restore before Riverhog requests archived collection data."
-                ),
-                "images": [
-                    {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"},
-                    {"id": "20260420T040003Z", "filename": "20260420T040003Z.iso"},
                 ],
             }
 
@@ -1523,45 +1519,42 @@ def test_all_pending_recovery_seed_slots_do_not_reenter_standard_burn_backlog() 
 
 def test_djdan_recover_lists_active_sessions(monkeypatch) -> None:
     class FakeClient:
-        def list_images(self, *, page: int, per_page: int, sort: str, order: str):
+        def list_recovery_sessions(
+            self,
+            *,
+            page: int,
+            per_page: int,
+            sort: str,
+            order: str,
+            recovery_type: str,
+            state: str | None = None,
+        ) -> dict[str, object]:
+            assert recovery_type == "image_rebuild"
+            if state not in {"pending_approval", "ready", "restore_requested"}:
+                return {"page": page, "pages": 0, "sessions": []}
             return {
-                "page": 1,
+                "page": page,
                 "pages": 1,
-                "images": [
+                "sessions": [
                     {
-                        "id": "20260420T040001Z",
-                        "filename": "20260420T040001Z.iso",
-                        "fill": 0.9,
-                        "physical_copies_registered": 0,
-                        "physical_copies_required": 2,
+                        "id": "rs-20260420T040001Z-1",
+                        "state": "pending_approval",
+                        "latest_message": (
+                            "Approve the archive restore before Riverhog requests archived "
+                            "collection data."
+                        ),
+                        "images": [
+                            {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"},
+                        ],
                     }
-                ],
-            }
-
-        def list_copies(self, image_id: str) -> dict[str, object]:
-            return {
-                "copies": [
-                    {"id": "20260420T040001Z-1", "state": "lost"},
-                    {"id": "20260420T040001Z-2", "state": "damaged"},
-                    {"id": "20260420T040001Z-3", "state": "needed"},
                 ]
-            }
-
-        def get_recovery_session_for_image(self, image_id: str) -> dict[str, object]:
-            return {
-                "id": "rs-20260420T040001Z-1",
-                "state": "pending_approval",
-                "latest_message": (
-                    "Approve the archive restore before Riverhog requests archived collection data."
-                ),
-                "images": [
-                    {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"},
-                ],
+                if state == "pending_approval"
+                else [],
             }
 
     monkeypatch.setattr(djdan_main, "ApiClient", FakeClient)
 
-    result = runner.invoke(djdan_main.app, ["image", "rebuild"])
+    result = runner.invoke(djdan_main.app, ["image", "rebuild", "list"])
 
     assert result.exit_code == 0
     assert "rs-20260420T040001Z-1" in result.stdout
@@ -1609,7 +1602,7 @@ def test_djdan_recover_approves_waiting_session(monkeypatch, tmp_path: Path) -> 
 
     result = runner.invoke(
         djdan_main.app,
-        ["image", "rebuild", "rs-20260420T040001Z-1", "--staging-dir", str(tmp_path)],
+        ["image", "rebuild", "burn", "rs-20260420T040001Z-1", "--staging-dir", str(tmp_path)],
     )
 
     assert result.exit_code == 0
@@ -1770,6 +1763,7 @@ def test_djdan_recover_ready_session_burns_replacements_and_cleans_staging(
         [
             "image",
             "rebuild",
+            "burn",
             "rs-20260420T040001Z-1",
             "--device",
             "/dev/fake-sr0",
@@ -1925,6 +1919,7 @@ def test_djdan_recover_can_finish_expired_session_from_local_staging(
         [
             "image",
             "rebuild",
+            "burn",
             "rs-20260420T040001Z-1",
             "--device",
             "/dev/fake-sr0",
@@ -2077,6 +2072,7 @@ def test_djdan_recover_stages_all_pending_session_images_before_first_burn(
         [
             "image",
             "rebuild",
+            "burn",
             "rs-20260420T040001Z-1",
             "--device",
             "/dev/fake-sr0",

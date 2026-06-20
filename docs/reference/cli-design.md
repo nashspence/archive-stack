@@ -9,7 +9,7 @@ future changes stay consistent.
 Riverhog is collection-first:
 
 - `riverhog collection ...` owns collection catalog, detail, file listing, and
-  upload session controls.
+  upload session controls, plus collection restore sessions.
 - `riverhog hot ...` owns pinned hot-storage sets and fetch status.
 
 Djdan is optical-media-first:
@@ -17,7 +17,7 @@ Djdan is optical-media-first:
 - `djdan burn` clears the burn backlog.
 - `djdan fetch` clears the fetch backlog from discs.
 - `djdan image ...` owns finalized images, planner output, downloads, and image
-  rebuild work.
+  rebuild sessions.
 - `djdan disc ...` owns burned disc/copy catalog and state changes.
 
 Avoid compatibility aliases. Prefer a small canonical surface over a broad one.

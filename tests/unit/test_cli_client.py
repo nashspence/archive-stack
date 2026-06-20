@@ -188,6 +188,55 @@ def test_get_collection_can_request_coverage_path_preview(monkeypatch) -> None:
     assert captured == ["https://api.test/v1/collections/tax/2022%20reports?coverage_path_limit=4"]
 
 
+def test_recovery_session_client_methods_use_canonical_endpoints(monkeypatch) -> None:
+    captured: list[tuple[str, str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append((request.method, str(request.url), request.read().decode("utf-8")))
+        return httpx.Response(200, json={"id": "rs-docs-restore-1", "sessions": []})
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_client(self: ApiClient) -> httpx.Client:
+        return httpx.Client(base_url=self.base_url, transport=transport)
+
+    monkeypatch.setattr(ApiClient, "_client", fake_client)
+
+    client = ApiClient(base_url="https://api.test")
+    client.list_recovery_sessions(
+        page=2,
+        per_page=10,
+        sort="state",
+        order="asc",
+        recovery_type="collection_restore",
+        state="ready",
+        collection="tax/2022 reports",
+    )
+    client.create_or_resume_collection_restore_session("tax/2022 reports")
+    client.get_collection_restore_session("tax/2022 reports")
+    client.materialize_collection_restore_files(
+        "rs-tax-restore-1",
+        "tax/2022 reports",
+        paths=["invoice 123.pdf"],
+    )
+
+    assert captured[0][0] == "GET"
+    assert captured[0][1] == (
+        "https://api.test/v1/recovery-sessions?page=2&per_page=10&sort=state&"
+        "order=asc&type=collection_restore&state=ready&collection=tax%2F2022+reports"
+    )
+    assert captured[1][0] == "POST"
+    assert captured[1][1] == ("https://api.test/v1/collections/tax/2022%20reports/restore-session")
+    assert captured[2][0] == "GET"
+    assert captured[2][1] == ("https://api.test/v1/collections/tax/2022%20reports/restore-session")
+    assert captured[3][0] == "POST"
+    assert captured[3][1] == (
+        "https://api.test/v1/recovery-sessions/rs-tax-restore-1/collections/"
+        "tax/2022%20reports/materialize"
+    )
+    assert '"paths":["invoice 123.pdf"]' in captured[3][2]
+
+
 def test_client_can_override_host_header_for_pinned_lan_routes(monkeypatch) -> None:
     captured: list[str | None] = []
 

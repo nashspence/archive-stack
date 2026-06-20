@@ -59,5 +59,26 @@ class RecoverySessionOut(RiverhogModel):
     images: list[RecoverySessionImageOut]
 
 
+class RecoverySessionListOut(RiverhogModel):
+    page: int
+    per_page: int
+    total: int
+    pages: int
+    sort: Literal[
+        "created_at",
+        "id",
+        "type",
+        "state",
+        "restore_ready_at",
+        "restore_expires_at",
+    ]
+    order: Literal["asc", "desc"]
+    type: Literal["collection_restore", "image_rebuild"] | None
+    state: Literal["pending_approval", "restore_requested", "ready", "expired", "completed"] | None
+    collection: str | None
+    image: str | None
+    sessions: list[RecoverySessionOut]
+
+
 class CollectionRestoreMaterializeRequest(RiverhogModel):
     paths: list[str]

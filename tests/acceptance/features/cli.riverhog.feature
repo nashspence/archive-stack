@@ -61,6 +61,29 @@ Feature: riverhog CLI
       And stdout matches the structure of GET "/v1/fetches/fx-1"
       And stdout mentions fetch id "fx-1"
 
+    Scenario: riverhog collection restore exposes start, list, show, and approve payloads
+      Given an archive with planner fixtures
+      And collection "docs" has uploaded Glacier archive package
+      When the operator runs 'riverhog collection restore start docs --json'
+      Then the command exits with code 0
+      And stdout is valid JSON
+      And stdout matches the structure of POST "/v1/collections/docs/restore-session"
+      And stdout mentions "collection_restore"
+      And stdout mentions "rs-docs-restore-1"
+      When the operator runs 'riverhog collection restore list --state pending_approval --json'
+      Then the command exits with code 0
+      And stdout is valid JSON
+      And stdout matches the structure of GET "/v1/recovery-sessions"
+      And stdout mentions "rs-docs-restore-1"
+      When the operator runs 'riverhog collection restore show rs-docs-restore-1 --json'
+      Then the command exits with code 0
+      And stdout is valid JSON
+      And stdout matches the structure of GET "/v1/recovery-sessions/rs-docs-restore-1"
+      When the operator runs 'riverhog collection restore approve rs-docs-restore-1 --json'
+      Then the command exits with code 0
+      And stdout is valid JSON
+      And stdout mentions "restore_requested"
+
   Rule: Human mode remains concise and stable
     Scenario: riverhog collection upload ingests and archives a local collection source
       Given a local collection source "photos-2024" with deterministic fixture contents

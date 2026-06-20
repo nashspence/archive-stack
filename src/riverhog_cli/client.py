@@ -388,6 +388,49 @@ class ApiClient:
             f"/v1/images/{quote(image_id, safe='/')}/rebuild-session",
         )
 
+    def list_recovery_sessions(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        sort: str = "created_at",
+        order: str = "desc",
+        recovery_type: str | None = None,
+        state: str | None = None,
+        collection: str | None = None,
+        image: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "page": page,
+            "per_page": per_page,
+            "sort": sort,
+            "order": order,
+        }
+        if recovery_type is not None:
+            params["type"] = recovery_type
+        if state is not None:
+            params["state"] = state
+        if collection is not None:
+            params["collection"] = collection
+        if image is not None:
+            params["image"] = image
+        return self._json("GET", "/v1/recovery-sessions", params=params)
+
+    def get_collection_restore_session(self, collection_id: str) -> dict[str, Any]:
+        return self._json(
+            "GET",
+            f"/v1/collections/{quote(collection_id, safe='/')}/restore-session",
+        )
+
+    def create_or_resume_collection_restore_session(
+        self,
+        collection_id: str,
+    ) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/collections/{quote(collection_id, safe='/')}/restore-session",
+        )
+
     def get_recovery_session(self, session_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/recovery-sessions/{quote(session_id, safe='/')}")
 
@@ -401,6 +444,21 @@ class ApiClient:
         return self._json(
             "POST",
             f"/v1/recovery-sessions/{quote(session_id, safe='/')}/complete",
+        )
+
+    def materialize_collection_restore_files(
+        self,
+        session_id: str,
+        collection_id: str,
+        *,
+        paths: Sequence[str],
+    ) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            "/v1/recovery-sessions/"
+            f"{quote(session_id, safe='/')}/collections/"
+            f"{quote(collection_id, safe='/')}/materialize",
+            json={"paths": list(paths)},
         )
 
     def _download(

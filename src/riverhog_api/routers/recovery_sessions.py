@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from typing import Annotated, Literal
+
+from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
 from riverhog_api.deps import ContainerDep
-from riverhog_api.mappers import map_recovery_session
+from riverhog_api.mappers import map_recovery_session, map_recovery_session_list
 from riverhog_api.schemas.recovery_sessions import (
     CollectionRestoreMaterializeRequest,
+    RecoverySessionListOut,
     RecoverySessionOut,
 )
 
@@ -47,6 +50,48 @@ def get_image_rebuild_session(
 ) -> RecoverySessionOut:
     summary = container.recovery_sessions.get_for_image(image_id)
     return RecoverySessionOut.model_validate(map_recovery_session(summary))
+
+
+@router.get("/recovery-sessions", response_model=RecoverySessionListOut)
+def list_recovery_sessions(
+    container: ContainerDep,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=100),
+    sort: Literal[
+        "created_at",
+        "id",
+        "type",
+        "state",
+        "restore_ready_at",
+        "restore_expires_at",
+    ] = Query("created_at"),
+    order: Literal["asc", "desc"] = Query("desc"),
+    recovery_type: Annotated[
+        Literal["collection_restore", "image_rebuild"] | None,
+        Query(alias="type"),
+    ] = None,
+    state: Literal[
+        "pending_approval",
+        "restore_requested",
+        "ready",
+        "expired",
+        "completed",
+    ]
+    | None = Query(None),
+    collection: str | None = Query(None),
+    image: str | None = Query(None),
+) -> RecoverySessionListOut:
+    summary = container.recovery_sessions.list(
+        page=page,
+        per_page=per_page,
+        sort=sort,
+        order=order,
+        recovery_type=recovery_type,
+        state=state,
+        collection=collection,
+        image=image,
+    )
+    return RecoverySessionListOut.model_validate(map_recovery_session_list(summary))
 
 
 @router.get("/recovery-sessions/{session_id}", response_model=RecoverySessionOut)
