@@ -6,7 +6,7 @@ import logging
 import re
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, TypedDict
 
@@ -30,6 +30,7 @@ from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveRecord,
     CollectionFileRecord,
+    CollectionImageOperatorSummaryRecord,
     CollectionOperatorSummaryRecord,
     CollectionRecord,
     CollectionUploadFileRecord,
@@ -38,6 +39,7 @@ from riverhog_core.catalog_models import (
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
     ImageCopyRecord,
+    ImageOperatorSummaryRecord,
 )
 from riverhog_core.domain.enums import GlacierState, ProtectionState, RecoveryCoverageState
 from riverhog_core.domain.errors import BadRequest, Conflict, HashMismatch, NotFound
@@ -865,27 +867,32 @@ class SqlAlchemyCollectionService:
                     session_idle_ttl=self._upload_session_idle_ttl,
                 )
 
-    def get(self, collection_id: str) -> CollectionSummary:
+    def get(
+        self,
+        collection_id: str,
+        *,
+        coverage_path_limit: int = 100,
+    ) -> CollectionSummary:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
+        if coverage_path_limit < 0:
+            raise BadRequest("coverage_path_limit must be at least 0")
 
         with session_scope(self._session_factory) as session:
-            collection = session.get(CollectionRecord, normalized_collection_id)
-            if collection is None:
-                raise NotFound(f"collection not found: {normalized_collection_id}")
-            file_records = _collection_file_summary_rows(session, [normalized_collection_id])
-            archive = session.get(CollectionArchiveRecord, normalized_collection_id)
-            (
-                image_coverage,
-                covered_paths,
-                recovery_parts_by_image_path,
-            ) = _collection_image_coverage(session, normalized_collection_id)
-            return _summary_from_records(
-                normalized_collection_id,
-                file_records,
-                archive=archive,
-                image_coverage=image_coverage,
-                covered_paths=covered_paths,
-                recovery_parts_by_image_path=recovery_parts_by_image_path,
+            row = session.get(CollectionOperatorSummaryRecord, normalized_collection_id)
+            if row is None:
+                collection = session.get(CollectionRecord, normalized_collection_id)
+                if collection is None:
+                    raise NotFound(f"collection not found: {normalized_collection_id}")
+                raise Conflict(
+                    f"collection operator summary projection is missing: {normalized_collection_id}"
+                )
+            return replace(
+                _summary_from_operator_projection(row),
+                image_coverage=_bounded_collection_image_coverage(
+                    session,
+                    normalized_collection_id,
+                    path_limit=coverage_path_limit,
+                ),
             )
 
     def list(
@@ -1024,6 +1031,81 @@ def _summary_from_operator_projection(row: CollectionOperatorSummaryRecord) -> C
         archive_format=row.archive_format,
         compression=row.compression,
     )
+
+
+def _bounded_collection_image_coverage(
+    session: Session,
+    collection_id: str,
+    *,
+    path_limit: int,
+) -> list[CollectionCoverageImage]:
+    rows = session.execute(
+        select(CollectionImageOperatorSummaryRecord, ImageOperatorSummaryRecord)
+        .join(
+            ImageOperatorSummaryRecord,
+            ImageOperatorSummaryRecord.image_id == CollectionImageOperatorSummaryRecord.image_id,
+        )
+        .where(CollectionImageOperatorSummaryRecord.collection_id == collection_id)
+        .order_by(CollectionImageOperatorSummaryRecord.image_id.asc())
+    ).all()
+    image_ids = [image_row.image_id for _, image_row in rows]
+    if not image_ids:
+        return []
+
+    paths_by_image: dict[str, list[str]] = {image_id: [] for image_id in image_ids}
+    if path_limit > 0:
+        for image_id in image_ids:
+            path_rows = session.scalars(
+                select(FinalizedImageCoveredPathRecord.path)
+                .where(FinalizedImageCoveredPathRecord.image_id == image_id)
+                .where(FinalizedImageCoveredPathRecord.collection_id == collection_id)
+                .order_by(FinalizedImageCoveredPathRecord.path.asc())
+                .limit(path_limit)
+            ).all()
+            paths_by_image[image_id] = list(path_rows)
+
+    copy_rows = session.execute(
+        select(
+            ImageCopyRecord.image_id,
+            ImageCopyRecord.copy_id,
+            ImageCopyRecord.label_text,
+            ImageCopyRecord.location,
+            ImageCopyRecord.created_at,
+            ImageCopyRecord.state,
+            ImageCopyRecord.verification_state,
+        )
+        .where(ImageCopyRecord.image_id.in_(image_ids))
+        .order_by(ImageCopyRecord.image_id.asc(), ImageCopyRecord.copy_id.asc())
+    ).all()
+    copies_by_image: dict[str, list[CopySummary]] = {image_id: [] for image_id in image_ids}
+    for copy in copy_rows:
+        copies_by_image.setdefault(copy.image_id, []).append(
+            CopySummary(
+                id=CopyId(copy.copy_id),
+                volume_id=copy.image_id,
+                label_text=copy.label_text or copy.copy_id,
+                location=copy.location,
+                created_at=copy.created_at,
+                state=normalize_copy_state(copy.state),
+                verification_state=normalize_verification_state(copy.verification_state),
+            )
+        )
+
+    return [
+        CollectionCoverageImage(
+            id=ImageId(image_row.image_id),
+            filename=image_row.filename,
+            protection_state=ProtectionState(image_row.physical_protection_state or "unprotected"),
+            physical_copies_required=int(image_row.physical_copies_required or 0),
+            physical_copies_registered=int(image_row.physical_copies_registered or 0),
+            physical_copies_verified=int(image_row.physical_copies_verified or 0),
+            physical_copies_missing=int(image_row.physical_copies_missing or 0),
+            covered_paths=paths_by_image.get(image_row.image_id, []),
+            copies=copies_by_image.get(image_row.image_id, []),
+            covered_paths_total=int(collection_image_row.covered_paths_total or 0),
+        )
+        for collection_image_row, image_row in rows
+    ]
 
 
 def _collection_list_summaries(

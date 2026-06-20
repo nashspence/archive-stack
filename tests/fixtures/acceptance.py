@@ -1705,7 +1705,12 @@ class AcceptanceCollectionService:
             self._expire_upload(upload)
 
     @_with_state_lock
-    def get(self, collection_id: str) -> CollectionSummary:
+    def get(
+        self,
+        collection_id: str,
+        *,
+        coverage_path_limit: int = 100,
+    ) -> CollectionSummary:
         return self.state.collection_summary(collection_id)
 
     @_with_state_lock

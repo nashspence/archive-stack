@@ -284,6 +284,11 @@ def map_collection_coverage_image(
     covered_paths = list(summary.covered_paths)
     if path_limit is not None:
         covered_paths = covered_paths[:path_limit]
+    covered_paths_total = (
+        summary.covered_paths_total
+        if summary.covered_paths_total is not None
+        else len(summary.covered_paths)
+    )
     return {
         "id": str(summary.id),
         "filename": summary.filename,
@@ -293,7 +298,7 @@ def map_collection_coverage_image(
         "physical_copies_verified": summary.physical_copies_verified,
         "physical_copies_missing": summary.physical_copies_missing,
         "covered_paths": covered_paths,
-        "covered_paths_total": len(summary.covered_paths),
+        "covered_paths_total": covered_paths_total,
         "copies": [map_copy(copy) for copy in summary.copies],
     }
 

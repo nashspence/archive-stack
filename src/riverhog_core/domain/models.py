@@ -160,6 +160,7 @@ class CollectionCoverageImage:
     physical_copies_missing: int
     covered_paths: list[str]
     copies: list[CopySummary]
+    covered_paths_total: int | None = None
 
 
 @dataclass(frozen=True)

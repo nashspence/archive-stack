@@ -69,6 +69,35 @@ class CollectionOperatorSummaryRecord(Base):
     collection: Mapped[CollectionRecord] = relationship(back_populates="operator_summary")
 
 
+class CollectionImageOperatorSummaryRecord(Base):
+    __tablename__ = "collection_image_operator_summaries"
+
+    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    image_id: Mapped[str] = mapped_column(String, primary_key=True)
+    covered_paths_total: Mapped[int] = mapped_column(BigInteger, default=0)
+    updated_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id"],
+            ["collections.id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["image_id"],
+            ["finalized_images.image_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+        ),
+        Index(
+            "ix_collection_image_operator_summaries_image",
+            "image_id",
+            "collection_id",
+        ),
+    )
+
+
 class CollectionFileRecord(Base):
     __tablename__ = "collection_files"
 

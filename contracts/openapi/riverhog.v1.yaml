@@ -373,11 +373,12 @@ paths:
         - in: query
           name: coverage_path_limit
           required: false
-          description: Optional maximum covered paths to return per image. Omit for full coverage path detail.
+          description: Maximum covered paths to return per image. Defaults to a bounded operator preview.
           schema:
             type: integer
             minimum: 0
             maximum: 100
+            default: 100
       responses:
         "200":
           description: Collection summary

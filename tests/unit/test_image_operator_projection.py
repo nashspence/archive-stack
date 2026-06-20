@@ -7,6 +7,7 @@ import pytest
 
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
+    CollectionRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
     ImageCopyRecord,
@@ -44,6 +45,7 @@ def _summary_row(sqlite_path: Path, image_id: str) -> ImageOperatorSummaryRecord
 def _seed_image(sqlite_path: Path) -> None:
     session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
+        session.add_all([CollectionRecord(id="docs"), CollectionRecord(id="photos")])
         session.add(
             FinalizedImageRecord(
                 image_id="20260616T121459Z",

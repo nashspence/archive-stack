@@ -10,6 +10,7 @@ from riverhog_core.catalog_db import initialize_db, make_session_factory, sessio
 from riverhog_core.catalog_models import (
     CollectionArchiveRecord,
     CollectionFileRecord,
+    CollectionImageOperatorSummaryRecord,
     CollectionOperatorSummaryRecord,
     CollectionRecord,
     FinalizedImageCoveragePartRecord,
@@ -238,3 +239,145 @@ def test_collection_list_reads_paged_operator_projection(
             )
         )
     assert collection_ids == ["large", "small"]
+
+
+def test_collection_show_reads_operator_projection_with_bounded_coverage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sqlite_path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
+    with session_scope(session_factory) as session:
+        session.add(CollectionRecord(id="docs"))
+        session.add_all(
+            [
+                CollectionFileRecord(
+                    collection_id="docs",
+                    path="a.txt",
+                    bytes=10,
+                    sha256=_sha256(b"a"),
+                    hot=True,
+                    archived=True,
+                ),
+                CollectionFileRecord(
+                    collection_id="docs",
+                    path="b.txt",
+                    bytes=20,
+                    sha256=_sha256(b"b"),
+                    hot=False,
+                    archived=True,
+                ),
+            ]
+        )
+        session.add(
+            FinalizedImageRecord(
+                image_id="img-001",
+                candidate_id="candidate-001",
+                filename="img-001.iso",
+                bytes=30,
+                image_root="/tmp/images",
+                target_bytes=50_000_000_000,
+                required_copy_count=2,
+            )
+        )
+        for path in ("a.txt", "b.txt"):
+            session.add(
+                FinalizedImageCoveredPathRecord(
+                    image_id="img-001",
+                    collection_id="docs",
+                    path=path,
+                )
+            )
+        session.add(
+            ImageCopyRecord(
+                image_id="img-001",
+                copy_id="copy-001",
+                label_text="Copy 1",
+                location="Shelf A",
+                created_at="2026-06-20T12:00:00Z",
+                state="registered",
+                verification_state="pending",
+            )
+        )
+
+    with session_scope(session_factory) as session:
+        collection_image_row = session.get(
+            CollectionImageOperatorSummaryRecord,
+            ("docs", "img-001"),
+        )
+        assert collection_image_row is not None
+        assert collection_image_row.covered_paths_total == 2
+
+    with session_scope(session_factory) as session:
+        covered_path = session.get(
+            FinalizedImageCoveredPathRecord,
+            ("img-001", "docs", "b.txt"),
+        )
+        assert covered_path is not None
+        session.delete(covered_path)
+
+    with session_scope(session_factory) as session:
+        collection_image_row = session.get(
+            CollectionImageOperatorSummaryRecord,
+            ("docs", "img-001"),
+        )
+        assert collection_image_row is not None
+        assert collection_image_row.covered_paths_total == 1
+
+        covered_path = session.get(
+            FinalizedImageCoveredPathRecord,
+            ("img-001", "docs", "a.txt"),
+        )
+        assert covered_path is not None
+        session.delete(covered_path)
+
+    with session_scope(session_factory) as session:
+        assert session.get(CollectionImageOperatorSummaryRecord, ("docs", "img-001")) is None
+        session.add_all(
+            [
+                FinalizedImageCoveredPathRecord(
+                    image_id="img-001",
+                    collection_id="docs",
+                    path="a.txt",
+                ),
+                FinalizedImageCoveredPathRecord(
+                    image_id="img-001",
+                    collection_id="docs",
+                    path="b.txt",
+                ),
+            ]
+        )
+
+    with session_scope(session_factory) as session:
+        collection_image_row = session.get(
+            CollectionImageOperatorSummaryRecord,
+            ("docs", "img-001"),
+        )
+        assert collection_image_row is not None
+        assert collection_image_row.covered_paths_total == 2
+
+    def fail_if_full_collection_show_path_is_used(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("bounded collection show should read operator projections")
+
+    monkeypatch.setattr(
+        collections_service,
+        "_collection_file_summary_rows",
+        fail_if_full_collection_show_path_is_used,
+    )
+    monkeypatch.setattr(
+        collections_service,
+        "_collection_image_coverage",
+        fail_if_full_collection_show_path_is_used,
+    )
+
+    service = SqlAlchemyCollectionService(_config(sqlite_path), object(), object())  # type: ignore[arg-type]
+    summary = service.get("docs", coverage_path_limit=1)
+
+    assert summary.id == "docs"
+    assert summary.files == 2
+    assert summary.bytes == 30
+    assert len(summary.image_coverage) == 1
+    assert summary.image_coverage[0].covered_paths == ["a.txt"]
+    assert summary.image_coverage[0].covered_paths_total == 2
+    assert [copy.id for copy in summary.image_coverage[0].copies] == ["copy-001"]

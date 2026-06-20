@@ -14,8 +14,16 @@ class Base(DeclarativeBase):
 
 
 SCHEMA_BASELINE_VERSION = 1
-SCHEMA_LATEST_VERSION = 6
-_SUPPORTED_SCHEMA_VERSIONS = {SCHEMA_BASELINE_VERSION, 2, 3, 4, 5, SCHEMA_LATEST_VERSION}
+SCHEMA_LATEST_VERSION = 7
+_SUPPORTED_SCHEMA_VERSIONS = {
+    SCHEMA_BASELINE_VERSION,
+    2,
+    3,
+    4,
+    5,
+    6,
+    SCHEMA_LATEST_VERSION,
+}
 _SCHEMA_V2_DROPPED_COLUMNS = {
     "glacier_usage_snapshots": (
         "estimated_billable_bytes",
@@ -55,6 +63,12 @@ _COLLECTION_OPERATOR_SUMMARY_COLUMNS = (
     "manifest_sha256",
     "ots_object_path",
     "ots_sha256",
+    "updated_at",
+)
+_COLLECTION_IMAGE_OPERATOR_SUMMARY_COLUMNS = (
+    "collection_id",
+    "image_id",
+    "covered_paths_total",
     "updated_at",
 )
 _HOT_FETCH_OPERATOR_SUMMARY_COLUMNS = (
@@ -176,6 +190,7 @@ def _apply_schema_migrations(engine: Engine) -> None:
             (4, _migrate_schema_v4),
             (5, _migrate_schema_v5),
             (6, _migrate_schema_v6),
+            (7, _migrate_schema_v7),
         ):
             if version not in applied_versions:
                 migration(conn)
@@ -230,6 +245,13 @@ def _migrate_schema_v6(conn: Connection) -> None:
     _refresh_disc_operator_summaries(
         conn,
         "SELECT image_id, copy_id FROM image_copies",
+    )
+
+
+def _migrate_schema_v7(conn: Connection) -> None:
+    _refresh_collection_image_operator_summaries(
+        conn,
+        "SELECT collection_id, image_id FROM finalized_image_covered_paths",
     )
 
 
@@ -309,6 +331,12 @@ def _ensure_schema_indexes(engine: Engine) -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS ix_disc_operator_summaries_location "
                 "ON disc_operator_summaries (location, copy_id)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_collection_image_operator_summaries_image "
+                "ON collection_image_operator_summaries (image_id, collection_id)"
             )
         )
 
@@ -1063,6 +1091,258 @@ $riverhog$;
                 f"{referencing} "
                 "FOR EACH STATEMENT "
                 f"EXECUTE FUNCTION {function_name}()"
+            )
+        )
+
+
+def _collection_image_operator_summary_select_sql(affected_pairs_sql: str) -> str:
+    return f"""
+SELECT *
+FROM (
+    WITH affected_pairs(collection_id, image_id) AS (
+        {affected_pairs_sql}
+    ),
+    distinct_pairs AS (
+        SELECT DISTINCT collection_id, image_id
+        FROM affected_pairs
+        WHERE collection_id IS NOT NULL
+            AND image_id IS NOT NULL
+    ),
+    path_stats AS (
+        SELECT
+            finalized_image_covered_paths.collection_id,
+            finalized_image_covered_paths.image_id,
+            COUNT(finalized_image_covered_paths.path) AS covered_paths_total
+        FROM finalized_image_covered_paths
+        JOIN distinct_pairs
+            ON distinct_pairs.collection_id = finalized_image_covered_paths.collection_id
+            AND distinct_pairs.image_id = finalized_image_covered_paths.image_id
+        GROUP BY
+            finalized_image_covered_paths.collection_id,
+            finalized_image_covered_paths.image_id
+    )
+    SELECT
+        path_stats.collection_id,
+        path_stats.image_id,
+        path_stats.covered_paths_total,
+        CAST(CURRENT_TIMESTAMP AS TEXT) AS updated_at
+    FROM path_stats
+) AS collection_image_operator_summary_refresh
+"""
+
+
+def _collection_image_operator_summary_upsert_sql(
+    conn: Connection,
+    affected_pairs_sql: str,
+) -> str:
+    columns = ", ".join(_COLLECTION_IMAGE_OPERATOR_SUMMARY_COLUMNS)
+    select_sql = _collection_image_operator_summary_select_sql(affected_pairs_sql)
+    if conn.dialect.name == "sqlite":
+        return (
+            f"INSERT OR REPLACE INTO collection_image_operator_summaries ({columns}) {select_sql}"
+        )
+    updates = ", ".join(
+        f"{column} = EXCLUDED.{column}"
+        for column in _COLLECTION_IMAGE_OPERATOR_SUMMARY_COLUMNS
+        if column not in {"collection_id", "image_id"}
+    )
+    return (
+        f"INSERT INTO collection_image_operator_summaries ({columns}) "
+        f"{select_sql} "
+        f"ON CONFLICT (collection_id, image_id) DO UPDATE SET {updates}"
+    )
+
+
+def _collection_image_operator_summary_delete_sql(
+    conn: Connection,
+    affected_pairs_sql: str,
+) -> str:
+    separator = "char(9)" if conn.dialect.name == "sqlite" else "E'\\t'"
+    return f"""
+DELETE FROM collection_image_operator_summaries
+WHERE collection_id || {separator} || image_id IN (
+    WITH affected_pairs(collection_id, image_id) AS (
+        {affected_pairs_sql}
+    ),
+    distinct_pairs AS (
+        SELECT DISTINCT collection_id, image_id
+        FROM affected_pairs
+        WHERE collection_id IS NOT NULL
+            AND image_id IS NOT NULL
+    )
+    SELECT collection_id || {separator} || image_id
+    FROM distinct_pairs
+)
+"""
+
+
+def _refresh_collection_image_operator_summaries(
+    conn: Connection,
+    affected_pairs_sql: str,
+) -> None:
+    conn.execute(text(_collection_image_operator_summary_delete_sql(conn, affected_pairs_sql)))
+    conn.execute(text(_collection_image_operator_summary_upsert_sql(conn, affected_pairs_sql)))
+
+
+def _install_collection_image_operator_projection(engine: Engine) -> None:
+    with engine.begin() as conn:
+        if conn.dialect.name == "sqlite":
+            _install_sqlite_collection_image_operator_projection(conn)
+            return
+        if conn.dialect.name == "postgresql":
+            _install_postgresql_collection_image_operator_projection(conn)
+            return
+        raise RuntimeError(f"unsupported catalog backend: {conn.dialect.name}")
+
+
+def _install_sqlite_collection_image_operator_projection(conn: Connection) -> None:
+    def refresh(affected_pairs_sql: str) -> str:
+        delete_sql = _collection_image_operator_summary_delete_sql(conn, affected_pairs_sql)
+        upsert_sql = _collection_image_operator_summary_upsert_sql(conn, affected_pairs_sql)
+        return f"{delete_sql}; {upsert_sql};"
+
+    trigger_sql = {
+        "riverhog_cios_finalized_image_covered_paths_insert": (
+            "finalized_image_covered_paths",
+            refresh("SELECT NEW.collection_id AS collection_id, NEW.image_id AS image_id"),
+        ),
+        "riverhog_cios_finalized_image_covered_paths_update": (
+            "finalized_image_covered_paths",
+            refresh(
+                "SELECT OLD.collection_id AS collection_id, OLD.image_id AS image_id "
+                "UNION SELECT NEW.collection_id AS collection_id, NEW.image_id AS image_id"
+            ),
+        ),
+        "riverhog_cios_finalized_image_covered_paths_delete": (
+            "finalized_image_covered_paths",
+            refresh("SELECT OLD.collection_id AS collection_id, OLD.image_id AS image_id"),
+        ),
+    }
+    for trigger_name, (table_name, body) in trigger_sql.items():
+        conn.execute(text(f"DROP TRIGGER IF EXISTS {trigger_name}"))
+        operation = trigger_name.rsplit("_", maxsplit=1)[-1].upper()
+        conn.execute(
+            text(
+                f"CREATE TRIGGER {trigger_name} AFTER {operation} ON {table_name} BEGIN {body} END"
+            )
+        )
+
+
+def _install_postgresql_collection_image_operator_projection(conn: Connection) -> None:
+    affected_pairs_sql = (
+        "SELECT "
+        "split_part(pair_key, E'\\t', 1) AS collection_id, "
+        "split_part(pair_key, E'\\t', 2) AS image_id "
+        "FROM unnest(p_pair_keys) AS affected_pairs(pair_key)"
+    )
+    refresh_sql = _collection_image_operator_summary_upsert_sql(conn, affected_pairs_sql)
+    delete_sql = _collection_image_operator_summary_delete_sql(conn, affected_pairs_sql)
+    conn.execute(
+        text(
+            f"""
+CREATE OR REPLACE FUNCTION riverhog_refresh_collection_image_operator_summaries(
+    p_pair_keys text[]
+) RETURNS void
+LANGUAGE plpgsql
+AS $riverhog$
+BEGIN
+    IF p_pair_keys IS NULL OR cardinality(p_pair_keys) = 0 THEN
+        RETURN;
+    END IF;
+
+    {delete_sql};
+    {refresh_sql};
+END;
+$riverhog$;
+"""
+        )
+    )
+    trigger_functions = {
+        "riverhog_cios_from_new_covered_paths": """
+CREATE OR REPLACE FUNCTION riverhog_cios_from_new_covered_paths()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $riverhog$
+BEGIN
+    PERFORM riverhog_refresh_collection_image_operator_summaries(
+        ARRAY(
+            SELECT DISTINCT collection_id || E'\\t' || image_id
+            FROM new_rows
+        )
+    );
+    RETURN NULL;
+END;
+$riverhog$;
+""",
+        "riverhog_cios_from_old_covered_paths": """
+CREATE OR REPLACE FUNCTION riverhog_cios_from_old_covered_paths()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $riverhog$
+BEGIN
+    PERFORM riverhog_refresh_collection_image_operator_summaries(
+        ARRAY(
+            SELECT DISTINCT collection_id || E'\\t' || image_id
+            FROM old_rows
+        )
+    );
+    RETURN NULL;
+END;
+$riverhog$;
+""",
+        "riverhog_cios_from_changed_covered_paths": """
+CREATE OR REPLACE FUNCTION riverhog_cios_from_changed_covered_paths()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $riverhog$
+BEGIN
+    PERFORM riverhog_refresh_collection_image_operator_summaries(
+        ARRAY(
+            SELECT DISTINCT pair_key
+            FROM (
+                SELECT collection_id || E'\\t' || image_id AS pair_key
+                FROM old_rows
+                UNION
+                SELECT collection_id || E'\\t' || image_id AS pair_key
+                FROM new_rows
+            ) AS changed_pairs
+        )
+    );
+    RETURN NULL;
+END;
+$riverhog$;
+""",
+    }
+    for sql in trigger_functions.values():
+        conn.execute(text(sql))
+
+    trigger_sql = {
+        "riverhog_cios_finalized_image_covered_paths_insert": (
+            "INSERT",
+            "NEW TABLE AS new_rows",
+            "riverhog_cios_from_new_covered_paths",
+        ),
+        "riverhog_cios_finalized_image_covered_paths_update": (
+            "UPDATE",
+            "OLD TABLE AS old_rows NEW TABLE AS new_rows",
+            "riverhog_cios_from_changed_covered_paths",
+        ),
+        "riverhog_cios_finalized_image_covered_paths_delete": (
+            "DELETE",
+            "OLD TABLE AS old_rows",
+            "riverhog_cios_from_old_covered_paths",
+        ),
+    }
+    for trigger_name, (operation, referencing, function_name) in trigger_sql.items():
+        conn.execute(
+            text(f"DROP TRIGGER IF EXISTS {trigger_name} ON finalized_image_covered_paths")
+        )
+        conn.execute(
+            text(
+                f"CREATE TRIGGER {trigger_name} "
+                f"AFTER {operation} ON finalized_image_covered_paths "
+                f"REFERENCING {referencing} "
+                f"FOR EACH STATEMENT EXECUTE FUNCTION {function_name}()"
             )
         )
 
@@ -2392,6 +2672,7 @@ def initialize_db(database_url: str) -> None:
         CandidateCoveredPathRecord,
         CollectionArchiveRecord,
         CollectionFileRecord,
+        CollectionImageOperatorSummaryRecord,
         CollectionOperatorSummaryRecord,
         CollectionRecord,
         CollectionUploadFileRecord,
@@ -2419,6 +2700,7 @@ def initialize_db(database_url: str) -> None:
         CandidateCoveredPathRecord,
         CollectionArchiveRecord,
         CollectionFileRecord,
+        CollectionImageOperatorSummaryRecord,
         CollectionOperatorSummaryRecord,
         CollectionRecord,
         DiscOperatorSummaryRecord,
@@ -2446,6 +2728,7 @@ def initialize_db(database_url: str) -> None:
     _ensure_schema_indexes(engine)
     _apply_schema_migrations(engine)
     _install_collection_operator_projection(engine)
+    _install_collection_image_operator_projection(engine)
     _install_image_operator_projection(engine)
     _install_disc_operator_projection(engine)
     _install_hot_fetch_operator_projection(engine)
