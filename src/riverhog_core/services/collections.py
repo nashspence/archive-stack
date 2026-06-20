@@ -10,10 +10,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, TypedDict
 
-from sqlalchemy import func, select
+from sqlalchemy import Integer, and_, case, cast, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from riverhog_core.archive_compliance import (
+    DEFAULT_REQUIRED_PHYSICAL_COPIES,
     collection_protection_state,
     copy_counts_as_verified,
     copy_counts_toward_protection,
@@ -93,6 +94,7 @@ class _CollectionListStats:
     archived_bytes: int = 0
     protected_bytes: int = 0
     physical_bytes: int = 0
+    has_registered_image: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1081,19 +1083,43 @@ def _collection_list_summaries(
     if not collection_ids:
         return []
 
-    file_rows = _collection_file_summary_rows(session, collection_ids)
-
     stats_by_collection = {
         collection_id: _CollectionListStats() for collection_id in collection_ids
     }
-    for file_row in file_rows:
-        stats = stats_by_collection[file_row.collection_id]
-        stats.files += 1
-        stats.bytes += file_row.bytes
-        if file_row.hot:
-            stats.hot_bytes += file_row.bytes
-        if file_row.archived:
-            stats.archived_bytes += file_row.bytes
+
+    file_stat_rows = session.execute(
+        select(
+            CollectionFileRecord.collection_id,
+            func.count(CollectionFileRecord.path).label("files"),
+            func.coalesce(func.sum(CollectionFileRecord.bytes), 0).label("bytes"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (CollectionFileRecord.hot.is_(True), CollectionFileRecord.bytes),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("hot_bytes"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (CollectionFileRecord.archived.is_(True), CollectionFileRecord.bytes),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("archived_bytes"),
+        )
+        .where(CollectionFileRecord.collection_id.in_(collection_ids))
+        .group_by(CollectionFileRecord.collection_id)
+    ).all()
+    for row in file_stat_rows:
+        stats = stats_by_collection[row.collection_id]
+        stats.files = int(row.files or 0)
+        stats.bytes = int(row.bytes or 0)
+        stats.hot_bytes = int(row.hot_bytes or 0)
+        stats.archived_bytes = int(row.archived_bytes or 0)
 
     archive_rows = session.scalars(
         select(CollectionArchiveRecord).where(
@@ -1102,69 +1128,194 @@ def _collection_list_summaries(
     ).all()
     archives_by_collection = {archive.collection_id: archive for archive in archive_rows}
 
-    image_states = _finalized_image_protection_states(session)
-    registered_counts = _finalized_image_registered_counts(session)
-    covered_path_rows = session.execute(
+    registered_copy_count = func.coalesce(
+        func.sum(
+            case(
+                (ImageCopyRecord.state.in_(("registered", "verified")), 1),
+                (ImageCopyRecord.state.is_(None), 1),
+                else_=0,
+            )
+        ),
+        0,
+    )
+    registered_counts = (
+        select(
+            ImageCopyRecord.image_id.label("image_id"),
+            registered_copy_count.label("registered_count"),
+        )
+        .group_by(ImageCopyRecord.image_id)
+        .subquery()
+    )
+    required_copy_count = case(
+        (
+            FinalizedImageRecord.required_copy_count.is_(None),
+            DEFAULT_REQUIRED_PHYSICAL_COPIES,
+        ),
+        (
+            FinalizedImageRecord.required_copy_count <= 0,
+            DEFAULT_REQUIRED_PHYSICAL_COPIES,
+        ),
+        else_=FinalizedImageRecord.required_copy_count,
+    )
+    image_states = (
+        select(
+            FinalizedImageRecord.image_id.label("image_id"),
+            case(
+                (
+                    func.coalesce(registered_counts.c.registered_count, 0)
+                    >= required_copy_count,
+                    1,
+                ),
+                else_=0,
+            ).label("is_protected"),
+            case(
+                (
+                    func.coalesce(registered_counts.c.registered_count, 0) > 0,
+                    1,
+                ),
+                else_=0,
+            ).label("has_registered"),
+        )
+        .outerjoin(
+            registered_counts,
+            registered_counts.c.image_id == FinalizedImageRecord.image_id,
+        )
+        .subquery()
+    )
+
+    path_protection = (
         select(
             FinalizedImageCoveredPathRecord.collection_id,
             FinalizedImageCoveredPathRecord.path,
-            FinalizedImageCoveredPathRecord.image_id,
-        ).where(FinalizedImageCoveredPathRecord.collection_id.in_(collection_ids))
+            func.min(image_states.c.is_protected).label("all_protected"),
+            func.max(image_states.c.has_registered).label("has_registered"),
+        )
+        .join(
+            image_states,
+            image_states.c.image_id == FinalizedImageCoveredPathRecord.image_id,
+        )
+        .where(FinalizedImageCoveredPathRecord.collection_id.in_(collection_ids))
+        .group_by(
+            FinalizedImageCoveredPathRecord.collection_id,
+            FinalizedImageCoveredPathRecord.path,
+        )
+        .subquery()
+    )
+    protection_rows = session.execute(
+        select(
+            CollectionFileRecord.collection_id,
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            path_protection.c.all_protected == 1,
+                            CollectionFileRecord.bytes,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("protected_bytes"),
+            func.coalesce(func.max(path_protection.c.has_registered), 0).label(
+                "has_registered_image"
+            ),
+        )
+        .outerjoin(
+            path_protection,
+            and_(
+                path_protection.c.collection_id == CollectionFileRecord.collection_id,
+                path_protection.c.path == CollectionFileRecord.path,
+            ),
+        )
+        .where(CollectionFileRecord.collection_id.in_(collection_ids))
+        .group_by(CollectionFileRecord.collection_id)
     ).all()
-    coverage_by_path: dict[tuple[str, str], set[str]] = defaultdict(set)
-    image_states_by_collection: dict[str, set[ProtectionState]] = defaultdict(set)
-    for covered_path_row in covered_path_rows:
-        coverage_by_path[(covered_path_row.collection_id, covered_path_row.path)].add(
-            covered_path_row.image_id
-        )
-        image_states_by_collection[covered_path_row.collection_id].add(
-            image_states.get(covered_path_row.image_id, ProtectionState.UNPROTECTED)
-        )
+    for row in protection_rows:
+        stats = stats_by_collection[row.collection_id]
+        stats.protected_bytes = int(row.protected_bytes or 0)
+        stats.has_registered_image = bool(row.has_registered_image)
 
-    part_rows = session.execute(
+    path_part_stats = (
         select(
             FinalizedImageCoveragePartRecord.collection_id,
             FinalizedImageCoveragePartRecord.path,
-            FinalizedImageCoveragePartRecord.image_id,
-            FinalizedImageCoveragePartRecord.part_index,
-            FinalizedImageCoveragePartRecord.part_count,
-        ).where(FinalizedImageCoveragePartRecord.collection_id.in_(collection_ids))
-    ).all()
-    recovery_parts_by_path: dict[tuple[str, str], dict[tuple[str, str], _RecoveryParts]] = (
-        defaultdict(dict)
+            func.max(
+                case(
+                    (
+                        and_(
+                            FinalizedImageCoveragePartRecord.part_count == 1,
+                            FinalizedImageCoveragePartRecord.part_index == 0,
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("has_single_full_part"),
+            func.min(FinalizedImageCoveragePartRecord.part_count).label("min_part_count"),
+            func.max(FinalizedImageCoveragePartRecord.part_count).label("max_part_count"),
+            func.count(func.distinct(FinalizedImageCoveragePartRecord.part_index)).label(
+                "present_parts"
+            ),
+        )
+        .join(
+            image_states,
+            image_states.c.image_id == FinalizedImageCoveragePartRecord.image_id,
+        )
+        .where(FinalizedImageCoveragePartRecord.collection_id.in_(collection_ids))
+        .where(image_states.c.has_registered == 1)
+        .group_by(
+            FinalizedImageCoveragePartRecord.collection_id,
+            FinalizedImageCoveragePartRecord.path,
+        )
+        .subquery()
     )
-    for part in part_rows:
-        path_key = (part.collection_id, part.path)
-        image_path_key = (part.image_id, part.path)
-        current = recovery_parts_by_path[path_key].get(image_path_key)
-        present_parts = frozenset({part.part_index})
-        if current is None:
-            recovery_parts_by_path[path_key][image_path_key] = _RecoveryParts(
-                part_count=part.part_count,
-                present_parts=present_parts,
-            )
-            continue
-        recovery_parts_by_path[path_key][image_path_key] = _RecoveryParts(
-            part_count=current.part_count,
-            present_parts=current.present_parts | present_parts,
+    partial_physical_bytes_expr = cast(
+        (CollectionFileRecord.bytes * path_part_stats.c.present_parts)
+        / path_part_stats.c.min_part_count,
+        Integer,
+    )
+    bounded_partial_physical_bytes_expr = case(
+        (partial_physical_bytes_expr < 1, 1),
+        else_=partial_physical_bytes_expr,
+    )
+    bounded_partial_physical_bytes_expr = case(
+        (
+            bounded_partial_physical_bytes_expr > CollectionFileRecord.bytes,
+            CollectionFileRecord.bytes,
+        ),
+        else_=bounded_partial_physical_bytes_expr,
+    )
+    physical_bytes_expr = case(
+        (
+            path_part_stats.c.has_single_full_part == 1,
+            CollectionFileRecord.bytes,
+        ),
+        (
+            and_(
+                path_part_stats.c.min_part_count == path_part_stats.c.max_part_count,
+                path_part_stats.c.present_parts > 0,
+            ),
+            bounded_partial_physical_bytes_expr,
+        ),
+        else_=0,
+    )
+    physical_rows = session.execute(
+        select(
+            CollectionFileRecord.collection_id,
+            func.coalesce(func.sum(physical_bytes_expr), 0).label("physical_bytes"),
         )
-
-    for file_row in file_rows:
-        stats = stats_by_collection[file_row.collection_id]
-        path_key = (file_row.collection_id, file_row.path)
-        image_ids = coverage_by_path.get(path_key, set())
-        if image_ids and all(
-            image_states.get(image_id, ProtectionState.UNPROTECTED) == ProtectionState.PROTECTED
-            for image_id in image_ids
-        ):
-            stats.protected_bytes += file_row.bytes
-        stats.physical_bytes += _path_recoverable_bytes_from_registered_images(
-            file_row.bytes,
-            file_row.path,
-            image_ids=image_ids,
-            recovery_parts_by_image_path=recovery_parts_by_path.get(path_key, {}),
-            registered_counts=registered_counts,
+        .outerjoin(
+            path_part_stats,
+            and_(
+                path_part_stats.c.collection_id == CollectionFileRecord.collection_id,
+                path_part_stats.c.path == CollectionFileRecord.path,
+            ),
         )
+        .where(CollectionFileRecord.collection_id.in_(collection_ids))
+        .group_by(CollectionFileRecord.collection_id)
+    ).all()
+    for row in physical_rows:
+        stats_by_collection[row.collection_id].physical_bytes = int(row.physical_bytes or 0)
 
     summaries: list[CollectionSummary] = []
     for collection_id in collection_ids:
@@ -1204,7 +1355,11 @@ def _collection_list_summaries(
                     bytes_total=bytes_total,
                     protected_bytes=protected_bytes,
                     archived_bytes=archived_bytes,
-                    image_states=image_states_by_collection.get(collection_id, set()),
+                    image_states=(
+                        (ProtectionState.PARTIALLY_PROTECTED,)
+                        if stats.has_registered_image
+                        else ()
+                    ),
                 ),
                 protected_bytes=protected_bytes,
                 recovery=CollectionRecoverySummary(
