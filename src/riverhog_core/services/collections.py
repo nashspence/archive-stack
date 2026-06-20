@@ -85,6 +85,25 @@ class _RecoveryParts:
     present_parts: frozenset[int]
 
 
+@dataclass(slots=True)
+class _CollectionListStats:
+    files: int = 0
+    bytes: int = 0
+    hot_bytes: int = 0
+    archived_bytes: int = 0
+    protected_bytes: int = 0
+    physical_bytes: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _CollectionFileSummaryRow:
+    collection_id: str
+    path: str
+    bytes: int
+    hot: bool
+    archived: bool
+
+
 class _UploadManifestEntry(TypedDict):
     path: str
     bytes: int
@@ -95,6 +114,23 @@ class _StoredManifestEntry(Protocol):
     path: str
     bytes: int
     sha256: str
+
+
+class _CollectionFileLike(Protocol):
+    @property
+    def collection_id(self) -> str: ...
+
+    @property
+    def path(self) -> str: ...
+
+    @property
+    def bytes(self) -> int: ...
+
+    @property
+    def hot(self) -> bool: ...
+
+    @property
+    def archived(self) -> bool: ...
 
 
 class SqlAlchemyCollectionService:
@@ -823,6 +859,8 @@ class SqlAlchemyCollectionService:
             collection = session.get(CollectionRecord, normalized_collection_id)
             if collection is None:
                 raise NotFound(f"collection not found: {normalized_collection_id}")
+            file_records = _collection_file_summary_rows(session, [normalized_collection_id])
+            archive = session.get(CollectionArchiveRecord, normalized_collection_id)
             (
                 image_coverage,
                 covered_paths,
@@ -830,8 +868,8 @@ class SqlAlchemyCollectionService:
             ) = _collection_image_coverage(session, normalized_collection_id)
             return _summary_from_records(
                 normalized_collection_id,
-                collection.files,
-                archive=collection.archive,
+                file_records,
+                archive=archive,
                 image_coverage=image_coverage,
                 covered_paths=covered_paths,
                 recovery_parts_by_image_path=recovery_parts_by_image_path,
@@ -858,17 +896,18 @@ class SqlAlchemyCollectionService:
 
         needle = q.casefold() if q else None
         with session_scope(self._session_factory) as session:
-            collections = session.scalars(
-                select(CollectionRecord)
-                .options(selectinload(CollectionRecord.files))
-                .options(selectinload(CollectionRecord.archive))
-                .order_by(CollectionRecord.id.asc())
-            ).all()
+            collection_ids = list(
+                session.scalars(select(CollectionRecord.id).order_by(CollectionRecord.id.asc()))
+            )
+            if needle is not None:
+                collection_ids = [
+                    collection_id
+                    for collection_id in collection_ids
+                    if needle in collection_id.casefold()
+                ]
 
             summaries: list[CollectionSummary] = []
-            for summary in _collection_list_summaries(session, collections):
-                if needle is not None and needle not in str(summary.id).casefold():
-                    continue
+            for summary in _collection_list_summaries(session, collection_ids):
                 if (
                     protection_state is not None
                     and summary.protection_state.value != protection_state
@@ -1037,11 +1076,31 @@ class SqlAlchemyCollectionService:
 
 def _collection_list_summaries(
     session: Session,
-    collections: Sequence[CollectionRecord],
+    collection_ids: Sequence[str],
 ) -> list[CollectionSummary]:
-    collection_ids = [collection.id for collection in collections]
     if not collection_ids:
         return []
+
+    file_rows = _collection_file_summary_rows(session, collection_ids)
+
+    stats_by_collection = {
+        collection_id: _CollectionListStats() for collection_id in collection_ids
+    }
+    for file_row in file_rows:
+        stats = stats_by_collection[file_row.collection_id]
+        stats.files += 1
+        stats.bytes += file_row.bytes
+        if file_row.hot:
+            stats.hot_bytes += file_row.bytes
+        if file_row.archived:
+            stats.archived_bytes += file_row.bytes
+
+    archive_rows = session.scalars(
+        select(CollectionArchiveRecord).where(
+            CollectionArchiveRecord.collection_id.in_(collection_ids)
+        )
+    ).all()
+    archives_by_collection = {archive.collection_id: archive for archive in archive_rows}
 
     image_states = _finalized_image_protection_states(session)
     registered_counts = _finalized_image_registered_counts(session)
@@ -1054,10 +1113,12 @@ def _collection_list_summaries(
     ).all()
     coverage_by_path: dict[tuple[str, str], set[str]] = defaultdict(set)
     image_states_by_collection: dict[str, set[ProtectionState]] = defaultdict(set)
-    for row in covered_path_rows:
-        coverage_by_path[(row.collection_id, row.path)].add(row.image_id)
-        image_states_by_collection[row.collection_id].add(
-            image_states.get(row.image_id, ProtectionState.UNPROTECTED)
+    for covered_path_row in covered_path_rows:
+        coverage_by_path[(covered_path_row.collection_id, covered_path_row.path)].add(
+            covered_path_row.image_id
+        )
+        image_states_by_collection[covered_path_row.collection_id].add(
+            image_states.get(covered_path_row.image_id, ProtectionState.UNPROTECTED)
         )
 
     part_rows = session.execute(
@@ -1088,30 +1149,32 @@ def _collection_list_summaries(
             present_parts=current.present_parts | present_parts,
         )
 
-    summaries: list[CollectionSummary] = []
-    for collection in collections:
-        bytes_total = sum(record.bytes for record in collection.files)
-        archived_bytes = sum(record.bytes for record in collection.files if record.archived)
-        protected_bytes = 0
-        physical_bytes = 0
-        for record in collection.files:
-            path_key = (record.collection_id, record.path)
-            image_ids = coverage_by_path.get(path_key, set())
-            if image_ids and all(
-                image_states.get(image_id, ProtectionState.UNPROTECTED)
-                == ProtectionState.PROTECTED
-                for image_id in image_ids
-            ):
-                protected_bytes += record.bytes
-            physical_bytes += _path_recoverable_bytes_from_registered_images(
-                record.bytes,
-                record.path,
-                image_ids=image_ids,
-                recovery_parts_by_image_path=recovery_parts_by_path.get(path_key, {}),
-                registered_counts=registered_counts,
-            )
+    for file_row in file_rows:
+        stats = stats_by_collection[file_row.collection_id]
+        path_key = (file_row.collection_id, file_row.path)
+        image_ids = coverage_by_path.get(path_key, set())
+        if image_ids and all(
+            image_states.get(image_id, ProtectionState.UNPROTECTED) == ProtectionState.PROTECTED
+            for image_id in image_ids
+        ):
+            stats.protected_bytes += file_row.bytes
+        stats.physical_bytes += _path_recoverable_bytes_from_registered_images(
+            file_row.bytes,
+            file_row.path,
+            image_ids=image_ids,
+            recovery_parts_by_image_path=recovery_parts_by_path.get(path_key, {}),
+            registered_counts=registered_counts,
+        )
 
-        archive = collection.archive
+    summaries: list[CollectionSummary] = []
+    for collection_id in collection_ids:
+        stats = stats_by_collection[collection_id]
+        bytes_total = stats.bytes
+        archived_bytes = stats.archived_bytes
+        protected_bytes = stats.protected_bytes
+        physical_bytes = stats.physical_bytes
+
+        archive = archives_by_collection.get(collection_id)
         archive_uploaded = (
             archive is not None and normalize_glacier_state(archive.state) == GlacierState.UPLOADED
         )
@@ -1132,16 +1195,16 @@ def _collection_list_summaries(
 
         summaries.append(
             CollectionSummary(
-                id=CollectionId(collection.id),
-                files=len(collection.files),
+                id=CollectionId(collection_id),
+                files=stats.files,
                 bytes=bytes_total,
-                hot_bytes=sum(record.bytes for record in collection.files if record.hot),
+                hot_bytes=stats.hot_bytes,
                 archived_bytes=archived_bytes,
                 protection_state=collection_protection_state(
                     bytes_total=bytes_total,
                     protected_bytes=protected_bytes,
                     archived_bytes=archived_bytes,
-                    image_states=image_states_by_collection.get(collection.id, set()),
+                    image_states=image_states_by_collection.get(collection_id, set()),
                 ),
                 protected_bytes=protected_bytes,
                 recovery=CollectionRecoverySummary(
@@ -1162,6 +1225,35 @@ def _collection_list_summaries(
             )
         )
     return summaries
+
+
+def _collection_file_summary_rows(
+    session: Session,
+    collection_ids: Sequence[str],
+) -> list[_CollectionFileSummaryRow]:
+    if not collection_ids:
+        return []
+    rows = session.execute(
+        select(
+            CollectionFileRecord.collection_id,
+            CollectionFileRecord.path,
+            CollectionFileRecord.bytes,
+            CollectionFileRecord.hot,
+            CollectionFileRecord.archived,
+        )
+        .where(CollectionFileRecord.collection_id.in_(collection_ids))
+        .order_by(CollectionFileRecord.collection_id.asc(), CollectionFileRecord.path.asc())
+    ).all()
+    return [
+        _CollectionFileSummaryRow(
+            collection_id=row.collection_id,
+            path=row.path,
+            bytes=row.bytes,
+            hot=row.hot,
+            archived=row.archived,
+        )
+        for row in rows
+    ]
 
 
 def _finalized_image_protection_states(session: Session) -> dict[str, ProtectionState]:
@@ -2262,7 +2354,7 @@ def _parse_utc_timestamp(value: str | None) -> datetime | None:
 
 def _summary_from_records(
     collection_id: str,
-    file_records: Sequence[CollectionFileRecord],
+    file_records: Sequence[_CollectionFileLike],
     *,
     archive: CollectionArchiveRecord | None = None,
     image_coverage: Sequence[CollectionCoverageImage] = (),
@@ -2476,7 +2568,7 @@ def _collection_image_coverage(
 
 
 def _protected_bytes(
-    file_records: Sequence[CollectionFileRecord],
+    file_records: Sequence[_CollectionFileLike],
     *,
     image_coverage: Sequence[CollectionCoverageImage],
     covered_paths: dict[str, set[str]],
@@ -2494,7 +2586,7 @@ def _protected_bytes(
 
 
 def _collection_recovery_summary(
-    file_records: Sequence[CollectionFileRecord],
+    file_records: Sequence[_CollectionFileLike],
     *,
     archive: CollectionArchiveRecord | None,
     image_coverage: Sequence[CollectionCoverageImage],
