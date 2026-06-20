@@ -5,6 +5,7 @@ from rich.console import Console
 
 from riverhog_cli.output import (
     format_collection_summary,
+    format_collection_upload,
     format_collections,
     format_disc,
     format_discs,
@@ -75,6 +76,40 @@ def test_format_find_uses_target_as_primary_id(
 
     assert "docs/tax/2022/invoice-123.pdf" in rendered
     assert rendered.count("38;2;142;201;204") == 1
+
+
+def test_format_collection_upload_uses_upload_color_roles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    rendered = _render_styled(
+        format_collection_upload(
+            {
+                "collection_id": "2026/docs",
+                "state": "partial",
+                "files_uploaded": 1,
+                "files_total": 2,
+                "uploaded_bytes": 10,
+                "bytes_total": 20,
+                "files": [
+                    {
+                        "path": "tax/invoice.pdf",
+                        "bytes": 20,
+                        "uploaded_bytes": 10,
+                        "upload_state": "partial",
+                    }
+                ],
+            }
+        )
+    )
+
+    assert "2026/docs" in rendered
+    assert "tax/invoice.pdf" in rendered
+    assert "38;2;192;173;108" in rendered
+    assert "38;2;142;201;204" in rendered
+    assert "38;2;255;137;51" in rendered
 
 
 def test_format_find_renders_long_targets_as_records(

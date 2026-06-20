@@ -1362,7 +1362,112 @@ def format_find(payload: Mapping[str, Any]) -> Any:
     return RichGroup(*renderables)
 
 
-def format_collection_upload(payload: Mapping[str, Any]) -> str:
+def _upload_state_text(value: object) -> Any:
+    text = str(value)
+    normalized = text.casefold().replace("-", "_")
+    if normalized in {"failed", "partial", "timeout"} or "failure" in normalized:
+        return _styled_text(text, ATTENTION_STYLE)
+    return text
+
+
+def _upload_ratio_text(numerator: object, denominator: object) -> Any:
+    total = _int_value(denominator)
+    value = _int_value(numerator)
+    text = _ratio_text(value, total)
+    if total > 0 and value < total:
+        return _styled_text(text, ATTENTION_STYLE)
+    return text
+
+
+def _upload_ratio_with_suffix(numerator: object, denominator: object, suffix: str) -> Any:
+    value = _upload_ratio_text(numerator, denominator)
+    if RichText is not None and isinstance(value, RichText):
+        value.append(suffix)
+        return value
+    return f"{value}{suffix}"
+
+
+def format_collection_upload(payload: Mapping[str, Any]) -> Any:
+    if _rich_enabled():
+        collection_id = str(payload.get("collection_id", "unknown"))
+        table = _detail_table()
+        table.add_row("State", _upload_state_text(payload.get("state", "unknown")))
+        table.add_row(
+            "Files",
+            _upload_ratio_text(payload.get("files_uploaded", 0), payload.get("files_total", 0)),
+        )
+        table.add_row(
+            "Bytes",
+            _upload_ratio_text(payload.get("uploaded_bytes", 0), payload.get("bytes_total", 0)),
+        )
+        hot_promoted_files = payload.get("hot_promoted_files")
+        hot_promoted_bytes = payload.get("hot_promoted_bytes")
+        if hot_promoted_files is not None or hot_promoted_bytes is not None:
+            hot_bytes = _upload_ratio_text(hot_promoted_bytes or 0, payload.get("bytes_total", 0))
+            if RichText is not None and isinstance(hot_bytes, RichText):
+                hot_value = RichText(
+                    f"{hot_promoted_files or 0}/{payload.get('files_total', 0)} files, "
+                )
+                hot_value.append_text(hot_bytes)
+            else:
+                hot_value = (
+                    f"{hot_promoted_files or 0}/{payload.get('files_total', 0)} files, {hot_bytes}"
+                )
+            table.add_row(
+                "Hot",
+                hot_value,
+            )
+        archive_total = payload.get("archive_total_bytes")
+        archive_uploaded = payload.get("archive_uploaded_bytes")
+        if archive_total is not None or archive_uploaded is not None:
+            archive_value = _upload_ratio_text(archive_uploaded or 0, archive_total or 0)
+            archive_phase = payload.get("archive_phase")
+            if archive_phase:
+                archive_value = _upload_ratio_with_suffix(
+                    archive_uploaded or 0,
+                    archive_total or 0,
+                    f" ({archive_phase})",
+                )
+            table.add_row("Deep Archive", archive_value)
+        latest_failure = payload.get("latest_failure") or payload.get("archive_failure")
+        if latest_failure:
+            table.add_row("Latest Failure", _styled_text(latest_failure, ATTENTION_STYLE))
+
+        title = RichText("collection upload ", style="bold")
+        title.append(collection_id, style=ENTITY_ID_STYLE)
+        renderables: list[Any] = [title, table]
+
+        collection = payload.get("collection")
+        if isinstance(collection, Mapping):
+            finalized = _detail_table()
+            finalized.add_row("Files", str(collection.get("files", 0)))
+            finalized.add_row("Bytes", _bytes_text(collection.get("bytes", 0)))
+            glacier = collection.get("glacier")
+            if isinstance(glacier, Mapping):
+                finalized.add_row("Glacier", str(glacier.get("state", "unknown")))
+            renderables.extend([RichText("finalized", style="bold"), finalized])
+            return RichGroup(*renderables)
+
+        files = payload.get("files")
+        if isinstance(files, Sequence):
+            pending = [
+                file
+                for file in files
+                if isinstance(file, Mapping) and file.get("upload_state") != "uploaded"
+            ]
+            if pending:
+                pending_table = _quiet_table("Path", "State", "Bytes")
+                for file in pending[:10]:
+                    pending_table.add_row(
+                        str(file.get("path", "unknown")),
+                        _upload_state_text(file.get("upload_state", "unknown")),
+                        _upload_ratio_text(file.get("uploaded_bytes", 0), file.get("bytes", 0)),
+                    )
+                if len(pending) > 10:
+                    pending_table.add_row(f"... {len(pending) - 10} more", "", "")
+                renderables.extend([RichText("pending", style="bold"), pending_table])
+        return RichGroup(*renderables)
+
     lines = [
         f"collection: {payload.get('collection_id', 'unknown')}",
         f"state: {payload.get('state', 'unknown')}",

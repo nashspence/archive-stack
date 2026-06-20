@@ -26,6 +26,7 @@ from riverhog_cli.output import (
     format_pin,
     format_release,
 )
+from riverhog_cli.upload_progress import CollectionUploadProgress, make_collection_upload_progress
 from riverhog_core.domain.errors import Conflict, NotFound, RiverhogError, ServiceUnavailable
 
 app = typer.Typer(help="riverhog collection and hot-storage CLI")
@@ -215,6 +216,13 @@ def _format_bytes(value: int) -> str:
 def _log_upload(message: str) -> None:
     with UPLOAD_LOG_LOCK:
         typer.echo(message, err=True)
+
+
+def _notify_upload_status(status: Callable[[str], None] | None, message: str) -> None:
+    if status is None:
+        _log_upload(message)
+        return
+    status(message)
 
 
 def _download_progress_logger(
@@ -496,6 +504,7 @@ def _upload_collection_files(
     upload_files: list[CollectionUploadFilePayload],
     *,
     progress: Callable[[int], None],
+    file_complete: Callable[[], None] | None = None,
     file_concurrency: int,
     api_factory: Callable[[], ApiClient] = client,
 ) -> None:
@@ -511,6 +520,8 @@ def _upload_collection_files(
                 file_payload,
                 progress=progress,
             )
+            if file_complete is not None:
+                file_complete()
         return
 
     _log_upload(f"Uploading up to {file_concurrency} files concurrently")
@@ -536,6 +547,8 @@ def _upload_collection_files(
                     file_payload,
                     progress=progress,
                 )
+                if file_complete is not None:
+                    file_complete()
         finally:
             worker_api.close()
 
@@ -611,6 +624,8 @@ def _wait_for_finalized_collection(
     api: ApiClient,
     collection_id: str,
     manifest: list[CollectionManifestEntry] | None,
+    *,
+    status: Callable[[str], None] | None = None,
 ) -> tuple[dict[str, object], str]:
     poll_seconds = _upload_finalize_poll_seconds()
     timeout_seconds = _upload_finalize_timeout_seconds()
@@ -618,7 +633,10 @@ def _wait_for_finalized_collection(
     last_status_log_at = 0.0
     last_payload: dict[str, object] | None = None
 
-    _log_upload("All files uploaded; waiting for Glacier archive verification")
+    _notify_upload_status(
+        status,
+        "All files uploaded; waiting for Glacier archive verification",
+    )
     while True:
         now = time.monotonic()
         transient_error: BaseException | None = None
@@ -644,9 +662,10 @@ def _wait_for_finalized_collection(
 
         if transient_error is not None:
             if now - last_status_log_at >= UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS:
-                _log_upload(
+                _notify_upload_status(
+                    status,
                     "Waiting for collection finalization: "
-                    f"{_upload_error_description(transient_error)} while polling; retrying"
+                    f"{_upload_error_description(transient_error)} while polling; retrying",
                 )
                 last_status_log_at = now
         elif last_payload is not None:
@@ -655,18 +674,22 @@ def _wait_for_finalized_collection(
                 return last_payload, "failed"
             if now - last_status_log_at >= UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS:
                 archive_status = _archive_wait_status(last_payload)
-                _log_upload(
+                _notify_upload_status(
+                    status,
                     "Waiting for collection finalization: "
                     f"state={state}, "
                     f"{last_payload.get('files_uploaded', 0)}/"
                     f"{last_payload.get('files_total', 0)} files, "
                     f"{last_payload.get('uploaded_bytes', 0)}/"
                     f"{last_payload.get('bytes_total', 0)} bytes staged"
-                    f"{archive_status}"
+                    f"{archive_status}",
                 )
                 last_status_log_at = now
         elif now - last_status_log_at >= UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS:
-            _log_upload("Waiting for collection finalization: upload session not visible yet")
+            _notify_upload_status(
+                status,
+                "Waiting for collection finalization: upload session not visible yet",
+            )
             last_status_log_at = now
 
         if deadline is not None and now >= deadline:
@@ -741,6 +764,7 @@ def _upload_collection_via_session(
     ingest_source: str | None,
     upload_timestamp: str | None,
     wait_mode: UploadWaitMode,
+    json_mode: bool = False,
 ) -> dict[str, object]:
     local_path_iter = _iter_local_collection_paths(resolved_root)
     try:
@@ -759,24 +783,20 @@ def _upload_collection_via_session(
     _log_upload(f"Upload session {collection_id}: registering files incrementally")
 
     manifest: list[CollectionManifestEntry] = []
-    uploaded_bytes_this_run = 0
     total_discovered_bytes = 0
-    last_progress_log_at = time.monotonic()
+    chunk_bytes = _upload_chunk_bytes()
 
-    def note_uploaded(delta: int) -> None:
-        nonlocal uploaded_bytes_this_run, last_progress_log_at
-        uploaded_bytes_this_run += delta
-        now = time.monotonic()
-        if now - last_progress_log_at < UPLOAD_PROGRESS_INTERVAL_SECONDS:
-            return
-        _log_upload(
-            "Upload progress: "
-            f"{_format_bytes(uploaded_bytes_this_run)} uploaded this run; "
-            f"{_format_bytes(total_discovered_bytes)} discovered so far"
-        )
-        last_progress_log_at = now
+    upload_progress = make_collection_upload_progress(
+        collection_id=collection_id,
+        files_total=0,
+        bytes_total=0,
+        file_concurrency=1,
+        chunk_bytes=chunk_bytes,
+        json_mode=json_mode,
+        interval_seconds=UPLOAD_PROGRESS_INTERVAL_SECONDS,
+    )
 
-    def upload_one(source_path: Path) -> None:
+    def upload_one(source_path: Path, progress: CollectionUploadProgress) -> None:
         nonlocal total_discovered_bytes
 
         rel_path = source_path.relative_to(resolved_root).as_posix()
@@ -790,6 +810,7 @@ def _upload_collection_via_session(
         }
         manifest.append(entry)
         total_discovered_bytes += stat.st_size
+        progress.set_totals(files_total=len(manifest), bytes_total=total_discovered_bytes)
 
         registered_payload = _register_collection_upload_session_file(
             api,
@@ -815,47 +836,57 @@ def _upload_collection_via_session(
             collection_id,
             source_path,
             file_payload,
-            progress=note_uploaded,
+            progress=progress.uploaded,
         )
+        progress.complete_file()
 
-    upload_one(first_source_path)
-    for source_path in local_path_iter:
-        upload_one(source_path)
+    with upload_progress:
+        upload_one(first_source_path, upload_progress)
+        for source_path in local_path_iter:
+            upload_one(source_path, upload_progress)
 
-    latest_payload = api.get_collection_upload(collection_id)
-    local_path_set = {item["path"] for item in manifest}
-    registered_paths = {
-        str(item.get("path"))
-        for item in _response_upload_files(latest_payload)
-        if isinstance(item, dict)
-    }
-    if registered_paths != local_path_set:
-        extra = sorted(registered_paths - local_path_set)
-        missing = sorted(local_path_set - registered_paths)
-        details: list[str] = []
-        if extra:
-            details.append(f"extra server files: {', '.join(extra[:5])}")
-        if missing:
-            details.append(f"missing server files: {', '.join(missing[:5])}")
-        raise RuntimeError(
-            "incremental upload session file set differs from local tree; "
-            "not completing session" + (f" ({'; '.join(details)})" if details else "")
+        latest_payload = api.get_collection_upload(collection_id)
+        local_path_set = {item["path"] for item in manifest}
+        registered_paths = {
+            str(item.get("path"))
+            for item in _response_upload_files(latest_payload)
+            if isinstance(item, dict)
+        }
+        if registered_paths != local_path_set:
+            extra = sorted(registered_paths - local_path_set)
+            missing = sorted(local_path_set - registered_paths)
+            details: list[str] = []
+            if extra:
+                details.append(f"extra server files: {', '.join(extra[:5])}")
+            if missing:
+                details.append(f"missing server files: {', '.join(missing[:5])}")
+            raise RuntimeError(
+                "incremental upload session file set differs from local tree; "
+                "not completing session" + (f" ({'; '.join(details)})" if details else "")
+            )
+
+        complete_payload = _complete_collection_upload_session(api, collection_id)
+        upload_progress.notice(
+            "All files uploaded; collection finalization will continue in the background",
+            phase="finalizing",
         )
-
-    complete_payload = _complete_collection_upload_session(api, collection_id)
-    _log_upload("All files uploaded; collection finalization will continue in the background")
-    if wait_mode == "finalized":
-        final_payload, completion_state = _wait_for_finalized_collection(
-            api,
-            collection_id,
-            manifest,
-        )
-        if completion_state == "timeout":
-            raise typer.Exit(124)
-        if completion_state == "failed":
-            raise typer.Exit(1)
-        return final_payload
-    return complete_payload
+        if wait_mode == "finalized":
+            final_payload, completion_state = _wait_for_finalized_collection(
+                api,
+                collection_id,
+                manifest,
+                status=lambda message: upload_progress.notice(message, phase="finalizing"),
+            )
+            if completion_state == "timeout":
+                upload_progress.notice("Timed out waiting for finalization", phase="timeout")
+                raise typer.Exit(124)
+            if completion_state == "failed":
+                upload_progress.notice("Collection finalization failed", phase="failed")
+                raise typer.Exit(1)
+            upload_progress.notice("Collection finalized", phase="finalized")
+            return final_payload
+        upload_progress.notice("Collection staged for background finalization", phase="staged")
+        return complete_payload
 
 
 def _archive_wait_status(payload: dict[str, object]) -> str:
@@ -1109,6 +1140,7 @@ def upload_cmd(
             ingest_source=str(resolved_root),
             upload_timestamp=upload_timestamp,
             wait_mode=wait_mode,
+            json_mode=json_mode,
         )
         emit(payload if json_mode else format_collection_upload(payload), json_mode=json_mode)
         if payload.get("state") == "failed":
@@ -1145,43 +1177,58 @@ def upload_cmd(
         f"{uploaded_files}/{len(upload_files)} files already uploaded, "
         f"{_format_bytes(uploaded_bytes)} / {_format_bytes(manifest_bytes)}"
     )
-    last_progress_log_at = time.monotonic()
-    progress_lock = threading.Lock()
-
-    def note_uploaded(delta: int) -> None:
-        nonlocal uploaded_bytes, last_progress_log_at
-        with progress_lock:
-            uploaded_bytes += delta
-            now = time.monotonic()
-            if now - last_progress_log_at < UPLOAD_PROGRESS_INTERVAL_SECONDS:
-                return
-            percent = (uploaded_bytes / manifest_bytes * 100.0) if manifest_bytes else 100.0
-            _log_upload(
-                "Upload progress: "
-                f"{_format_bytes(uploaded_bytes)} / {_format_bytes(manifest_bytes)} "
-                f"({percent:.1f}%)"
-            )
-            last_progress_log_at = now
-
-    _upload_collection_files(
-        api,
-        collection_id,
-        resolved_root,
-        upload_files,
-        progress=note_uploaded,
-        file_concurrency=_upload_file_concurrency(),
+    file_concurrency = _upload_file_concurrency()
+    chunk_bytes = _upload_chunk_bytes()
+    upload_progress = make_collection_upload_progress(
+        collection_id=collection_id,
+        files_total=len(upload_files),
+        bytes_total=manifest_bytes,
+        files_uploaded=uploaded_files,
+        uploaded_bytes=uploaded_bytes,
+        file_concurrency=file_concurrency,
+        chunk_bytes=chunk_bytes,
+        json_mode=json_mode,
+        interval_seconds=UPLOAD_PROGRESS_INTERVAL_SECONDS,
     )
 
-    if wait_mode == "finalized":
-        final_payload, completion_state = _wait_for_finalized_collection(
+    def note_uploaded(delta: int) -> None:
+        upload_progress.uploaded(delta)
+
+    with upload_progress:
+        _upload_collection_files(
             api,
             collection_id,
-            manifest,
+            resolved_root,
+            upload_files,
+            progress=note_uploaded,
+            file_complete=upload_progress.complete_file,
+            file_concurrency=file_concurrency,
         )
-    else:
-        _log_upload("All files uploaded; collection finalization will continue in the background")
-        final_payload = _staged_collection_upload_payload(api, collection_id, manifest)
-        completion_state = "staged"
+
+        if wait_mode == "finalized":
+            final_payload, completion_state = _wait_for_finalized_collection(
+                api,
+                collection_id,
+                manifest,
+                status=lambda message: upload_progress.notice(message, phase="finalizing"),
+            )
+            if completion_state == "timeout":
+                upload_progress.notice("Timed out waiting for finalization", phase="timeout")
+            elif completion_state == "failed":
+                upload_progress.notice("Collection finalization failed", phase="failed")
+            else:
+                upload_progress.notice("Collection finalized", phase="finalized")
+        else:
+            upload_progress.notice(
+                "All files uploaded; collection finalization will continue in the background",
+                phase="finalizing",
+            )
+            final_payload = _staged_collection_upload_payload(api, collection_id, manifest)
+            completion_state = "staged"
+            upload_progress.notice(
+                "Collection staged for background finalization",
+                phase="staged",
+            )
     emit(
         final_payload if json_mode else format_collection_upload(final_payload),
         json_mode=json_mode,

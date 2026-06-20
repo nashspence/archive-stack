@@ -8,6 +8,11 @@ import pytest
 import typer
 
 from riverhog_cli import main as riverhog_main
+from riverhog_cli.upload_progress import (
+    CollectionUploadProgress,
+    CollectionUploadProgressState,
+    UploadProgressRenderer,
+)
 from riverhog_core.domain.errors import Conflict, NotFound, ServiceUnavailable
 
 
@@ -229,6 +234,102 @@ def test_upload_collection_files_uses_worker_clients_when_concurrent(
     assert all(name.startswith("worker-") for name, _ in uploaded)
     assert sorted(progress) == [3, 4, 5]
     assert sorted(closed_clients) == ["worker-0", "worker-1"]
+
+
+def test_upload_collection_files_reports_file_completion_after_upload(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "collection"
+    root.mkdir()
+    (root / "a.txt").write_bytes(b"aaa")
+    completed = 0
+
+    class FakeApi:
+        create_calls = 0
+        append_calls = 0
+
+        def create_or_resume_collection_file_upload(
+            self,
+            collection_id: str,
+            path: str,
+        ) -> dict[str, object]:
+            self.create_calls += 1
+            return {
+                "upload_url": f"https://uploads.test/{path}",
+                "offset": 0,
+                "checksum_algorithm": "sha256",
+            }
+
+        def append_upload_chunk(
+            self,
+            upload_url: str,
+            *,
+            offset: int,
+            checksum_algorithm: str,
+            content: bytes,
+        ) -> dict[str, object]:
+            self.append_calls += 1
+            return {"offset": offset + len(content), "expires_at": None}
+
+    def note_complete() -> None:
+        nonlocal completed
+        completed += 1
+
+    fake_api = FakeApi()
+    monkeypatch.setattr(riverhog_main, "UPLOAD_CHUNK_BYTES", 100)
+
+    riverhog_main._upload_collection_files(
+        fake_api,  # type: ignore[arg-type]
+        "2025/collection",
+        root,
+        [{"path": "a.txt", "bytes": 3, "upload_state": "pending"}],
+        progress=lambda _delta: None,
+        file_complete=note_complete,
+        file_concurrency=1,
+    )
+
+    assert fake_api.create_calls == 1
+    assert fake_api.append_calls == 1
+    assert completed == 1
+
+
+def test_upload_progress_throttles_accepted_byte_rendering() -> None:
+    updates: list[CollectionUploadProgressState] = []
+    now = 0.0
+
+    class Renderer(UploadProgressRenderer):
+        def update(
+            self,
+            state: CollectionUploadProgressState,
+            *,
+            force: bool = False,
+        ) -> None:
+            updates.append(state)
+
+    def clock() -> float:
+        return now
+
+    progress = CollectionUploadProgress(
+        collection_id="2025/collection",
+        files_total=1,
+        bytes_total=100,
+        renderer=Renderer(),
+        interval_seconds=5.0,
+        clock=clock,
+    )
+
+    with progress:
+        progress.uploaded(10)
+        progress.uploaded(10)
+        now = 4.9
+        progress.uploaded(10)
+        now = 5.0
+        progress.uploaded(10)
+        progress.complete_file()
+
+    assert [state.uploaded_bytes for state in updates] == [0, 40]
+    assert progress.files_uploaded == 1
 
 
 def test_upload_collection_via_session_registers_files_before_completion(

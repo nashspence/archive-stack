@@ -39,6 +39,9 @@ TRANSIENT_UPLOAD_ERRNOS = {
     errno.ETIMEDOUT,
     errno.EPIPE,
 }
+FIELD_STYLE = "bold #c0ad6c"
+ENTITY_ID_STYLE = "bold #8ec9cc"
+ATTENTION_STYLE = "bold #ff8933"
 
 
 @dataclass(frozen=True)
@@ -983,7 +986,7 @@ class RichProgressRenderer(ProgressRenderer):
         from rich.table import Table
 
         table = Table.grid(padding=(0, 2))
-        table.add_column(justify="right", style="cyan", no_wrap=True, width=24)
+        table.add_column(justify="right", style=FIELD_STYLE, no_wrap=True, width=24)
         table.add_column(ratio=1)
 
         state = str(job.get("state") or "running")
@@ -1058,7 +1061,7 @@ class RichProgressRenderer(ProgressRenderer):
         ):
             table.add_row("Progress", "waiting")
 
-        return Panel(table, title=self.title, border_style="cyan", box=box.ROUNDED)
+        return Panel(table, title=self.title, border_style=ENTITY_ID_STYLE, box=box.ROUNDED)
 
     def _transient_issue_renderable(self, issue: dict[str, Any] | None) -> Any:
         from rich.text import Text
@@ -1067,7 +1070,7 @@ class RichProgressRenderer(ProgressRenderer):
             return Text(" ", no_wrap=True, overflow="ellipsis")
         return Text(
             format_transient_issue(issue),
-            style="yellow",
+            style=ATTENTION_STYLE,
             no_wrap=True,
             overflow="ellipsis",
         )

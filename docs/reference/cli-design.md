@@ -40,6 +40,11 @@ Visual emphasis should be sparse and role-based:
 - Field names and table column headers use bold `#c0ad6c`.
 - Entity ids in tables and detail views use bold `#8ec9cc`.
 - Under-protected or partial coverage values use bold `#ff8933`.
+- Upload progress uses the same roles: labels use the field color, collection ids
+  use the entity color, and partial/failed/retry states use the attention color.
+  Active byte-transfer progress must be derived only from bytes accepted by the
+  upload endpoint; do not add polling, rescans, or per-chunk work proportional
+  to the number of files.
 
 ## JSON Output
 
