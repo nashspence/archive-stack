@@ -23,6 +23,22 @@ class FetchSummaryOut(RiverhogModel):
     copies: list[FetchHintCopyOut]
 
 
+class FetchStatusEntryOut(RiverhogModel):
+    id: str
+    collection_id: str
+    path: str
+    bytes: int
+    upload_state: str
+    uploaded_bytes: int
+    upload_state_expires_at: str | None
+
+
+class FetchStatusResponse(FetchSummaryOut):
+    entries_limit: int
+    entries_returned: int
+    entries: list[FetchStatusEntryOut]
+
+
 class FetchManifestCopyOut(RiverhogModel):
     copy_: str = Field(alias="copy")
     volume_id: str

@@ -185,6 +185,74 @@ def test_done_fetch_summary_uses_aggregate_stats_without_materializing_entries(
         assert session.scalars(select(FetchEntryRecord)).all() == []
 
 
+def test_waiting_fetch_status_uses_pending_preview_without_materializing_entries(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+
+    collection_id = "docs"
+    files = {
+        f"camera/file-{index:04d}.dat": f"payload-{index}\n".encode()
+        for index in range(100)
+    }
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
+    with session_scope(session_factory) as session:
+        session.add(CollectionRecord(id=collection_id))
+        for path, content in files.items():
+            session.add(
+                CollectionFileRecord(
+                    collection_id=collection_id,
+                    path=path,
+                    bytes=len(content),
+                    sha256=hashlib.sha256(content).hexdigest(),
+                    hot=False,
+                    archived=True,
+                )
+            )
+        session.add(
+            ActivePinRecord(
+                target=f"{collection_id}/",
+                fetch_id="fx-waiting",
+                fetch_order=1,
+                fetch_state=FetchState.WAITING_MEDIA.value,
+            )
+        )
+
+    service = SqlAlchemyFetchService(
+        _config(sqlite_path),
+        _FakeHotStore({}),
+        _RaceyUploadStore({}),
+        _RECOVERY_CODEC,
+    )
+
+    summary = service.get("fx-waiting")
+
+    assert summary.state == FetchState.WAITING_MEDIA
+    assert summary.entries_total == len(files)
+    assert summary.entries_pending == len(files)
+    assert summary.copies == []
+
+    status = service.status("fx-waiting", limit=3)
+
+    assert status["state"] == FetchState.WAITING_MEDIA.value
+    assert status["entries_total"] == len(files)
+    assert status["entries_pending"] == len(files)
+    assert status["entries_returned"] == 3
+    assert [
+        (entry["id"], entry["collection_id"], entry["upload_state"])
+        for entry in status["entries"]
+        if isinstance(entry, dict)
+    ] == [
+        ("e1", collection_id, "pending"),
+        ("e2", collection_id, "pending"),
+        ("e3", collection_id, "pending"),
+    ]
+
+    with session_scope(session_factory) as session:
+        assert session.scalars(select(FetchEntryRecord)).all() == []
+
+
 def test_waiting_fetch_notifications_are_delivered_and_reminded(
     tmp_path: Path,
     monkeypatch,

@@ -977,6 +977,33 @@ paths:
                 $ref: "#/components/schemas/FetchSummary"
         default:
           $ref: "#/components/responses/Error"
+  /fetches/{fetch_id}/status:
+    get:
+      summary: Get lightweight fetch status
+      description: Returns one durable pin-scoped fetch summary plus a bounded list of pending, partial, or byte-complete entry statuses for human operator display. This endpoint does not include recovery copy hints and does not backfill finalized-image recovery metadata; use the fetch manifest for automated recovery.
+      operationId: getFetchStatus
+      parameters:
+        - in: path
+          name: fetch_id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            default: 25
+            minimum: 0
+            maximum: 100
+      responses:
+        "200":
+          description: Lightweight fetch status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FetchStatus"
+        default:
+          $ref: "#/components/responses/Error"
   /fetches/{fetch_id}/manifest:
     get:
       summary: Get fetch manifest
@@ -2242,10 +2269,10 @@ components:
         entries_uploaded: { type: integer }
         uploaded_bytes:
           type: integer
-          description: Accepted upload bytes in the ordered recovery-byte stream exposed by the manifest.
+          description: Bytes already satisfied for this fetch summary. The manifest exposes exact per-entry recovery-byte stream lengths for automated recovery.
         missing_bytes:
           type: integer
-          description: Remaining upload bytes in the ordered recovery-byte stream exposed by the manifest.
+          description: Bytes still missing for this fetch summary. The manifest exposes exact per-entry recovery-byte stream lengths for automated recovery.
         upload_state_expires_at:
           oneOf:
             - type: string
@@ -2255,6 +2282,46 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/FetchCopyHint"
+    FetchStatusEntry:
+      type: object
+      required:
+        [id, collection_id, path, bytes, upload_state, uploaded_bytes, upload_state_expires_at]
+      properties:
+        id: { type: string }
+        collection_id:
+          type: string
+          description: Collection id for this logical file.
+        path: { type: string }
+        bytes:
+          type: integer
+          description: Final logical-file byte length.
+        upload_state:
+          $ref: "#/components/schemas/FetchEntryUploadState"
+        uploaded_bytes:
+          type: integer
+          description: Current accepted upload bytes when an upload is active; otherwise 0 for pending previews.
+        upload_state_expires_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+    FetchStatus:
+      allOf:
+        - $ref: "#/components/schemas/FetchSummary"
+        - type: object
+          required: [entries_limit, entries_returned, entries]
+          properties:
+            entries_limit:
+              type: integer
+              minimum: 0
+              maximum: 100
+            entries_returned:
+              type: integer
+              minimum: 0
+            entries:
+              type: array
+              items:
+                $ref: "#/components/schemas/FetchStatusEntry"
     FetchManifestEntryCopy:
       type: object
       required: [copy, volume_id, location, disc_path, recovery_bytes, recovery_sha256]

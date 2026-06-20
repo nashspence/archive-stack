@@ -43,7 +43,10 @@ from riverhog_core.services.resumable_uploads import (
     sync_upload_state,
     upload_expiry_timestamp,
 )
-from riverhog_core.services.target_selection import selected_collection_file_stats
+from riverhog_core.services.target_selection import (
+    selected_collection_file_stats,
+    selected_collection_files,
+)
 from riverhog_core.webhooks import (
     WebhookConfig,
     build_fetch_waiting_payload,
@@ -110,15 +113,38 @@ class SqlAlchemyFetchService:
             pin_record = _get_pin_record(session, fetch_id)
             if pin_record.fetch_state == FetchState.DONE.value:
                 return _done_summary_from_target_stats(session, pin_record)
-            entries = _ensure_fetch_entries(
-                session,
-                pin_record,
-                self._hot_store,
-                self._recovery_payload_codec,
-            )
+            entries = _existing_fetch_entries(session, pin_record.fetch_id)
+            if not entries:
+                return _summary_from_target_stats(session, pin_record)
             _sync_upload_progress(pin_record, entries, self._upload_store)
             _expire_incomplete_uploads(pin_record, entries, self._upload_store)
-            return _summary_from_records(pin_record, entries)
+            return _summary_from_records(pin_record, entries, include_copies=False)
+
+    def status(self, fetch_id: str, *, limit: int = 25) -> dict[str, object]:
+        with session_scope(self._session_factory) as session:
+            pin_record = _get_pin_record(session, fetch_id)
+            if pin_record.fetch_state == FetchState.DONE.value:
+                summary = _done_summary_from_target_stats(session, pin_record)
+                return _fetch_status_payload(summary, entries=[], limit=limit)
+
+            existing = _existing_fetch_entries(session, pin_record.fetch_id)
+            if not existing:
+                summary = _summary_from_target_stats(session, pin_record)
+                entries = _pending_status_entries_from_target(session, pin_record.target, limit)
+                return _fetch_status_payload(summary, entries=entries, limit=limit)
+
+            _sync_upload_progress(pin_record, existing, self._upload_store)
+            _expire_incomplete_uploads(pin_record, existing, self._upload_store)
+            summary = _summary_from_records(pin_record, existing, include_copies=False)
+            return _fetch_status_payload(
+                summary,
+                entries=_status_entries_from_records(
+                    existing,
+                    fetch_state=FetchState(pin_record.fetch_state),
+                    limit=limit,
+                ),
+                limit=limit,
+            )
 
     def manifest(self, fetch_id: str) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
@@ -544,11 +570,34 @@ def _done_summary_from_target_stats(
     session: Session,
     pin_record: ActivePinRecord,
 ) -> FetchSummary:
+    summary = _summary_from_target_stats(session, pin_record)
+    return FetchSummary(
+        id=summary.id,
+        target=summary.target,
+        state=FetchState.DONE,
+        files=summary.files,
+        bytes=summary.bytes,
+        copies=[],
+        entries_total=summary.entries_total,
+        entries_pending=summary.entries_pending,
+        entries_partial=0,
+        entries_byte_complete=0,
+        entries_uploaded=summary.entries_uploaded,
+        uploaded_bytes=summary.uploaded_bytes,
+        missing_bytes=summary.missing_bytes,
+        upload_state_expires_at=None,
+    )
+
+
+def _summary_from_target_stats(
+    session: Session,
+    pin_record: ActivePinRecord,
+) -> FetchSummary:
     stats = selected_collection_file_stats(session, pin_record.target)
     return FetchSummary(
         id=FetchId(pin_record.fetch_id),
         target=TargetStr(pin_record.target),
-        state=FetchState.DONE,
+        state=FetchState(pin_record.fetch_state),
         files=stats.files,
         bytes=stats.bytes,
         copies=[],
@@ -563,19 +612,26 @@ def _done_summary_from_target_stats(
     )
 
 
+def _existing_fetch_entries(
+    session: Session,
+    fetch_id: str,
+) -> list[FetchEntryRecord]:
+    return list(
+        session.scalars(
+            select(FetchEntryRecord)
+            .where(FetchEntryRecord.fetch_id == fetch_id)
+            .order_by(FetchEntryRecord.entry_order)
+        ).all()
+    )
+
+
 def _ensure_fetch_entries(
     session: Session,
     pin_record: ActivePinRecord,
     hot_store: HotStore,
     recovery_payload_codec: RecoveryPayloadCodec,
 ) -> list[FetchEntryRecord]:
-    existing = list(
-        session.scalars(
-            select(FetchEntryRecord)
-            .where(FetchEntryRecord.fetch_id == pin_record.fetch_id)
-            .order_by(FetchEntryRecord.entry_order)
-        ).all()
-    )
+    existing = _existing_fetch_entries(session, pin_record.fetch_id)
     if existing:
         return existing
 
@@ -626,6 +682,8 @@ def _ensure_fetch_entries(
 def _summary_from_records(
     pin_record: ActivePinRecord,
     entries: list[FetchEntryRecord],
+    *,
+    include_copies: bool = True,
 ) -> FetchSummary:
     fetch_state = FetchState(pin_record.fetch_state)
     entries_total = len(entries)
@@ -653,7 +711,7 @@ def _summary_from_records(
         state=FetchState(pin_record.fetch_state),
         files=len(entries),
         bytes=sum(entry.bytes for entry in entries),
-        copies=_summary_copies(entries),
+        copies=_summary_copies(entries) if include_copies else [],
         entries_total=entries_total,
         entries_pending=entries_pending,
         entries_partial=entries_partial,
@@ -663,6 +721,114 @@ def _summary_from_records(
         missing_bytes=missing_bytes,
         upload_state_expires_at=max(expiries) if expiries else None,
     )
+
+
+def _fetch_status_payload(
+    summary: FetchSummary,
+    *,
+    entries: list[dict[str, object]],
+    limit: int,
+) -> dict[str, object]:
+    return {
+        "id": str(summary.id),
+        "target": str(summary.target),
+        "state": summary.state.value,
+        "files": summary.files,
+        "bytes": summary.bytes,
+        "entries_total": summary.entries_total,
+        "entries_pending": summary.entries_pending,
+        "entries_partial": summary.entries_partial,
+        "entries_byte_complete": summary.entries_byte_complete,
+        "entries_uploaded": summary.entries_uploaded,
+        "uploaded_bytes": summary.uploaded_bytes,
+        "missing_bytes": summary.missing_bytes,
+        "upload_state_expires_at": summary.upload_state_expires_at,
+        "copies": [
+            {"id": str(copy.id), "volume_id": copy.volume_id, "location": copy.location}
+            for copy in summary.copies
+        ],
+        "entries_limit": limit,
+        "entries_returned": len(entries),
+        "entries": entries,
+    }
+
+
+def _status_entry_payload(
+    entry_id: str,
+    *,
+    collection_id: str,
+    path: str,
+    bytes_: int,
+    upload_state: str,
+    uploaded_bytes: int,
+    upload_state_expires_at: str | None,
+) -> dict[str, object]:
+    return {
+        "id": entry_id,
+        "collection_id": collection_id,
+        "path": path,
+        "bytes": bytes_,
+        "upload_state": upload_state,
+        "uploaded_bytes": uploaded_bytes,
+        "upload_state_expires_at": upload_state_expires_at,
+    }
+
+
+def _status_entries_from_records(
+    entries: list[FetchEntryRecord],
+    *,
+    fetch_state: FetchState,
+    limit: int,
+) -> list[dict[str, object]]:
+    if limit <= 0:
+        return []
+    out: list[dict[str, object]] = []
+    for entry in entries:
+        upload_state = _entry_upload_state(entry, fetch_state=fetch_state)
+        if upload_state == "uploaded":
+            continue
+        out.append(
+            _status_entry_payload(
+                entry.entry_id,
+                collection_id=entry.collection_id,
+                path=entry.path,
+                bytes_=entry.bytes,
+                upload_state=upload_state,
+                uploaded_bytes=entry.uploaded_bytes,
+                upload_state_expires_at=entry.upload_expires_at,
+            )
+        )
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _pending_status_entries_from_target(
+    session: Session,
+    raw_target: str,
+    limit: int,
+) -> list[dict[str, object]]:
+    if limit <= 0:
+        return []
+    out: list[dict[str, object]] = []
+    selected = selected_collection_files(session, raw_target, load_copies=False)
+    for index, record in enumerate(selected, start=1):
+        if record.hot:
+            continue
+        out.append(
+            _status_entry_payload(
+                f"e{index}",
+                collection_id=record.collection_id,
+                path=record.path,
+                bytes_=record.bytes,
+                upload_state="pending",
+                uploaded_bytes=0,
+                upload_state_expires_at=None,
+            )
+        )
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _summary_copies(entries: list[FetchEntryRecord]) -> list[FetchCopyHint]:

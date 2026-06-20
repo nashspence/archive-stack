@@ -3425,6 +3425,56 @@ class AcceptanceFetchService:
         }
 
     @_with_state_lock
+    def status(self, fetch_id: str, *, limit: int = 25) -> dict[str, object]:
+        record = self._record(fetch_id)
+        self._expire_stale_upload_record(record)
+        record.summary = self._replace_summary(record)
+        entries: list[dict[str, object]] = []
+        if limit > 0:
+            for entry in record.entries.values():
+                upload_state = self._entry_upload_state(
+                    entry,
+                    fetch_state=record.summary.state,
+                )
+                if upload_state == "uploaded":
+                    continue
+                entries.append(
+                    {
+                        "id": str(entry.id),
+                        "collection_id": str(entry.collection_id),
+                        "path": entry.path,
+                        "bytes": entry.bytes,
+                        "upload_state": upload_state,
+                        "uploaded_bytes": entry.uploaded_bytes,
+                        "upload_state_expires_at": entry.upload_expires_at,
+                    }
+                )
+                if len(entries) >= limit:
+                    break
+        return {
+            "id": str(record.summary.id),
+            "target": str(record.summary.target),
+            "state": record.summary.state.value,
+            "files": record.summary.files,
+            "bytes": record.summary.bytes,
+            "entries_total": record.summary.entries_total,
+            "entries_pending": record.summary.entries_pending,
+            "entries_partial": record.summary.entries_partial,
+            "entries_byte_complete": record.summary.entries_byte_complete,
+            "entries_uploaded": record.summary.entries_uploaded,
+            "uploaded_bytes": record.summary.uploaded_bytes,
+            "missing_bytes": record.summary.missing_bytes,
+            "upload_state_expires_at": record.summary.upload_state_expires_at,
+            "copies": [
+                {"id": str(copy.id), "volume_id": copy.volume_id, "location": copy.location}
+                for copy in record.summary.copies
+            ],
+            "entries_limit": limit,
+            "entries_returned": len(entries),
+            "entries": entries,
+        }
+
+    @_with_state_lock
     def create_or_resume_upload(self, fetch_id: str, entry_id: str) -> dict[str, object]:
         record = self._record(fetch_id)
         self._expire_stale_upload_record(record)

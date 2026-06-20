@@ -1324,15 +1324,13 @@ def fetch_cmd(
     fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    summary = client().get_fetch(fetch_id)
+    api = client()
     if json_mode:
+        summary = api.get_fetch(fetch_id)
         emit(summary, json_mode=True)
         return
-    if summary.get("state") == "done":
-        emit(format_fetch(summary, {"entries": []}), json_mode=False)
-        return
-    manifest = client().get_fetch_manifest(fetch_id)
-    emit(format_fetch(summary, manifest), json_mode=False)
+    status = api.get_fetch_status(fetch_id)
+    emit(format_fetch(status, {"entries": status.get("entries", [])}), json_mode=False)
 
 
 def main() -> None:

@@ -509,6 +509,9 @@ class ApiClient:
     def get_fetch(self, fetch_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/fetches/{fetch_id}")
 
+    def get_fetch_status(self, fetch_id: str, *, limit: int = 25) -> dict[str, Any]:
+        return self._json("GET", f"/v1/fetches/{fetch_id}/status", params={"limit": limit})
+
     def get_fetch_manifest(self, fetch_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/fetches/{fetch_id}/manifest")
 

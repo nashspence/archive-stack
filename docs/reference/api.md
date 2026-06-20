@@ -682,6 +682,16 @@ Required behavior:
 
 Returns one pin-scoped fetch summary.
 
+#### `GET /v1/fetches/{fetch_id}/status`
+
+Returns a lightweight operator status view for one pin-scoped fetch.
+
+- includes the same summary fields as `GET /v1/fetches/{fetch_id}`
+- includes a bounded list of pending, partial, or byte-complete entry statuses
+- does not include recovery copy hints, part metadata, or recovery-byte digests
+- does not backfill finalized-image recovery metadata
+- intended for human `riverhog hot show` output
+
 #### `GET /v1/fetches/{fetch_id}/manifest`
 
 Returns a stable manifest for the exact pin lifetime.
@@ -874,6 +884,7 @@ phone text directly.
 - files still pending upload
 - files currently partial and still resumable
 - the expiry time for each partial upload
+- completed fetches should show summary state without fetching the full recovery manifest
 
 ### `djdan`
 

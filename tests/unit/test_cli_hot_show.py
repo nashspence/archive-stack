@@ -15,6 +15,9 @@ class _DoneFetchClient:
         self.manifest_calls = 0
 
     def get_fetch(self, fetch_id: str) -> dict[str, Any]:
+        raise AssertionError(f"summary should only be requested in JSON mode: {fetch_id}")
+
+    def get_fetch_status(self, fetch_id: str) -> dict[str, Any]:
         return {
             "id": fetch_id,
             "target": "docs/",
@@ -30,6 +33,9 @@ class _DoneFetchClient:
             "missing_bytes": 0,
             "upload_state_expires_at": None,
             "copies": [],
+            "entries_limit": 25,
+            "entries_returned": 0,
+            "entries": [],
         }
 
     def get_fetch_manifest(self, fetch_id: str) -> dict[str, Any]:

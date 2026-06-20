@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Request, Response
+from typing import Annotated
+
+from fastapi import APIRouter, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
 
 from riverhog_api.deps import ContainerDep
@@ -8,6 +10,7 @@ from riverhog_api.mappers import map_fetch
 from riverhog_api.schemas.fetches import (
     CompleteFetchResponse,
     FetchManifestResponse,
+    FetchStatusResponse,
     FetchSummaryOut,
     FetchUploadSessionResponse,
 )
@@ -26,6 +29,16 @@ router = APIRouter(tags=["fetches"])
 def get_fetch(fetch_id: str, container: ContainerDep) -> FetchSummaryOut:
     summary = container.fetches.get(fetch_id)
     return FetchSummaryOut.model_validate(map_fetch(summary))
+
+
+@router.get("/fetches/{fetch_id}/status", response_model=FetchStatusResponse)
+def get_fetch_status(
+    fetch_id: str,
+    container: ContainerDep,
+    limit: Annotated[int, Query(ge=0, le=100)] = 25,
+) -> FetchStatusResponse:
+    payload = container.fetches.status(fetch_id, limit=limit)
+    return FetchStatusResponse.model_validate(payload)
 
 
 @router.get("/fetches/{fetch_id}/manifest", response_model=FetchManifestResponse)
