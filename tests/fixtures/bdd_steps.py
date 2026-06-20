@@ -606,7 +606,15 @@ def _prepare_riverhog_expectation(
 
     if argv[1:3] == ["hot", "list"]:
         context.expected_api_endpoint = ("GET", "/v1/pins")
-        context.expected_api_payload = acceptance_system.request("GET", "/v1/pins").json()
+        params = {
+            "page": _riverhog_option_value(argv, "--page", 1),
+            "per_page": _riverhog_option_value(argv, "--per-page", 25),
+        }
+        context.expected_api_payload = acceptance_system.request(
+            "GET",
+            "/v1/pins",
+            params=params,
+        ).json()
         return
 
     if argv[1:3] == ["hot", "show"]:

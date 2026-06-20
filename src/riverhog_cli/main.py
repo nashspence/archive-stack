@@ -1313,9 +1313,11 @@ def release_cmd(
 
 @hot_app.command("list")
 def pins_cmd(
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    payload = client().list_pins()
+    payload = client().list_pins(page=page, per_page=per_page)
     emit(payload if json_mode else format_hot_pins(payload), json_mode=json_mode)
 
 

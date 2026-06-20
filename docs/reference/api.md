@@ -667,12 +667,13 @@ Required behavior:
 
 #### `GET /v1/pins`
 
-Lists active pins.
+Lists active pins. Supports `page` and `per_page`.
 
 Required behavior:
 
 - every returned pin includes its associated fetch id, current fetch state, file
   count, byte count, and missing hot-storage bytes
+- responses include `page`, `per_page`, `total`, and `pages`
 - pin list rows are compact summaries; use fetch detail/manifest commands for
   recovery copy detail
 

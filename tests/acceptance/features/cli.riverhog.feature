@@ -43,10 +43,12 @@ Feature: riverhog CLI
 
     Scenario: riverhog hot list emits fetch associations for active pins
       Given archived target "docs/tax/2022/invoice-123.pdf" is pinned with fetch "fx-1"
-      When the operator runs 'riverhog hot list --json'
+      When the operator runs 'riverhog hot list --page 1 --per-page 25 --json'
       Then the command exits with code 0
       And stdout is valid JSON
       And stdout matches the structure of GET "/v1/pins"
+      And stdout mentions "per_page"
+      And stdout mentions "total"
       And stdout mentions target "docs/tax/2022/invoice-123.pdf"
       And stdout mentions fetch id "fx-1"
       And stdout mentions "waiting_media"

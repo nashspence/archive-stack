@@ -67,6 +67,62 @@ def test_default_djdan_io_builders_use_real_backends(monkeypatch) -> None:
     )
 
 
+def test_djdan_disc_list_image_scope_returns_paged_payload(monkeypatch) -> None:
+    class FakeClient:
+        def list_copies(self, image_id: str) -> dict[str, object]:
+            assert image_id == "20260420T040001Z"
+            return {
+                "copies": [
+                    {
+                        "id": "20260420T040001Z-1",
+                        "state": "verified",
+                        "verification_state": "verified",
+                        "location": "Shelf B1",
+                    },
+                    {
+                        "id": "20260420T040001Z-2",
+                        "state": "needed",
+                        "verification_state": "pending",
+                        "location": None,
+                    },
+                ]
+            }
+
+    monkeypatch.setattr(djdan_main, "ApiClient", FakeClient)
+
+    result = runner.invoke(
+        djdan_main.app,
+        [
+            "disc",
+            "list",
+            "20260420T040001Z",
+            "--page",
+            "1",
+            "--per-page",
+            "1",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["image_id"] == "20260420T040001Z"
+    assert payload["page"] == 1
+    assert payload["per_page"] == 1
+    assert payload["total"] == 2
+    assert payload["pages"] == 2
+    assert payload["discs"] == [
+        {
+            "id": "20260420T040001Z-1",
+            "image_id": "20260420T040001Z",
+            "state": "verified",
+            "verification_state": "verified",
+            "location": "Shelf B1",
+        }
+    ]
+    assert "copies" not in payload
+
+
 def test_terminal_burn_prompts_reprompt_for_label_confirmation(monkeypatch, capsys) -> None:
     responses = iter(["", "labeled"])
     monkeypatch.setattr("builtins.input", lambda: next(responses))

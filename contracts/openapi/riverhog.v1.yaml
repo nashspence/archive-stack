@@ -945,6 +945,13 @@ paths:
       summary: List active pins
       description: Lists durable exact pins that remain active until release.
       operationId: listPins
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer, default: 1, minimum: 1 }
+        - in: query
+          name: per_page
+          schema: { type: integer, default: 25, minimum: 1, maximum: 100 }
       responses:
         "200":
           description: Active pins
@@ -952,8 +959,12 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [pins]
+                required: [page, per_page, total, pages, pins]
                 properties:
+                  page: { type: integer }
+                  per_page: { type: integer }
+                  total: { type: integer }
+                  pages: { type: integer }
                   pins:
                     type: array
                     items:

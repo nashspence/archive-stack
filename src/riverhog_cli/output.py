@@ -13,6 +13,11 @@ RichGroup: Any
 RichTable: Any
 RichText: Any
 
+FIELD_STYLE = "bold #c0ad6c"
+ENTITY_ID_STYLE = "bold #8ec9cc"
+ATTENTION_STYLE = "bold #ff8933"
+_ATTENTION_TOKENS = {"under_protected", "partially_protected", "partial"}
+
 try:
     from rich.console import Console as RichConsole
     from rich.console import Group as RichGroup
@@ -58,6 +63,25 @@ def _page_text(kind: str, payload: Mapping[str, Any]) -> Any:
     return RichText(text, style="bold")
 
 
+def _styled_text(value: object, style: str) -> Any:
+    text = str(value)
+    if RichText is None:
+        return text
+    return RichText(text, style=style)
+
+
+def _entity_text(value: object) -> Any:
+    return _styled_text(value, ENTITY_ID_STYLE)
+
+
+def _attention_text(value: object) -> Any:
+    text = str(value)
+    normalized = text.casefold().replace("-", "_")
+    if any(token in normalized for token in _ATTENTION_TOKENS):
+        return _styled_text(text, ATTENTION_STYLE)
+    return text
+
+
 def _bytes_text(value: object) -> str:
     byte_count = _int_value(value)
     if byte_count < 1000:
@@ -81,7 +105,7 @@ def _ratio_text(numerator: object, denominator: object) -> str:
 def _quiet_table(*columns: str) -> Any:
     table = RichTable(box=None, show_edge=False, padding=(0, 2), collapse_padding=True)
     for index, column in enumerate(columns):
-        table.add_column(column, no_wrap=index == 0)
+        table.add_column(column, no_wrap=index == 0, header_style=FIELD_STYLE)
     return table
 
 
@@ -93,7 +117,7 @@ def _detail_table() -> Any:
         padding=(0, 2),
         collapse_padding=True,
     )
-    table.add_column("Field", style="bold", no_wrap=True)
+    table.add_column("Field", style=FIELD_STYLE, no_wrap=True)
     table.add_column("Value")
     return table
 
@@ -153,6 +177,30 @@ def _int_value(value: object, *, default: int = 0) -> int:
     if isinstance(value, str):
         return int(value)
     return default
+
+
+def _partial_copy_coverage(verified: object, registered: object, required: object) -> bool:
+    required_count = _int_value(required)
+    return required_count > 0 and (
+        _int_value(verified) < required_count or _int_value(registered) < required_count
+    )
+
+
+def _copy_coverage_text(verified: object, registered: object, required: object) -> Any:
+    text = f"{verified}/{registered}/{required}"
+    if _partial_copy_coverage(verified, registered, required):
+        return _styled_text(text, ATTENTION_STYLE)
+    return text
+
+
+def _copy_detail_coverage_text(image: Mapping[str, Any]) -> Any:
+    verified = image.get("physical_copies_verified", 0)
+    registered = image.get("physical_copies_registered", 0)
+    required = image.get("physical_copies_required", 0)
+    text = f"verified={verified}/{required} registered={registered}/{required}"
+    if _partial_copy_coverage(verified, registered, required):
+        return _styled_text(text, ATTENTION_STYLE)
+    return text
 
 
 def _find_collection_glacier_entry(
@@ -268,14 +316,14 @@ def format_pin(payload: Mapping[str, Any]) -> Any:
 
     hot = payload.get("hot")
     if isinstance(hot, Mapping):
-        table.add_row("hot", str(hot.get("state", "unknown")))
+        table.add_row("hot", _attention_text(hot.get("state", "unknown")))
         table.add_row("present", _bytes_text(hot.get("present_bytes", 0)))
         table.add_row("missing", _bytes_text(hot.get("missing_bytes", 0)))
 
     fetch = payload.get("fetch")
     if isinstance(fetch, Mapping):
-        table.add_row("fetch", str(fetch.get("id", "unknown")))
-        table.add_row("fetch state", str(fetch.get("state", "unknown")))
+        table.add_row("fetch", _entity_text(fetch.get("id", "unknown")))
+        table.add_row("fetch state", _attention_text(fetch.get("state", "unknown")))
         table.add_row("fetch files", str(fetch.get("files", 0)))
         table.add_row("fetch bytes", _bytes_text(fetch.get("bytes", 0)))
         table.add_row("fetch missing", _bytes_text(fetch.get("missing_bytes", 0)))
@@ -341,9 +389,9 @@ def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> Any
 
     pending, partial, byte_complete = _fetch_status_lines(manifest)
     table = _detail_table()
-    table.add_row("fetch", str(summary.get("id", "unknown")))
+    table.add_row("fetch", _entity_text(summary.get("id", "unknown")))
     table.add_row("target", str(summary.get("target", "unknown")))
-    table.add_row("state", str(summary.get("state", "unknown")))
+    table.add_row("state", _attention_text(summary.get("state", "unknown")))
     table.add_row("files", str(summary.get("files", 0)))
     table.add_row("bytes", _bytes_text(summary.get("bytes", 0)))
     table.add_row("missing", _bytes_text(summary.get("missing_bytes", 0)))
@@ -351,7 +399,7 @@ def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> Any
 
     status_table = _quiet_table("Status", "Items")
     status_table.add_row("pending", _preview_lines(pending, limit=8))
-    status_table.add_row("partial", _preview_lines(partial, limit=8))
+    status_table.add_row(_attention_text("partial"), _preview_lines(partial, limit=8))
     status_table.add_row("byte-complete", _preview_lines(byte_complete, limit=8))
 
     return RichGroup(
@@ -421,13 +469,13 @@ def format_collections(payload: Mapping[str, Any]) -> Any:
             else:
                 disc_text = "unknown"
             table.add_row(
-                str(collection.get("id", "unknown")),
-                str(collection.get("protection_state", "unknown")),
+                _entity_text(collection.get("id", "unknown")),
+                _attention_text(collection.get("protection_state", "unknown")),
                 str(collection.get("files", 0)),
                 _bytes_text(collection.get("bytes", 0)),
                 _ratio_text(collection.get("hot_bytes", 0), collection.get("bytes", 0)),
                 _ratio_text(collection.get("archived_bytes", 0), collection.get("bytes", 0)),
-                disc_text,
+                _attention_text(disc_text),
             )
     if not table.rows:
         table.add_row("none", "", "", "", "", "", "")
@@ -435,10 +483,18 @@ def format_collections(payload: Mapping[str, Any]) -> Any:
 
 
 def _format_hot_pins_plain(payload: Mapping[str, Any]) -> str:
+    prefix = "hot pins:"
+    if "page" in payload:
+        prefix = (
+            "hot pins: "
+            f"page {payload.get('page', 1)}/{payload.get('pages', 0)} "
+            f"per_page={payload.get('per_page', 25)} "
+            f"total={payload.get('total', 0)}"
+        )
     pins = payload.get("pins")
     if not isinstance(pins, Sequence) or not pins:
-        return "hot pins:\n- none"
-    lines = ["hot pins:"]
+        return f"{prefix}\n- none"
+    lines = [prefix]
     for pin in pins:
         if not isinstance(pin, Mapping):
             continue
@@ -487,15 +543,18 @@ def format_hot_pins(payload: Mapping[str, Any]) -> Any:
                 missing = "0 B"
             table.add_row(
                 str(pin.get("target", "unknown")),
-                fetch_id,
-                state,
+                _entity_text(fetch_id) if fetch_id != "none" else fetch_id,
+                _attention_text(state),
                 missing,
                 files,
                 bytes_text,
             )
     if not table.rows:
         table.add_row("none", "", "", "", "", "")
-    return RichGroup(RichText("hot pins", style="bold"), table)
+    title = (
+        _page_text("hot pins", payload) if "page" in payload else RichText("hot pins", style="bold")
+    )
+    return RichGroup(title, table)
 
 
 def _format_images_plain(payload: Mapping[str, Any]) -> str:
@@ -548,12 +607,12 @@ def format_images(payload: Mapping[str, Any]) -> Any:
                 continue
             required = image.get("physical_copies_required", 0)
             table.add_row(
-                str(image.get("id", "unknown")),
-                str(image.get("physical_protection_state", "unknown")),
-                (
-                    f"{image.get('physical_copies_verified', 0)}/"
-                    f"{image.get('physical_copies_registered', 0)}/"
-                    f"{required}"
+                _entity_text(image.get("id", "unknown")),
+                _attention_text(image.get("physical_protection_state", "unknown")),
+                _copy_coverage_text(
+                    image.get("physical_copies_verified", 0),
+                    image.get("physical_copies_registered", 0),
+                    required,
                 ),
                 str(image.get("files", 0)),
                 _bytes_text(image.get("bytes", 0)),
@@ -589,23 +648,21 @@ def _format_image_plain(image: Mapping[str, Any]) -> str:
 def format_image(image: Mapping[str, Any]) -> Any:
     if not _rich_enabled():
         return _format_image_plain(image)
-    table = _quiet_table("Field", "Value")
-    table.add_row("image", str(image.get("id", "unknown")))
+    table = _detail_table()
+    table.add_row("image", _entity_text(image.get("id", "unknown")))
     table.add_row("filename", str(image.get("filename", "unknown")))
     table.add_row("finalized_at", str(image.get("finalized_at", "unknown")))
     table.add_row("files", str(image.get("files", 0)))
     table.add_row("bytes", _bytes_text(image.get("bytes", 0)))
     table.add_row("target", _bytes_text(image.get("target_bytes", 0)))
     table.add_row("fill", f"{float(image.get('fill', 0) or 0) * 100:.1f}%")
-    table.add_row("protection", str(image.get("physical_protection_state", "unknown")))
+    table.add_row(
+        "protection",
+        _attention_text(image.get("physical_protection_state", "unknown")),
+    )
     table.add_row(
         "discs",
-        (
-            f"verified={image.get('physical_copies_verified', 0)}/"
-            f"{image.get('physical_copies_required', 0)} "
-            f"registered={image.get('physical_copies_registered', 0)}/"
-            f"{image.get('physical_copies_required', 0)}"
-        ),
+        _copy_detail_coverage_text(image),
     )
     table.add_row("collections", _collection_ids_text(image.get("collection_ids")))
     return RichGroup(RichText("image", style="bold"), table)
@@ -659,13 +716,19 @@ def format_disc(payload: Mapping[str, Any]) -> Any:
 
     copy_payload = _disc_copy_payload(payload)
     table = _detail_table()
-    table.add_row("disc", str(copy_payload.get("id", "unknown")))
-    table.add_row("image", str(payload.get("image_id", copy_payload.get("image_id", "unknown"))))
-    table.add_row("volume", str(copy_payload.get("volume_id", "unknown")))
-    table.add_row("label", str(copy_payload.get("label_text", "unknown")))
+    table.add_row("disc", _entity_text(copy_payload.get("id", "unknown")))
+    table.add_row(
+        "image",
+        _entity_text(payload.get("image_id", copy_payload.get("image_id", "unknown"))),
+    )
+    table.add_row("volume", _entity_text(copy_payload.get("volume_id", "unknown")))
+    table.add_row("label", _entity_text(copy_payload.get("label_text", "unknown")))
     table.add_row("location", str(copy_payload.get("location") or "unassigned"))
-    table.add_row("state", str(copy_payload.get("state", "unknown")))
-    table.add_row("verification", str(copy_payload.get("verification_state", "unknown")))
+    table.add_row("state", _attention_text(copy_payload.get("state", "unknown")))
+    table.add_row(
+        "verification",
+        _attention_text(copy_payload.get("verification_state", "unknown")),
+    )
     if copy_payload.get("created_at"):
         table.add_row("created", str(copy_payload.get("created_at")))
 
@@ -679,8 +742,8 @@ def format_disc(payload: Mapping[str, Any]) -> Any:
             history_table.add_row(
                 str(item.get("at", "unknown")),
                 str(item.get("event", "unknown")),
-                str(item.get("state", "unknown")),
-                str(item.get("verification_state", "unknown")),
+                _attention_text(item.get("state", "unknown")),
+                _attention_text(item.get("verification_state", "unknown")),
                 str(item.get("location") or "unassigned"),
             )
         renderables.extend([RichText("history", style="bold"), history_table])
@@ -720,15 +783,21 @@ def format_discs(payload: Mapping[str, Any]) -> Any:
     table = _quiet_table("Disc", "Image", "State", "Verification", "Location")
     for item in _disc_items(payload):
         table.add_row(
-            str(item.get("id", "unknown")),
-            str(item.get("image_id", "unknown")),
-            str(item.get("state", "unknown")),
-            str(item.get("verification_state", "unknown")),
+            _entity_text(item.get("id", "unknown")),
+            _entity_text(item.get("image_id", "unknown")),
+            _attention_text(item.get("state", "unknown")),
+            _attention_text(item.get("verification_state", "unknown")),
             str(item.get("location") or "unassigned"),
         )
     if not table.rows:
         table.add_row("none", "", "", "", "")
-    return RichGroup(RichText("discs", style="bold"), table)
+    renderables: list[Any] = []
+    if "page" in payload:
+        renderables.append(_page_text("discs", payload))
+    else:
+        renderables.append(RichText("discs", style="bold"))
+    renderables.append(table)
+    return RichGroup(*renderables)
 
 
 def _format_collection_summary_plain(
@@ -778,8 +847,7 @@ def _format_collection_summary_plain(
         )
         ots_state = "uploaded" if collection_manifest.get("ots_object_path") else "missing"
         lines.append(
-            f"ots: {ots_state} "
-            f"path={collection_manifest.get('ots_object_path') or 'missing'}"
+            f"ots: {ots_state} path={collection_manifest.get('ots_object_path') or 'missing'}"
         )
 
     disc_coverage = payload.get("disc_coverage")
@@ -873,16 +941,20 @@ def _collection_recovery_rows(
     if isinstance(verified, Mapping):
         table.add_row(
             "verified physical",
-            f"{verified.get('state', 'unknown')} "
-            f"{_ratio_text(verified.get('bytes', 0), total_bytes)}",
+            _attention_text(
+                f"{verified.get('state', 'unknown')} "
+                f"{_ratio_text(verified.get('bytes', 0), total_bytes)}"
+            ),
         )
 
     glacier = recovery.get("glacier")
     if isinstance(glacier, Mapping):
         table.add_row(
             "deep archive",
-            f"{glacier.get('state', 'unknown')} "
-            f"{_ratio_text(glacier.get('bytes', 0), total_bytes)}",
+            _attention_text(
+                f"{glacier.get('state', 'unknown')} "
+                f"{_ratio_text(glacier.get('bytes', 0), total_bytes)}"
+            ),
         )
 
 
@@ -894,11 +966,7 @@ def _collection_image_costs(
     contributions = collection_glacier.get("images")
     if not isinstance(contributions, Sequence):
         return {}
-    return {
-        str(item.get("image_id")): item
-        for item in contributions
-        if isinstance(item, Mapping)
-    }
+    return {str(item.get("image_id")): item for item in contributions if isinstance(item, Mapping)}
 
 
 def _collection_coverage_table(
@@ -921,12 +989,12 @@ def _collection_coverage_table(
                 else "unknown"
             )
             table.add_row(
-                image_id,
-                str(image.get("physical_protection_state", "unknown")),
-                (
-                    f"{image.get('physical_copies_verified', 0)}/"
-                    f"{image.get('physical_copies_registered', 0)}/"
-                    f"{required}"
+                _entity_text(image_id),
+                _attention_text(image.get("physical_protection_state", "unknown")),
+                _copy_coverage_text(
+                    image.get("physical_copies_verified", 0),
+                    image.get("physical_copies_registered", 0),
+                    required,
                 ),
                 _preview_lines(_string_items(image.get("covered_paths")), limit=4),
                 _copy_lines(image.get("copies"), limit=4),
@@ -949,7 +1017,7 @@ def format_collection_summary(
     collection_glacier = _find_collection_glacier_entry(collection_id, glacier_payload)
 
     overview = _detail_table()
-    overview.add_row("protection", str(payload.get("protection_state", "unknown")))
+    overview.add_row("protection", _attention_text(payload.get("protection_state", "unknown")))
     overview.add_row("protected", _ratio_text(payload.get("protected_bytes", 0), total_bytes))
     overview.add_row("files", str(payload.get("files", 0)))
     overview.add_row("bytes", _bytes_text(total_bytes))
@@ -962,8 +1030,10 @@ def format_collection_summary(
     if isinstance(disc_coverage, Mapping):
         overview.add_row(
             "disc",
-            f"{disc_coverage.get('state', 'unknown')} "
-            f"{_ratio_text(disc_coverage.get('verified_physical_bytes', 0), total_bytes)}",
+            _attention_text(
+                f"{disc_coverage.get('state', 'unknown')} "
+                f"{_ratio_text(disc_coverage.get('verified_physical_bytes', 0), total_bytes)}"
+            ),
         )
 
     direct_glacier = payload.get("glacier")
@@ -1145,7 +1215,7 @@ def format_plan(payload: Mapping[str, Any]) -> Any:
             if not isinstance(candidate, Mapping):
                 continue
             table.add_row(
-                str(candidate.get("candidate_id", "unknown")),
+                _entity_text(candidate.get("candidate_id", "unknown")),
                 "yes" if candidate.get("iso_ready", False) else "no",
                 f"{float(candidate.get('fill', 0) or 0) * 100:.1f}%",
                 str(candidate.get("files", 0)),

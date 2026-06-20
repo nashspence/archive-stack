@@ -24,6 +24,19 @@ def _render(renderable: object) -> str:
     return console.export_text()
 
 
+def _render_styled(renderable: object) -> str:
+    if isinstance(renderable, str):
+        return renderable
+    console = Console(
+        record=True,
+        width=120,
+        color_system="truecolor",
+        force_terminal=True,
+    )
+    console.print(renderable)
+    return console.export_text(styles=True)
+
+
 def test_format_images_omits_finalized_image_glacier_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -104,6 +117,44 @@ def test_format_collections_uses_compact_collection_table(
     assert "partial" in rendered
 
 
+def test_rich_operator_palette_marks_headers_ids_and_partial_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    rendered = _render_styled(
+        format_collections(
+            {
+                "page": 1,
+                "pages": 1,
+                "per_page": 25,
+                "total": 1,
+                "collections": [
+                    {
+                        "id": "docs",
+                        "files": 2,
+                        "bytes": 100,
+                        "hot_bytes": 25,
+                        "archived_bytes": 100,
+                        "protection_state": "partially_protected",
+                        "disc_coverage": {
+                            "state": "partial",
+                            "verified_physical_bytes": 50,
+                        },
+                    }
+                ],
+            }
+        )
+    )
+
+    assert "38;2;192;173;108" in rendered
+    assert "38;2;142;201;204" in rendered
+    assert "38;2;255;137;51" in rendered
+    assert "docs" in rendered
+    assert "partially_protected" in rendered
+
+
 def test_format_collections_can_fall_back_to_plain_text(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
 
@@ -142,6 +193,10 @@ def test_format_hot_pins_uses_compact_pin_table(monkeypatch: pytest.MonkeyPatch)
     rendered = _render(
         format_hot_pins(
             {
+                "page": 1,
+                "pages": 1,
+                "per_page": 25,
+                "total": 1,
                 "pins": [
                     {
                         "target": "docs/tax/2022/invoice-123.pdf",
@@ -153,12 +208,12 @@ def test_format_hot_pins_uses_compact_pin_table(monkeypatch: pytest.MonkeyPatch)
                             "missing_bytes": 11,
                         },
                     }
-                ]
+                ],
             }
         )
     )
 
-    assert "hot pins" in rendered
+    assert "hot pins page 1/1" in rendered
     assert "docs/tax/2022/invoice-123.pdf" in rendered
     assert "fx-1" in rendered
     assert "waiting_media" in rendered
@@ -173,6 +228,10 @@ def test_format_discs_uses_compact_disc_table(monkeypatch: pytest.MonkeyPatch) -
     rendered = _render(
         format_discs(
             {
+                "page": 1,
+                "pages": 1,
+                "per_page": 25,
+                "total": 1,
                 "discs": [
                     {
                         "id": "20260420T040001Z-1",
@@ -181,12 +240,12 @@ def test_format_discs_uses_compact_disc_table(monkeypatch: pytest.MonkeyPatch) -
                         "verification_state": "verified",
                         "location": "Shelf B1",
                     }
-                ]
+                ],
             }
         )
     )
 
-    assert "discs" in rendered
+    assert "discs page 1/1" in rendered
     assert "20260420T040001Z-1" in rendered
     assert "verified" in rendered
     assert "Shelf B1" in rendered

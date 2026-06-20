@@ -35,6 +35,12 @@ Human output should be calm, dense, and boring in the best way:
 - Rich output must degrade to plain, readable text when Rich is unavailable,
   when `TERM=dumb`, or when `RIVERHOG_CLI_PLAIN=1`.
 
+Visual emphasis should be sparse and role-based:
+
+- Field names and table column headers use bold `#c0ad6c`.
+- Entity ids in tables and detail views use bold `#8ec9cc`.
+- Under-protected or partial coverage values use bold `#ff8933`.
+
 ## JSON Output
 
 `--json` is for machines:

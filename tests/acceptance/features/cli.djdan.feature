@@ -93,12 +93,15 @@ Feature: djdan CLI
     And stdout is valid JSON
     And stdout mentions "20260420T040001Z-1"
 
-  Scenario: djdan disc list emits the generated-disc listing payload
+  Scenario: djdan disc list emits a paged generated-disc listing payload
     Given candidate "img_2026-04-20_01" is finalized
-    When the operator runs 'djdan disc list 20260420T040001Z --json'
+    When the operator runs 'djdan disc list 20260420T040001Z --page 1 --per-page 25 --json'
     Then the command exits with code 0
     And stdout is valid JSON
-    And stdout matches the structure of GET "/v1/images/20260420T040001Z/copies"
+    And stdout mentions "per_page"
+    And stdout mentions "total"
+    And stdout mentions "discs"
+    And stdout mentions "20260420T040001Z-1"
 
   Scenario: djdan disc location emits the disc update payload
     Given copy "20260420T040001Z-1" already exists

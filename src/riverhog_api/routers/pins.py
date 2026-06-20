@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_pin
@@ -35,6 +35,20 @@ def release_target(
 
 
 @router.get("/pins", response_model=PinsResponse)
-def list_pins(container: ContainerDep) -> PinsResponse:
+def list_pins(
+    container: ContainerDep,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=100),
+) -> PinsResponse:
     pins = [PinSummaryOut.model_validate(map_pin(item)) for item in container.pins.list_pins()]
-    return PinsResponse(pins=pins)
+    total = len(pins)
+    pages = (total + per_page - 1) // per_page if total else 0
+    start = (page - 1) * per_page
+    stop = start + per_page
+    return PinsResponse(
+        page=page,
+        per_page=per_page,
+        total=total,
+        pages=pages,
+        pins=pins[start:stop],
+    )

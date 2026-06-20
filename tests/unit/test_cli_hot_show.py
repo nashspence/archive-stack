@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from typer.testing import CliRunner
@@ -54,3 +55,41 @@ def test_hot_show_done_fetch_does_not_request_manifest(monkeypatch) -> None:
     assert "fetch: fx-done (done)" in result.stdout
     assert "pending:" in result.stdout
     assert fake_client.manifest_calls == 0
+
+
+def test_hot_list_passes_page_options_and_emits_paged_json(monkeypatch) -> None:
+    class FakeClient:
+        def list_pins(self, *, page: int = 1, per_page: int = 25) -> dict[str, Any]:
+            assert page == 2
+            assert per_page == 1
+            return {
+                "page": page,
+                "per_page": per_page,
+                "total": 2,
+                "pages": 2,
+                "pins": [
+                    {
+                        "target": "docs/photos/",
+                        "fetch": {
+                            "id": "fx-2",
+                            "state": "waiting_media",
+                            "files": 4,
+                            "bytes": 40,
+                            "missing_bytes": 40,
+                            "copy_count": 0,
+                            "copies": [],
+                        },
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
+
+    result = runner.invoke(app, ["hot", "list", "--page", "2", "--per-page", "1", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["page"] == 2
+    assert payload["per_page"] == 1
+    assert payload["total"] == 2
+    assert payload["pins"][0]["fetch"]["id"] == "fx-2"

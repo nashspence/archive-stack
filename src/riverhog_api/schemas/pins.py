@@ -53,4 +53,8 @@ class PinSummaryOut(RiverhogModel):
 
 
 class PinsResponse(RiverhogModel):
+    page: int
+    per_page: int
+    total: int
+    pages: int
     pins: list[PinSummaryOut]

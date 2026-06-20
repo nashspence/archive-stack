@@ -503,8 +503,8 @@ class ApiClient:
     def release(self, target: str) -> dict[str, Any]:
         return self._json("POST", "/v1/release", json={"target": target})
 
-    def list_pins(self) -> dict[str, Any]:
-        return self._json("GET", "/v1/pins")
+    def list_pins(self, *, page: int = 1, per_page: int = 25) -> dict[str, Any]:
+        return self._json("GET", "/v1/pins", params={"page": page, "per_page": per_page})
 
     def get_fetch(self, fetch_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/fetches/{fetch_id}")
