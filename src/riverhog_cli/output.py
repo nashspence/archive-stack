@@ -806,7 +806,7 @@ def format_discs(payload: Mapping[str, Any]) -> Any:
     for item in _disc_items(payload):
         table.add_row(
             _entity_text(item.get("id", "unknown")),
-            _entity_text(item.get("image_id", "unknown")),
+            str(item.get("image_id", "unknown")),
             _attention_text(item.get("state", "unknown")),
             _attention_text(item.get("verification_state", "unknown")),
             str(item.get("location") or "unassigned"),

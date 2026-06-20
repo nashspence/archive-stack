@@ -303,6 +303,27 @@ def test_format_discs_uses_compact_disc_table(monkeypatch: pytest.MonkeyPatch) -
     assert "verified" in rendered
     assert "Shelf B1" in rendered
 
+    styled = _render_styled(
+        format_discs(
+            {
+                "page": 1,
+                "pages": 1,
+                "per_page": 25,
+                "total": 1,
+                "discs": [
+                    {
+                        "id": "20260420T040001Z-1",
+                        "image_id": "20260420T040001Z",
+                        "state": "verified",
+                        "verification_state": "verified",
+                        "location": "Shelf B1",
+                    }
+                ],
+            }
+        )
+    )
+    assert styled.count("38;2;142;201;204") == 1
+
 
 def test_format_disc_uses_detail_table(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
