@@ -31,10 +31,10 @@ from riverhog_cli.output import (
 from riverhog_cli.upload_progress import CollectionUploadProgress, make_collection_upload_progress
 from riverhog_core.domain.errors import Conflict, NotFound, RiverhogError, ServiceUnavailable
 
-app = typer.Typer(help="riverhog collection and hot-storage CLI")
-collection_app = typer.Typer(help="collection catalog and upload operations")
-collection_restore_app = typer.Typer(help="collection deep-archive restore operations")
-hot_app = typer.Typer(help="pinned hot-storage set operations")
+app = typer.Typer(help="Riverhog collection and hot-storage CLI.")
+collection_app = typer.Typer(help="Collection catalog and upload operations.")
+collection_restore_app = typer.Typer(help="Collection deep-archive restore operations.")
+hot_app = typer.Typer(help="Pinned hot-storage set operations.")
 app.add_typer(collection_app, name="collection")
 collection_app.add_typer(collection_restore_app, name="restore")
 app.add_typer(hot_app, name="hot")
@@ -1088,6 +1088,8 @@ def collection_list_cmd(
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """List collections with storage coverage summaries."""
+
     payload = _sorted_collection_page(
         client(),
         page=page,
@@ -1130,6 +1132,8 @@ def upload_cmd(
         ),
     ] = False,
 ) -> None:
+    """Upload a local directory as a collection."""
+
     wait_mode = _normalize_upload_wait_mode(wait)
     resolved_root = root.expanduser().resolve()
     if not resolved_root.is_dir():
@@ -1248,6 +1252,8 @@ def upload_cancel_cmd(
     collection_id: Annotated[str, typer.Argument(help="Open collection upload session id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Cancel an open collection upload session."""
+
     payload = client().cancel_collection_upload_session(collection_id)
     emit(payload if json_mode else format_collection_upload(payload), json_mode=json_mode)
 
@@ -1260,6 +1266,8 @@ def upload_watch_cmd(
     ],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Wait for collection finalization to finish."""
+
     payload, completion_state = _wait_for_finalized_collection(
         client(),
         collection_id,
@@ -1296,6 +1304,8 @@ def find_cmd(
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Search collection file targets."""
+
     if sort not in _FIND_SORT_FIELDS:
         raise typer.BadParameter(
             f"sort must be one of {', '.join(sorted(_FIND_SORT_FIELDS))}",
@@ -1322,6 +1332,8 @@ def show_cmd(
     collection: Annotated[str, typer.Argument(help="Collection id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Show collection storage and recovery details."""
+
     api = client()
     if json_mode:
         payload = api.get_collection(collection)
@@ -1351,6 +1363,8 @@ def collection_restore_list_cmd(
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """List collection restore sessions."""
+
     normalized_order = order.casefold()
     payload = client().list_recovery_sessions(
         page=page,
@@ -1372,6 +1386,8 @@ def collection_restore_show_cmd(
     ],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Show a collection restore session."""
+
     api = client()
     try:
         payload = api.get_recovery_session(session_or_collection)
@@ -1385,6 +1401,8 @@ def collection_restore_start_cmd(
     collection: Annotated[str, typer.Argument(help="Collection id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Start or resume a collection restore."""
+
     payload = client().create_or_resume_collection_restore_session(collection)
     emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
 
@@ -1394,6 +1412,8 @@ def collection_restore_approve_cmd(
     session_id: Annotated[str, typer.Argument(help="Recovery session id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Approve a pending collection restore."""
+
     payload = client().approve_recovery_session(session_id)
     emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
 
@@ -1408,6 +1428,8 @@ def collection_restore_materialize_cmd(
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Record restored files as materialized."""
+
     if not paths:
         raise typer.BadParameter("at least one --path is required", param_hint="--path")
     payload = client().materialize_collection_restore_files(
@@ -1423,6 +1445,8 @@ def collection_restore_complete_cmd(
     session_id: Annotated[str, typer.Argument(help="Recovery session id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Complete a ready collection restore."""
+
     payload = client().complete_recovery_session(session_id)
     emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
 
@@ -1432,6 +1456,8 @@ def pin_cmd(
     target: Annotated[str, typer.Argument(help="Target selector")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Pin a target into hot storage."""
+
     payload = client().pin(target)
     emit(payload if json_mode else format_pin(payload), json_mode=json_mode)
 
@@ -1441,6 +1467,8 @@ def release_cmd(
     target: Annotated[str, typer.Argument(help="Target selector")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Release a hot-storage pin."""
+
     payload = client().release(target)
     emit(payload if json_mode else format_release(payload), json_mode=json_mode)
 
@@ -1451,6 +1479,8 @@ def pins_cmd(
     per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """List pinned hot-storage sets."""
+
     payload = client().list_pins(page=page, per_page=per_page)
     emit(payload if json_mode else format_hot_pins(payload), json_mode=json_mode)
 
@@ -1460,6 +1490,8 @@ def fetch_cmd(
     fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Show hot-storage fetch progress."""
+
     api = client()
     if json_mode:
         summary = api.get_fetch(fetch_id)

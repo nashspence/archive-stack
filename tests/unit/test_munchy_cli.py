@@ -13,7 +13,9 @@ def test_munchy_help() -> None:
     result = runner.invoke(app, ["--help"])
 
     assert result.exit_code == 0
-    assert "munchy media ingest CLI" in result.stdout
+    assert "Munchy media ingest CLI." in result.stdout
+    assert "Encode profile operations." in result.stdout
+    assert "Runner job operations." in result.stdout
 
 
 def test_munchy_profile_validate(tmp_path) -> None:  # type: ignore[no-untyped-def]

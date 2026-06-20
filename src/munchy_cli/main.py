@@ -16,9 +16,9 @@ from munchy.runner_client import (
     runner_url_setting,
 )
 
-app = typer.Typer(help="munchy media ingest CLI")
-profile_app = typer.Typer(help="encode profile operations")
-job_app = typer.Typer(help="runner job operations")
+app = typer.Typer(help="Munchy media ingest CLI.")
+profile_app = typer.Typer(help="Encode profile operations.")
+job_app = typer.Typer(help="Runner job operations.")
 app.add_typer(profile_app, name="profile")
 app.add_typer(job_app, name="job")
 

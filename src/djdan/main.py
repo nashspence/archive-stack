@@ -32,10 +32,10 @@ from riverhog_cli.output import (
 )
 from riverhog_core.domain.errors import HashMismatch, NotFound, RiverhogError
 
-app = typer.Typer(help="riverhog optical media CLI")
-image_app = typer.Typer(help="image planning and download operations")
-image_rebuild_app = typer.Typer(help="image rebuild recovery operations")
-disc_app = typer.Typer(help="burned disc catalog operations")
+app = typer.Typer(help="Riverhog optical media CLI.")
+image_app = typer.Typer(help="Image planning and download operations.")
+image_rebuild_app = typer.Typer(help="Image rebuild recovery operations.")
+disc_app = typer.Typer(help="Burned disc catalog operations.")
 app.add_typer(image_app, name="image")
 image_app.add_typer(image_rebuild_app, name="rebuild")
 app.add_typer(disc_app, name="disc")
@@ -2127,6 +2127,8 @@ def image_list_cmd(
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """List finalized images."""
+
     payload = ApiClient().list_images(
         page=page,
         per_page=per_page,
@@ -2144,6 +2146,8 @@ def image_show_cmd(
     image_id: Annotated[str, typer.Argument(help="Finalized image id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Show finalized image details."""
+
     payload = ApiClient().get_image(image_id)
     emit(payload if json_mode else format_image(payload), json_mode=json_mode)
 
@@ -2169,6 +2173,8 @@ def image_plan_cmd(
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """List image planner candidates."""
+
     payload = ApiClient().get_plan(
         page=page,
         per_page=per_page,
@@ -2186,6 +2192,8 @@ def image_download_cmd(
     image_id: Annotated[str, typer.Argument(help="Finalized image id")],
     output: Annotated[Path | None, typer.Option("-o", "--output", help="Output path")] = None,
 ) -> None:
+    """Download a finalized ISO image."""
+
     client = ApiClient()
     if output is None:
         content = client.download_iso(image_id)
@@ -2275,6 +2283,8 @@ def disc_list_cmd(
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """List registered burned discs."""
+
     client = ApiClient()
     payload = _list_discs_payload(
         client,
@@ -2293,6 +2303,8 @@ def disc_show_cmd(
     copy_id: Annotated[str, typer.Argument(help="Generated disc/copy id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Show burned disc details."""
+
     copy = ApiClient().get_disc(copy_id)
     emit(copy if json_mode else format_disc(copy), json_mode=json_mode)
 
@@ -2307,6 +2319,8 @@ def disc_add_cmd(
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Register a physical disc copy."""
+
     payload = ApiClient().register_copy(image_id, at, copy_id=copy_id)
     _emit_disc_payload(payload, image_id=image_id, json_mode=json_mode)
 
@@ -2317,6 +2331,8 @@ def disc_location_cmd(
     to: Annotated[str, typer.Option("--to", help="New physical location label")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Update a disc location label."""
+
     image_id = _image_id_from_copy_id(copy_id)
     payload = ApiClient().update_copy(image_id, copy_id, location=to)
     _emit_disc_payload(payload, image_id=image_id, json_mode=json_mode)
@@ -2327,6 +2343,8 @@ def disc_mark_lost_cmd(
     copy_id: Annotated[str, typer.Argument(help="Generated disc/copy id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Mark a disc as lost."""
+
     image_id = _image_id_from_copy_id(copy_id)
     payload = ApiClient().update_copy(image_id, copy_id, state="lost")
     _emit_disc_payload(payload, image_id=image_id, json_mode=json_mode)
@@ -2337,6 +2355,8 @@ def disc_mark_damaged_cmd(
     copy_id: Annotated[str, typer.Argument(help="Generated disc/copy id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Mark a disc as damaged."""
+
     image_id = _image_id_from_copy_id(copy_id)
     payload = ApiClient().update_copy(image_id, copy_id, state="damaged")
     _emit_disc_payload(payload, image_id=image_id, json_mode=json_mode)
@@ -2347,6 +2367,8 @@ def disc_verify_cmd(
     copy_id: Annotated[str, typer.Argument(help="Generated disc/copy id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Mark a disc copy as verified."""
+
     image_id = _image_id_from_copy_id(copy_id)
     payload = ApiClient().update_copy(
         image_id,
@@ -2363,6 +2385,8 @@ def fetch_cmd(
     device: Annotated[str, typer.Option("--device", help="Optical device path")] = "/dev/sr0",
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Run the guided hot-storage fetch workflow."""
+
     try:
         client = ApiClient()
         manifest = client.get_fetch_manifest(fetch_id)
@@ -2427,6 +2451,8 @@ def burn_cmd(
         ),
     ] = False,
 ) -> None:
+    """Run the guided burn-backlog workflow."""
+
     try:
         client = ApiClient()
         iso_verifier = build_iso_verifier()
@@ -2586,6 +2612,8 @@ def image_rebuild_list_cmd(
     ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """List image rebuild sessions."""
+
     try:
         normalized_order = order.casefold()
         payload = _list_image_rebuild_sessions(
@@ -2608,6 +2636,8 @@ def image_rebuild_show_cmd(
     session_id: Annotated[str, typer.Argument(help="Recovery session id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Show an image rebuild session."""
+
     try:
         payload = ApiClient().get_recovery_session(session_id)
         _require_image_rebuild(payload)
@@ -2622,6 +2652,8 @@ def image_rebuild_approve_cmd(
     session_id: Annotated[str, typer.Argument(help="Recovery session id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Approve a pending image rebuild."""
+
     try:
         api = ApiClient()
         _require_image_rebuild(api.get_recovery_session(session_id))
@@ -2651,6 +2683,8 @@ def image_rebuild_burn_cmd(
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
+    """Burn recovered copies for a rebuild."""
+
     try:
         client = ApiClient()
         payload = client.get_recovery_session(session_id)
