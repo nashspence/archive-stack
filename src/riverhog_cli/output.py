@@ -1284,26 +1284,57 @@ def _format_find_plain(payload: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _find_scope_text(payload: Mapping[str, Any]) -> Any:
+    text = RichText()
+    fields: list[tuple[str, object]] = [
+        ("sort", f"{payload.get('sort', 'target')} {payload.get('order', 'asc')}")
+    ]
+    if payload.get("query") is not None:
+        fields.insert(0, ("query", payload.get("query")))
+    if payload.get("collection") is not None:
+        fields.append(("collection", payload.get("collection")))
+    if payload.get("hot") is not None:
+        fields.append(("hot", str(payload.get("hot")).lower()))
+    if payload.get("archived") is not None:
+        fields.append(("archived", str(payload.get("archived")).lower()))
+    for index, (label, value) in enumerate(fields):
+        if index:
+            text.append("  ")
+        text.append(f"{label}:", style=FIELD_STYLE)
+        text.append(f" {value}")
+    return text
+
+
+def _find_record_text(file: Mapping[str, Any]) -> Any:
+    target = RichText(str(file.get("target", "unknown")), style=ENTITY_ID_STYLE)
+    meta = RichText("  ")
+    for index, (label, value) in enumerate(
+        (
+            ("bytes", _bytes_text(file.get("bytes", 0))),
+            ("hot", str(file.get("hot", False)).lower()),
+            ("archived", str(file.get("archived", False)).lower()),
+        )
+    ):
+        if index:
+            meta.append("   ")
+        meta.append(f"{label}:", style=FIELD_STYLE)
+        meta.append(f" {value}")
+    return RichGroup(target, meta)
+
+
 def format_find(payload: Mapping[str, Any]) -> Any:
     if not _rich_enabled():
         return _format_find_plain(payload)
-    table = _quiet_table("Target", "Hot", "Archive", "Bytes", "Collection", "Path")
+    renderables: list[Any] = [_page_text("files", payload), _find_scope_text(payload)]
     files = payload.get("files")
+    if not isinstance(files, Sequence) or not files:
+        return RichGroup(*renderables, "none")
     if isinstance(files, Sequence):
         for file in files:
             if not isinstance(file, Mapping):
                 continue
-            table.add_row(
-                _entity_text(file.get("target", "unknown")),
-                str(file.get("hot", False)).lower(),
-                str(file.get("archived", False)).lower(),
-                _bytes_text(file.get("bytes", 0)),
-                str(file.get("collection", "unknown")),
-                str(file.get("path", "unknown")),
-            )
-    if not table.rows:
-        table.add_row("none", "", "", "", "", "")
-    return RichGroup(_page_text("files", payload), table)
+            renderables.extend(["", _find_record_text(file)])
+    return RichGroup(*renderables)
 
 
 def format_collection_upload(payload: Mapping[str, Any]) -> str:

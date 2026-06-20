@@ -18,10 +18,10 @@ from riverhog_cli.output import (
 )
 
 
-def _render(renderable: object) -> str:
+def _render(renderable: object, *, width: int = 120) -> str:
     if isinstance(renderable, str):
         return renderable
-    console = Console(record=True, width=120, color_system=None)
+    console = Console(record=True, width=width, color_system=None)
     console.print(renderable)
     return console.export_text()
 
@@ -75,6 +75,59 @@ def test_format_find_uses_target_as_primary_id(
 
     assert "docs/tax/2022/invoice-123.pdf" in rendered
     assert rendered.count("38;2;142;201;204") == 1
+
+
+def test_format_find_renders_long_targets_as_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    rendered = _render(
+        format_find(
+            {
+                "page": 1,
+                "pages": 965,
+                "per_page": 25,
+                "total": 24108,
+                "sort": "bytes",
+                "order": "desc",
+                "query": "reolink",
+                "collection": None,
+                "hot": None,
+                "archived": None,
+                "files": [
+                    {
+                        "target": (
+                            "2026/20260615T030000Z__weekly-device-artifacts/"
+                            "reolink-duo-3v-poe-backyard-video/back-yard-camera/"
+                            "Back Yard_00_20260603120819.webm"
+                        ),
+                        "collection": "2026/20260615T030000Z__weekly-device-artifacts",
+                        "path": (
+                            "reolink-duo-3v-poe-backyard-video/back-yard-camera/"
+                            "Back Yard_00_20260603120819.webm"
+                        ),
+                        "bytes": 88200000,
+                        "sha256": "c" * 64,
+                        "hot": True,
+                        "archived": True,
+                    }
+                ],
+            }
+        ),
+        width=72,
+    )
+
+    normalized = rendered.replace("\n", "")
+    assert "Target" not in rendered
+    assert "Collection" not in rendered
+    assert (
+        "2026/20260615T030000Z__weekly-device-artifacts/"
+        "reolink-duo-3v-poe-backyard-video/back-yard-camera/"
+        "Back Yard_00_20260603120819.webm"
+    ) in normalized
+    assert "bytes: 88.2 MB" in rendered
 
 
 def test_format_images_omits_finalized_image_glacier_context(
