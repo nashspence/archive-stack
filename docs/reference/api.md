@@ -218,8 +218,8 @@ Required behavior:
 
 - the response includes pagination metadata and a `collections` array
 - returned collection summaries are compact list items; use
-  `GET /v1/collections/{collection_id}` for per-image coverage paths and copy
-  detail
+  `GET /v1/collections/{collection_id}` for bounded per-image coverage previews
+  and copy detail
 - collection summaries are returned only for collections whose Glacier archive
   package has uploaded and verified
 - filtering by `protection_state=fully_protected` can be used to answer which
@@ -244,8 +244,8 @@ Required behavior:
   object path, and OTS proof state
 - per-image coverage details expose `covered_paths`, `physical_copies_registered`,
   `physical_copies_verified`, copy labels and locations
-- `coverage_path_limit` may be used by human-facing clients to limit returned
-  `covered_paths` per image; when it is present, `covered_paths_total` reports
+- `coverage_path_limit` controls the returned `covered_paths` preview per
+  image and defaults to a bounded operator view; `covered_paths_total` reports
   the total path count before truncation
 
 ### Files
@@ -775,7 +775,7 @@ The `riverhog` CLI is collection-first and should provide:
 
 - `riverhog collection list [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--protection STATE]`
 - `riverhog collection show COLLECTION`
-- `riverhog collection files COLLECTION [--page N] [--per-page N]`
+- `riverhog find [QUERY] [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--collection ID] [--hot|--not-hot] [--archived|--not-archived]`
 - `riverhog collection upload SLUG ROOT [--timestamp YYYYMMDDTHHMMSSZ] [--wait finalized|staged]`
 - `riverhog collection watch COLLECTION_UPLOAD_ID`
 - `riverhog collection cancel COLLECTION_UPLOAD_ID`
@@ -845,14 +845,18 @@ Every operator webhook includes `notification.title` and `notification.body`
 rendered from that contract so receivers can use Riverhog's canonical quiet
 phone text directly.
 
-`riverhog collection files COLLECTION` should provide a concise human-readable listing of the collection's logical files, including current hot or archived state and available copies when applicable.
+`riverhog find` should provide a concise, paged human-readable listing of
+logical files across the projected namespace. It supports substring search plus
+collection, hot-storage, and deep-archive filters; JSON output mirrors the
+`GET /v1/files` response payload.
 
 `riverhog collection show COLLECTION` should provide a concise human-readable recovery and coverage view for one collection, including:
 
 - an explicit summary of whether the collection is currently recoverable from verified physical copies, Glacier, both,
   or neither
 - finalized images currently covering the collection
-- projected paths carried by each image
+- a bounded preview of projected paths carried by each image, plus total path
+  counts
 - generated disc ids, exact label text, locations, and verification state
 - direct collection archive object paths and manifest/OTS proof state
 
