@@ -176,11 +176,6 @@ def _collection_ids_lines(collection_ids: object) -> str:
     return "\n".join(items) if items else "none"
 
 
-def _collection_ids_block(collection_ids: object) -> Any:
-    text = _collection_ids_lines(collection_ids)
-    return _entity_text(text) if text != "none" else text
-
-
 def _int_value(value: object, *, default: int = 0) -> int:
     if isinstance(value, bool):
         return int(value)
@@ -691,7 +686,7 @@ def format_image(image: Mapping[str, Any]) -> Any:
         "discs",
         _copy_detail_coverage_text(image),
     )
-    table.add_row("collections", _collection_ids_block(image.get("collection_ids")))
+    table.add_row("collections", _collection_ids_lines(image.get("collection_ids")))
     return RichGroup(RichText("image", style="bold"), table)
 
 

@@ -113,6 +113,17 @@ def test_format_image_lists_collections_vertically(monkeypatch: pytest.MonkeyPat
         "2026/20260415T010101Z__beta"
     )
 
+    styled = _render_styled(
+        format_image(
+            {
+                "id": "20260420T040001Z",
+                "filename": "20260420T040001Z.iso",
+                "collection_ids": ["2026/20260414T010101Z__alpha"],
+            }
+        )
+    )
+    assert styled.count("38;2;142;201;204") == 1
+
 
 def test_format_collections_uses_compact_collection_table(
     monkeypatch: pytest.MonkeyPatch,
