@@ -12,7 +12,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any
@@ -2207,77 +2207,17 @@ def _image_id_from_copy_id(copy_id: str) -> str:
     return copy_id.rsplit("-", 1)[0]
 
 
-def _copy_from_image_payload(
-    payload: dict[str, Any],
-    *,
-    image_id: str,
-    copy_id: str,
-) -> dict[str, Any]:
-    copies = payload.get("copies")
-    if isinstance(copies, list):
-        for copy in copies:
-            if isinstance(copy, dict) and copy.get("id") == copy_id:
-                return {**copy, "image_id": image_id}
-    raise NotFound(f"disc not found: {copy_id}")
-
-
 def _emit_disc_payload(payload: dict[str, Any], *, image_id: str, json_mode: bool) -> None:
     human_payload = {"image_id": image_id, **payload}
     emit(payload if json_mode else format_disc(human_payload), json_mode=json_mode)
 
 
-def _disc_sort_value(disc: Mapping[str, object], sort: str) -> str:
+def _validate_disc_sort(sort: str) -> None:
     if sort not in _DISC_SORT_FIELDS:
         raise typer.BadParameter(
             f"sort must be one of {', '.join(sorted(_DISC_SORT_FIELDS))}",
             param_hint="--sort",
         )
-    return str(disc.get(sort) or "").casefold()
-
-
-def _disc_matches_query(disc: Mapping[str, object], query: str | None) -> bool:
-    if query is None:
-        return True
-    needle = query.casefold()
-    haystack = " ".join(
-        str(disc.get(field, ""))
-        for field in ("id", "image_id", "state", "verification_state", "location")
-    ).casefold()
-    return needle in haystack
-
-
-def _paged_disc_payload(
-    discs: list[dict[str, Any]],
-    *,
-    page: int,
-    per_page: int,
-    sort: str,
-    order: str,
-    query: str | None,
-    image_id: str | None,
-) -> dict[str, Any]:
-    discs = [disc for disc in discs if _disc_matches_query(disc, query)]
-    discs.sort(
-        key=lambda disc: _disc_sort_value(disc, sort),
-        reverse=order == "desc",
-    )
-    total = len(discs)
-    display_pages = (total + per_page - 1) // per_page if total else 0
-    start = (page - 1) * per_page
-    stop = start + per_page
-    payload: dict[str, Any] = {
-        "page": page,
-        "per_page": per_page,
-        "total": total,
-        "pages": display_pages,
-        "sort": sort,
-        "order": order,
-        "query": query,
-        "discs": discs[start:stop],
-    }
-    if image_id is not None:
-        payload["image_id"] = image_id
-    return payload
 
 
 def _list_discs_payload(
@@ -2293,68 +2233,14 @@ def _list_discs_payload(
     normalized_order = order.casefold()
     if normalized_order not in {"asc", "desc"}:
         raise typer.BadParameter("order must be asc or desc", param_hint="--order")
-    _ = _disc_sort_value({}, sort)
-
-    if image_id is not None:
-        copies_payload = client.list_copies(image_id)
-        copies = copies_payload.get("copies")
-        image_discs = (
-            [{**copy, "image_id": image_id} for copy in copies if isinstance(copy, dict)]
-            if isinstance(copies, list)
-            else []
-        )
-        return _paged_disc_payload(
-            image_discs,
-            page=page,
-            per_page=per_page,
-            sort=sort,
-            order=normalized_order,
-            query=query,
-            image_id=image_id,
-        )
-
-    image_page = client.list_images(
-        page=1,
-        per_page=100,
-        sort="finalized_at",
-        order="desc",
-        has_copies=True,
-    )
-    images = [image for image in image_page.get("images", []) if isinstance(image, dict)]
-    pages = _optional_int(image_page.get("pages")) or 0
-    for page_number in range(2, pages + 1):
-        next_page = client.list_images(
-            page=page_number,
-            per_page=100,
-            sort="finalized_at",
-            order="desc",
-            has_copies=True,
-        )
-        images.extend(image for image in next_page.get("images", []) if isinstance(image, dict))
-
-    all_discs: list[dict[str, Any]] = []
-    for image in images:
-        image_id = str(image.get("id", ""))
-        if not image_id:
-            continue
-        copies_payload = client.list_copies(image_id)
-        copies = copies_payload.get("copies")
-        if not isinstance(copies, list):
-            continue
-        for copy in copies:
-            if not isinstance(copy, dict):
-                continue
-            disc = {**copy, "image_id": image_id}
-            all_discs.append(disc)
-
-    return _paged_disc_payload(
-        all_discs,
+    _validate_disc_sort(sort)
+    return client.list_discs(
         page=page,
         per_page=per_page,
         sort=sort,
         order=normalized_order,
         query=query,
-        image_id=None,
+        image_id=image_id,
     )
 
 
@@ -2392,12 +2278,7 @@ def disc_show_cmd(
     copy_id: Annotated[str, typer.Argument(help="Generated disc/copy id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    image_id = _image_id_from_copy_id(copy_id)
-    copy = _copy_from_image_payload(
-        ApiClient().list_copies(image_id),
-        image_id=image_id,
-        copy_id=copy_id,
-    )
+    copy = ApiClient().get_disc(copy_id)
     emit(copy if json_mode else format_disc(copy), json_mode=json_mode)
 
 

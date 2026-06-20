@@ -69,23 +69,40 @@ def test_default_djdan_io_builders_use_real_backends(monkeypatch) -> None:
 
 def test_djdan_disc_list_image_scope_returns_paged_payload(monkeypatch) -> None:
     class FakeClient:
-        def list_copies(self, image_id: str) -> dict[str, object]:
+        def list_discs(
+            self,
+            *,
+            page: int,
+            per_page: int,
+            sort: str,
+            order: str,
+            query: str | None,
+            image_id: str | None,
+        ) -> dict[str, object]:
             assert image_id == "20260420T040001Z"
+            assert page == 1
+            assert per_page == 1
+            assert sort == "id"
+            assert order == "asc"
+            assert query is None
             return {
-                "copies": [
+                "page": page,
+                "per_page": per_page,
+                "total": 2,
+                "pages": 2,
+                "sort": sort,
+                "order": order,
+                "query": query,
+                "image_id": image_id,
+                "discs": [
                     {
                         "id": "20260420T040001Z-1",
+                        "image_id": "20260420T040001Z",
                         "state": "verified",
                         "verification_state": "verified",
                         "location": "Shelf B1",
                     },
-                    {
-                        "id": "20260420T040001Z-2",
-                        "state": "needed",
-                        "verification_state": "pending",
-                        "location": None,
-                    },
-                ]
+                ],
             }
 
     monkeypatch.setattr(djdan_main, "ApiClient", FakeClient)
@@ -121,6 +138,35 @@ def test_djdan_disc_list_image_scope_returns_paged_payload(monkeypatch) -> None:
         }
     ]
     assert "copies" not in payload
+
+
+def test_djdan_disc_show_uses_disc_endpoint(monkeypatch) -> None:
+    class FakeClient:
+        def get_disc(self, copy_id: str) -> dict[str, object]:
+            assert copy_id == "20260420T040001Z-1"
+            return {
+                "id": copy_id,
+                "image_id": "20260420T040001Z",
+                "volume_id": "20260420T040001Z",
+                "label_text": copy_id,
+                "location": "Shelf B1",
+                "created_at": "2026-04-20T04:00:01Z",
+                "state": "registered",
+                "verification_state": "verified",
+                "history": [],
+            }
+
+    monkeypatch.setattr(djdan_main, "ApiClient", FakeClient)
+
+    result = runner.invoke(
+        djdan_main.app,
+        ["disc", "show", "20260420T040001Z-1", "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["id"] == "20260420T040001Z-1"
+    assert payload["image_id"] == "20260420T040001Z"
 
 
 def test_terminal_burn_prompts_reprompt_for_label_confirmation(monkeypatch, capsys) -> None:

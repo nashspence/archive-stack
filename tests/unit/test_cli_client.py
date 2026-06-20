@@ -867,6 +867,43 @@ def test_register_copy_uses_generated_copy_endpoint(monkeypatch) -> None:
     ]
 
 
+def test_list_and_get_discs_use_disc_endpoints(monkeypatch) -> None:
+    captured: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append((request.method, str(request.url)))
+        if request.url.path == "/v1/discs":
+            return httpx.Response(200, json={"discs": []})
+        return httpx.Response(200, json={"id": "20260420T040001Z-1"})
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_client(self: ApiClient) -> httpx.Client:
+        return httpx.Client(base_url=self.base_url, transport=transport)
+
+    monkeypatch.setattr(ApiClient, "_client", fake_client)
+
+    client = ApiClient(base_url="https://api.test")
+    client.list_discs(
+        page=2,
+        per_page=10,
+        sort="location",
+        order="desc",
+        query="Shelf B",
+        image_id="20260420T040001Z",
+    )
+    client.get_disc("20260420T040001Z-1")
+
+    assert captured == [
+        (
+            "GET",
+            "https://api.test/v1/discs?page=2&per_page=10&sort=location&order=desc"
+            "&q=Shelf+B&image_id=20260420T040001Z",
+        ),
+        ("GET", "https://api.test/v1/discs/20260420T040001Z-1"),
+    ]
+
+
 def test_notify_copy_label_needed_uses_copy_endpoint(monkeypatch) -> None:
     captured: list[tuple[str, str, str]] = []
 

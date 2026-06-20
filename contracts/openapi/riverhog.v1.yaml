@@ -473,6 +473,70 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PlanResponse"
+  /discs:
+    get:
+      summary: List burned disc records
+      description: Returns one page of generated disc/copy records with sorting and filtering over operator-facing disc metadata.
+      operationId: listDiscs
+      parameters:
+        - in: query
+          name: page
+          required: false
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: per_page
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+        - in: query
+          name: sort
+          required: false
+          schema:
+            type: string
+            enum: [id, image_id, state, verification_state, location]
+            default: id
+        - in: query
+          name: order
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
+        - in: query
+          name: q
+          required: false
+          schema: { type: string }
+        - in: query
+          name: image_id
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: Disc list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiscListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /discs/{copy_id}:
+    get:
+      summary: Get one burned disc record
+      description: Returns one generated disc/copy record by copy id, including copy history.
+      operationId: getDisc
+      parameters:
+        - in: path
+          name: copy_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Disc record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiscSummary"
+        default:
+          $ref: "#/components/responses/Error"
   /images:
     get:
       summary: List finalized images
@@ -1905,6 +1969,86 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/CopyHistory"
+    DiscSummary:
+      type: object
+      required:
+        [
+          id,
+          volume_id,
+          label_text,
+          location,
+          created_at,
+          state,
+          verification_state,
+          history,
+          image_id,
+        ]
+      properties:
+        id:
+          type: string
+          description: Generated disc/copy id.
+        volume_id:
+          type: string
+          pattern: "^[0-9]{8}T[0-9]{6}Z$"
+          description: Immutable media identifier for the finalized image this disc belongs to.
+        label_text:
+          type: string
+          description: Exact operator-facing disc label text for this generated copy slot.
+        location:
+          type: string
+          nullable: true
+          description: Mutable physical location label. Not part of copy identity.
+        created_at: { type: string, format: date-time }
+        state:
+          type: string
+          enum: [needed, burning, verified, registered, lost, damaged, retired]
+        verification_state:
+          type: string
+          enum: [pending, verified, failed]
+        history:
+          type: array
+          items:
+            $ref: "#/components/schemas/CopyHistory"
+        image_id:
+          type: string
+          pattern: "^[0-9]{8}T[0-9]{6}Z$"
+          description: Finalized image id for this disc.
+        filename:
+          type: string
+          nullable: true
+          description: Stable ISO filename for the finalized image artifact.
+    DiscListResponse:
+      type: object
+      required: [page, per_page, total, pages, sort, order, query, discs]
+      properties:
+        page:
+          type: integer
+          minimum: 1
+        per_page:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+        pages:
+          type: integer
+          minimum: 0
+        sort:
+          type: string
+          enum: [id, image_id, state, verification_state, location]
+        order:
+          type: string
+          enum: [asc, desc]
+        query:
+          type: string
+          nullable: true
+        image_id:
+          type: string
+          nullable: true
+        discs:
+          type: array
+          items:
+            $ref: "#/components/schemas/DiscSummary"
     CopyHistory:
       type: object
       required: [at, event, state, verification_state, location]

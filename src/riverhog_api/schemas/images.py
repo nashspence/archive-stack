@@ -67,9 +67,26 @@ class CopyOut(RiverhogModel):
     history: list[CopyHistoryOut]
 
 
+class DiscOut(CopyOut):
+    image_id: str
+    filename: str | None = None
+
+
 class RegisterCopyResponse(RiverhogModel):
     copy_: CopyOut = Field(alias="copy")
 
 
 class ListCopiesResponse(RiverhogModel):
     copies: list[CopyOut]
+
+
+class ListDiscsResponse(RiverhogModel):
+    page: int
+    per_page: int
+    total: int
+    pages: int
+    sort: Literal["id", "image_id", "state", "verification_state", "location"]
+    order: Literal["asc", "desc"]
+    query: str | None
+    image_id: str | None = None
+    discs: list[DiscOut]

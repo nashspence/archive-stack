@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypeVar, cast
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, func, insert, or_, select, update
 from sqlalchemy.orm import Session
 
 from riverhog_core.archive_compliance import (
@@ -19,6 +19,7 @@ from riverhog_core.archive_compliance import (
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionFileRecord,
+    DiscOperatorSummaryRecord,
     FileCopyRecord,
     FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
@@ -99,6 +100,89 @@ class SqlAlchemyCopyService:
             copies = self._ensure_required_copy_slots(session, image)
             session.flush()
             return [self._copy_summary(session, copy) for copy in copies]
+
+    def list_discs(
+        self,
+        *,
+        page: int,
+        per_page: int,
+        sort: str,
+        order: str,
+        q: str | None,
+        image_id: str | None,
+    ) -> dict[str, object]:
+        normalized_sort = _normalize_disc_sort(sort)
+        normalized_order = _normalize_disc_order(order)
+        with session_scope(self._session_factory) as session:
+            if image_id is not None:
+                image = self._require_image(session, image_id)
+                self._ensure_required_copy_slots(session, image)
+                session.flush()
+
+            stmt = select(DiscOperatorSummaryRecord)
+            filters = []
+            if image_id is not None:
+                filters.append(DiscOperatorSummaryRecord.image_id == image_id)
+            if q:
+                needle = q.casefold()
+                filters.append(
+                    or_(
+                        func.lower(DiscOperatorSummaryRecord.copy_id).contains(needle),
+                        func.lower(DiscOperatorSummaryRecord.image_id).contains(needle),
+                        func.lower(DiscOperatorSummaryRecord.state).contains(needle),
+                        func.lower(DiscOperatorSummaryRecord.verification_state).contains(needle),
+                        func.lower(func.coalesce(DiscOperatorSummaryRecord.location, "")).contains(
+                            needle
+                        ),
+                    )
+                )
+            if filters:
+                stmt = stmt.where(*filters)
+
+            total = int(session.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
+            pages = (total + per_page - 1) // per_page if total else 0
+            rows = session.scalars(
+                stmt.order_by(*_disc_summary_order(sort=normalized_sort, order=normalized_order))
+                .offset((page - 1) * per_page)
+                .limit(per_page)
+            ).all()
+
+        payload: dict[str, object] = {
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "pages": pages,
+            "sort": normalized_sort,
+            "order": normalized_order,
+            "query": q,
+            "discs": [_disc_summary_payload(row) for row in rows],
+        }
+        if image_id is not None:
+            payload["image_id"] = image_id
+        return payload
+
+    def get_disc(self, copy_id: str) -> dict[str, object]:
+        with session_scope(self._session_factory) as session:
+            rows = session.scalars(
+                select(DiscOperatorSummaryRecord)
+                .where(DiscOperatorSummaryRecord.copy_id == copy_id)
+                .order_by(DiscOperatorSummaryRecord.image_id.asc())
+                .limit(2)
+            ).all()
+            if not rows:
+                raise NotFound(f"disc not found: {copy_id}")
+            if len(rows) > 1:
+                raise BadRequest(f"disc id is ambiguous: {copy_id}")
+            row = rows[0]
+            history_rows = session.scalars(
+                select(ImageCopyEventRecord)
+                .where(
+                    ImageCopyEventRecord.image_id == row.image_id,
+                    ImageCopyEventRecord.copy_id == row.copy_id,
+                )
+                .order_by(ImageCopyEventRecord.id)
+            ).all()
+            return _disc_summary_payload(row, history_rows=history_rows)
 
     def notify_label_needed(self, image_id: str, copy_id: str) -> CopySummary:
         with session_scope(self._session_factory) as session:
@@ -554,3 +638,65 @@ def _copy_recovery_bytes(
         return payload_path.stat().st_size
     except FileNotFoundError as exc:
         raise InvalidState(f"finalized-image payload is missing: {payload_path}") from exc
+
+
+def _normalize_disc_sort(sort: str) -> str:
+    if sort not in _DISC_SORT_COLUMNS:
+        raise BadRequest(f"sort must be one of {', '.join(sorted(_DISC_SORT_COLUMNS))}")
+    return sort
+
+
+def _normalize_disc_order(order: str) -> str:
+    normalized = order.casefold()
+    if normalized not in {"asc", "desc"}:
+        raise BadRequest("order must be asc or desc")
+    return normalized
+
+
+_DISC_SORT_COLUMNS = {
+    "id": (DiscOperatorSummaryRecord.copy_id, DiscOperatorSummaryRecord.image_id),
+    "image_id": (DiscOperatorSummaryRecord.image_id, DiscOperatorSummaryRecord.copy_id),
+    "state": (DiscOperatorSummaryRecord.state, DiscOperatorSummaryRecord.copy_id),
+    "verification_state": (
+        DiscOperatorSummaryRecord.verification_state,
+        DiscOperatorSummaryRecord.copy_id,
+    ),
+    "location": (DiscOperatorSummaryRecord.location, DiscOperatorSummaryRecord.copy_id),
+}
+
+
+def _disc_summary_order(*, sort: str, order: str) -> list[Any]:
+    columns = _DISC_SORT_COLUMNS[sort]
+    if order == "desc":
+        return [column.desc() for column in columns]
+    return [column.asc() for column in columns]
+
+
+def _disc_summary_payload(
+    row: DiscOperatorSummaryRecord,
+    *,
+    history_rows: Sequence[ImageCopyEventRecord] = (),
+) -> dict[str, object]:
+    return {
+        "id": row.copy_id,
+        "image_id": row.image_id,
+        "volume_id": row.image_id,
+        "filename": row.filename,
+        "label_text": row.label_text,
+        "location": row.location,
+        "created_at": row.created_at,
+        "state": normalize_copy_state(row.state).value,
+        "verification_state": normalize_verification_state(row.verification_state).value,
+        "history": [
+            {
+                "at": history.occurred_at,
+                "event": history.event,
+                "state": normalize_copy_state(history.state).value,
+                "verification_state": normalize_verification_state(
+                    history.verification_state
+                ).value,
+                "location": history.location,
+            }
+            for history in history_rows
+        ],
+    }

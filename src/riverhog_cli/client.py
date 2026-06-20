@@ -501,6 +501,31 @@ class ApiClient:
     def list_copies(self, image_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/images/{image_id}/copies")
 
+    def list_discs(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        sort: str = "id",
+        order: str = "asc",
+        query: str | None = None,
+        image_id: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "page": page,
+            "per_page": per_page,
+            "sort": sort,
+            "order": order,
+        }
+        if query:
+            params["q"] = query
+        if image_id:
+            params["image_id"] = image_id
+        return self._json("GET", "/v1/discs", params=params)
+
+    def get_disc(self, copy_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/v1/discs/{quote(copy_id, safe='/')}")
+
     def notify_copy_label_needed(self, image_id: str, copy_id: str) -> dict[str, Any]:
         return self._json(
             "POST",

@@ -48,7 +48,7 @@ from riverhog_core.domain.enums import (
     RecoverySessionState,
     VerificationState,
 )
-from riverhog_core.domain.errors import Conflict, HashMismatch, InvalidState, NotFound
+from riverhog_core.domain.errors import BadRequest, Conflict, HashMismatch, InvalidState, NotFound
 from riverhog_core.domain.models import (
     CollectionCoverageImage,
     CollectionListPage,
@@ -138,6 +138,7 @@ _OPERATOR_WEBHOOK_RETRY_DELAY_SECONDS = 1.0
 _OPERATOR_WEBHOOK_REMINDER_INTERVAL_SECONDS = 2.0
 _CLI_SUBPROCESS_TIMEOUT_SECONDS = 30.0
 _CLI_TIMEOUT_OUTPUT_CHARS = 4_000
+_DISC_SORT_FIELDS = {"id", "image_id", "state", "verification_state", "location"}
 
 
 def _generated_copy_id(image_id: str, ordinal: int) -> str:
@@ -3194,6 +3195,99 @@ class AcceptanceCopyService:
             for (volume_id, _copy_id), summary in sorted(self.state.copy_summaries.items())
             if volume_id == image_id
         ]
+
+    @_with_state_lock
+    def list_discs(
+        self,
+        *,
+        page: int,
+        per_page: int,
+        sort: str,
+        order: str,
+        q: str | None,
+        image_id: str | None,
+    ) -> dict[str, object]:
+        if image_id is not None:
+            self.state.ensure_required_copy_slots(image_id)
+        normalized_order = order.casefold()
+        if normalized_order not in {"asc", "desc"}:
+            raise BadRequest("order must be asc or desc")
+        if sort not in _DISC_SORT_FIELDS:
+            raise BadRequest(f"sort must be one of {', '.join(sorted(_DISC_SORT_FIELDS))}")
+
+        discs = [
+            self._disc_payload(summary)
+            for (volume_id, _copy_id), summary in sorted(self.state.copy_summaries.items())
+            if image_id is None or volume_id == image_id
+        ]
+        if q:
+            needle = q.casefold()
+            discs = [
+                disc
+                for disc in discs
+                if needle
+                in " ".join(
+                    str(disc.get(field, ""))
+                    for field in ("id", "image_id", "state", "verification_state", "location")
+                ).casefold()
+            ]
+        discs.sort(
+            key=lambda disc: str(disc.get(sort) or "").casefold(),
+            reverse=normalized_order == "desc",
+        )
+        total = len(discs)
+        pages = math.ceil(total / per_page) if total else 0
+        start = (page - 1) * per_page
+        payload: dict[str, object] = {
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "pages": pages,
+            "sort": sort,
+            "order": normalized_order,
+            "query": q,
+            "discs": discs[start : start + per_page],
+        }
+        if image_id is not None:
+            payload["image_id"] = image_id
+        return payload
+
+    @_with_state_lock
+    def get_disc(self, copy_id: str) -> dict[str, object]:
+        matches = [
+            summary
+            for (_volume_id, scoped_copy_id), summary in sorted(self.state.copy_summaries.items())
+            if str(scoped_copy_id) == copy_id
+        ]
+        if not matches:
+            raise NotFound(f"disc not found: {copy_id}")
+        if len(matches) > 1:
+            raise BadRequest(f"disc id is ambiguous: {copy_id}")
+        return self._disc_payload(matches[0])
+
+    def _disc_payload(self, summary: CopySummary) -> dict[str, object]:
+        image = self.state.finalized_images_by_id.get(ImageId(summary.volume_id))
+        return {
+            "id": str(summary.id),
+            "image_id": summary.volume_id,
+            "volume_id": summary.volume_id,
+            "filename": image.filename if image is not None else None,
+            "label_text": summary.label_text,
+            "location": summary.location,
+            "created_at": summary.created_at,
+            "state": summary.state.value,
+            "verification_state": summary.verification_state.value,
+            "history": [
+                {
+                    "at": entry.at,
+                    "event": entry.event,
+                    "state": entry.state.value,
+                    "verification_state": entry.verification_state.value,
+                    "location": entry.location,
+                }
+                for entry in summary.history
+            ],
+        }
 
     @_with_state_lock
     def notify_label_needed(self, image_id: str, copy_id: str) -> CopySummary:

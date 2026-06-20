@@ -179,6 +179,17 @@ class CopyService(Protocol):
         self, image_id: str, location: str, *, copy_id: str | None = None
     ) -> CopySummary: ...
     def list_for_image(self, image_id: str) -> list[CopySummary]: ...
+    def list_discs(
+        self,
+        *,
+        page: int,
+        per_page: int,
+        sort: str,
+        order: str,
+        q: str | None,
+        image_id: str | None,
+    ) -> JsonObject: ...
+    def get_disc(self, copy_id: str) -> JsonObject: ...
     def notify_label_needed(self, image_id: str, copy_id: str) -> CopySummary: ...
     def update(
         self,

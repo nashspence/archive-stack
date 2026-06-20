@@ -11,8 +11,10 @@ from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_copy
 from riverhog_api.schemas.images import (
     CopyOut,
+    DiscOut,
     FinalizedImageSummaryResponse,
     ListCopiesResponse,
+    ListDiscsResponse,
     ListImagesResponse,
     RegisterCopyRequest,
     RegisterCopyResponse,
@@ -21,6 +23,33 @@ from riverhog_api.schemas.images import (
 from riverhog_core.iso.streaming import IsoStream
 
 router = APIRouter(tags=["images"])
+
+
+@router.get("/discs", response_model=ListDiscsResponse)
+def list_discs(
+    container: ContainerDep,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=100),
+    sort: Literal["id", "image_id", "state", "verification_state", "location"] = Query("id"),
+    order: Literal["asc", "desc"] = Query("asc"),
+    q: str | None = Query(None),
+    image_id: str | None = Query(None),
+) -> ListDiscsResponse:
+    payload = container.copies.list_discs(
+        page=page,
+        per_page=per_page,
+        sort=sort,
+        order=order,
+        q=q,
+        image_id=image_id,
+    )
+    return ListDiscsResponse.model_validate(payload)
+
+
+@router.get("/discs/{copy_id}", response_model=DiscOut)
+def get_disc(copy_id: str, container: ContainerDep) -> DiscOut:
+    payload = container.copies.get_disc(copy_id)
+    return DiscOut.model_validate(payload)
 
 
 @router.get("/images", response_model=ListImagesResponse)

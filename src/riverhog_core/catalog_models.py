@@ -486,6 +486,36 @@ class ImageCopyRecord(Base):
     )
 
     image: Mapped[FinalizedImageRecord] = relationship(back_populates="copies")
+    operator_summary: Mapped[DiscOperatorSummaryRecord | None] = relationship(
+        back_populates="copy",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class DiscOperatorSummaryRecord(Base):
+    __tablename__ = "disc_operator_summaries"
+
+    image_id: Mapped[str] = mapped_column(String, primary_key=True)
+    copy_id: Mapped[str] = mapped_column(String, primary_key=True)
+    label_text: Mapped[str] = mapped_column(String)
+    location: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String)
+    state: Mapped[str] = mapped_column(String)
+    verification_state: Mapped[str] = mapped_column(String)
+    filename: Mapped[str | None] = mapped_column(String, nullable=True)
+    updated_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["image_id", "copy_id"],
+            ["image_copies.image_id", "image_copies.copy_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+        ),
+    )
+
+    copy: Mapped[ImageCopyRecord] = relationship(back_populates="operator_summary")
 
 
 class ImageCopyEventRecord(Base):
