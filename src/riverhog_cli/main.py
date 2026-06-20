@@ -149,9 +149,7 @@ def _upload_file_log_bytes() -> int:
             "RIVERHOG_UPLOAD_FILE_LOG_BYTES must be a non-negative integer"
         ) from exc
     if value < 0:
-        raise typer.BadParameter(
-            "RIVERHOG_UPLOAD_FILE_LOG_BYTES must be a non-negative integer"
-        )
+        raise typer.BadParameter("RIVERHOG_UPLOAD_FILE_LOG_BYTES must be a non-negative integer")
     return value
 
 
@@ -541,8 +539,7 @@ def _upload_collection_files(
 
     with ThreadPoolExecutor(max_workers=file_concurrency) as executor:
         futures = [
-            executor.submit(upload_worker)
-            for _ in range(min(file_concurrency, len(pending_files)))
+            executor.submit(upload_worker) for _ in range(min(file_concurrency, len(pending_files)))
         ]
         try:
             for future in as_completed(futures):
@@ -840,8 +837,7 @@ def _upload_collection_via_session(
             details.append(f"missing server files: {', '.join(missing[:5])}")
         raise RuntimeError(
             "incremental upload session file set differs from local tree; "
-            "not completing session"
-            + (f" ({'; '.join(details)})" if details else "")
+            "not completing session" + (f" ({'; '.join(details)})" if details else "")
         )
 
     complete_payload = _complete_collection_upload_session(api, collection_id)
@@ -1216,9 +1212,7 @@ def upload_cmd(
             manifest,
         )
     else:
-        _log_upload(
-            "All files uploaded; collection finalization will continue in the background"
-        )
+        _log_upload("All files uploaded; collection finalization will continue in the background")
         final_payload = _staged_collection_upload_payload(api, collection_id, manifest)
         completion_state = "staged"
     emit(

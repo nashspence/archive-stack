@@ -108,9 +108,12 @@ def test_structured_input_upload_accepts_source_prefixed_paths(
     )
 
     assert req.files[0].path == "front-door/telephoto/clip.mp4"
-    assert runner.upload_file_resolved_group(
-        {"path": "front-door/telephoto/clip.mp4", "structured_routing": True}
-    ) == ""
+    assert (
+        runner.upload_file_resolved_group(
+            {"path": "front-door/telephoto/clip.mp4", "structured_routing": True}
+        )
+        == ""
+    )
 
 
 def test_passthrough_profile_groups_normalize_to_copy_only(
@@ -308,9 +311,7 @@ def test_completed_structured_file_fails_when_no_route_matches(
         "job_id": "job-1",
         "input_upload_id": "upload-1",
         "profile_routing": {
-            "routes": [
-                {"id": "front-door-video", "group": "video", "path_prefix": "front-door"}
-            ]
+            "routes": [{"id": "front-door-video", "group": "video", "path_prefix": "front-door"}]
         },
     }
 
@@ -1404,9 +1405,7 @@ def test_failed_job_debug_bundle_preserves_pre_compaction_state(
     assert changed is True
     assert bundle.is_dir()
     assert (bundle / "metadata.json").is_file()
-    assert (bundle / "error.txt").read_text(encoding="utf-8") == (
-        "gpu job failed: bad encode\n"
-    )
+    assert (bundle / "error.txt").read_text(encoding="utf-8") == ("gpu job failed: bad encode\n")
     with gzip.open(bundle / "job-state-full.json.gz", "rt", encoding="utf-8") as handle:
         full_state = json.load(handle)
     assert full_state["eager_archive"]["files"]["camera/a.mp4"]["state"] == "failed"
@@ -1781,6 +1780,7 @@ def test_create_file_upload_does_not_sync_entire_shared_tree(
         "sync_shared_input_tree",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("full sync")),
     )
+
     class TrackingLock:
         active = False
 
@@ -2784,9 +2784,7 @@ def test_save_job_preserves_newer_riverhog_upload_state(
 
     stored = runner.load_job("job-1")
     assert stored["phase"] == "gpu-eager:pipeline=3/3"
-    assert stored["riverhog_session_upload"]["files"] == {
-        "camera/a.webm": {"state": "uploaded"}
-    }
+    assert stored["riverhog_session_upload"]["files"] == {"camera/a.webm": {"state": "uploaded"}}
 
 
 def test_handoff_retry_refreshes_persisted_job_state(
@@ -3737,7 +3735,7 @@ def test_ready_eager_files_skips_claimed_encoding_files(
                 "camera/c.mp4": {
                     "state": "failed",
                     "batch_id": "batch-2",
-                }
+                },
             },
             "batches": {},
             "next_batch_number": 1,

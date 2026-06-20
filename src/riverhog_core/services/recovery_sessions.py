@@ -227,16 +227,18 @@ class SqlAlchemyRecoverySessionService:
                     proof_object_path=archive.proof_object_path,
                 )
                 for archive in (
-                    _require_collection_archive_objects(collection)
-                    for collection in collections
+                    _require_collection_archive_objects(collection) for collection in collections
                 )
             ]
             record.state = RecoverySessionState.RESTORE_REQUESTED.value
             record.approved_at = now
             record.restore_requested_at = now
-            record.restore_ready_at = _max_timestamp(
-                status.ready_at for status in statuses if status.ready_at is not None
-            ) or estimated_ready_at
+            record.restore_ready_at = (
+                _max_timestamp(
+                    status.ready_at for status in statuses if status.ready_at is not None
+                )
+                or estimated_ready_at
+            )
             record.restore_expires_at = _min_timestamp(
                 status.expires_at for status in statuses if status.expires_at is not None
             )
@@ -405,18 +407,14 @@ class SqlAlchemyRecoverySessionService:
                 raise NotFound(f"recovery session not found: {session_id}")
             if record.state != RecoverySessionState.READY.value:
                 raise InvalidState("recovery session is not ready for ISO download")
-            images = {
-                image.image_id: image
-                for image in _session_images(session, record=record)
-            }
+            images = {image.image_id: image for image in _session_images(session, record=record)}
             image = images.get(image_id)
             if image is None:
                 raise NotFound(f"image not found in recovery session: {image_id}")
             collections = _session_collections(session, record=record)
             if (record.type or "image_rebuild") == "image_rebuild" and collections:
                 collection_archives = tuple(
-                    _require_collection_archive_objects(collection)
-                    for collection in collections
+                    _require_collection_archive_objects(collection) for collection in collections
                 )
                 collection_artifacts = tuple(
                     session.scalars(
@@ -465,19 +463,17 @@ class SqlAlchemyRecoverySessionService:
                 .where(
                     or_(
                         (
-                            (GlacierRecoverySessionRecord.state
-                             == RecoverySessionState.RESTORE_REQUESTED.value)
+                            (
+                                GlacierRecoverySessionRecord.state
+                                == RecoverySessionState.RESTORE_REQUESTED.value
+                            )
                             & (
-                                (
-                                    GlacierRecoverySessionRecord.restore_next_poll_at.is_(None)
-                                )
+                                (GlacierRecoverySessionRecord.restore_next_poll_at.is_(None))
                                 | (
                                     GlacierRecoverySessionRecord.restore_next_poll_at
                                     <= current_text
                                 )
-                                | (
-                                    GlacierRecoverySessionRecord.restore_ready_at <= current_text
-                                )
+                                | (GlacierRecoverySessionRecord.restore_ready_at <= current_text)
                             )
                         ),
                         (
@@ -491,18 +487,14 @@ class SqlAlchemyRecoverySessionService:
                         (
                             (GlacierRecoverySessionRecord.state == RecoverySessionState.READY.value)
                             & (
-                                (
-                                    GlacierRecoverySessionRecord.restore_expires_at.is_not(None)
-                                )
+                                (GlacierRecoverySessionRecord.restore_expires_at.is_not(None))
                                 & (GlacierRecoverySessionRecord.restore_expires_at <= current_text)
                             )
                         ),
                         (
                             (GlacierRecoverySessionRecord.state == RecoverySessionState.READY.value)
                             & (
-                                (
-                                    GlacierRecoverySessionRecord.next_reminder_at.is_not(None)
-                                )
+                                (GlacierRecoverySessionRecord.next_reminder_at.is_not(None))
                                 & (GlacierRecoverySessionRecord.next_reminder_at <= current_text)
                             )
                         ),
@@ -795,8 +787,7 @@ class SqlAlchemyRecoverySessionService:
                 proof_object_path=archive.proof_object_path,
             )
             for archive in (
-                _require_collection_archive_objects(collection)
-                for collection in collections
+                _require_collection_archive_objects(collection) for collection in collections
             )
         ]
         if any(status.state == "expired" for status in statuses):
@@ -1098,8 +1089,7 @@ def _require_collection_archive_objects(collection: CollectionRecord) -> _Collec
         )
     if not archive.manifest_object_path:
         raise InvalidState(
-            f"collection manifest object path is missing and cannot be restored: "
-            f"{collection.id}"
+            f"collection manifest object path is missing and cannot be restored: {collection.id}"
         )
     if not archive.ots_object_path:
         raise InvalidState(
@@ -1108,8 +1098,7 @@ def _require_collection_archive_objects(collection: CollectionRecord) -> _Collec
         )
     if not archive.manifest_sha256:
         raise InvalidState(
-            f"collection manifest sha256 is missing and cannot be verified: "
-            f"{collection.id}"
+            f"collection manifest sha256 is missing and cannot be verified: {collection.id}"
         )
     if not archive.ots_sha256:
         raise InvalidState(
@@ -1303,9 +1292,7 @@ def _expected_files_from_lookup(
 ) -> tuple[CollectionArchiveExpectedFile, ...]:
     return tuple(
         CollectionArchiveExpectedFile(path=path, sha256=sha256, bytes=byte_count)
-        for (current_collection_id, path), (sha256, byte_count) in sorted(
-            file_lookup.items()
-        )
+        for (current_collection_id, path), (sha256, byte_count) in sorted(file_lookup.items())
         if current_collection_id == collection_id
     )
 
@@ -1547,8 +1534,7 @@ def _has_recovery_triggering_copy_history(session: Session, image_id: str) -> bo
         select(ImageCopyRecord.state).where(ImageCopyRecord.image_id == image_id)
     ).all()
     return any(
-        normalize_copy_state(state) not in {CopyState.NEEDED, CopyState.BURNING}
-        for state in rows
+        normalize_copy_state(state) not in {CopyState.NEEDED, CopyState.BURNING} for state in rows
     )
 
 
@@ -1559,16 +1545,17 @@ def _active_session_for_image(
     return cast(
         GlacierRecoverySessionRecord | None,
         session.scalar(
-        select(GlacierRecoverySessionRecord)
-        .join(
-            GlacierRecoverySessionImageRecord,
-            GlacierRecoverySessionImageRecord.session_id == GlacierRecoverySessionRecord.session_id,
-        )
-        .where(GlacierRecoverySessionImageRecord.image_id == image_id)
-        .where(GlacierRecoverySessionRecord.state.in_(_ACTIVE_RECOVERY_STATES))
-        .order_by(GlacierRecoverySessionRecord.created_at.desc())
-        .limit(1)
-    )
+            select(GlacierRecoverySessionRecord)
+            .join(
+                GlacierRecoverySessionImageRecord,
+                GlacierRecoverySessionImageRecord.session_id
+                == GlacierRecoverySessionRecord.session_id,
+            )
+            .where(GlacierRecoverySessionImageRecord.image_id == image_id)
+            .where(GlacierRecoverySessionRecord.state.in_(_ACTIVE_RECOVERY_STATES))
+            .order_by(GlacierRecoverySessionRecord.created_at.desc())
+            .limit(1)
+        ),
     )
 
 
@@ -1579,17 +1566,17 @@ def _active_session_for_collection(
     return cast(
         GlacierRecoverySessionRecord | None,
         session.scalar(
-        select(GlacierRecoverySessionRecord)
-        .join(
-            GlacierRecoverySessionCollectionRecord,
-            GlacierRecoverySessionCollectionRecord.session_id
-            == GlacierRecoverySessionRecord.session_id,
-        )
-        .where(GlacierRecoverySessionCollectionRecord.collection_id == collection_id)
-        .where(GlacierRecoverySessionRecord.state.in_(_ACTIVE_RECOVERY_STATES))
-        .order_by(GlacierRecoverySessionRecord.created_at.desc())
-        .limit(1)
-    )
+            select(GlacierRecoverySessionRecord)
+            .join(
+                GlacierRecoverySessionCollectionRecord,
+                GlacierRecoverySessionCollectionRecord.session_id
+                == GlacierRecoverySessionRecord.session_id,
+            )
+            .where(GlacierRecoverySessionCollectionRecord.collection_id == collection_id)
+            .where(GlacierRecoverySessionRecord.state.in_(_ACTIVE_RECOVERY_STATES))
+            .order_by(GlacierRecoverySessionRecord.created_at.desc())
+            .limit(1)
+        ),
     )
 
 
@@ -1600,15 +1587,16 @@ def _latest_session_for_image(
     return cast(
         GlacierRecoverySessionRecord | None,
         session.scalar(
-        select(GlacierRecoverySessionRecord)
-        .join(
-            GlacierRecoverySessionImageRecord,
-            GlacierRecoverySessionImageRecord.session_id == GlacierRecoverySessionRecord.session_id,
-        )
-        .where(GlacierRecoverySessionImageRecord.image_id == image_id)
-        .order_by(GlacierRecoverySessionRecord.created_at.desc())
-        .limit(1)
-    )
+            select(GlacierRecoverySessionRecord)
+            .join(
+                GlacierRecoverySessionImageRecord,
+                GlacierRecoverySessionImageRecord.session_id
+                == GlacierRecoverySessionRecord.session_id,
+            )
+            .where(GlacierRecoverySessionImageRecord.image_id == image_id)
+            .order_by(GlacierRecoverySessionRecord.created_at.desc())
+            .limit(1)
+        ),
     )
 
 
@@ -1619,16 +1607,16 @@ def _latest_session_for_collection(
     return cast(
         GlacierRecoverySessionRecord | None,
         session.scalar(
-        select(GlacierRecoverySessionRecord)
-        .join(
-            GlacierRecoverySessionCollectionRecord,
-            GlacierRecoverySessionCollectionRecord.session_id
-            == GlacierRecoverySessionRecord.session_id,
-        )
-        .where(GlacierRecoverySessionCollectionRecord.collection_id == collection_id)
-        .order_by(GlacierRecoverySessionRecord.created_at.desc())
-        .limit(1)
-    )
+            select(GlacierRecoverySessionRecord)
+            .join(
+                GlacierRecoverySessionCollectionRecord,
+                GlacierRecoverySessionCollectionRecord.session_id
+                == GlacierRecoverySessionRecord.session_id,
+            )
+            .where(GlacierRecoverySessionCollectionRecord.collection_id == collection_id)
+            .order_by(GlacierRecoverySessionRecord.created_at.desc())
+            .limit(1)
+        ),
     )
 
 
@@ -1636,11 +1624,13 @@ def _reusable_pending_approval_session(session: Session) -> GlacierRecoverySessi
     return cast(
         GlacierRecoverySessionRecord | None,
         session.scalar(
-        select(GlacierRecoverySessionRecord)
-        .where(GlacierRecoverySessionRecord.state == RecoverySessionState.PENDING_APPROVAL.value)
-        .order_by(GlacierRecoverySessionRecord.created_at.desc())
-        .limit(1)
-    )
+            select(GlacierRecoverySessionRecord)
+            .where(
+                GlacierRecoverySessionRecord.state == RecoverySessionState.PENDING_APPROVAL.value
+            )
+            .order_by(GlacierRecoverySessionRecord.created_at.desc())
+            .limit(1)
+        ),
     )
 
 
@@ -1682,8 +1672,7 @@ def _sync_session_collections_for_images(
                 if (
                     collection is None
                     or collection.archive is None
-                    or normalize_glacier_state(collection.archive.state)
-                    != GlacierState.UPLOADED
+                    or normalize_glacier_state(collection.archive.state) != GlacierState.UPLOADED
                 ):
                     continue
                 collection_ids.append(collection_id)
@@ -1891,9 +1880,7 @@ def _notify_recovery_ready(
             "Ready notification failed and will retry: "
             f"{str(exc).strip() or exc.__class__.__name__}"
         )
-        record.next_reminder_at = _isoformat_z(
-            current + config.operator_webhook_retry_delay
-        )
+        record.next_reminder_at = _isoformat_z(current + config.operator_webhook_retry_delay)
         return
 
     record.last_notified_at = _isoformat_z(current)

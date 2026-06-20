@@ -43,9 +43,7 @@ def test_validates_av1_nvenc_profile_and_drop_reasons() -> None:
 
     assert profile.archive.container == "webm"
     assert profile.archive.video.quality == 52
-    assert artifact_drop_reason_map(profile) == {
-        "stream:4": "gyro data intentionally discarded"
-    }
+    assert artifact_drop_reason_map(profile) == {"stream:4": "gyro data intentionally discarded"}
 
 
 def test_rejects_duplicate_artifact_drops() -> None:

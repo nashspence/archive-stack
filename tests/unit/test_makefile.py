@@ -22,15 +22,15 @@ def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
                 [
                     "#!/usr/bin/env bash",
                     "set -euo pipefail",
-                    f"printf '%s|%s\\n' \"${{COMPOSE_PROJECT_NAME:-}}\" \"$*\" >> {log_path}",
-                    "if [[ \"$1\" == \"image\" && \"$2\" == \"inspect\" ]]; then",
-                    "  [[ \"${FAKE_DOCKER_HAVE_IMAGES:-0}\" == \"1\" ]] && "
+                    f'printf \'%s|%s\\n\' "${{COMPOSE_PROJECT_NAME:-}}" "$*" >> {log_path}',
+                    'if [[ "$1" == "image" && "$2" == "inspect" ]]; then',
+                    '  [[ "${FAKE_DOCKER_HAVE_IMAGES:-0}" == "1" ]] && '
                     "printf 'fake-image-id\\n' && exit 0",
                     "  exit 1",
                     "fi",
                     (
-                        "if [[ \"$*\" == *"
-                        "\" exec -T garage /garage -c /etc/garage.toml node id\"* ]]; then"
+                        'if [[ "$*" == *'
+                        '" exec -T garage /garage -c /etc/garage.toml node id"* ]]; then'
                     ),
                     "  printf 'fake-node@garage\\n'",
                     "fi",
@@ -44,7 +44,7 @@ def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
                 [
                     "#!/usr/bin/env bash",
                     "set -euo pipefail",
-                    f"printf '%s|%s\\n' \"${{COMPOSE_PROJECT_NAME:-}}\" \"$*\" >> {log_path}",
+                    f'printf \'%s|%s\\n\' "${{COMPOSE_PROJECT_NAME:-}}" "$*" >> {log_path}',
                     "exit 1",
                 ]
             )
@@ -56,7 +56,7 @@ def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
                 [
                     "#!/usr/bin/env bash",
                     "set -euo pipefail",
-                    f"printf '%s|%s\\n' \"${{COMPOSE_PROJECT_NAME:-}}\" \"$*\" >> {log_path}",
+                    f'printf \'%s|%s\\n\' "${{COMPOSE_PROJECT_NAME:-}}" "$*" >> {log_path}',
                 ]
             )
             + "\n"
@@ -99,8 +99,8 @@ def _read_log_lines(log_path: Path) -> list[str]:
 def test_checked_in_compose_uses_supported_tusd_filesystem_storage_flag() -> None:
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
 
-    assert "- \"-upload-dir\"" in compose_text
-    assert "- \"-dir\"" not in compose_text
+    assert '- "-upload-dir"' in compose_text
+    assert '- "-dir"' not in compose_text
 
 
 @pytest.mark.parametrize(

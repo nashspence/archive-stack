@@ -27,9 +27,9 @@ class RecoverySessionImageOut(RiverhogModel):
     id: str
     filename: str
     collection_ids: list[str] = Field(default_factory=list)
-    rebuild_state: Literal[
-        "pending", "restoring_collections", "rebuilding", "ready", "failed"
-    ] = "pending"
+    rebuild_state: Literal["pending", "restoring_collections", "rebuilding", "ready", "failed"] = (
+        "pending"
+    )
 
 
 class RecoverySessionCollectionOut(RiverhogModel):

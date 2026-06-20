@@ -24,9 +24,7 @@ def read_copy_recovery_metadata(
 ) -> CopyRecoveryMetadata:
     payload = (Path(image_root) / disc_path.lstrip("/")).read_bytes()
     plaintext = (
-        decrypt_recovery_payload(payload, recovery_payload_codec)
-        if include_plaintext
-        else None
+        decrypt_recovery_payload(payload, recovery_payload_codec) if include_plaintext else None
     )
     return CopyRecoveryMetadata(
         recovery_bytes=len(payload),

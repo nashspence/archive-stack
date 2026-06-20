@@ -422,8 +422,7 @@ def test_planner_may_split_one_single_disc_collection_by_whole_files() -> None:
     assert len(groups) == 2
     assert len(alpha_groups) == 2
     assert sorted(
-        sum(piece.collection_id.endswith("__alpha") for piece in group)
-        for group in alpha_groups
+        sum(piece.collection_id.endswith("__alpha") for piece in group) for group in alpha_groups
     ) == [1, 1]
     assert _group_estimated_bytes(groups) == [450, 900]
     assert all(piece.part_count == 1 for group in groups for piece in group)
@@ -644,9 +643,7 @@ def test_planner_allows_only_one_optional_split_collection_per_disc() -> None:
 
     split_collection_ids = {
         collection_id
-        for collection_id in {
-            piece.collection_id for group in groups for piece in group
-        }
+        for collection_id in {piece.collection_id for group in groups for piece in group}
         if _collection_disc_count(groups, collection_id) > 1
     }
 

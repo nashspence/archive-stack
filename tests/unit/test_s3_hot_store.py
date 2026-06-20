@@ -85,10 +85,7 @@ class _FakeS3Client:
         _ = Bucket
         upload = self.uploads.pop(UploadId)
         assert upload["Key"] == Key
-        body = b"".join(
-            upload["Parts"][part["PartNumber"]]
-            for part in MultipartUpload["Parts"]
-        )
+        body = b"".join(upload["Parts"][part["PartNumber"]] for part in MultipartUpload["Parts"])
         self.objects[Key] = {
             "Body": body,
             "ContentLength": len(body),

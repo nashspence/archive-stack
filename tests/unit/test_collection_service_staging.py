@@ -885,7 +885,6 @@ def test_collection_upload_post_finish_marks_uploaded_without_extra_offset_sync(
     assert staged["uploaded_bytes"] == len(content)
 
 
-
 def test_incremental_collection_upload_session_cancel_cleans_staged_files(
     tmp_path: Path,
 ) -> None:
@@ -1172,8 +1171,7 @@ def test_glacier_archive_worker_prioritizes_resumable_multipart_upload(
         upload_store.append_upload_chunk(
             tus_url,
             offset=0,
-            checksum="sha256 "
-            + base64.b64encode(hashlib.sha256(content).digest()).decode("ascii"),
+            checksum="sha256 " + base64.b64encode(hashlib.sha256(content).digest()).decode("ascii"),
             content=content,
         )
         with session_scope(session_factory) as session:
@@ -1558,9 +1556,9 @@ def test_packaged_archive_artifacts_reuse_survives_multipart_content_length(
         upload.collection_manifest_bytes_b64 = base64.b64encode(package.manifest_bytes).decode(
             "ascii"
         )
-        upload.collection_manifest_proof_bytes_b64 = base64.b64encode(
-            package.proof_bytes
-        ).decode("ascii")
+        upload.collection_manifest_proof_bytes_b64 = base64.b64encode(package.proof_bytes).decode(
+            "ascii"
+        )
         upload.archive_object_path = f"glacier/archives/{collection_id}/archive.tar.age"
         upload.archive_multipart_upload_id = "archive-upload-1"
         upload.archive_multipart_part_size = 64 * 1024 * 1024

@@ -486,9 +486,7 @@ def _hdiutil_device_args(device: str) -> tuple[list[str], str | None]:
     if normalized.startswith("IOService:"):
         return ["-device", normalized], None
     if normalized == "/dev/sr0":
-        raise RuntimeError(
-            "macOS burn device must be /dev/diskN, /dev/rdiskN, or default"
-        )
+        raise RuntimeError("macOS burn device must be /dev/diskN, /dev/rdiskN, or default")
     if not normalized.startswith(("/dev/disk", "/dev/rdisk")):
         raise RuntimeError(
             "macOS burn device must be /dev/diskN, /dev/rdiskN, default, "
@@ -619,10 +617,7 @@ class RawBurnedMediaVerifier:
                     remaining -= len(expected_chunk)
                     verified += len(expected_chunk)
                     now = time.monotonic()
-                    if (
-                        now - last_report_at >= _VERIFY_PROGRESS_INTERVAL_SECONDS
-                        or remaining == 0
-                    ):
+                    if now - last_report_at >= _VERIFY_PROGRESS_INTERVAL_SECONDS or remaining == 0:
                         _print_progress(
                             label=f"verify {copy_id}",
                             completed=verified,
@@ -1017,7 +1012,8 @@ def _image_has_resumable_copy_verification(
     if not isinstance(copies, list):
         return False
     return any(
-        isinstance(copy, dict) and _can_mark_copy_verified_from_checkpoint(
+        isinstance(copy, dict)
+        and _can_mark_copy_verified_from_checkpoint(
             session_state,
             image_id,
             copy,
@@ -1146,9 +1142,7 @@ def _report_recovery_handoffs(handoffs: list[RecoveryHandoff]) -> None:
         return
     typer.echo("ordinary burn backlog is clear, but image rebuild work remains")
     for handoff in handoffs:
-        typer.echo(
-            f"{handoff.image_id}: recovery session {handoff.session_id} is {handoff.state}"
-        )
+        typer.echo(f"{handoff.image_id}: recovery session {handoff.session_id} is {handoff.state}")
         if handoff.latest_message:
             typer.echo(handoff.latest_message)
 
@@ -1279,8 +1273,7 @@ def _clear_completed_burn_artifacts(
 def _image_requires_recovery_burn(client: ApiClient, image_id: str) -> bool:
     copies_payload = client.list_copies(image_id)
     return any(
-        isinstance(copy_payload, dict)
-        and str(copy_payload.get("state")) in _PENDING_BURN_STATES
+        isinstance(copy_payload, dict) and str(copy_payload.get("state")) in _PENDING_BURN_STATES
         for copy_payload in copies_payload.get("copies", [])
     )
 
@@ -1468,9 +1461,7 @@ def _process_recovery_session(
             session_id=recovery_session.session_id,
             type=recovery_session.type,
             state="completed",
-            latest_message=(
-                "Recovery session completed and restored ISO cleanup was recorded."
-            ),
+            latest_message=("Recovery session completed and restored ISO cleanup was recorded."),
             images=recovery_session.images,
         ),
         completed_copy_ids,
@@ -2050,9 +2041,7 @@ def _upload_entry_from_disc(
             next_offset = int(upload_result["offset"])
             uploaded_bytes = next_offset - offset
             if uploaded_bytes != len(chunk):
-                raise RuntimeError(
-                    f"upload offset advanced unexpectedly for {_entry_label(entry)}"
-                )
+                raise RuntimeError(f"upload offset advanced unexpectedly for {_entry_label(entry)}")
             offset = next_offset
             progress.record_uploaded_bytes(entry, uploaded_bytes)
             progress.report(entry)
@@ -2061,8 +2050,7 @@ def _upload_entry_from_disc(
 
     if offset != entry.recovery_bytes:
         raise RuntimeError(
-            f"upload for {_entry_label(entry)} stopped at {offset} of "
-            f"{entry.recovery_bytes} bytes"
+            f"upload for {_entry_label(entry)} stopped at {offset} of {entry.recovery_bytes} bytes"
         )
 
 
@@ -2215,9 +2203,7 @@ def image_download_cmd(
 
 def _image_id_from_copy_id(copy_id: str) -> str:
     if "-" not in copy_id:
-        raise typer.BadParameter(
-            "disc id must include an image id prefix, like 20260420T040001Z-1"
-        )
+        raise typer.BadParameter("disc id must include an image id prefix, like 20260420T040001Z-1")
     return copy_id.rsplit("-", 1)[0]
 
 
@@ -2659,20 +2645,14 @@ def recover_cmd(
 
     if recovery_session.state == "restore_requested":
         label = (
-            "rebuild session"
-            if recovery_session.type == "image_rebuild"
-            else "recovery session"
+            "rebuild session" if recovery_session.type == "image_rebuild" else "recovery session"
         )
         typer.echo(f"{label} {session_id} is restore_requested")
         if recovery_session.latest_message:
             typer.echo(recovery_session.latest_message)
         return
 
-    label = (
-        "rebuild session"
-        if recovery_session.type == "image_rebuild"
-        else "recovery session"
-    )
+    label = "rebuild session" if recovery_session.type == "image_rebuild" else "recovery session"
     typer.echo(f"{label} {session_id} completed")
     for copy_id in completed_copy_ids:
         typer.echo(copy_id)

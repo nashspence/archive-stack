@@ -68,8 +68,7 @@ def test_operator_webhook_contract_covers_current_events() -> None:
             "default": event.get("canonical_notification")
         }
         assert all(
-            template["title_template"] == "{emoji} {subject_40}"
-            for template in templates.values()
+            template["title_template"] == "{emoji} {subject_40}" for template in templates.values()
         )
         assert all(len(template["body_template"]) <= 150 for template in templates.values())
     assert events["collections.planner_failed"]["operator_urgency"] == "critical"
@@ -108,8 +107,7 @@ def test_build_images_ready_payload_supports_multiple_images() -> None:
     assert payload["notification"] == {
         "title": "👨🏻‍🎤 20260420T040001Z.iso +1",
         "body": (
-            "The pigs got some discs ready to burn, dawg! Run `djdan burn` so we can "
-            "get spinnin'."
+            "The pigs got some discs ready to burn, dawg! Run `djdan burn` so we can get spinnin'."
         ),
     }
 
@@ -154,10 +152,7 @@ def test_build_recovery_ready_payload_includes_session_and_image_urls() -> None:
         "collections": [],
         "notification": {
             "title": "👨🏻‍🎤 20260420T040001Z.iso",
-            "body": (
-                "Glacier data is cued up! Run `djdan burn` before the restore window "
-                "closes."
-            ),
+            "body": ("Glacier data is cued up! Run `djdan burn` before the restore window closes."),
         },
     }
 

@@ -479,9 +479,10 @@ class S3ArchiveStore:
                 COLLECTION_SHA256_METADATA: logical_sha256,
             }
         }
-        if self._is_aws_restore_backend() and _configured_s3_storage_class(
-            storage_class
-        ) != "STANDARD":
+        if (
+            self._is_aws_restore_backend()
+            and _configured_s3_storage_class(storage_class) != "STANDARD"
+        ):
             extra_args["StorageClass"] = storage_class
         if _should_use_multipart(content=content, content_length=content_length):
             if kind == "archive":
@@ -809,7 +810,7 @@ class S3ArchiveStore:
                     content_length,
                     resumed_part_count,
                     exc_info=True,
-            )
+                )
             raise
 
     def _put_encrypted_archive_object_multipart(
@@ -926,9 +927,9 @@ class S3ArchiveStore:
                     content_length=content_length,
                     sha256=logical_sha256,
                     total_parts=expected_part_count,
-                    encryption_state_json=session.export_state(
-                        plaintext_size=package.archive_size
-                    ).to_json_bytes().decode("utf-8"),
+                    encryption_state_json=session.export_state(plaintext_size=package.archive_size)
+                    .to_json_bytes()
+                    .decode("utf-8"),
                 )
                 if multipart_tracker is not None:
                     multipart_tracker.save_multipart_upload(
@@ -1358,6 +1359,7 @@ class S3ArchiveStore:
     def _is_aws_restore_backend(self) -> bool:
         endpoint = self._config.glacier_endpoint_url.casefold()
         return self._config.glacier_backend.casefold() == "aws" or "amazonaws.com" in endpoint
+
 
 def _collection_restore_paths(
     *,

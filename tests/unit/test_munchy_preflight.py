@@ -45,9 +45,7 @@ def test_media_preflight_detects_truncated_mp4_atom(tmp_path: Path) -> None:
 def test_media_preflight_accepts_mp4_with_video_stream_metadata(tmp_path: Path) -> None:
     source = tmp_path / "ok.mp4"
     source.write_bytes(
-        mp4_atom(b"ftyp", b"isom")
-        + mp4_atom(b"moov", b"")
-        + mp4_atom(b"mdat", b"payload")
+        mp4_atom(b"ftyp", b"isom") + mp4_atom(b"moov", b"") + mp4_atom(b"mdat", b"payload")
     )
 
     def fake_run(command, *, check, capture_output, text, timeout):
@@ -84,9 +82,7 @@ def test_media_preflight_accepts_mp4_with_video_stream_metadata(tmp_path: Path) 
 def test_media_preflight_rejects_video_stream_without_usable_metadata(tmp_path: Path) -> None:
     source = tmp_path / "bad.mp4"
     source.write_bytes(
-        mp4_atom(b"ftyp", b"isom")
-        + mp4_atom(b"moov", b"")
-        + mp4_atom(b"mdat", b"payload")
+        mp4_atom(b"ftyp", b"isom") + mp4_atom(b"moov", b"") + mp4_atom(b"mdat", b"payload")
     )
 
     def fake_run(command, *, check, capture_output, text, timeout):
@@ -174,9 +170,10 @@ def test_media_preflight_cache_commits_each_write_for_parallel_runs(tmp_path: Pa
         bytes=100,
         sha256="a" * 64,
     )
-    with MediaPreflightCache(preflight_path) as first, MediaPreflightCache(
-        preflight_path
-    ) as second:
+    with (
+        MediaPreflightCache(preflight_path) as first,
+        MediaPreflightCache(preflight_path) as second,
+    ):
         first.put(file, [MediaPreflightIssue("ffprobe_failed", "broken")])
         assert first.conn is not None
         assert not first.conn.in_transaction

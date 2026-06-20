@@ -252,8 +252,8 @@ def test_wrong_passphrase_fails():
 
 
 def test_unsupported_recipient_type_is_no_match_for_decrypt():
-    age_file = new_test_session().encrypt_plaintext(b"secret").replace(
-        b"-> scrypt ", b"-> Scrypt ", 1
+    age_file = (
+        new_test_session().encrypt_plaintext(b"secret").replace(b"-> scrypt ", b"-> Scrypt ", 1)
     )
     with pytest.raises(AgeDecryptError, match="no supported scrypt recipient"):
         decrypt_age_scrypt(age_file, PASS)

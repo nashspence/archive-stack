@@ -226,9 +226,7 @@ def test_get_report_ignores_terminal_upload_sessions(tmp_path: Path) -> None:
                     opened_at="2026-06-13T00:00:00Z",
                     last_activity_at="2026-06-13T00:00:00Z",
                     closed_at=(
-                        "2026-06-13T00:01:00Z"
-                        if state in {"canceled", "expired"}
-                        else None
+                        "2026-06-13T00:01:00Z" if state in {"canceled", "expired"} else None
                     ),
                 )
             )

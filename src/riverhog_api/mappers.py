@@ -155,9 +155,7 @@ def map_collection_list_page(summary: CollectionListPage) -> dict[str, object]:
         "per_page": summary.per_page,
         "total": summary.total,
         "pages": summary.pages,
-        "collections": [
-            map_collection_list_item(collection) for collection in summary.collections
-        ],
+        "collections": [map_collection_list_item(collection) for collection in summary.collections],
     }
 
 

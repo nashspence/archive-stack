@@ -331,13 +331,8 @@ class SqlAlchemyFetchService:
                     or_(
                         ActivePinRecord.fetch_notification_sent_at.is_(None),
                         (
-                            ActivePinRecord.fetch_notification_next_attempt_at.is_not(
-                                None
-                            )
-                            & (
-                                ActivePinRecord.fetch_notification_next_attempt_at
-                                <= current_text
-                            )
+                            ActivePinRecord.fetch_notification_next_attempt_at.is_not(None)
+                            & (ActivePinRecord.fetch_notification_next_attempt_at <= current_text)
                         ),
                     )
                 )

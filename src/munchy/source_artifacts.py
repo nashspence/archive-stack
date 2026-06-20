@@ -328,9 +328,7 @@ def _metadata_format_name(metadata: dict[str, Any]) -> str:
 
 def _metadata_format_names(metadata: dict[str, Any]) -> set[str]:
     return {
-        name.strip().lower()
-        for name in _metadata_format_name(metadata).split(",")
-        if name.strip()
+        name.strip().lower() for name in _metadata_format_name(metadata).split(",") if name.strip()
     }
 
 
@@ -434,13 +432,9 @@ def _iter_top_level_atoms(path: pathlib.Path) -> list[TopLevelAtom]:
             else:
                 size = size32
             if size < header_size:
-                raise ValueError(
-                    f"invalid top-level atom {kind!r} at {offset}: size {size}"
-                )
+                raise ValueError(f"invalid top-level atom {kind!r} at {offset}: size {size}")
             if offset + size > file_size:
-                raise ValueError(
-                    f"top-level atom {kind!r} at {offset} extends past EOF"
-                )
+                raise ValueError(f"top-level atom {kind!r} at {offset} extends past EOF")
             atoms.append(TopLevelAtom(offset, size, kind, header_size))
             offset += size
         if offset != file_size:
@@ -681,8 +675,7 @@ def _adjust_chunk_offsets_for_moov_delta(
                     new_value = value + delta
                     if new_value < 0 or new_value > 0xFFFFFFFF:
                         raise RuntimeError(
-                            "stco chunk offset cannot be adjusted without "
-                            "converting to co64"
+                            "stco chunk offset cannot be adjusted without converting to co64"
                         )
                     moov[offset : offset + 4] = struct.pack(">I", new_value)
                     adjusted += 1
@@ -792,9 +785,7 @@ def _repair_iso_bmff_stream_artifact_sample_entry(
         if atom.kind == b"trak"
     ]
     if stream_index >= len(source_tracks):
-        raise RuntimeError(
-            f"source stream index {stream_index} has no matching MP4 track"
-        )
+        raise RuntimeError(f"source stream index {stream_index} has no matching MP4 track")
     source_track = source_tracks[stream_index]
     source_mdia = _find_child_atom(source_data, source_track, b"mdia")
     source_hdlr = _find_child_atom(source_data, source_mdia, b"hdlr")
@@ -819,9 +810,7 @@ def _repair_iso_bmff_stream_artifact_sample_entry(
             source_hdlr.offset + 16 : source_hdlr.offset + 20
         ]
 
-    old_stsd = bytes(
-        artifact_data[target_stsd.offset : target_stsd.offset + target_stsd.size]
-    )
+    old_stsd = bytes(artifact_data[target_stsd.offset : target_stsd.offset + target_stsd.size])
     new_stsd = old_stsd[: target_stsd.header_size + 4]
     new_stsd += struct.pack(">I", source_entry_count)
     new_stsd += source_entries
@@ -877,9 +866,7 @@ def _copy_atom_bytes(
         while remaining:
             chunk = src_fh.read(min(1024 * 1024, remaining))
             if not chunk:
-                raise RuntimeError(
-                    f"unexpected EOF while copying atom {atom.kind!r} from {source}"
-                )
+                raise RuntimeError(f"unexpected EOF while copying atom {atom.kind!r} from {source}")
             out_fh.write(chunk)
             remaining -= len(chunk)
 
@@ -942,10 +929,7 @@ def _export_top_level_container_atoms(
             dropped.append(record)
             continue
 
-        file_name = (
-            f"top-level-{atom_label}-{type_ordinal:02d}."
-            f"offset-{atom.offset:016x}.atom"
-        )
+        file_name = f"top-level-{atom_label}-{type_ordinal:02d}.offset-{atom.offset:016x}.atom"
         artifact_path = dest_dir / "container_atoms" / file_name
         _copy_atom_bytes(source_path, artifact_path, atom)
         arcname = f"container/{file_name}"
@@ -982,9 +966,7 @@ def _export_matroska_container_artifacts(
 ) -> tuple[list[dict[str, Any]], list[SourceArtifact]]:
     mkvmerge = shutil.which("mkvmerge")
     if not mkvmerge:
-        raise RuntimeError(
-            "mkvmerge is required for Matroska/WebM source-container support"
-        )
+        raise RuntimeError("mkvmerge is required for Matroska/WebM source-container support")
 
     proc = subprocess.run(
         [mkvmerge, "-J", src],
@@ -1062,8 +1044,7 @@ def _source_container_rebuild_contract(
             "supported": True,
             "mode": "iso_bmff_rebuild",
             "preservation": (
-                "top-level ISO BMFF/QuickTime atoms plus rebuild-muxable "
-                "source stream artifacts"
+                "top-level ISO BMFF/QuickTime atoms plus rebuild-muxable source stream artifacts"
             ),
         }
     if is_matroska:
@@ -1086,8 +1067,7 @@ def _source_container_rebuild_contract(
     )
     if not allow_conversion_only_container:
         raise RuntimeError(
-            message
-            + "; use --allow-conversion-only-container only when you explicitly "
+            message + "; use --allow-conversion-only-container only when you explicitly "
             "accept conversion-only archival semantics for this source"
         )
     return {
@@ -1264,13 +1244,11 @@ def _dump_streams_and_metadata(
     )
 
     exports: list[StreamExport] = []
-    container_inventory, container_artifacts, dropped_items = (
-        _export_top_level_container_atoms(
-            src,
-            dest_dir,
-            drop_policy,
-            is_iso_bmff=source_is_iso_bmff,
-        )
+    container_inventory, container_artifacts, dropped_items = _export_top_level_container_atoms(
+        src,
+        dest_dir,
+        drop_policy,
+        is_iso_bmff=source_is_iso_bmff,
     )
     if source_is_matroska:
         matroska_inventory, matroska_artifacts = _export_matroska_container_artifacts(
@@ -1384,9 +1362,7 @@ def _dump_streams_and_metadata(
                 data_ext_hint,
                 primary_extension,
             )
-        sidecar_name = _build_stream_attachment_name(
-            stype, index, stream, primary_extension
-        )
+        sidecar_name = _build_stream_attachment_name(stype, index, stream, primary_extension)
         sidecar = dest_dir / sidecar_name
         export_entry: StreamExport = {
             "path": str(sidecar),
@@ -1438,9 +1414,7 @@ def _print_command(cmd: Sequence[str]) -> None:
     print(cmdline, file=sys.stderr)
 
 
-def _packet_sidecar_path(
-    export: StreamExport, export_path: pathlib.Path
-) -> pathlib.Path | None:
+def _packet_sidecar_path(export: StreamExport, export_path: pathlib.Path) -> pathlib.Path | None:
     packet_path_str = export.get("packet_timestamps_path")
     if packet_path_str:
         return pathlib.Path(packet_path_str)
@@ -1668,9 +1642,7 @@ def _stream_transforms_payload(
     encode_output_path: pathlib.Path,
     stream_transforms: Sequence[dict[str, Any]],
 ) -> dict[str, Any]:
-    selected_method = (
-        "original_remux" if selected_output_path != encode_output_path else "encoded"
-    )
+    selected_method = "original_remux" if selected_output_path != encode_output_path else "encoded"
     return {
         "schema_version": 1,
         "kind": "munchy.stream-transforms",
@@ -1768,9 +1740,7 @@ def _source_stream_artifact_records(
         stream = export.get("stream", {})
         codec_hint = cast(
             str,
-            stream.get("codec_name")
-            or stream.get("codec_tag_string")
-            or "unknown",
+            stream.get("codec_name") or stream.get("codec_tag_string") or "unknown",
         )
         export_dict = cast(dict[str, Any], export)
         artifact_name = export_dict.get("artifact_arcname")
@@ -1970,9 +1940,7 @@ def _artifact_arcname(base: str, used: set[str]) -> str:
     for index in range(2, 10_000):
         candidate_name = f"{stem}-{index}{suffix}"
         candidate = (
-            candidate_name
-            if str(parent) == "."
-            else f"{parent.as_posix()}/{candidate_name}"
+            candidate_name if str(parent) == "." else f"{parent.as_posix()}/{candidate_name}"
         )
         if candidate not in used:
             used.add(candidate)
@@ -2072,9 +2040,7 @@ def _build_source_artifacts_bundle(
         "artifacts": manifest_entries,
         "dropped": list(dropped_items),
     }
-    manifest_bytes = (
-        json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n"
-    )
+    manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n"
 
     try:
         if _source_artifacts_use_zstd(bundle_path):
@@ -2405,12 +2371,8 @@ def _audit_extracted_source_artifacts(
         if inventory.get("strict_accounting") is not True:
             errors.append("source inventory does not declare strict_accounting=true")
         container = inventory.get("container")
-        container_format = (
-            container.get("format") if isinstance(container, dict) else None
-        )
-        container_rebuild = (
-            container.get("rebuild") if isinstance(container, dict) else None
-        )
+        container_format = container.get("format") if isinstance(container, dict) else None
+        container_rebuild = container.get("rebuild") if isinstance(container, dict) else None
         if not isinstance(container_rebuild, dict):
             errors.append("source inventory missing source container rebuild contract")
             rebuild_supported = False
@@ -2419,8 +2381,7 @@ def _audit_extracted_source_artifacts(
             raw_mode = container_rebuild.get("mode")
             source_rebuild_mode = raw_mode if isinstance(raw_mode, str) else ""
             checks.append(
-                "source container rebuild contract: "
-                f"{container_rebuild.get('mode') or 'supported'}"
+                f"source container rebuild contract: {container_rebuild.get('mode') or 'supported'}"
             )
         else:
             warnings.append(
@@ -2429,11 +2390,7 @@ def _audit_extracted_source_artifacts(
             )
             rebuild_supported = False
             rebuild_blockers.append("source_container")
-        format_tags = (
-            container_format.get("tags")
-            if isinstance(container_format, dict)
-            else None
-        )
+        format_tags = container_format.get("tags") if isinstance(container_format, dict) else None
         if isinstance(format_tags, dict):
             metadata_keys = sorted(
                 key
@@ -2453,10 +2410,7 @@ def _audit_extracted_source_artifacts(
                         f"{len(metadata_keys)}"
                     )
                 else:
-                    checks.append(
-                        "source format metadata tags recorded: "
-                        f"{len(metadata_keys)}"
-                    )
+                    checks.append(f"source format metadata tags recorded: {len(metadata_keys)}")
     except RuntimeError as exc:
         errors.append(str(exc))
         inventory = {}
@@ -2499,9 +2453,7 @@ def _audit_extracted_source_artifacts(
         action = stream.get("action")
         if action == "unaccounted":
             unaccounted_streams += 1
-            errors.append(
-                f"unaccounted source stream: {stream.get('source_stream_index')}"
-            )
+            errors.append(f"unaccounted source stream: {stream.get('source_stream_index')}")
             rebuild_supported = False
             rebuild_blockers.append("stream_accounting")
         elif action == "preserved_as_source_artifact":
@@ -2523,8 +2475,7 @@ def _audit_extracted_source_artifacts(
             elif artifact_path.suffix.lower() not in _ISO_BMFF_CONTAINER_SUFFIXES:
                 source_index = stream.get("source_stream_index")
                 drop_hint = (
-                    f"; use --drop-source-artifact stream:{source_index} to "
-                    "intentionally drop it"
+                    f"; use --drop-source-artifact stream:{source_index} to intentionally drop it"
                     if isinstance(source_index, int)
                     else ""
                 )
@@ -2573,8 +2524,7 @@ def _audit_extracted_source_artifacts(
                             continue
                         if archive_index >= by_type.get(archive_type, 0):
                             errors.append(
-                                "archive output stream missing: "
-                                f"{archive_type}:{archive_index}"
+                                f"archive output stream missing: {archive_type}:{archive_index}"
                             )
                 checks.append("archive media streams probed")
             except Exception as exc:
@@ -2649,9 +2599,7 @@ def _audit_source_artifacts_bundle(
         cleanup = not keep_work
     else:
         work_dir.mkdir(parents=True, exist_ok=True)
-        base_dir = pathlib.Path(
-            tempfile.mkdtemp(prefix="audit-", dir=str(work_dir))
-        )
+        base_dir = pathlib.Path(tempfile.mkdtemp(prefix="audit-", dir=str(work_dir)))
         cleanup = not keep_work
     try:
         root = base_dir / "artifacts"
@@ -2788,9 +2736,7 @@ def _rebuild_source_container(
         cleanup = not keep_work
     else:
         work_dir.mkdir(parents=True, exist_ok=True)
-        base_dir = pathlib.Path(
-            tempfile.mkdtemp(prefix="rebuild-", dir=str(work_dir))
-        )
+        base_dir = pathlib.Path(tempfile.mkdtemp(prefix="rebuild-", dir=str(work_dir)))
         cleanup = not keep_work
 
     try:
@@ -2862,8 +2808,7 @@ def _rebuild_source_container(
             stream_path = artifacts_root / artifact
             if stream_path.suffix.lower() not in _ISO_BMFF_CONTAINER_SUFFIXES:
                 raise RuntimeError(
-                    "preserved stream artifact is not currently rebuild-muxable: "
-                    f"{artifact}"
+                    f"preserved stream artifact is not currently rebuild-muxable: {artifact}"
                 )
             preserved_stream_paths.append(stream_path)
 
@@ -2910,9 +2855,9 @@ def _rebuild_source_container(
             and cast(str, entry["atom_type"]).lower() in append_set
         ]
         top_level_atom_entries.sort(
-            key=lambda entry: int(entry.get("atom_offset", 0))
-            if isinstance(entry.get("atom_offset"), int)
-            else 0
+            key=lambda entry: (
+                int(entry.get("atom_offset", 0)) if isinstance(entry.get("atom_offset"), int) else 0
+            )
         )
 
         output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -196,8 +196,7 @@ def build_strict_source_artifacts(
 ) -> dict[str, Any]:
     if not isinstance(source_filesystem_metadata, Mapping):
         raise RuntimeError(
-            "unresumable: source filesystem metadata sidecar is missing for "
-            f"{source.name}"
+            f"unresumable: source filesystem metadata sidecar is missing for {source.name}"
         )
     profile = dict(encode_profile or {})
     drop_policy = source_artifacts.SourceArtifactDropPolicy(_artifact_drop_reason_map(profile))
@@ -237,8 +236,7 @@ def build_strict_source_artifacts(
         data_copy_specs = {
             spec
             for spec in (
-                info.get("spec") if isinstance(info.get("spec"), str) else ""
-                for info in data_infos
+                info.get("spec") if isinstance(info.get("spec"), str) else "" for info in data_infos
             )
             if spec
         }
@@ -289,18 +287,14 @@ def build_strict_source_artifacts(
             encode_output_path=archive_mkv,
             use_constant_quality=True,
             constant_quality=(
-                archive.get("quality")
-                if isinstance(archive.get("quality"), int)
-                else None
+                archive.get("quality") if isinstance(archive.get("quality"), int) else None
             ),
             global_video_kbps=0,
             audio_kbps=_bitrate_kbps(audio.get("bitrate"), 128),
             svt_lp=0,
             video_codec=str(archive.get("codec") or "av1_nvenc"),
             video_encoder={
-                key: value
-                for key, value in archive.items()
-                if key != "audio" and value is not None
+                key: value for key, value in archive.items() if key != "audio" and value is not None
             },
             audio_codec=str(audio.get("codec") or "libopus"),
             audio_encoder={key: value for key, value in audio.items() if value is not None},

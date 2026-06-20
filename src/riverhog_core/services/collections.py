@@ -1162,8 +1162,7 @@ def _collection_list_summaries(
             FinalizedImageRecord.image_id.label("image_id"),
             case(
                 (
-                    func.coalesce(registered_counts.c.registered_count, 0)
-                    >= required_copy_count,
+                    func.coalesce(registered_counts.c.registered_count, 0) >= required_copy_count,
                     1,
                 ),
                 else_=0,
@@ -1356,9 +1355,7 @@ def _collection_list_summaries(
                     protected_bytes=protected_bytes,
                     archived_bytes=archived_bytes,
                     image_states=(
-                        (ProtectionState.PARTIALLY_PROTECTED,)
-                        if stats.has_registered_image
-                        else ()
+                        (ProtectionState.PARTIALLY_PROTECTED,) if stats.has_registered_image else ()
                     ),
                 ),
                 protected_bytes=protected_bytes,
@@ -1864,9 +1861,7 @@ def _committed_unprotected_collection_bytes(session: Session) -> int:
     }
     coverage_by_file: dict[tuple[str, str], set[str]] = defaultdict(set)
     for coverage_row in coverage_rows:
-        coverage_by_file[(coverage_row.collection_id, coverage_row.path)].add(
-            coverage_row.image_id
-        )
+        coverage_by_file[(coverage_row.collection_id, coverage_row.path)].add(coverage_row.image_id)
 
     unprotected_bytes = 0
     for file_row in file_rows:

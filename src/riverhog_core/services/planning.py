@@ -651,10 +651,7 @@ def _refresh_provisional_plan_locked(
         _LOG.info(
             "planner refresh packed candidate groups: candidates=%s estimated_bytes=%s",
             len(piece_groups),
-            [
-                _candidate_estimated_bytes(tuple(pieces), config)
-                for pieces in piece_groups
-            ],
+            [_candidate_estimated_bytes(tuple(pieces), config) for pieces in piece_groups],
         )
         desired_ids = {
             _candidate_id_from_fingerprint(_candidate_plan_fingerprint(pieces, config))
@@ -1431,7 +1428,8 @@ def _pack_collection_piece_groups(
             collection_group_counts.get(group.collection_id, 0) + 1
         )
     eligible_collection_ids = (
-        set(collection_group_counts) if optionally_splittable_collections is None
+        set(collection_group_counts)
+        if optionally_splittable_collections is None
         else optionally_splittable_collections
     )
     optional_collection_ids = {
@@ -1443,9 +1441,7 @@ def _pack_collection_piece_groups(
         if all(piece.part_count == 1 for piece in group.pieces)
     }
     required_counts = {
-        collection_id: int(
-            (collection_required_image_counts or {}).get(collection_id, group_count)
-        )
+        collection_id: int((collection_required_image_counts or {}).get(collection_id, group_count))
         for collection_id, group_count in collection_group_counts.items()
     }
     finalized_counts = {
@@ -1559,8 +1555,7 @@ def _apply_saturation_whole_file_collection_splits(
     if saturation_threshold_bytes <= 0:
         return
     while (
-        _waiting_candidate_bytes(candidate_bins, minimum_payload_fill)
-        > saturation_threshold_bytes
+        _waiting_candidate_bytes(candidate_bins, minimum_payload_fill) > saturation_threshold_bytes
     ):
         move = _find_saturation_split_move(
             candidate_bins,
@@ -1613,15 +1608,18 @@ def _find_saturation_split_move(
 ) -> _OptionalSplitMove | None:
     waiting_before = _waiting_candidate_bytes(candidate_bins, minimum_payload_fill)
     best_move: _OptionalSplitMove | None = None
-    best_key: tuple[
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        tuple[tuple[str, str, int], ...],
-    ] | None = None
+    best_key: (
+        tuple[
+            int,
+            int,
+            int,
+            int,
+            int,
+            int,
+            tuple[tuple[str, str, int], ...],
+        ]
+        | None
+    ) = None
     for target_idx in sorted(
         range(len(candidate_bins)),
         key=lambda idx: (candidate_bins[idx].estimated_bytes, idx),
@@ -1686,13 +1684,16 @@ def _best_saturation_split_move_for_target(
     target = candidate_bins[target_bin_index]
     target_remaining = payload_capacity - target.estimated_bytes
     best_move: _OptionalSplitMove | None = None
-    best_key: tuple[
-        int,
-        int,
-        int,
-        int,
-        tuple[tuple[str, str, int], ...],
-    ] | None = None
+    best_key: (
+        tuple[
+            int,
+            int,
+            int,
+            int,
+            tuple[tuple[str, str, int], ...],
+        ]
+        | None
+    ) = None
     for donor_idx in sorted(
         range(len(candidate_bins)),
         key=lambda idx: (-candidate_bins[idx].estimated_bytes, idx),
@@ -1820,8 +1821,7 @@ def _find_optional_split_move(
             continue
         target_after = target.estimated_bytes + move.target_group_estimated_bytes
         donor_after = (
-            candidate_bins[move.donor_bin_index].estimated_bytes
-            - move.moved_payload_bytes
+            candidate_bins[move.donor_bin_index].estimated_bytes - move.moved_payload_bytes
         )
         piece_key = tuple(
             (piece.collection_id, piece.path, piece.part_index) for piece in move.moved_pieces
@@ -1960,9 +1960,7 @@ def _apply_optional_split_move(
     target = candidate_bins[move.target_bin_index]
     donor = candidate_bins[move.donor_bin_index]
     donor_group = donor.groups[move.donor_group_index]
-    moved_piece_keys = {
-        (piece.file_id, piece.part_index) for piece in move.moved_pieces
-    }
+    moved_piece_keys = {(piece.file_id, piece.part_index) for piece in move.moved_pieces}
     remaining_pieces = tuple(
         piece
         for piece in donor_group.pieces
@@ -2011,9 +2009,7 @@ def _collection_artifact_estimate(config: RuntimeConfig, collection_id: str) -> 
 def _collection_artifact_bytes_estimate(artifact: _CollectionArtifactCache) -> int:
     return _estimated_encrypted_leaf_size(
         len(artifact.manifest_bytes)
-    ) + _estimated_encrypted_leaf_size(
-        len(artifact.proof_bytes)
-    )
+    ) + _estimated_encrypted_leaf_size(len(artifact.proof_bytes))
 
 
 def _estimated_encrypted_leaf_size(plaintext_size: int) -> int:

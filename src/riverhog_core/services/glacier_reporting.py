@@ -214,9 +214,7 @@ def _direct_collection_usage_reports(
                 CollectionArchiveRecord.collection_id.in_(collection_ids)
             )
         ).all()
-        archives_by_collection = {
-            archive.collection_id: archive for archive in archive_rows
-        }
+        archives_by_collection = {archive.collection_id: archive for archive in archive_rows}
 
     image_contributions = _image_contributions_by_collection(
         session,
@@ -315,8 +313,7 @@ def _image_contributions_by_collection(
         .outerjoin(
             CollectionFileRecord,
             and_(
-                CollectionFileRecord.collection_id
-                == FinalizedImageCoveredPathRecord.collection_id,
+                CollectionFileRecord.collection_id == FinalizedImageCoveredPathRecord.collection_id,
                 CollectionFileRecord.path == FinalizedImageCoveredPathRecord.path,
             ),
         )

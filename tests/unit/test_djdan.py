@@ -556,11 +556,15 @@ def test_raw_burned_media_verifier_unmounts_macos_optical_media_before_raw_read(
     monkeypatch.setattr(djdan_main.sys, "platform", "darwin")
     monkeypatch.setattr(djdan_main.shutil, "which", lambda name: "/usr/bin/diskutil")
     monkeypatch.setattr(djdan_main.subprocess, "run", fake_run)
-    monkeypatch.setattr(djdan_main.Path, "open", lambda path, mode="r", *args, **kwargs: (
-        original_open(raw_device, mode, *args, **kwargs)
-        if str(path) == "/dev/rdisk4"
-        else original_open(path, mode, *args, **kwargs)
-    ))
+    monkeypatch.setattr(
+        djdan_main.Path,
+        "open",
+        lambda path, mode="r", *args, **kwargs: (
+            original_open(raw_device, mode, *args, **kwargs)
+            if str(path) == "/dev/rdisk4"
+            else original_open(path, mode, *args, **kwargs)
+        ),
+    )
 
     djdan_main.RawBurnedMediaVerifier().verify(
         iso_path,
@@ -1359,8 +1363,7 @@ def test_discover_recovery_handoffs_for_images_that_require_recovery() -> None:
                 "id": "rs-20260420T040001Z-1",
                 "state": "pending_approval",
                 "latest_message": (
-                    "Approve the archive restore before Riverhog requests archived "
-                    "collection data."
+                    "Approve the archive restore before Riverhog requests archived collection data."
                 ),
             }
 
@@ -1370,8 +1373,7 @@ def test_discover_recovery_handoffs_for_images_that_require_recovery() -> None:
             session_id="rs-20260420T040001Z-1",
             state="pending_approval",
             latest_message=(
-                "Approve the archive restore before Riverhog requests archived "
-                "collection data."
+                "Approve the archive restore before Riverhog requests archived collection data."
             ),
         )
     ]
@@ -1416,8 +1418,7 @@ def test_discover_active_recovery_sessions_dedupes_multi_image_sessions() -> Non
                 "id": "rs-20260420T040001Z-1",
                 "state": "pending_approval",
                 "latest_message": (
-                    "Approve the archive restore before Riverhog requests archived "
-                    "collection data."
+                    "Approve the archive restore before Riverhog requests archived collection data."
                 ),
                 "images": [
                     {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"},
@@ -1433,8 +1434,7 @@ def test_discover_active_recovery_sessions_dedupes_multi_image_sessions() -> Non
             type="image_rebuild",
             state="pending_approval",
             latest_message=(
-                "Approve the archive restore before Riverhog requests archived "
-                "collection data."
+                "Approve the archive restore before Riverhog requests archived collection data."
             ),
             images=(
                 djdan_main.RecoverySessionImageHint(
@@ -1506,8 +1506,7 @@ def test_djdan_recover_lists_active_sessions(monkeypatch) -> None:
                 "id": "rs-20260420T040001Z-1",
                 "state": "pending_approval",
                 "latest_message": (
-                    "Approve the archive restore before Riverhog requests archived "
-                    "collection data."
+                    "Approve the archive restore before Riverhog requests archived collection data."
                 ),
                 "images": [
                     {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"},
@@ -1535,8 +1534,7 @@ def test_djdan_recover_approves_waiting_session(monkeypatch, tmp_path: Path) -> 
                 "id": session_id,
                 "state": "pending_approval",
                 "latest_message": (
-                    "Approve the archive restore before Riverhog requests archived "
-                    "collection data."
+                    "Approve the archive restore before Riverhog requests archived collection data."
                 ),
                 "images": [
                     {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"},
@@ -1892,8 +1890,7 @@ def test_djdan_recover_can_finish_expired_session_from_local_staging(
     assert result.exit_code == 0
     assert "rebuild session rs-20260420T040001Z-1 completed" in result.stdout
     assert (
-        "restore window expired remotely; resuming from local staged ISO artifacts"
-        in result.stderr
+        "restore window expired remotely; resuming from local staged ISO artifacts" in result.stderr
     )
     assert client.completed_sessions == ["rs-20260420T040001Z-1"]
     assert client.copy_states[f"{image_id}-3"]["state"] == "verified"
@@ -2090,8 +2087,7 @@ def test_djdan_burn_reports_recovery_handoffs_when_no_standard_backlog_exists(
                 "id": "rs-20260420T040001Z-1",
                 "state": "pending_approval",
                 "latest_message": (
-                    "Approve the archive restore before Riverhog requests archived "
-                    "collection data."
+                    "Approve the archive restore before Riverhog requests archived collection data."
                 ),
             }
 
@@ -2294,9 +2290,7 @@ def test_djdan_burn_resumes_registered_copy_verification_update(
 
         def list_images(self, *, page: int, per_page: int, sort: str, order: str):
             verified = sum(
-                1
-                for copy in self.copy_states.values()
-                if copy["verification_state"] == "verified"
+                1 for copy in self.copy_states.values() if copy["verification_state"] == "verified"
             )
             return {
                 "page": 1,

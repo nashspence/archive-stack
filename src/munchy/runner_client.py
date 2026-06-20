@@ -388,9 +388,13 @@ def format_input_upload_progress(progress: dict[str, Any]) -> str:
     files_total = int(progress.get("files_total") or 0)
     uploaded_bytes = int(progress.get("uploaded_bytes") or 0)
     bytes_total = int(progress.get("bytes_total") or 0)
-    pct = (uploaded_bytes / bytes_total * 100.0) if bytes_total else progress_percent(
-        progress,
-        percent_key="percent_bytes",
+    pct = (
+        (uploaded_bytes / bytes_total * 100.0)
+        if bytes_total
+        else progress_percent(
+            progress,
+            percent_key="percent_bytes",
+        )
     )
     rate = int(progress.get("rate_bytes_per_second") or 0)
     parts = [
@@ -541,8 +545,10 @@ def input_tree_progress(upload_progress: dict[str, Any]) -> dict[str, Any] | Non
     bytes_done = min(int(upload_progress.get("input_tree_bytes_ready") or 0), bytes_total)
     if files_total <= 0 and bytes_total <= 0:
         return None
-    if files_total > 0 and files_done >= files_total and (
-        bytes_total <= 0 or bytes_done >= bytes_total
+    if (
+        files_total > 0
+        and files_done >= files_total
+        and (bytes_total <= 0 or bytes_done >= bytes_total)
     ):
         return None
     percent = (bytes_done / bytes_total * 100.0) if bytes_total else 0.0
@@ -633,9 +639,7 @@ def local_progress_items(job: dict[str, Any]) -> list[tuple[str, dict[str, Any]]
         return items
     if isinstance(progress, list):
         return [
-            (str(item.get("stage") or "local"), item)
-            for item in progress
-            if isinstance(item, dict)
+            (str(item.get("stage") or "local"), item) for item in progress if isinstance(item, dict)
         ]
     return []
 
@@ -1009,14 +1013,10 @@ class RichProgressRenderer(ProgressRenderer):
         encode_progress = job.get("encode_progress")
         if isinstance(encode_progress, dict):
             label = (
-                "Remote Review"
-                if int(encode_progress.get("clips_total") or 0)
-                else "Remote Encode"
+                "Remote Review" if int(encode_progress.get("clips_total") or 0) else "Remote Encode"
             )
             encode_percent_key = (
-                "percent_clips"
-                if int(encode_progress.get("clips_total") or 0)
-                else "percent_files"
+                "percent_clips" if int(encode_progress.get("clips_total") or 0) else "percent_files"
             )
             table.add_row(label, self._bar(encode_progress, percent_key=encode_percent_key))
             table.add_row("", format_encode_progress(encode_progress))
@@ -1227,9 +1227,8 @@ class UploadProgress:
                 self.completed_files == self.total_files or now - self.last_printed_at >= 15
             )
             job_status_provider = self.job_status_provider
-            should_check_job = (
-                job_status_provider is not None
-                and (should_print or now - self.last_job_checked_at >= 5)
+            should_check_job = job_status_provider is not None and (
+                should_print or now - self.last_job_checked_at >= 5
             )
             remote_job: dict[str, Any] | None = None
             if should_check_job:
@@ -1739,8 +1738,7 @@ class MunchyRunnerClient:
         length = int(upload.get("length") or item.bytes)
         if length != item.bytes:
             raise RuntimeError(
-                f"runner expected {length} bytes for {item.rel_path}, "
-                f"local file has {item.bytes}"
+                f"runner expected {length} bytes for {item.rel_path}, local file has {item.bytes}"
             )
         if offset < 0:
             offset = 0

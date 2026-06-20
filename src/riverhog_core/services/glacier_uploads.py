@@ -161,9 +161,7 @@ class SqlAlchemyGlacierUploadService:
                                     1,
                                 ),
                                 (
-                                    CollectionUploadRecord.archive_multipart_upload_id.is_not(
-                                        None
-                                    ),
+                                    CollectionUploadRecord.archive_multipart_upload_id.is_not(None),
                                     2,
                                 ),
                                 (CollectionUploadRecord.archive_phase == "uploading", 2),
@@ -808,9 +806,7 @@ class SqlAlchemyGlacierUploadService:
         notify_operator = False
         attempt_count = 0
         next_retry_at = (
-            _isoformat_z(current + self._config.glacier_upload_retry_delay)
-            if retryable
-            else None
+            _isoformat_z(current + self._config.glacier_upload_retry_delay) if retryable else None
         )
 
         with session_scope(self._session_factory) as session:
@@ -833,13 +829,10 @@ class SqlAlchemyGlacierUploadService:
             ):
                 upload.archive_last_failure_notification_at = current_text
                 notify_operator = True
-            if (
-                not retryable
-                and (
-                    previous_state != "failed"
-                    or previous_phase != "failed"
-                    or previous_failure != error
-                )
+            if not retryable and (
+                previous_state != "failed"
+                or previous_phase != "failed"
+                or previous_failure != error
             ):
                 upload.archive_last_failure_notification_at = current_text
                 notify_operator = True

@@ -251,9 +251,10 @@ def test_collection_archive_package_can_resume_from_ranged_file_reader() -> None
     first_member_size = 512 + len(files_by_path["a.txt"]) + ((-len(files_by_path["a.txt"])) % 512)
     archive_offset = first_member_size + 512 + 17
 
-    assert b"".join(package.iter_archive_from_offset(archive_offset)) == package.archive_bytes[
-        archive_offset:
-    ]
+    assert (
+        b"".join(package.iter_archive_from_offset(archive_offset))
+        == package.archive_bytes[archive_offset:]
+    )
     assert range_calls == [("b.txt", 17, len(files_by_path["b.txt"]) - 17)]
 
 

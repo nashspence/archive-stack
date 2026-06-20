@@ -54,8 +54,7 @@ def test_source_artifact_bundle_uses_munchy_manifest_kind(tmp_path: Path) -> Non
     assert manifest["kind"] == "munchy.source-artifacts"
     assert fs_metadata["kind"] == "munchy.source-filesystem-metadata"
     assert any(
-        item["path"] == "inventory/source-filesystem.json"
-        and item["kind"] == "source_filesystem"
+        item["path"] == "inventory/source-filesystem.json" and item["kind"] == "source_filesystem"
         for item in manifest["artifacts"]
     )
 
@@ -121,8 +120,7 @@ def test_source_artifact_audit_rejects_non_munchy_manifest_kind(tmp_path: Path) 
 
 def test_source_artifact_default_path_is_zstd_tar() -> None:
     assert (
-        source_artifacts._source_artifacts_path("clip.webm")
-        == "clip.webm.source-artifacts.tar.zst"
+        source_artifacts._source_artifacts_path("clip.webm") == "clip.webm.source-artifacts.tar.zst"
     )
 
 
@@ -160,6 +158,4 @@ def test_source_artifact_bridge_accepts_service_encode_profile_shape() -> None:
         },
     }
 
-    assert _artifact_drop_reason_map(profile) == {
-        "stream:7": "not useful after stabilization"
-    }
+    assert _artifact_drop_reason_map(profile) == {"stream:7": "not useful after stabilization"}

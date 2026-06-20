@@ -1854,9 +1854,11 @@ def merge_last_eager_upload_metrics(
     payload_at = safe_parse_iso(payload_riverhog.get("last_eager_upload_at"))
     if current_at is None and payload_at is None:
         return
-    source = payload_riverhog if current_at is None or (
-        payload_at is not None and payload_at >= current_at
-    ) else current_riverhog
+    source = (
+        payload_riverhog
+        if current_at is None or (payload_at is not None and payload_at >= current_at)
+        else current_riverhog
+    )
     for key in (
         "last_eager_upload_at",
         "last_eager_upload_files",
@@ -2342,11 +2344,7 @@ def materialize_upload_file(
         link_or_copy(source, dest)
     except RuntimeError:
         alternate_source = shared_source if source == tusd_source else tusd_source
-        if (
-            not source.exists()
-            and alternate_source is not None
-            and alternate_source.exists()
-        ):
+        if not source.exists() and alternate_source is not None and alternate_source.exists():
             link_or_copy(alternate_source, dest)
         else:
             raise
@@ -2430,9 +2428,8 @@ def sync_shared_input_tree(
 def sync_shared_input_file(upload_id: str, rel_path: str) -> bool:
     upload = load_input_upload_raw(upload_id)
     file_state = find_upload_file(upload, rel_path)
-    if (
-        input_upload_storage_hint(upload).structured_routing
-        and not file_state.get("resolved_group")
+    if input_upload_storage_hint(upload).structured_routing and not file_state.get(
+        "resolved_group"
     ):
         return False
     with shared_input_tree_lock(upload_id):
@@ -4225,9 +4222,13 @@ def riverhog_upload_artifact(
     session = api.create_or_resume_registered_collection_file_upload(collection_id, file_payload)
     update_riverhog_state_from_payload(job, session)
     with riverhog_upload_lock(job_id):
-        record = riverhog_session_state(job).setdefault("files", {}).setdefault(
-            rel_path,
-            {"path": rel_path},
+        record = (
+            riverhog_session_state(job)
+            .setdefault("files", {})
+            .setdefault(
+                rel_path,
+                {"path": rel_path},
+            )
         )
         if not isinstance(record, dict):
             record = {"path": rel_path}
@@ -6885,10 +6886,9 @@ def resume_job(job_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]
         job = load_job(job_id)
         if job.get("state") == "succeeded":
             return job
-        preserve_riverhog_session = (
-            can_resume_preserving_riverhog_session(job)
-            and riverhog_session_visible_for_resume(job)
-        )
+        preserve_riverhog_session = can_resume_preserving_riverhog_session(
+            job
+        ) and riverhog_session_visible_for_resume(job)
         if preserve_riverhog_session:
             for key in (
                 "debug_bundle_created_at",

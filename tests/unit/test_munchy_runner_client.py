@@ -134,9 +134,7 @@ def test_format_riverhog_archive_and_promotion_progress_are_separate() -> None:
     assert promotion is not None
     assert format_riverhog_archive_progress(archive).startswith("riverhog deep archive, uploading")
     assert "parts 2/5" in format_riverhog_archive_progress(archive)
-    assert format_riverhog_promotion_progress(promotion).startswith(
-        "riverhog promotion 3/10 files"
-    )
+    assert format_riverhog_promotion_progress(promotion).startswith("riverhog promotion 3/10 files")
 
 
 def test_riverhog_archive_progress_waits_when_collection_exists() -> None:
@@ -151,9 +149,7 @@ def test_riverhog_archive_progress_waits_when_collection_exists() -> None:
 
     assert progress is not None
     assert progress["percent_bytes"] == 0.0
-    assert format_riverhog_archive_progress(progress).startswith(
-        "riverhog deep archive, waiting"
-    )
+    assert format_riverhog_archive_progress(progress).startswith("riverhog deep archive, waiting")
 
 
 def test_format_job_summary_line_renders_review_clip_progress() -> None:

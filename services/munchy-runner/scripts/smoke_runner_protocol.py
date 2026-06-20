@@ -111,9 +111,7 @@ def tus_patch(url: str, chunk: bytes, offset: int) -> int:
     )
     if result.status != 204:
         body = result.body.decode("utf-8", "replace")
-        raise AssertionError(
-            f"TUS PATCH expected HTTP 204, got {result.status}: {body}"
-        )
+        raise AssertionError(f"TUS PATCH expected HTTP 204, got {result.status}: {body}")
     return int(result.body.decode("utf-8") or 0) if result.body else offset + len(chunk)
 
 
@@ -300,8 +298,7 @@ def main() -> int:
         )
     if not storage.get("eager_archive_only_encoding"):
         raise AssertionError(
-            "runner capabilities did not advertise eager archive encoding: "
-            f"{capabilities}"
+            f"runner capabilities did not advertise eager archive encoding: {capabilities}"
         )
 
     root_upload = request(

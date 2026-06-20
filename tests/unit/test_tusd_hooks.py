@@ -77,9 +77,7 @@ def test_precreate_hook_assigns_url_safe_id_for_paths_with_spaces(monkeypatch) -
 def test_precreate_hook_accepts_signature_safe_base64_target_metadata(monkeypatch) -> None:
     monkeypatch.setenv("RIVERHOG_TUSD_HOOK_SECRET", "hook-secret")
     client = _client()
-    target_path = (
-        ".riverhog/uploads/collections/2025/demo/Logos/Plane Tail -  logo2a.jpg"
-    )
+    target_path = ".riverhog/uploads/collections/2025/demo/Logos/Plane Tail -  logo2a.jpg"
     target_path_b64 = base64.b64encode(target_path.encode("utf-8")).decode("ascii")
 
     response = client.post(
@@ -175,9 +173,7 @@ def test_post_finish_hook_accepts_forwarded_bearer_token(monkeypatch) -> None:
 
 
 def test_tusd_upload_store_sends_signature_safe_target_metadata() -> None:
-    target_path = (
-        ".riverhog/uploads/collections/2025/demo/Logos/Plane Tail -  logo2a.jpg"
-    )
+    target_path = ".riverhog/uploads/collections/2025/demo/Logos/Plane Tail -  logo2a.jpg"
     header = TusdUploadStore._metadata_header(object(), target_path)
     name, encoded_value = header.split(" ", 1)
     decoded_value = base64.b64decode(encoded_value, validate=True).decode("ascii")

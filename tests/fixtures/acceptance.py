@@ -1035,8 +1035,7 @@ class AcceptanceState:
         released_files = self.selected_files(raw_target, missing_ok=True)
         for record in released_files:
             if record.hot and not any(
-                self._record_matches_target(record, str(target))
-                for target in self.exact_pins
+                self._record_matches_target(record, str(target)) for target in self.exact_pins
             ):
                 record.hot = False
 
@@ -1276,8 +1275,7 @@ class AcceptanceCollectionService:
                 "sha256": str(existing.sha256),
             } != normalized_file:
                 raise Conflict(
-                    "collection upload session file already exists with different metadata: "
-                    f"{path}"
+                    f"collection upload session file already exists with different metadata: {path}"
                 )
             return self._upload_payload(upload, state="open", collection=None)
         upload.files[path] = CollectionUploadFileRecord(
@@ -1310,8 +1308,7 @@ class AcceptanceCollectionService:
                 "sha256": str(file_record.sha256),
             } != normalized_file:
                 raise Conflict(
-                    "collection upload session file already exists with different metadata: "
-                    f"{path}"
+                    f"collection upload session file already exists with different metadata: {path}"
                 )
         else:
             file_record = CollectionUploadFileRecord(
@@ -1375,11 +1372,7 @@ class AcceptanceCollectionService:
         file_record.uploaded_bytes = file_record.bytes
         file_record.upload_expires_at = None
 
-        if (
-            upload.state != "open"
-            and upload.state != "archiving"
-            and self._is_complete(upload)
-        ):
+        if upload.state != "open" and upload.state != "archiving" and self._is_complete(upload):
             upload.state = "archiving"
 
         return {
@@ -2636,15 +2629,13 @@ class AcceptanceRecoverySessionService:
                             f"{str(exc).strip() or exc.__class__.__name__}"
                         )
                         record.next_reminder_at = _acceptance_isoformat(
-                            current
-                            + timedelta(seconds=_OPERATOR_WEBHOOK_RETRY_DELAY_SECONDS)
+                            current + timedelta(seconds=_OPERATOR_WEBHOOK_RETRY_DELAY_SECONDS)
                         )
                         processed += 1
                         continue
                     record.last_notified_at = current_text
                     record.next_reminder_at = _acceptance_isoformat(
-                        current
-                        + timedelta(seconds=_OPERATOR_WEBHOOK_REMINDER_INTERVAL_SECONDS)
+                        current + timedelta(seconds=_OPERATOR_WEBHOOK_REMINDER_INTERVAL_SECONDS)
                     )
                     if initial_notification_succeeded:
                         record.reminder_count += 1
@@ -2885,6 +2876,7 @@ def _acceptance_glacier_scope(*, image_id: str | None, collection: str | None) -
     if collection is not None:
         return "collection"
     return "all"
+
 
 def _acceptance_glacier_image(image: CandidateRecord) -> GlacierUsageImage:
     return GlacierUsageImage(

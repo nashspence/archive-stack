@@ -161,10 +161,14 @@ def estimate_iso_size_from_root(*, image_root: Path, volume_id: str, fallback_by
     def as_bytes(part: bytes | str) -> bytes:
         return part.encode("utf-8") if isinstance(part, str) else part
 
-    combined = b"\n".join(as_bytes(part) for part in (proc.stdout, proc.stderr) if part).decode(
-        "utf-8",
-        errors="replace",
-    ).strip()
+    combined = (
+        b"\n".join(as_bytes(part) for part in (proc.stdout, proc.stderr) if part)
+        .decode(
+            "utf-8",
+            errors="replace",
+        )
+        .strip()
+    )
     if proc.returncode != 0:
         detail = combined[-1500:] or f"xorriso exited {proc.returncode}"
         raise RuntimeError(detail)

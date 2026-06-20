@@ -135,10 +135,7 @@ def test_done_fetch_summary_uses_aggregate_stats_without_materializing_entries(
     initialize_db(sqlite_url(sqlite_path))
 
     collection_id = "docs"
-    files = {
-        f"camera/file-{index:04d}.dat": f"payload-{index}\n".encode()
-        for index in range(100)
-    }
+    files = {f"camera/file-{index:04d}.dat": f"payload-{index}\n".encode() for index in range(100)}
     session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         session.add(CollectionRecord(id=collection_id))
@@ -192,10 +189,7 @@ def test_waiting_fetch_status_uses_pending_preview_without_materializing_entries
     initialize_db(sqlite_url(sqlite_path))
 
     collection_id = "docs"
-    files = {
-        f"camera/file-{index:04d}.dat": f"payload-{index}\n".encode()
-        for index in range(100)
-    }
+    files = {f"camera/file-{index:04d}.dat": f"payload-{index}\n".encode() for index in range(100)}
     session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         session.add(CollectionRecord(id=collection_id))
@@ -730,8 +724,7 @@ def test_cold_fetch_manifest_can_select_multiple_collections_by_prefix(
 
     assert manifest["target"] == "2025/"
     assert [
-        (entry["id"], entry["collection_id"], entry["path"])
-        for entry in manifest["entries"]
+        (entry["id"], entry["collection_id"], entry["path"]) for entry in manifest["entries"]
     ] == [
         ("e1", collections[0][0], path),
         ("e2", collections[1][0], path),
@@ -836,10 +829,9 @@ def test_cold_fetch_complete_restores_matching_paths_across_collections(
 
     manifest = service.manifest("fx-multi")
 
-    assert [
-        (entry["collection_id"], entry["path"])
-        for entry in manifest["entries"]
-    ] == [(collection_id, path) for collection_id, _content in collections]
+    assert [(entry["collection_id"], entry["path"]) for entry in manifest["entries"]] == [
+        (collection_id, path) for collection_id, _content in collections
+    ]
 
     completed = service.complete("fx-multi")
 

@@ -1154,9 +1154,7 @@ def av1_archive_command(source: Path, dest: Path, archive: ArchiveEncodeProfile)
     decoder_args = archive_decoder_args(source)
     hardware_scale_filter = archive_hardware_scale_filter(source, archive, decoder_args)
     filters = (
-        [hardware_scale_filter]
-        if hardware_scale_filter
-        else archive_video_filters(source, archive)
+        [hardware_scale_filter] if hardware_scale_filter else archive_video_filters(source, archive)
     )
     hardware_frames = hardware_scale_filter is not None
     if hardware_frames:
@@ -1353,8 +1351,7 @@ def run_batch(
             if len(missing_metadata) > 5:
                 sample += f", ... ({len(missing_metadata)} total)"
             raise RuntimeError(
-                "unresumable: source filesystem metadata sidecar is missing entries for "
-                f"{sample}"
+                f"unresumable: source filesystem metadata sidecar is missing entries for {sample}"
             )
     with ThreadPoolExecutor(max_workers=MAX_PARALLEL_ENCODES) as pool:
         futures = {}

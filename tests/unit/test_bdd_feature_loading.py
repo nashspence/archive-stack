@@ -44,6 +44,4 @@ def test_optical_acceptance_features_do_not_expose_fixture_or_device_internals()
             for term in forbidden_terms:
                 if term in lowered:
                     violations.append(f"{path.name}:{line_number}: {term}")
-    assert not violations, "Optical acceptance surface exposes internals: " + ", ".join(
-        violations
-    )
+    assert not violations, "Optical acceptance surface exposes internals: " + ", ".join(violations)

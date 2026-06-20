@@ -82,6 +82,5 @@ def test_runtime_and_test_lockfiles_use_hashes_for_every_package() -> None:
         packages = _parse_lockfile(REPO_ROOT / lockfile)
         missing_hashes = [package.name for package in packages.values() if not package.hashes]
         assert not missing_hashes, (
-            f"{lockfile} has packages without --hash=sha256 entries: "
-            f"{', '.join(missing_hashes)}"
+            f"{lockfile} has packages without --hash=sha256 entries: {', '.join(missing_hashes)}"
         )

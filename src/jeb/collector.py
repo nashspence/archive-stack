@@ -402,8 +402,7 @@ class Collector:
                 """
             )
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_jeb_batches_state "
-                "ON batches(state, created_at)"
+                "CREATE INDEX IF NOT EXISTS idx_jeb_batches_state ON batches(state, created_at)"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_jeb_batches_collection_state "
@@ -517,9 +516,7 @@ class Collector:
             return
         target_paths = [item.target_path for item in files]
         if len(target_paths) != len(set(target_paths)):
-            duplicates = sorted(
-                path for path in set(target_paths) if target_paths.count(path) > 1
-            )
+            duplicates = sorted(path for path in set(target_paths) if target_paths.count(path) > 1)
             raise UnrecoverableJebError(
                 f"collection {collection.id} has duplicate upload path(s): "
                 + ", ".join(duplicates[:5])
@@ -746,9 +743,7 @@ class Collector:
         period: datetime,
     ) -> tuple[str, str]:
         collection_timestamp = period.strftime("%Y%m%dT%H%M%SZ")
-        manifest = "\n".join(
-            f"{item.target_path} {item.bytes} {item.mtime_ns}" for item in files
-        )
+        manifest = "\n".join(f"{item.target_path} {item.bytes} {item.mtime_ns}" for item in files)
         digest = hashlib.sha256(manifest.encode("utf-8")).hexdigest()[:12]
         return f"{collection_timestamp}__{collection.id}__{digest}", digest
 
@@ -850,10 +845,7 @@ class Collector:
                 elapsed = max(now - started_at, 0.001)
                 percent = (done_bytes / total_bytes * 100.0) if total_bytes else 100.0
                 LOG.info(
-                    (
-                        "batch %s hash progress: %d/%d file(s), %s/%s, "
-                        "%.2f%%, %.1fs"
-                    ),
+                    ("batch %s hash progress: %d/%d file(s), %s/%s, %.2f%%, %.1fs"),
                     batch_id,
                     index,
                     total_files,
@@ -938,11 +930,7 @@ class Collector:
         report: MediaPreflightReport,
     ) -> tuple[MediaPreflightReport, list[str]]:
         rows = {str(row["target_path"]): row for row in self.batch_files(batch_id)}
-        results_by_label = {
-            result.file.label: result
-            for result in report.results
-            if result.ok
-        }
+        results_by_label = {result.file.label: result for result in report.results if result.ok}
         notes: list[str] = []
         repaired = 0
         quarantined = 0
@@ -1038,8 +1026,7 @@ class Collector:
                     source.unlink()
             elif self.config.collector.preflight_repair_original == "keep_corrupt":
                 corrupt_dest = unique_corrupt_path(
-                    self.config.collector.preflight_repair_corrupt_dir
-                    / PurePosixPath(target_path)
+                    self.config.collector.preflight_repair_corrupt_dir / PurePosixPath(target_path)
                 )
                 corrupt_dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(input_path, corrupt_dest)
@@ -1091,7 +1078,6 @@ class Collector:
                 "DELETE FROM files WHERE batch_id = ? AND target_path = ?",
                 (batch_id, target_path),
             )
-
 
     def finish_target_success(self, batch_id: str) -> None:
         batch = self.load_batch(batch_id)
@@ -1145,10 +1131,9 @@ class Collector:
         fingerprint = hashlib.sha256(
             f"{batch_payload['id']}:{component}:{message}".encode()
         ).hexdigest()[:24]
-        if (
-            batch_payload.get("notified_error_fingerprint") == fingerprint
-            and not self.notification_reminder_due(batch_payload)
-        ):
+        if batch_payload.get(
+            "notified_error_fingerprint"
+        ) == fingerprint and not self.notification_reminder_due(batch_payload):
             return True
         if not self.notifier.critical_batch_issue(
             batch=batch_payload,
@@ -1173,6 +1158,7 @@ class Collector:
             return True
         age = max(0.0, (now() - sent_at.astimezone(UTC)).total_seconds())
         return age >= self.config.notify.reminder_interval_seconds
+
 
 class MunchyTargetRunner:
     def advance(self, collector: Collector, batch_id: str) -> None:
@@ -1226,9 +1212,7 @@ def munchy_upload_request(
             rel_path=str(row["target_path"]),
             bytes=int(row["bytes"]),
             sha256=str(row["sha256"]),
-            filesystem_metadata=collect_filesystem_metadata(
-                filesystem_metadata_source(row)
-            ),
+            filesystem_metadata=collect_filesystem_metadata(filesystem_metadata_source(row)),
         )
         for row in rows
     )
@@ -1260,9 +1244,7 @@ def munchy_upload_request(
         "structured_routing": bool(job_payload.get("profile_routing")),
         "groups": {
             name: {
-                "archive_mode": munchy_archive_mode(
-                    str(group.get("archive_mode") or "av1_nvenc")
-                ),
+                "archive_mode": munchy_archive_mode(str(group.get("archive_mode") or "av1_nvenc")),
                 "gpu_tasks": list(group.get("gpu_tasks") or []),
             }
             for name, group in groups.items()
@@ -1286,9 +1268,7 @@ def filesystem_metadata_source(row: sqlite3.Row) -> Path:
     staging = Path(str(row["staging_path"]))
     if staging.exists():
         return staging
-    raise UnrecoverableJebError(
-        f"source and staging file are both missing: {source} -> {staging}"
-    )
+    raise UnrecoverableJebError(f"source and staging file are both missing: {source} -> {staging}")
 
 
 def run_safe_remux(*, ffmpeg_path: str, source: Path, dest: Path) -> None:
@@ -1354,8 +1334,7 @@ def munchy_groups_payload(config: JebConfig) -> dict[str, dict[str, Any]]:
 def format_media_preflight_error(report: MediaPreflightReport) -> str:
     failed = report.failed_results
     message = (
-        f"media preflight failed for {len(failed)}/{len(report.results)} file(s); "
-        "no upload started"
+        f"media preflight failed for {len(failed)}/{len(report.results)} file(s); no upload started"
     )
     if not failed:
         return message
@@ -1411,9 +1390,7 @@ def config_from_mapping(raw: Mapping[str, Any]) -> JebConfig:
         collector_raw.get("preflight_repair_original") or "keep_corrupt"
     )
     if preflight_repair_original not in {"keep_corrupt", "delete"}:
-        raise ValueError(
-            "collector.preflight_repair_original must be keep_corrupt or delete"
-        )
+        raise ValueError("collector.preflight_repair_original must be keep_corrupt or delete")
     collector = CollectorSettings(
         interval_seconds=parse_duration(collector_raw.get("interval"), 300),
         state_db=Path(os.path.expandvars(str(collector_raw.get("state_db", "/state/jeb.sqlite3")))),
@@ -1429,9 +1406,7 @@ def config_from_mapping(raw: Mapping[str, Any]) -> JebConfig:
                 str(collector_raw.get("preflight_repair_corrupt_dir", "/landing/_corrupt"))
             )
         ),
-        preflight_repair_ffmpeg=str(
-            collector_raw.get("preflight_repair_ffmpeg") or "ffmpeg"
-        ),
+        preflight_repair_ffmpeg=str(collector_raw.get("preflight_repair_ffmpeg") or "ffmpeg"),
     )
     notify_raw = mapping(raw.get("notify"))
     notify_url = env_value(
@@ -1450,8 +1425,7 @@ def config_from_mapping(raw: Mapping[str, Any]) -> JebConfig:
         raise ValueError("notify.url or JEB_WEBHOOK_URL is required when notify.enabled=true")
 
     profiles = {
-        str(name): dict(mapping(profile))
-        for name, profile in mapping(raw.get("profiles")).items()
+        str(name): dict(mapping(profile)) for name, profile in mapping(raw.get("profiles")).items()
     }
     targets = load_targets(mapping(raw.get("targets")))
     sources = tuple(load_source(source) for source in sequence(raw.get("sources")))
@@ -1623,9 +1597,7 @@ def load_source_group(raw_any: Any) -> ProfileGroup:
         gpu_tasks: tuple[str, ...] = ()
     else:
         gpu_tasks = (
-            tuple(str(item) for item in sequence(tasks))
-            if tasks is not None
-            else DEFAULT_GPU_TASKS
+            tuple(str(item) for item in sequence(tasks)) if tasks is not None else DEFAULT_GPU_TASKS
         )
     return ProfileGroup(
         profile=optional_str(raw.get("profile")),
