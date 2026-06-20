@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, object_session, selectinload
+from sqlalchemy.sql.elements import ColumnElement
 
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
@@ -16,6 +17,7 @@ from riverhog_core.catalog_models import (
     FetchEntryRecord,
     FileCopyRecord,
     FinalizedImageRecord,
+    HotFetchOperatorSummaryRecord,
 )
 from riverhog_core.domain.enums import FetchState
 from riverhog_core.domain.errors import Conflict, HashMismatch, InvalidState, NotFound
@@ -36,6 +38,7 @@ from riverhog_core.services.copy_recovery_metadata import (
     CopyRecoveryMetadata,
     read_copy_recovery_metadata,
 )
+from riverhog_core.services.hot_fetch_projection import fetch_summary_from_hot_projection
 from riverhog_core.services.resumable_uploads import (
     UploadLifecycleState,
     create_or_resume_upload_state,
@@ -110,39 +113,31 @@ class SqlAlchemyFetchService:
 
     def get(self, fetch_id: str) -> FetchSummary:
         with session_scope(self._session_factory) as session:
-            pin_record = _get_pin_record(session, fetch_id)
-            if pin_record.fetch_state == FetchState.DONE.value:
-                return _done_summary_from_target_stats(session, pin_record)
-            entries = _existing_fetch_entries(session, pin_record.fetch_id)
-            if not entries:
-                return _summary_from_target_stats(session, pin_record)
-            _sync_upload_progress(pin_record, entries, self._upload_store)
-            _expire_incomplete_uploads(pin_record, entries, self._upload_store)
-            return _summary_from_records(pin_record, entries, include_copies=False)
+            row = _get_hot_fetch_projection(session, fetch_id)
+            return fetch_summary_from_hot_projection(row, prefer_entries=True)
 
     def status(self, fetch_id: str, *, limit: int = 25) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
-            pin_record = _get_pin_record(session, fetch_id)
-            if pin_record.fetch_state == FetchState.DONE.value:
-                summary = _done_summary_from_target_stats(session, pin_record)
-                return _fetch_status_payload(summary, entries=[], limit=limit)
-
-            existing = _existing_fetch_entries(session, pin_record.fetch_id)
-            if not existing:
-                summary = _summary_from_target_stats(session, pin_record)
-                entries = _pending_status_entries_from_target(session, pin_record.target, limit)
-                return _fetch_status_payload(summary, entries=entries, limit=limit)
-
-            _sync_upload_progress(pin_record, existing, self._upload_store)
-            _expire_incomplete_uploads(pin_record, existing, self._upload_store)
-            summary = _summary_from_records(pin_record, existing, include_copies=False)
+            row = _get_hot_fetch_projection(session, fetch_id)
+            summary = fetch_summary_from_hot_projection(row, prefer_entries=True)
+            if summary.state == FetchState.DONE:
+                entries: list[dict[str, object]] = []
+            elif row.entries_total > 0:
+                entries = _status_entries_from_query(
+                    session,
+                    row.fetch_id,
+                    fetch_state=summary.state,
+                    limit=limit,
+                )
+            else:
+                entries = _pending_status_entries_from_target_query(
+                    session,
+                    row.target,
+                    limit,
+                )
             return _fetch_status_payload(
                 summary,
-                entries=_status_entries_from_records(
-                    existing,
-                    fetch_state=FetchState(pin_record.fetch_state),
-                    limit=limit,
-                ),
+                entries=entries,
                 limit=limit,
             )
 
@@ -458,6 +453,20 @@ def _get_pin_record(session: Session, fetch_id: str) -> ActivePinRecord:
     if pin_record is None:
         raise NotFound(f"fetch not found: {fetch_id}")
     return pin_record
+
+
+def _get_hot_fetch_projection(
+    session: Session,
+    fetch_id: str,
+) -> HotFetchOperatorSummaryRecord:
+    row = session.scalar(
+        select(HotFetchOperatorSummaryRecord).where(
+            HotFetchOperatorSummaryRecord.fetch_id == fetch_id
+        )
+    )
+    if row is None:
+        raise NotFound(f"fetch not found: {fetch_id}")
+    return row
 
 
 def _notify_fetch_waiting(
@@ -796,6 +805,89 @@ def _status_entries_from_records(
         if len(out) >= limit:
             break
     return out
+
+
+def _status_entries_from_query(
+    session: Session,
+    fetch_id: str,
+    *,
+    fetch_state: FetchState,
+    limit: int,
+) -> list[dict[str, object]]:
+    if limit <= 0 or fetch_state == FetchState.DONE:
+        return []
+    rows = session.scalars(
+        select(FetchEntryRecord)
+        .where(FetchEntryRecord.fetch_id == fetch_id)
+        .order_by(FetchEntryRecord.entry_order)
+        .limit(limit)
+    ).all()
+    return [
+        _status_entry_payload(
+            entry.entry_id,
+            collection_id=entry.collection_id,
+            path=entry.path,
+            bytes_=entry.bytes,
+            upload_state=_entry_upload_state(entry, fetch_state=fetch_state),
+            uploaded_bytes=entry.uploaded_bytes,
+            upload_state_expires_at=entry.upload_expires_at,
+        )
+        for entry in rows
+    ]
+
+
+def _target_file_match_clause(raw_target: str) -> ColumnElement[bool]:
+    target = parse_target(raw_target)
+    full_path = CollectionFileRecord.collection_id + "/" + CollectionFileRecord.path
+    if target.is_dir:
+        canonical = target.canonical
+        return func.substr(full_path, 1, len(canonical)) == canonical
+    return full_path == target.canonical
+
+
+def _pending_status_entries_from_target_query(
+    session: Session,
+    raw_target: str,
+    limit: int,
+) -> list[dict[str, object]]:
+    if limit <= 0:
+        return []
+    selected_files = (
+        select(
+            CollectionFileRecord.collection_id.label("collection_id"),
+            CollectionFileRecord.path.label("path"),
+            CollectionFileRecord.bytes.label("bytes"),
+            CollectionFileRecord.hot.label("hot"),
+            func.row_number()
+            .over(order_by=(CollectionFileRecord.collection_id, CollectionFileRecord.path))
+            .label("entry_order"),
+        )
+        .where(_target_file_match_clause(raw_target))
+        .subquery()
+    )
+    rows = session.execute(
+        select(
+            selected_files.c.collection_id,
+            selected_files.c.path,
+            selected_files.c.bytes,
+            selected_files.c.entry_order,
+        )
+        .where(selected_files.c.hot.is_(False))
+        .order_by(selected_files.c.entry_order)
+        .limit(limit)
+    ).all()
+    return [
+        _status_entry_payload(
+            f"e{int(row.entry_order)}",
+            collection_id=row.collection_id,
+            path=row.path,
+            bytes_=int(row.bytes),
+            upload_state="pending",
+            uploaded_bytes=0,
+            upload_state_expires_at=None,
+        )
+        for row in rows
+    ]
 
 
 def _pending_status_entries_from_target(

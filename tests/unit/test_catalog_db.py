@@ -41,6 +41,7 @@ def test_initialize_db_creates_current_baseline_schema(tmp_path: Path) -> None:
         "glacier_recovery_session_images",
         "glacier_recovery_sessions",
         "glacier_usage_snapshots",
+        "hot_fetch_operator_summaries",
         "image_copies",
         "image_copy_events",
         "planned_candidates",
@@ -80,7 +81,7 @@ def test_initialize_db_creates_current_baseline_schema(tmp_path: Path) -> None:
         applied_versions = {
             row[0] for row in conn.execute(text("SELECT version FROM schema_migrations")).fetchall()
         }
-    assert applied_versions == {SCHEMA_BASELINE_VERSION, 2, SCHEMA_LATEST_VERSION}
+    assert applied_versions == {SCHEMA_BASELINE_VERSION, 2, 3, SCHEMA_LATEST_VERSION}
 
 
 def test_initialize_db_migrates_v1_catalog_billing_columns(tmp_path: Path) -> None:
@@ -135,7 +136,7 @@ def test_initialize_db_migrates_v1_catalog_billing_columns(tmp_path: Path) -> No
         applied_versions = {
             row[0] for row in conn.execute(text("SELECT version FROM schema_migrations")).fetchall()
         }
-    assert applied_versions == {SCHEMA_BASELINE_VERSION, 2, SCHEMA_LATEST_VERSION}
+    assert applied_versions == {SCHEMA_BASELINE_VERSION, 2, 3, SCHEMA_LATEST_VERSION}
 
 
 def test_create_catalog_engine_rejects_bare_database_paths(tmp_path: Path) -> None:

@@ -9,7 +9,7 @@ from riverhog_core.domain.models import (
     CopySummary,
     FetchSummary,
     GlacierUsageReport,
-    PinSummary,
+    PinListPage,
     RecoverySessionSummary,
 )
 from riverhog_core.iso.streaming import IsoStream
@@ -194,7 +194,7 @@ class CopyService(Protocol):
 class PinService(Protocol):
     def pin(self, raw_target: str) -> object: ...
     def release(self, raw_target: str) -> object: ...
-    def list_pins(self) -> list[PinSummary]: ...
+    def list_pins(self, *, page: int, per_page: int) -> PinListPage: ...
 
 
 class FetchService(Protocol):

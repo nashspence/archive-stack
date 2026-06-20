@@ -10,10 +10,11 @@ from riverhog_core.catalog_models import (
     ActivePinRecord,
     CollectionFileRecord,
     FetchEntryRecord,
+    HotFetchOperatorSummaryRecord,
 )
 from riverhog_core.domain.enums import FetchState
-from riverhog_core.domain.errors import Conflict
-from riverhog_core.domain.models import FetchCopyHint, FetchSummary, PinSummary
+from riverhog_core.domain.errors import BadRequest, Conflict
+from riverhog_core.domain.models import FetchCopyHint, FetchSummary, PinListPage
 from riverhog_core.domain.selectors import parse_target
 from riverhog_core.domain.types import CopyId, FetchId, TargetStr
 from riverhog_core.ports.hot_store import HotStore
@@ -21,9 +22,8 @@ from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.compliance import file_is_fully_compliant
 from riverhog_core.services.fetches import delete_fetch_entries
+from riverhog_core.services.hot_fetch_projection import pin_summary_from_hot_projection
 from riverhog_core.services.target_selection import (
-    SelectedCollectionFileStats,
-    selected_collection_file_stats,
     selected_collection_files,
 )
 
@@ -120,25 +120,31 @@ class SqlAlchemyPinService:
             "pin": False,
         }
 
-    def list_pins(self) -> list[PinSummary]:
+    def list_pins(self, *, page: int, per_page: int) -> PinListPage:
+        if page < 1:
+            raise BadRequest("page must be at least 1")
+        if per_page < 1:
+            raise BadRequest("per_page must be at least 1")
         with session_scope(self._session_factory) as session:
-            pin_records = session.scalars(
-                select(ActivePinRecord).order_by(ActivePinRecord.target)
+            total = int(
+                session.scalar(select(func.count()).select_from(HotFetchOperatorSummaryRecord)) or 0
+            )
+            pages = (total + per_page - 1) // per_page if total else 0
+            rows = session.scalars(
+                select(HotFetchOperatorSummaryRecord)
+                .order_by(
+                    HotFetchOperatorSummaryRecord.target.asc(),
+                )
+                .offset((page - 1) * per_page)
+                .limit(per_page)
             ).all()
-            summaries: list[PinSummary] = []
-            for pin_record in pin_records:
-                stats = selected_collection_file_stats(
-                    session,
-                    pin_record.target,
-                    missing_ok=True,
-                )
-                summaries.append(
-                    PinSummary(
-                        target=TargetStr(pin_record.target),
-                        fetch=_fetch_summary_from_stats(pin_record, stats),
-                    )
-                )
-            return summaries
+            return PinListPage(
+                page=page,
+                per_page=per_page,
+                total=total,
+                pages=pages,
+                pins=[pin_summary_from_hot_projection(row) for row in rows],
+            )
 
 
 def _next_fetch_order(session: Session) -> int:
@@ -158,21 +164,6 @@ def _fetch_summary(
         bytes=sum(record.bytes for record in selected),
         copies=_summary_copies(selected),
         missing_bytes=sum(record.bytes for record in selected if not record.hot),
-    )
-
-
-def _fetch_summary_from_stats(
-    pin_record: ActivePinRecord,
-    stats: SelectedCollectionFileStats,
-) -> FetchSummary:
-    return FetchSummary(
-        id=FetchId(pin_record.fetch_id),
-        target=TargetStr(pin_record.target),
-        state=FetchState(pin_record.fetch_state),
-        files=stats.files,
-        bytes=stats.bytes,
-        copies=[],
-        missing_bytes=stats.missing_bytes,
     )
 
 

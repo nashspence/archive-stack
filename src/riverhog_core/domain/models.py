@@ -289,6 +289,15 @@ class PinSummary:
 
 
 @dataclass(frozen=True)
+class PinListPage:
+    page: int
+    per_page: int
+    total: int
+    pages: int
+    pins: list[PinSummary]
+
+
+@dataclass(frozen=True)
 class FileRef:
     collection_id: CollectionId
     path: str

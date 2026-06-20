@@ -291,11 +291,12 @@ def test_listing_pins_reports_aggregate_fetch_stats_without_copy_hints(tmp_path:
     service = SqlAlchemyPinService(_config(sqlite_path), hot_store, _FakeUploadStore())
 
     service.pin("docs/tax/")
-    pins = service.list_pins()
+    page = service.list_pins(page=1, per_page=25)
 
-    assert len(pins) == 1
-    fetch = pins[0].fetch
-    assert str(pins[0].target) == "docs/tax/"
+    assert page.total == 1
+    assert len(page.pins) == 1
+    fetch = page.pins[0].fetch
+    assert str(page.pins[0].target) == "docs/tax/"
     assert fetch.files == 2
     assert fetch.bytes == len(b"invoice") + len(b"receipt")
     assert fetch.missing_bytes == len(b"receipt")

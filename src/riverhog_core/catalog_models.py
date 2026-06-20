@@ -488,6 +488,48 @@ class ActivePinRecord(Base):
     )
     fetch_notification_failure: Mapped[str | None] = mapped_column(String, nullable=True)
     fetch_notification_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    operator_summary: Mapped[HotFetchOperatorSummaryRecord | None] = relationship(
+        back_populates="pin",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class HotFetchOperatorSummaryRecord(Base):
+    __tablename__ = "hot_fetch_operator_summaries"
+
+    target: Mapped[str] = mapped_column(String, primary_key=True)
+    fetch_id: Mapped[str] = mapped_column(String, unique=True)
+    fetch_order: Mapped[int] = mapped_column(Integer)
+    fetch_state: Mapped[str] = mapped_column(String)
+    files: Mapped[int] = mapped_column(BigInteger, default=0)
+    bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    hot_files: Mapped[int] = mapped_column(BigInteger, default=0)
+    hot_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    missing_files: Mapped[int] = mapped_column(BigInteger, default=0)
+    missing_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    entries_total: Mapped[int] = mapped_column(BigInteger, default=0)
+    entries_pending: Mapped[int] = mapped_column(BigInteger, default=0)
+    entries_partial: Mapped[int] = mapped_column(BigInteger, default=0)
+    entries_byte_complete: Mapped[int] = mapped_column(BigInteger, default=0)
+    entries_uploaded: Mapped[int] = mapped_column(BigInteger, default=0)
+    entry_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    entry_recovery_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    uploaded_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    upload_missing_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    upload_state_expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    updated_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["target"],
+            ["active_pins.target"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+        ),
+    )
+
+    pin: Mapped[ActivePinRecord] = relationship(back_populates="operator_summary")
 
 
 class FetchEntryRecord(Base):

@@ -97,6 +97,7 @@ DELEGATED_HELPER_STATE_ACCESS = {
     "seed_image_fixtures": "delegates candidate image registration to locked AcceptanceState",
     "seed_planner_fixtures": "delegates planner setup to locked fixture seed helpers",
     "seed_split_planner_fixtures": "delegates split planner setup to locked fixture seed helpers",
+    "pins_list": "sizes a complete page from fixture pin state, then delegates pin listing",
 }
 
 LIFECYCLE_HELPER_STATE_ACCESS = {

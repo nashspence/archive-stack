@@ -66,6 +66,7 @@ from riverhog_core.domain.models import (
     GlacierUsageReport,
     GlacierUsageSnapshot,
     GlacierUsageTotals,
+    PinListPage,
     PinSummary,
     RecoveryCoverage,
     RecoveryNotificationStatus,
@@ -3966,11 +3967,22 @@ class AcceptancePinService:
         }
 
     @_with_state_lock
-    def list_pins(self) -> list[PinSummary]:
-        return [
+    def list_pins(self, *, page: int, per_page: int) -> PinListPage:
+        pins = [
             PinSummary(target=target, fetch=self.fetches.find_for_target(target))
             for target in sorted(self.state.exact_pins)
         ]
+        total = len(pins)
+        pages = math.ceil(total / per_page) if total else 0
+        start = (page - 1) * per_page
+        stop = start + per_page
+        return PinListPage(
+            page=page,
+            per_page=per_page,
+            total=total,
+            pages=pages,
+            pins=pins[start:stop],
+        )
 
 
 class AcceptanceFileService:
@@ -5305,7 +5317,9 @@ class AcceptanceSystem:
         return credentials != storage
 
     def pins_list(self) -> list[str]:
-        return [str(item.target) for item in self.pins.list_pins()]
+        per_page = max(len(self.state.exact_pins), 1)
+        page = self.pins.list_pins(page=1, per_page=per_page)
+        return [str(item.target) for item in page.pins]
 
     def uploaded_entry_content(self, fetch_id: str, entry_path: str) -> bytes | None:
         with self.state.lock:
