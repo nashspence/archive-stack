@@ -51,6 +51,24 @@ class CollectionSummaryOut(RiverhogModel):
     image_coverage: list[CollectionCoverageImageOut]
 
 
+class CollectionListItemOut(RiverhogModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    files: int
+    bytes: int
+    hot_bytes: int
+    archived_bytes: int
+    pending_bytes: int
+    glacier: GlacierArchiveOut | None = None
+    collection_manifest: CollectionManifestOut | None = None
+    archive_format: str | None = None
+    compression: str | None = None
+    disc_coverage: CollectionDiscCoverageOut | None = None
+    protection_state: str
+    protected_bytes: int
+
+
 class CollectionCoverageImageOut(RiverhogModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -78,7 +96,7 @@ class ListCollectionsResponse(RiverhogModel):
     per_page: int
     total: int
     pages: int
-    collections: list[CollectionSummaryOut]
+    collections: list[CollectionListItemOut]
 
 
 CollectionSummaryOut.model_rebuild()

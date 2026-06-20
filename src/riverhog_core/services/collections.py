@@ -866,20 +866,7 @@ class SqlAlchemyCollectionService:
             ).all()
 
             summaries: list[CollectionSummary] = []
-            for collection in collections:
-                (
-                    image_coverage,
-                    covered_paths,
-                    recovery_parts_by_image_path,
-                ) = _collection_image_coverage(session, collection.id)
-                summary = _summary_from_records(
-                    collection.id,
-                    collection.files,
-                    archive=collection.archive,
-                    image_coverage=image_coverage,
-                    covered_paths=covered_paths,
-                    recovery_parts_by_image_path=recovery_parts_by_image_path,
-                )
+            for summary in _collection_list_summaries(session, collections):
                 if needle is not None and needle not in str(summary.id).casefold():
                     continue
                 if (
@@ -1048,6 +1035,135 @@ class SqlAlchemyCollectionService:
             return {"collections": collections, "active_uploads": active_uploads}
 
 
+def _collection_list_summaries(
+    session: Session,
+    collections: Sequence[CollectionRecord],
+) -> list[CollectionSummary]:
+    collection_ids = [collection.id for collection in collections]
+    if not collection_ids:
+        return []
+
+    image_states = _finalized_image_protection_states(session)
+    registered_counts = _finalized_image_registered_counts(session)
+    covered_path_rows = session.execute(
+        select(
+            FinalizedImageCoveredPathRecord.collection_id,
+            FinalizedImageCoveredPathRecord.path,
+            FinalizedImageCoveredPathRecord.image_id,
+        ).where(FinalizedImageCoveredPathRecord.collection_id.in_(collection_ids))
+    ).all()
+    coverage_by_path: dict[tuple[str, str], set[str]] = defaultdict(set)
+    image_states_by_collection: dict[str, set[ProtectionState]] = defaultdict(set)
+    for row in covered_path_rows:
+        coverage_by_path[(row.collection_id, row.path)].add(row.image_id)
+        image_states_by_collection[row.collection_id].add(
+            image_states.get(row.image_id, ProtectionState.UNPROTECTED)
+        )
+
+    part_rows = session.execute(
+        select(
+            FinalizedImageCoveragePartRecord.collection_id,
+            FinalizedImageCoveragePartRecord.path,
+            FinalizedImageCoveragePartRecord.image_id,
+            FinalizedImageCoveragePartRecord.part_index,
+            FinalizedImageCoveragePartRecord.part_count,
+        ).where(FinalizedImageCoveragePartRecord.collection_id.in_(collection_ids))
+    ).all()
+    recovery_parts_by_path: dict[tuple[str, str], dict[tuple[str, str], _RecoveryParts]] = (
+        defaultdict(dict)
+    )
+    for part in part_rows:
+        path_key = (part.collection_id, part.path)
+        image_path_key = (part.image_id, part.path)
+        current = recovery_parts_by_path[path_key].get(image_path_key)
+        present_parts = frozenset({part.part_index})
+        if current is None:
+            recovery_parts_by_path[path_key][image_path_key] = _RecoveryParts(
+                part_count=part.part_count,
+                present_parts=present_parts,
+            )
+            continue
+        recovery_parts_by_path[path_key][image_path_key] = _RecoveryParts(
+            part_count=current.part_count,
+            present_parts=current.present_parts | present_parts,
+        )
+
+    summaries: list[CollectionSummary] = []
+    for collection in collections:
+        bytes_total = sum(record.bytes for record in collection.files)
+        archived_bytes = sum(record.bytes for record in collection.files if record.archived)
+        protected_bytes = 0
+        physical_bytes = 0
+        for record in collection.files:
+            path_key = (record.collection_id, record.path)
+            image_ids = coverage_by_path.get(path_key, set())
+            if image_ids and all(
+                image_states.get(image_id, ProtectionState.UNPROTECTED)
+                == ProtectionState.PROTECTED
+                for image_id in image_ids
+            ):
+                protected_bytes += record.bytes
+            physical_bytes += _path_recoverable_bytes_from_registered_images(
+                record.bytes,
+                record.path,
+                image_ids=image_ids,
+                recovery_parts_by_image_path=recovery_parts_by_path.get(path_key, {}),
+                registered_counts=registered_counts,
+            )
+
+        archive = collection.archive
+        archive_uploaded = (
+            archive is not None and normalize_glacier_state(archive.state) == GlacierState.UPLOADED
+        )
+        glacier_bytes = bytes_total if archive_uploaded else 0
+        physical_state = _recovery_coverage_state(
+            covered_bytes=physical_bytes,
+            total_bytes=bytes_total,
+        )
+        glacier_state = _recovery_coverage_state(
+            covered_bytes=glacier_bytes,
+            total_bytes=bytes_total,
+        )
+        available: list[str] = []
+        if physical_state is RecoveryCoverageState.FULL:
+            available.append("verified_physical")
+        if glacier_state is RecoveryCoverageState.FULL:
+            available.append("glacier")
+
+        summaries.append(
+            CollectionSummary(
+                id=CollectionId(collection.id),
+                files=len(collection.files),
+                bytes=bytes_total,
+                hot_bytes=sum(record.bytes for record in collection.files if record.hot),
+                archived_bytes=archived_bytes,
+                protection_state=collection_protection_state(
+                    bytes_total=bytes_total,
+                    protected_bytes=protected_bytes,
+                    archived_bytes=archived_bytes,
+                    image_states=image_states_by_collection.get(collection.id, set()),
+                ),
+                protected_bytes=protected_bytes,
+                recovery=CollectionRecoverySummary(
+                    verified_physical=RecoveryCoverage(
+                        state=physical_state,
+                        bytes=physical_bytes,
+                    ),
+                    glacier=RecoveryCoverage(
+                        state=glacier_state,
+                        bytes=glacier_bytes,
+                    ),
+                    available=tuple(available),
+                ),
+                glacier=_collection_glacier_status(archive),
+                collection_manifest=_collection_manifest_status(archive),
+                archive_format=archive.archive_format if archive is not None else None,
+                compression=archive.compression if archive is not None else None,
+            )
+        )
+    return summaries
+
+
 def _finalized_image_protection_states(session: Session) -> dict[str, ProtectionState]:
     image_rows = session.execute(
         select(FinalizedImageRecord.image_id, FinalizedImageRecord.required_copy_count)
@@ -1064,6 +1180,48 @@ def _finalized_image_protection_states(session: Session) -> dict[str, Protection
         )
         for row in image_rows
     }
+
+
+def _finalized_image_registered_counts(session: Session) -> dict[str, int]:
+    image_ids = session.scalars(select(FinalizedImageRecord.image_id)).all()
+    registered_counts: dict[str, int] = {image_id: 0 for image_id in image_ids}
+    copy_rows = session.execute(select(ImageCopyRecord.image_id, ImageCopyRecord.state)).all()
+    for copy in copy_rows:
+        if copy_counts_toward_protection(copy.state):
+            registered_counts[copy.image_id] = registered_counts.get(copy.image_id, 0) + 1
+    return registered_counts
+
+
+def _path_recoverable_bytes_from_registered_images(
+    total_bytes: int,
+    path: str,
+    *,
+    image_ids: set[str],
+    recovery_parts_by_image_path: dict[tuple[str, str], _RecoveryParts],
+    registered_counts: dict[str, int],
+) -> int:
+    expected_part_count: int | None = None
+    present_parts: set[int] = set()
+    for image_id in image_ids:
+        if registered_counts.get(image_id, 0) <= 0:
+            continue
+        recovery_parts = recovery_parts_by_image_path.get((image_id, path))
+        if recovery_parts is None:
+            continue
+        if recovery_parts.part_count == 1 and recovery_parts.present_parts == frozenset({0}):
+            return total_bytes
+        if expected_part_count is None:
+            expected_part_count = recovery_parts.part_count
+        elif expected_part_count != recovery_parts.part_count:
+            return 0
+        present_parts.update(recovery_parts.present_parts)
+
+    if expected_part_count is None or not present_parts:
+        return 0
+    return min(
+        total_bytes,
+        max(1, (total_bytes * len(present_parts)) // expected_part_count),
+    )
 
 
 def _dashboard_active_uploads(

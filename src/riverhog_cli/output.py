@@ -341,12 +341,18 @@ def _format_hot_pins_plain(payload: Mapping[str, Any]) -> str:
         fetch = pin.get("fetch")
         if isinstance(fetch, Mapping):
             copies = fetch.get("copies")
-            copy_count = len(copies) if isinstance(copies, Sequence) else 0
+            copy_count = fetch.get(
+                "copy_count",
+                len(copies) if isinstance(copies, Sequence) else None,
+            )
             lines.append(
                 f"- {pin.get('target', 'unknown')} "
                 f"fetch={fetch.get('id', 'unknown')} "
                 f"state={fetch.get('state', 'unknown')} "
-                f"copies={copy_count}"
+                f"files={fetch.get('files', 0)} "
+                f"bytes={fetch.get('bytes', 0)} "
+                f"missing={fetch.get('missing_bytes', 0)}"
+                + (f" copies={copy_count}" if copy_count is not None else "")
             )
         else:
             lines.append(f"- {pin.get('target', 'unknown')} fetch=none")
@@ -356,7 +362,7 @@ def _format_hot_pins_plain(payload: Mapping[str, Any]) -> str:
 def format_hot_pins(payload: Mapping[str, Any]) -> Any:
     if not _rich_enabled():
         return _format_hot_pins_plain(payload)
-    table = _quiet_table("Target", "Fetch", "State", "Copies")
+    table = _quiet_table("Target", "Fetch", "State", "Missing", "Files", "Bytes")
     pins = payload.get("pins")
     if isinstance(pins, Sequence):
         for pin in pins:
@@ -365,19 +371,30 @@ def format_hot_pins(payload: Mapping[str, Any]) -> Any:
             fetch = pin.get("fetch")
             fetch_id = "none"
             state = "unknown"
-            copy_count = "0"
             if isinstance(fetch, Mapping):
                 fetch_id = str(fetch.get("id", "unknown"))
                 state = str(fetch.get("state", "unknown"))
-                copies = fetch.get("copies")
-                copy_count = str(len(copies)) if isinstance(copies, Sequence) else "0"
-            table.add_row(str(pin.get("target", "unknown")), fetch_id, state, copy_count)
+                files = str(fetch.get("files", 0))
+                bytes_text = _bytes_text(fetch.get("bytes", 0))
+                missing = _bytes_text(fetch.get("missing_bytes", 0))
+            else:
+                files = "0"
+                bytes_text = "0 B"
+                missing = "0 B"
+            table.add_row(
+                str(pin.get("target", "unknown")),
+                fetch_id,
+                state,
+                missing,
+                files,
+                bytes_text,
+            )
     if not table.rows:
-        table.add_row("none", "", "", "")
+        table.add_row("none", "", "", "", "", "")
     return RichGroup(RichText("hot pins", style="bold"), table)
 
 
-def format_images(payload: Mapping[str, Any]) -> str:
+def _format_images_plain(payload: Mapping[str, Any]) -> str:
     lines = [
         "images: "
         f"page {payload.get('page', 1)}/{payload.get('pages', 0)} "
@@ -416,7 +433,35 @@ def format_images(payload: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_image(image: Mapping[str, Any]) -> str:
+def format_images(payload: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        return _format_images_plain(payload)
+    table = _quiet_table("Image", "Protection", "Discs", "Files", "Bytes", "Fill", "Collections")
+    images = payload.get("images")
+    if isinstance(images, Sequence):
+        for image in images:
+            if not isinstance(image, Mapping):
+                continue
+            required = image.get("physical_copies_required", 0)
+            table.add_row(
+                str(image.get("id", "unknown")),
+                str(image.get("physical_protection_state", "unknown")),
+                (
+                    f"{image.get('physical_copies_verified', 0)}/"
+                    f"{image.get('physical_copies_registered', 0)}/"
+                    f"{required}"
+                ),
+                str(image.get("files", 0)),
+                _bytes_text(image.get("bytes", 0)),
+                f"{float(image.get('fill', 0) or 0) * 100:.1f}%",
+                str(image.get("collections", 0)),
+            )
+    if not table.rows:
+        table.add_row("none", "", "", "", "", "", "")
+    return RichGroup(_page_text("images", payload), table)
+
+
+def _format_image_plain(image: Mapping[str, Any]) -> str:
     return "\n".join(
         [
             f"image: {image.get('id', 'unknown')} ({image.get('filename', 'unknown')})",
@@ -435,6 +480,31 @@ def format_image(image: Mapping[str, Any]) -> str:
             f"[{_collection_ids_text(image.get('collection_ids'))}]",
         ]
     )
+
+
+def format_image(image: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        return _format_image_plain(image)
+    table = _quiet_table("Field", "Value")
+    table.add_row("image", str(image.get("id", "unknown")))
+    table.add_row("filename", str(image.get("filename", "unknown")))
+    table.add_row("finalized_at", str(image.get("finalized_at", "unknown")))
+    table.add_row("files", str(image.get("files", 0)))
+    table.add_row("bytes", _bytes_text(image.get("bytes", 0)))
+    table.add_row("target", _bytes_text(image.get("target_bytes", 0)))
+    table.add_row("fill", f"{float(image.get('fill', 0) or 0) * 100:.1f}%")
+    table.add_row("protection", str(image.get("physical_protection_state", "unknown")))
+    table.add_row(
+        "discs",
+        (
+            f"verified={image.get('physical_copies_verified', 0)}/"
+            f"{image.get('physical_copies_required', 0)} "
+            f"registered={image.get('physical_copies_registered', 0)}/"
+            f"{image.get('physical_copies_required', 0)}"
+        ),
+    )
+    table.add_row("collections", _collection_ids_text(image.get("collection_ids")))
+    return RichGroup(RichText("image", style="bold"), table)
 
 
 def format_release(payload: Mapping[str, Any]) -> str:
@@ -711,7 +781,7 @@ def format_glacier_report(payload: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_plan(payload: Mapping[str, Any]) -> str:
+def _format_plan_plain(payload: Mapping[str, Any]) -> str:
     lines = [
         "plan: "
         f"page {payload.get('page', 1)}/{payload.get('pages', 0)} "
@@ -752,6 +822,36 @@ def format_plan(payload: Mapping[str, Any]) -> str:
         )
 
     return "\n".join(lines)
+
+
+def format_plan(payload: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        return _format_plan_plain(payload)
+    planner = RichText(
+        "planner "
+        f"ready={payload.get('ready', False)}  "
+        f"target={_bytes_text(payload.get('target_bytes', 0))}  "
+        f"min_fill={_bytes_text(payload.get('min_fill_bytes', 0))}  "
+        f"unplanned={_bytes_text(payload.get('unplanned_bytes', 0))}",
+        style="bold",
+    )
+    table = _quiet_table("Candidate", "Ready", "Fill", "Files", "Bytes", "Collections")
+    candidates = payload.get("candidates")
+    if isinstance(candidates, Sequence):
+        for candidate in candidates:
+            if not isinstance(candidate, Mapping):
+                continue
+            table.add_row(
+                str(candidate.get("candidate_id", "unknown")),
+                "yes" if candidate.get("iso_ready", False) else "no",
+                f"{float(candidate.get('fill', 0) or 0) * 100:.1f}%",
+                str(candidate.get("files", 0)),
+                _bytes_text(candidate.get("bytes", 0)),
+                str(candidate.get("collections", 0)),
+            )
+    if not table.rows:
+        table.add_row("none", "", "", "", "", "")
+    return RichGroup(_page_text("plan", payload), planner, table)
 
 
 def format_collection_files(payload: Mapping[str, Any]) -> str:

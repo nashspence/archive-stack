@@ -276,3 +276,27 @@ def test_releasing_noncompliant_pin_is_refused(tmp_path: Path) -> None:
         "tax/2022/receipt-456.pdf",
         "letters/cover.txt",
     }
+
+
+def test_listing_pins_reports_aggregate_fetch_stats_without_copy_hints(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+    hot_store = _FakeHotStore()
+    _seed_hot_docs(sqlite_path, hot_store)
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
+    with session_scope(session_factory) as session:
+        receipt = session.get(CollectionFileRecord, ("docs", "tax/2022/receipt-456.pdf"))
+        assert receipt is not None
+        receipt.hot = False
+    service = SqlAlchemyPinService(_config(sqlite_path), hot_store, _FakeUploadStore())
+
+    service.pin("docs/tax/")
+    pins = service.list_pins()
+
+    assert len(pins) == 1
+    fetch = pins[0].fetch
+    assert str(pins[0].target) == "docs/tax/"
+    assert fetch.files == 2
+    assert fetch.bytes == len(b"invoice") + len(b"receipt")
+    assert fetch.missing_bytes == len(b"receipt")
+    assert fetch.copies == []

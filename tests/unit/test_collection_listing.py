@@ -38,11 +38,15 @@ def test_collection_listing_can_include_protected_collections() -> None:
                 params={"protection_state": "fully_protected"},
             )
             assert listing.status_code == 200
-            assert [item["id"] for item in listing.json()["collections"]] == ["docs"]
+            listed = listing.json()["collections"]
+            assert [item["id"] for item in listed] == ["docs"]
+            assert "image_coverage" not in listed[0]
+            assert listed[0]["disc_coverage"]["state"] == "full"
 
             summary = system.request("GET", "/v1/collections/docs")
             assert summary.status_code == 200
             payload = summary.json()
+            assert "image_coverage" in payload
             assert payload["protection_state"] == "fully_protected"
             assert payload["protected_bytes"] == payload["bytes"]
             assert payload["glacier"]["state"] == "uploaded"

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pydantic import Field
+
 from riverhog_api.schemas.common import RiverhogModel
 
 
@@ -22,7 +24,11 @@ class FetchHintCopyOut(RiverhogModel):
 class FetchHintOut(RiverhogModel):
     id: str
     state: str
-    copies: list[FetchHintCopyOut]
+    files: int = 0
+    bytes: int = 0
+    missing_bytes: int = 0
+    copy_count: int = 0
+    copies: list[FetchHintCopyOut] = Field(default_factory=list)
 
 
 class PinResponse(RiverhogModel):

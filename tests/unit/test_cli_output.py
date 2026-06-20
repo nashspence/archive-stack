@@ -21,36 +21,43 @@ def _render(renderable: object) -> str:
     return console.export_text()
 
 
-def test_format_images_omits_finalized_image_glacier_context() -> None:
-    rendered = format_images(
-        {
-            "page": 1,
-            "pages": 1,
-            "per_page": 25,
-            "total": 1,
-            "sort": "finalized_at",
-            "order": "desc",
-            "images": [
-                {
-                    "id": "20260420T040001Z",
-                    "filename": "20260420T040001Z.iso",
-                    "finalized_at": "2026-04-20T04:00:01Z",
-                    "collections": 1,
-                    "collection_ids": ["docs"],
-                    "physical_protection_state": "partially_protected",
-                    "physical_copies_registered": 1,
-                    "physical_copies_verified": 0,
-                    "physical_copies_required": 2,
-                    "glacier": {
-                        "state": "failed",
-                        "object_path": None,
-                        "failure": "s3 timeout",
-                    },
-                }
-            ],
-        }
+def test_format_images_omits_finalized_image_glacier_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    rendered = _render(
+        format_images(
+            {
+                "page": 1,
+                "pages": 1,
+                "per_page": 25,
+                "total": 1,
+                "sort": "finalized_at",
+                "order": "desc",
+                "images": [
+                    {
+                        "id": "20260420T040001Z",
+                        "filename": "20260420T040001Z.iso",
+                        "finalized_at": "2026-04-20T04:00:01Z",
+                        "collections": 1,
+                        "collection_ids": ["docs"],
+                        "physical_protection_state": "partially_protected",
+                        "physical_copies_registered": 1,
+                        "physical_copies_verified": 0,
+                        "physical_copies_required": 2,
+                        "glacier": {
+                            "state": "failed",
+                            "object_path": None,
+                            "failure": "s3 timeout",
+                        },
+                    }
+                ],
+            }
+        )
     )
-    assert "verified=0/2" in rendered
+    assert "0/1/2" in rendered
     assert "glacier=" not in rendered
     assert "glacier_failure" not in rendered
 
@@ -125,7 +132,10 @@ def test_format_collections_can_fall_back_to_plain_text(monkeypatch: pytest.Monk
     assert "docs protection=partially_protected" in rendered
 
 
-def test_format_hot_pins_uses_compact_pin_table() -> None:
+def test_format_hot_pins_uses_compact_pin_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
     rendered = _render(
         format_hot_pins(
             {
@@ -135,7 +145,9 @@ def test_format_hot_pins_uses_compact_pin_table() -> None:
                         "fetch": {
                             "id": "fx-1",
                             "state": "waiting_media",
-                            "copies": [{"id": "20260420T040001Z-1"}],
+                            "files": 2,
+                            "bytes": 33,
+                            "missing_bytes": 11,
                         },
                     }
                 ]
@@ -147,6 +159,8 @@ def test_format_hot_pins_uses_compact_pin_table() -> None:
     assert "docs/tax/2022/invoice-123.pdf" in rendered
     assert "fx-1" in rendered
     assert "waiting_media" in rendered
+    assert "2" in rendered
+    assert "33 B" in rendered
 
 
 def test_format_discs_uses_compact_disc_table() -> None:

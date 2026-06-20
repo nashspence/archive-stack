@@ -131,13 +131,33 @@ def map_collection(summary: CollectionSummary) -> dict[str, object]:
     }
 
 
+def map_collection_list_item(summary: CollectionSummary) -> dict[str, object]:
+    return {
+        "id": str(summary.id),
+        "files": summary.files,
+        "bytes": summary.bytes,
+        "hot_bytes": summary.hot_bytes,
+        "archived_bytes": summary.archived_bytes,
+        "pending_bytes": summary.pending_bytes,
+        "glacier": map_glacier(summary.glacier),
+        "collection_manifest": map_collection_manifest(summary.collection_manifest),
+        "archive_format": summary.archive_format,
+        "compression": summary.compression,
+        "disc_coverage": map_collection_disc_coverage(summary.recovery.verified_physical),
+        "protection_state": map_collection_protection_state(summary),
+        "protected_bytes": summary.protected_bytes,
+    }
+
+
 def map_collection_list_page(summary: CollectionListPage) -> dict[str, object]:
     return {
         "page": summary.page,
         "per_page": summary.per_page,
         "total": summary.total,
         "pages": summary.pages,
-        "collections": [map_collection(collection) for collection in summary.collections],
+        "collections": [
+            map_collection_list_item(collection) for collection in summary.collections
+        ],
     }
 
 
@@ -295,6 +315,10 @@ def map_pin(summary: PinSummary) -> dict[str, object]:
         "fetch": {
             "id": str(summary.fetch.id),
             "state": summary.fetch.state.value,
+            "files": summary.fetch.files,
+            "bytes": summary.fetch.bytes,
+            "missing_bytes": summary.fetch.missing_bytes,
+            "copy_count": len(summary.fetch.copies),
             "copies": [
                 {"id": str(copy.id), "volume_id": copy.volume_id, "location": copy.location}
                 for copy in summary.fetch.copies

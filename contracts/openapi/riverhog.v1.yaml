@@ -1426,6 +1426,47 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/CollectionCoverageImage"
+    CollectionListItem:
+      type: object
+      required:
+        [
+          id,
+          files,
+          bytes,
+          hot_bytes,
+          archived_bytes,
+          pending_bytes,
+          glacier,
+          collection_manifest,
+          archive_format,
+          compression,
+          disc_coverage,
+          protection_state,
+          protected_bytes,
+        ]
+      properties:
+        id:
+          type: string
+          description: Canonical collection id. May contain `/` and is prefix-free with every other collection id.
+        files: { type: integer }
+        bytes: { type: integer }
+        hot_bytes: { type: integer }
+        archived_bytes: { type: integer }
+        pending_bytes: { type: integer }
+        glacier:
+          $ref: "#/components/schemas/GlacierArchive"
+        collection_manifest:
+          $ref: "#/components/schemas/CollectionManifest"
+        archive_format:
+          type: string
+        compression:
+          type: string
+        disc_coverage:
+          $ref: "#/components/schemas/CollectionDiscCoverage"
+        protection_state:
+          $ref: "#/components/schemas/CollectionProtectionState"
+        protected_bytes:
+          type: integer
     CollectionDiscCoverage:
       type: object
       required: [state, covered_bytes, verified_physical_bytes]
@@ -1457,7 +1498,7 @@ components:
         collections:
           type: array
           items:
-            $ref: "#/components/schemas/CollectionSummary"
+            $ref: "#/components/schemas/CollectionListItem"
     DashboardCollectionsResponse:
       type: object
       required: [collections, active_uploads]
@@ -2143,11 +2184,15 @@ components:
           $ref: "#/components/schemas/FetchHint"
     FetchHint:
       type: object
-      required: [id, state, copies]
+      required: [id, state]
       properties:
         id: { type: string }
         state:
           $ref: "#/components/schemas/FetchState"
+        files: { type: integer }
+        bytes: { type: integer }
+        missing_bytes: { type: integer }
+        copy_count: { type: integer }
         copies:
           type: array
           items:
@@ -2336,15 +2381,7 @@ components:
         hot:
           $ref: "#/components/schemas/HotStatus"
         fetch:
-          allOf:
-            - $ref: "#/components/schemas/FetchHint"
-            - type: object
-              required: [copies]
-              properties:
-                copies:
-                  type: array
-                  items:
-                    $ref: "#/components/schemas/FetchCopyHint"
+          $ref: "#/components/schemas/FetchHint"
     FetchUploadSession:
       type: object
       required: [entry, protocol, upload_url, offset, length, checksum_algorithm, expires_at]

@@ -21,7 +21,11 @@ from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.compliance import file_is_fully_compliant
 from riverhog_core.services.fetches import delete_fetch_entries
-from riverhog_core.services.target_selection import selected_collection_files
+from riverhog_core.services.target_selection import (
+    SelectedCollectionFileStats,
+    selected_collection_file_stats,
+    selected_collection_files,
+)
 
 
 class SqlAlchemyPinService:
@@ -123,16 +127,15 @@ class SqlAlchemyPinService:
             ).all()
             summaries: list[PinSummary] = []
             for pin_record in pin_records:
-                selected = selected_collection_files(
+                stats = selected_collection_file_stats(
                     session,
                     pin_record.target,
-                    load_copies=True,
                     missing_ok=True,
                 )
                 summaries.append(
                     PinSummary(
                         target=TargetStr(pin_record.target),
-                        fetch=_fetch_summary(pin_record, selected),
+                        fetch=_fetch_summary_from_stats(pin_record, stats),
                     )
                 )
             return summaries
@@ -154,6 +157,22 @@ def _fetch_summary(
         files=len(selected),
         bytes=sum(record.bytes for record in selected),
         copies=_summary_copies(selected),
+        missing_bytes=sum(record.bytes for record in selected if not record.hot),
+    )
+
+
+def _fetch_summary_from_stats(
+    pin_record: ActivePinRecord,
+    stats: SelectedCollectionFileStats,
+) -> FetchSummary:
+    return FetchSummary(
+        id=FetchId(pin_record.fetch_id),
+        target=TargetStr(pin_record.target),
+        state=FetchState(pin_record.fetch_state),
+        files=stats.files,
+        bytes=stats.bytes,
+        copies=[],
+        missing_bytes=stats.missing_bytes,
     )
 
 
@@ -183,6 +202,10 @@ def _fetch_payload(fetch_summary: FetchSummary) -> dict[str, object]:
     return {
         "id": str(fetch_summary.id),
         "state": fetch_summary.state.value,
+        "files": fetch_summary.files,
+        "bytes": fetch_summary.bytes,
+        "missing_bytes": fetch_summary.missing_bytes,
+        "copy_count": len(fetch_summary.copies),
         "copies": [
             {"id": str(copy.id), "volume_id": copy.volume_id, "location": copy.location}
             for copy in fetch_summary.copies

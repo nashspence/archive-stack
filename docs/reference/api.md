@@ -207,13 +207,15 @@ Supported query parameters:
 Required behavior:
 
 - the response includes pagination metadata and a `collections` array
-- returned collection summaries use the same shape as `GET /v1/collections/{collection_id}`
+- returned collection summaries are compact list items; use
+  `GET /v1/collections/{collection_id}` for per-image coverage paths and copy
+  detail
 - collection summaries are returned only for collections whose Glacier archive
   package has uploaded and verified
 - filtering by `protection_state=fully_protected` can be used to answer which
   collections have both verified Glacier and full physical coverage
 - collection summaries include direct collection Glacier state, archive
-  manifest/OTS proof state, physical disc coverage, and finalized-image coverage
+  manifest/OTS proof state, and physical disc coverage
 
 #### `GET /v1/collections/{collection_id}`
 
@@ -669,7 +671,10 @@ Lists active pins.
 
 Required behavior:
 
-- every returned pin includes its associated fetch id and current fetch state
+- every returned pin includes its associated fetch id, current fetch state, file
+  count, byte count, and missing hot-storage bytes
+- pin list rows are compact summaries; use fetch detail/manifest commands for
+  recovery copy detail
 
 ### Fetches
 
