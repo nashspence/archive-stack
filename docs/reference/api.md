@@ -178,17 +178,27 @@ Required behavior:
 
 ### Search
 
-#### `GET /v1/search?q=<query>&limit=<n>`
+#### `GET /v1/search`
 
-Returns collection and file selectors that can be used directly with `pin` and `release`.
+Returns paged collection-file targets for operator lookup and hot-storage selection.
+
+Supported query parameters:
+
+- `q` — case-insensitive substring search over collection ids and full logical file paths
+- `page` — 1-based page number, default `1`
+- `per_page` — page size, default `25`, max `100`
+- `sort` — one of `target`, `collection`, `path`, `bytes`, `hot`, or `archived`
+- `order` — `asc` or `desc`
+- `collection` — exact collection id filter
+- `hot` — optional boolean hot-storage filter
+- `archived` — optional boolean deep-archive filter
 
 Required behavior:
 
 - search is case-insensitive substring match over collection ids and full logical file paths
-- file results include current hot availability
-- file results include available copies, if any
-- returned selectors use projected-path syntax only
-- `limit` is honored
+- the response includes pagination metadata and a `files` array
+- file results include projected target, collection id, relative path, byte count,
+  and current hot/deep-archive state
 
 ### Collections summary
 
@@ -234,45 +244,11 @@ Required behavior:
   object path, and OTS proof state
 - per-image coverage details expose `covered_paths`, `physical_copies_registered`,
   `physical_copies_verified`, copy labels and locations
+- `coverage_path_limit` may be used by human-facing clients to limit returned
+  `covered_paths` per image; when it is present, `covered_paths_total` reports
+  the total path count before truncation
 
-#### `GET /v1/dashboard/collections`
-
-Returns lightweight collection compliance rows for the operator dashboard.
-
-Supported query parameters:
-
-- `q` — case-insensitive substring filter over collection ids
-
-Required behavior:
-
-- returned rows include collection byte totals, hot/archive byte totals,
-  `protected_bytes`, `protection_state`, and concise recovery coverage
-- returned rows intentionally do not include full `image_coverage`; use
-  `GET /v1/collections/{collection_id}` when the operator needs per-image path
-  detail
-- the endpoint derives physical compliance from persisted finalized-image
-  coverage rows and registered copy state using aggregate database reads rather
-  than the full collection-summary scan path
-- collection coverage explains which finalized images, paths, and registered
-  copies physically cover that collection
-
-### File introspection
-
-#### `GET /v1/collection-files/{collection_id}`
-
-Lists the logical files in one collection.
-
-Supported query parameters:
-
-- `page` — 1-based page number, default `1`
-- `per_page` — page size, default `25`, max `100`
-
-Required behavior:
-
-- collection ids may span multiple path segments, for example `GET /v1/collection-files/photos/2024`
-- the response includes pagination metadata and a `files` array
-- each returned file includes its projected path and current hot or archived state
-- each returned file includes available copies, if any
+### Files
 
 #### `GET /v1/files?target=<target>`
 

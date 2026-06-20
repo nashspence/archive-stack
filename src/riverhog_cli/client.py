@@ -277,8 +277,20 @@ class ApiClient:
             params["archived"] = archived
         return self._json("GET", "/v1/search", params=params)
 
-    def get_collection(self, collection_id: str) -> dict[str, Any]:
-        return self._json("GET", f"/v1/collections/{quote(collection_id, safe='/')}")
+    def get_collection(
+        self,
+        collection_id: str,
+        *,
+        coverage_path_limit: int | None = None,
+    ) -> dict[str, Any]:
+        params = None
+        if coverage_path_limit is not None:
+            params = {"coverage_path_limit": coverage_path_limit}
+        return self._json(
+            "GET",
+            f"/v1/collections/{quote(collection_id, safe='/')}",
+            params=params,
+        )
 
     def list_collections(
         self,
@@ -297,12 +309,6 @@ class ApiClient:
         if protection_state:
             params["protection_state"] = protection_state
         return self._json("GET", "/v1/collections", params=params)
-
-    def list_dashboard_collections(self, *, q: str | None = None) -> dict[str, Any]:
-        params: dict[str, Any] = {}
-        if q:
-            params["q"] = q
-        return self._json("GET", "/v1/dashboard/collections", params=params)
 
     def get_plan(
         self,

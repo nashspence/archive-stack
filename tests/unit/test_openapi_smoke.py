@@ -834,12 +834,6 @@ def test_binary_download_runtime_matches_contract_content_types() -> None:
         )
 
 
-def test_collection_files_legacy_endpoint_is_not_available() -> None:
-    with _contract_runtime_client() as client:
-        response = client.get("/v1/collection-files/docs")
-        assert response.status_code == 404
-
-
 def test_planner_refresh_runs_immediately_on_startup() -> None:
     refresh_ran = threading.Event()
 

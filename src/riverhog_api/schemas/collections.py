@@ -82,6 +82,7 @@ class CollectionCoverageImageOut(RiverhogModel):
     physical_copies_verified: int
     physical_copies_missing: int
     covered_paths: list[str]
+    covered_paths_total: int | None = None
     copies: list[CopyOut]
 
 

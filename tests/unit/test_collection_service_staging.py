@@ -1203,16 +1203,6 @@ def test_glacier_archive_worker_prioritizes_resumable_multipart_upload(
             )
             session.add(upload)
 
-    dashboard = SqlAlchemyCollectionService(
-        config,
-        _FakeHotStore(),
-        upload_store,
-    ).list_dashboard_collections(q="resume")
-    assert dashboard["collections"] == []
-    assert dashboard["active_uploads"][0]["collection_id"] == resumed_id
-    assert dashboard["active_uploads"][0]["state"] == "archiving"
-    assert dashboard["active_uploads"][0]["archive_phase"] == "uploading"
-
     archive_store = _RecordingArchiveStore()
     upload_service = SqlAlchemyGlacierUploadService(
         config,

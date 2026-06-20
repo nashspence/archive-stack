@@ -131,6 +131,23 @@ def _preview_lines(items: Sequence[str], *, limit: int = 5) -> str:
     return "\n".join(shown)
 
 
+def _preview_lines_with_total(
+    items: Sequence[str],
+    *,
+    limit: int = 5,
+    total: int | None = None,
+) -> str:
+    if not items:
+        if total and total > 0:
+            return f"... {total} paths"
+        return "none"
+    shown = list(items[:limit])
+    remaining = (total if total is not None else len(items)) - len(shown)
+    if remaining > 0:
+        shown.append(f"... {remaining} more")
+    return "\n".join(shown)
+
+
 def _string_items(value: object) -> list[str]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         return []
@@ -1020,7 +1037,15 @@ def _collection_coverage_table(
                 ),
                 archive_text,
                 _copy_lines(image.get("copies"), limit=4),
-                _preview_lines(_string_items(image.get("covered_paths")), limit=4),
+                _preview_lines_with_total(
+                    _string_items(image.get("covered_paths")),
+                    limit=4,
+                    total=(
+                        _int_value(image.get("covered_paths_total"))
+                        if image.get("covered_paths_total") is not None
+                        else None
+                    ),
+                ),
             )
     if not table.rows:
         table.add_row("none", "", "", "", "", "")

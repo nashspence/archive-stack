@@ -675,7 +675,8 @@ def test_format_collection_summary_uses_rich_detail_preview(
                         "physical_copies_registered": 1,
                         "physical_copies_verified": 1,
                         "physical_copies_required": 2,
-                        "covered_paths": [f"path-{index}.txt" for index in range(6)],
+                        "covered_paths": [f"path-{index}.txt" for index in range(4)],
+                        "covered_paths_total": 6,
                         "copies": [
                             {
                                 "id": "20260420T040001Z-1",

@@ -51,6 +51,16 @@ def test_collection_listing_can_include_protected_collections() -> None:
             assert payload["protected_bytes"] == payload["bytes"]
             assert payload["glacier"]["state"] == "uploaded"
             assert payload["disc_coverage"]["state"] == "full"
+
+            preview = system.request(
+                "GET",
+                "/v1/collections/docs",
+                params={"coverage_path_limit": 1},
+            )
+            assert preview.status_code == 200
+            preview_image = preview.json()["image_coverage"][0]
+            assert preview_image["covered_paths"] == ["tax/2022/invoice-123.pdf"]
+            assert preview_image["covered_paths_total"] == 2
         finally:
             system.close()
 
@@ -101,37 +111,5 @@ def test_collection_recovery_summary_requires_all_split_parts() -> None:
             assert summary.status_code == 200
             payload = summary.json()
             assert payload["disc_coverage"]["state"] == "full"
-        finally:
-            system.close()
-
-
-def test_dashboard_collections_report_compliance_without_full_collection_payload() -> None:
-    with TemporaryDirectory() as tmp:
-        system = AcceptanceSystem.create(Path(tmp))
-        try:
-            system.seed_planner_fixtures()
-            system.planning.finalize_image("img_2026-04-20_01")
-            system.copies.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-1")
-            system.copies.register("20260420T040001Z", "Shelf B2", copy_id="20260420T040001Z-2")
-            system.mark_collection_archive_uploaded("docs")
-            system.constrain_collection_to_paths(
-                "docs",
-                [
-                    "tax/2022/invoice-123.pdf",
-                    "tax/2022/receipt-456.pdf",
-                ],
-                hot=False,
-                archived=True,
-            )
-
-            response = system.request("GET", "/v1/dashboard/collections", params={"q": "docs"})
-            assert response.status_code == 200
-            payload = response.json()
-            assert [item["id"] for item in payload["collections"]] == ["docs"]
-            collection = payload["collections"][0]
-            assert collection["protection_state"] == "fully_protected"
-            assert collection["protected_bytes"] == collection["bytes"]
-            assert collection["recovery"]["glacier"]["state"] == "full"
-            assert "image_coverage" not in collection
         finally:
             system.close()

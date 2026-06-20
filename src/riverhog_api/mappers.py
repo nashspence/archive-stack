@@ -110,7 +110,11 @@ def map_glacier_usage_report(summary: GlacierUsageReport) -> dict[str, object]:
     }
 
 
-def map_collection(summary: CollectionSummary) -> dict[str, object]:
+def map_collection(
+    summary: CollectionSummary,
+    *,
+    coverage_path_limit: int | None = None,
+) -> dict[str, object]:
     return {
         "id": str(summary.id),
         "files": summary.files,
@@ -126,7 +130,8 @@ def map_collection(summary: CollectionSummary) -> dict[str, object]:
         "protection_state": map_collection_protection_state(summary),
         "protected_bytes": summary.protected_bytes,
         "image_coverage": [
-            map_collection_coverage_image(image) for image in summary.image_coverage
+            map_collection_coverage_image(image, path_limit=coverage_path_limit)
+            for image in summary.image_coverage
         ],
     }
 
@@ -271,7 +276,14 @@ def map_copy(summary: CopySummary) -> dict[str, object]:
     }
 
 
-def map_collection_coverage_image(summary: CollectionCoverageImage) -> dict[str, object]:
+def map_collection_coverage_image(
+    summary: CollectionCoverageImage,
+    *,
+    path_limit: int | None = None,
+) -> dict[str, object]:
+    covered_paths = list(summary.covered_paths)
+    if path_limit is not None:
+        covered_paths = covered_paths[:path_limit]
     return {
         "id": str(summary.id),
         "filename": summary.filename,
@@ -280,7 +292,8 @@ def map_collection_coverage_image(summary: CollectionCoverageImage) -> dict[str,
         "physical_copies_registered": summary.physical_copies_registered,
         "physical_copies_verified": summary.physical_copies_verified,
         "physical_copies_missing": summary.physical_copies_missing,
-        "covered_paths": list(summary.covered_paths),
+        "covered_paths": covered_paths,
+        "covered_paths_total": len(summary.covered_paths),
         "copies": [map_copy(copy) for copy in summary.copies],
     }
 

@@ -14,7 +14,6 @@ def test_riverhog_help() -> None:
     assert "riverhog collection and hot-storage CLI" in result.stdout
     assert "collection" in result.stdout
     assert "hot" in result.stdout
-    assert "dashboard" not in result.stdout
 
 
 def test_djdan_help() -> None:

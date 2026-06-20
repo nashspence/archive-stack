@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
@@ -24,7 +26,7 @@ from riverhog_cli.output import (
     format_pin,
     format_release,
 )
-from riverhog_core.domain.errors import Conflict, NotFound, ServiceUnavailable
+from riverhog_core.domain.errors import Conflict, NotFound, RiverhogError, ServiceUnavailable
 
 app = typer.Typer(help="riverhog collection and hot-storage CLI")
 collection_app = typer.Typer(help="collection catalog and upload operations")
@@ -1306,10 +1308,11 @@ def show_cmd(
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     api = client()
-    payload = api.get_collection(collection)
     if json_mode:
+        payload = api.get_collection(collection)
         emit(payload, json_mode=True)
         return
+    payload = api.get_collection(collection, coverage_path_limit=4)
     glacier_payload = api.get_glacier_report(collection=collection)
     emit(format_collection_summary(payload, glacier_payload), json_mode=False)
 
@@ -1356,8 +1359,42 @@ def fetch_cmd(
     emit(format_fetch(status, {"entries": status.get("entries", [])}), json_mode=False)
 
 
+def _error_code(exc: BaseException) -> str:
+    if isinstance(exc, httpx.TransportError):
+        return "transport_error"
+    if isinstance(exc, RiverhogError):
+        return exc.code
+    return "error"
+
+
+def _json_requested(argv: list[str]) -> bool:
+    return "--json" in argv
+
+
+def _emit_cli_error(exc: BaseException, *, json_mode: bool) -> None:
+    code = _error_code(exc)
+    message = str(exc) or type(exc).__name__
+    if json_mode:
+        typer.echo(
+            json.dumps(
+                {"error": {"code": code, "message": message}},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        return
+    if isinstance(exc, httpx.TransportError):
+        typer.echo(f"riverhog: transport error: {message}", err=True)
+        return
+    typer.echo(f"riverhog: {message}", err=True)
+
+
 def main() -> None:
-    app()
+    try:
+        app()
+    except (httpx.TransportError, RiverhogError) as exc:
+        _emit_cli_error(exc, json_mode=_json_requested(sys.argv[1:]))
+        raise typer.Exit(1) from None
 
 
 if __name__ == "__main__":

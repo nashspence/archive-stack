@@ -188,6 +188,9 @@ def create_or_resume_collection_file_upload(
 def get_collection(
     collection_id: str,
     container: ContainerDep,
+    coverage_path_limit: int | None = Query(None, ge=0, le=100),
 ) -> CollectionSummaryOut:
     summary = container.collections.get(collection_id)
-    return CollectionSummaryOut.model_validate(map_collection(summary))
+    return CollectionSummaryOut.model_validate(
+        map_collection(summary, coverage_path_limit=coverage_path_limit)
+    )

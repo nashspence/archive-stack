@@ -362,6 +362,14 @@ paths:
           required: true
           description: Canonical collection id. Slash-bearing ids occupy multiple path segments under `/collections/`.
           schema: { type: string }
+        - in: query
+          name: coverage_path_limit
+          required: false
+          description: Optional maximum covered paths to return per image. Omit for full coverage path detail.
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 100
       responses:
         "200":
           description: Collection summary
@@ -408,26 +416,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RecoverySession"
-        default:
-          $ref: "#/components/responses/Error"
-  /dashboard/collections:
-    get:
-      summary: List lightweight dashboard collection compliance rows
-      description: Returns collection compliance rows for the operator dashboard without full per-image collection coverage detail.
-      operationId: listDashboardCollections
-      parameters:
-        - in: query
-          name: q
-          required: false
-          description: Case-insensitive substring filter over canonical collection ids.
-          schema: { type: string }
-      responses:
-        "200":
-          description: Dashboard collection compliance rows
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DashboardCollectionsResponse"
         default:
           $ref: "#/components/responses/Error"
   /plan:
@@ -1536,148 +1524,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/CollectionListItem"
-    DashboardCollectionsResponse:
-      type: object
-      required: [collections, active_uploads]
-      properties:
-        collections:
-          type: array
-          items:
-            $ref: "#/components/schemas/DashboardCollection"
-        active_uploads:
-          type: array
-          description: Collection upload sessions that have not yet finalized into the collection catalog.
-          items:
-            $ref: "#/components/schemas/DashboardActiveUpload"
-    DashboardCollection:
-      type: object
-      required:
-        [
-          id,
-          files,
-          bytes,
-          hot_bytes,
-          archived_bytes,
-          pending_bytes,
-          protection_state,
-          protected_bytes,
-          recovery,
-        ]
-      properties:
-        id:
-          type: string
-        files:
-          type: integer
-        bytes:
-          type: integer
-        hot_bytes:
-          type: integer
-        archived_bytes:
-          type: integer
-        pending_bytes:
-          type: integer
-        protection_state:
-          type: string
-          enum: [cloud_only, under_protected, fully_protected]
-        protected_bytes:
-          type: integer
-        recovery:
-          $ref: "#/components/schemas/DashboardRecovery"
-    DashboardActiveUpload:
-      type: object
-      required:
-        [
-          collection_id,
-          state,
-          files_total,
-          files_pending,
-          files_partial,
-          files_uploaded,
-          hot_promoted_files,
-          bytes_total,
-          uploaded_bytes,
-          hot_promoted_bytes,
-          missing_bytes,
-        ]
-      properties:
-        collection_id:
-          type: string
-        ingest_source:
-          oneOf:
-            - type: string
-            - type: "null"
-        state:
-          type: string
-          enum: [uploading, archiving]
-        files_total: { type: integer }
-        files_pending: { type: integer }
-        files_partial: { type: integer }
-        files_uploaded: { type: integer }
-        hot_promoted_files: { type: integer }
-        bytes_total: { type: integer }
-        uploaded_bytes: { type: integer }
-        hot_promoted_bytes: { type: integer }
-        missing_bytes: { type: integer }
-        latest_failure:
-          oneOf:
-            - type: string
-            - type: "null"
-        archive_phase:
-          oneOf:
-            - type: string
-            - type: "null"
-        archive_phase_updated_at:
-          oneOf:
-            - type: string
-              format: date-time
-            - type: "null"
-        archive_object_path:
-          oneOf:
-            - type: string
-            - type: "null"
-        archive_attempt_count:
-          type: integer
-        archive_next_attempt_at:
-          oneOf:
-            - type: string
-              format: date-time
-            - type: "null"
-        archive_uploaded_bytes:
-          oneOf:
-            - type: integer
-            - type: "null"
-        archive_total_bytes:
-          oneOf:
-            - type: integer
-            - type: "null"
-        archive_uploaded_parts:
-          oneOf:
-            - type: integer
-            - type: "null"
-        archive_total_parts:
-          oneOf:
-            - type: integer
-            - type: "null"
-    DashboardRecovery:
-      type: object
-      required: [available, verified_physical, glacier]
-      properties:
-        available:
-          type: array
-          items:
-            type: string
-        verified_physical:
-          $ref: "#/components/schemas/DashboardRecoveryCoverage"
-        glacier:
-          $ref: "#/components/schemas/DashboardRecoveryCoverage"
-    DashboardRecoveryCoverage:
-      type: object
-      required: [state, bytes]
-      properties:
-        state:
-          $ref: "#/components/schemas/CoverageState"
-        bytes:
-          type: integer
     CollectionUploadFile:
       type: object
       required: [path, bytes, sha256]
@@ -2013,6 +1859,10 @@ components:
           items:
             type: string
           description: Relative collection paths within this collection that the finalized image represents.
+        covered_paths_total:
+          type: integer
+          minimum: 0
+          description: Total covered path count before any `coverage_path_limit` truncation.
         copies:
           type: array
           items:
