@@ -41,5 +41,7 @@ Human output should be calm, dense, and boring in the best way:
 
 - Emit clean JSON only on stdout.
 - Prefer exact API payloads for commands that map one-to-one to an endpoint.
+- Keep list-command JSON compact; detail commands can expose richer nested
+  payloads.
 - Keep progress, prompts, and warnings on stderr.
 - Do not include Rich formatting, table labels, or human summary text.

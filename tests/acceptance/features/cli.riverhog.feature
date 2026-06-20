@@ -2,13 +2,13 @@
 Feature: riverhog CLI
   The main CLI is focused on collections and pinned hot-storage sets.
 
-  Rule: JSON mode mirrors API payloads
-    Scenario: riverhog collection list emits the collection listing payload
+  Rule: JSON mode emits machine-readable payloads
+    Scenario: riverhog collection list emits a compact collection listing payload
       Given an archive containing collection "docs"
       When the operator runs 'riverhog collection list --page 1 --per-page 2 --sort id --order asc --query docs --json'
       Then the command exits with code 0
       And stdout is valid JSON
-      And stdout matches the structure of GET "/v1/collections"
+      And stdout matches the compact collection list payload
       And stdout mentions "docs"
 
     Scenario: riverhog collection show emits the collection summary payload

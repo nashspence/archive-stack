@@ -851,13 +851,13 @@ def format_files(payload: Mapping[str, Any]) -> str:
 
 def emit(payload: Any, *, json_mode: bool) -> None:
     if json_mode:
-        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+        typer.echo(json.dumps(payload, sort_keys=True, separators=(",", ":")))
         return
     if isinstance(payload, str):
         typer.echo(payload)
         return
     if isinstance(payload, dict):
-        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+        typer.echo(json.dumps(payload, sort_keys=True, separators=(",", ":")))
         return
     console = _console()
     if console is None:

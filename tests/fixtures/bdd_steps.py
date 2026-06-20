@@ -536,13 +536,71 @@ def _prepare_riverhog_expectation(
         collections.sort(key=sort_value, reverse=order == "desc")
         total = len(collections)
         pages = (total + per_page - 1) // per_page if total else 0
+        def compact_glacier(collection: dict[str, Any]) -> dict[str, object] | None:
+            glacier = collection.get("glacier")
+            if not isinstance(glacier, dict):
+                return None
+            return {
+                key: glacier[key]
+                for key in (
+                    "state",
+                    "storage_class",
+                    "stored_bytes",
+                    "last_uploaded_at",
+                    "last_verified_at",
+                    "failure",
+                )
+                if key in glacier
+            }
+
+        def compact_disc_coverage(collection: dict[str, Any]) -> dict[str, object] | None:
+            disc_coverage = collection.get("disc_coverage")
+            if not isinstance(disc_coverage, dict):
+                return None
+            return {
+                key: disc_coverage[key]
+                for key in ("state", "covered_bytes", "verified_physical_bytes")
+                if key in disc_coverage
+            }
+
+        def compact_collection(collection: dict[str, Any]) -> dict[str, object]:
+            payload: dict[str, object] = {
+                key: collection[key]
+                for key in (
+                    "id",
+                    "files",
+                    "bytes",
+                    "hot_bytes",
+                    "archived_bytes",
+                    "pending_bytes",
+                    "protected_bytes",
+                    "protection_state",
+                    "archive_format",
+                    "compression",
+                )
+                if key in collection
+            }
+            glacier = compact_glacier(collection)
+            if glacier is not None:
+                payload["glacier"] = glacier
+            disc_coverage = compact_disc_coverage(collection)
+            if disc_coverage is not None:
+                payload["disc_coverage"] = disc_coverage
+            return payload
+
         context.expected_api_payload = {
-            **first_page,
             "page": page,
             "per_page": per_page,
             "total": total,
             "pages": pages,
-            "collections": collections[(page - 1) * per_page : page * per_page],
+            "sort": sort,
+            "order": order.casefold(),
+            "query": query,
+            "protection_state": protection,
+            "collections": [
+                compact_collection(collection)
+                for collection in collections[(page - 1) * per_page : page * per_page]
+            ],
         }
         return
 
@@ -4064,6 +4122,23 @@ def then_stdout_matches_expected_api_payload(
         actual = _normalized_glacier_payload(actual)
         expected = _normalized_glacier_payload(expected)
     assert actual == expected
+
+
+@then("stdout matches the compact collection list payload")
+def then_stdout_matches_compact_collection_list_payload(
+    acceptance_context: AcceptanceScenarioContext,
+) -> None:
+    assert acceptance_context.expected_api_endpoint == ("GET", "/v1/collections")
+    actual = acceptance_context.stdout_json
+    expected = acceptance_context.expected_api_payload
+    assert actual == expected
+    assert isinstance(actual, dict)
+    collections = actual.get("collections")
+    assert isinstance(collections, list)
+    for collection in collections:
+        assert isinstance(collection, dict)
+        assert "image_coverage" not in collection
+        assert "covered_paths" not in json.dumps(collection, sort_keys=True)
 
 
 def _normalized_glacier_payload(payload: object) -> object:

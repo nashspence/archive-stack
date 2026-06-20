@@ -923,6 +923,88 @@ def _collection_sort_value(collection: Mapping[str, object], sort: str) -> int |
     return _optional_int(collection.get(sort)) or 0
 
 
+def _collection_list_glacier_payload(collection: Mapping[str, object]) -> dict[str, object] | None:
+    glacier = collection.get("glacier")
+    if not isinstance(glacier, Mapping):
+        return None
+    return {
+        key: glacier[key]
+        for key in (
+            "state",
+            "storage_class",
+            "stored_bytes",
+            "last_uploaded_at",
+            "last_verified_at",
+            "failure",
+        )
+        if key in glacier
+    }
+
+
+def _collection_list_disc_payload(collection: Mapping[str, object]) -> dict[str, object] | None:
+    disc_coverage = collection.get("disc_coverage")
+    if not isinstance(disc_coverage, Mapping):
+        return None
+    return {
+        key: disc_coverage[key]
+        for key in ("state", "covered_bytes", "verified_physical_bytes")
+        if key in disc_coverage
+    }
+
+
+def _collection_list_item_payload(collection: Mapping[str, object]) -> dict[str, object]:
+    payload: dict[str, object] = {
+        key: collection[key]
+        for key in (
+            "id",
+            "files",
+            "bytes",
+            "hot_bytes",
+            "archived_bytes",
+            "pending_bytes",
+            "protected_bytes",
+            "protection_state",
+            "archive_format",
+            "compression",
+        )
+        if key in collection
+    }
+    glacier = _collection_list_glacier_payload(collection)
+    if glacier is not None:
+        payload["glacier"] = glacier
+    disc_coverage = _collection_list_disc_payload(collection)
+    if disc_coverage is not None:
+        payload["disc_coverage"] = disc_coverage
+    return payload
+
+
+def _compact_collection_page(payload: Mapping[str, object]) -> dict[str, object]:
+    collections = payload.get("collections")
+    compact_collections: list[dict[str, object]] = []
+    if isinstance(collections, list):
+        compact_collections = [
+            _collection_list_item_payload(collection)
+            for collection in collections
+            if isinstance(collection, Mapping)
+        ]
+    page_payload = {
+        key: payload[key]
+        for key in (
+            "page",
+            "per_page",
+            "total",
+            "pages",
+            "sort",
+            "order",
+            "query",
+            "protection_state",
+        )
+        if key in payload
+    }
+    page_payload["collections"] = compact_collections
+    return page_payload
+
+
 def _sorted_collection_page(
     api: ApiClient,
     *,
@@ -981,6 +1063,10 @@ def _sorted_collection_page(
         "per_page": per_page,
         "total": total,
         "pages": display_pages,
+        "sort": sort,
+        "order": normalized_order,
+        "query": query,
+        "protection_state": protection_state,
         "collections": collections[start:stop],
     }
 
@@ -1013,7 +1099,10 @@ def collection_list_cmd(
         sort=sort,
         order=order,
     )
-    emit(payload if json_mode else format_collections(payload), json_mode=json_mode)
+    emit(
+        _compact_collection_page(payload) if json_mode else format_collections(payload),
+        json_mode=json_mode,
+    )
 
 
 @collection_app.command("upload")
