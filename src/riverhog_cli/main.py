@@ -1328,6 +1328,9 @@ def fetch_cmd(
     if json_mode:
         emit(summary, json_mode=True)
         return
+    if summary.get("state") == "done":
+        emit(format_fetch(summary, {"entries": []}), json_mode=False)
+        return
     manifest = client().get_fetch_manifest(fetch_id)
     emit(format_fetch(summary, manifest), json_mode=False)
 

@@ -43,6 +43,7 @@ from riverhog_core.services.resumable_uploads import (
     sync_upload_state,
     upload_expiry_timestamp,
 )
+from riverhog_core.services.target_selection import selected_collection_file_stats
 from riverhog_core.webhooks import (
     WebhookConfig,
     build_fetch_waiting_payload,
@@ -107,6 +108,8 @@ class SqlAlchemyFetchService:
     def get(self, fetch_id: str) -> FetchSummary:
         with session_scope(self._session_factory) as session:
             pin_record = _get_pin_record(session, fetch_id)
+            if pin_record.fetch_state == FetchState.DONE.value:
+                return _done_summary_from_target_stats(session, pin_record)
             entries = _ensure_fetch_entries(
                 session,
                 pin_record,
@@ -535,6 +538,29 @@ def _selected_files(session: Session, raw_target: str) -> list[CollectionFileRec
     if not selected:
         raise NotFound(f"target not found: {raw_target}")
     return selected
+
+
+def _done_summary_from_target_stats(
+    session: Session,
+    pin_record: ActivePinRecord,
+) -> FetchSummary:
+    stats = selected_collection_file_stats(session, pin_record.target)
+    return FetchSummary(
+        id=FetchId(pin_record.fetch_id),
+        target=TargetStr(pin_record.target),
+        state=FetchState.DONE,
+        files=stats.files,
+        bytes=stats.bytes,
+        copies=[],
+        entries_total=stats.files,
+        entries_pending=stats.missing_files,
+        entries_partial=0,
+        entries_byte_complete=0,
+        entries_uploaded=stats.hot_files,
+        uploaded_bytes=stats.hot_bytes,
+        missing_bytes=stats.missing_bytes,
+        upload_state_expires_at=None,
+    )
 
 
 def _ensure_fetch_entries(

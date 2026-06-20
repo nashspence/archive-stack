@@ -15,7 +15,12 @@ from riverhog_core.domain.selectors import parse_target
 class SelectedCollectionFileStats:
     files: int
     bytes: int
+    hot_files: int
     hot_bytes: int
+
+    @property
+    def missing_files(self) -> int:
+        return self.files - self.hot_files
 
     @property
     def missing_bytes(self) -> int:
@@ -86,13 +91,22 @@ def selected_collection_file_stats(
     clauses = _target_file_clauses(session, raw_target)
     if not clauses:
         if missing_ok:
-            return SelectedCollectionFileStats(files=0, bytes=0, hot_bytes=0)
+            return SelectedCollectionFileStats(files=0, bytes=0, hot_files=0, hot_bytes=0)
         raise NotFound(f"target not found: {raw_target}")
 
-    files, bytes_total, hot_bytes = session.execute(
+    files, bytes_total, hot_files, hot_bytes = session.execute(
         select(
             func.count(),
             func.coalesce(func.sum(CollectionFileRecord.bytes), 0),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (CollectionFileRecord.hot.is_(True), 1),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
             func.coalesce(
                 func.sum(
                     case(
@@ -107,6 +121,7 @@ def selected_collection_file_stats(
     stats = SelectedCollectionFileStats(
         files=int(files or 0),
         bytes=int(bytes_total or 0),
+        hot_files=int(hot_files or 0),
         hot_bytes=int(hot_bytes or 0),
     )
     if stats.files == 0 and not missing_ok:

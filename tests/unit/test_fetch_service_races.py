@@ -128,6 +128,63 @@ def _config(sqlite_path: Path) -> RuntimeConfig:
     )
 
 
+def test_done_fetch_summary_uses_aggregate_stats_without_materializing_entries(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+
+    collection_id = "docs"
+    files = {
+        f"camera/file-{index:04d}.dat": f"payload-{index}\n".encode()
+        for index in range(100)
+    }
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
+    with session_scope(session_factory) as session:
+        session.add(CollectionRecord(id=collection_id))
+        for path, content in files.items():
+            session.add(
+                CollectionFileRecord(
+                    collection_id=collection_id,
+                    path=path,
+                    bytes=len(content),
+                    sha256=hashlib.sha256(content).hexdigest(),
+                    hot=True,
+                    archived=True,
+                )
+            )
+        session.add(
+            ActivePinRecord(
+                target=f"{collection_id}/",
+                fetch_id="fx-done",
+                fetch_order=1,
+                fetch_state=FetchState.DONE.value,
+            )
+        )
+
+    service = SqlAlchemyFetchService(
+        _config(sqlite_path),
+        _FakeHotStore({(collection_id, path): content for path, content in files.items()}),
+        _RaceyUploadStore({}),
+        _RECOVERY_CODEC,
+    )
+
+    summary = service.get("fx-done")
+
+    assert summary.state == FetchState.DONE
+    assert summary.files == len(files)
+    assert summary.bytes == sum(len(content) for content in files.values())
+    assert summary.entries_total == len(files)
+    assert summary.entries_uploaded == len(files)
+    assert summary.entries_pending == 0
+    assert summary.uploaded_bytes == summary.bytes
+    assert summary.missing_bytes == 0
+    assert summary.copies == []
+
+    with session_scope(session_factory) as session:
+        assert session.scalars(select(FetchEntryRecord)).all() == []
+
+
 def test_waiting_fetch_notifications_are_delivered_and_reminded(
     tmp_path: Path,
     monkeypatch,
