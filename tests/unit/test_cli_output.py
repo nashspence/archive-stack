@@ -11,6 +11,7 @@ from riverhog_cli.output import (
     format_fetch,
     format_glacier_report,
     format_hot_pins,
+    format_image,
     format_images,
     format_pin,
 )
@@ -76,6 +77,41 @@ def test_format_images_omits_finalized_image_glacier_context(
     assert "0/1/2" in rendered
     assert "glacier=" not in rendered
     assert "glacier_failure" not in rendered
+
+
+def test_format_image_lists_collections_vertically(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    rendered = _render(
+        format_image(
+            {
+                "id": "20260420T040001Z",
+                "filename": "20260420T040001Z.iso",
+                "finalized_at": "2026-04-20T04:00:01Z",
+                "files": 2,
+                "bytes": 100,
+                "target_bytes": 200,
+                "fill": 0.5,
+                "physical_protection_state": "protected",
+                "physical_copies_registered": 2,
+                "physical_copies_verified": 2,
+                "physical_copies_required": 2,
+                "collections": 2,
+                "collection_ids": [
+                    "2026/20260414T010101Z__alpha",
+                    "2026/20260415T010101Z__beta",
+                ],
+            }
+        )
+    )
+
+    assert "20260414T010101Z__alpha, 20260415T010101Z__beta" not in rendered
+    assert "2026/20260414T010101Z__alpha" in rendered
+    assert "2026/20260415T010101Z__beta" in rendered
+    assert rendered.index("2026/20260414T010101Z__alpha") < rendered.index(
+        "2026/20260415T010101Z__beta"
+    )
 
 
 def test_format_collections_uses_compact_collection_table(
@@ -219,6 +255,12 @@ def test_format_hot_pins_uses_compact_pin_table(monkeypatch: pytest.MonkeyPatch)
     assert "waiting_media" in rendered
     assert "2" in rendered
     assert "33 B" in rendered
+    header_line = next(
+        line for line in rendered.splitlines() if "Fetch" in line and "Target" in line
+    )
+    row_line = next(line for line in rendered.splitlines() if "fx-1" in line)
+    assert header_line.index("Fetch") < header_line.index("Target")
+    assert row_line.index("fx-1") < row_line.index("docs/tax/2022/invoice-123.pdf")
 
 
 def test_format_discs_uses_compact_disc_table(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -340,6 +382,50 @@ def test_format_fetch_uses_entry_preview(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "docs/" in rendered
     assert "file-0.txt" in rendered
     assert "... 2 more" in rendered
+
+
+def test_format_fetch_omits_empty_entries_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    rendered = _render(
+        format_fetch(
+            {"id": "fx-4", "target": "docs/", "state": "done", "files": 10},
+            {"entries": []},
+        )
+    )
+
+    assert "entries" not in rendered
+    assert "Status" not in rendered
+    assert "partial" not in rendered
+
+
+def test_format_fetch_partial_entries_do_not_use_coverage_attention_color(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    rendered = _render_styled(
+        format_fetch(
+            {"id": "fx-4", "target": "docs/", "state": "waiting_media", "files": 10},
+            {
+                "entries": [
+                    {
+                        "collection_id": "docs",
+                        "path": "tax/2022/invoice-123.pdf",
+                        "bytes": 100,
+                        "uploaded_bytes": 25,
+                        "upload_state": "partial",
+                        "upload_state_expires_at": "2026-04-21T00:00:00Z",
+                    }
+                ]
+            },
+        )
+    )
+
+    assert "partial" in rendered
+    assert "38;2;255;137;51" not in rendered
 
 
 def test_format_collection_summary_surfaces_recovery_paths_labels_and_glacier_costs(
@@ -488,6 +574,13 @@ def test_format_collection_summary_uses_rich_detail_preview(
     assert "... 2 more" in rendered
     assert "20260420T040001Z-1 @ Shelf B1" in rendered
     assert "300 B" in rendered
+    header_line = next(
+        line
+        for line in rendered.splitlines()
+        if "Image" in line and "Archive" in line and "Copies" in line and "Paths" in line
+    )
+    assert header_line.index("Archive") < header_line.index("Copies")
+    assert header_line.index("Copies") < header_line.index("Paths")
 
 
 def test_format_glacier_report_surfaces_collection_storage() -> None:

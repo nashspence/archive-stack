@@ -53,7 +53,8 @@ def test_hot_show_done_fetch_does_not_request_manifest(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert "fetch: fx-done (done)" in result.stdout
-    assert "pending:" in result.stdout
+    assert "entries: none" in result.stdout
+    assert "pending:" not in result.stdout
     assert fake_client.manifest_calls == 0
 
 

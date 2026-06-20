@@ -167,6 +167,20 @@ def _collection_ids_text(collection_ids: object) -> str:
     return ", ".join(str(item) for item in collection_ids)
 
 
+def _collection_ids_lines(collection_ids: object) -> str:
+    if not isinstance(collection_ids, Sequence) or isinstance(
+        collection_ids, (str, bytes, bytearray)
+    ):
+        return "none"
+    items = [str(item) for item in collection_ids]
+    return "\n".join(items) if items else "none"
+
+
+def _collection_ids_block(collection_ids: object) -> Any:
+    text = _collection_ids_lines(collection_ids)
+    return _entity_text(text) if text != "none" else text
+
+
 def _int_value(value: object, *, default: int = 0) -> int:
     if isinstance(value, bool):
         return int(value)
@@ -373,13 +387,19 @@ def _format_fetch_plain(summary: Mapping[str, Any], manifest: Mapping[str, Any])
     lines = [
         f"fetch: {summary.get('id', 'unknown')} ({summary.get('state', 'unknown')})",
         f"target: {summary.get('target', 'unknown')}",
-        "pending:",
     ]
-    lines.extend(pending or ["- none"])
-    lines.append("partial:")
-    lines.extend(partial or ["- none", "expires: n/a"])
-    lines.append("byte-complete:")
-    lines.extend(byte_complete or ["- none"])
+    if not pending and not partial and not byte_complete:
+        lines.append("entries: none")
+        return "\n".join(lines)
+    if pending:
+        lines.append("pending:")
+        lines.extend(pending)
+    if partial:
+        lines.append("partial:")
+        lines.extend(partial)
+    if byte_complete:
+        lines.append("byte-complete:")
+        lines.extend(byte_complete)
     return "\n".join(lines)
 
 
@@ -397,17 +417,18 @@ def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> Any
     table.add_row("missing", _bytes_text(summary.get("missing_bytes", 0)))
     table.add_row("copies", _copy_lines(summary.get("copies")))
 
-    status_table = _quiet_table("Status", "Items")
-    status_table.add_row("pending", _preview_lines(pending, limit=8))
-    status_table.add_row(_attention_text("partial"), _preview_lines(partial, limit=8))
-    status_table.add_row("byte-complete", _preview_lines(byte_complete, limit=8))
+    renderables: list[Any] = [RichText("fetch", style="bold"), table]
+    if pending or partial or byte_complete:
+        status_table = _quiet_table("Status", "Items")
+        if pending:
+            status_table.add_row("pending", _preview_lines(pending, limit=8))
+        if partial:
+            status_table.add_row("partial", _preview_lines(partial, limit=8))
+        if byte_complete:
+            status_table.add_row("byte-complete", _preview_lines(byte_complete, limit=8))
+        renderables.extend([RichText("entries", style="bold"), status_table])
 
-    return RichGroup(
-        RichText("fetch", style="bold"),
-        table,
-        RichText("entries", style="bold"),
-        status_table,
-    )
+    return RichGroup(*renderables)
 
 
 def _format_collections_plain(payload: Mapping[str, Any]) -> str:
@@ -506,8 +527,8 @@ def _format_hot_pins_plain(payload: Mapping[str, Any]) -> str:
                 len(copies) if isinstance(copies, Sequence) else None,
             )
             lines.append(
-                f"- {pin.get('target', 'unknown')} "
-                f"fetch={fetch.get('id', 'unknown')} "
+                f"- fetch={fetch.get('id', 'unknown')} "
+                f"target={pin.get('target', 'unknown')} "
                 f"state={fetch.get('state', 'unknown')} "
                 f"files={fetch.get('files', 0)} "
                 f"bytes={fetch.get('bytes', 0)} "
@@ -515,14 +536,14 @@ def _format_hot_pins_plain(payload: Mapping[str, Any]) -> str:
                 + (f" copies={copy_count}" if copy_count is not None else "")
             )
         else:
-            lines.append(f"- {pin.get('target', 'unknown')} fetch=none")
+            lines.append(f"- fetch=none target={pin.get('target', 'unknown')}")
     return "\n".join(lines)
 
 
 def format_hot_pins(payload: Mapping[str, Any]) -> Any:
     if not _rich_enabled():
         return _format_hot_pins_plain(payload)
-    table = _quiet_table("Target", "Fetch", "State", "Missing", "Files", "Bytes")
+    table = _quiet_table("Fetch", "Target", "State", "Missing", "Files", "Bytes")
     pins = payload.get("pins")
     if isinstance(pins, Sequence):
         for pin in pins:
@@ -542,8 +563,8 @@ def format_hot_pins(payload: Mapping[str, Any]) -> Any:
                 bytes_text = "0 B"
                 missing = "0 B"
             table.add_row(
-                str(pin.get("target", "unknown")),
                 _entity_text(fetch_id) if fetch_id != "none" else fetch_id,
+                str(pin.get("target", "unknown")),
                 _attention_text(state),
                 missing,
                 files,
@@ -625,6 +646,12 @@ def format_images(payload: Mapping[str, Any]) -> Any:
 
 
 def _format_image_plain(image: Mapping[str, Any]) -> str:
+    collection_ids = _collection_ids_lines(image.get("collection_ids"))
+    collection_lines = (
+        "\n".join(f"  {line}" for line in collection_ids.splitlines())
+        if collection_ids != "none"
+        else "  none"
+    )
     return "\n".join(
         [
             f"image: {image.get('id', 'unknown')} ({image.get('filename', 'unknown')})",
@@ -639,8 +666,8 @@ def _format_image_plain(image: Mapping[str, Any]) -> str:
             f"{image.get('physical_copies_required', 0)} "
             f"verified={image.get('physical_copies_verified', 0)}/"
             f"{image.get('physical_copies_required', 0)}",
-            f"collections: {image.get('collections', 0)} "
-            f"[{_collection_ids_text(image.get('collection_ids'))}]",
+            f"collections: {image.get('collections', 0)}",
+            collection_lines,
         ]
     )
 
@@ -664,7 +691,7 @@ def format_image(image: Mapping[str, Any]) -> Any:
         "discs",
         _copy_detail_coverage_text(image),
     )
-    table.add_row("collections", _collection_ids_text(image.get("collection_ids")))
+    table.add_row("collections", _collection_ids_block(image.get("collection_ids")))
     return RichGroup(RichText("image", style="bold"), table)
 
 
@@ -973,7 +1000,7 @@ def _collection_coverage_table(
     payload: Mapping[str, Any],
     collection_glacier: Mapping[str, Any] | None,
 ) -> Any:
-    table = _quiet_table("Image", "Protection", "Discs", "Paths", "Copies", "Archive")
+    table = _quiet_table("Image", "Protection", "Discs", "Archive", "Copies", "Paths")
     image_costs = _collection_image_costs(collection_glacier)
     images = payload.get("image_coverage")
     if isinstance(images, Sequence):
@@ -996,9 +1023,9 @@ def _collection_coverage_table(
                     image.get("physical_copies_registered", 0),
                     required,
                 ),
-                _preview_lines(_string_items(image.get("covered_paths")), limit=4),
-                _copy_lines(image.get("copies"), limit=4),
                 archive_text,
+                _copy_lines(image.get("copies"), limit=4),
+                _preview_lines(_string_items(image.get("covered_paths")), limit=4),
             )
     if not table.rows:
         table.add_row("none", "", "", "", "", "")
