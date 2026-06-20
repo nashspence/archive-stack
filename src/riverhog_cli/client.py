@@ -299,11 +299,17 @@ class ApiClient:
         per_page: int = 25,
         q: str | None = None,
         protection_state: str | None = None,
+        sort: str = "id",
+        order: str = "asc",
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
             "per_page": per_page,
         }
+        if sort != "id":
+            params["sort"] = sort
+        if order != "asc":
+            params["order"] = order
         if q:
             params["q"] = q
         if protection_state:

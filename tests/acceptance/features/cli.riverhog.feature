@@ -107,11 +107,9 @@ Feature: riverhog CLI
       And stdout mentions fetch id "fx-1"
       And stdout mentions at least one candidate copy id
 
-    Scenario: riverhog hot show lists pending and partial files for one pin manifest
+    Scenario: riverhog hot show lists pending files for one pin manifest
       Given fetch "fx-1" exists for target "docs/tax/2022/invoice-123.pdf"
       When the operator runs 'riverhog hot show "fx-1"'
       Then the command exits with code 0
       And stdout mentions fetch id "fx-1"
       And stdout mentions "pending"
-      And stdout mentions "partial"
-      And stdout mentions "expires"

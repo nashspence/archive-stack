@@ -916,12 +916,6 @@ _COLLECTION_SORT_FIELDS = {
 _FIND_SORT_FIELDS = {"target", "collection", "path", "bytes", "hot", "archived"}
 
 
-def _collection_sort_value(collection: Mapping[str, object], sort: str) -> int | str:
-    if sort == "id":
-        return str(collection.get("id", "")).casefold()
-    return _optional_int(collection.get(sort)) or 0
-
-
 def _collection_list_glacier_payload(collection: Mapping[str, object]) -> dict[str, object] | None:
     glacier = collection.get("glacier")
     if not isinstance(glacier, Mapping):
@@ -1023,50 +1017,20 @@ def _sorted_collection_page(
     if normalized_order not in {"asc", "desc"}:
         raise typer.BadParameter("order must be asc or desc", param_hint="--order")
 
-    first_page = api.list_collections(
-        page=1,
-        per_page=100,
+    payload = api.list_collections(
+        page=page,
+        per_page=per_page,
         q=query,
         protection_state=protection_state,
+        sort=sort,
+        order=normalized_order,
     )
-    collections = [
-        collection
-        for collection in first_page.get("collections", [])
-        if isinstance(collection, dict)
-    ]
-    pages = _optional_int(first_page.get("pages")) or 0
-    for page_number in range(2, pages + 1):
-        next_page = api.list_collections(
-            page=page_number,
-            per_page=100,
-            q=query,
-            protection_state=protection_state,
-        )
-        collections.extend(
-            collection
-            for collection in next_page.get("collections", [])
-            if isinstance(collection, dict)
-        )
-
-    collections.sort(
-        key=lambda collection: _collection_sort_value(collection, sort),
-        reverse=normalized_order == "desc",
-    )
-    total = len(collections)
-    display_pages = (total + per_page - 1) // per_page if total else 0
-    start = (page - 1) * per_page
-    stop = start + per_page
     return {
-        **first_page,
-        "page": page,
-        "per_page": per_page,
-        "total": total,
-        "pages": display_pages,
+        **payload,
         "sort": sort,
         "order": normalized_order,
         "query": query,
         "protection_state": protection_state,
-        "collections": collections[start:stop],
     }
 
 

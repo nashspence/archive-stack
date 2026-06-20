@@ -47,6 +47,8 @@ def list_collections(
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
     q: str | None = Query(None),
+    sort: str = Query("id"),
+    order: str = Query("asc"),
     protection_state: Annotated[CollectionProtectionFilter | None, Query()] = None,
 ) -> ListCollectionsResponse:
     service_protection_state = (
@@ -57,6 +59,8 @@ def list_collections(
         per_page=per_page,
         q=q,
         protection_state=service_protection_state,
+        sort=sort,
+        order=order,
     )
     return ListCollectionsResponse.model_validate(map_collection_list_page(summary))
 

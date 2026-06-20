@@ -12,6 +12,7 @@ from typing import Protocol, TypedDict
 
 from sqlalchemy import Integer, and_, case, cast, func, select
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.sql.elements import ColumnElement
 
 from riverhog_core.archive_compliance import (
     DEFAULT_REQUIRED_PHYSICAL_COPIES,
@@ -29,6 +30,7 @@ from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveRecord,
     CollectionFileRecord,
+    CollectionOperatorSummaryRecord,
     CollectionRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
@@ -78,6 +80,15 @@ from riverhog_core.webhooks import (
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _LOG = logging.getLogger(__name__)
+_COLLECTION_SORT_FIELDS = {
+    "id",
+    "bytes",
+    "files",
+    "hot_bytes",
+    "archived_bytes",
+    "pending_bytes",
+    "protected_bytes",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -884,11 +895,17 @@ class SqlAlchemyCollectionService:
         per_page: int,
         q: str | None,
         protection_state: str | None,
+        sort: str = "id",
+        order: str = "asc",
     ) -> CollectionListPage:
         if page < 1:
             raise BadRequest("page must be at least 1")
         if per_page < 1:
             raise BadRequest("per_page must be at least 1")
+        if sort not in _COLLECTION_SORT_FIELDS:
+            raise BadRequest(f"sort must be one of {', '.join(sorted(_COLLECTION_SORT_FIELDS))}")
+        if order not in {"asc", "desc"}:
+            raise BadRequest("order must be asc or desc")
         if protection_state is not None and protection_state not in {
             "unprotected",
             "partially_protected",
@@ -898,36 +915,115 @@ class SqlAlchemyCollectionService:
 
         needle = q.casefold() if q else None
         with session_scope(self._session_factory) as session:
-            collection_ids = list(
-                session.scalars(select(CollectionRecord.id).order_by(CollectionRecord.id.asc()))
-            )
+            filters: list[ColumnElement[bool]] = []
             if needle is not None:
-                collection_ids = [
-                    collection_id
-                    for collection_id in collection_ids
-                    if needle in collection_id.casefold()
-                ]
+                filters.append(
+                    func.lower(CollectionOperatorSummaryRecord.collection_id).like(f"%{needle}%")
+                )
+            if protection_state is not None:
+                filters.append(CollectionOperatorSummaryRecord.protection_state == protection_state)
 
-            summaries: list[CollectionSummary] = []
-            for summary in _collection_list_summaries(session, collection_ids):
-                if (
-                    protection_state is not None
-                    and summary.protection_state.value != protection_state
-                ):
-                    continue
-                summaries.append(summary)
-
-            total = len(summaries)
+            total = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(CollectionOperatorSummaryRecord)
+                    .where(*filters)
+                )
+                or 0
+            )
             pages = (total + per_page - 1) // per_page if total else 0
             start = (page - 1) * per_page
-            stop = start + per_page
+            sort_column = (
+                CollectionOperatorSummaryRecord.collection_id
+                if sort == "id"
+                else getattr(CollectionOperatorSummaryRecord, sort)
+            )
+            order_by = sort_column.desc() if order == "desc" else sort_column.asc()
+            rows = session.scalars(
+                select(CollectionOperatorSummaryRecord)
+                .where(*filters)
+                .order_by(order_by, CollectionOperatorSummaryRecord.collection_id.asc())
+                .offset(start)
+                .limit(per_page)
+            ).all()
+
             return CollectionListPage(
                 page=page,
                 per_page=per_page,
                 total=total,
                 pages=pages,
-                collections=summaries[start:stop],
+                collections=[_summary_from_operator_projection(row) for row in rows],
             )
+
+
+def _summary_from_operator_projection(row: CollectionOperatorSummaryRecord) -> CollectionSummary:
+    bytes_total = int(row.bytes or 0)
+    archived_bytes = int(row.archived_bytes or 0)
+    protected_bytes = int(row.protected_bytes or 0)
+    physical_bytes = int(row.physical_bytes or 0)
+    archive_state = normalize_glacier_state(row.archive_state)
+    glacier_bytes = bytes_total if archive_state is GlacierState.UPLOADED else 0
+    physical_state = _recovery_coverage_state(
+        covered_bytes=physical_bytes,
+        total_bytes=bytes_total,
+    )
+    glacier_state = _recovery_coverage_state(
+        covered_bytes=glacier_bytes,
+        total_bytes=bytes_total,
+    )
+    available: list[str] = []
+    if physical_state is RecoveryCoverageState.FULL:
+        available.append("verified_physical")
+    if glacier_state is RecoveryCoverageState.FULL:
+        available.append("glacier")
+
+    collection_manifest = None
+    if row.has_archive:
+        ots_state = "uploaded" if row.ots_object_path else "pending"
+        if row.archive_state == "failed":
+            ots_state = "failed"
+        collection_manifest = CollectionManifestStatus(
+            object_path=row.manifest_object_path,
+            sha256=row.manifest_sha256,
+            ots_object_path=row.ots_object_path,
+            ots_state=ots_state,
+            ots_sha256=row.ots_sha256,
+        )
+
+    return CollectionSummary(
+        id=CollectionId(row.collection_id),
+        files=int(row.files or 0),
+        bytes=bytes_total,
+        hot_bytes=int(row.hot_bytes or 0),
+        archived_bytes=archived_bytes,
+        protection_state=ProtectionState(row.protection_state or "unprotected"),
+        protected_bytes=protected_bytes,
+        recovery=CollectionRecoverySummary(
+            verified_physical=RecoveryCoverage(
+                state=physical_state,
+                bytes=physical_bytes,
+            ),
+            glacier=RecoveryCoverage(
+                state=glacier_state,
+                bytes=glacier_bytes,
+            ),
+            available=tuple(available),
+        ),
+        image_coverage=[],
+        glacier=GlacierArchiveStatus(
+            state=archive_state,
+            object_path=row.archive_object_path,
+            stored_bytes=row.archive_stored_bytes,
+            backend=row.archive_backend,
+            storage_class=row.archive_storage_class,
+            last_uploaded_at=row.archive_last_uploaded_at,
+            last_verified_at=row.archive_last_verified_at,
+            failure=row.archive_failure,
+        ),
+        collection_manifest=collection_manifest,
+        archive_format=row.archive_format,
+        compression=row.compression,
+    )
 
 
 def _collection_list_summaries(

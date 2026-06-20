@@ -27,6 +27,7 @@ def test_initialize_db_creates_current_baseline_schema(tmp_path: Path) -> None:
         "active_pins",
         "collection_archives",
         "collection_files",
+        "collection_operator_summaries",
         "collection_upload_files",
         "collection_uploads",
         "collections",
@@ -79,7 +80,7 @@ def test_initialize_db_creates_current_baseline_schema(tmp_path: Path) -> None:
         applied_versions = {
             row[0] for row in conn.execute(text("SELECT version FROM schema_migrations")).fetchall()
         }
-    assert applied_versions == {SCHEMA_BASELINE_VERSION, SCHEMA_LATEST_VERSION}
+    assert applied_versions == {SCHEMA_BASELINE_VERSION, 2, SCHEMA_LATEST_VERSION}
 
 
 def test_initialize_db_migrates_v1_catalog_billing_columns(tmp_path: Path) -> None:
@@ -134,7 +135,7 @@ def test_initialize_db_migrates_v1_catalog_billing_columns(tmp_path: Path) -> No
         applied_versions = {
             row[0] for row in conn.execute(text("SELECT version FROM schema_migrations")).fetchall()
         }
-    assert applied_versions == {SCHEMA_BASELINE_VERSION, SCHEMA_LATEST_VERSION}
+    assert applied_versions == {SCHEMA_BASELINE_VERSION, 2, SCHEMA_LATEST_VERSION}
 
 
 def test_create_catalog_engine_rejects_bare_database_paths(tmp_path: Path) -> None:

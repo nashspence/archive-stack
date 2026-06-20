@@ -1714,6 +1714,8 @@ class AcceptanceCollectionService:
         per_page: int,
         q: str | None,
         protection_state: str | None,
+        sort: str = "id",
+        order: str = "asc",
     ) -> CollectionListPage:
         needle = q.casefold() if q else None
         summaries = [
@@ -1728,6 +1730,23 @@ class AcceptanceCollectionService:
                 for summary in summaries
                 if summary.protection_state.value == protection_state
             ]
+        if sort not in {
+            "id",
+            "bytes",
+            "files",
+            "hot_bytes",
+            "archived_bytes",
+            "pending_bytes",
+            "protected_bytes",
+        }:
+            sort = "id"
+        reverse = order == "desc"
+        summaries.sort(
+            key=lambda summary: (
+                str(summary.id).casefold() if sort == "id" else int(getattr(summary, sort))
+            ),
+            reverse=reverse,
+        )
         total = len(summaries)
         pages = math.ceil(total / per_page) if total else 0
         start = (page - 1) * per_page

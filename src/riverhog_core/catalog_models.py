@@ -20,6 +20,53 @@ class CollectionRecord(Base):
         cascade="all, delete-orphan",
         uselist=False,
     )
+    operator_summary: Mapped[CollectionOperatorSummaryRecord | None] = relationship(
+        back_populates="collection",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class CollectionOperatorSummaryRecord(Base):
+    __tablename__ = "collection_operator_summaries"
+
+    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    files: Mapped[int] = mapped_column(BigInteger, default=0)
+    bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    hot_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    archived_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    pending_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    protected_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    physical_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    has_registered_image: Mapped[int] = mapped_column(Integer, default=0)
+    protection_state: Mapped[str] = mapped_column(String, default="unprotected")
+    has_archive: Mapped[int] = mapped_column(Integer, default=0)
+    archive_state: Mapped[str | None] = mapped_column(String, default="pending", nullable=True)
+    archive_object_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    archive_stored_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    archive_backend: Mapped[str | None] = mapped_column(String, nullable=True)
+    archive_storage_class: Mapped[str | None] = mapped_column(String, nullable=True)
+    archive_last_uploaded_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    archive_last_verified_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    archive_failure: Mapped[str | None] = mapped_column(String, nullable=True)
+    archive_format: Mapped[str | None] = mapped_column(String, nullable=True)
+    compression: Mapped[str | None] = mapped_column(String, nullable=True)
+    manifest_object_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    manifest_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ots_object_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    ots_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id"],
+            ["collections.id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+        ),
+    )
+
+    collection: Mapped[CollectionRecord] = relationship(back_populates="operator_summary")
 
 
 class CollectionFileRecord(Base):

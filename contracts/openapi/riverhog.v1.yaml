@@ -337,6 +337,14 @@ paths:
           description: Case-insensitive substring filter over canonical collection ids.
           schema: { type: string }
         - in: query
+          name: sort
+          required: false
+          schema: { type: string, default: id }
+        - in: query
+          name: order
+          required: false
+          schema: { type: string, default: asc }
+        - in: query
           name: protection_state
           required: false
           description: Exact collection protection filter.

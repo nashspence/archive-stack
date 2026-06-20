@@ -90,6 +90,8 @@ class CollectionService(Protocol):
         per_page: int,
         q: str | None,
         protection_state: str | None,
+        sort: str = "id",
+        order: str = "asc",
     ) -> CollectionListPage: ...
 
 
