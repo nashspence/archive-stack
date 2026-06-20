@@ -6,10 +6,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from riverhog_core.catalog_db import make_session_factory, session_scope
-from riverhog_core.catalog_models import CollectionFileRecord, CollectionRecord
-from riverhog_core.domain.errors import BadRequest, InvalidTarget, NotFound
+from riverhog_core.catalog_models import CollectionFileRecord
+from riverhog_core.domain.errors import InvalidTarget, NotFound
 from riverhog_core.domain.selectors import parse_target
-from riverhog_core.fs_paths import PathNormalizationError, normalize_collection_id
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.runtime_config import RuntimeConfig
 
@@ -48,39 +47,6 @@ class SqlAlchemyFileService:
         self._config = config
         self._hot_store = hot_store
         self._session_factory = make_session_factory(config.database_url)
-
-    def list_collection_files(
-        self,
-        collection_id: str,
-        *,
-        page: int,
-        per_page: int,
-    ) -> dict[str, object]:
-        try:
-            normalized = normalize_collection_id(collection_id)
-        except PathNormalizationError as exc:
-            raise BadRequest(str(exc)) from exc
-
-        with session_scope(self._session_factory) as session:
-            collection = session.get(CollectionRecord, normalized)
-            if collection is None:
-                raise NotFound(f"collection not found: {normalized}")
-            records = sorted(
-                [
-                    {
-                        "path": f.path,
-                        "bytes": f.bytes,
-                        "hot": f.hot,
-                        "archived": f.archived,
-                    }
-                    for f in collection.files
-                ],
-                key=lambda r: str(r["path"]),
-            )
-        return {
-            "collection_id": normalized,
-            **_paginate_file_records(records, page=page, per_page=per_page),
-        }
 
     def query_by_target(
         self,

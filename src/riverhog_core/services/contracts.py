@@ -20,22 +20,6 @@ IsoStreamResult = IsoStream | IsoBody
 PlanningIsoResult = IsoStreamResult | Awaitable[IsoStreamResult]
 
 
-class CollectionFilePayload(TypedDict):
-    path: str
-    bytes: int
-    hot: bool
-    archived: bool
-
-
-class CollectionFilesPayload(TypedDict):
-    collection_id: str
-    page: int
-    per_page: int
-    total: int
-    pages: int
-    files: list[CollectionFilePayload]
-
-
 class FileStatePayload(TypedDict):
     target: str
     collection: str
@@ -111,7 +95,18 @@ class CollectionService(Protocol):
 
 
 class SearchService(Protocol):
-    def search(self, query: str, limit: int) -> list[dict[str, object]]: ...
+    def search(
+        self,
+        *,
+        q: str | None,
+        page: int,
+        per_page: int,
+        sort: str,
+        order: str,
+        collection: str | None = None,
+        hot: bool | None = None,
+        archived: bool | None = None,
+    ) -> dict[str, object]: ...
 
 
 class PlanningService(Protocol):
@@ -223,13 +218,6 @@ class FetchService(Protocol):
 
 
 class FileService(Protocol):
-    def list_collection_files(
-        self,
-        collection_id: str,
-        *,
-        page: int,
-        per_page: int,
-    ) -> dict[str, object]: ...
     def query_by_target(
         self,
         raw_target: str,

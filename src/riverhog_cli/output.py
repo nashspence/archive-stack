@@ -1249,14 +1249,23 @@ def format_plan(payload: Mapping[str, Any]) -> Any:
     return RichGroup(_page_text("plan", payload), planner, table)
 
 
-def format_collection_files(payload: Mapping[str, Any]) -> str:
+def _format_find_plain(payload: Mapping[str, Any]) -> str:
     lines = [
-        f"collection: {payload.get('collection_id', 'unknown')}",
-        "files: "
+        "find: "
         f"page {payload.get('page', 1)}/{payload.get('pages', 0)} "
         f"per_page={payload.get('per_page', 25)} "
-        f"total={payload.get('total', 0)}",
+        f"total={payload.get('total', 0)} "
+        f"sort={payload.get('sort', 'target')} "
+        f"order={payload.get('order', 'asc')}",
     ]
+    if payload.get("query") is not None:
+        lines.append(f"query: {payload.get('query')}")
+    if payload.get("collection") is not None:
+        lines.append(f"collection: {payload.get('collection')}")
+    if payload.get("hot") is not None:
+        lines.append(f"hot: {str(payload.get('hot')).lower()}")
+    if payload.get("archived") is not None:
+        lines.append(f"archived: {str(payload.get('archived')).lower()}")
     files = payload.get("files")
     if not isinstance(files, Sequence) or not files:
         lines.append("- none")
@@ -1266,13 +1275,35 @@ def format_collection_files(payload: Mapping[str, Any]) -> str:
             continue
         lines.extend(
             [
-                f"- {file.get('path', 'unknown')}",
+                f"- {file.get('target', 'unknown')}",
                 f"  bytes: {file.get('bytes', 0)}",
                 f"  hot: {str(file.get('hot', False)).lower()}",
                 f"  archived: {str(file.get('archived', False)).lower()}",
             ]
         )
     return "\n".join(lines)
+
+
+def format_find(payload: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        return _format_find_plain(payload)
+    table = _quiet_table("Target", "Hot", "Archive", "Bytes", "Collection", "Path")
+    files = payload.get("files")
+    if isinstance(files, Sequence):
+        for file in files:
+            if not isinstance(file, Mapping):
+                continue
+            table.add_row(
+                _entity_text(file.get("target", "unknown")),
+                str(file.get("hot", False)).lower(),
+                str(file.get("archived", False)).lower(),
+                _bytes_text(file.get("bytes", 0)),
+                str(file.get("collection", "unknown")),
+                str(file.get("path", "unknown")),
+            )
+    if not table.rows:
+        table.add_row("none", "", "", "", "", "")
+    return RichGroup(_page_text("files", payload), table)
 
 
 def format_collection_upload(payload: Mapping[str, Any]) -> str:

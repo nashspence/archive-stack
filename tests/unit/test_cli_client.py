@@ -353,7 +353,7 @@ def test_create_or_resume_registered_collection_file_upload_posts_manifest_file(
     ]
 
 
-def test_list_collection_files_uses_unambiguous_collection_files_endpoint(monkeypatch) -> None:
+def test_search_includes_pagination_sort_and_filter_params(monkeypatch) -> None:
     captured: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -361,11 +361,16 @@ def test_list_collection_files_uses_unambiguous_collection_files_endpoint(monkey
         return httpx.Response(
             200,
             json={
-                "collection_id": "tax/files",
                 "page": 2,
-                "per_page": 2,
-                "total": 3,
-                "pages": 2,
+                "per_page": 10,
+                "total": 0,
+                "pages": 0,
+                "query": "invoice",
+                "collection": "docs",
+                "hot": True,
+                "archived": False,
+                "sort": "bytes",
+                "order": "desc",
                 "files": [],
             },
         )
@@ -378,9 +383,22 @@ def test_list_collection_files_uses_unambiguous_collection_files_endpoint(monkey
     monkeypatch.setattr(ApiClient, "_client", fake_client)
 
     client = ApiClient(base_url="https://api.test")
-    client.list_collection_files("tax/files", page=2, per_page=2)
+    client.search(
+        "invoice",
+        page=2,
+        per_page=10,
+        sort="bytes",
+        order="desc",
+        collection="docs",
+        hot=True,
+        archived=False,
+    )
 
-    assert captured == ["https://api.test/v1/collection-files/tax/files?page=2&per_page=2"]
+    assert captured == [
+        "https://api.test/v1/search?"
+        "page=2&per_page=10&sort=bytes&order=desc&"
+        "q=invoice&collection=docs&hot=true&archived=false"
+    ]
 
 
 def test_query_files_includes_pagination_params(monkeypatch) -> None:

@@ -15,11 +15,11 @@ import typer
 from riverhog_cli.client import ApiClient
 from riverhog_cli.output import (
     emit,
-    format_collection_files,
     format_collection_summary,
     format_collection_upload,
     format_collections,
     format_fetch,
+    format_find,
     format_hot_pins,
     format_pin,
     format_release,
@@ -911,6 +911,7 @@ _COLLECTION_SORT_FIELDS = {
     "pending_bytes",
     "protected_bytes",
 }
+_FIND_SORT_FIELDS = {"target", "collection", "path", "bytes", "hot", "archived"}
 
 
 def _collection_sort_value(collection: Mapping[str, object], sort: str) -> int | str:
@@ -1254,12 +1255,49 @@ def upload_watch_cmd(
         raise typer.Exit(124)
 
 
+@app.command("find")
 def find_cmd(
-    query: Annotated[str, typer.Argument(help="Search query")],
-    limit: Annotated[int, typer.Option("--limit", min=1, max=100)] = 25,
+    query: Annotated[
+        str | None,
+        typer.Argument(help="Optional substring matched against projected file targets"),
+    ] = None,
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "target",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
+    collection: Annotated[
+        str | None,
+        typer.Option("--collection", help="Restrict results to one collection"),
+    ] = None,
+    hot: Annotated[
+        bool | None,
+        typer.Option("--hot/--not-hot", help="Filter by hot-storage availability"),
+    ] = None,
+    archived: Annotated[
+        bool | None,
+        typer.Option("--archived/--not-archived", help="Filter by deep-archive coverage"),
+    ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    emit(client().search(query, limit), json_mode=json_mode)
+    if sort not in _FIND_SORT_FIELDS:
+        raise typer.BadParameter(
+            f"sort must be one of {', '.join(sorted(_FIND_SORT_FIELDS))}",
+            param_hint="--sort",
+        )
+    normalized_order = order.casefold()
+    if normalized_order not in {"asc", "desc"}:
+        raise typer.BadParameter("order must be asc or desc", param_hint="--order")
+    payload = client().search(
+        query,
+        page=page,
+        per_page=per_page,
+        sort=sort,
+        order=normalized_order,
+        collection=collection,
+        hot=hot,
+        archived=archived,
+    )
+    emit(payload if json_mode else format_find(payload), json_mode=json_mode)
 
 
 @collection_app.command("show")
@@ -1274,17 +1312,6 @@ def show_cmd(
         return
     glacier_payload = api.get_glacier_report(collection=collection)
     emit(format_collection_summary(payload, glacier_payload), json_mode=False)
-
-
-@collection_app.command("files")
-def collection_files_cmd(
-    collection: Annotated[str, typer.Argument(help="Collection id")],
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    payload = client().list_collection_files(collection, page=page, per_page=per_page)
-    emit(payload if json_mode else format_collection_files(payload), json_mode=json_mode)
 
 
 @hot_app.command("pin")

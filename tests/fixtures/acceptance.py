@@ -1944,56 +1944,81 @@ class AcceptanceSearchService:
         self.state = state
 
     @_with_state_lock
-    def search(self, query: str, limit: int) -> list[dict[str, object]]:
-        needle = query.casefold()
-        results: list[dict[str, object]] = []
-
+    def search(
+        self,
+        *,
+        q: str | None,
+        page: int,
+        per_page: int,
+        sort: str,
+        order: str,
+        collection: str | None = None,
+        hot: bool | None = None,
+        archived: bool | None = None,
+    ) -> dict[str, object]:
+        normalized_collection = normalize_collection_id(collection) if collection else None
+        needle = q.casefold() if q else None
+        records: list[dict[str, object]] = []
         for collection_id in sorted(self.state.files_by_collection):
             collection_name = str(collection_id)
-            if needle in collection_name.casefold():
-                summary = self.state.collection_summary(collection_id)
-                results.append(
-                    {
-                        "kind": "collection",
-                        "target": f"{collection_name}/",
-                        "collection": collection_name,
-                        "files": summary.files,
-                        "bytes": summary.bytes,
-                        "hot_bytes": summary.hot_bytes,
-                        "archived_bytes": summary.archived_bytes,
-                        "pending_bytes": summary.pending_bytes,
-                    }
-                )
-
-        for collection_id in sorted(self.state.files_by_collection):
-            collection_name = str(collection_id)
+            if normalized_collection is not None and collection_name != normalized_collection:
+                continue
             for record in sorted(
                 self.state.collection_files(collection_id), key=lambda item: item.path
             ):
                 full_path = record.projected_target
-                if needle not in full_path.casefold():
+                if needle is not None and needle not in full_path.casefold():
                     continue
-                results.append(
+                if hot is not None and record.hot is not hot:
+                    continue
+                if archived is not None and record.archived is not archived:
+                    continue
+                records.append(
                     {
-                        "kind": "file",
                         "target": record.projected_target,
                         "collection": collection_name,
-                        "path": f"/{record.path}",
+                        "path": record.path,
                         "bytes": record.bytes,
+                        "sha256": record.sha256,
                         "hot": record.hot,
-                        "copies": [
-                            {
-                                "id": str(copy.id),
-                                "volume_id": copy.volume_id,
-                                "location": copy.location,
-                            }
-                            for copy in record.copies
-                        ],
+                        "archived": record.archived,
                     }
                 )
 
-        results.sort(key=lambda item: (str(item["kind"]), str(item["target"])))
-        return results[:limit]
+        reverse = order == "desc"
+        if sort == "target":
+            records.sort(key=lambda item: str(item["target"]).casefold(), reverse=reverse)
+        elif sort == "collection":
+            records.sort(
+                key=lambda item: (str(item["collection"]).casefold(), str(item["path"]).casefold()),
+                reverse=reverse,
+            )
+        elif sort == "path":
+            records.sort(
+                key=lambda item: (str(item["path"]).casefold(), str(item["collection"]).casefold()),
+                reverse=reverse,
+            )
+        else:
+            records.sort(
+                key=lambda item: (int(item.get(sort, 0) or 0), str(item["target"]).casefold()),
+                reverse=reverse,
+            )
+        total = len(records)
+        pages = math.ceil(total / per_page) if total else 0
+        start = (page - 1) * per_page
+        return {
+            "query": q,
+            "collection": normalized_collection,
+            "hot": hot,
+            "archived": archived,
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "pages": pages,
+            "sort": sort,
+            "order": order,
+            "files": records[start : start + per_page],
+        }
 
 
 class AcceptancePlanningService:
@@ -3978,38 +4003,6 @@ class AcceptancePinService:
 class AcceptanceFileService:
     def __init__(self, state: AcceptanceState) -> None:
         self.state = state
-
-    @_with_state_lock
-    def list_collection_files(
-        self,
-        collection_id: str,
-        *,
-        page: int,
-        per_page: int,
-    ) -> dict[str, object]:
-        records = sorted(
-            [
-                {
-                    "path": record.path,
-                    "bytes": record.bytes,
-                    "hot": record.hot,
-                    "archived": record.archived,
-                }
-                for record in self.state.collection_files(collection_id)
-            ],
-            key=lambda r: str(r["path"]),
-        )
-        total = len(records)
-        pages = math.ceil(total / per_page) if total else 0
-        start = (page - 1) * per_page
-        return {
-            "collection_id": collection_id,
-            "page": page,
-            "per_page": per_page,
-            "total": total,
-            "pages": pages,
-            "files": records[start : start + per_page],
-        }
 
     @_with_state_lock
     def query_by_target(

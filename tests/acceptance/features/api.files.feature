@@ -3,41 +3,6 @@ Feature: File introspection API
   Read-only endpoints expose per-file state and hot file bytes without requiring
   a full search query or internal state access.
 
-  Rule: GET /v1/collection-files/{id} lists every file with per-file state
-
-    Background:
-      Given an archive containing collection "docs"
-
-    Scenario: List files for a known collection
-      When the client gets "/v1/collection-files/docs"
-      Then the response status is 200
-      And the response contains "collection_id", "page", "per_page", "total", "pages", and "files"
-      And the response pagination is page 1 with per_page 25 and total 3 and pages 1
-      And each file entry contains "path", "bytes", "hot", and "archived"
-
-    Scenario: Collection file listing is paginated
-      When the client gets "/v1/collection-files/docs?page=2&per_page=2"
-      Then the response status is 200
-      And the response pagination is page 2 with per_page 2 and total 3 and pages 2
-      And the response files list has exactly 1 entry
-
-    Scenario: Unknown collection returns not found
-      When the client gets "/v1/collection-files/missing"
-      Then the response status is 404
-      And the error code is "not_found"
-
-    Scenario: List files for a slash-bearing collection id
-      Given an archive containing collection "photos/2024"
-      When the client gets "/v1/collection-files/photos/2024"
-      Then the response status is 200
-      And the response contains "collection_id", "page", "per_page", "total", "pages", and "files"
-
-    Scenario: List files for a collection id ending in files
-      Given an archive containing collection "tax/files"
-      When the client gets "/v1/collection-files/tax/files"
-      Then the response status is 200
-      And the response contains "collection_id", "page", "per_page", "total", "pages", and "files"
-
   Rule: GET /v1/files?target={target} queries files matching a selector
 
     Background:

@@ -1,28 +1,29 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from riverhog_api.schemas.common import RiverhogModel
 
 
-class SearchCopyOut(RiverhogModel):
-    id: str
-    volume_id: str
-    location: str
-
-
-class SearchResultOut(RiverhogModel):
-    kind: str
+class SearchFileOut(RiverhogModel):
     target: str
     collection: str
-    path: str | None = None
-    bytes: int | None = None
-    hot: bool | None = None
-    files: int | None = None
-    hot_bytes: int | None = None
-    archived_bytes: int | None = None
-    pending_bytes: int | None = None
-    copies: list[SearchCopyOut] = []
+    path: str
+    bytes: int
+    sha256: str
+    hot: bool
+    archived: bool
 
 
 class SearchResponse(RiverhogModel):
-    query: str
-    results: list[SearchResultOut]
+    query: str | None
+    collection: str | None
+    hot: bool | None
+    archived: bool | None
+    page: int
+    per_page: int
+    total: int
+    pages: int
+    sort: Literal["target", "collection", "path", "bytes", "hot", "archived"]
+    order: Literal["asc", "desc"]
+    files: list[SearchFileOut]

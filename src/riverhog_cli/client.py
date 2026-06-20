@@ -249,8 +249,33 @@ class ApiClient:
             json=dict(file),
         )
 
-    def search(self, query: str, limit: int = 25) -> dict[str, Any]:
-        return self._json("GET", "/v1/search", params={"q": query, "limit": limit})
+    def search(
+        self,
+        query: str | None = None,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        sort: str = "target",
+        order: str = "asc",
+        collection: str | None = None,
+        hot: bool | None = None,
+        archived: bool | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, object] = {
+            "page": page,
+            "per_page": per_page,
+            "sort": sort,
+            "order": order,
+        }
+        if query:
+            params["q"] = query
+        if collection:
+            params["collection"] = collection
+        if hot is not None:
+            params["hot"] = hot
+        if archived is not None:
+            params["archived"] = archived
+        return self._json("GET", "/v1/search", params=params)
 
     def get_collection(self, collection_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/collections/{quote(collection_id, safe='/')}")
@@ -542,19 +567,6 @@ class ApiClient:
 
     def complete_fetch(self, fetch_id: str) -> dict[str, Any]:
         return self._json("POST", f"/v1/fetches/{fetch_id}/complete")
-
-    def list_collection_files(
-        self,
-        collection_id: str,
-        *,
-        page: int = 1,
-        per_page: int = 25,
-    ) -> dict[str, Any]:
-        return self._json(
-            "GET",
-            f"/v1/collection-files/{quote(collection_id, safe='/')}",
-            params={"page": page, "per_page": per_page},
-        )
 
     def query_files(
         self,

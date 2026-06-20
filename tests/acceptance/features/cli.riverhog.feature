@@ -19,12 +19,12 @@ Feature: riverhog CLI
       And stdout matches the structure of GET "/v1/collections/docs"
       And stdout mentions "docs"
 
-    Scenario: riverhog collection files emits the collection files payload
+    Scenario: riverhog find emits a paged file inventory payload
       Given an archive containing collection "docs"
-      When the operator runs 'riverhog collection files docs --page 2 --per-page 2 --json'
+      When the operator runs 'riverhog find receipt --collection docs --page 1 --per-page 2 --sort path --order asc --json'
       Then the command exits with code 0
       And stdout is valid JSON
-      And stdout matches the structure of GET "/v1/collection-files/docs"
+      And stdout matches the structure of GET "/v1/search"
       And stdout mentions "receipt-456.pdf"
 
     Scenario: riverhog hot pin emits the API pin payload

@@ -9,6 +9,7 @@ from riverhog_cli.output import (
     format_disc,
     format_discs,
     format_fetch,
+    format_find,
     format_glacier_report,
     format_hot_pins,
     format_image,
@@ -36,6 +37,44 @@ def _render_styled(renderable: object) -> str:
     )
     console.print(renderable)
     return console.export_text(styles=True)
+
+
+def test_format_find_uses_target_as_primary_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    rendered = _render_styled(
+        format_find(
+            {
+                "page": 1,
+                "pages": 1,
+                "per_page": 25,
+                "total": 1,
+                "sort": "target",
+                "order": "asc",
+                "query": "invoice",
+                "collection": "docs",
+                "hot": None,
+                "archived": None,
+                "files": [
+                    {
+                        "target": "docs/tax/2022/invoice-123.pdf",
+                        "collection": "docs",
+                        "path": "tax/2022/invoice-123.pdf",
+                        "bytes": 34,
+                        "sha256": "c" * 64,
+                        "hot": False,
+                        "archived": True,
+                    }
+                ],
+            }
+        )
+    )
+
+    assert "docs/tax/2022/invoice-123.pdf" in rendered
+    assert rendered.count("38;2;142;201;204") == 1
 
 
 def test_format_images_omits_finalized_image_glacier_context(

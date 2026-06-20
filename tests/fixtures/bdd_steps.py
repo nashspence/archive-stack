@@ -230,7 +230,6 @@ def _resolve_collection_alias_path(
     prefixes = (
         "/v1/collection-uploads/",
         "/v1/collections/",
-        "/v1/collection-files/",
     )
     aliases = sorted(
         acceptance_context.collection_upload_ids_by_slug.items(),
@@ -365,6 +364,25 @@ def _riverhog_bool_flag(argv: list[str], positive: str, negative: str) -> bool |
     return None
 
 
+def _riverhog_find_query(argv: list[str]) -> str | None:
+    options_with_values = {"--page", "--per-page", "--sort", "--order", "--collection"}
+    value_flags = {"--json", "--hot", "--not-hot", "--archived", "--not-archived"}
+    index = 2
+    while index < len(argv):
+        current = argv[index]
+        if current in options_with_values:
+            index += 2
+            continue
+        if current in value_flags:
+            index += 1
+            continue
+        if current.startswith("-"):
+            index += 1
+            continue
+        return current
+    return None
+
+
 def _set_response(
     context: AcceptanceScenarioContext, response: httpx.Response, *, append: bool = False
 ) -> None:
@@ -495,6 +513,33 @@ def _prepare_riverhog_expectation(
         ).json()
         return
 
+    if len(argv) > 1 and argv[1] == "find":
+        context.expected_api_endpoint = ("GET", "/v1/search")
+        query = _riverhog_find_query(argv)
+        params = {
+            "page": _riverhog_option_value(argv, "--page", 1),
+            "per_page": _riverhog_option_value(argv, "--per-page", 25),
+            "sort": _riverhog_option_value(argv, "--sort", "target"),
+            "order": str(_riverhog_option_value(argv, "--order", "asc")).casefold(),
+        }
+        collection = _riverhog_option_value(argv, "--collection")
+        hot = _riverhog_bool_flag(argv, "--hot", "--not-hot")
+        archived = _riverhog_bool_flag(argv, "--archived", "--not-archived")
+        if query is not None:
+            params["q"] = query
+        if collection is not None:
+            params["collection"] = collection
+        if hot is not None:
+            params["hot"] = hot
+        if archived is not None:
+            params["archived"] = archived
+        context.expected_api_payload = acceptance_system.request(
+            "GET",
+            "/v1/search",
+            params=params,
+        ).json()
+        return
+
     if argv[1:3] == ["collection", "list"]:
         context.expected_api_endpoint = ("GET", "/v1/collections")
         page = int(_riverhog_option_value(argv, "--page", 1))
@@ -621,20 +666,6 @@ def _prepare_riverhog_expectation(
         context.expected_api_endpoint = ("GET", f"/v1/fetches/{fetch_id}")
         context.expected_api_payload = acceptance_system.request(
             "GET", f"/v1/fetches/{fetch_id}"
-        ).json()
-        return
-
-    if argv[1:3] == ["collection", "files"]:
-        collection_id = argv[3]
-        context.expected_api_endpoint = ("GET", f"/v1/collection-files/{collection_id}")
-        params = {
-            "page": _riverhog_option_value(argv, "--page", 1),
-            "per_page": _riverhog_option_value(argv, "--per-page", 25),
-        }
-        context.expected_api_payload = acceptance_system.request(
-            "GET",
-            f"/v1/collection-files/{quote(collection_id, safe='/')}",
-            params=params,
         ).json()
         return
 
@@ -1353,17 +1384,36 @@ def given_image_rebuild_session_exists_for_image(
     acceptance_system.ensure_image_rebuild_session(session_id=session_id, image_id=image_id)
 
 
+def _search_collection_file_paths(
+    acceptance_system: AcceptanceSystem,
+    collection_id: str,
+) -> list[str]:
+    params: dict[str, object] = {
+        "collection": collection_id,
+        "page": 1,
+        "per_page": 100,
+        "sort": "path",
+        "order": "asc",
+    }
+    resp = acceptance_system.request("GET", "/v1/search", params=params)
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    paths = [str(record["path"]) for record in payload["files"]]
+    for page in range(2, int(payload.get("pages", 0)) + 1):
+        params["page"] = page
+        page_resp = acceptance_system.request("GET", "/v1/search", params=params)
+        assert page_resp.status_code == 200, page_resp.text
+        paths.extend(str(record["path"]) for record in page_resp.json()["files"])
+    return paths
+
+
 @given(parsers.parse('collection "{collection_id}" contains file "{path}"'))
 def given_collection_contains_file(
     acceptance_system: AcceptanceSystem,
     collection_id: str,
     path: str,
 ) -> None:
-    request_path = f"/v1/collection-files/{quote(collection_id, safe='/')}"
-    resp = acceptance_system.request("GET", request_path)
-    assert resp.status_code == 200, resp.text
-    collection_files = {record["path"] for record in resp.json()["files"]}
-    assert path.lstrip("/") in collection_files
+    assert path.lstrip("/") in set(_search_collection_file_paths(acceptance_system, collection_id))
 
 
 @given(parsers.parse('collection "{collection_id}" keeps only path "{path}" and is archived'))
@@ -1406,11 +1456,10 @@ def given_collection_contains_directory(
     path: str,
 ) -> None:
     prefix = path.strip("/").rstrip("/") + "/"
-    request_path = f"/v1/collection-files/{quote(collection_id, safe='/')}"
-    resp = acceptance_system.request("GET", request_path)
-    assert resp.status_code == 200, resp.text
-    collection_files = [record["path"] for record in resp.json()["files"]]
-    assert any(current.startswith(prefix) for current in collection_files)
+    assert any(
+        current.startswith(prefix)
+        for current in _search_collection_file_paths(acceptance_system, collection_id)
+    )
 
 
 @when(parsers.parse('the client gets "{url}"'))
@@ -2520,8 +2569,7 @@ def then_response_contains_file_results(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    file_results = [item for item in payload["results"] if item["kind"] == "file"]
-    assert file_results
+    assert payload["files"]
 
 
 @then("each file result contains a canonical target")
@@ -2531,7 +2579,7 @@ def then_each_file_result_contains_canonical_target(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    file_results = [item for item in payload["results"] if item["kind"] == "file"]
+    file_results = payload["files"]
     assert file_results
     assert all(result["target"] for result in file_results)
     assert all(":" not in str(result["target"]) for result in file_results)
@@ -2543,8 +2591,7 @@ def then_each_file_result_contains_hot_availability(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    file_results = [item for item in payload["results"] if item["kind"] == "file"]
-    assert all("hot" in result for result in file_results)
+    assert all("hot" in result for result in payload["files"])
 
 
 @then(parsers.re(r'each file entry contains "(?P<first>[^"]+)"(?P<rest>.*)'))
@@ -2605,9 +2652,7 @@ def then_each_file_result_contains_copies_if_archived(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    file_results = [item for item in payload["results"] if item["kind"] == "file"]
-    assert all("copies" in result for result in file_results)
-    assert all(result["copies"] for result in file_results if result["hot"] is False)
+    assert all("archived" in result for result in payload["files"])
 
 
 @then("every returned target is valid input for pin")
@@ -2616,7 +2661,7 @@ def then_every_returned_target_is_valid_input_for_pin(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    for target in [item["target"] for item in payload["results"]]:
+    for target in [item["target"] for item in payload["files"]]:
         assert (
             acceptance_system.request("POST", "/v1/pin", json_body={"target": target}).status_code
             == 200
@@ -2629,7 +2674,7 @@ def then_every_returned_target_is_valid_input_for_release(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    for target in [item["target"] for item in payload["results"]]:
+    for target in [item["target"] for item in payload["files"]]:
         response = acceptance_system.request("POST", "/v1/release", json_body={"target": target})
         assert response.status_code in {200, 409}, response.text
         if response.status_code == 409:
@@ -2642,7 +2687,7 @@ def then_response_contains_at_most_limit(
     limit: int,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert len(payload["results"]) <= limit
+    assert len(payload["files"]) <= limit
 
 
 @then(parsers.parse('the response contains target "{target}"'))
@@ -2651,8 +2696,8 @@ def then_response_contains_target(
     target: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    if "results" in payload:
-        assert target in [item["target"] for item in payload["results"]]
+    if "files" in payload:
+        assert target in [item["target"] for item in payload["files"]]
         return
     assert payload["target"] == target
 
@@ -4264,10 +4309,7 @@ def then_every_collection_manifest_matches_contract(
         payload = decrypt_yaml_file(inspected.extract_root / collection["manifest"])
         assert_contract_schema("collection-manifest.schema.json", payload)
         collection_id = str(collection["id"])
-        request_path = f"/v1/collection-files/{quote(collection_id, safe='/')}"
-        resp = acceptance_system.request("GET", request_path)
-        assert resp.status_code == 200, resp.text
-        expected_files = sorted(record["path"] for record in resp.json()["files"])
+        expected_files = sorted(_search_collection_file_paths(acceptance_system, collection_id))
         assert_collection_manifest_semantics(
             payload,
             expected_collection_id=collection_id,

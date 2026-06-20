@@ -3,22 +3,6 @@ from __future__ import annotations
 from riverhog_api.schemas.common import RiverhogModel
 
 
-class CollectionFileOut(RiverhogModel):
-    path: str
-    bytes: int
-    hot: bool
-    archived: bool
-
-
-class CollectionFilesResponse(RiverhogModel):
-    collection_id: str
-    page: int
-    per_page: int
-    total: int
-    pages: int
-    files: list[CollectionFileOut]
-
-
 class FileStateOut(RiverhogModel):
     target: str
     collection: str
