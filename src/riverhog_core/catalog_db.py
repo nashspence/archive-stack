@@ -14,8 +14,8 @@ class Base(DeclarativeBase):
 
 
 SCHEMA_BASELINE_VERSION = 1
-SCHEMA_LATEST_VERSION = 4
-_SUPPORTED_SCHEMA_VERSIONS = {SCHEMA_BASELINE_VERSION, 2, 3, SCHEMA_LATEST_VERSION}
+SCHEMA_LATEST_VERSION = 5
+_SUPPORTED_SCHEMA_VERSIONS = {SCHEMA_BASELINE_VERSION, 2, 3, 4, SCHEMA_LATEST_VERSION}
 _SCHEMA_V2_DROPPED_COLUMNS = {
     "glacier_usage_snapshots": (
         "estimated_billable_bytes",
@@ -78,6 +78,22 @@ _HOT_FETCH_OPERATOR_SUMMARY_COLUMNS = (
     "uploaded_bytes",
     "upload_missing_bytes",
     "upload_state_expires_at",
+    "updated_at",
+)
+_IMAGE_OPERATOR_SUMMARY_COLUMNS = (
+    "image_id",
+    "filename",
+    "finalized_at",
+    "bytes",
+    "target_bytes",
+    "files",
+    "collections",
+    "collection_ids_text",
+    "physical_protection_state",
+    "physical_copies_required",
+    "physical_copies_registered",
+    "physical_copies_verified",
+    "physical_copies_missing",
     "updated_at",
 )
 
@@ -147,6 +163,7 @@ def _apply_schema_migrations(engine: Engine) -> None:
             (2, _migrate_schema_v2),
             (3, _migrate_schema_v3),
             (4, _migrate_schema_v4),
+            (5, _migrate_schema_v5),
         ):
             if version not in applied_versions:
                 migration(conn)
@@ -190,6 +207,13 @@ def _migrate_schema_v4(conn: Connection) -> None:
     )
 
 
+def _migrate_schema_v5(conn: Connection) -> None:
+    _refresh_image_operator_summaries(
+        conn,
+        "SELECT image_id FROM finalized_images",
+    )
+
+
 def _quote_identifier(conn: Connection, identifier: str) -> str:
     return conn.dialect.identifier_preparer.quote(identifier)
 
@@ -224,6 +248,24 @@ def _ensure_schema_indexes(engine: Engine) -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS ix_hot_fetch_operator_summaries_order "
                 "ON hot_fetch_operator_summaries (fetch_order, target)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_image_operator_summaries_finalized_at "
+                "ON image_operator_summaries (image_id, filename)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_image_operator_summaries_bytes "
+                "ON image_operator_summaries (bytes, image_id)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_image_operator_summaries_copies "
+                "ON image_operator_summaries (physical_copies_registered, image_id)"
             )
         )
 
@@ -982,6 +1024,484 @@ $riverhog$;
         )
 
 
+def _image_operator_summary_collection_agg_sql(conn: Connection) -> str:
+    if conn.dialect.name == "sqlite":
+        return "COALESCE(group_concat(image_collections.collection_id, char(10)), '')"
+    return (
+        "COALESCE(string_agg(image_collections.collection_id, "
+        "chr(10) ORDER BY image_collections.collection_id), '')"
+    )
+
+
+def _image_operator_summary_select_sql(
+    conn: Connection,
+    affected_images_sql: str,
+) -> str:
+    collection_ids = _image_operator_summary_collection_agg_sql(conn)
+    return f"""
+SELECT *
+FROM (
+    WITH affected_images(image_id) AS (
+        {affected_images_sql}
+    ),
+    distinct_images AS (
+        SELECT DISTINCT image_id
+        FROM affected_images
+        WHERE image_id IS NOT NULL
+    ),
+    image_rows AS (
+        SELECT finalized_images.*
+        FROM finalized_images
+        JOIN distinct_images
+            ON distinct_images.image_id = finalized_images.image_id
+    ),
+    image_required AS (
+        SELECT
+            image_rows.image_id,
+            CASE
+                WHEN image_rows.required_copy_count > 0 THEN image_rows.required_copy_count
+                ELSE 2
+            END AS required_copy_count
+        FROM image_rows
+    ),
+    image_collections AS (
+        SELECT
+            finalized_image_covered_paths.image_id,
+            finalized_image_covered_paths.collection_id
+        FROM finalized_image_covered_paths
+        JOIN distinct_images
+            ON distinct_images.image_id = finalized_image_covered_paths.image_id
+        GROUP BY
+            finalized_image_covered_paths.image_id,
+            finalized_image_covered_paths.collection_id
+        ORDER BY
+            finalized_image_covered_paths.image_id,
+            finalized_image_covered_paths.collection_id
+    ),
+    file_stats AS (
+        SELECT
+            finalized_image_covered_paths.image_id,
+            COUNT(*) AS files
+        FROM finalized_image_covered_paths
+        JOIN distinct_images
+            ON distinct_images.image_id = finalized_image_covered_paths.image_id
+        GROUP BY finalized_image_covered_paths.image_id
+    ),
+    collection_stats AS (
+        SELECT
+            image_collections.image_id,
+            COUNT(*) AS collections,
+            {collection_ids} AS collection_ids_text
+        FROM image_collections
+        GROUP BY image_collections.image_id
+    ),
+    copy_stats AS (
+        SELECT
+            image_copies.image_id,
+            COALESCE(
+                SUM(
+                    CASE
+                        WHEN COALESCE(image_copies.state, 'registered')
+                            IN ('registered', 'verified')
+                        THEN 1
+                        ELSE 0
+                    END
+                ),
+                0
+            ) AS physical_copies_registered,
+            COALESCE(
+                SUM(
+                    CASE
+                        WHEN COALESCE(image_copies.state, 'registered')
+                            IN ('registered', 'verified')
+                            AND COALESCE(image_copies.verification_state, 'pending') = 'verified'
+                        THEN 1
+                        ELSE 0
+                    END
+                ),
+                0
+            ) AS physical_copies_verified
+        FROM image_copies
+        JOIN distinct_images
+            ON distinct_images.image_id = image_copies.image_id
+        GROUP BY image_copies.image_id
+    )
+    SELECT
+        image_rows.image_id,
+        image_rows.filename,
+        substr(image_rows.image_id, 1, 4)
+            || '-'
+            || substr(image_rows.image_id, 5, 2)
+            || '-'
+            || substr(image_rows.image_id, 7, 2)
+            || 'T'
+            || substr(image_rows.image_id, 10, 2)
+            || ':'
+            || substr(image_rows.image_id, 12, 2)
+            || ':'
+            || substr(image_rows.image_id, 14, 2)
+            || 'Z' AS finalized_at,
+        image_rows.bytes,
+        image_rows.target_bytes,
+        COALESCE(file_stats.files, 0) AS files,
+        COALESCE(collection_stats.collections, 0) AS collections,
+        COALESCE(collection_stats.collection_ids_text, '') AS collection_ids_text,
+        CASE
+            WHEN COALESCE(copy_stats.physical_copies_registered, 0)
+                >= image_required.required_copy_count
+            THEN 'protected'
+            WHEN COALESCE(copy_stats.physical_copies_registered, 0) > 0
+            THEN 'partially_protected'
+            ELSE 'unprotected'
+        END AS physical_protection_state,
+        image_required.required_copy_count AS physical_copies_required,
+        COALESCE(copy_stats.physical_copies_registered, 0) AS physical_copies_registered,
+        COALESCE(copy_stats.physical_copies_verified, 0) AS physical_copies_verified,
+        CASE
+            WHEN image_required.required_copy_count
+                - COALESCE(copy_stats.physical_copies_registered, 0) > 0
+            THEN image_required.required_copy_count
+                - COALESCE(copy_stats.physical_copies_registered, 0)
+            ELSE 0
+        END AS physical_copies_missing,
+        CAST(CURRENT_TIMESTAMP AS TEXT) AS updated_at
+    FROM image_rows
+    JOIN image_required
+        ON image_required.image_id = image_rows.image_id
+    LEFT JOIN file_stats
+        ON file_stats.image_id = image_rows.image_id
+    LEFT JOIN collection_stats
+        ON collection_stats.image_id = image_rows.image_id
+    LEFT JOIN copy_stats
+        ON copy_stats.image_id = image_rows.image_id
+) AS image_operator_summary_refresh
+"""
+
+
+def _image_operator_summary_upsert_sql(
+    conn: Connection,
+    affected_images_sql: str,
+) -> str:
+    columns = ", ".join(_IMAGE_OPERATOR_SUMMARY_COLUMNS)
+    select_sql = _image_operator_summary_select_sql(conn, affected_images_sql)
+    if conn.dialect.name == "sqlite":
+        return f"INSERT OR REPLACE INTO image_operator_summaries ({columns}) {select_sql}"
+    updates = ", ".join(
+        f"{column} = EXCLUDED.{column}"
+        for column in _IMAGE_OPERATOR_SUMMARY_COLUMNS
+        if column != "image_id"
+    )
+    return (
+        f"INSERT INTO image_operator_summaries ({columns}) "
+        f"{select_sql} "
+        f"ON CONFLICT (image_id) DO UPDATE SET {updates}"
+    )
+
+
+def _refresh_image_operator_summaries(
+    conn: Connection,
+    affected_images_sql: str,
+) -> None:
+    conn.execute(text(_image_operator_summary_upsert_sql(conn, affected_images_sql)))
+
+
+def _install_image_operator_projection(engine: Engine) -> None:
+    with engine.begin() as conn:
+        if conn.dialect.name == "sqlite":
+            _install_sqlite_image_operator_projection(conn)
+            return
+        if conn.dialect.name == "postgresql":
+            _install_postgresql_image_operator_projection(conn)
+            return
+        raise RuntimeError(f"unsupported catalog backend: {conn.dialect.name}")
+
+
+def _install_sqlite_image_operator_projection(conn: Connection) -> None:
+    def refresh(affected_images_sql: str) -> str:
+        columns = ", ".join(_IMAGE_OPERATOR_SUMMARY_COLUMNS)
+        select_sql = _image_operator_summary_select_sql(conn, affected_images_sql)
+        return f"INSERT OR REPLACE INTO image_operator_summaries ({columns}) {select_sql};"
+
+    trigger_sql = {
+        "riverhog_ios_finalized_images_insert": (
+            "finalized_images",
+            refresh("SELECT NEW.image_id AS image_id"),
+        ),
+        "riverhog_ios_finalized_images_update": (
+            "finalized_images",
+            refresh("SELECT OLD.image_id AS image_id UNION SELECT NEW.image_id AS image_id"),
+        ),
+        "riverhog_ios_finalized_image_covered_paths_insert": (
+            "finalized_image_covered_paths",
+            refresh("SELECT NEW.image_id AS image_id"),
+        ),
+        "riverhog_ios_finalized_image_covered_paths_update": (
+            "finalized_image_covered_paths",
+            refresh("SELECT OLD.image_id AS image_id UNION SELECT NEW.image_id AS image_id"),
+        ),
+        "riverhog_ios_finalized_image_covered_paths_delete": (
+            "finalized_image_covered_paths",
+            refresh("SELECT OLD.image_id AS image_id"),
+        ),
+        "riverhog_ios_image_copies_insert": (
+            "image_copies",
+            refresh("SELECT NEW.image_id AS image_id"),
+        ),
+        "riverhog_ios_image_copies_update": (
+            "image_copies",
+            refresh("SELECT OLD.image_id AS image_id UNION SELECT NEW.image_id AS image_id"),
+        ),
+        "riverhog_ios_image_copies_delete": (
+            "image_copies",
+            refresh("SELECT OLD.image_id AS image_id"),
+        ),
+    }
+    for trigger_name, (table_name, body) in trigger_sql.items():
+        conn.execute(text(f"DROP TRIGGER IF EXISTS {trigger_name}"))
+        operation = trigger_name.rsplit("_", maxsplit=1)[-1].upper()
+        conn.execute(
+            text(
+                f"CREATE TRIGGER {trigger_name} AFTER {operation} ON {table_name} BEGIN {body} END"
+            )
+        )
+
+
+def _install_postgresql_image_operator_projection(conn: Connection) -> None:
+    refresh_sql = _image_operator_summary_upsert_sql(
+        conn,
+        "SELECT unnest(p_image_ids) AS image_id",
+    )
+    conn.execute(
+        text(
+            f"""
+CREATE OR REPLACE FUNCTION riverhog_refresh_image_operator_summaries(
+    p_image_ids text[]
+) RETURNS void
+LANGUAGE plpgsql
+AS $riverhog$
+BEGIN
+    IF p_image_ids IS NULL OR cardinality(p_image_ids) = 0 THEN
+        RETURN;
+    END IF;
+
+    DELETE FROM image_operator_summaries
+    WHERE image_id = ANY(p_image_ids)
+        AND NOT EXISTS (
+            SELECT 1
+            FROM finalized_images
+            WHERE finalized_images.image_id = image_operator_summaries.image_id
+        );
+
+    {refresh_sql};
+END;
+$riverhog$;
+"""
+        )
+    )
+    trigger_functions = {
+        "riverhog_ios_from_new_finalized_images": """
+CREATE OR REPLACE FUNCTION riverhog_ios_from_new_finalized_images()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $riverhog$
+BEGIN
+    PERFORM riverhog_refresh_image_operator_summaries(
+        ARRAY(SELECT DISTINCT image_id::text FROM new_rows WHERE image_id IS NOT NULL)
+    );
+    RETURN NULL;
+END;
+$riverhog$;
+""",
+        "riverhog_ios_from_changed_finalized_images": """
+CREATE OR REPLACE FUNCTION riverhog_ios_from_changed_finalized_images()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $riverhog$
+BEGIN
+    PERFORM riverhog_refresh_image_operator_summaries(
+        ARRAY(
+            SELECT DISTINCT image_id::text
+            FROM (
+                SELECT image_id::text AS image_id FROM old_rows
+                UNION
+                SELECT image_id::text AS image_id FROM new_rows
+            ) AS affected
+            WHERE image_id IS NOT NULL
+        )
+    );
+    RETURN NULL;
+END;
+$riverhog$;
+""",
+        "riverhog_ios_from_new_covered_paths": """
+CREATE OR REPLACE FUNCTION riverhog_ios_from_new_covered_paths()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $riverhog$
+BEGIN
+    PERFORM riverhog_refresh_image_operator_summaries(
+        ARRAY(SELECT DISTINCT image_id::text FROM new_rows WHERE image_id IS NOT NULL)
+    );
+    RETURN NULL;
+END;
+$riverhog$;
+""",
+        "riverhog_ios_from_old_covered_paths": """
+CREATE OR REPLACE FUNCTION riverhog_ios_from_old_covered_paths()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $riverhog$
+BEGIN
+    PERFORM riverhog_refresh_image_operator_summaries(
+        ARRAY(SELECT DISTINCT image_id::text FROM old_rows WHERE image_id IS NOT NULL)
+    );
+    RETURN NULL;
+END;
+$riverhog$;
+""",
+        "riverhog_ios_from_changed_covered_paths": """
+CREATE OR REPLACE FUNCTION riverhog_ios_from_changed_covered_paths()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $riverhog$
+BEGIN
+    PERFORM riverhog_refresh_image_operator_summaries(
+        ARRAY(
+            SELECT DISTINCT image_id::text
+            FROM (
+                SELECT image_id::text AS image_id FROM old_rows
+                UNION
+                SELECT image_id::text AS image_id FROM new_rows
+            ) AS affected
+            WHERE image_id IS NOT NULL
+        )
+    );
+    RETURN NULL;
+END;
+$riverhog$;
+""",
+        "riverhog_ios_from_new_image_copies": """
+CREATE OR REPLACE FUNCTION riverhog_ios_from_new_image_copies()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $riverhog$
+BEGIN
+    PERFORM riverhog_refresh_image_operator_summaries(
+        ARRAY(SELECT DISTINCT image_id::text FROM new_rows WHERE image_id IS NOT NULL)
+    );
+    RETURN NULL;
+END;
+$riverhog$;
+""",
+        "riverhog_ios_from_old_image_copies": """
+CREATE OR REPLACE FUNCTION riverhog_ios_from_old_image_copies()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $riverhog$
+BEGIN
+    PERFORM riverhog_refresh_image_operator_summaries(
+        ARRAY(SELECT DISTINCT image_id::text FROM old_rows WHERE image_id IS NOT NULL)
+    );
+    RETURN NULL;
+END;
+$riverhog$;
+""",
+        "riverhog_ios_from_changed_image_copies": """
+CREATE OR REPLACE FUNCTION riverhog_ios_from_changed_image_copies()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $riverhog$
+BEGIN
+    PERFORM riverhog_refresh_image_operator_summaries(
+        ARRAY(
+            SELECT DISTINCT image_id::text
+            FROM (
+                SELECT image_id::text AS image_id FROM old_rows
+                UNION
+                SELECT image_id::text AS image_id FROM new_rows
+            ) AS affected
+            WHERE image_id IS NOT NULL
+        )
+    );
+    RETURN NULL;
+END;
+$riverhog$;
+""",
+    }
+    for function_sql in trigger_functions.values():
+        conn.execute(text(function_sql))
+
+    triggers = (
+        (
+            "riverhog_ios_finalized_images_insert",
+            "finalized_images",
+            "AFTER INSERT",
+            "REFERENCING NEW TABLE AS new_rows",
+            "riverhog_ios_from_new_finalized_images",
+        ),
+        (
+            "riverhog_ios_finalized_images_update",
+            "finalized_images",
+            "AFTER UPDATE",
+            "REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows",
+            "riverhog_ios_from_changed_finalized_images",
+        ),
+        (
+            "riverhog_ios_finalized_image_covered_paths_insert",
+            "finalized_image_covered_paths",
+            "AFTER INSERT",
+            "REFERENCING NEW TABLE AS new_rows",
+            "riverhog_ios_from_new_covered_paths",
+        ),
+        (
+            "riverhog_ios_finalized_image_covered_paths_update",
+            "finalized_image_covered_paths",
+            "AFTER UPDATE",
+            "REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows",
+            "riverhog_ios_from_changed_covered_paths",
+        ),
+        (
+            "riverhog_ios_finalized_image_covered_paths_delete",
+            "finalized_image_covered_paths",
+            "AFTER DELETE",
+            "REFERENCING OLD TABLE AS old_rows",
+            "riverhog_ios_from_old_covered_paths",
+        ),
+        (
+            "riverhog_ios_image_copies_insert",
+            "image_copies",
+            "AFTER INSERT",
+            "REFERENCING NEW TABLE AS new_rows",
+            "riverhog_ios_from_new_image_copies",
+        ),
+        (
+            "riverhog_ios_image_copies_update",
+            "image_copies",
+            "AFTER UPDATE",
+            "REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows",
+            "riverhog_ios_from_changed_image_copies",
+        ),
+        (
+            "riverhog_ios_image_copies_delete",
+            "image_copies",
+            "AFTER DELETE",
+            "REFERENCING OLD TABLE AS old_rows",
+            "riverhog_ios_from_old_image_copies",
+        ),
+    )
+    for trigger_name, table_name, timing, referencing, function_name in triggers:
+        conn.execute(text(f"DROP TRIGGER IF EXISTS {trigger_name} ON {table_name}"))
+        conn.execute(
+            text(
+                f"CREATE TRIGGER {trigger_name} "
+                f"{timing} ON {table_name} "
+                f"{referencing} "
+                "FOR EACH STATEMENT "
+                f"EXECUTE FUNCTION {function_name}()"
+            )
+        )
+
+
 def _hot_fetch_target_selects_file_sql(
     *,
     target: str,
@@ -1560,6 +2080,7 @@ def initialize_db(database_url: str) -> None:
         HotFetchOperatorSummaryRecord,
         ImageCopyEventRecord,
         ImageCopyRecord,
+        ImageOperatorSummaryRecord,
         PlannedCandidateRecord,
     )
 
@@ -1581,6 +2102,7 @@ def initialize_db(database_url: str) -> None:
         GlacierRecoverySessionRecord,
         GlacierUsageSnapshotRecord,
         HotFetchOperatorSummaryRecord,
+        ImageOperatorSummaryRecord,
         ImageCopyEventRecord,
         ImageCopyRecord,
         CollectionUploadFileRecord,
@@ -1593,6 +2115,7 @@ def initialize_db(database_url: str) -> None:
     _ensure_schema_indexes(engine)
     _apply_schema_migrations(engine)
     _install_collection_operator_projection(engine)
+    _install_image_operator_projection(engine)
     _install_hot_fetch_operator_projection(engine)
 
 

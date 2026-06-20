@@ -248,6 +248,41 @@ class FinalizedImageRecord(Base):
         back_populates="image",
         cascade="all, delete-orphan",
     )
+    operator_summary: Mapped[ImageOperatorSummaryRecord | None] = relationship(
+        back_populates="image",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class ImageOperatorSummaryRecord(Base):
+    __tablename__ = "image_operator_summaries"
+
+    image_id: Mapped[str] = mapped_column(String, primary_key=True)
+    filename: Mapped[str] = mapped_column(String)
+    finalized_at: Mapped[str] = mapped_column(String)
+    bytes: Mapped[int] = mapped_column(BigInteger)
+    target_bytes: Mapped[int] = mapped_column(BigInteger)
+    files: Mapped[int] = mapped_column(BigInteger, default=0)
+    collections: Mapped[int] = mapped_column(BigInteger, default=0)
+    collection_ids_text: Mapped[str] = mapped_column(String, default="")
+    physical_protection_state: Mapped[str] = mapped_column(String, default="unprotected")
+    physical_copies_required: Mapped[int] = mapped_column(Integer, default=2)
+    physical_copies_registered: Mapped[int] = mapped_column(BigInteger, default=0)
+    physical_copies_verified: Mapped[int] = mapped_column(BigInteger, default=0)
+    physical_copies_missing: Mapped[int] = mapped_column(BigInteger, default=0)
+    updated_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["image_id"],
+            ["finalized_images.image_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+        ),
+    )
+
+    image: Mapped[FinalizedImageRecord] = relationship(back_populates="operator_summary")
 
 
 class FinalizedImageCoveredPathRecord(Base):

@@ -13,9 +13,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, TypedDict
 
-from sqlalchemy import func, insert, select
+from sqlalchemy import func, insert, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
@@ -40,6 +40,7 @@ from riverhog_core.catalog_models import (
     FinalizedImageRecord,
     ImageCopyEventRecord,
     ImageCopyRecord,
+    ImageOperatorSummaryRecord,
     PlannedCandidateRecord,
 )
 from riverhog_core.crypto_age import (
@@ -347,40 +348,30 @@ class SqlAlchemyPlanningService:
         has_copies: bool | None,
     ) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
-            all_images = session.scalars(select(FinalizedImageRecord)).all()
-            image_views = [_finalized_image_view(img, session) for img in all_images]
+            stmt = select(ImageOperatorSummaryRecord)
+            if q:
+                needle = q.casefold()
+                stmt = stmt.where(
+                    or_(
+                        func.lower(ImageOperatorSummaryRecord.image_id).contains(needle),
+                        func.lower(ImageOperatorSummaryRecord.filename).contains(needle),
+                        func.lower(ImageOperatorSummaryRecord.collection_ids_text).contains(needle),
+                    )
+                )
+            if collection:
+                stmt = stmt.where(_image_summary_collection_clause(collection))
+            if has_copies is not None:
+                copy_clause = ImageOperatorSummaryRecord.physical_copies_registered > 0
+                stmt = stmt.where(copy_clause if has_copies else ~copy_clause)
 
-        if q:
-            needle = q.casefold()
-            image_views = [
-                v
-                for v in image_views
-                if needle in v["id"].casefold()
-                or needle in v["filename"].casefold()
-                or any(needle in cid.casefold() for cid in v["_collection_ids"])
-            ]
-        if collection:
-            image_views = [v for v in image_views if collection in v["_collection_ids"]]
-        if has_copies is not None:
-            image_views = [
-                v for v in image_views if (v["physical_copies_registered"] > 0) is has_copies
-            ]
-
-        reverse = order == "desc"
-        sort_key = {
-            "finalized_at": lambda v: (v["id"], v["filename"]),
-            "bytes": lambda v: (v["_bytes"], v["id"]),
-            "physical_copies_registered": lambda v: (
-                v["physical_copies_registered"],
-                v["id"],
-            ),
-        }[sort]
-        image_views = sorted(image_views, key=sort_key, reverse=reverse)
-
-        total = len(image_views)
-        pages = math.ceil(total / per_page) if total else 0
-        start = (page - 1) * per_page
-        page_views = image_views[start : start + per_page]
+            total = int(session.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
+            pages = math.ceil(total / per_page) if total else 0
+            rows = session.scalars(
+                stmt.order_by(*_image_summary_order(sort=sort, order=order))
+                .offset((page - 1) * per_page)
+                .limit(per_page)
+            ).all()
+            page_views = [_finalized_image_view_from_summary(row) for row in rows]
 
         return {
             "page": page,
@@ -394,10 +385,10 @@ class SqlAlchemyPlanningService:
 
     def get_image(self, image_id: str) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
-            record = session.get(FinalizedImageRecord, image_id)
-            if record is None:
+            row = session.get(ImageOperatorSummaryRecord, image_id)
+            if row is None:
                 raise NotFound(f"image not found: {image_id}")
-            return _strip_internal(_finalized_image_view(record, session))
+            return _strip_internal(_finalized_image_view_from_summary(row))
 
     def finalize_image(self, candidate_id: str) -> dict[str, object]:
         try:
@@ -2408,6 +2399,68 @@ def _candidate_plan_view(candidate: PlannedCandidateRecord) -> CandidatePlanView
         "_bytes": candidate.bytes,
         "_collections": collection_ids,
         "_projected_paths": projected_paths,
+    }
+
+
+def _image_summary_collection_ids(row: ImageOperatorSummaryRecord) -> list[str]:
+    if not row.collection_ids_text:
+        return []
+    return row.collection_ids_text.split("\n")
+
+
+def _image_summary_collection_clause(collection: str) -> Any:
+    collection_ids = ImageOperatorSummaryRecord.collection_ids_text
+    return or_(
+        collection_ids == collection,
+        collection_ids.startswith(f"{collection}\n"),
+        collection_ids.endswith(f"\n{collection}"),
+        collection_ids.contains(f"\n{collection}\n"),
+    )
+
+
+def _image_summary_order(*, sort: str, order: str) -> list[Any]:
+    columns = {
+        "finalized_at": (
+            ImageOperatorSummaryRecord.image_id,
+            ImageOperatorSummaryRecord.filename,
+        ),
+        "bytes": (
+            ImageOperatorSummaryRecord.bytes,
+            ImageOperatorSummaryRecord.image_id,
+        ),
+        "physical_copies_registered": (
+            ImageOperatorSummaryRecord.physical_copies_registered,
+            ImageOperatorSummaryRecord.image_id,
+        ),
+    }[sort]
+    if order == "desc":
+        return [column.desc() for column in columns]
+    return [column.asc() for column in columns]
+
+
+def _finalized_image_view_from_summary(
+    row: ImageOperatorSummaryRecord,
+) -> FinalizedImageView:
+    collection_ids = _image_summary_collection_ids(row)
+    fill = row.bytes / row.target_bytes if row.target_bytes else 0.0
+    return {
+        "id": row.image_id,
+        "filename": row.filename,
+        "finalized_at": row.finalized_at,
+        "bytes": int(row.bytes),
+        "target_bytes": int(row.target_bytes),
+        "fill": fill,
+        "files": int(row.files),
+        "collections": int(row.collections),
+        "collection_ids": collection_ids,
+        "iso_ready": True,
+        "physical_protection_state": row.physical_protection_state,
+        "physical_copies_required": int(row.physical_copies_required),
+        "physical_copies_registered": int(row.physical_copies_registered),
+        "physical_copies_verified": int(row.physical_copies_verified),
+        "physical_copies_missing": int(row.physical_copies_missing),
+        "_bytes": int(row.bytes),
+        "_collection_ids": collection_ids,
     }
 
 
