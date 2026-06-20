@@ -1459,7 +1459,7 @@ def test_djdan_recover_lists_active_sessions(monkeypatch) -> None:
 
     monkeypatch.setattr(djdan_main, "ApiClient", FakeClient)
 
-    result = runner.invoke(djdan_main.app, ["recover"])
+    result = runner.invoke(djdan_main.app, ["image", "rebuild"])
 
     assert result.exit_code == 0
     assert "rs-20260420T040001Z-1" in result.stdout
@@ -1508,7 +1508,7 @@ def test_djdan_recover_approves_waiting_session(monkeypatch, tmp_path: Path) -> 
 
     result = runner.invoke(
         djdan_main.app,
-        ["recover", "rs-20260420T040001Z-1", "--staging-dir", str(tmp_path)],
+        ["image", "rebuild", "rs-20260420T040001Z-1", "--staging-dir", str(tmp_path)],
     )
 
     assert result.exit_code == 0
@@ -1667,7 +1667,8 @@ def test_djdan_recover_ready_session_burns_replacements_and_cleans_staging(
     result = runner.invoke(
         djdan_main.app,
         [
-            "recover",
+            "image",
+            "rebuild",
             "rs-20260420T040001Z-1",
             "--device",
             "/dev/fake-sr0",
@@ -1821,7 +1822,8 @@ def test_djdan_recover_can_finish_expired_session_from_local_staging(
     result = runner.invoke(
         djdan_main.app,
         [
-            "recover",
+            "image",
+            "rebuild",
             "rs-20260420T040001Z-1",
             "--device",
             "/dev/fake-sr0",
@@ -1973,7 +1975,8 @@ def test_djdan_recover_stages_all_pending_session_images_before_first_burn(
     result = runner.invoke(
         djdan_main.app,
         [
-            "recover",
+            "image",
+            "rebuild",
             "rs-20260420T040001Z-1",
             "--device",
             "/dev/fake-sr0",

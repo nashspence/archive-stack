@@ -688,7 +688,7 @@ values on a new network path.
 - type: positive integer byte count
 - default: `8388608`
 
-Size of each tus-compatible `PATCH` request body sent by `riverhog upload`.
+Size of each tus-compatible `PATCH` request body sent by `riverhog collection upload`.
 Reverse proxies must allow bodies larger than this value. A proxy body limit of
 at least 16 MiB is recommended for the default 8 MiB chunk.
 
@@ -697,7 +697,7 @@ at least 16 MiB is recommended for the default 8 MiB chunk.
 - type: positive integer
 - default: `1`
 
-Maximum number of logical files one `riverhog upload` process uploads at the
+Maximum number of logical files one `riverhog collection upload` process uploads at the
 same time. Each worker uses its own API client and resumes exactly one
 server-owned file upload resource at a time. Keep the default for large-file
 collections when a single stream already fills the path; raise it for
@@ -709,7 +709,7 @@ collections with many small files where per-file round trips dominate.
 - default: `1048576`
 
 Minimum logical file size that gets per-file start/completion log lines during
-`riverhog upload`. Smaller files still contribute to throttled total progress
+`riverhog collection upload`. Smaller files still contribute to throttled total progress
 logs, and retries/errors always name the affected path. Set this to `0` for
 full per-file logging while debugging a small collection.
 
@@ -740,7 +740,7 @@ and hot-promotion progress when the server has those counters.
 
 Maximum time the CLI waits for collection finalization after all files are
 staged. Unset or `0` means wait indefinitely. If this timeout is reached,
-`riverhog upload` prints the current upload session and exits non-zero instead
+`riverhog collection upload` prints the current upload session and exits non-zero instead
 of presenting staged bytes as a completed collection.
 
 ### `RIVERHOG_DOWNLOAD_TIMEOUT_SECONDS`

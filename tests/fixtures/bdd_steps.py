@@ -477,34 +477,126 @@ def _prepare_riverhog_expectation(
     if not argv or argv[0] != "riverhog":
         return
 
-    if argv[1] == "pin":
+    if argv[1:3] == ["hot", "pin"]:
         context.expected_api_endpoint = ("POST", "/v1/pin")
         context.expected_api_payload = acceptance_system.request(
             "POST",
             "/v1/pin",
-            json_body={"target": argv[2]},
+            json_body={"target": argv[3]},
         ).json()
         return
 
-    if argv[1] == "release":
+    if argv[1:3] == ["hot", "unpin"]:
         context.expected_api_endpoint = ("POST", "/v1/release")
         context.expected_api_payload = acceptance_system.request(
             "POST",
             "/v1/release",
-            json_body={"target": argv[2]},
+            json_body={"target": argv[3]},
         ).json()
         return
 
-    if argv[1] == "find":
-        context.expected_api_endpoint = ("GET", "/v1/search")
+    if argv[1:3] == ["collection", "list"]:
+        context.expected_api_endpoint = ("GET", "/v1/collections")
+        page = int(_riverhog_option_value(argv, "--page", 1))
+        per_page = int(_riverhog_option_value(argv, "--per-page", 25))
+        sort = str(_riverhog_option_value(argv, "--sort", "id"))
+        order = str(_riverhog_option_value(argv, "--order", "asc"))
+        params: dict[str, object] = {"page": 1, "per_page": 100}
+        query = _riverhog_option_value(argv, "--query")
+        if query is None:
+            query = _riverhog_option_value(argv, "--search")
+        protection = _riverhog_option_value(argv, "--protection")
+        if query is not None:
+            params["q"] = query
+        if protection is not None:
+            params["protection_state"] = protection
+        first_page = acceptance_system.request("GET", "/v1/collections", params=params).json()
+        collections = [
+            collection
+            for collection in first_page.get("collections", [])
+            if isinstance(collection, dict)
+        ]
+        for page_number in range(2, int(first_page.get("pages", 0)) + 1):
+            params["page"] = page_number
+            collections.extend(
+                collection
+                for collection in acceptance_system.request(
+                    "GET", "/v1/collections", params=params
+                )
+                .json()
+                .get("collections", [])
+                if isinstance(collection, dict)
+            )
+
+        def sort_value(collection: dict[str, Any]) -> object:
+            if sort == "id":
+                return str(collection.get("id", "")).casefold()
+            return int(collection.get(sort, 0) or 0)
+
+        collections.sort(key=sort_value, reverse=order == "desc")
+        total = len(collections)
+        pages = (total + per_page - 1) // per_page if total else 0
+        context.expected_api_payload = {
+            **first_page,
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "pages": pages,
+            "collections": collections[(page - 1) * per_page : page * per_page],
+        }
+        return
+
+    if argv[1:3] == ["hot", "list"]:
+        context.expected_api_endpoint = ("GET", "/v1/pins")
+        context.expected_api_payload = acceptance_system.request("GET", "/v1/pins").json()
+        return
+
+    if argv[1:3] == ["hot", "show"]:
+        fetch_id = argv[3]
+        context.expected_api_endpoint = ("GET", f"/v1/fetches/{fetch_id}")
+        context.expected_api_payload = acceptance_system.request(
+            "GET", f"/v1/fetches/{fetch_id}"
+        ).json()
+        return
+
+    if argv[1:3] == ["collection", "files"]:
+        collection_id = argv[3]
+        context.expected_api_endpoint = ("GET", f"/v1/collection-files/{collection_id}")
+        params = {
+            "page": _riverhog_option_value(argv, "--page", 1),
+            "per_page": _riverhog_option_value(argv, "--per-page", 25),
+        }
         context.expected_api_payload = acceptance_system.request(
             "GET",
-            "/v1/search",
-            params={"q": argv[2], "limit": 25},
+            f"/v1/collection-files/{quote(collection_id, safe='/')}",
+            params=params,
         ).json()
         return
 
-    if argv[1] == "plan":
+    if argv[1:3] == ["collection", "show"]:
+        collection_id = argv[3]
+        context.expected_api_endpoint = ("GET", f"/v1/collections/{collection_id}")
+        context.expected_api_payload = acceptance_system.request(
+            "GET",
+            f"/v1/collections/{quote(collection_id, safe='/')}",
+        ).json()
+        return
+
+    if argv[1:3] == ["collection", "upload"]:
+        return
+
+    raise AssertionError(f"unsupported riverhog command: {argv}")
+
+
+def _prepare_djdan_expectation(
+    acceptance_system: AcceptanceSystem,
+    context: AcceptanceScenarioContext,
+) -> None:
+    argv = context.command_argv
+    if not argv or argv[0] != "djdan":
+        return
+
+    if argv[1:3] == ["image", "plan"]:
         context.expected_api_endpoint = ("GET", "/v1/plan")
         params = {
             "page": _riverhog_option_value(argv, "--page", 1),
@@ -526,7 +618,7 @@ def _prepare_riverhog_expectation(
         ).json()
         return
 
-    if argv[1] == "images":
+    if argv[1:3] == ["image", "list"]:
         context.expected_api_endpoint = ("GET", "/v1/images")
         params = {
             "page": _riverhog_option_value(argv, "--page", 1),
@@ -536,7 +628,7 @@ def _prepare_riverhog_expectation(
         }
         query = _riverhog_option_value(argv, "--query")
         collection = _riverhog_option_value(argv, "--collection")
-        has_copies = _riverhog_bool_flag(argv, "--has-copies", "--no-copies")
+        has_copies = _riverhog_bool_flag(argv, "--has-discs", "--no-discs")
         if query is not None:
             params["q"] = query
         if collection is not None:
@@ -544,52 +636,19 @@ def _prepare_riverhog_expectation(
         if has_copies is not None:
             params["has_copies"] = has_copies
         context.expected_api_payload = acceptance_system.request(
-            "GET",
-            "/v1/images",
-            params=params,
+            "GET", "/v1/images", params=params
         ).json()
         return
 
-    if argv[1] == "dashboard":
-        context.expected_api_endpoint = ("GET", "/v1/dashboard")
-        params: dict[str, object] = {
-            "page": _riverhog_option_value(argv, "--page", 1),
-            "per_page": _riverhog_option_value(argv, "--per-page", 25),
-            "sort": _riverhog_option_value(argv, "--sort", "finalized_at"),
-            "order": _riverhog_option_value(argv, "--order", "desc"),
-        }
-        query = _riverhog_option_value(argv, "--query")
-        collection = _riverhog_option_value(argv, "--collection")
-        has_copies = _riverhog_bool_flag(argv, "--has-copies", "--no-copies")
-        if query is not None:
-            params["q"] = query
-        if collection is not None:
-            params["collection"] = collection
-        if has_copies is not None:
-            params["has_copies"] = has_copies
-        context.expected_api_payload = {
-            "images": acceptance_system.request(
-                "GET",
-                "/v1/images",
-                params=params,
-            ).json(),
-        }
-        return
-
-    if argv[1] == "glacier":
-        context.expected_api_endpoint = ("GET", "/v1/glacier")
-        params: dict[str, object] = {}
-        collection = _riverhog_option_value(argv, "--collection")
-        if collection is not None:
-            params["collection"] = collection
+    if argv[1:3] == ["image", "show"]:
+        image_id = argv[3]
+        context.expected_api_endpoint = ("GET", f"/v1/images/{image_id}")
         context.expected_api_payload = acceptance_system.request(
-            "GET",
-            "/v1/glacier",
-            params=params,
+            "GET", f"/v1/images/{image_id}"
         ).json()
         return
 
-    if argv[1] == "copy" and argv[2] == "add":
+    if argv[1:3] == ["disc", "add"]:
         image_id = argv[3]
         context.expected_api_endpoint = ("POST", f"/v1/images/{image_id}/copies")
         body: dict[str, object] = {"location": _riverhog_option_value(argv, "--at")}
@@ -603,7 +662,7 @@ def _prepare_riverhog_expectation(
         ).json()
         return
 
-    if argv[1] == "copy" and argv[2] == "list":
+    if argv[1:3] == ["disc", "list"] and len(argv) > 3 and not argv[3].startswith("-"):
         image_id = argv[3]
         context.expected_api_endpoint = ("GET", f"/v1/images/{image_id}/copies")
         context.expected_api_payload = acceptance_system.request(
@@ -612,9 +671,9 @@ def _prepare_riverhog_expectation(
         ).json()
         return
 
-    if argv[1] == "copy" and argv[2] == "move":
-        image_id = argv[3]
-        copy_id = argv[4]
+    if argv[1:3] == ["disc", "location"]:
+        copy_id = argv[3]
+        image_id = copy_id.rsplit("-", 1)[0]
         context.expected_api_endpoint = (
             "PATCH",
             f"/v1/images/{image_id}/copies/{copy_id}",
@@ -626,75 +685,10 @@ def _prepare_riverhog_expectation(
         ).json()
         return
 
-    if argv[1] == "copy" and argv[2] == "mark":
-        image_id = argv[3]
-        copy_id = argv[4]
-        body: dict[str, object] = {"state": _riverhog_option_value(argv, "--state")}
-        verification_state = _riverhog_option_value(argv, "--verification-state")
-        location = _riverhog_option_value(argv, "--at")
-        if verification_state is not None:
-            body["verification_state"] = verification_state
-        if location is not None:
-            body["location"] = location
-        context.expected_api_endpoint = (
-            "PATCH",
-            f"/v1/images/{image_id}/copies/{copy_id}",
-        )
-        context.expected_api_payload = acceptance_system.request(
-            "PATCH",
-            f"/v1/images/{image_id}/copies/{copy_id}",
-            json_body=body,
-        ).json()
+    if argv[1] in {"fetch", "burn"} or argv[1:3] == ["image", "rebuild"]:
         return
 
-    if argv[1] == "pins":
-        context.expected_api_endpoint = ("GET", "/v1/pins")
-        context.expected_api_payload = acceptance_system.request("GET", "/v1/pins").json()
-        return
-
-    if argv[1] == "fetch":
-        return
-
-    if argv[1] == "upload":
-        return
-
-    if argv[1] == "show" and "--files" in argv:
-        collection_id = argv[2]
-        context.expected_api_endpoint = ("GET", f"/v1/collection-files/{collection_id}")
-        params = {
-            "page": _riverhog_option_value(argv, "--page", 1),
-            "per_page": _riverhog_option_value(argv, "--per-page", 25),
-        }
-        context.expected_api_payload = acceptance_system.request(
-            "GET",
-            f"/v1/collection-files/{quote(collection_id, safe='/')}",
-            params=params,
-        ).json()
-        return
-
-    if argv[1] == "show":
-        collection_id = argv[2]
-        context.expected_api_endpoint = ("GET", f"/v1/collections/{collection_id}")
-        context.expected_api_payload = acceptance_system.request(
-            "GET",
-            f"/v1/collections/{quote(collection_id, safe='/')}",
-        ).json()
-        return
-
-    if argv[1] == "status":
-        target = argv[2]
-        context.expected_api_endpoint = ("GET", "/v1/files")
-        params = {
-            "target": target,
-            "page": _riverhog_option_value(argv, "--page", 1),
-            "per_page": _riverhog_option_value(argv, "--per-page", 25),
-        }
-        context.expected_api_payload = acceptance_system.request(
-            "GET", "/v1/files", params=params
-        ).json()
-        return
-
-    raise AssertionError(f"unsupported riverhog command: {argv}")
+    raise AssertionError(f"unsupported djdan command: {argv}")
 
 
 @given("an empty archive")
@@ -1933,10 +1927,11 @@ def when_operator_uploads_collection_source(
 ) -> None:
     source_root = acceptance_system.collection_source_root(collection_id)
     acceptance_context.command_text = (
-        f'riverhog upload {collection_id} "{source_root}" --wait staged'
+        f'riverhog collection upload {collection_id} "{source_root}" --wait staged'
     )
     acceptance_context.command_argv = [
         "riverhog",
+        "collection",
         "upload",
         collection_id,
         str(source_root),
@@ -1947,6 +1942,7 @@ def when_operator_uploads_collection_source(
     acceptance_context.expected_api_endpoint = None
     acceptance_context.expected_api_payload = None
     acceptance_context.command = acceptance_system.run_riverhog(
+        "collection",
         "upload",
         collection_id,
         str(acceptance_system.collection_source_root(collection_id)),
@@ -1975,6 +1971,7 @@ def when_operator_runs_command(
 
     if argv[0] == "djdan":
         acceptance_context.command = acceptance_system.run_djdan(*argv[1:])
+        _prepare_djdan_expectation(acceptance_system, acceptance_context)
         return
 
     raise AssertionError(f"unsupported command: {command}")
@@ -2027,7 +2024,7 @@ def when_operator_runs_djdan_burn(
     )
 
 
-@when(parsers.parse('the operator runs djdan recover "{session_id}"'))
+@when(parsers.parse('the operator runs djdan image rebuild "{session_id}"'))
 def when_operator_runs_djdan_recover(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
@@ -2036,7 +2033,8 @@ def when_operator_runs_djdan_recover(
     _run_djdan_command(
         acceptance_system,
         acceptance_context,
-        "recover",
+        "image",
+        "rebuild",
         session_id,
         "--device",
         _configured_optical_acceptance_device(),

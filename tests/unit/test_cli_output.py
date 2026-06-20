@@ -1,11 +1,24 @@
 from __future__ import annotations
 
+import pytest
+from rich.console import Console
+
 from riverhog_cli.output import (
     format_collection_summary,
-    format_dashboard,
+    format_collections,
+    format_discs,
     format_glacier_report,
+    format_hot_pins,
     format_images,
 )
+
+
+def _render(renderable: object) -> str:
+    if isinstance(renderable, str):
+        return renderable
+    console = Console(record=True, width=120, color_system=None)
+    console.print(renderable)
+    return console.export_text()
 
 
 def test_format_images_omits_finalized_image_glacier_context() -> None:
@@ -42,122 +55,121 @@ def test_format_images_omits_finalized_image_glacier_context() -> None:
     assert "glacier_failure" not in rendered
 
 
-def test_format_dashboard_surfaces_ready_backlog_and_noncompliant_collections() -> None:
-    rendered = format_dashboard(
-        {
-            "total": 1,
-            "unplanned_bytes": 6100,
-            "candidates": [
-                {
-                    "candidate_id": "img_2026-04-20_01",
-                    "fill": 0.84,
-                    "collections": 1,
-                    "collection_ids": ["docs"],
-                }
-            ],
-        },
-        {
-            "total": 1,
-            "candidates": [
-                {
-                    "candidate_id": "img_2026-04-20_02",
-                    "fill": 0.12,
-                    "collections": 1,
-                    "collection_ids": ["photos-2024"],
-                }
-            ],
-        },
+def test_format_collections_uses_compact_collection_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    rendered = _render(
+        format_collections(
+            {
+                "page": 1,
+                "pages": 1,
+                "per_page": 25,
+                "total": 1,
+                "collections": [
+                    {
+                        "id": "docs",
+                        "files": 2,
+                        "bytes": 100,
+                        "hot_bytes": 25,
+                        "archived_bytes": 100,
+                        "protection_state": "partially_protected",
+                        "disc_coverage": {
+                            "state": "partial",
+                            "verified_physical_bytes": 50,
+                        },
+                    }
+                ],
+            }
+        )
+    )
+
+    assert "collections page 1/1" in rendered
+    assert "Collection" in rendered
+    assert "Protection" in rendered
+    assert "docs" in rendered
+    assert "partially_protected" in rendered
+    assert "partial" in rendered
+
+
+def test_format_collections_can_fall_back_to_plain_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
+
+    rendered = format_collections(
         {
             "page": 1,
+            "pages": 1,
             "per_page": 25,
-            "images": [
-                {
-                    "id": "20260420T040001Z",
-                    "filename": "20260420T040001Z.iso",
-                    "collections": 1,
-                    "collection_ids": ["docs"],
-                    "physical_protection_state": "partially_protected",
-                    "physical_copies_registered": 1,
-                    "physical_copies_verified": 0,
-                    "physical_copies_required": 2,
-                    "glacier": {"state": "pending"},
-                }
-            ],
-        },
-        {
-            "collections": [
-                {
-                    "id": "photos-2024",
-                    "bytes": 100,
-                    "protected_bytes": 0,
-                    "protection_state": "unprotected",
-                    "recovery": {
-                        "available": [],
-                        "verified_physical": {"state": "none", "bytes": 0},
-                        "glacier": {"state": "none", "bytes": 0},
-                    },
-                }
-            ]
-        },
-        {
+            "total": 1,
             "collections": [
                 {
                     "id": "docs",
-                    "bytes": 55,
-                    "protected_bytes": 22,
+                    "files": 2,
+                    "bytes": 100,
+                    "hot_bytes": 25,
+                    "archived_bytes": 100,
                     "protection_state": "partially_protected",
-                    "recovery": {
-                        "available": [],
-                        "verified_physical": {"state": "partial", "bytes": 22},
-                        "glacier": {"state": "partial", "bytes": 22},
+                    "disc_coverage": {
+                        "state": "partial",
+                        "verified_physical_bytes": 50,
                     },
                 }
-            ]
-        },
-        {
-            "collections": [
-                {
-                    "id": "receipts",
-                    "bytes": 40,
-                    "protected_bytes": 40,
-                }
-            ]
-        },
-        {
-            "active_uploads": [
-                {
-                    "collection_id": "photos-2025",
-                    "state": "archiving",
-                    "files_total": 12,
-                    "files_uploaded": 12,
-                    "hot_promoted_files": 12,
-                    "bytes_total": 4096,
-                    "uploaded_bytes": 4096,
-                    "archive_phase": "uploading",
-                    "archive_uploaded_bytes": 2048,
-                    "archive_total_bytes": 4096,
-                    "archive_uploaded_parts": 1,
-                    "archive_total_parts": 2,
-                }
-            ]
-        },
+            ],
+        }
     )
-    assert "active_uploads:" in rendered
-    assert (
-        "photos-2025 state=archiving files=12/12 hot=12/12 bytes=4096/4096 "
-        "phase=uploading archive_bytes=2048/4096 archive_parts=1/2"
-    ) in rendered
-    assert "ready_to_finalize:" in rendered
-    assert "img_2026-04-20_01" in rendered
-    assert "waiting_for_future_iso:" in rendered
-    assert "img_2026-04-20_02" in rendered
-    assert "next: burn, verify" in rendered
-    assert "noncompliant_collections:" in rendered
-    assert "photos-2024 state=unprotected" in rendered
-    assert "docs state=partially_protected" in rendered
-    assert "verified_physical=partial 22/55" in rendered
-    assert "fully_protected_collections:" in rendered
-    assert "receipts protected_bytes=40/40" in rendered
+
+    assert isinstance(rendered, str)
+    assert "collections: page 1/1" in rendered
+    assert "docs protection=partially_protected" in rendered
+
+
+def test_format_hot_pins_uses_compact_pin_table() -> None:
+    rendered = _render(
+        format_hot_pins(
+            {
+                "pins": [
+                    {
+                        "target": "docs/tax/2022/invoice-123.pdf",
+                        "fetch": {
+                            "id": "fx-1",
+                            "state": "waiting_media",
+                            "copies": [{"id": "20260420T040001Z-1"}],
+                        },
+                    }
+                ]
+            }
+        )
+    )
+
+    assert "hot pins" in rendered
+    assert "docs/tax/2022/invoice-123.pdf" in rendered
+    assert "fx-1" in rendered
+    assert "waiting_media" in rendered
+
+
+def test_format_discs_uses_compact_disc_table() -> None:
+    rendered = _render(
+        format_discs(
+            {
+                "discs": [
+                    {
+                        "id": "20260420T040001Z-1",
+                        "image_id": "20260420T040001Z",
+                        "state": "verified",
+                        "verification_state": "verified",
+                        "location": "Shelf B1",
+                    }
+                ]
+            }
+        )
+    )
+
+    assert "discs" in rendered
+    assert "20260420T040001Z-1" in rendered
+    assert "verified" in rendered
+    assert "Shelf B1" in rendered
 
 
 def test_format_collection_summary_surfaces_recovery_paths_labels_and_glacier_costs() -> None:

@@ -1,60 +1,49 @@
 @acceptance @cli @mvp
 Feature: riverhog CLI
-  The main CLI is a thin stable wrapper over the API.
+  The main CLI is focused on collections and pinned hot-storage sets.
 
   Rule: JSON mode mirrors API payloads
-    Scenario: riverhog pin emits the API pin payload
+    Scenario: riverhog collection list emits the collection listing payload
+      Given an archive containing collection "docs"
+      When the operator runs 'riverhog collection list --page 1 --per-page 2 --sort id --order asc --query docs --json'
+      Then the command exits with code 0
+      And stdout is valid JSON
+      And stdout matches the structure of GET "/v1/collections"
+      And stdout mentions "docs"
+
+    Scenario: riverhog collection show emits the collection summary payload
+      Given an archive containing collection "docs"
+      When the operator runs 'riverhog collection show docs --json'
+      Then the command exits with code 0
+      And stdout is valid JSON
+      And stdout matches the structure of GET "/v1/collections/docs"
+      And stdout mentions "docs"
+
+    Scenario: riverhog collection files emits the collection files payload
+      Given an archive containing collection "docs"
+      When the operator runs 'riverhog collection files docs --page 2 --per-page 2 --json'
+      Then the command exits with code 0
+      And stdout is valid JSON
+      And stdout matches the structure of GET "/v1/collection-files/docs"
+      And stdout mentions "receipt-456.pdf"
+
+    Scenario: riverhog hot pin emits the API pin payload
       Given target "docs/tax/2022/invoice-123.pdf" is valid
-      When the operator runs 'riverhog pin "docs/tax/2022/invoice-123.pdf" --json'
+      When the operator runs 'riverhog hot pin "docs/tax/2022/invoice-123.pdf" --json'
       Then the command exits with code 0
       And stdout is valid JSON
       And stdout matches the structure of POST "/v1/pin"
 
-    Scenario: riverhog release emits the API release payload
+    Scenario: riverhog hot unpin emits the API release payload
       Given target "docs/tax/2022/invoice-123.pdf" is valid
-      When the operator runs 'riverhog release "docs/tax/2022/invoice-123.pdf" --json'
+      When the operator runs 'riverhog hot unpin "docs/tax/2022/invoice-123.pdf" --json'
       Then the command exits with code 0
       And stdout is valid JSON
       And stdout matches the structure of POST "/v1/release"
 
-    Scenario: riverhog find emits the API search payload
-      When the operator runs 'riverhog find "invoice" --json'
-      Then the command exits with code 0
-      And stdout is valid JSON
-      And stdout matches the structure of GET "/v1/search"
-
-    Scenario: riverhog plan emits the API plan payload
-      Given an archive with planner fixtures
-      And an archive with split planner fixtures
-      When the operator runs 'riverhog plan --page 1 --per-page 2 --sort candidate_id --order asc --collection docs --iso-ready --query invoice-123.pdf --json'
-      Then the command exits with code 0
-      And stdout is valid JSON
-      And stdout matches the structure of GET "/v1/plan"
-      And stdout mentions "img_2026-04-20_01"
-
-    Scenario: riverhog images emits the finalized-image listing payload
-      Given an archive with planner fixtures
-      And an archive with split planner fixtures
-      And candidate "img_2026-04-20_01" is finalized
-      And candidate "img_2026-04-20_03" is finalized
-      And copy "20260420T040001Z-1" already exists
-      When the operator runs 'riverhog images --page 1 --per-page 2 --sort finalized_at --order desc --has-copies --query 040001Z --collection docs --json'
-      Then the command exits with code 0
-      And stdout is valid JSON
-      And stdout matches the structure of GET "/v1/images"
-      And stdout mentions "20260420T040001Z"
-    Scenario: riverhog glacier emits the collection-native Glacier usage payload
-      Given an archive with planner fixtures
-      And collection "docs" has uploaded Glacier archive package
-      When the operator runs 'riverhog glacier --collection docs --json'
-      Then the command exits with code 0
-      And stdout is valid JSON
-      And stdout matches the structure of GET "/v1/glacier"
-      And stdout mentions "docs"
-
-    Scenario: riverhog pins emits fetch associations for active pins
+    Scenario: riverhog hot list emits fetch associations for active pins
       Given archived target "docs/tax/2022/invoice-123.pdf" is pinned with fetch "fx-1"
-      When the operator runs 'riverhog pins --json'
+      When the operator runs 'riverhog hot list --json'
       Then the command exits with code 0
       And stdout is valid JSON
       And stdout matches the structure of GET "/v1/pins"
@@ -62,52 +51,16 @@ Feature: riverhog CLI
       And stdout mentions fetch id "fx-1"
       And stdout mentions "waiting_media"
 
-    Scenario: riverhog show --files emits the collection files payload
-      Given an archive containing collection "docs"
-      When the operator runs 'riverhog show docs --files --page 2 --per-page 2 --json'
+    Scenario: riverhog hot show emits one fetch summary payload
+      Given fetch "fx-1" exists for target "docs/tax/2022/invoice-123.pdf"
+      When the operator runs 'riverhog hot show "fx-1" --json'
       Then the command exits with code 0
       And stdout is valid JSON
-      And stdout matches the structure of GET "/v1/collection-files/docs"
-      And stdout mentions "receipt-456.pdf"
+      And stdout matches the structure of GET "/v1/fetches/fx-1"
+      And stdout mentions fetch id "fx-1"
 
-    Scenario: riverhog status emits the files query payload
-      Given an archive containing collection "docs"
-      When the operator runs 'riverhog status "docs/" --page 2 --per-page 2 --json'
-      Then the command exits with code 0
-      And stdout is valid JSON
-      And stdout matches the structure of GET "/v1/files"
-      And stdout mentions "receipt-456.pdf"
-
-    Scenario: riverhog copy add emits the generated-copy registration payload
-      Given candidate "img_2026-04-20_01" is finalized
-      When the operator runs 'riverhog copy add 20260420T040001Z --at "Shelf B1" --json'
-      Then the command exits with code 0
-      And stdout is valid JSON
-      And stdout mentions "20260420T040001Z-1"
-
-    Scenario: riverhog copy list emits the generated-copy listing payload
-      Given candidate "img_2026-04-20_01" is finalized
-      When the operator runs 'riverhog copy list 20260420T040001Z --json'
-      Then the command exits with code 0
-      And stdout is valid JSON
-      And stdout matches the structure of GET "/v1/images/20260420T040001Z/copies"
-
-    Scenario: riverhog copy move emits the copy update payload
-      Given copy "20260420T040001Z-1" already exists
-      When the operator runs 'riverhog copy move 20260420T040001Z 20260420T040001Z-1 --to "Shelf B2" --json'
-      Then the command exits with code 0
-      And stdout is valid JSON
-      And stdout mentions "Shelf B2"
-
-    Scenario: riverhog copy mark emits the copy state-transition payload
-      Given copy "20260420T040001Z-1" already exists
-      When the operator runs 'riverhog copy mark 20260420T040001Z 20260420T040001Z-1 --state verified --verification-state verified --json'
-      Then the command exits with code 0
-      And stdout is valid JSON
-      And stdout mentions "verified"
-
-  Rule: Non-JSON mode remains concise and stable
-    Scenario: riverhog upload ingests and archives a local collection source
+  Rule: Human mode remains concise and stable
+    Scenario: riverhog collection upload ingests and archives a local collection source
       Given a local collection source "photos-2024" with deterministic fixture contents
       When the operator uploads collection source "photos-2024" with riverhog
       Then the command exits with code 0
@@ -115,48 +68,26 @@ Feature: riverhog CLI
       And stdout mentions "state: archiving"
       And stdout mentions "upload: 4/4 files"
 
-    Scenario: riverhog plan prints candidate ids, fill, and readiness
+    Scenario: riverhog collection list prints collection coverage
       Given an archive with planner fixtures
-      And an archive with split planner fixtures
-      When the operator runs 'riverhog plan --collection docs --iso-ready'
-      Then the command exits with code 0
-      And stdout mentions "img_2026-04-20_01"
-      And stdout mentions "fill:"
-      And stdout mentions "iso_ready: True"
-      And stdout mentions "collections: 1 [docs]"
-
-    Scenario: riverhog dashboard prints physical media work status
-      Given an archive with planner fixtures
-      And an archive with split planner fixtures
+      And collection "docs" has uploaded Glacier archive package
       And candidate "img_2026-04-20_01" is finalized
       And copy "20260420T040001Z-1" already exists
-      When the operator runs 'riverhog dashboard --has-copies'
+      When the operator runs 'riverhog collection list --query docs'
       Then the command exits with code 0
-      And stdout mentions "ready_to_finalize:"
-      And stdout mentions "img_2026-04-20_03"
-      And stdout mentions "waiting_for_future_iso:"
-      And stdout mentions "img_2026-04-20_02"
-      And stdout mentions "20260420T040001Z"
-      And stdout mentions "next: burn, verify"
-      And stdout mentions "verified=0/2"
-      And stdout mentions "noncompliant_collections:"
-      And stdout mentions "photos-2024 state=cloud_only"
-      And stdout mentions "fully_protected_collections:"
-    Scenario: riverhog images prints finalized image records
-      Given an archive with planner fixtures
-      And candidate "img_2026-04-20_01" is finalized
-      When the operator runs 'riverhog images'
-      Then the command exits with code 0
-      And stdout mentions "images:"
-      And stdout mentions "20260420T040001Z"
-      And stdout mentions "protection:"
-    Scenario: riverhog show prints collection Glacier state and physical coverage
+      And stdout mentions "collections"
+      And stdout mentions "docs"
+      And stdout mentions "under_protected"
+      And stdout mentions "archive="
+      And stdout mentions "disc="
+
+    Scenario: riverhog collection show prints deep archive and physical coverage
       Given an archive with planner fixtures
       And collection "docs" has uploaded Glacier archive package
       And candidate "img_2026-04-20_01" is finalized
       And copy "20260420T040001Z-1" already exists
       When the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-1" with location "Shelf B1", state "verified", and verification_state "verified"
-      When the operator runs 'riverhog show docs'
+      When the operator runs 'riverhog collection show docs'
       Then the command exits with code 0
       And stdout mentions "glacier: uploaded"
       And stdout mentions "collection_manifest:"
@@ -165,47 +96,18 @@ Feature: riverhog CLI
       And stdout mentions "coverage:"
       And stdout mentions "paths: tax/2022/invoice-123.pdf"
       And stdout mentions "label=20260420T040001Z-1"
-      And stdout mentions "glacier_path: glacier/archives/"
-      And stdout mentions "measured_storage_bytes="
-    Scenario: riverhog show does not overstate split physical coverage from one image part
-      Given an archive with split planner fixtures
-      And collection "docs" has uploaded Glacier archive package
-      And candidate "img_2026-04-20_03" is finalized
-      And the client posts to "/v1/images/20260420T040003Z/copies" with id "20260420T040003Z-1" and location "vault-a/shelf-03"
-      And the client patches "/v1/images/20260420T040003Z/copies/20260420T040003Z-1" with state "verified" and verification_state "verified"
-      And collection "docs" keeps only path "tax/2022/invoice-123.pdf" and is archived
-      When the operator runs 'riverhog show docs'
-      Then the command exits with code 0
-      And stdout mentions "glacier: uploaded"
-      And stdout mentions "disc_coverage=partial"
-    Scenario: riverhog glacier prints direct collection usage
-      Given an archive with split planner fixtures
-      And collection "docs" has uploaded Glacier archive package
-      When the operator runs 'riverhog glacier --collection docs'
-      Then the command exits with code 0
-      And stdout mentions "glacier=uploaded"
-      And stdout mentions "ots=uploaded"
-      And stdout mentions "measured_storage_bytes="
 
-    Scenario: riverhog copy add prints the generated label text and state
-      Given candidate "img_2026-04-20_01" is finalized
-      When the operator runs 'riverhog copy add 20260420T040001Z --at "Shelf B1"'
-      Then the command exits with code 0
-      And stdout mentions "copy: 20260420T040001Z-1"
-      And stdout mentions "label: 20260420T040001Z-1"
-      And stdout mentions "state: registered"
-
-    Scenario: riverhog pin prints fetch guidance when recovery is needed
+    Scenario: riverhog hot pin prints fetch guidance when recovery is needed
       Given pinning target "docs/tax/2022/invoice-123.pdf" requires fetch "fx-1"
-      When the operator runs 'riverhog pin "docs/tax/2022/invoice-123.pdf"'
+      When the operator runs 'riverhog hot pin "docs/tax/2022/invoice-123.pdf"'
       Then the command exits with code 0
       And stdout mentions target "docs/tax/2022/invoice-123.pdf"
       And stdout mentions fetch id "fx-1"
       And stdout mentions at least one candidate copy id
 
-    Scenario: riverhog fetch lists pending and partial files for one pin manifest
+    Scenario: riverhog hot show lists pending and partial files for one pin manifest
       Given fetch "fx-1" exists for target "docs/tax/2022/invoice-123.pdf"
-      When the operator runs 'riverhog fetch "fx-1"'
+      When the operator runs 'riverhog hot show "fx-1"'
       Then the command exits with code 0
       And stdout mentions fetch id "fx-1"
       And stdout mentions "pending"

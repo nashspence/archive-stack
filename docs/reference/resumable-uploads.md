@@ -22,7 +22,7 @@ For collection ingest specifically:
 - archival finalization failures leave the collection upload `archiving` with a
   retry phase, keep retrying indefinitely, notify the operator on a paced
   cadence, and keep the collection invisible until retry succeeds
-- `riverhog upload` waits for finalized handoff by default, which means all
+- `riverhog collection upload` waits for finalized handoff by default, which means all
   files have reached Riverhog and the collection archive has completed
   finalization; operators can use `--wait staged` when a shorter blocking
   client run is desired after server custody begins
@@ -309,7 +309,7 @@ uploads, and complete verification without using hot plaintext as an input.
 CLI uploads use bounded request chunks. The default request chunk size is 8 MiB,
 and each resumable chunk is sent as one bounded PATCH request body. Operators may
 tune `RIVERHOG_UPLOAD_CHUNK_BYTES` after validating the target network and
-reverse-proxy body limits. After all files are staged, `riverhog upload` waits
+reverse-proxy body limits. After all files are staged, `riverhog collection upload` waits
 for finalization by default; `--wait staged` exits once server custody begins,
 and `RIVERHOG_UPLOAD_FINALIZE_TIMEOUT_SECONDS` can bound the finalized wait when
 automation needs a hard deadline. See

@@ -511,7 +511,7 @@ Required behavior:
 - the image must belong to that recovery session
 - the response streams bytes from the rebuilt image artifact produced from
   restored collection archives and persisted coverage metadata
-- `djdan recover` uses this endpoint for replacement burns instead of
+- `djdan image rebuild` uses this endpoint for replacement burns instead of
   `GET /v1/images/{image_id}/iso`
 
 #### `GET /v1/glacier`
@@ -779,29 +779,20 @@ Suggested error codes:
 
 ### `riverhog`
 
-The `riverhog` CLI is a thin API client and should provide at least:
+The `riverhog` CLI is collection-first and should provide:
 
-- `riverhog upload SLUG ROOT [--timestamp YYYYMMDDTHHMMSSZ]`
-- `riverhog find QUERY`
-- `riverhog show COLLECTION`
-- `riverhog show COLLECTION --files`
-- `riverhog status TARGET`
-- `riverhog get TARGET [-o FILE]`
-- `riverhog plan [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--iso-ready|--not-ready]`
-- `riverhog images [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--has-copies|--no-copies]`
-- `riverhog dashboard [--page N] [--per-page N] [--query TEXT] [--collection ID] [--has-copies|--no-copies]`
-- `riverhog glacier [--collection ID]`
-- `riverhog iso get IMAGE_ID [-o FILE]`
-- `riverhog copy add IMAGE_ID --at LOCATION [--copy-id GENERATED_ID]`
-- `riverhog copy list IMAGE_ID`
-- `riverhog copy move IMAGE_ID GENERATED_ID --to LOCATION`
-- `riverhog copy mark IMAGE_ID GENERATED_ID --state STATE [--verification-state STATE]`
-- `riverhog pin TARGET`
-- `riverhog release TARGET`
-- `riverhog pins`
-- `riverhog fetch FETCH_ID`
+- `riverhog collection list [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--protection STATE]`
+- `riverhog collection show COLLECTION`
+- `riverhog collection files COLLECTION [--page N] [--per-page N]`
+- `riverhog collection upload SLUG ROOT [--timestamp YYYYMMDDTHHMMSSZ] [--wait finalized|staged]`
+- `riverhog collection watch COLLECTION_UPLOAD_ID`
+- `riverhog collection cancel COLLECTION_UPLOAD_ID`
+- `riverhog hot list`
+- `riverhog hot show FETCH_ID`
+- `riverhog hot pin TARGET`
+- `riverhog hot unpin TARGET`
 
-`riverhog upload` streams files in bounded tus-compatible chunks. The default
+`riverhog collection upload` streams files in bounded tus-compatible chunks. The default
 chunk size is 8 MiB; operators may set `RIVERHOG_UPLOAD_CHUNK_BYTES` to a
 positive byte count when a specific deployment path needs smaller or larger
 request bodies. HTTPS API clients prefer HTTP/2 by default; set
@@ -841,14 +832,14 @@ Server-side upload expiry sweeps do not poll tusd offsets for live,
 non-expired uploads because tusd interrupts an active PATCH when another
 request, including HEAD, targets the same upload resource.
 
-`riverhog upload` defaults to `--wait finalized`: it exits successfully after
+`riverhog collection upload` defaults to `--wait finalized`: it exits successfully after
 every source file is verified and staged on the server and the background
-archive finalization has completed. Use `riverhog upload --wait staged` when a
-terminal session should detach after server custody begins while Glacier archive
+archive finalization has completed. Use `riverhog collection upload --wait staged`
+when a terminal session should detach after server custody begins while archive
 upload, hot-file promotion, and planner refresh continue in the background.
 Operators should track those longer phases with the configured operator webhook
-or `riverhog show`. `RIVERHOG_UPLOAD_WAIT` may be set to `staged` or
-`finalized` to change the default.
+or `riverhog collection show`. `RIVERHOG_UPLOAD_WAIT` may be set to `staged`
+or `finalized` to change the default.
 
 Glacier recovery notifications are deliberately explicit because bulk restores
 are rare and slow. `glacier_recovery.started` confirms Riverhog has requested a
@@ -862,58 +853,55 @@ Every operator webhook includes `notification.title` and `notification.body`
 rendered from that contract so receivers can use Riverhog's canonical quiet
 phone text directly.
 
-`riverhog show COLLECTION --files` should provide a concise human-readable listing of the collection's logical files, including current hot or archived state and available copies when applicable.
+`riverhog collection files COLLECTION` should provide a concise human-readable listing of the collection's logical files, including current hot or archived state and available copies when applicable.
 
-`riverhog show COLLECTION` should provide a concise human-readable recovery and coverage view for one collection, including:
+`riverhog collection show COLLECTION` should provide a concise human-readable recovery and coverage view for one collection, including:
 
 - an explicit summary of whether the collection is currently recoverable from verified physical copies, Glacier, both,
   or neither
 - finalized images currently covering the collection
 - projected paths carried by each image
 - generated disc ids, exact label text, locations, and verification state
-- direct collection Glacier object paths, manifest/OTS proof state, measured
-  storage footprint, and monthly cost estimate
+- direct collection archive object paths and manifest/OTS proof state
 
-`riverhog status TARGET` should show file availability for one explicit target selector.
-
-`riverhog get TARGET [-o FILE]` should download one hot file target and fail clearly when the target is archived-only or does not select exactly one file.
-
-`riverhog fetch FETCH_ID` should provide a concise human-readable listing of:
+`riverhog hot show FETCH_ID` should provide a concise human-readable listing of:
 
 - files still pending upload
 - files currently partial and still resumable
 - the expiry time for each partial upload
 
-For finalized-image commands:
-
-- `CANDIDATE_ID` means a ready provisional candidate id returned by `riverhog plan --iso-ready`
-- `IMAGE_ID` means the finalized image id
-- finalized image ids use compact UTC basic form `YYYYMMDDTHHMMSSZ`
-- `riverhog images --json` mirrors the `GET /v1/images` response payload
-- `riverhog dashboard --json` emits the combined operator dashboard payload
-- `riverhog glacier --json` mirrors the `GET /v1/glacier` response payload
-- `riverhog plan --json` mirrors the `GET /v1/plan` response payload
-- standalone manual candidate finalization is intentionally not exposed in the `riverhog` CLI; `djdan burn` selects and
-  finalizes ready candidates as part of the guided burn workflow
-- non-JSON `riverhog plan` output stays concise and line-oriented while surfacing candidate id, fill, readiness, and
-  contained collections
-- non-JSON `riverhog images` is a literal paginated finalized-image listing
-- non-JSON `riverhog dashboard` acts as the default physical-media status view and stays concise while surfacing:
-  ready-to-finalize provisional images, backlog still waiting for inclusion in a future ISO, finalized-image burn and
-  verification backlog, non-compliant collections, and which collections are
-  already fully protected
-- `riverhog dashboard` uses the dedicated dashboard collection endpoint instead
-  of the full collection-summary listing so the operator view does not
-  recompute per-image collection manifests or `image_coverage` details just to
-  answer compliance state
-- non-JSON `riverhog glacier` output stays line-oriented while surfacing measured usage totals, direct collection
-  archive state, manifest/OTS proof state, and image contribution metadata
-
 ### `djdan`
 
-The `djdan` CLI is a fetch-fulfillment client for a machine with an optical drive and should provide:
+The `djdan` CLI is an optical-media client for a machine with an optical drive and should provide:
 
+- `djdan burn [--device DEVICE] [--staging-dir DIR] [--simulate]`
 - `djdan fetch FETCH_ID [--device DEVICE]`
+- `djdan image plan [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--iso-ready|--not-ready]`
+- `djdan image list [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--has-discs|--no-discs]`
+- `djdan image show IMAGE_ID`
+- `djdan image download IMAGE_ID [-o FILE]`
+- `djdan image rebuild [SESSION_ID] [--device DEVICE] [--staging-dir DIR]`
+- `djdan disc list [IMAGE_ID] [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT]`
+- `djdan disc show COPY_ID`
+- `djdan disc add IMAGE_ID --at LOCATION [--copy-id GENERATED_ID]`
+- `djdan disc location COPY_ID --to LOCATION`
+- `djdan disc mark-lost COPY_ID`
+- `djdan disc mark-damaged COPY_ID`
+- `djdan disc verify COPY_ID`
+
+For finalized-image and disc commands:
+
+- `CANDIDATE_ID` means a ready provisional candidate id returned by `djdan image plan --iso-ready`
+- `IMAGE_ID` means the finalized image id
+- finalized image ids use compact UTC basic form `YYYYMMDDTHHMMSSZ`
+- `djdan image list --json` mirrors the `GET /v1/images` response payload
+- `djdan image plan --json` mirrors the `GET /v1/plan` response payload
+- `djdan disc list IMAGE_ID --json` mirrors the `GET /v1/images/{image_id}/copies` response payload
+- standalone manual candidate finalization is intentionally not exposed; `djdan burn` selects and
+  finalizes ready candidates as part of the guided burn workflow
+- non-JSON `djdan image plan` output stays concise and line-oriented while surfacing candidate id, fill, readiness, and
+  contained collections
+- non-JSON `djdan image list` is a literal paginated finalized-image listing
 
 For multipart recovery, one invocation should continue across successive discs until every required
 part has been recovered, streamed, and uploaded.

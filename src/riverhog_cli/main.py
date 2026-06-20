@@ -18,28 +18,20 @@ from riverhog_cli.output import (
     format_collection_files,
     format_collection_summary,
     format_collection_upload,
-    format_copies,
-    format_copy,
-    format_dashboard,
+    format_collections,
     format_fetch,
-    format_files,
-    format_glacier_report,
-    format_images,
+    format_hot_pins,
     format_pin,
-    format_plan,
+    format_release,
 )
 from riverhog_core.domain.errors import Conflict, NotFound, ServiceUnavailable
 
-app = typer.Typer(help="riverhog archival control CLI")
-iso_app = typer.Typer(help="ISO operations")
-copy_app = typer.Typer(help="copy registration")
-app.add_typer(iso_app, name="iso")
-app.add_typer(copy_app, name="copy")
+app = typer.Typer(help="riverhog collection and hot-storage CLI")
+collection_app = typer.Typer(help="collection catalog and upload operations")
+hot_app = typer.Typer(help="pinned hot-storage set operations")
+app.add_typer(collection_app, name="collection")
+app.add_typer(hot_app, name="hot")
 
-PLAN_QUERY_HELP = (
-    "Substring match over candidate id, collection ids, and represented projected file paths"
-)
-IMAGE_QUERY_HELP = "Substring match over id, filename, and collection ids"
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 UPLOAD_FILE_CONCURRENCY = 1
@@ -914,7 +906,117 @@ def _archive_wait_status(payload: dict[str, object]) -> str:
     return status
 
 
-@app.command("upload")
+_COLLECTION_SORT_FIELDS = {
+    "id",
+    "bytes",
+    "files",
+    "hot_bytes",
+    "archived_bytes",
+    "pending_bytes",
+    "protected_bytes",
+}
+
+
+def _collection_sort_value(collection: Mapping[str, object], sort: str) -> int | str:
+    if sort == "id":
+        return str(collection.get("id", "")).casefold()
+    return _optional_int(collection.get(sort)) or 0
+
+
+def _sorted_collection_page(
+    api: ApiClient,
+    *,
+    page: int,
+    per_page: int,
+    query: str | None,
+    protection_state: str | None,
+    sort: str,
+    order: str,
+) -> dict[str, Any]:
+    if sort not in _COLLECTION_SORT_FIELDS:
+        raise typer.BadParameter(
+            f"sort must be one of {', '.join(sorted(_COLLECTION_SORT_FIELDS))}",
+            param_hint="--sort",
+        )
+    normalized_order = order.casefold()
+    if normalized_order not in {"asc", "desc"}:
+        raise typer.BadParameter("order must be asc or desc", param_hint="--order")
+
+    first_page = api.list_collections(
+        page=1,
+        per_page=100,
+        q=query,
+        protection_state=protection_state,
+    )
+    collections = [
+        collection
+        for collection in first_page.get("collections", [])
+        if isinstance(collection, dict)
+    ]
+    pages = _optional_int(first_page.get("pages")) or 0
+    for page_number in range(2, pages + 1):
+        next_page = api.list_collections(
+            page=page_number,
+            per_page=100,
+            q=query,
+            protection_state=protection_state,
+        )
+        collections.extend(
+            collection
+            for collection in next_page.get("collections", [])
+            if isinstance(collection, dict)
+        )
+
+    collections.sort(
+        key=lambda collection: _collection_sort_value(collection, sort),
+        reverse=normalized_order == "desc",
+    )
+    total = len(collections)
+    display_pages = (total + per_page - 1) // per_page if total else 0
+    start = (page - 1) * per_page
+    stop = start + per_page
+    return {
+        **first_page,
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "pages": display_pages,
+        "collections": collections[start:stop],
+    }
+
+
+@collection_app.command("list")
+def collection_list_cmd(
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "id",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
+    query: Annotated[
+        str | None,
+        typer.Option("--query", "--search", help="Substring match over collection ids"),
+    ] = None,
+    protection_state: Annotated[
+        str | None,
+        typer.Option(
+            "--protection",
+            help="Filter by under_protected, cloud_only, physical_only, or fully_protected",
+        ),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    payload = _sorted_collection_page(
+        client(),
+        page=page,
+        per_page=per_page,
+        query=query,
+        protection_state=protection_state,
+        sort=sort,
+        order=order,
+    )
+    emit(payload if json_mode else format_collections(payload), json_mode=json_mode)
+
+
+@collection_app.command("upload")
 def upload_cmd(
     slug: Annotated[str, typer.Argument(help="Human-readable collection slug")],
     root: Annotated[Path, typer.Argument(help="Local collection root directory")],
@@ -1040,7 +1142,7 @@ def upload_cmd(
         raise typer.Exit(124)
 
 
-@app.command("upload-cancel")
+@collection_app.command("cancel")
 def upload_cancel_cmd(
     collection_id: Annotated[str, typer.Argument(help="Open collection upload session id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
@@ -1049,7 +1151,7 @@ def upload_cancel_cmd(
     emit(payload if json_mode else format_collection_upload(payload), json_mode=json_mode)
 
 
-@app.command("upload-watch")
+@collection_app.command("watch")
 def upload_watch_cmd(
     collection_id: Annotated[
         str,
@@ -1069,7 +1171,6 @@ def upload_watch_cmd(
         raise typer.Exit(124)
 
 
-@app.command("find")
 def find_cmd(
     query: Annotated[str, typer.Argument(help="Search query")],
     limit: Annotated[int, typer.Option("--limit", min=1, max=100)] = 25,
@@ -1078,349 +1179,32 @@ def find_cmd(
     emit(client().search(query, limit), json_mode=json_mode)
 
 
-@app.command("show")
+@collection_app.command("show")
 def show_cmd(
     collection: Annotated[str, typer.Argument(help="Collection id")],
-    files: Annotated[bool, typer.Option("--files", help="List files in the collection")] = False,
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    if files:
-        payload = client().list_collection_files(collection, page=page, per_page=per_page)
-        emit(payload if json_mode else format_collection_files(payload), json_mode=json_mode)
-    else:
-        api = client()
-        payload = api.get_collection(collection)
-        if json_mode:
-            emit(payload, json_mode=True)
-            return
-        glacier_payload = api.get_glacier_report(collection=collection)
-        emit(format_collection_summary(payload, glacier_payload), json_mode=False)
-
-
-@app.command("status")
-def status_cmd(
-    target: Annotated[str, typer.Argument(help="Target selector")],
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    payload = client().query_files(target, page=page, per_page=per_page)
-    emit(payload if json_mode else format_files(payload), json_mode=json_mode)
-
-
-@app.command("get")
-def get_cmd(
-    target: Annotated[str, typer.Argument(help="File target selector")],
-    output: Annotated[Path | None, typer.Option("-o", "--output", help="Output path")] = None,
-) -> None:
-    import sys
-
-    content = client().get_file_content(target, output)
-    if output is None:
-        sys.stdout.buffer.write(content)
-    else:
-        typer.echo(f"wrote {len(content)} bytes to {output}")
-
-
-@app.command("plan")
-def plan_cmd(
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
-    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "fill",
-    order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
-    query: Annotated[
-        str | None,
-        typer.Option(
-            "--query",
-            help=PLAN_QUERY_HELP,
-        ),
-    ] = None,
-    collection: Annotated[
-        str | None, typer.Option("--collection", help="Filter by exact contained collection id")
-    ] = None,
-    iso_ready: Annotated[
-        bool | None,
-        typer.Option(
-            "--iso-ready/--not-ready", help="Filter by whether the candidate is ready to finalize"
-        ),
-    ] = None,
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    payload = client().get_plan(
-        page=page,
-        per_page=per_page,
-        sort=sort,
-        order=order,
-        query=query,
-        collection=collection,
-        iso_ready=iso_ready,
-    )
-    emit(payload if json_mode else format_plan(payload), json_mode=json_mode)
-
-
-def _filter_collection_list_page(
-    payload: dict[str, Any],
-    *,
-    protection_state: str,
-) -> dict[str, Any]:
-    collections = payload.get("collections")
-    if not isinstance(collections, list):
-        return {**payload, "collections": [], "total": 0, "pages": 0}
-    filtered = [
-        collection
-        for collection in collections
-        if isinstance(collection, dict) and collection.get("protection_state") == protection_state
-    ]
-    return {
-        **payload,
-        "collections": filtered,
-        "total": len(filtered),
-        "pages": 1 if filtered else 0,
-    }
-
-
-@app.command("images")
-def images_cmd(
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
-    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "finalized_at",
-    order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
-    query: Annotated[
-        str | None,
-        typer.Option("--query", help=IMAGE_QUERY_HELP),
-    ] = None,
-    collection: Annotated[
-        str | None, typer.Option("--collection", help="Filter by exact contained collection id")
-    ] = None,
-    has_copies: Annotated[
-        bool | None,
-        typer.Option(
-            "--has-copies/--no-copies", help="Filter by whether the image has registered copies"
-        ),
-    ] = None,
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    payload = client().list_images(
-        page=page,
-        per_page=per_page,
-        sort=sort,
-        order=order,
-        query=query,
-        collection=collection,
-        has_copies=has_copies,
-    )
-    emit(payload if json_mode else format_images(payload), json_mode=json_mode)
-
-
-@app.command("dashboard")
-def dashboard_cmd(
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
-    sort: Annotated[
-        str, typer.Option("--sort", help="Finalized-image sort field")
-    ] = "finalized_at",
-    order: Annotated[str, typer.Option("--order", help="Finalized-image sort order")] = "desc",
-    query: Annotated[
-        str | None,
-        typer.Option("--query", help="Filter dashboard lists by matching text"),
-    ] = None,
-    collection: Annotated[
-        str | None, typer.Option("--collection", help="Filter by exact contained collection id")
-    ] = None,
-    has_copies: Annotated[
-        bool | None,
-        typer.Option(
-            "--has-copies/--no-copies",
-            help="Filter finalized images by whether they have registered copies",
-        ),
-    ] = None,
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    collections_query = collection or query
-
-    def call_with_client(call: Callable[[ApiClient], dict[str, Any]]) -> dict[str, Any]:
-        local_api = client()
-        try:
-            return call(local_api)
-        finally:
-            local_api.close()
-
-    calls: dict[str, Callable[[ApiClient], dict[str, Any]]] = {
-        "images": lambda api: api.list_images(
-            page=page,
-            per_page=per_page,
-            sort=sort,
-            order=order,
-            query=query,
-            collection=collection,
-            has_copies=has_copies,
-        ),
-        "ready_plan": lambda api: api.get_plan(
-            page=page,
-            per_page=per_page,
-            sort="fill",
-            order="desc",
-            query=query,
-            collection=collection,
-            iso_ready=True,
-        ),
-        "backlog_plan": lambda api: api.get_plan(
-            page=page,
-            per_page=per_page,
-            sort="fill",
-            order="desc",
-            query=query,
-            collection=collection,
-            iso_ready=False,
-        ),
-        "collections": lambda api: api.list_dashboard_collections(
-            q=collections_query,
-        ),
-    }
-    results: dict[str, dict[str, Any]] = {}
-    with ThreadPoolExecutor(max_workers=len(calls)) as executor:
-        futures = {
-            executor.submit(call_with_client, call): name for name, call in calls.items()
-        }
-        for future in as_completed(futures):
-            results[futures[future]] = future.result()
-
-    collections_payload = results["collections"]
-    unprotected_collections = _filter_collection_list_page(
-        collections_payload,
-        protection_state="cloud_only",
-    )
-    partially_protected_collections = _filter_collection_list_page(
-        collections_payload,
-        protection_state="under_protected",
-    )
-    protected_collections = _filter_collection_list_page(
-        collections_payload,
-        protection_state="fully_protected",
-    )
-    dashboard_payload = {
-        "ready_to_finalize": results["ready_plan"],
-        "waiting_for_future_iso": results["backlog_plan"],
-        "finalized_images": results["images"],
-        "collections": collections_payload,
-    }
-    if json_mode:
-        emit(dashboard_payload, json_mode=True)
-        return
-    emit(
-        format_dashboard(
-            results["ready_plan"],
-            results["backlog_plan"],
-            results["images"],
-            unprotected_collections,
-            partially_protected_collections,
-            protected_collections,
-            collections_payload,
-        ),
-        json_mode=False,
-    )
-
-
-@app.command("glacier")
-def glacier_cmd(
-    collection: Annotated[
-        str | None, typer.Option("--collection", help="Filter to one exact collection id")
-    ] = None,
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    payload = client().get_glacier_report(collection=collection)
-    emit(payload if json_mode else format_glacier_report(payload), json_mode=json_mode)
-
-
-@iso_app.command("get")
-def iso_get_cmd(
-    image_id: Annotated[str, typer.Argument(help="Image id")],
-    output: Annotated[Path | None, typer.Option("-o", "--output", help="Output path")] = None,
-) -> None:
-    import sys
-
-    if output is None:
-        content = client().download_iso(image_id)
-        if not isinstance(content, bytes):
-            raise typer.Exit(code=1)
-        sys.stdout.buffer.write(content)
-        raise typer.Exit(code=0)
-
     api = client()
-    image_payload = api.get_image(image_id)
-    estimated_total_bytes = _optional_int(image_payload.get("bytes"))
-    typer.echo(f"downloading ISO {image_id} to {output}", err=True)
-    content = api.download_iso(
-        image_id,
-        output,
-        progress=_download_progress_logger(estimated_total_bytes),
-    )
-    downloaded_bytes = len(content) if isinstance(content, bytes) else content
-    typer.echo(f"wrote {downloaded_bytes} bytes to {output}")
+    payload = api.get_collection(collection)
+    if json_mode:
+        emit(payload, json_mode=True)
+        return
+    glacier_payload = api.get_glacier_report(collection=collection)
+    emit(format_collection_summary(payload, glacier_payload), json_mode=False)
 
 
-@copy_app.command("add")
-def copy_add_cmd(
-    image_id: Annotated[str, typer.Argument(help="Finalized image id")],
-    at: Annotated[str, typer.Option("--at", help="Physical location label")],
-    copy_id: Annotated[
-        str | None,
-        typer.Option("--copy-id", help="Generated copy id to claim explicitly"),
-    ] = None,
+@collection_app.command("files")
+def collection_files_cmd(
+    collection: Annotated[str, typer.Argument(help="Collection id")],
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    payload = client().register_copy(image_id, at, copy_id=copy_id)
-    emit(payload if json_mode else format_copy(payload["copy"]), json_mode=json_mode)
+    payload = client().list_collection_files(collection, page=page, per_page=per_page)
+    emit(payload if json_mode else format_collection_files(payload), json_mode=json_mode)
 
 
-@copy_app.command("list")
-def copy_list_cmd(
-    image_id: Annotated[str, typer.Argument(help="Finalized image id")],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    payload = client().list_copies(image_id)
-    emit(payload if json_mode else format_copies(payload), json_mode=json_mode)
-
-
-@copy_app.command("move")
-def copy_move_cmd(
-    image_id: Annotated[str, typer.Argument(help="Finalized image id")],
-    copy_id: Annotated[str, typer.Argument(help="Generated copy id")],
-    to: Annotated[str, typer.Option("--to", help="New physical location label")],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    payload = client().update_copy(image_id, copy_id, location=to)
-    emit(payload if json_mode else format_copy(payload["copy"]), json_mode=json_mode)
-
-
-@copy_app.command("mark")
-def copy_mark_cmd(
-    image_id: Annotated[str, typer.Argument(help="Finalized image id")],
-    copy_id: Annotated[str, typer.Argument(help="Generated copy id")],
-    state: Annotated[str, typer.Option("--state", help="Copy lifecycle state")],
-    verification_state: Annotated[
-        str | None,
-        typer.Option("--verification-state", help="Verification state"),
-    ] = None,
-    at: Annotated[
-        str | None,
-        typer.Option("--at", help="Updated physical location label"),
-    ] = None,
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    payload = client().update_copy(
-        image_id,
-        copy_id,
-        location=at,
-        state=state,
-        verification_state=verification_state,
-    )
-    emit(payload if json_mode else format_copy(payload["copy"]), json_mode=json_mode)
-
-
-@app.command("pin")
+@hot_app.command("pin")
 def pin_cmd(
     target: Annotated[str, typer.Argument(help="Target selector")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
@@ -1429,22 +1213,24 @@ def pin_cmd(
     emit(payload if json_mode else format_pin(payload), json_mode=json_mode)
 
 
-@app.command("release")
+@hot_app.command("unpin")
 def release_cmd(
     target: Annotated[str, typer.Argument(help="Target selector")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    emit(client().release(target), json_mode=json_mode)
+    payload = client().release(target)
+    emit(payload if json_mode else format_release(payload), json_mode=json_mode)
 
 
-@app.command("pins")
+@hot_app.command("list")
 def pins_cmd(
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    emit(client().list_pins(), json_mode=json_mode)
+    payload = client().list_pins()
+    emit(payload if json_mode else format_hot_pins(payload), json_mode=json_mode)
 
 
-@app.command("fetch")
+@hot_app.command("show")
 def fetch_cmd(
     fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,

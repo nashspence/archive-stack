@@ -1,10 +1,88 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Literal
 
 import typer
+
+RichConsole: Any
+RichGroup: Any
+RichTable: Any
+RichText: Any
+
+try:
+    from rich.console import Console as RichConsole
+    from rich.console import Group as RichGroup
+    from rich.table import Table as RichTable
+    from rich.text import Text as RichText
+except ModuleNotFoundError:  # pragma: no cover - exercised only in stripped environments
+    RichConsole = None
+    RichGroup = None
+    RichTable = None
+    RichText = None
+
+
+def _plain_requested() -> bool:
+    raw_value = os.getenv("RIVERHOG_CLI_PLAIN", "").strip().casefold()
+    return raw_value in {"1", "true", "yes", "on"} or os.getenv("TERM") == "dumb"
+
+
+def _rich_enabled() -> bool:
+    return (
+        RichConsole is not None
+        and RichGroup is not None
+        and RichTable is not None
+        and RichText is not None
+        and not _plain_requested()
+    )
+
+
+def _console() -> Any:
+    if RichConsole is None:
+        return None
+    color_system: Literal["auto"] | None = "auto" if sys.stdout.isatty() else None
+    return RichConsole(file=sys.stdout, color_system=color_system, highlight=False)
+
+
+def _page_text(kind: str, payload: Mapping[str, Any]) -> Any:
+    pages = payload.get("pages", 0)
+    page = payload.get("page", 1)
+    per_page = payload.get("per_page", 25)
+    total = payload.get("total", 0)
+    text = f"{kind} page {page}/{pages}  per_page={per_page}  total={total}"
+    if RichText is None:
+        return text
+    return RichText(text, style="bold")
+
+
+def _bytes_text(value: object) -> str:
+    byte_count = _int_value(value)
+    if byte_count < 1000:
+        return f"{byte_count} B"
+    scaled = float(byte_count)
+    for unit in ("KB", "MB", "GB", "TB", "PB"):
+        scaled /= 1000.0
+        if scaled < 1000.0 or unit == "PB":
+            return f"{scaled:.1f} {unit}"
+    raise AssertionError("unreachable")
+
+
+def _ratio_text(numerator: object, denominator: object) -> str:
+    total = _int_value(denominator)
+    value = _int_value(numerator)
+    if total <= 0:
+        return f"{_bytes_text(value)} / {_bytes_text(total)}"
+    return f"{_bytes_text(value)} / {_bytes_text(total)} ({value / total * 100:.0f}%)"
+
+
+def _quiet_table(*columns: str) -> Any:
+    table = RichTable(box=None, show_edge=False, padding=(0, 2), collapse_padding=True)
+    for index, column in enumerate(columns):
+        table.add_column(column, no_wrap=index == 0)
+    return table
 
 
 def _copy_label(copy: Mapping[str, object]) -> str:
@@ -30,18 +108,6 @@ def _int_value(value: object, *, default: int = 0) -> int:
     if isinstance(value, str):
         return int(value)
     return default
-
-
-def _image_next_actions(image: Mapping[str, object]) -> str:
-    required = _int_value(image.get("physical_copies_required", 0))
-    registered = _int_value(image.get("physical_copies_registered", 0))
-    verified = _int_value(image.get("physical_copies_verified", 0))
-    actions: list[str] = []
-    if registered < required:
-        actions.append("burn")
-    if verified < required:
-        actions.append("verify")
-    return ", ".join(actions) if actions else "none"
 
 
 def _find_collection_glacier_entry(
@@ -83,30 +149,6 @@ def _recovery_text(recovery: object, *, total_bytes: int) -> str:
         f"verified_physical={verified_state} {verified_bytes}/{total_bytes} "
         f"glacier={glacier_state} {glacier_bytes}/{total_bytes}"
     )
-
-
-def _active_upload_progress_text(upload: Mapping[str, object]) -> str:
-    archive_uploaded = upload.get("archive_uploaded_bytes")
-    archive_total = upload.get("archive_total_bytes")
-    archive_phase = upload.get("archive_phase") or "pending"
-    archive_text = f"phase={archive_phase}"
-    if archive_total is not None:
-        archive_text += f" archive_bytes={_int_value(archive_uploaded)}/{_int_value(archive_total)}"
-
-    archive_uploaded_parts = upload.get("archive_uploaded_parts")
-    archive_total_parts = upload.get("archive_total_parts")
-    if archive_total_parts is not None:
-        archive_text += (
-            f" archive_parts={_int_value(archive_uploaded_parts)}/"
-            f"{_int_value(archive_total_parts)}"
-        )
-    next_attempt = upload.get("archive_next_attempt_at")
-    if next_attempt:
-        archive_text += f" next_attempt={next_attempt}"
-    failure = upload.get("latest_failure")
-    if failure:
-        archive_text += f" failure={failure}"
-    return archive_text
 
 
 def format_copy(payload: Mapping[str, Any]) -> str:
@@ -216,6 +258,125 @@ def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> str
     return "\n".join(lines)
 
 
+def _format_collections_plain(payload: Mapping[str, Any]) -> str:
+    lines = [
+        "collections: "
+        f"page {payload.get('page', 1)}/{payload.get('pages', 0)} "
+        f"per_page={payload.get('per_page', 25)} "
+        f"total={payload.get('total', 0)}",
+    ]
+    collections = payload.get("collections")
+    if not isinstance(collections, Sequence) or not collections:
+        lines.append("- none")
+        return "\n".join(lines)
+    for collection in collections:
+        if not isinstance(collection, Mapping):
+            continue
+        disc_coverage = collection.get("disc_coverage")
+        disc_text = "unknown"
+        if isinstance(disc_coverage, Mapping):
+            disc_text = (
+                f"{disc_coverage.get('state', 'unknown')} "
+                f"{disc_coverage.get('verified_physical_bytes', 0)}"
+            )
+        lines.append(
+            f"- {collection.get('id', 'unknown')} "
+            f"protection={collection.get('protection_state', 'unknown')} "
+            f"files={collection.get('files', 0)} "
+            f"bytes={collection.get('bytes', 0)} "
+            f"hot={collection.get('hot_bytes', 0)}/{collection.get('bytes', 0)} "
+            f"archive={collection.get('archived_bytes', 0)}/{collection.get('bytes', 0)} "
+            f"disc={disc_text}"
+        )
+    return "\n".join(lines)
+
+
+def format_collections(payload: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        return _format_collections_plain(payload)
+    table = _quiet_table(
+        "Collection",
+        "Protection",
+        "Files",
+        "Bytes",
+        "Hot",
+        "Archive",
+        "Disc",
+    )
+    collections = payload.get("collections")
+    if isinstance(collections, Sequence):
+        for collection in collections:
+            if not isinstance(collection, Mapping):
+                continue
+            disc_coverage = collection.get("disc_coverage")
+            if isinstance(disc_coverage, Mapping):
+                disc_text = (
+                    f"{disc_coverage.get('state', 'unknown')} "
+                    f"{_bytes_text(disc_coverage.get('verified_physical_bytes', 0))}"
+                )
+            else:
+                disc_text = "unknown"
+            table.add_row(
+                str(collection.get("id", "unknown")),
+                str(collection.get("protection_state", "unknown")),
+                str(collection.get("files", 0)),
+                _bytes_text(collection.get("bytes", 0)),
+                _ratio_text(collection.get("hot_bytes", 0), collection.get("bytes", 0)),
+                _ratio_text(collection.get("archived_bytes", 0), collection.get("bytes", 0)),
+                disc_text,
+            )
+    if not table.rows:
+        table.add_row("none", "", "", "", "", "", "")
+    return RichGroup(_page_text("collections", payload), table)
+
+
+def _format_hot_pins_plain(payload: Mapping[str, Any]) -> str:
+    pins = payload.get("pins")
+    if not isinstance(pins, Sequence) or not pins:
+        return "hot pins:\n- none"
+    lines = ["hot pins:"]
+    for pin in pins:
+        if not isinstance(pin, Mapping):
+            continue
+        fetch = pin.get("fetch")
+        if isinstance(fetch, Mapping):
+            copies = fetch.get("copies")
+            copy_count = len(copies) if isinstance(copies, Sequence) else 0
+            lines.append(
+                f"- {pin.get('target', 'unknown')} "
+                f"fetch={fetch.get('id', 'unknown')} "
+                f"state={fetch.get('state', 'unknown')} "
+                f"copies={copy_count}"
+            )
+        else:
+            lines.append(f"- {pin.get('target', 'unknown')} fetch=none")
+    return "\n".join(lines)
+
+
+def format_hot_pins(payload: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        return _format_hot_pins_plain(payload)
+    table = _quiet_table("Target", "Fetch", "State", "Copies")
+    pins = payload.get("pins")
+    if isinstance(pins, Sequence):
+        for pin in pins:
+            if not isinstance(pin, Mapping):
+                continue
+            fetch = pin.get("fetch")
+            fetch_id = "none"
+            state = "unknown"
+            copy_count = "0"
+            if isinstance(fetch, Mapping):
+                fetch_id = str(fetch.get("id", "unknown"))
+                state = str(fetch.get("state", "unknown"))
+                copies = fetch.get("copies")
+                copy_count = str(len(copies)) if isinstance(copies, Sequence) else "0"
+            table.add_row(str(pin.get("target", "unknown")), fetch_id, state, copy_count)
+    if not table.rows:
+        table.add_row("none", "", "", "")
+    return RichGroup(RichText("hot pins", style="bold"), table)
+
+
 def format_images(payload: Mapping[str, Any]) -> str:
     lines = [
         "images: "
@@ -276,137 +437,81 @@ def format_image(image: Mapping[str, Any]) -> str:
     )
 
 
-def format_dashboard(
-    ready_plan_payload: Mapping[str, Any],
-    backlog_plan_payload: Mapping[str, Any],
-    images_payload: Mapping[str, Any],
-    unprotected_collections_payload: Mapping[str, Any],
-    partially_protected_collections_payload: Mapping[str, Any],
-    protected_collections_payload: Mapping[str, Any],
-    collections_payload: Mapping[str, Any] | None = None,
-) -> str:
-    lines = [
-        "dashboard: "
-        f"page={images_payload.get('page', 1)} "
-        f"per_page={images_payload.get('per_page', 25)} "
-        f"ready_to_finalize={ready_plan_payload.get('total', 0)} "
-        f"waiting_for_future_iso={backlog_plan_payload.get('total', 0)} "
-        f"unplanned_bytes={ready_plan_payload.get('unplanned_bytes', 0)}",
-        "active_uploads:",
-    ]
-
-    active_uploads = (
-        collections_payload.get("active_uploads")
-        if isinstance(collections_payload, Mapping)
-        else None
+def format_release(payload: Mapping[str, Any]) -> str:
+    return "\n".join(
+        [
+            f"target: {payload.get('target', 'unknown')}",
+            f"pin: {'true' if payload.get('pin') else 'false'}",
+        ]
     )
-    if not isinstance(active_uploads, Sequence) or not active_uploads:
-        lines.append("- none")
-    else:
-        for upload in active_uploads:
-            if not isinstance(upload, Mapping):
-                continue
-            lines.append(
-                f"- {upload.get('collection_id', 'unknown')} "
-                f"state={upload.get('state', 'unknown')} "
-                f"files={upload.get('files_uploaded', 0)}/{upload.get('files_total', 0)} "
-                f"hot={upload.get('hot_promoted_files', 0)}/{upload.get('files_total', 0)} "
-                f"bytes={upload.get('uploaded_bytes', 0)}/{upload.get('bytes_total', 0)} "
-                f"{_active_upload_progress_text(upload)}"
-            )
 
-    lines.append("ready_to_finalize:")
 
-    candidates = ready_plan_payload.get("candidates")
-    if not isinstance(candidates, Sequence) or not candidates:
-        lines.append("- none")
-    else:
-        for candidate in candidates:
-            if not isinstance(candidate, Mapping):
-                continue
-            lines.append(
-                f"- {candidate.get('candidate_id', 'unknown')} "
-                f"fill={candidate.get('fill', 0)} "
-                f"collections={candidate.get('collections', 0)} "
-                f"[{_collection_ids_text(candidate.get('collection_ids'))}]"
-            )
+def _disc_copy_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    copy_payload = payload.get("copy")
+    if isinstance(copy_payload, Mapping):
+        return copy_payload
+    return payload
 
-    lines.append("waiting_for_future_iso:")
-    backlog_candidates = backlog_plan_payload.get("candidates")
-    if not isinstance(backlog_candidates, Sequence) or not backlog_candidates:
-        lines.append("- none")
-    else:
-        for candidate in backlog_candidates:
-            if not isinstance(candidate, Mapping):
-                continue
-            lines.append(
-                f"- {candidate.get('candidate_id', 'unknown')} "
-                f"fill={candidate.get('fill', 0)} "
-                f"collections={candidate.get('collections', 0)} "
-                f"[{_collection_ids_text(candidate.get('collection_ids'))}]"
-            )
 
-    lines.append("finalized_images:")
-    images = images_payload.get("images")
-    if not isinstance(images, Sequence) or not images:
-        lines.append("- none")
-    else:
-        for image in images:
-            if not isinstance(image, Mapping):
-                continue
-            lines.extend(
-                [
-                    f"- {image.get('id', 'unknown')} ({image.get('filename', 'unknown')})",
-                    f"  next: {_image_next_actions(image)}",
-                    "  protection: "
-                    f"{image.get('physical_protection_state', 'unknown')} "
-                    f"registered={image.get('physical_copies_registered', 0)}/"
-                    f"{image.get('physical_copies_required', 0)} "
-                    f"verified={image.get('physical_copies_verified', 0)}/"
-                    f"{image.get('physical_copies_required', 0)}",
-                    f"  collections: {image.get('collections', 0)} "
-                    f"[{_collection_ids_text(image.get('collection_ids'))}]",
-                ]
-            )
-
-    lines.append("noncompliant_collections:")
-    noncompliant_collections: list[Mapping[str, Any]] = []
-    for payload in (
-        unprotected_collections_payload,
-        partially_protected_collections_payload,
-    ):
-        collections = payload.get("collections")
-        if not isinstance(collections, Sequence):
-            continue
-        noncompliant_collections.extend(
-            collection for collection in collections if isinstance(collection, Mapping)
-        )
-    if not noncompliant_collections:
-        lines.append("- none")
-    else:
-        for collection in noncompliant_collections:
-            total_bytes = _int_value(collection.get("bytes", 0))
-            lines.append(
-                f"- {collection.get('id', 'unknown')} "
-                f"state={collection.get('protection_state', 'unknown')} "
-                f"protected_bytes={collection.get('protected_bytes', 0)}/{total_bytes} "
-                f"recovery={_recovery_text(collection.get('recovery'), total_bytes=total_bytes)}"
-            )
-
-    lines.append("fully_protected_collections:")
-    collections = protected_collections_payload.get("collections")
-    if not isinstance(collections, Sequence) or not collections:
-        lines.append("- none")
-    else:
-        for collection in collections:
-            if not isinstance(collection, Mapping):
-                continue
-            lines.append(
-                f"- {collection.get('id', 'unknown')} "
-                f"protected_bytes={collection.get('protected_bytes', 0)}/"
-                f"{collection.get('bytes', 0)}"
-            )
+def format_disc(payload: Mapping[str, Any]) -> str:
+    copy_payload = _disc_copy_payload(payload)
+    lines = [
+        f"disc: {copy_payload.get('id', 'unknown')}",
+        f"image: {payload.get('image_id', copy_payload.get('image_id', 'unknown'))}",
+        f"volume: {copy_payload.get('volume_id', 'unknown')}",
+        f"label: {copy_payload.get('label_text', 'unknown')}",
+        f"location: {copy_payload.get('location') or 'unassigned'}",
+        f"state: {copy_payload.get('state', 'unknown')}",
+        f"verification: {copy_payload.get('verification_state', 'unknown')}",
+    ]
+    history = copy_payload.get("history")
+    if isinstance(history, Sequence):
+        lines.append(f"history: {len(history)} event(s)")
     return "\n".join(lines)
+
+
+def _disc_items(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    items = payload.get("discs")
+    if isinstance(items, Sequence):
+        return [item for item in items if isinstance(item, Mapping)]
+    copies = payload.get("copies")
+    image_id = payload.get("image_id")
+    if not isinstance(copies, Sequence):
+        return []
+    return [{**copy, "image_id": image_id} for copy in copies if isinstance(copy, Mapping)]
+
+
+def _format_discs_plain(payload: Mapping[str, Any]) -> str:
+    discs = _disc_items(payload)
+    if not discs:
+        return "discs:\n- none"
+    lines = ["discs:"]
+    for disc in discs:
+        lines.append(
+            f"- {disc.get('id', 'unknown')} "
+            f"image={disc.get('image_id', 'unknown')} "
+            f"state={disc.get('state', 'unknown')} "
+            f"verification={disc.get('verification_state', 'unknown')} "
+            f"location={disc.get('location') or 'unassigned'}"
+        )
+    return "\n".join(lines)
+
+
+def format_discs(payload: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        return _format_discs_plain(payload)
+    table = _quiet_table("Disc", "Image", "State", "Verification", "Location")
+    for item in _disc_items(payload):
+        table.add_row(
+            str(item.get("id", "unknown")),
+            str(item.get("image_id", "unknown")),
+            str(item.get("state", "unknown")),
+            str(item.get("verification_state", "unknown")),
+            str(item.get("location") or "unassigned"),
+        )
+    if not table.rows:
+        table.add_row("none", "", "", "", "")
+    return RichGroup(RichText("discs", style="bold"), table)
 
 
 def format_collection_summary(
@@ -754,4 +859,8 @@ def emit(payload: Any, *, json_mode: bool) -> None:
     if isinstance(payload, dict):
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
-    typer.echo(str(payload))
+    console = _console()
+    if console is None:
+        typer.echo(str(payload))
+        return
+    console.print(payload)

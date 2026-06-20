@@ -12,7 +12,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any
@@ -20,15 +20,26 @@ from typing import Annotated, Any
 import typer
 
 from riverhog_cli.client import ApiClient
-from riverhog_cli.output import emit
+from riverhog_cli.output import (
+    emit,
+    format_disc,
+    format_discs,
+    format_image,
+    format_images,
+    format_plan,
+)
 from riverhog_core.domain.errors import HashMismatch, NotFound, RiverhogError
 
-app = typer.Typer(help="riverhog optical recovery CLI")
+app = typer.Typer(help="riverhog optical media CLI")
+image_app = typer.Typer(help="image planning and download operations")
+disc_app = typer.Typer(help="burned disc catalog operations")
+app.add_typer(image_app, name="image")
+app.add_typer(disc_app, name="disc")
 
 
 @app.callback()
 def djdan_app() -> None:
-    """Keep the CLI in group mode so `djdan fetch ...` stays canonical."""
+    """Keep the CLI in group mode so `djdan fetch ...` and groups stay canonical."""
 
 
 _DISC_IO_CHUNK_BYTES = 1024 * 1024
@@ -2085,6 +2096,342 @@ def _reset_byte_complete_uploads(
     return reset_entries
 
 
+IMAGE_PLAN_QUERY_HELP = (
+    "Substring match over candidate id, collection ids, and represented projected file paths"
+)
+IMAGE_QUERY_HELP = "Substring match over id, filename, and collection ids"
+_DISC_SORT_FIELDS = {"id", "image_id", "state", "verification_state", "location"}
+
+
+@image_app.command("list")
+def image_list_cmd(
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "finalized_at",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
+    query: Annotated[
+        str | None,
+        typer.Option("--query", "--search", help=IMAGE_QUERY_HELP),
+    ] = None,
+    collection: Annotated[
+        str | None, typer.Option("--collection", help="Filter by exact contained collection id")
+    ] = None,
+    has_copies: Annotated[
+        bool | None,
+        typer.Option(
+            "--has-discs/--no-discs", help="Filter by whether the image has registered discs"
+        ),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    payload = ApiClient().list_images(
+        page=page,
+        per_page=per_page,
+        sort=sort,
+        order=order,
+        query=query,
+        collection=collection,
+        has_copies=has_copies,
+    )
+    emit(payload if json_mode else format_images(payload), json_mode=json_mode)
+
+
+@image_app.command("show")
+def image_show_cmd(
+    image_id: Annotated[str, typer.Argument(help="Finalized image id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    payload = ApiClient().get_image(image_id)
+    emit(payload if json_mode else format_image(payload), json_mode=json_mode)
+
+
+@image_app.command("plan")
+def image_plan_cmd(
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "fill",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
+    query: Annotated[
+        str | None,
+        typer.Option("--query", "--search", help=IMAGE_PLAN_QUERY_HELP),
+    ] = None,
+    collection: Annotated[
+        str | None, typer.Option("--collection", help="Filter by exact contained collection id")
+    ] = None,
+    iso_ready: Annotated[
+        bool | None,
+        typer.Option(
+            "--iso-ready/--not-ready", help="Filter by whether the candidate is ready to finalize"
+        ),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    payload = ApiClient().get_plan(
+        page=page,
+        per_page=per_page,
+        sort=sort,
+        order=order,
+        query=query,
+        collection=collection,
+        iso_ready=iso_ready,
+    )
+    emit(payload if json_mode else format_plan(payload), json_mode=json_mode)
+
+
+@image_app.command("download")
+def image_download_cmd(
+    image_id: Annotated[str, typer.Argument(help="Finalized image id")],
+    output: Annotated[Path | None, typer.Option("-o", "--output", help="Output path")] = None,
+) -> None:
+    client = ApiClient()
+    if output is None:
+        content = client.download_iso(image_id)
+        if not isinstance(content, bytes):
+            raise typer.Exit(code=1)
+        sys.stdout.buffer.write(content)
+        raise typer.Exit(code=0)
+
+    image_payload = client.get_image(image_id)
+    estimated_total = _optional_int(image_payload.get("bytes"))
+    typer.echo(f"downloading ISO {image_id} to {output}", err=True)
+    download_result = _call_download_with_optional_progress(
+        client.download_iso,
+        image_id,
+        output,
+        progress=_download_progress_logger(
+            f"download ISO {image_id}",
+            estimated_total=estimated_total,
+        ),
+    )
+    downloaded_bytes = (
+        len(download_result)
+        if isinstance(download_result, bytes)
+        else _optional_int(download_result)
+    )
+    if downloaded_bytes is None:
+        raise typer.Exit(code=1)
+    typer.echo(f"wrote {downloaded_bytes} bytes to {output}")
+
+
+def _image_id_from_copy_id(copy_id: str) -> str:
+    if "-" not in copy_id:
+        raise typer.BadParameter(
+            "disc id must include an image id prefix, like 20260420T040001Z-1"
+        )
+    return copy_id.rsplit("-", 1)[0]
+
+
+def _copy_from_image_payload(
+    payload: dict[str, Any],
+    *,
+    image_id: str,
+    copy_id: str,
+) -> dict[str, Any]:
+    copies = payload.get("copies")
+    if isinstance(copies, list):
+        for copy in copies:
+            if isinstance(copy, dict) and copy.get("id") == copy_id:
+                return {**copy, "image_id": image_id}
+    raise NotFound(f"disc not found: {copy_id}")
+
+
+def _emit_disc_payload(payload: dict[str, Any], *, image_id: str, json_mode: bool) -> None:
+    human_payload = {"image_id": image_id, **payload}
+    emit(payload if json_mode else format_disc(human_payload), json_mode=json_mode)
+
+
+def _disc_sort_value(disc: Mapping[str, object], sort: str) -> str:
+    if sort not in _DISC_SORT_FIELDS:
+        raise typer.BadParameter(
+            f"sort must be one of {', '.join(sorted(_DISC_SORT_FIELDS))}",
+            param_hint="--sort",
+        )
+    return str(disc.get(sort) or "").casefold()
+
+
+def _list_discs_payload(
+    client: ApiClient,
+    *,
+    page: int,
+    per_page: int,
+    sort: str,
+    order: str,
+    query: str | None,
+) -> dict[str, Any]:
+    normalized_order = order.casefold()
+    if normalized_order not in {"asc", "desc"}:
+        raise typer.BadParameter("order must be asc or desc", param_hint="--order")
+    _ = _disc_sort_value({}, sort)
+
+    image_page = client.list_images(
+        page=1,
+        per_page=100,
+        sort="finalized_at",
+        order="desc",
+        has_copies=True,
+    )
+    images = [image for image in image_page.get("images", []) if isinstance(image, dict)]
+    pages = _optional_int(image_page.get("pages")) or 0
+    for page_number in range(2, pages + 1):
+        next_page = client.list_images(
+            page=page_number,
+            per_page=100,
+            sort="finalized_at",
+            order="desc",
+            has_copies=True,
+        )
+        images.extend(image for image in next_page.get("images", []) if isinstance(image, dict))
+
+    needle = query.casefold() if query else None
+    discs: list[dict[str, Any]] = []
+    for image in images:
+        image_id = str(image.get("id", ""))
+        if not image_id:
+            continue
+        copies_payload = client.list_copies(image_id)
+        copies = copies_payload.get("copies")
+        if not isinstance(copies, list):
+            continue
+        for copy in copies:
+            if not isinstance(copy, dict):
+                continue
+            disc = {**copy, "image_id": image_id}
+            haystack = " ".join(
+                str(disc.get(field, ""))
+                for field in ("id", "image_id", "state", "verification_state", "location")
+            ).casefold()
+            if needle is not None and needle not in haystack:
+                continue
+            discs.append(disc)
+
+    discs.sort(
+        key=lambda disc: _disc_sort_value(disc, sort),
+        reverse=normalized_order == "desc",
+    )
+    total = len(discs)
+    display_pages = (total + per_page - 1) // per_page if total else 0
+    start = (page - 1) * per_page
+    stop = start + per_page
+    return {
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "pages": display_pages,
+        "sort": sort,
+        "order": normalized_order,
+        "discs": discs[start:stop],
+    }
+
+
+@disc_app.command("list")
+def disc_list_cmd(
+    image_id: Annotated[
+        str | None,
+        typer.Argument(help="Optional finalized image id", show_default=False),
+    ] = None,
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "id",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
+    query: Annotated[
+        str | None,
+        typer.Option("--query", "--search", help="Substring match over disc fields"),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    client = ApiClient()
+    if image_id is not None:
+        payload = client.list_copies(image_id)
+        emit(
+            payload if json_mode else format_discs({"image_id": image_id, **payload}),
+            json_mode=json_mode,
+        )
+        return
+    payload = _list_discs_payload(
+        client,
+        page=page,
+        per_page=per_page,
+        sort=sort,
+        order=order,
+        query=query,
+    )
+    emit(payload if json_mode else format_discs(payload), json_mode=json_mode)
+
+
+@disc_app.command("show")
+def disc_show_cmd(
+    copy_id: Annotated[str, typer.Argument(help="Generated disc/copy id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    image_id = _image_id_from_copy_id(copy_id)
+    copy = _copy_from_image_payload(
+        ApiClient().list_copies(image_id),
+        image_id=image_id,
+        copy_id=copy_id,
+    )
+    emit(copy if json_mode else format_disc(copy), json_mode=json_mode)
+
+
+@disc_app.command("add")
+def disc_add_cmd(
+    image_id: Annotated[str, typer.Argument(help="Finalized image id")],
+    at: Annotated[str, typer.Option("--at", help="Physical location label")],
+    copy_id: Annotated[
+        str | None,
+        typer.Option("--copy-id", help="Generated copy id to claim explicitly"),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    payload = ApiClient().register_copy(image_id, at, copy_id=copy_id)
+    _emit_disc_payload(payload, image_id=image_id, json_mode=json_mode)
+
+
+@disc_app.command("location")
+def disc_location_cmd(
+    copy_id: Annotated[str, typer.Argument(help="Generated disc/copy id")],
+    to: Annotated[str, typer.Option("--to", help="New physical location label")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    image_id = _image_id_from_copy_id(copy_id)
+    payload = ApiClient().update_copy(image_id, copy_id, location=to)
+    _emit_disc_payload(payload, image_id=image_id, json_mode=json_mode)
+
+
+@disc_app.command("mark-lost")
+def disc_mark_lost_cmd(
+    copy_id: Annotated[str, typer.Argument(help="Generated disc/copy id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    image_id = _image_id_from_copy_id(copy_id)
+    payload = ApiClient().update_copy(image_id, copy_id, state="lost")
+    _emit_disc_payload(payload, image_id=image_id, json_mode=json_mode)
+
+
+@disc_app.command("mark-damaged")
+def disc_mark_damaged_cmd(
+    copy_id: Annotated[str, typer.Argument(help="Generated disc/copy id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    image_id = _image_id_from_copy_id(copy_id)
+    payload = ApiClient().update_copy(image_id, copy_id, state="damaged")
+    _emit_disc_payload(payload, image_id=image_id, json_mode=json_mode)
+
+
+@disc_app.command("verify")
+def disc_verify_cmd(
+    copy_id: Annotated[str, typer.Argument(help="Generated disc/copy id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    image_id = _image_id_from_copy_id(copy_id)
+    payload = ApiClient().update_copy(
+        image_id,
+        copy_id,
+        state="verified",
+        verification_state="verified",
+    )
+    _emit_disc_payload(payload, image_id=image_id, json_mode=json_mode)
+
+
 @app.command("fetch")
 def fetch_cmd(
     fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
@@ -2218,7 +2565,7 @@ def burn_cmd(
     _report_recovery_handoffs(recovery_handoffs)
 
 
-@app.command("recover")
+@image_app.command("rebuild")
 def recover_cmd(
     session_id: Annotated[
         str | None,

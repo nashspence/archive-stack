@@ -11,7 +11,7 @@ photos-2024/
 CLI example:
 
 ```bash
-riverhog pin 'photos-2024/'
+riverhog hot pin 'photos-2024/'
 ```
 
 ## Pin a directory subtree
@@ -23,7 +23,7 @@ photos-2024/albums/japan/
 CLI example:
 
 ```bash
-riverhog pin 'photos-2024/albums/japan/'
+riverhog hot pin 'photos-2024/albums/japan/'
 ```
 
 ## Pin a single file
@@ -35,7 +35,7 @@ docs/tax/2022/invoice-123.pdf
 CLI example:
 
 ```bash
-riverhog pin 'docs/tax/2022/invoice-123.pdf'
+riverhog hot pin 'docs/tax/2022/invoice-123.pdf'
 ```
 
 ## Pin a projected parent directory
@@ -50,7 +50,7 @@ collections.
 ## Release a previously pinned target
 
 ```bash
-riverhog release 'docs/tax/2022/'
+riverhog hot unpin 'docs/tax/2022/'
 ```
 
 ## Notes
