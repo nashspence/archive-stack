@@ -13,30 +13,8 @@ class Base(DeclarativeBase):
     pass
 
 
-SCHEMA_BASELINE_VERSION = 1
+SCHEMA_BASELINE_VERSION = 7
 SCHEMA_LATEST_VERSION = 7
-_SUPPORTED_SCHEMA_VERSIONS = {
-    SCHEMA_BASELINE_VERSION,
-    2,
-    3,
-    4,
-    5,
-    6,
-    SCHEMA_LATEST_VERSION,
-}
-_SCHEMA_V2_DROPPED_COLUMNS = {
-    "glacier_usage_snapshots": (
-        "estimated_billable_bytes",
-        "estimated_monthly_cost_usd",
-        "pricing_label",
-        "glacier_storage_rate_usd_per_gib_month",
-        "standard_storage_rate_usd_per_gib_month",
-        "archived_metadata_bytes_per_object",
-        "standard_metadata_bytes_per_object",
-        "minimum_storage_duration_days",
-    ),
-    "glacier_recovery_sessions": ("estimate_json",),
-}
 _COLLECTION_OPERATOR_SUMMARY_COLUMNS = (
     "collection_id",
     "files",
@@ -158,105 +136,44 @@ def _database_url_backend(database_url: str) -> str:
 
 def _check_database_is_baseline_compatible(engine: Engine) -> None:
     table_names = set(inspect(engine).get_table_names())
-    if table_names and "schema_migrations" not in table_names:
+    if not table_names:
+        return
+    if "schema_migrations" not in table_names:
         raise RuntimeError(
             "unsupported unversioned catalog schema detected; reset the Riverhog "
             "database before starting this greenfield build"
         )
+    with engine.begin() as conn:
+        applied_versions = _applied_schema_versions(conn)
+    if applied_versions != {SCHEMA_BASELINE_VERSION}:
+        raise RuntimeError(
+            "unsupported pre-baseline catalog schema detected; reset or normalize the "
+            "Riverhog database before starting this greenfield build"
+        )
 
 
-def _apply_schema_migrations(engine: Engine) -> None:
+def _ensure_schema_baseline_marker(engine: Engine) -> None:
     with engine.begin() as conn:
         conn.execute(
             text("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)")
         )
-        applied_versions = {
-            row[0] for row in conn.execute(text("SELECT version FROM schema_migrations")).fetchall()
-        }
-        if applied_versions - _SUPPORTED_SCHEMA_VERSIONS:
+        applied_versions = _applied_schema_versions(conn)
+        if applied_versions and applied_versions != {SCHEMA_BASELINE_VERSION}:
             raise RuntimeError(
-                "unsupported pre-baseline catalog schema detected; reset the Riverhog "
-                "database before starting this greenfield build"
+                "unsupported pre-baseline catalog schema detected; reset or normalize the "
+                "Riverhog database before starting this greenfield build"
             )
         if SCHEMA_BASELINE_VERSION not in applied_versions:
             conn.execute(
                 text("INSERT INTO schema_migrations (version) VALUES (:v)"),
                 {"v": SCHEMA_BASELINE_VERSION},
             )
-            applied_versions.add(SCHEMA_BASELINE_VERSION)
-        for version, migration in (
-            (2, _migrate_schema_v2),
-            (3, _migrate_schema_v3),
-            (4, _migrate_schema_v4),
-            (5, _migrate_schema_v5),
-            (6, _migrate_schema_v6),
-            (7, _migrate_schema_v7),
-        ):
-            if version not in applied_versions:
-                migration(conn)
-                conn.execute(
-                    text("INSERT INTO schema_migrations (version) VALUES (:v)"),
-                    {"v": version},
-                )
-                applied_versions.add(version)
 
 
-def _migrate_schema_v2(conn: Connection) -> None:
-    inspector = inspect(conn)
-    table_names = set(inspector.get_table_names())
-    for table_name, column_names in _SCHEMA_V2_DROPPED_COLUMNS.items():
-        if table_name not in table_names:
-            continue
-        existing_columns = {column["name"] for column in inspector.get_columns(table_name)}
-        for column_name in column_names:
-            if column_name in existing_columns:
-                conn.execute(
-                    text(
-                        "ALTER TABLE "
-                        f"{_quote_identifier(conn, table_name)} "
-                        "DROP COLUMN "
-                        f"{_quote_identifier(conn, column_name)}"
-                    )
-                )
-
-
-def _migrate_schema_v3(conn: Connection) -> None:
-    _refresh_collection_operator_summaries(
-        conn,
-        "SELECT id AS collection_id FROM collections",
-    )
-
-
-def _migrate_schema_v4(conn: Connection) -> None:
-    _refresh_hot_fetch_operator_summaries(
-        conn,
-        "SELECT target FROM active_pins",
-    )
-
-
-def _migrate_schema_v5(conn: Connection) -> None:
-    _refresh_image_operator_summaries(
-        conn,
-        "SELECT image_id FROM finalized_images",
-    )
-
-
-def _migrate_schema_v6(conn: Connection) -> None:
-    _refresh_disc_operator_summaries(
-        conn,
-        "SELECT image_id, copy_id FROM image_copies",
-    )
-
-
-def _migrate_schema_v7(conn: Connection) -> None:
-    _refresh_collection_image_operator_summaries(
-        conn,
-        "SELECT collection_id, image_id FROM finalized_image_covered_paths",
-    )
-
-
-def _quote_identifier(conn: Connection, identifier: str) -> str:
-    return conn.dialect.identifier_preparer.quote(identifier)
+def _applied_schema_versions(conn: Connection) -> set[int]:
+    return {
+        row[0] for row in conn.execute(text("SELECT version FROM schema_migrations")).fetchall()
+    }
 
 
 def _ensure_schema_indexes(engine: Engine) -> None:
@@ -2726,7 +2643,7 @@ def initialize_db(database_url: str) -> None:
     _check_database_is_baseline_compatible(engine)
     Base.metadata.create_all(engine)
     _ensure_schema_indexes(engine)
-    _apply_schema_migrations(engine)
+    _ensure_schema_baseline_marker(engine)
     _install_collection_operator_projection(engine)
     _install_collection_image_operator_projection(engine)
     _install_image_operator_projection(engine)
