@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import urllib.request
 from pathlib import Path
 from threading import Event
 from unittest.mock import patch
@@ -32,6 +33,37 @@ from munchy.runner_client import (
     riverhog_archive_progress,
     riverhog_promotion_progress,
 )
+
+
+def test_runner_client_injects_bearer_token() -> None:
+    client = MunchyRunnerClient("http://runner", token="runner-token")
+    seen: list[urllib.request.Request] = []
+
+    class FakeResponse:
+        status = 200
+        headers: dict[str, str] = {}
+
+        def read(self) -> bytes:
+            return b"{}"
+
+    def fake_urlopen(req: urllib.request.Request, *, timeout: float) -> FakeResponse:
+        assert timeout == 60.0
+        seen.append(req)
+        return FakeResponse()
+
+    with patch("munchy.runner_client.urllib.request.urlopen", side_effect=fake_urlopen):
+        client.request("GET", "/v1/jobs")
+        client.request(
+            "PATCH",
+            "http://uploads.test/file",
+            data=b"chunk",
+            headers={"Tus-Resumable": "1.0.0"},
+        )
+
+    assert [req.get_header("Authorization") for req in seen] == [
+        "Bearer runner-token",
+        "Bearer runner-token",
+    ]
 
 
 def test_format_job_summary_line_includes_upload_and_encode_progress() -> None:

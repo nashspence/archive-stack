@@ -19,6 +19,7 @@ from typing import Any, cast
 
 DEFAULT_RUNNER_URL = "http://127.0.0.1:8092"
 RUNNER_URL_ENV = "MUNCHY_RUNNER_URL"
+RUNNER_TOKEN_ENV = "MUNCHY_RUNNER_TOKEN"
 PROGRESS_ENV = "MUNCHY_PROGRESS"
 DEFAULT_UPLOAD_CHUNK_MIB = 64
 DEFAULT_UPLOAD_WORKERS = 12
@@ -70,6 +71,10 @@ class RunnerUploadRequest:
 
 def runner_url_setting(runner_url: str | None = None) -> str:
     return (runner_url or os.getenv(RUNNER_URL_ENV) or DEFAULT_RUNNER_URL).rstrip("/")
+
+
+def runner_token_setting(token: str | None = None) -> str:
+    return (token or os.getenv(RUNNER_TOKEN_ENV) or "").strip()
 
 
 def format_bytes(value: int | float | None) -> str:
@@ -1286,8 +1291,9 @@ class UploadProgress:
 
 
 class MunchyRunnerClient:
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, *, token: str | None = None) -> None:
         self.base_url = base_url.rstrip("/")
+        self.token = runner_token_setting(token)
 
     def request(
         self,
@@ -1305,6 +1311,8 @@ class MunchyRunnerClient:
         else:
             url = f"{self.base_url}{path_or_url}"
         request_headers = dict(headers or {})
+        if self.token:
+            request_headers.setdefault("Authorization", f"Bearer {self.token}")
         body = data
         if payload is not None:
             body = json.dumps(payload).encode("utf-8")

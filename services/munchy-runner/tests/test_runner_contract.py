@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import errno
 import gzip
+import hashlib
 import importlib.util
 import json
 import logging
@@ -10,11 +12,18 @@ import threading
 import uuid
 from pathlib import Path
 from types import ModuleType
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
+from fastapi.testclient import TestClient
 
 from munchy.filesystem_metadata import SOURCE_FILESYSTEM_METADATA_FILENAME
 from munchy.uvicorn_logging import DropHealthAccessLogFilter
+
+
+def secure_link_token(*, expires: str, path: str, secret: str) -> str:
+    digest = hashlib.md5(f"{expires}{unquote(path)} {secret}".encode()).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
 def load_runner(tmp_path: Path, monkeypatch) -> ModuleType:  # type: ignore[no-untyped-def]
@@ -58,6 +67,24 @@ def test_health_access_log_filter_drops_only_health_paths() -> None:
     assert access_filter.filter(api) is True
 
 
+def test_api_auth_protects_v1_but_not_health(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("MUNCHY_RUNNER_API_TOKEN", "runner-token")
+    runner = load_runner(tmp_path, monkeypatch)
+
+    client = TestClient(runner.app)
+
+    assert client.get("/health/live").status_code == 200
+    unauthorized = client.get("/v1/capabilities")
+    assert unauthorized.status_code == 401
+    assert unauthorized.headers["WWW-Authenticate"] == "Bearer"
+    authorized = client.get(
+        "/v1/capabilities",
+        headers={"Authorization": "Bearer runner-token"},
+    )
+    assert authorized.status_code == 200
+    assert authorized.json()["operations"]["list_jobs"] is True
+
+
 def test_capabilities_advertise_munchy_profile_target(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     runner = load_runner(tmp_path, monkeypatch)
 
@@ -85,6 +112,41 @@ def test_riverhog_handoff_wait_defaults_to_finalized(
 
     assert runner.RIVERHOG_WAIT == "finalized"
     assert runner.RiverhogConfig(enabled=True).wait == "finalized"
+
+
+def test_public_tusd_upload_url_signs_nginx_normalized_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("MUNCHY_RUNNER_TUSD_PUBLIC_SIGNING_SECRET", "fixture-secret")
+    runner = load_runner(tmp_path, monkeypatch)
+
+    url = runner.public_tusd_upload_url("http://runner.test/files/.munchy-runner%2Fuploads%2Fabc")
+
+    parsed = urlsplit(url)
+    query = parse_qs(parsed.query)
+    expires = query["expires"][0]
+    assert query == {
+        "expires": [expires],
+        "md5": [
+            secure_link_token(
+                expires=expires,
+                path=parsed.path,
+                secret="fixture-secret",
+            )
+        ],
+    }
+
+
+def test_public_tusd_upload_url_omits_signature_without_secret(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+
+    url = runner.public_tusd_upload_url("http://runner.test/files/.munchy-runner%2Fuploads%2Fabc")
+
+    assert url == "http://runner.test/files/.munchy-runner%2Fuploads%2Fabc"
 
 
 def test_structured_input_upload_accepts_source_prefixed_paths(

@@ -80,6 +80,8 @@ Important environment variables:
 - `MUNCHY_RUNNER_STATE_DIR`
 - `MUNCHY_RUNNER_WORK_DIR`
 - `MUNCHY_RUNNER_TUSD_DIR`
+- `MUNCHY_RUNNER_API_TOKEN`
+- `MUNCHY_RUNNER_TUSD_PUBLIC_SIGNING_SECRET`
 - `MUNCHY_RUNNER_GPU_RUNTIME_DIR`
 - `MUNCHY_RUNNER_GPU_MANAGER_URL`
 - `MUNCHY_RUNNER_GPU_TARGET_URL`
@@ -113,6 +115,13 @@ fully use the encoder. New input uploads are still admitted only when the upload
 buffer and future scratch reservation fit. Already-admitted uploads and jobs
 retry transient network, capacity, and scratch-space pressure instead of failing
 immediately.
+
+When `MUNCHY_RUNNER_API_TOKEN` is set, `/v1` operator API requests require
+`Authorization: Bearer <token>`. Health endpoints remain unauthenticated for
+service checks. When `MUNCHY_RUNNER_TUSD_PUBLIC_SIGNING_SECRET` is set, public
+TUS upload URLs are signed with nginx secure-link-compatible `md5` and `expires`
+query parameters so upload chunks do not need a per-chunk application auth
+round trip.
 
 Webhook payloads identify themselves with `source = "munchy"` and the canonical
 emoji `🤤`.

@@ -11,6 +11,7 @@ import logging
 import logging.config
 import os
 import re
+import secrets
 import shutil
 import signal
 import sqlite3
@@ -24,7 +25,7 @@ from datetime import UTC, datetime, timedelta
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import quote, urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpx
 import uvicorn
@@ -100,6 +101,8 @@ TUSD_PUBLIC_BASE_URL = os.getenv(
     "MUNCHY_RUNNER_TUSD_PUBLIC_BASE_URL", TUSD_INTERNAL_BASE_URL
 ).rstrip("/")
 TUSD_HOOK_SECRET = os.getenv("MUNCHY_RUNNER_TUSD_HOOK_SECRET", "").strip()
+API_TOKEN = os.getenv("MUNCHY_RUNNER_API_TOKEN", "").strip()
+TUSD_PUBLIC_SIGNING_SECRET = os.getenv("MUNCHY_RUNNER_TUSD_PUBLIC_SIGNING_SECRET", "").strip()
 GPU_RUNTIME_DIR = Path(
     os.getenv("MUNCHY_RUNNER_GPU_RUNTIME_DIR", "/gpu-runtime/munchy-av1-nvenc")
 ).resolve()
@@ -360,6 +363,25 @@ riverhog_upload_locks: dict[str, threading.RLock] = {}
 riverhog_upload_locks_guard = threading.Lock()
 riverhog_upload_call_locks: dict[str, threading.Lock] = {}
 riverhog_upload_call_locks_guard = threading.Lock()
+
+
+def authorized_api_bearer(request: Request) -> bool:
+    if not API_TOKEN:
+        return True
+    raw = request.headers.get("authorization", "")
+    scheme, _, token = raw.partition(" ")
+    return scheme.casefold() == "bearer" and secrets.compare_digest(token, API_TOKEN)
+
+
+@app.middleware("http")
+async def require_api_auth(request: Request, call_next):  # type: ignore[no-untyped-def]
+    if request.url.path.startswith("/v1/") and not authorized_api_bearer(request):
+        return JSONResponse(
+            {"detail": "invalid api token"},
+            status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return await call_next(request)
 
 
 def shared_input_tree_lock(upload_id: str) -> threading.Lock:
@@ -2263,6 +2285,49 @@ def normalize_public_tusd_url(location: str) -> str:
             parsed.query,
             parsed.fragment,
         )
+    )
+
+
+def tusd_upload_expires_at() -> str:
+    expires_at = datetime.now(UTC) + timedelta(hours=INPUT_UPLOAD_TTL_HOURS)
+    return expires_at.isoformat().replace("+00:00", "Z")
+
+
+def upload_expires_epoch(expires_at: str) -> int | None:
+    normalized = expires_at.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return int(parsed.timestamp())
+
+
+def signed_tusd_query(path: str, *, expires_at: str, secret: str) -> dict[str, str]:
+    expires = upload_expires_epoch(expires_at)
+    if expires is None:
+        return {}
+    normalized_uri = unquote(path)
+    digest = hashlib.md5(f"{expires}{normalized_uri} {secret}".encode()).digest()
+    token = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    return {"md5": token, "expires": str(expires)}
+
+
+def public_tusd_upload_url(upload_url: str) -> str:
+    if not TUSD_PUBLIC_SIGNING_SECRET:
+        return upload_url
+    parsed = urlsplit(upload_url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query.update(
+        signed_tusd_query(
+            parsed.path,
+            expires_at=tusd_upload_expires_at(),
+            secret=TUSD_PUBLIC_SIGNING_SECRET,
+        )
+    )
+    return urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment)
     )
 
 
@@ -6910,6 +6975,24 @@ def delete_input_upload(upload_id: str) -> dict[str, Any]:
         }
 
 
+def input_file_upload_response(
+    *,
+    upload_url: object,
+    offset: int,
+    length: int,
+    status: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "protocol": "tus",
+        "upload_url": public_tusd_upload_url(str(upload_url)) if upload_url else upload_url,
+        "offset": offset,
+        "length": length,
+        "checksum_algorithm": "sha256",
+        "headers": {"Tus-Resumable": "1.0.0"},
+        "file": status,
+    }
+
+
 @app.post("/v1/input-uploads/{upload_id}/files/{rel_path:path}/upload", status_code=201)
 def create_or_resume_input_file_upload(upload_id: str, rel_path: str) -> dict[str, Any]:
     with state_lock:
@@ -6917,15 +7000,12 @@ def create_or_resume_input_file_upload(upload_id: str, rel_path: str) -> dict[st
         file_state = find_upload_file(upload, rel_path)
         if file_state.get("consumed_at"):
             status = upload_file_status(file_state)
-            return {
-                "protocol": "tus",
-                "upload_url": file_state.get("upload_url"),
-                "offset": file_state["bytes"],
-                "length": file_state["bytes"],
-                "checksum_algorithm": "sha256",
-                "headers": {"Tus-Resumable": "1.0.0"},
-                "file": status,
-            }
+            return input_file_upload_response(
+                upload_url=file_state.get("upload_url"),
+                offset=int(file_state["bytes"]),
+                length=int(file_state["bytes"]),
+                status=status,
+            )
         upload_url = file_state.get("upload_url")
         target_path = str(file_state["target_path"])
         length = int(file_state["bytes"])
@@ -6938,15 +7018,12 @@ def create_or_resume_input_file_upload(upload_id: str, rel_path: str) -> dict[st
             file_state = find_upload_file(upload, rel_path)
             if file_state.get("consumed_at"):
                 status = upload_file_status(file_state)
-                return {
-                    "protocol": "tus",
-                    "upload_url": file_state.get("upload_url") or created_upload_url,
-                    "offset": file_state["bytes"],
-                    "length": file_state["bytes"],
-                    "checksum_algorithm": "sha256",
-                    "headers": {"Tus-Resumable": "1.0.0"},
-                    "file": status,
-                }
+                return input_file_upload_response(
+                    upload_url=file_state.get("upload_url") or created_upload_url,
+                    offset=int(file_state["bytes"]),
+                    length=int(file_state["bytes"]),
+                    status=status,
+                )
             existing_upload_url = file_state.get("upload_url")
             if existing_upload_url:
                 upload_url = str(existing_upload_url)
@@ -6967,15 +7044,12 @@ def create_or_resume_input_file_upload(upload_id: str, rel_path: str) -> dict[st
         file_state = find_upload_file(upload, rel_path)
         if file_state.get("consumed_at"):
             status = upload_file_status(file_state)
-            return {
-                "protocol": "tus",
-                "upload_url": file_state.get("upload_url") or upload_url,
-                "offset": file_state["bytes"],
-                "length": file_state["bytes"],
-                "checksum_algorithm": "sha256",
-                "headers": {"Tus-Resumable": "1.0.0"},
-                "file": status,
-            }
+            return input_file_upload_response(
+                upload_url=file_state.get("upload_url") or upload_url,
+                offset=int(file_state["bytes"]),
+                length=int(file_state["bytes"]),
+                status=status,
+            )
         if upload_url and not file_state.get("upload_url"):
             file_state["upload_url"] = upload_url
             upload = save_input_upload_raw(upload)
@@ -6985,15 +7059,12 @@ def create_or_resume_input_file_upload(upload_id: str, rel_path: str) -> dict[st
         offset = head_tusd_upload(upload_url)
     if offset < 0:
         offset = 0
-    return {
-        "protocol": "tus",
-        "upload_url": upload_url,
-        "offset": offset,
-        "length": length,
-        "checksum_algorithm": "sha256",
-        "headers": {"Tus-Resumable": "1.0.0"},
-        "file": status,
-    }
+    return input_file_upload_response(
+        upload_url=upload_url,
+        offset=offset,
+        length=length,
+        status=status,
+    )
 
 
 @app.post("/v1/jobs", status_code=202)
