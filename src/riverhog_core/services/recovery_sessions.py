@@ -80,8 +80,12 @@ from riverhog_core.services.compliance import file_has_registered_disc_coverage
 from riverhog_core.services.target_selection import selected_collection_files
 from riverhog_core.webhooks import (
     WebhookConfig,
+    build_recovery_canceled_payload,
     build_recovery_completed_payload,
+    build_recovery_failed_payload,
+    build_recovery_paused_reminder_payload,
     build_recovery_ready_payload,
+    build_recovery_retrying_payload,
     build_recovery_started_payload,
     post_webhook,
     utcnow,
@@ -92,12 +96,16 @@ _LOG = logging.getLogger(__name__)
 _ACTIVE_RECOVERY_STATES = {
     RecoverySessionState.RESTORE_REQUESTED.value,
     RecoverySessionState.READY.value,
+    RecoverySessionState.PAUSED.value,
 }
 _PUBLIC_RECOVERY_STATES = {
     RecoverySessionState.RESTORE_REQUESTED.value,
     RecoverySessionState.READY.value,
+    RecoverySessionState.PAUSED.value,
     RecoverySessionState.EXPIRED.value,
     RecoverySessionState.COMPLETED.value,
+    RecoverySessionState.FAILED.value,
+    RecoverySessionState.CANCELED.value,
 }
 _RECOVERY_SESSION_SORT_FIELDS = {
     "created_at",
@@ -108,6 +116,7 @@ _RECOVERY_SESSION_SORT_FIELDS = {
     "restore_expires_at",
 }
 _RECOVERY_SESSION_TYPES = {"collection_restore", "image_rebuild"}
+_PAUSED_REBUILD_REMINDER_INTERVAL = timedelta(days=1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,7 +260,7 @@ class SqlAlchemyRecoverySessionService:
         *,
         paths: Sequence[str] | None = None,
     ) -> RecoverySessionSummary:
-        current = utcnow()
+        session_id: str | None = None
         with session_scope(self._session_factory) as session:
             collection = _require_collection(session, collection_id)
             active = _active_session_for_collection(session, collection_id)
@@ -262,34 +271,27 @@ class SqlAlchemyRecoverySessionService:
                     collection_id=collection.id,
                     paths=paths,
                 )
-                _request_restore_if_needed(
+                session_id = active.session_id
+            else:
+                _require_collection_archive_uploaded(collection)
+                created = _create_collection_restore_session(
                     session,
-                    record=active,
-                    archive_store=self._archive_store,
                     config=self._config,
-                    current=current,
+                    collection=collection,
+                    paths=_normalize_collection_restore_paths(
+                        session,
+                        collection_id=collection.id,
+                        paths=paths,
+                    ),
+                    created_at=_isoformat_z(utcnow()),
                 )
-                return _session_summary(session, active, config=self._config)
-            _require_collection_archive_uploaded(collection)
-            created = _create_collection_restore_session(
-                session,
-                config=self._config,
-                collection=collection,
-                paths=_normalize_collection_restore_paths(
-                    session,
-                    collection_id=collection.id,
-                    paths=paths,
-                ),
-                created_at=_isoformat_z(current),
-            )
-            _request_restore_if_needed(
-                session,
-                record=created,
-                archive_store=self._archive_store,
-                config=self._config,
-                current=current,
-            )
-            return _session_summary(session, created, config=self._config)
+                session_id = created.session_id
+        assert session_id is not None
+        try:
+            self._process_one(session_id=session_id)
+        except Exception as exc:
+            self._record_processing_failure(session_id=session_id, exc=exc)
+        return self.get(session_id)
 
     def get_for_image(self, image_id: str) -> RecoverySessionSummary:
         with session_scope(self._session_factory) as session:
@@ -300,20 +302,63 @@ class SqlAlchemyRecoverySessionService:
 
     def complete(self, session_id: str) -> RecoverySessionSummary:
         current = utcnow()
+        try:
+            with session_scope(self._session_factory) as session:
+                record = session.get(GlacierRecoverySessionRecord, session_id)
+                if record is None:
+                    raise NotFound(f"recovery session not found: {session_id}")
+                _complete_recovery_session_record(
+                    session,
+                    record=record,
+                    archive_store=self._archive_store,
+                    proof_verifier=self._proof_verifier,
+                    config=self._config,
+                    current=current,
+                    verify_archives=True,
+                )
+                return _session_summary(session, record, config=self._config)
+        except (InvalidState, NotFound):
+            raise
+        except Exception as exc:
+            self._record_processing_failure(session_id=session_id, exc=exc)
+            raise
+
+    def cancel(self, session_id: str) -> RecoverySessionSummary:
+        current = utcnow()
         with session_scope(self._session_factory) as session:
             record = session.get(GlacierRecoverySessionRecord, session_id)
             if record is None:
                 raise NotFound(f"recovery session not found: {session_id}")
-            _complete_recovery_session_record(
+            _cancel_recovery_session_record(
                 session,
                 record=record,
                 archive_store=self._archive_store,
-                proof_verifier=self._proof_verifier,
                 config=self._config,
                 current=current,
-                verify_archives=True,
             )
             return _session_summary(session, record, config=self._config)
+
+    def pause(self, session_id: str) -> RecoverySessionSummary:
+        current = utcnow()
+        with session_scope(self._session_factory) as session:
+            record = session.get(GlacierRecoverySessionRecord, session_id)
+            if record is None:
+                raise NotFound(f"recovery session not found: {session_id}")
+            _pause_recovery_session_record(record=record, current=current)
+            return _session_summary(session, record, config=self._config)
+
+    def resume(self, session_id: str) -> RecoverySessionSummary:
+        current = utcnow()
+        with session_scope(self._session_factory) as session:
+            record = session.get(GlacierRecoverySessionRecord, session_id)
+            if record is None:
+                raise NotFound(f"recovery session not found: {session_id}")
+            _resume_recovery_session_record(record=record, current=current)
+        try:
+            self._process_one(session_id=session_id)
+        except Exception as exc:
+            self._record_processing_failure(session_id=session_id, exc=exc)
+        return self.get(session_id)
 
     def iter_restored_iso(self, session_id: str, image_id: str) -> Iterator[bytes]:
         with session_scope(self._session_factory) as session:
@@ -372,6 +417,7 @@ class SqlAlchemyRecoverySessionService:
         processed = 0
         started_next = GlacierRecoverySessionRecord.started_notification_next_attempt_at
         completed_next = GlacierRecoverySessionRecord.completed_notification_next_attempt_at
+        canceled_next = GlacierRecoverySessionRecord.canceled_notification_next_attempt_at
         with session_scope(self._session_factory) as session:
             due_ids = session.scalars(
                 select(GlacierRecoverySessionRecord.session_id)
@@ -408,6 +454,18 @@ class SqlAlchemyRecoverySessionService:
                         ),
                         (
                             (GlacierRecoverySessionRecord.state == RecoverySessionState.READY.value)
+                            & (GlacierRecoverySessionRecord.type == "collection_restore")
+                            & (GlacierRecoverySessionRecord.materialization_state != "completed")
+                            & (
+                                (GlacierRecoverySessionRecord.restore_next_poll_at.is_(None))
+                                | (
+                                    GlacierRecoverySessionRecord.restore_next_poll_at
+                                    <= current_text
+                                )
+                            )
+                        ),
+                        (
+                            (GlacierRecoverySessionRecord.state == RecoverySessionState.READY.value)
                             & (
                                 (GlacierRecoverySessionRecord.next_reminder_at.is_not(None))
                                 & (GlacierRecoverySessionRecord.next_reminder_at <= current_text)
@@ -421,6 +479,24 @@ class SqlAlchemyRecoverySessionService:
                             & (completed_next.is_not(None))
                             & (completed_next <= current_text)
                         ),
+                        (
+                            (
+                                GlacierRecoverySessionRecord.state
+                                == RecoverySessionState.CANCELED.value
+                            )
+                            & (canceled_next.is_not(None))
+                            & (canceled_next <= current_text)
+                        ),
+                        (
+                            (
+                                GlacierRecoverySessionRecord.state
+                                == RecoverySessionState.PAUSED.value
+                            )
+                            & (
+                                (GlacierRecoverySessionRecord.next_reminder_at.is_not(None))
+                                & (GlacierRecoverySessionRecord.next_reminder_at <= current_text)
+                            )
+                        ),
                     )
                 )
                 .order_by(
@@ -431,9 +507,76 @@ class SqlAlchemyRecoverySessionService:
             ).all()
 
         for session_id in due_ids:
-            self._process_one(session_id=session_id)
+            try:
+                self._process_one(session_id=session_id)
+            except Exception as exc:
+                self._record_processing_failure(session_id=session_id, exc=exc)
             processed += 1
         return processed
+
+    def _record_processing_failure(self, *, session_id: str, exc: Exception) -> None:
+        current = utcnow()
+        current_text = _isoformat_z(current)
+        retryable = _recovery_failure_is_retryable(exc)
+        error = _error_text(exc)
+        notify_operator = False
+        next_retry_at = (
+            _isoformat_z(current + self._config.glacier_recovery_sweep_interval)
+            if retryable
+            else None
+        )
+
+        with session_scope(self._session_factory) as session:
+            record = session.get(GlacierRecoverySessionRecord, session_id)
+            if record is None:
+                return
+            if record.state in {
+                RecoverySessionState.COMPLETED.value,
+                RecoverySessionState.CANCELED.value,
+                RecoverySessionState.PAUSED.value,
+            }:
+                return
+
+            record.failure_count = int(record.failure_count or 0) + 1
+            record.last_failure_at = current_text
+            record.last_failure = error
+            if retryable:
+                record.restore_next_poll_at = next_retry_at
+                record.latest_message = (
+                    "Recovery attempt failed and will retry"
+                    f"{' at ' + next_retry_at if next_retry_at else ''}: {error}"
+                )
+                if _operator_failure_notification_due(
+                    record.last_failure_notification_at,
+                    current=current,
+                    interval=self._config.operator_failure_notification_interval,
+                ):
+                    record.last_failure_notification_at = current_text
+                    notify_operator = True
+            else:
+                record.state = RecoverySessionState.FAILED.value
+                record.restore_next_poll_at = None
+                record.next_reminder_at = None
+                record.archive_verification_state = _failed_progress_state(
+                    record.archive_verification_state
+                )
+                record.extraction_state = _failed_progress_state(record.extraction_state)
+                record.materialization_state = _failed_progress_state(record.materialization_state)
+                record.latest_message = f"Recovery failed and will not retry automatically: {error}"
+                if record.last_failure_notification_at != current_text:
+                    record.last_failure_notification_at = current_text
+                    notify_operator = True
+
+            if notify_operator:
+                _notify_recovery_failure(
+                    session,
+                    record=record,
+                    config=self._config,
+                    current=current,
+                    retryable=retryable,
+                    error=error,
+                    next_retry_at=next_retry_at,
+                )
 
     def repair_missing_pinned_hot_files(self, *, limit: int = 100) -> int:
         if limit < 1 or self._hot_store is None:
@@ -551,6 +694,22 @@ class SqlAlchemyRecoverySessionService:
 
             if record.state == RecoverySessionState.COMPLETED.value:
                 _notify_recovery_completed(
+                    session,
+                    record=record,
+                    config=self._config,
+                    current=current,
+                )
+                return
+            if record.state == RecoverySessionState.CANCELED.value:
+                _notify_recovery_canceled(
+                    session,
+                    record=record,
+                    config=self._config,
+                    current=current,
+                )
+                return
+            if record.state == RecoverySessionState.PAUSED.value:
+                _notify_recovery_paused_reminder(
                     session,
                     record=record,
                     config=self._config,
@@ -858,10 +1017,17 @@ def _create_recovery_session(
         restore_next_poll_at=None,
         restore_expires_at=None,
         completed_at=None,
+        canceled_at=None,
+        paused_at=None,
+        paused_from_state=None,
         latest_message="Archive restore queued; Riverhog will request archived collection data.",
         retrieval_tier=config.glacier_recovery_retrieval_tier,
         hold_days=_restore_hold_days(config),
         warnings_json=json.dumps(list(warnings)),
+        failure_count=0,
+        last_failure_at=None,
+        last_failure=None,
+        last_failure_notification_at=None,
         reminder_count=0,
         next_reminder_at=None,
         last_notified_at=None,
@@ -914,10 +1080,17 @@ def _create_collection_restore_session(
         restore_next_poll_at=None,
         restore_expires_at=None,
         completed_at=None,
+        canceled_at=None,
+        paused_at=None,
+        paused_from_state=None,
         latest_message="Archive restore queued; Riverhog will materialize requested files.",
         retrieval_tier=config.glacier_recovery_retrieval_tier,
         hold_days=_restore_hold_days(config),
         warnings_json=json.dumps(list(warnings)),
+        failure_count=0,
+        last_failure_at=None,
+        last_failure=None,
+        last_failure_notification_at=None,
         reminder_count=0,
         next_reminder_at=None,
         last_notified_at=None,
@@ -1291,6 +1464,101 @@ def _auto_materialize_collection_restore(
     )
 
 
+def _cancel_recovery_session_record(
+    session: Session,
+    *,
+    record: GlacierRecoverySessionRecord,
+    archive_store: ArchiveStore,
+    config: RuntimeConfig,
+    current: datetime,
+) -> None:
+    if (record.type or "image_rebuild") != "collection_restore":
+        raise InvalidState("image rebuild sessions can be paused and resumed, not canceled")
+    if record.state == RecoverySessionState.CANCELED.value:
+        _notify_recovery_canceled(session, record=record, config=config, current=current)
+        return
+    if record.state not in {
+        RecoverySessionState.RESTORE_REQUESTED.value,
+        RecoverySessionState.READY.value,
+    }:
+        raise InvalidState("recovery session is not active and cannot be canceled")
+    _cleanup_recovery_session_restores(session, record=record, archive_store=archive_store)
+    record.state = RecoverySessionState.CANCELED.value
+    record.canceled_at = _isoformat_z(current)
+    record.restore_next_poll_at = None
+    record.next_reminder_at = None
+    record.started_notification_next_attempt_at = None
+    record.completed_notification_next_attempt_at = None
+    record.latest_message = (
+        "Collection restore was canceled by the operator; Riverhog will not materialize "
+        "files for this session."
+    )
+    _notify_recovery_canceled(session, record=record, config=config, current=current)
+
+
+def _pause_recovery_session_record(
+    *,
+    record: GlacierRecoverySessionRecord,
+    current: datetime,
+) -> None:
+    if (record.type or "image_rebuild") != "image_rebuild":
+        raise InvalidState("collection restore sessions can be canceled, not paused")
+    if record.state == RecoverySessionState.PAUSED.value:
+        return
+    if record.state not in {
+        RecoverySessionState.RESTORE_REQUESTED.value,
+        RecoverySessionState.READY.value,
+    }:
+        raise InvalidState("image rebuild session is not active and cannot be paused")
+    record.paused_from_state = record.state
+    record.state = RecoverySessionState.PAUSED.value
+    record.paused_at = _isoformat_z(current)
+    record.restore_next_poll_at = None
+    record.next_reminder_at = _isoformat_z(current + _PAUSED_REBUILD_REMINDER_INTERVAL)
+    record.started_notification_next_attempt_at = None
+    record.latest_message = (
+        "Image rebuild recovery is paused by the operator; resume it when replacement "
+        "media should continue."
+    )
+
+
+def _resume_recovery_session_record(
+    *,
+    record: GlacierRecoverySessionRecord,
+    current: datetime,
+) -> None:
+    if (record.type or "image_rebuild") != "image_rebuild":
+        raise InvalidState("collection restore sessions cannot be resumed from pause")
+    if record.state != RecoverySessionState.PAUSED.value:
+        raise InvalidState("image rebuild session is not paused")
+    resume_state = record.paused_from_state or RecoverySessionState.RESTORE_REQUESTED.value
+    if resume_state not in {
+        RecoverySessionState.RESTORE_REQUESTED.value,
+        RecoverySessionState.READY.value,
+    }:
+        resume_state = RecoverySessionState.RESTORE_REQUESTED.value
+    current_text = _isoformat_z(current)
+    if (
+        resume_state == RecoverySessionState.READY.value
+        and record.restore_expires_at is not None
+        and record.restore_expires_at <= current_text
+    ):
+        record.state = RecoverySessionState.EXPIRED.value
+        record.restore_next_poll_at = None
+        record.next_reminder_at = None
+        record.latest_message = (
+            "Paused image rebuild restore expired before resume; a new recovery request "
+            "is required."
+        )
+        return
+    record.state = resume_state
+    record.paused_at = None
+    record.paused_from_state = None
+    record.restore_next_poll_at = current_text
+    record.next_reminder_at = None
+    record.latest_message = "Image rebuild recovery resumed by the operator."
+
+
 def _complete_recovery_session_record(
     session: Session,
     *,
@@ -1319,14 +1587,7 @@ def _complete_recovery_session_record(
             proof_verifier=proof_verifier,
         )
         record.archive_verification_state = "completed"
-    for collection in collections:
-        archive = _require_collection_archive_objects(collection)
-        archive_store.cleanup_collection_archive_restore(
-            collection_id=collection.id,
-            object_path=archive.archive_object_path,
-            manifest_object_path=archive.manifest_object_path,
-            proof_object_path=archive.proof_object_path,
-        )
+    _cleanup_recovery_session_restores(session, record=record, archive_store=archive_store)
     record.state = RecoverySessionState.COMPLETED.value
     record.completed_at = _isoformat_z(current)
     record.next_reminder_at = None
@@ -1346,6 +1607,22 @@ def _complete_recovery_session_record(
         config=config,
         current=current,
     )
+
+
+def _cleanup_recovery_session_restores(
+    session: Session,
+    *,
+    record: GlacierRecoverySessionRecord,
+    archive_store: ArchiveStore,
+) -> None:
+    for collection in _session_collections(session, record=record):
+        archive = _require_collection_archive_objects(collection)
+        archive_store.cleanup_collection_archive_restore(
+            collection_id=collection.id,
+            object_path=archive.archive_object_path,
+            manifest_object_path=archive.manifest_object_path,
+            proof_object_path=archive.proof_object_path,
+        )
 
 
 def _iter_rebuilt_iso_from_collection_archives(
@@ -1971,6 +2248,9 @@ def _session_summary(
         reminder_count=record.reminder_count,
         next_reminder_at=record.next_reminder_at,
         last_notified_at=record.last_notified_at,
+        failure_count=int(record.failure_count or 0),
+        last_failure_at=record.last_failure_at,
+        last_failure=record.last_failure,
     )
     progress = RecoverySessionProgress(
         archive_verification=record.archive_verification_state or "pending",
@@ -1987,6 +2267,9 @@ def _session_summary(
         restore_ready_at=record.restore_ready_at,
         restore_expires_at=record.restore_expires_at,
         completed_at=record.completed_at,
+        canceled_at=record.canceled_at,
+        paused_at=record.paused_at,
+        paused_from_state=record.paused_from_state,
         restore_paths=_restore_paths_from_json(record.restore_paths_json)
         if (record.type or "image_rebuild") == "collection_restore"
         else None,
@@ -2022,7 +2305,11 @@ def _recovery_session_image_rebuild_state(record: GlacierRecoverySessionRecord) 
         return "restoring_collections"
     if state in {RecoverySessionState.READY, RecoverySessionState.COMPLETED}:
         return "ready"
-    if state == RecoverySessionState.EXPIRED:
+    if state == RecoverySessionState.PAUSED:
+        return "paused"
+    if state == RecoverySessionState.CANCELED:
+        return "canceled"
+    if state in {RecoverySessionState.EXPIRED, RecoverySessionState.FAILED}:
         return "failed"
     return "pending"
 
@@ -2227,6 +2514,143 @@ def _notify_recovery_completed(
     record.completed_notification_failure = None
 
 
+def _notify_recovery_canceled(
+    session: Session,
+    *,
+    record: GlacierRecoverySessionRecord,
+    config: RuntimeConfig,
+    current: datetime,
+) -> None:
+    current_text = _isoformat_z(current)
+    if not config.operator_webhook_url:
+        record.canceled_notification_next_attempt_at = None
+        record.canceled_notification_failure = None
+        return
+    if (
+        record.canceled_notification_sent_at is not None
+        and record.canceled_notification_next_attempt_at is None
+    ):
+        return
+    if (
+        record.canceled_notification_next_attempt_at is not None
+        and record.canceled_notification_next_attempt_at > current_text
+    ):
+        return
+
+    webhook_config = _webhook_config(config)
+    try:
+        post_webhook(
+            config=webhook_config,
+            payload=build_recovery_canceled_payload(
+                config=webhook_config,
+                session_id=record.session_id,
+                recovery_type=_recovery_type(record),
+                images=_recovery_image_payload(session, record),
+                collections=_recovery_collection_payload(session, record),
+                delivered_at=current,
+            ),
+        )
+    except Exception as exc:
+        record.canceled_notification_failure = str(exc).strip() or exc.__class__.__name__
+        record.canceled_notification_next_attempt_at = _isoformat_z(
+            current + config.operator_webhook_retry_delay
+        )
+        return
+
+    record.canceled_notification_sent_at = current_text
+    record.canceled_notification_next_attempt_at = None
+    record.canceled_notification_failure = None
+
+
+def _notify_recovery_paused_reminder(
+    session: Session,
+    *,
+    record: GlacierRecoverySessionRecord,
+    config: RuntimeConfig,
+    current: datetime,
+) -> None:
+    current_text = _isoformat_z(current)
+    if not config.operator_webhook_url:
+        record.next_reminder_at = None
+        return
+    if record.next_reminder_at is not None and record.next_reminder_at > current_text:
+        return
+    webhook_config = _webhook_config(config)
+    try:
+        post_webhook(
+            config=webhook_config,
+            payload=build_recovery_paused_reminder_payload(
+                config=webhook_config,
+                session_id=record.session_id,
+                images=_recovery_image_payload(session, record),
+                collections=_recovery_collection_payload(session, record),
+                delivered_at=current,
+                reminder_count=record.reminder_count,
+                reminder_interval_seconds=_PAUSED_REBUILD_REMINDER_INTERVAL.total_seconds(),
+            ),
+        )
+    except Exception as exc:
+        record.latest_message = (
+            "Paused rebuild reminder failed and will retry: "
+            f"{str(exc).strip() or exc.__class__.__name__}"
+        )
+        record.next_reminder_at = _isoformat_z(current + config.operator_webhook_retry_delay)
+        return
+    record.last_notified_at = current_text
+    record.reminder_count += 1
+    record.next_reminder_at = _isoformat_z(current + _PAUSED_REBUILD_REMINDER_INTERVAL)
+
+
+def _notify_recovery_failure(
+    session: Session,
+    *,
+    record: GlacierRecoverySessionRecord,
+    config: RuntimeConfig,
+    current: datetime,
+    retryable: bool,
+    error: str,
+    next_retry_at: str | None,
+) -> None:
+    if not config.operator_webhook_url:
+        return
+    webhook_config = _webhook_config(config)
+    try:
+        if retryable:
+            payload = build_recovery_retrying_payload(
+                config=webhook_config,
+                session_id=record.session_id,
+                recovery_type=_recovery_type(record),
+                images=_recovery_image_payload(session, record),
+                collections=_recovery_collection_payload(session, record),
+                delivered_at=current,
+                attempts=int(record.failure_count or 0),
+                failed_at=record.last_failure_at or _isoformat_z(current),
+                next_retry_at=next_retry_at,
+                retry_delay_seconds=config.glacier_recovery_sweep_interval.total_seconds(),
+                error=error,
+            )
+        else:
+            payload = build_recovery_failed_payload(
+                config=webhook_config,
+                session_id=record.session_id,
+                recovery_type=_recovery_type(record),
+                images=_recovery_image_payload(session, record),
+                collections=_recovery_collection_payload(session, record),
+                delivered_at=current,
+                attempts=int(record.failure_count or 0),
+                failed_at=record.last_failure_at or _isoformat_z(current),
+                error=error,
+            )
+        post_webhook(config=webhook_config, payload=payload)
+    except Exception:
+        _LOG.warning(
+            "failed to deliver recovery failure webhook: session=%s retryable=%s",
+            record.session_id,
+            retryable,
+            exc_info=True,
+        )
+
+
 def _recovery_type(record: GlacierRecoverySessionRecord) -> str:
     return record.type or "image_rebuild"
 
@@ -2312,6 +2736,40 @@ def _format_timedelta(value: timedelta) -> str:
     if seconds or not parts:
         parts.append(f"{seconds}s")
     return "".join(parts)
+
+
+def _error_text(exc: Exception) -> str:
+    detail = str(exc).strip()
+    return detail or exc.__class__.__name__
+
+
+def _recovery_failure_is_retryable(exc: Exception) -> bool:
+    if isinstance(exc, (InvalidState, NotFound, ValueError)):
+        return False
+    return True
+
+
+def _failed_progress_state(value: str | None) -> str:
+    if value == "completed":
+        return "completed"
+    return "failed"
+
+
+def _operator_failure_notification_due(
+    last_notified_at: str | None,
+    *,
+    current: datetime,
+    interval: timedelta,
+) -> bool:
+    if last_notified_at is None:
+        return True
+    if interval.total_seconds() <= 0:
+        return True
+    try:
+        previous = datetime.fromisoformat(last_notified_at.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    return current - previous >= interval
 
 
 def _isoformat_z(value: datetime) -> str:

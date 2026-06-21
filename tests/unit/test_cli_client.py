@@ -217,6 +217,11 @@ def test_recovery_session_client_methods_use_canonical_endpoints(monkeypatch) ->
         paths=["invoice 123.pdf"],
     )
     client.get_collection_restore_session("tax/2022 reports")
+    client.get_recovery_session("rs-docs-restore-1")
+    client.complete_recovery_session("rs-docs-restore-1")
+    client.cancel_recovery_session("rs-docs-restore-1")
+    client.pause_recovery_session("rs-20260420T040001Z-rebuild-1")
+    client.resume_recovery_session("rs-20260420T040001Z-rebuild-1")
 
     assert captured[0][0] == "GET"
     assert captured[0][1] == (
@@ -228,6 +233,31 @@ def test_recovery_session_client_methods_use_canonical_endpoints(monkeypatch) ->
     assert '"paths":["invoice 123.pdf"]' in captured[1][2]
     assert captured[2][0] == "GET"
     assert captured[2][1] == ("https://api.test/v1/collections/tax/2022%20reports/restore-session")
+    assert captured[3] == (
+        "GET",
+        "https://api.test/v1/recovery-sessions/rs-docs-restore-1",
+        "",
+    )
+    assert captured[4] == (
+        "POST",
+        "https://api.test/v1/recovery-sessions/rs-docs-restore-1/complete",
+        "",
+    )
+    assert captured[5] == (
+        "POST",
+        "https://api.test/v1/recovery-sessions/rs-docs-restore-1/cancel",
+        "",
+    )
+    assert captured[6] == (
+        "POST",
+        "https://api.test/v1/recovery-sessions/rs-20260420T040001Z-rebuild-1/pause",
+        "",
+    )
+    assert captured[7] == (
+        "POST",
+        "https://api.test/v1/recovery-sessions/rs-20260420T040001Z-rebuild-1/resume",
+        "",
+    )
 
 
 def test_client_can_override_host_header_for_pinned_lan_routes(monkeypatch) -> None:

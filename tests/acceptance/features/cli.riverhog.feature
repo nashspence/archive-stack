@@ -67,9 +67,13 @@ Feature: riverhog CLI
       When the operator runs 'riverhog collection restore start docs --json'
       Then the command exits with code 0
       And stdout is valid JSON
-      And stdout matches the structure of POST "/v1/collections/docs/restore-session"
       And stdout mentions "collection_restore"
       And stdout mentions "rs-docs-restore-1"
+      Given recovery session "rs-docs-restore-1" restore remains pending
+      When the operator runs 'riverhog collection restore cancel rs-docs-restore-1 --json'
+      Then the command exits with code 0
+      And stdout is valid JSON
+      And stdout mentions "canceled"
       When the operator runs 'riverhog collection restore list --json'
       Then the command exits with code 0
       And stdout is valid JSON

@@ -98,6 +98,7 @@ from riverhog_core.planner.manifest import MANIFEST_FILENAME
 from riverhog_core.webhooks import (
     WebhookConfig,
     build_fetch_waiting_payload,
+    build_recovery_paused_reminder_payload,
     build_recovery_ready_payload,
 )
 from tests.fixtures.data import (
@@ -137,6 +138,7 @@ _GLACIER_RECOVERY_RESTORE_LATENCY_SECONDS = 0.2
 _GLACIER_RECOVERY_READY_TTL_SECONDS = 4.0
 _OPERATOR_WEBHOOK_RETRY_DELAY_SECONDS = 1.0
 _OPERATOR_WEBHOOK_REMINDER_INTERVAL_SECONDS = 2.0
+_PAUSED_REBUILD_REMINDER_INTERVAL_SECONDS = 86_400.0
 _CLI_SUBPROCESS_TIMEOUT_SECONDS = 30.0
 _CLI_TIMEOUT_OUTPUT_CHARS = 4_000
 _DISC_SORT_FIELDS = {"id", "image_id", "state", "verification_state", "location"}
@@ -391,10 +393,16 @@ class AcceptanceRecoverySessionRecord:
     restore_next_poll_at: str | None = None
     restore_expires_at: str | None = None
     completed_at: str | None = None
+    canceled_at: str | None = None
+    paused_at: str | None = None
+    paused_from_state: str | None = None
     latest_message: str | None = None
     reminder_count: int = 0
     next_reminder_at: str | None = None
     last_notified_at: str | None = None
+    failure_count: int = 0
+    last_failure_at: str | None = None
+    last_failure: str | None = None
     archive_verification_state: str = "pending"
     extraction_state: str = "pending"
     materialization_state: str = "pending"
@@ -643,6 +651,7 @@ class AcceptanceState:
         active_states = {
             RecoverySessionState.RESTORE_REQUESTED,
             RecoverySessionState.READY,
+            RecoverySessionState.PAUSED,
         }
         sessions = [
             record
@@ -657,6 +666,7 @@ class AcceptanceState:
         active_states = {
             RecoverySessionState.RESTORE_REQUESTED,
             RecoverySessionState.READY,
+            RecoverySessionState.PAUSED,
         }
         sessions = [
             record
@@ -2578,6 +2588,84 @@ class AcceptanceRecoverySessionService:
             return self._summary(record)
 
     @_with_state_lock
+    def cancel(self, session_id: str) -> RecoverySessionSummary:
+        with self.state.lock:
+            record = self.state.recovery_sessions_by_id.get(session_id)
+            if record is None:
+                raise NotFound(f"recovery session not found: {session_id}")
+            if record.type != "collection_restore":
+                raise InvalidState("image rebuild sessions can be paused and resumed, not canceled")
+            if record.state not in {
+                RecoverySessionState.RESTORE_REQUESTED,
+                RecoverySessionState.READY,
+            }:
+                raise InvalidState("recovery session is not active and cannot be canceled")
+            current_text = _acceptance_isoformat(datetime.now(UTC))
+            record.state = RecoverySessionState.CANCELED
+            record.canceled_at = current_text
+            record.restore_next_poll_at = None
+            record.next_reminder_at = None
+            record.latest_message = (
+                "Collection restore was canceled by the operator; Riverhog will not materialize "
+                "files for this session."
+            )
+            return self._summary(record)
+
+    @_with_state_lock
+    def pause(self, session_id: str) -> RecoverySessionSummary:
+        with self.state.lock:
+            record = self.state.recovery_sessions_by_id.get(session_id)
+            if record is None:
+                raise NotFound(f"recovery session not found: {session_id}")
+            if record.type != "image_rebuild":
+                raise InvalidState("collection restore sessions can be canceled, not paused")
+            if record.state == RecoverySessionState.PAUSED:
+                return self._summary(record)
+            if record.state not in {
+                RecoverySessionState.RESTORE_REQUESTED,
+                RecoverySessionState.READY,
+            }:
+                raise InvalidState("image rebuild session is not active and cannot be paused")
+            current = datetime.now(UTC)
+            record.paused_from_state = record.state.value
+            record.state = RecoverySessionState.PAUSED
+            record.paused_at = _acceptance_isoformat(current)
+            record.restore_next_poll_at = None
+            record.next_reminder_at = _acceptance_isoformat(
+                current + timedelta(seconds=_PAUSED_REBUILD_REMINDER_INTERVAL_SECONDS)
+            )
+            record.latest_message = (
+                "Image rebuild recovery is paused by the operator; resume it when replacement "
+                "media should continue."
+            )
+            return self._summary(record)
+
+    @_with_state_lock
+    def resume(self, session_id: str) -> RecoverySessionSummary:
+        with self.state.lock:
+            record = self.state.recovery_sessions_by_id.get(session_id)
+            if record is None:
+                raise NotFound(f"recovery session not found: {session_id}")
+            if record.type != "image_rebuild":
+                raise InvalidState("collection restore sessions cannot be resumed from pause")
+            if record.state != RecoverySessionState.PAUSED:
+                raise InvalidState("image rebuild session is not paused")
+            current_text = _acceptance_isoformat(datetime.now(UTC))
+            resume_state = record.paused_from_state or RecoverySessionState.RESTORE_REQUESTED.value
+            if resume_state not in {
+                RecoverySessionState.RESTORE_REQUESTED.value,
+                RecoverySessionState.READY.value,
+            }:
+                resume_state = RecoverySessionState.RESTORE_REQUESTED.value
+            record.state = RecoverySessionState(resume_state)
+            record.paused_at = None
+            record.paused_from_state = None
+            record.restore_next_poll_at = current_text
+            record.next_reminder_at = None
+            record.latest_message = "Image rebuild recovery resumed by the operator."
+            return self._summary(record)
+
+    @_with_state_lock
     def iter_restored_iso(self, session_id: str, image_id: str) -> Iterator[bytes]:
         with self.state.lock:
             record = self.state.recovery_sessions_by_id.get(session_id)
@@ -2694,6 +2782,56 @@ class AcceptanceRecoverySessionService:
                     record.latest_message = (
                         "Restored ISO data expired and cleanup was recorded; "
                         "re-initiate recovery to request a new restore."
+                    )
+                    processed += 1
+                if (
+                    record.state == RecoverySessionState.PAUSED
+                    and record.next_reminder_at is not None
+                    and record.next_reminder_at <= current_text
+                ):
+                    images = [
+                        self.state.finalized_images_by_id[image_id]
+                        for image_id in self.state._record_image_ids(record)
+                    ]
+                    try:
+                        self.state.deliver_webhook_payload(
+                            build_recovery_paused_reminder_payload(
+                                config=self.state.webhook_config(),
+                                session_id=record.session_id,
+                                images=[
+                                    {
+                                        "image_id": str(image.finalized_id),
+                                        "filename": image.filename,
+                                    }
+                                    for image in images
+                                ],
+                                collections=[
+                                    {"collection_id": str(collection_id)}
+                                    for collection_id in record.collection_ids
+                                ],
+                                delivered_at=current,
+                                reminder_count=record.reminder_count,
+                                reminder_interval_seconds=(
+                                    _PAUSED_REBUILD_REMINDER_INTERVAL_SECONDS
+                                ),
+                            ),
+                            delivered_at=current,
+                            timeout_seconds=self.state.webhook_config().timeout_seconds,
+                        )
+                    except Exception as exc:
+                        record.latest_message = (
+                            "Paused rebuild reminder failed and will retry: "
+                            f"{str(exc).strip() or exc.__class__.__name__}"
+                        )
+                        record.next_reminder_at = _acceptance_isoformat(
+                            current + timedelta(seconds=_OPERATOR_WEBHOOK_RETRY_DELAY_SECONDS)
+                        )
+                        processed += 1
+                        continue
+                    record.last_notified_at = current_text
+                    record.reminder_count += 1
+                    record.next_reminder_at = _acceptance_isoformat(
+                        current + timedelta(seconds=_PAUSED_REBUILD_REMINDER_INTERVAL_SECONDS)
                     )
                     processed += 1
             return processed
@@ -2816,6 +2954,9 @@ class AcceptanceRecoverySessionService:
             restore_ready_at=record.restore_ready_at,
             restore_expires_at=record.restore_expires_at,
             completed_at=record.completed_at,
+            canceled_at=record.canceled_at,
+            paused_at=record.paused_at,
+            paused_from_state=record.paused_from_state,
             restore_paths=record.restore_paths if record.type == "collection_restore" else None,
             latest_message=record.latest_message,
             warnings=warnings,
@@ -2824,6 +2965,9 @@ class AcceptanceRecoverySessionService:
                 reminder_count=record.reminder_count,
                 next_reminder_at=record.next_reminder_at,
                 last_notified_at=record.last_notified_at,
+                failure_count=record.failure_count,
+                last_failure_at=record.last_failure_at,
+                last_failure=record.last_failure,
             ),
             progress=RecoverySessionProgress(
                 archive_verification=record.archive_verification_state,
@@ -2932,7 +3076,11 @@ def _acceptance_rebuild_state(record: AcceptanceRecoverySessionRecord) -> str:
         return "restoring_collections"
     if record.state in {RecoverySessionState.READY, RecoverySessionState.COMPLETED}:
         return "ready"
-    if record.state == RecoverySessionState.EXPIRED:
+    if record.state == RecoverySessionState.PAUSED:
+        return "paused"
+    if record.state == RecoverySessionState.CANCELED:
+        return "canceled"
+    if record.state in {RecoverySessionState.EXPIRED, RecoverySessionState.FAILED}:
         return "failed"
     return "pending"
 

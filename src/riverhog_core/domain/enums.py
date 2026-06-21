@@ -34,8 +34,11 @@ class GlacierState(StrEnum):
 class RecoverySessionState(StrEnum):
     RESTORE_REQUESTED = "restore_requested"
     READY = "ready"
+    PAUSED = "paused"
     EXPIRED = "expired"
     COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELED = "canceled"
 
 
 class CopyState(StrEnum):

@@ -105,6 +105,9 @@ class RecoveryNotificationStatus:
     reminder_count: int
     next_reminder_at: str | None
     last_notified_at: str | None
+    failure_count: int = 0
+    last_failure_at: str | None = None
+    last_failure: str | None = None
 
 
 @dataclass(frozen=True)
@@ -140,6 +143,9 @@ class RecoverySessionSummary:
     restore_ready_at: str | None
     restore_expires_at: str | None
     completed_at: str | None
+    canceled_at: str | None
+    paused_at: str | None
+    paused_from_state: str | None
     restore_paths: tuple[str, ...] | None
     latest_message: str | None
     warnings: tuple[str, ...]

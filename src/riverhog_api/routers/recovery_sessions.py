@@ -68,8 +68,11 @@ def list_recovery_sessions(
     state: Literal[
         "restore_requested",
         "ready",
+        "paused",
         "expired",
         "completed",
+        "failed",
+        "canceled",
     ]
     | None = Query(None),
     collection: str | None = Query(None),
@@ -103,6 +106,33 @@ def complete_recovery_session(
     container: ContainerDep,
 ) -> RecoverySessionOut:
     summary = container.recovery_sessions.complete(session_id)
+    return RecoverySessionOut.model_validate(map_recovery_session(summary))
+
+
+@router.post("/recovery-sessions/{session_id}/cancel", response_model=RecoverySessionOut)
+def cancel_recovery_session(
+    session_id: str,
+    container: ContainerDep,
+) -> RecoverySessionOut:
+    summary = container.recovery_sessions.cancel(session_id)
+    return RecoverySessionOut.model_validate(map_recovery_session(summary))
+
+
+@router.post("/recovery-sessions/{session_id}/pause", response_model=RecoverySessionOut)
+def pause_recovery_session(
+    session_id: str,
+    container: ContainerDep,
+) -> RecoverySessionOut:
+    summary = container.recovery_sessions.pause(session_id)
+    return RecoverySessionOut.model_validate(map_recovery_session(summary))
+
+
+@router.post("/recovery-sessions/{session_id}/resume", response_model=RecoverySessionOut)
+def resume_recovery_session(
+    session_id: str,
+    container: ContainerDep,
+) -> RecoverySessionOut:
+    summary = container.recovery_sessions.resume(session_id)
     return RecoverySessionOut.model_validate(map_recovery_session(summary))
 
 

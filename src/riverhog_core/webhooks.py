@@ -273,6 +273,186 @@ def build_recovery_completed_payload(
     return payload
 
 
+def build_recovery_canceled_payload(
+    *,
+    config: WebhookConfig,
+    session_id: str,
+    recovery_type: str,
+    images: list[dict[str, str]],
+    collections: list[dict[str, str]],
+    delivered_at: datetime,
+) -> dict[str, object]:
+    payload = _base_recovery_payload(
+        config=config,
+        event="glacier_recovery.canceled",
+        session_id=session_id,
+        recovery_type=recovery_type,
+        delivered_at=delivered_at,
+        images=images,
+        collections=collections,
+    )
+    payload.update(
+        {
+            "operator_urgency": "passive",
+            "operator_action": "none",
+            "operator_message": "Glacier recovery was canceled by the operator.",
+        }
+    )
+    payload["notification"] = _recovery_notification(
+        event="glacier_recovery.canceled",
+        recovery_type=recovery_type,
+        session_id=session_id,
+        images=images,
+        collections=collections,
+    )
+    return payload
+
+
+def build_recovery_paused_reminder_payload(
+    *,
+    config: WebhookConfig,
+    session_id: str,
+    images: list[dict[str, str]],
+    collections: list[dict[str, str]],
+    delivered_at: datetime,
+    reminder_count: int,
+    reminder_interval_seconds: float,
+) -> dict[str, object]:
+    payload = _base_recovery_payload(
+        config=config,
+        event="glacier_recovery.paused.reminder",
+        session_id=session_id,
+        recovery_type="image_rebuild",
+        delivered_at=delivered_at,
+        images=images,
+        collections=collections,
+    )
+    payload.update(
+        {
+            "reminder_count": reminder_count + 1,
+            "reminder_interval_seconds": reminder_interval_seconds,
+            "operator_urgency": "time_sensitive",
+            "operator_action": f"Run `djdan image rebuild resume {session_id}` when ready",
+            "operator_message": (
+                "Image rebuild recovery is paused. Resume it when ready to rebuild the image "
+                "and restore disc coverage."
+            ),
+        }
+    )
+    payload["notification"] = _recovery_notification(
+        event="glacier_recovery.paused.reminder",
+        recovery_type="image_rebuild",
+        session_id=session_id,
+        images=images,
+        collections=collections,
+    )
+    return payload
+
+
+def build_recovery_retrying_payload(
+    *,
+    config: WebhookConfig,
+    session_id: str,
+    recovery_type: str,
+    images: list[dict[str, str]],
+    collections: list[dict[str, str]],
+    delivered_at: datetime,
+    attempts: int,
+    failed_at: str,
+    next_retry_at: str | None,
+    retry_delay_seconds: float,
+    error: str,
+) -> dict[str, object]:
+    payload = _base_recovery_payload(
+        config=config,
+        event="glacier_recovery.retrying",
+        session_id=session_id,
+        recovery_type=recovery_type,
+        delivered_at=delivered_at,
+        images=images,
+        collections=collections,
+    )
+    payload.update(
+        {
+            "operator_urgency": "time_sensitive",
+            "operator_action": "wait unless failures persist beyond normal connectivity trouble",
+            "operator_message": (
+                "Glacier recovery hit a retryable issue. Riverhog will keep retrying "
+                "without operator action."
+            ),
+            "attempts": attempts,
+            "failed_at": failed_at,
+            "next_retry_at": next_retry_at,
+            "retry_delay_seconds": retry_delay_seconds,
+            "error": error,
+        }
+    )
+    payload["notification"] = _recovery_notification(
+        event="glacier_recovery.retrying",
+        recovery_type=recovery_type,
+        session_id=session_id,
+        images=images,
+        collections=collections,
+        values={
+            "attempts": attempts,
+            "failed_at": failed_at,
+            "next_retry_at": next_retry_at or "unknown",
+            "retry_delay_seconds": retry_delay_seconds,
+            "error": error,
+        },
+    )
+    return payload
+
+
+def build_recovery_failed_payload(
+    *,
+    config: WebhookConfig,
+    session_id: str,
+    recovery_type: str,
+    images: list[dict[str, str]],
+    collections: list[dict[str, str]],
+    delivered_at: datetime,
+    attempts: int,
+    failed_at: str,
+    error: str,
+) -> dict[str, object]:
+    payload = _base_recovery_payload(
+        config=config,
+        event="glacier_recovery.failed",
+        session_id=session_id,
+        recovery_type=recovery_type,
+        delivered_at=delivered_at,
+        images=images,
+        collections=collections,
+    )
+    payload.update(
+        {
+            "operator_urgency": "critical",
+            "operator_action": "inspect Riverhog recovery logs and session state",
+            "operator_message": (
+                "Glacier recovery stopped on a non-retryable issue. Riverhog will not "
+                "continue this session automatically."
+            ),
+            "attempts": attempts,
+            "failed_at": failed_at,
+            "error": error,
+        }
+    )
+    payload["notification"] = _recovery_notification(
+        event="glacier_recovery.failed",
+        recovery_type=recovery_type,
+        session_id=session_id,
+        images=images,
+        collections=collections,
+        values={
+            "attempts": attempts,
+            "failed_at": failed_at,
+            "error": error,
+        },
+    )
+    return payload
+
+
 def build_fetch_waiting_payload(
     *,
     config: WebhookConfig,
@@ -701,6 +881,7 @@ def _recovery_notification(
     session_id: str,
     images: Sequence[Mapping[str, object]],
     collections: list[dict[str, str]],
+    values: Mapping[str, object] | None = None,
 ) -> dict[str, str]:
     subject = _recovery_subject(
         session_id=session_id,
@@ -711,6 +892,7 @@ def _recovery_notification(
         event=event,
         subject=subject,
         notification_type=recovery_type,
+        values=values,
     )
 
 

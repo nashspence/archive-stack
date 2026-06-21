@@ -732,6 +732,15 @@ def _prepare_riverhog_expectation(
             ).json()
         return
 
+    if argv[1:4] == ["collection", "restore", "cancel"]:
+        session_id = argv[4]
+        context.expected_api_endpoint = ("POST", f"/v1/recovery-sessions/{session_id}/cancel")
+        context.expected_api_payload = acceptance_system.request(
+            "POST",
+            f"/v1/recovery-sessions/{quote(session_id, safe='/')}/cancel",
+        ).json()
+        return
+
     if argv[1:3] == ["collection", "upload"]:
         return
 

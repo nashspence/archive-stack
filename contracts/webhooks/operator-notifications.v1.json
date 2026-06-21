@@ -873,6 +873,187 @@
         "image_rebuild",
         "collection_restore"
       ]
+    },
+    {
+      "event": "glacier_recovery.retrying",
+      "category": "glacier_recovery",
+      "source": "riverhog_core.services.recovery_sessions",
+      "purpose": "Glacier recovery encountered a recoverable restore, polling, cleanup, or materialization failure and Riverhog will keep retrying.",
+      "operator_urgency": "time_sensitive",
+      "operator_action": "wait unless failures persist beyond normal connectivity trouble",
+      "delivery": {
+        "mode": "paced_best_effort",
+        "retry": false,
+        "reminder": true,
+        "reminder_interval_env": "RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL"
+      },
+      "canonical_notification_by_type": {
+        "image_rebuild": {
+          "actor": "djdan",
+          "title_template": "{emoji} {subject_40}",
+          "body_template": "Recovery restore hit a retryable issue: {error_80}. Next retry: {next_retry_at}; no action yet."
+        },
+        "collection_restore": {
+          "actor": "riverhog",
+          "title_template": "{emoji} {subject_40}",
+          "body_template": "Oink, restore materialization hit a retryable issue: {error_80}. Next retry: {next_retry_at}."
+        }
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "session_id",
+        "delivered_at",
+        "images",
+        "collections",
+        "attempts",
+        "failed_at",
+        "next_retry_at",
+        "retry_delay_seconds",
+        "error",
+        "operator_urgency",
+        "operator_action",
+        "operator_message"
+      ],
+      "optional_payload_fields": [
+        "session_url"
+      ],
+      "type_values": [
+        "image_rebuild",
+        "collection_restore"
+      ]
+    },
+    {
+      "event": "glacier_recovery.failed",
+      "category": "glacier_recovery",
+      "source": "riverhog_core.services.recovery_sessions",
+      "purpose": "Glacier recovery encountered a non-retryable validation, catalog, or data-integrity failure.",
+      "operator_urgency": "critical",
+      "operator_action": "inspect Riverhog recovery logs and session state",
+      "delivery": {
+        "mode": "best_effort",
+        "retry": false,
+        "reminder": false
+      },
+      "canonical_notification_by_type": {
+        "image_rebuild": {
+          "actor": "djdan",
+          "title_template": "{emoji} {subject_40}",
+          "body_template": "Image rebuild recovery stopped: {error_80}. Please inspect Riverhog; I will not retry this."
+        },
+        "collection_restore": {
+          "actor": "riverhog",
+          "title_template": "{emoji} {subject_40}",
+          "body_template": "Oink! Collection restore stopped: {error_80}. Please inspect Riverhog; I will not retry this."
+        }
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "session_id",
+        "delivered_at",
+        "images",
+        "collections",
+        "attempts",
+        "failed_at",
+        "error",
+        "operator_urgency",
+        "operator_action",
+        "operator_message"
+      ],
+      "optional_payload_fields": [
+        "session_url"
+      ],
+      "type_values": [
+        "image_rebuild",
+        "collection_restore"
+      ]
+    },
+    {
+      "event": "glacier_recovery.paused.reminder",
+      "category": "glacier_recovery",
+      "source": "riverhog_core.services.recovery_sessions",
+      "purpose": "Daily reminder that an image rebuild recovery session is paused and should be resumed when the operator is ready to restore disc coverage.",
+      "operator_urgency": "time_sensitive",
+      "operator_action": "run `djdan image rebuild resume <session_id>` when ready",
+      "reminder_of": "image rebuild pause",
+      "delivery": {
+        "mode": "durable",
+        "retry": true,
+        "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
+        "reminder": true,
+        "reminder_interval": "1 day"
+      },
+      "canonical_notification_by_type": {
+        "image_rebuild": {
+          "actor": "djdan",
+          "title_template": "{emoji} {subject_40}",
+          "body_template": "Image rebuild is paused. Resume when ready to rebuild the image and restore disc coverage."
+        }
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "session_id",
+        "delivered_at",
+        "images",
+        "collections",
+        "reminder_count",
+        "reminder_interval_seconds",
+        "operator_urgency",
+        "operator_action",
+        "operator_message"
+      ],
+      "optional_payload_fields": [
+        "session_url"
+      ],
+      "type_values": [
+        "image_rebuild"
+      ]
+    },
+    {
+      "event": "glacier_recovery.canceled",
+      "category": "glacier_recovery",
+      "source": "riverhog_core.services.recovery_sessions",
+      "purpose": "The operator canceled an active collection restore session.",
+      "operator_urgency": "passive",
+      "operator_action": "none",
+      "delivery": {
+        "mode": "durable",
+        "retry": true,
+        "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
+        "reminder": false
+      },
+      "canonical_notification_by_type": {
+        "image_rebuild": {
+          "actor": "riverhog",
+          "title_template": "{emoji} {subject_40}",
+          "body_template": "Oink, recovery was canceled by the operator."
+        },
+        "collection_restore": {
+          "actor": "riverhog",
+          "title_template": "{emoji} {subject_40}",
+          "body_template": "Oink, collection restore was canceled by the operator."
+        }
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "session_id",
+        "delivered_at",
+        "images",
+        "collections",
+        "operator_urgency",
+        "operator_action",
+        "operator_message"
+      ],
+      "optional_payload_fields": [
+        "session_url"
+      ],
+      "type_values": [
+        "image_rebuild",
+        "collection_restore"
+      ]
     }
   ]
 }

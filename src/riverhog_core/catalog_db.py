@@ -271,6 +271,29 @@ def _ensure_schema_columns(engine: Engine) -> None:
             conn.execute(
                 text("ALTER TABLE glacier_recovery_sessions ADD COLUMN restore_paths_json TEXT")
             )
+    recovery_column_sql = {
+        "canceled_at": "TEXT",
+        "paused_at": "TEXT",
+        "paused_from_state": "TEXT",
+        "failure_count": "INTEGER DEFAULT 0",
+        "last_failure_at": "TEXT",
+        "last_failure": "TEXT",
+        "last_failure_notification_at": "TEXT",
+        "canceled_notification_sent_at": "TEXT",
+        "canceled_notification_next_attempt_at": "TEXT",
+        "canceled_notification_failure": "TEXT",
+    }
+    missing_recovery_columns = [
+        (name, column_sql)
+        for name, column_sql in recovery_column_sql.items()
+        if name not in recovery_columns
+    ]
+    if missing_recovery_columns:
+        with engine.begin() as conn:
+            for name, column_sql in missing_recovery_columns:
+                conn.execute(
+                    text(f"ALTER TABLE glacier_recovery_sessions ADD COLUMN {name} {column_sql}")
+                )
     if "approved_at" in recovery_columns:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE glacier_recovery_sessions DROP COLUMN approved_at"))

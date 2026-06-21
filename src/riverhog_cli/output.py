@@ -555,7 +555,11 @@ def _format_recovery_session_plain(payload: Mapping[str, Any]) -> str:
         f"restore_ready_at: {payload.get('restore_ready_at') or 'none'}",
         f"restore_expires_at: {payload.get('restore_expires_at') or 'none'}",
         f"completed_at: {payload.get('completed_at') or 'none'}",
+        f"canceled_at: {payload.get('canceled_at') or 'none'}",
+        f"paused_at: {payload.get('paused_at') or 'none'}",
     ]
+    if payload.get("paused_from_state"):
+        lines.append(f"paused_from_state: {payload.get('paused_from_state')}")
     if payload.get("type") == "collection_restore":
         restore_paths = _string_items(payload.get("restore_paths"))
         lines.append("restore_paths:")
@@ -573,6 +577,15 @@ def _format_recovery_session_plain(payload: Mapping[str, Any]) -> str:
             f"archive_verification={progress.get('archive_verification', 'unknown')} "
             f"extraction={progress.get('extraction', 'unknown')} "
             f"materialization={progress.get('materialization', 'unknown')}"
+        )
+
+    notification = payload.get("notification")
+    if isinstance(notification, Mapping) and notification.get("last_failure"):
+        lines.append(
+            "last_failure: "
+            f"{notification.get('last_failure')} "
+            f"at={notification.get('last_failure_at') or 'unknown'} "
+            f"count={notification.get('failure_count', 0)}"
         )
 
     collections = payload.get("collections")
@@ -685,6 +698,12 @@ def format_recovery_session(payload: Mapping[str, Any]) -> Any:
     overview.add_row("ready", str(payload.get("restore_ready_at") or "none"))
     overview.add_row("expires", str(payload.get("restore_expires_at") or "none"))
     overview.add_row("completed", str(payload.get("completed_at") or "none"))
+    if payload.get("canceled_at"):
+        overview.add_row("canceled", str(payload.get("canceled_at")))
+    if payload.get("paused_at"):
+        overview.add_row("paused", str(payload.get("paused_at")))
+    if payload.get("paused_from_state"):
+        overview.add_row("paused from", str(payload.get("paused_from_state")))
     if payload.get("type") == "collection_restore":
         restore_paths = _string_items(payload.get("restore_paths"))
         overview.add_row(
@@ -692,6 +711,16 @@ def format_recovery_session(payload: Mapping[str, Any]) -> Any:
         )
     if payload.get("latest_message"):
         overview.add_row("message", str(payload.get("latest_message")))
+    notification = payload.get("notification")
+    if isinstance(notification, Mapping) and notification.get("last_failure"):
+        overview.add_row(
+            "last failure",
+            (
+                f"{notification.get('last_failure')} "
+                f"at {notification.get('last_failure_at') or 'unknown'} "
+                f"({notification.get('failure_count', 0)} attempts)"
+            ),
+        )
 
     progress = payload.get("progress")
     if isinstance(progress, Mapping):

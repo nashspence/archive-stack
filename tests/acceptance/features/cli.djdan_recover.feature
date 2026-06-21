@@ -15,6 +15,7 @@ Feature: djdan image rebuild CLI
     And the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-2" with state "damaged"
     And the client patches "/v1/images/20260420T040003Z/copies/20260420T040003Z-1" with state "lost"
     And the client patches "/v1/images/20260420T040003Z/copies/20260420T040003Z-2" with state "damaged"
+    And recovery session "rs-20260420T040001Z-rebuild-1" restore remains pending
     When the operator runs 'djdan image rebuild list'
     Then the command exits with code 0
     And stdout mentions "rs-20260420T040001Z-rebuild-1"
@@ -22,6 +23,14 @@ Feature: djdan image rebuild CLI
     And stdout mentions "restore_requested"
     And stdout mentions "20260420T040001Z"
     And stdout mentions "20260420T040003Z"
+    When the operator runs 'djdan image rebuild pause rs-20260420T040001Z-rebuild-1 --json'
+    Then the command exits with code 0
+    And stdout is valid JSON
+    And stdout mentions "paused"
+    When the operator runs 'djdan image rebuild resume rs-20260420T040001Z-rebuild-1 --json'
+    Then the command exits with code 0
+    And stdout is valid JSON
+    And stdout mentions "restore_requested"
   Scenario: djdan burn resumes one ready multi-image rebuild session and cleans up staged ISOs
     Given an archive with planned images
     And an archive with split planned images

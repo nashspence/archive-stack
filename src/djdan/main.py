@@ -286,7 +286,7 @@ class DiscPromptState:
 
 _PENDING_BURN_STATES = {"needed", "burning"}
 _PROTECTED_COPY_STATES = {"registered", "verified"}
-_ACTIVE_RECOVERY_SESSION_STATES = {"restore_requested", "ready"}
+_ACTIVE_RECOVERY_SESSION_STATES = {"restore_requested", "ready", "paused"}
 
 
 @dataclass(slots=True)
@@ -1062,7 +1062,7 @@ def _is_standard_burn_backlog_image(client: ApiClient, image_id: str) -> bool:
         except NotFound:
             pass
         else:
-            if str(payload.get("state")) in {"restore_requested", "ready", "expired"}:
+            if str(payload.get("state")) in {"restore_requested", "ready", "paused", "expired"}:
                 return False
     if all_pending and not has_protected:
         return True
@@ -2616,7 +2616,10 @@ def image_rebuild_list_cmd(
         str | None,
         typer.Option(
             "--state",
-            help="Filter by restore_requested, ready, expired, or completed",
+            help=(
+                "Filter by restore_requested, ready, paused, expired, completed, failed, "
+                "or canceled"
+            ),
         ),
     ] = None,
     include_all: Annotated[
@@ -2653,6 +2656,38 @@ def image_rebuild_show_cmd(
 
     try:
         payload = ApiClient().get_recovery_session(session_id)
+        _require_image_rebuild(payload)
+    except (RiverhogError, RuntimeError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
+
+
+@image_rebuild_app.command("pause")
+def image_rebuild_pause_cmd(
+    session_id: Annotated[str, typer.Argument(help="Image rebuild session id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Pause an active image rebuild session."""
+
+    try:
+        payload = ApiClient().pause_recovery_session(session_id)
+        _require_image_rebuild(payload)
+    except (RiverhogError, RuntimeError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
+
+
+@image_rebuild_app.command("resume")
+def image_rebuild_resume_cmd(
+    session_id: Annotated[str, typer.Argument(help="Image rebuild session id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Resume a paused image rebuild session."""
+
+    try:
+        payload = ApiClient().resume_recovery_session(session_id)
         _require_image_rebuild(payload)
     except (RiverhogError, RuntimeError) as exc:
         typer.echo(f"error: {exc}", err=True)

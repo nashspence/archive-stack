@@ -28,7 +28,7 @@ from riverhog_core.collection_archives import (
     build_collection_archive_package,
 )
 from riverhog_core.domain.enums import FetchState, RecoverySessionState
-from riverhog_core.domain.errors import NotFound
+from riverhog_core.domain.errors import InvalidState, NotFound
 from riverhog_core.finalized_image_coverage import (
     read_finalized_image_collection_artifacts,
     read_finalized_image_coverage_parts,
@@ -178,6 +178,43 @@ class _FakeArchiveStore:
         assert manifest_object_path is not None
         assert proof_object_path is not None
         self.cleanup_requests.append((object_path, manifest_object_path, proof_object_path))
+
+
+class _FlakyRestoreRequestArchiveStore(_FakeArchiveStore):
+    def __init__(
+        self,
+        *,
+        collection_packages: dict[str, CollectionArchivePackage] | None = None,
+        request_failures: int,
+    ) -> None:
+        super().__init__(collection_packages=collection_packages)
+        self.request_failures = request_failures
+
+    def request_collection_archive_restore(
+        self,
+        *,
+        collection_id: str,
+        object_path: str,
+        retrieval_tier: str,
+        hold_days: int,
+        requested_at: str,
+        estimated_ready_at: str,
+        manifest_object_path: str | None = None,
+        proof_object_path: str | None = None,
+    ) -> ArchiveRestoreStatus:
+        if self.request_failures > 0:
+            self.request_failures -= 1
+            raise TimeoutError("S3 restore request timed out")
+        return super().request_collection_archive_restore(
+            collection_id=collection_id,
+            object_path=object_path,
+            retrieval_tier=retrieval_tier,
+            hold_days=hold_days,
+            requested_at=requested_at,
+            estimated_ready_at=estimated_ready_at,
+            manifest_object_path=manifest_object_path,
+            proof_object_path=proof_object_path,
+        )
 
 
 def _config(sqlite_path: Path, **overrides: object) -> RuntimeConfig:
@@ -561,7 +598,7 @@ def test_collection_restore_requests_and_verifies_manifest_and_proof(
 
     session = recovery_service.create_or_resume_for_collection("docs")
 
-    assert session.state == RecoverySessionState.RESTORE_REQUESTED
+    assert session.state == RecoverySessionState.READY
     assert store.restore_requests == [
         (
             "glacier/archives/opaque-docs/archive.tar.age",
@@ -713,6 +750,139 @@ def test_recovery_started_notification_retries_while_restore_is_pending(
     ]
 
 
+def test_collection_restore_request_failure_records_retryable_session(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    image_root = tmp_path / "image-root"
+    initialize_db(sqlite_url(sqlite_path))
+    write_tree(image_root, IMAGE_ONE_FILES)
+    _seed_finalized_image(sqlite_path, image_root)
+    package = _docs_collection_archive_package()
+    _seed_collection_archive(sqlite_path, package)
+    store = _FlakyRestoreRequestArchiveStore(
+        collection_packages={"docs": package},
+        request_failures=1,
+    )
+    config = _config(
+        sqlite_path,
+        glacier_recovery_restore_latency=timedelta(seconds=0),
+        glacier_recovery_sweep_interval=timedelta(seconds=5),
+        operator_webhook_url="http://example.invalid/webhooks/operator",
+    )
+    recovery_service = SqlAlchemyRecoverySessionService(config, store)
+    events: list[str] = []
+
+    def _post_webhook(*, config, payload):
+        events.append(str(payload["event"]))
+
+    start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
+    monkeypatch.setattr("riverhog_core.services.recovery_sessions.utcnow", lambda: start)
+    monkeypatch.setattr("riverhog_core.services.recovery_sessions.post_webhook", _post_webhook)
+
+    session = recovery_service.create_or_resume_for_collection("docs")
+
+    assert session.state == RecoverySessionState.RESTORE_REQUESTED
+    assert session.restore_requested_at is None
+    assert session.notification.failure_count == 1
+    assert session.notification.last_failure == "S3 restore request timed out"
+    assert events == ["glacier_recovery.retrying"]
+    assert store.restore_requests == []
+
+    monkeypatch.setattr(
+        "riverhog_core.services.recovery_sessions.utcnow",
+        lambda: start + timedelta(seconds=5),
+    )
+
+    assert recovery_service.process_due_sessions() == 1
+    ready = recovery_service.get(session.id)
+    assert ready.state == RecoverySessionState.READY
+    assert ready.restore_requested_at == "2026-04-20T04:00:05Z"
+    assert store.restore_requests == [
+        (
+            "glacier/archives/opaque-docs/archive.tar.age",
+            "glacier/archives/opaque-docs/manifest.yml.age",
+            "glacier/archives/opaque-docs/manifest.yml.ots.age",
+        )
+    ]
+
+
+def test_collection_restore_can_be_canceled_but_image_rebuild_pauses(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    image_root = tmp_path / "image-root"
+    initialize_db(sqlite_url(sqlite_path))
+    write_tree(image_root, IMAGE_ONE_FILES)
+    _seed_finalized_image(sqlite_path, image_root)
+    package = _docs_collection_archive_package()
+    _seed_collection_archive(sqlite_path, package)
+    store = _FakeArchiveStore(collection_packages={"docs": package})
+    config = _config(
+        sqlite_path,
+        glacier_recovery_restore_latency=timedelta(seconds=10),
+        operator_webhook_url="http://example.invalid/webhooks/operator",
+    )
+    copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
+    recovery_service = SqlAlchemyRecoverySessionService(config, store)
+    events: list[str] = []
+
+    def _post_webhook(*, config, payload):
+        events.append(str(payload["event"]))
+
+    start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
+    monkeypatch.setattr("riverhog_core.services.recovery_sessions.utcnow", lambda: start)
+    monkeypatch.setattr("riverhog_core.services.recovery_sessions.post_webhook", _post_webhook)
+
+    restore = recovery_service.create_or_resume_for_collection("docs")
+    canceled = recovery_service.cancel(restore.id)
+
+    assert canceled.state == RecoverySessionState.CANCELED
+    assert canceled.canceled_at == "2026-04-20T04:00:00Z"
+    assert events[-1] == "glacier_recovery.canceled"
+
+    copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
+    copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
+    copy_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
+    copy_service.update("20260420T040001Z", "20260420T040001Z-2", state="damaged")
+    rebuild = recovery_service.get_for_image("20260420T040001Z")
+
+    with pytest.raises(InvalidState, match="paused and resumed"):
+        recovery_service.cancel(rebuild.id)
+
+    paused = recovery_service.pause(rebuild.id)
+
+    assert paused.state == RecoverySessionState.PAUSED
+    assert paused.paused_from_state == "restore_requested"
+    assert paused.notification.next_reminder_at == "2026-04-21T04:00:00Z"
+
+    monkeypatch.setattr(
+        "riverhog_core.services.recovery_sessions.utcnow",
+        lambda: start + timedelta(days=1),
+    )
+
+    assert recovery_service.process_due_sessions() == 1
+    reminded = recovery_service.get(rebuild.id)
+    assert reminded.state == RecoverySessionState.PAUSED
+    assert reminded.notification.reminder_count == 1
+    assert reminded.notification.next_reminder_at == "2026-04-22T04:00:00Z"
+    assert events[-1] == "glacier_recovery.paused.reminder"
+
+    monkeypatch.setattr(
+        "riverhog_core.services.recovery_sessions.utcnow",
+        lambda: start + timedelta(days=1, seconds=1),
+    )
+
+    resumed = recovery_service.resume(rebuild.id)
+
+    assert resumed.state == RecoverySessionState.RESTORE_REQUESTED
+    assert resumed.paused_at is None
+    assert resumed.paused_from_state is None
+    assert resumed.restore_requested_at == "2026-04-21T04:00:01Z"
+
+
 def test_collection_restore_materializes_selected_files_to_hot_storage(
     tmp_path: Path,
     monkeypatch,
@@ -741,7 +911,6 @@ def test_collection_restore_materializes_selected_files_to_hot_storage(
         "docs",
         paths=["tax/2022/invoice-123.pdf"],
     )
-    assert recovery_service.process_due_sessions() == 1
 
     materialized = recovery_service.get(session.id)
 
@@ -917,7 +1086,6 @@ def test_collection_restore_streams_large_selected_file_to_hot_storage(
         lambda: datetime(2026, 4, 20, 4, 0, tzinfo=UTC),
     )
     recovery_service.create_or_resume_for_collection("docs", paths=["large.bin"])
-    assert recovery_service.process_due_sessions() == 1
 
     key = ("docs", "large.bin")
     assert hot_store.byte_put_paths == []
@@ -961,14 +1129,17 @@ def test_collection_restore_does_not_materialize_selected_file_with_bad_sha256(
         "riverhog_core.services.recovery_sessions.utcnow",
         lambda: datetime(2026, 4, 20, 4, 0, tzinfo=UTC),
     )
-    recovery_service.create_or_resume_for_collection(
+    session = recovery_service.create_or_resume_for_collection(
         "docs",
         paths=["tax/2022/invoice-123.pdf"],
     )
 
-    with pytest.raises(ValueError, match="member sha256 mismatch"):
-        recovery_service.process_due_sessions()
+    failed = recovery_service.get(session.id)
 
+    assert failed.state == RecoverySessionState.FAILED
+    assert failed.notification.failure_count == 1
+    assert failed.notification.last_failure is not None
+    assert "member sha256 mismatch" in failed.notification.last_failure
     assert hot_store.puts == {}
 
 

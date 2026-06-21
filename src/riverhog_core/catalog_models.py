@@ -403,10 +403,17 @@ class GlacierRecoverySessionRecord(Base):
     restore_next_poll_at: Mapped[str | None] = mapped_column(String, nullable=True)
     restore_expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
     completed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    canceled_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    paused_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    paused_from_state: Mapped[str | None] = mapped_column(String, nullable=True)
     latest_message: Mapped[str | None] = mapped_column(String, nullable=True)
     retrieval_tier: Mapped[str] = mapped_column(String)
     hold_days: Mapped[int] = mapped_column(Integer)
     warnings_json: Mapped[str] = mapped_column(String)
+    failure_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_failure_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_failure: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_failure_notification_at: Mapped[str | None] = mapped_column(String, nullable=True)
     reminder_count: Mapped[int] = mapped_column(Integer, default=0)
     next_reminder_at: Mapped[str | None] = mapped_column(String, nullable=True)
     last_notified_at: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -422,6 +429,12 @@ class GlacierRecoverySessionRecord(Base):
         nullable=True,
     )
     completed_notification_failure: Mapped[str | None] = mapped_column(String, nullable=True)
+    canceled_notification_sent_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    canceled_notification_next_attempt_at: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+    )
+    canceled_notification_failure: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_verification_state: Mapped[str | None] = mapped_column(
         String,
         default="pending",

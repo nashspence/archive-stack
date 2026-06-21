@@ -446,6 +446,24 @@ class ApiClient:
             f"/v1/recovery-sessions/{quote(session_id, safe='/')}/complete",
         )
 
+    def cancel_recovery_session(self, session_id: str) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/recovery-sessions/{quote(session_id, safe='/')}/cancel",
+        )
+
+    def pause_recovery_session(self, session_id: str) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/recovery-sessions/{quote(session_id, safe='/')}/pause",
+        )
+
+    def resume_recovery_session(self, session_id: str) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/recovery-sessions/{quote(session_id, safe='/')}/resume",
+        )
+
     def _download(
         self,
         path: str,

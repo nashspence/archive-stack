@@ -13,6 +13,9 @@ class RecoveryNotificationStatusOut(RiverhogModel):
     reminder_count: int
     next_reminder_at: str | None
     last_notified_at: str | None
+    failure_count: int = 0
+    last_failure_at: str | None = None
+    last_failure: str | None = None
 
 
 class RecoverySessionProgressOut(RiverhogModel):
@@ -27,9 +30,15 @@ class RecoverySessionImageOut(RiverhogModel):
     id: str
     filename: str
     collection_ids: list[str] = Field(default_factory=list)
-    rebuild_state: Literal["pending", "restoring_collections", "rebuilding", "ready", "failed"] = (
-        "pending"
-    )
+    rebuild_state: Literal[
+        "pending",
+        "restoring_collections",
+        "rebuilding",
+        "ready",
+        "paused",
+        "failed",
+        "canceled",
+    ] = "pending"
 
 
 class RecoverySessionCollectionOut(RiverhogModel):
@@ -44,12 +53,23 @@ class RecoverySessionOut(RiverhogModel):
 
     id: str
     type: Literal["collection_restore", "image_rebuild"] = "image_rebuild"
-    state: Literal["restore_requested", "ready", "expired", "completed"]
+    state: Literal[
+        "restore_requested",
+        "ready",
+        "paused",
+        "expired",
+        "completed",
+        "failed",
+        "canceled",
+    ]
     created_at: str
     restore_requested_at: str | None
     restore_ready_at: str | None
     restore_expires_at: str | None
     completed_at: str | None
+    canceled_at: str | None = None
+    paused_at: str | None = None
+    paused_from_state: str | None = None
     restore_paths: list[str] | None = None
     latest_message: str | None
     warnings: list[str]
@@ -74,7 +94,18 @@ class RecoverySessionListOut(RiverhogModel):
     ]
     order: Literal["asc", "desc"]
     type: Literal["collection_restore", "image_rebuild"] | None
-    state: Literal["restore_requested", "ready", "expired", "completed"] | None
+    state: (
+        Literal[
+            "restore_requested",
+            "ready",
+            "paused",
+            "expired",
+            "completed",
+            "failed",
+            "canceled",
+        ]
+        | None
+    )
     collection: str | None
     image: str | None
     sessions: list[RecoverySessionOut]

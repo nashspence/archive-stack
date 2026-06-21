@@ -1354,7 +1354,10 @@ def collection_restore_list_cmd(
         str | None,
         typer.Option(
             "--state",
-            help="Filter by restore_requested, ready, expired, or completed",
+            help=(
+                "Filter by restore_requested, ready, paused, expired, completed, failed, "
+                "or canceled"
+            ),
         ),
     ] = None,
     collection: Annotated[
@@ -1414,6 +1417,17 @@ def collection_restore_start_cmd(
         collection,
         paths=paths,
     )
+    emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
+
+
+@collection_restore_app.command("cancel")
+def collection_restore_cancel_cmd(
+    session_id: Annotated[str, typer.Argument(help="Collection restore session id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Cancel an active collection restore session."""
+
+    payload = client().cancel_recovery_session(session_id)
     emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
 
 

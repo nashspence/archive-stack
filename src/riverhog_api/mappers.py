@@ -203,6 +203,9 @@ def map_recovery_notification(summary: RecoveryNotificationStatus) -> dict[str, 
         "reminder_count": summary.reminder_count,
         "next_reminder_at": summary.next_reminder_at,
         "last_notified_at": summary.last_notified_at,
+        "failure_count": summary.failure_count,
+        "last_failure_at": summary.last_failure_at,
+        "last_failure": summary.last_failure,
     }
 
 
@@ -242,6 +245,9 @@ def map_recovery_session(summary: RecoverySessionSummary) -> dict[str, object]:
         "restore_ready_at": summary.restore_ready_at,
         "restore_expires_at": summary.restore_expires_at,
         "completed_at": summary.completed_at,
+        "canceled_at": summary.canceled_at,
+        "paused_at": summary.paused_at,
+        "paused_from_state": summary.paused_from_state,
         "restore_paths": None
         if summary.restore_paths is None
         else [str(path) for path in summary.restore_paths],

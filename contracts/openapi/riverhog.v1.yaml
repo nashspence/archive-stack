@@ -681,7 +681,7 @@ paths:
           schema:
             oneOf:
               - type: string
-                enum: [restore_requested, ready, expired, completed]
+                enum: [restore_requested, ready, paused, expired, completed, failed, canceled]
               - type: "null"
         - in: query
           name: collection
@@ -738,6 +738,63 @@ paths:
       responses:
         "200":
           description: Completed recovery session summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoverySession"
+        default:
+          $ref: "#/components/responses/Error"
+  /recovery-sessions/{session_id}/cancel:
+    post:
+      summary: Cancel one active collection restore session
+      description: Cancels one active `collection_restore` recovery session and stops automatic materialization. Image rebuild sessions are paused and resumed instead of canceled.
+      operationId: cancelRecoverySession
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Canceled recovery session summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoverySession"
+        default:
+          $ref: "#/components/responses/Error"
+  /recovery-sessions/{session_id}/pause:
+    post:
+      summary: Pause one active image rebuild session
+      description: Pauses one active `image_rebuild` recovery session and schedules daily operator reminders until it is resumed.
+      operationId: pauseRecoverySession
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Paused recovery session summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoverySession"
+        default:
+          $ref: "#/components/responses/Error"
+  /recovery-sessions/{session_id}/resume:
+    post:
+      summary: Resume one paused image rebuild session
+      description: Resumes one paused `image_rebuild` recovery session from its previous restore state.
+      operationId: resumeRecoverySession
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Resumed recovery session summary
           content:
             application/json:
               schema:
@@ -2110,7 +2167,7 @@ components:
         state:
           oneOf:
             - type: string
-              enum: [restore_requested, ready, expired, completed]
+              enum: [restore_requested, ready, paused, expired, completed, failed, canceled]
             - type: "null"
         collection:
           oneOf:
@@ -2136,7 +2193,7 @@ components:
           enum: [collection_restore, image_rebuild]
         state:
           type: string
-          enum: [restore_requested, ready, expired, completed]
+          enum: [restore_requested, ready, paused, expired, completed, failed, canceled]
         created_at:
           type: string
           format: date-time
@@ -2159,6 +2216,20 @@ components:
           oneOf:
             - type: string
               format: date-time
+            - type: "null"
+        canceled_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        paused_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        paused_from_state:
+          oneOf:
+            - type: string
             - type: "null"
         restore_paths:
           oneOf:
@@ -2188,7 +2259,16 @@ components:
             $ref: "#/components/schemas/RecoverySessionImage"
     RecoveryNotificationStatus:
       type: object
-      required: [webhook_configured, reminder_count, next_reminder_at, last_notified_at]
+      required:
+        [
+          webhook_configured,
+          reminder_count,
+          next_reminder_at,
+          last_notified_at,
+          failure_count,
+          last_failure_at,
+          last_failure,
+        ]
       properties:
         webhook_configured:
           type: boolean
@@ -2203,6 +2283,18 @@ components:
           oneOf:
             - type: string
               format: date-time
+            - type: "null"
+        failure_count:
+          type: integer
+          minimum: 0
+        last_failure_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        last_failure:
+          oneOf:
+            - type: string
             - type: "null"
     RecoverySessionProgress:
       type: object
@@ -2239,7 +2331,7 @@ components:
           items: { type: string }
         rebuild_state:
           type: string
-          enum: [pending, restoring_collections, rebuilding, ready, failed]
+          enum: [pending, restoring_collections, rebuilding, ready, paused, failed, canceled]
     RecoverySessionCollection:
       type: object
       required: [id, glacier, collection_manifest, stored_bytes]

@@ -1493,6 +1493,80 @@ def test_list_image_rebuild_sessions_defaults_to_active_states() -> None:
     ]
 
 
+def test_image_rebuild_pause_and_resume_commands_emit_json(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def payload(state: str) -> dict[str, object]:
+        return {
+            "id": "rs-20260420T040001Z-rebuild-1",
+            "type": "image_rebuild",
+            "state": state,
+            "created_at": "2026-04-20T04:00:00Z",
+            "restore_requested_at": None,
+            "restore_ready_at": None,
+            "restore_expires_at": None,
+            "completed_at": None,
+            "canceled_at": None,
+            "paused_at": "2026-04-20T04:00:00Z" if state == "paused" else None,
+            "paused_from_state": "restore_requested" if state == "paused" else None,
+            "restore_paths": None,
+            "latest_message": f"session is {state}",
+            "warnings": [],
+            "notification": {
+                "webhook_configured": True,
+                "reminder_count": 0,
+                "next_reminder_at": "2026-04-21T04:00:00Z" if state == "paused" else None,
+                "last_notified_at": None,
+                "failure_count": 0,
+                "last_failure_at": None,
+                "last_failure": None,
+            },
+            "progress": {
+                "archive_verification": "pending",
+                "extraction": "pending",
+                "materialization": "pending",
+            },
+            "collections": [],
+            "images": [
+                {
+                    "id": "20260420T040001Z",
+                    "filename": "20260420T040001Z.iso",
+                    "collection_ids": ["docs"],
+                    "rebuild_state": state,
+                }
+            ],
+        }
+
+    class FakeClient:
+        def pause_recovery_session(self, session_id: str) -> dict[str, object]:
+            calls.append(("pause", session_id))
+            return payload("paused")
+
+        def resume_recovery_session(self, session_id: str) -> dict[str, object]:
+            calls.append(("resume", session_id))
+            return payload("restore_requested")
+
+    monkeypatch.setattr(djdan_main, "ApiClient", FakeClient)
+
+    paused = runner.invoke(
+        djdan_main.app,
+        ["image", "rebuild", "pause", "rs-20260420T040001Z-rebuild-1", "--json"],
+    )
+    resumed = runner.invoke(
+        djdan_main.app,
+        ["image", "rebuild", "resume", "rs-20260420T040001Z-rebuild-1", "--json"],
+    )
+
+    assert paused.exit_code == 0
+    assert resumed.exit_code == 0
+    assert json.loads(paused.stdout)["state"] == "paused"
+    assert json.loads(resumed.stdout)["state"] == "restore_requested"
+    assert calls == [
+        ("pause", "rs-20260420T040001Z-rebuild-1"),
+        ("resume", "rs-20260420T040001Z-rebuild-1"),
+    ]
+
+
 def test_all_pending_recovery_seed_slots_do_not_reenter_standard_burn_backlog() -> None:
     class FakeClient:
         def get_recovery_session_for_image(self, image_id: str) -> dict[str, object]:

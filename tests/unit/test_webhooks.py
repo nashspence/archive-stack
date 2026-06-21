@@ -14,8 +14,12 @@ from riverhog_core.webhooks import (
     build_images_ready_payload,
     build_jeb_event_payload,
     build_munchy_job_payload,
+    build_recovery_canceled_payload,
     build_recovery_completed_payload,
+    build_recovery_failed_payload,
+    build_recovery_paused_reminder_payload,
     build_recovery_ready_payload,
+    build_recovery_retrying_payload,
     build_recovery_started_payload,
 )
 
@@ -62,6 +66,10 @@ def test_operator_webhook_contract_covers_current_events() -> None:
         "glacier_recovery.ready",
         "glacier_recovery.ready.reminder",
         "glacier_recovery.completed",
+        "glacier_recovery.retrying",
+        "glacier_recovery.failed",
+        "glacier_recovery.canceled",
+        "glacier_recovery.paused.reminder",
     }
     for event in events.values():
         templates = event.get("canonical_notification_by_type") or {
@@ -81,6 +89,8 @@ def test_operator_webhook_contract_covers_current_events() -> None:
     assert events["job.upload_waiting.reminder"]["delivery"]["reminder"] is True
     assert events["fetches.waiting_media"]["delivery"]["mode"] == "durable"
     assert events["glacier_recovery.started"]["operator_urgency"] == "time_sensitive"
+    assert events["glacier_recovery.failed"]["operator_urgency"] == "critical"
+    assert events["glacier_recovery.paused.reminder"]["delivery"]["reminder"] is True
 
 
 def test_build_images_ready_payload_supports_multiple_images() -> None:
@@ -200,6 +210,72 @@ def test_build_recovery_lifecycle_payloads_are_explicit_about_glacier_work() -> 
         "title": "🐷 docs",
         "body": "Oink, Glacier recovery is done, and the missing pinned files are hot again.",
     }
+
+
+def test_build_recovery_retry_failure_cancel_and_pause_payloads() -> None:
+    config = WebhookConfig(url="https://example.test/hook", base_url="https://api.test")
+    images = [{"image_id": "20260420T040001Z", "filename": "20260420T040001Z.iso"}]
+    collections = [{"collection_id": "docs"}]
+    delivered_at = datetime(2026, 4, 20, 5, 0, tzinfo=UTC)
+
+    retrying = build_recovery_retrying_payload(
+        config=config,
+        session_id="rs-20260420T040001Z-rebuild-1",
+        recovery_type="image_rebuild",
+        images=images,
+        collections=collections,
+        delivered_at=delivered_at,
+        attempts=2,
+        failed_at="2026-04-20T05:00:00Z",
+        next_retry_at="2026-04-20T05:05:00Z",
+        retry_delay_seconds=300.0,
+        error="S3 restore request timed out",
+    )
+    failed = build_recovery_failed_payload(
+        config=config,
+        session_id="rs-docs-restore-1",
+        recovery_type="collection_restore",
+        images=[],
+        collections=collections,
+        delivered_at=delivered_at,
+        attempts=1,
+        failed_at="2026-04-20T05:00:00Z",
+        error="collection archive member sha256 mismatch",
+    )
+    canceled = build_recovery_canceled_payload(
+        config=config,
+        session_id="rs-docs-restore-1",
+        recovery_type="collection_restore",
+        images=[],
+        collections=collections,
+        delivered_at=delivered_at,
+    )
+    paused = build_recovery_paused_reminder_payload(
+        config=config,
+        session_id="rs-20260420T040001Z-rebuild-1",
+        images=images,
+        collections=collections,
+        delivered_at=delivered_at,
+        reminder_count=3,
+        reminder_interval_seconds=86400.0,
+    )
+
+    assert retrying["event"] == "glacier_recovery.retrying"
+    assert retrying["operator_action"] == (
+        "wait unless failures persist beyond normal connectivity trouble"
+    )
+    assert "Next retry: 2026-04-20T05:05:00Z" in retrying["notification"]["body"]
+    assert failed["event"] == "glacier_recovery.failed"
+    assert failed["operator_urgency"] == "critical"
+    assert "will not retry" in failed["notification"]["body"]
+    assert canceled["event"] == "glacier_recovery.canceled"
+    assert canceled["operator_urgency"] == "passive"
+    assert paused["event"] == "glacier_recovery.paused.reminder"
+    assert paused["reminder_count"] == 4
+    assert paused["reminder_interval_seconds"] == 86400.0
+    assert paused["operator_action"] == (
+        "Run `djdan image rebuild resume rs-20260420T040001Z-rebuild-1` when ready"
+    )
 
 
 def test_build_fetch_waiting_payload_names_operator_action() -> None:
