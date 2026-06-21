@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, NoReturn, cast
 
 import typer
 
@@ -34,10 +34,8 @@ from riverhog_core.domain.errors import HashMismatch, NotFound, RiverhogError
 
 app = typer.Typer(help="Riverhog optical media CLI.")
 image_app = typer.Typer(help="Image planning and download operations.")
-image_rebuild_app = typer.Typer(help="Image rebuild recovery operations.")
 disc_app = typer.Typer(help="Burned disc catalog operations.")
 app.add_typer(image_app, name="image")
-image_app.add_typer(image_rebuild_app, name="rebuild")
 app.add_typer(disc_app, name="disc")
 
 
@@ -50,6 +48,8 @@ _DISC_IO_CHUNK_BYTES = 1024 * 1024
 _DOWNLOAD_PROGRESS_INTERVAL_SECONDS = 10.0
 _VERIFY_PROGRESS_INTERVAL_SECONDS = 10.0
 _LOCAL_STAGE_HEARTBEAT_INTERVAL_SECONDS = 30.0
+_DISC_REBUILD_REASONS = {"lost", "damaged"}
+_DISC_REBUILD_ACTIONS = {"list", "show", "pause", "resume"}
 
 
 def _elapsed_text(started_at: float) -> str:
@@ -2337,54 +2337,93 @@ def disc_location_cmd(
     _emit_disc_payload(payload, image_id=image_id, json_mode=json_mode)
 
 
-@disc_app.command("mark-lost")
-def disc_mark_lost_cmd(
-    copy_id: Annotated[str, typer.Argument(help="Generated disc/copy id")],
+def _disc_rebuild_usage_error(message: str) -> NoReturn:
+    typer.echo(f"error: {message}", err=True)
+    raise typer.Exit(code=2)
+
+
+@disc_app.command("rebuild")
+def disc_rebuild_cmd(
+    args: Annotated[
+        list[str],
+        typer.Argument(
+            help=(
+                "COPY_ID for declaration, or one of: list, show SESSION, "
+                "pause SESSION, resume SESSION"
+            )
+        ),
+    ],
+    reason: Annotated[
+        str | None,
+        typer.Option("--reason", help="Why this disc needs rebuild: lost or damaged"),
+    ] = None,
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "created_at",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
+    state: Annotated[
+        str | None,
+        typer.Option(
+            "--state",
+            help=(
+                "Filter list by restore_requested, ready, paused, expired, "
+                "completed, failed, or canceled"
+            ),
+        ),
+    ] = None,
+    include_all: Annotated[
+        bool,
+        typer.Option("--all", help="Include completed and expired rebuild sessions"),
+    ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Mark a disc as lost."""
+    """Report a lost/damaged disc and inspect rebuild work."""
 
-    image_id = _image_id_from_copy_id(copy_id)
-    client = ApiClient()
-    payload = _disc_payload_with_recovery_status(
-        client,
-        client.update_copy(image_id, copy_id, state="lost"),
-        image_id=image_id,
-    )
-    _emit_disc_payload(payload, image_id=image_id, json_mode=json_mode)
+    if not args:
+        _disc_rebuild_usage_error(
+            "expected COPY_ID --reason lost|damaged, or list/show/pause/resume"
+        )
 
+    action = args[0].casefold()
+    try:
+        if action in _DISC_REBUILD_ACTIONS:
+            if reason is not None:
+                _disc_rebuild_usage_error("--reason only applies when declaring a disc rebuild")
+            _run_disc_rebuild_action(
+                action,
+                args[1:],
+                page=page,
+                per_page=per_page,
+                sort=sort,
+                order=order.casefold(),
+                state=state,
+                include_all=include_all,
+                json_mode=json_mode,
+            )
+            return
 
-@disc_app.command("mark-damaged")
-def disc_mark_damaged_cmd(
-    copy_id: Annotated[str, typer.Argument(help="Generated disc/copy id")],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Mark a disc as damaged."""
+        if len(args) != 1:
+            _disc_rebuild_usage_error(
+                "disc rebuild declaration expects COPY_ID --reason lost|damaged"
+            )
+        if reason is None:
+            _disc_rebuild_usage_error("--reason lost|damaged is required")
+        normalized_reason = reason.casefold()
+        if normalized_reason not in _DISC_REBUILD_REASONS:
+            _disc_rebuild_usage_error("--reason must be lost or damaged")
 
-    image_id = _image_id_from_copy_id(copy_id)
-    client = ApiClient()
-    payload = _disc_payload_with_recovery_status(
-        client,
-        client.update_copy(image_id, copy_id, state="damaged"),
-        image_id=image_id,
-    )
-    _emit_disc_payload(payload, image_id=image_id, json_mode=json_mode)
+        copy_id = args[0]
+        image_id = _image_id_from_copy_id(copy_id)
+        client = ApiClient()
+        payload = _disc_payload_with_recovery_status(
+            client,
+            client.update_copy(image_id, copy_id, state=normalized_reason),
+            image_id=image_id,
+        )
+    except (RiverhogError, RuntimeError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
-
-@disc_app.command("verify")
-def disc_verify_cmd(
-    copy_id: Annotated[str, typer.Argument(help="Generated disc/copy id")],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Mark a disc copy as verified."""
-
-    image_id = _image_id_from_copy_id(copy_id)
-    payload = ApiClient().update_copy(
-        image_id,
-        copy_id,
-        state="verified",
-        verification_state="verified",
-    )
     _emit_disc_payload(payload, image_id=image_id, json_mode=json_mode)
 
 
@@ -2567,7 +2606,7 @@ def burn_cmd(
     _report_recovery_handoffs(recovery_handoffs)
 
 
-def _list_image_rebuild_sessions(
+def _list_disc_rebuild_sessions(
     client: ApiClient,
     *,
     page: int,
@@ -2639,98 +2678,77 @@ def _list_image_rebuild_sessions(
     }
 
 
-def _require_image_rebuild(payload: dict[str, Any]) -> None:
+def _require_disc_rebuild_session(payload: dict[str, Any]) -> None:
     if str(payload.get("type", "image_rebuild")) != "image_rebuild":
-        raise RuntimeError("djdan image rebuild only handles image_rebuild recovery sessions")
+        raise RuntimeError("djdan disc rebuild only handles image_rebuild recovery sessions")
 
 
-@image_rebuild_app.command("list")
-def image_rebuild_list_cmd(
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
-    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "created_at",
-    order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
-    state: Annotated[
-        str | None,
-        typer.Option(
-            "--state",
-            help=(
-                "Filter by restore_requested, ready, paused, expired, completed, failed, "
-                "or canceled"
-            ),
-        ),
-    ] = None,
-    include_all: Annotated[
-        bool,
-        typer.Option("--all", help="Include completed and expired rebuild sessions"),
-    ] = False,
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+def _disc_rebuild_human_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    def convert_session(session: dict[str, Any]) -> dict[str, Any]:
+        converted = dict(session)
+        if str(converted.get("type", "image_rebuild")) == "image_rebuild":
+            converted["type"] = "disc rebuild"
+        return converted
+
+    converted = dict(payload)
+    if str(converted.get("type", "image_rebuild")) == "image_rebuild":
+        converted["type"] = "disc rebuild"
+    sessions = converted.get("sessions")
+    if isinstance(sessions, list):
+        converted["sessions"] = [
+            convert_session(session) if isinstance(session, dict) else session
+            for session in sessions
+        ]
+    return converted
+
+
+def _run_disc_rebuild_action(
+    action: str,
+    operands: list[str],
+    *,
+    page: int,
+    per_page: int,
+    sort: str,
+    order: str,
+    state: str | None,
+    include_all: bool,
+    json_mode: bool,
 ) -> None:
-    """List image rebuild sessions."""
-
-    try:
-        normalized_order = order.casefold()
-        payload = _list_image_rebuild_sessions(
-            ApiClient(),
+    client = ApiClient()
+    if action == "list":
+        if operands:
+            _disc_rebuild_usage_error("disc rebuild list does not accept extra arguments")
+        payload = _list_disc_rebuild_sessions(
+            client,
             page=page,
             per_page=per_page,
             sort=sort,
-            order=normalized_order,
+            order=order,
             state=state,
             include_all=include_all,
         )
-    except (RiverhogError, RuntimeError) as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
-    emit(payload if json_mode else format_recovery_sessions(payload), json_mode=json_mode)
+        emit(
+            payload
+            if json_mode
+            else format_recovery_sessions(_disc_rebuild_human_payload(payload)),
+            json_mode=json_mode,
+        )
+        return
 
-
-@image_rebuild_app.command("show")
-def image_rebuild_show_cmd(
-    session_id: Annotated[str, typer.Argument(help="Recovery session id")],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Show an image rebuild session."""
-
-    try:
-        payload = ApiClient().get_recovery_session(session_id)
-        _require_image_rebuild(payload)
-    except (RiverhogError, RuntimeError) as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
-    emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
-
-
-@image_rebuild_app.command("pause")
-def image_rebuild_pause_cmd(
-    session_id: Annotated[str, typer.Argument(help="Image rebuild session id")],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Pause an active image rebuild session."""
-
-    try:
-        payload = ApiClient().pause_recovery_session(session_id)
-        _require_image_rebuild(payload)
-    except (RiverhogError, RuntimeError) as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
-    emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
-
-
-@image_rebuild_app.command("resume")
-def image_rebuild_resume_cmd(
-    session_id: Annotated[str, typer.Argument(help="Image rebuild session id")],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Resume a paused image rebuild session."""
-
-    try:
-        payload = ApiClient().resume_recovery_session(session_id)
-        _require_image_rebuild(payload)
-    except (RiverhogError, RuntimeError) as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
-    emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
+    if len(operands) != 1:
+        _disc_rebuild_usage_error(f"disc rebuild {action} expects one recovery session id")
+    session_id = operands[0]
+    if action == "show":
+        payload = client.get_recovery_session(session_id)
+    elif action == "pause":
+        payload = client.pause_recovery_session(session_id)
+    else:
+        payload = client.resume_recovery_session(session_id)
+    _require_disc_rebuild_session(payload)
+    emit(
+        payload if json_mode else format_recovery_session(_disc_rebuild_human_payload(payload)),
+        json_mode=json_mode,
+    )
 
 
 def main() -> None:

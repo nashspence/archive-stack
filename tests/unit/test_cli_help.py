@@ -79,19 +79,9 @@ def test_djdan_command_help_has_summaries() -> None:
         "Show finalized image details.",
         "List image planner candidates.",
         "Download a finalized ISO image.",
-        "Image rebuild recovery operations.",
     ):
         assert summary in image.stdout
-
-    rebuild = runner.invoke(disc_app, ["image", "rebuild", "--help"])
-    assert rebuild.exit_code == 0
-    for summary in (
-        "List image rebuild sessions.",
-        "Show an image rebuild session.",
-        "Pause an active image rebuild session.",
-        "Resume a paused image rebuild session.",
-    ):
-        assert summary in rebuild.stdout
+    assert "rebuild" not in image.stdout
 
     disc = runner.invoke(disc_app, ["disc", "--help"])
     assert disc.exit_code == 0
@@ -100,11 +90,20 @@ def test_djdan_command_help_has_summaries() -> None:
         "Show burned disc details.",
         "Register a physical disc copy.",
         "Update a disc location label.",
-        "Mark a disc as lost.",
-        "Mark a disc as damaged.",
-        "Mark a disc copy as verified.",
+        "Report a lost/damaged disc and inspect rebuild work.",
     ):
         assert summary in disc.stdout
+
+    rebuild = runner.invoke(disc_app, ["disc", "rebuild", "--help"])
+    assert rebuild.exit_code == 0
+    for summary in (
+        "Report a lost/damaged disc and inspect rebuild work.",
+        "--reason",
+        "lost or damaged",
+        "COPY_ID for declaration",
+        "resume SESSION",
+    ):
+        assert summary in rebuild.stdout
 
 
 def test_jeb_help_has_command_summaries(capsys: pytest.CaptureFixture[str]) -> None:

@@ -851,7 +851,7 @@ def _prepare_djdan_expectation(
         ).json()
         return
 
-    if argv[1] in {"fetch", "burn"} or argv[1:3] == ["image", "rebuild"]:
+    if argv[1] in {"fetch", "burn"} or argv[1:3] == ["disc", "rebuild"]:
         return
 
     raise AssertionError(f"unsupported djdan command: {argv}")

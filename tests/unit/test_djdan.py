@@ -1427,7 +1427,7 @@ def test_discover_recovery_handoffs_for_images_that_require_recovery() -> None:
     ]
 
 
-def test_list_image_rebuild_sessions_defaults_to_active_states() -> None:
+def test_list_disc_rebuild_sessions_defaults_to_active_states() -> None:
     class FakeClient:
         def list_recovery_sessions(
             self,
@@ -1466,7 +1466,7 @@ def test_list_image_rebuild_sessions_defaults_to_active_states() -> None:
                 ],
             }
 
-    payload = djdan_main._list_image_rebuild_sessions(
+    payload = djdan_main._list_disc_rebuild_sessions(
         FakeClient(),
         page=1,
         per_page=25,
@@ -1493,7 +1493,7 @@ def test_list_image_rebuild_sessions_defaults_to_active_states() -> None:
     ]
 
 
-def test_image_rebuild_pause_and_resume_commands_emit_json(monkeypatch) -> None:
+def test_disc_rebuild_pause_and_resume_commands_emit_json(monkeypatch) -> None:
     calls: list[tuple[str, str]] = []
 
     def payload(state: str) -> dict[str, object]:
@@ -1550,11 +1550,11 @@ def test_image_rebuild_pause_and_resume_commands_emit_json(monkeypatch) -> None:
 
     paused = runner.invoke(
         djdan_main.app,
-        ["image", "rebuild", "pause", "rs-20260420T040001Z-rebuild-1", "--json"],
+        ["disc", "rebuild", "pause", "rs-20260420T040001Z-rebuild-1", "--json"],
     )
     resumed = runner.invoke(
         djdan_main.app,
-        ["image", "rebuild", "resume", "rs-20260420T040001Z-rebuild-1", "--json"],
+        ["disc", "rebuild", "resume", "rs-20260420T040001Z-rebuild-1", "--json"],
     )
 
     assert paused.exit_code == 0
@@ -1565,6 +1565,57 @@ def test_image_rebuild_pause_and_resume_commands_emit_json(monkeypatch) -> None:
         ("pause", "rs-20260420T040001Z-rebuild-1"),
         ("resume", "rs-20260420T040001Z-rebuild-1"),
     ]
+
+
+def test_disc_rebuild_declares_lost_or_damaged_disc(monkeypatch) -> None:
+    calls: list[tuple[str, str, str | None]] = []
+
+    class FakeClient:
+        def update_copy(
+            self,
+            image_id: str,
+            copy_id: str,
+            *,
+            location: str | None = None,
+            state: str | None = None,
+            verification_state: str | None = None,
+        ) -> dict[str, object]:
+            assert location is None
+            assert verification_state is None
+            calls.append((image_id, copy_id, state))
+            return {
+                "copy": {
+                    "id": copy_id,
+                    "image_id": image_id,
+                    "volume_id": image_id,
+                    "label_text": copy_id,
+                    "state": state,
+                    "verification_state": "pending",
+                }
+            }
+
+        def get_recovery_session_for_image(self, image_id: str) -> dict[str, object]:
+            assert image_id == "20260420T040001Z"
+            return {
+                "id": "rs-20260420T040001Z-rebuild-1",
+                "type": "image_rebuild",
+                "state": "restore_requested",
+                "latest_message": "Archive restore requested.",
+                "images": [{"id": image_id, "filename": f"{image_id}.iso"}],
+            }
+
+    monkeypatch.setattr(djdan_main, "ApiClient", FakeClient)
+
+    result = runner.invoke(
+        djdan_main.app,
+        ["disc", "rebuild", "20260420T040001Z-1", "--reason", "lost", "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["copy"]["state"] == "lost"
+    assert payload["recovery_session"]["id"] == "rs-20260420T040001Z-rebuild-1"
+    assert calls == [("20260420T040001Z", "20260420T040001Z-1", "lost")]
 
 
 def test_all_pending_recovery_seed_slots_do_not_reenter_standard_burn_backlog() -> None:
@@ -1629,7 +1680,7 @@ def test_djdan_recover_lists_active_sessions(monkeypatch) -> None:
 
     monkeypatch.setattr(djdan_main, "ApiClient", FakeClient)
 
-    result = runner.invoke(djdan_main.app, ["image", "rebuild", "list"])
+    result = runner.invoke(djdan_main.app, ["disc", "rebuild", "list"])
 
     assert result.exit_code == 0
     assert "rs-20260420T040001Z-1" in result.stdout

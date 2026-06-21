@@ -274,7 +274,7 @@ def test_build_recovery_retry_failure_cancel_and_pause_payloads() -> None:
     assert paused["reminder_count"] == 4
     assert paused["reminder_interval_seconds"] == 86400.0
     assert paused["operator_action"] == (
-        "Run `djdan image rebuild resume rs-20260420T040001Z-rebuild-1` when ready"
+        "Run `djdan disc rebuild resume rs-20260420T040001Z-rebuild-1` when ready"
     )
 
 

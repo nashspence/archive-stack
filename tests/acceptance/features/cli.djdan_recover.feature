@@ -1,7 +1,7 @@
 @acceptance @cli @mvp
-Feature: djdan image rebuild CLI
-  The optical CLI lists image rebuild sessions and the burn workflow consumes ready rebuild work automatically.
-  Scenario: djdan image rebuild lists one multi-image pending rebuild session
+Feature: djdan disc rebuild CLI
+  The optical CLI lists disc rebuild sessions and the burn workflow consumes ready rebuild work automatically.
+  Scenario: djdan disc rebuild lists one multi-image pending rebuild session
     Given an archive with planned images
     And an archive with split planned images
     And collection "docs" has uploaded Glacier archive package
@@ -16,18 +16,18 @@ Feature: djdan image rebuild CLI
     And the client patches "/v1/images/20260420T040003Z/copies/20260420T040003Z-1" with state "lost"
     And the client patches "/v1/images/20260420T040003Z/copies/20260420T040003Z-2" with state "damaged"
     And recovery session "rs-20260420T040001Z-rebuild-1" restore remains pending
-    When the operator runs 'djdan image rebuild list'
+    When the operator runs 'djdan disc rebuild list'
     Then the command exits with code 0
     And stdout mentions "rs-20260420T040001Z-rebuild-1"
-    And stdout mentions "image_rebuild"
+    And stdout mentions "disc rebuild"
     And stdout mentions "restore_requested"
     And stdout mentions "20260420T040001Z"
     And stdout mentions "20260420T040003Z"
-    When the operator runs 'djdan image rebuild pause rs-20260420T040001Z-rebuild-1 --json'
+    When the operator runs 'djdan disc rebuild pause rs-20260420T040001Z-rebuild-1 --json'
     Then the command exits with code 0
     And stdout is valid JSON
     And stdout mentions "paused"
-    When the operator runs 'djdan image rebuild resume rs-20260420T040001Z-rebuild-1 --json'
+    When the operator runs 'djdan disc rebuild resume rs-20260420T040001Z-rebuild-1 --json'
     Then the command exits with code 0
     And stdout is valid JSON
     And stdout mentions "restore_requested"

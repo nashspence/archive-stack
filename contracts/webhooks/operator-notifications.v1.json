@@ -975,7 +975,7 @@
       "source": "riverhog_core.services.recovery_sessions",
       "purpose": "Daily reminder that an image rebuild recovery session is paused and should be resumed when the operator is ready to restore disc coverage.",
       "operator_urgency": "time_sensitive",
-      "operator_action": "run `djdan image rebuild resume <session_id>` when ready",
+      "operator_action": "run `djdan disc rebuild resume <session_id>` when ready",
       "reminder_of": "image rebuild pause",
       "delivery": {
         "mode": "durable",

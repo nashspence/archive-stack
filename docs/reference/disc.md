@@ -272,14 +272,15 @@ Expected multipart flow:
 
 ## Recovery Sessions
 
-`djdan image rebuild` lists `image_rebuild` recovery sessions after one or more
-finalized images lose all protected copies. Replacement burns stay in the normal
-`djdan burn` workflow.
-
-- `djdan image rebuild list` lists active image-rebuild recovery
-  sessions and the finalized images attached to each one
-- `djdan image rebuild show SESSION` shows restore readiness, attached images,
+- `djdan disc rebuild COPY_ID --reason lost|damaged` marks a burned disc
+  lost or damaged and shows the rebuild work needed to restore coverage
+- `djdan disc rebuild list` lists active image-rebuild recovery sessions and
+  the finalized images attached to each one
+- `djdan disc rebuild show SESSION` shows restore readiness, attached images,
   and latest operator message
+- `djdan disc rebuild pause SESSION` pauses active restore work when the
+  operator is not ready to rebuild and burn replacement media
+- `djdan disc rebuild resume SESSION` resumes a paused rebuild session
 - while a session is still `restore_requested`, `djdan burn` exits cleanly and
   reports the recovery session that is blocking burn backlog
 - once the session is `ready`, `djdan burn` stages and burns the replacement

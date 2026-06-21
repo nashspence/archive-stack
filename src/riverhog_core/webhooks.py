@@ -332,7 +332,7 @@ def build_recovery_paused_reminder_payload(
             "reminder_count": reminder_count + 1,
             "reminder_interval_seconds": reminder_interval_seconds,
             "operator_urgency": "time_sensitive",
-            "operator_action": f"Run `djdan image rebuild resume {session_id}` when ready",
+            "operator_action": f"Run `djdan disc rebuild resume {session_id}` when ready",
             "operator_message": (
                 "Image rebuild recovery is paused. Resume it when ready to rebuild the image "
                 "and restore disc coverage."

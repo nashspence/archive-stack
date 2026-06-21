@@ -906,14 +906,12 @@ The `djdan` CLI is an optical-media client for a machine with an optical drive a
 - `djdan image list [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--has-discs|--no-discs]`
 - `djdan image show IMAGE_ID`
 - `djdan image download IMAGE_ID [-o FILE]`
-- `djdan image rebuild list|show`
 - `djdan disc list [IMAGE_ID] [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT]`
 - `djdan disc show COPY_ID`
 - `djdan disc add IMAGE_ID --at LOCATION [--copy-id GENERATED_ID]`
 - `djdan disc location COPY_ID --to LOCATION`
-- `djdan disc mark-lost COPY_ID`
-- `djdan disc mark-damaged COPY_ID`
-- `djdan disc verify COPY_ID`
+- `djdan disc rebuild COPY_ID --reason lost|damaged`
+- `djdan disc rebuild list|show|pause|resume`
 
 For finalized-image and disc commands:
 
