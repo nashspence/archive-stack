@@ -6,7 +6,8 @@ Run the canonical lint flow with `make lint`.
 
 That lane runs `ruff check .` and then runs strict `mypy` in a local locked `uv`
 environment built from `requirements-test.txt` plus the editable project.
-Runtime container dependencies are locked separately in `requirements-runtime.txt`.
+Runtime container dependencies are locked separately in `requirements-runtime.txt`;
+deployed service images use `requirements-service.txt`.
 
 ## Testing
 

@@ -204,16 +204,40 @@ def test_dockerfiles_keep_dependency_layers_independent_of_docs_and_tests() -> N
     assert "docs/" in dockerignore
 
 
+def test_deployed_service_dockerfiles_use_locked_service_dependencies() -> None:
+    service_dockerfiles = [
+        REPO_ROOT / "services" / "jeb" / "Dockerfile",
+        REPO_ROOT / "services" / "munchy-av1-nvenc" / "Dockerfile",
+        REPO_ROOT / "services" / "munchy-runner" / "Dockerfile",
+    ]
+
+    for path in service_dockerfiles:
+        dockerfile = path.read_text(encoding="utf-8")
+        assert "COPY requirements-service.txt" in dockerfile
+        assert "--require-hashes -r" in dockerfile
+        assert "PYTHONPATH=/riverhog/src" in dockerfile
+        assert "pip install /riverhog" not in dockerfile
+        assert "pip install -r requirements.txt" not in dockerfile
+        assert dockerfile.index("COPY requirements-service.txt") < dockerfile.index("COPY src")
+        assert dockerfile.index("--require-hashes -r") < dockerfile.index("COPY src")
+
+
 def test_locked_dependency_files_cover_runtime_and_test_db_extras() -> None:
     runtime_requirements = (REPO_ROOT / "requirements-runtime.txt").read_text()
     test_requirements = (REPO_ROOT / "requirements-test.txt").read_text()
+    service_requirements = (REPO_ROOT / "requirements-service.txt").read_text()
 
     assert "--extra db" in runtime_requirements.splitlines()[1]
     assert "--extra db" in test_requirements.splitlines()[1]
+    assert "--extra service" in service_requirements.splitlines()[1]
+    assert "-c requirements-runtime.txt" in service_requirements.splitlines()[1]
     for package in ("boto3", "fastapi", "psycopg", "psycopg-binary", "sqlalchemy", "uvicorn"):
         assert f"{package}==" in runtime_requirements
         assert f"{package}==" in test_requirements
+    for package in ("fastapi", "httptools", "uvicorn", "uvloop", "watchfiles", "websockets"):
+        assert f"{package}==" in service_requirements
     assert "--hash=sha256:" in runtime_requirements
+    assert "--hash=sha256:" in service_requirements
     assert "--hash=sha256:" in test_requirements
 
 

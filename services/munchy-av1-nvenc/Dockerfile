@@ -53,7 +53,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PIP_ROOT_USER_ACTION=ignore \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/riverhog/src
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl fonts-dejavu-core jq mkvtoolnix python3 python3-pip rclone tini zstd \
@@ -64,13 +65,11 @@ COPY --from=ffmpeg-build /opt/ffmpeg /usr/local
 
 WORKDIR /app
 
-COPY services/munchy-av1-nvenc/requirements.txt .
-RUN python3 -m pip install --break-system-packages --no-cache-dir -r requirements.txt
+COPY requirements-service.txt /tmp/requirements-service.txt
+RUN python3 -m pip install --break-system-packages --require-hashes -r /tmp/requirements-service.txt
 
-COPY pyproject.toml README.md /riverhog/
 COPY contracts /riverhog/contracts
 COPY src /riverhog/src
-RUN python3 -m pip install --break-system-packages --no-cache-dir /riverhog
 
 COPY services/munchy-av1-nvenc/app app
 

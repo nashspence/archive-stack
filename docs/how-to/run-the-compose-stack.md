@@ -77,12 +77,14 @@ make stop-spec
 ```
 
 The checked-in Dockerfiles install hashed dependencies from
-`requirements-runtime.txt` and `requirements-test.txt` before copying
-`pyproject.toml`, `src/`, `contracts/`, or `tests/`. README and documentation
-edits do not invalidate the dependency-install layers. Regenerate
+`requirements-runtime.txt`, `requirements-service.txt`, and
+`requirements-test.txt` before copying application source. README and
+documentation edits do not invalidate the dependency-install layers. Regenerate
 `requirements-runtime.txt` and `requirements-test.txt` together when dependency
-constraints change; the unit suite checks that shared packages do not drift and
-that both lockfiles keep hash-pinned entries.
+constraints change; regenerate `requirements-service.txt` with
+`requirements-runtime.txt` as a constraint so deployed service images do not
+drift from the app runtime. The unit suite checks that shared packages do not
+drift and that all lockfiles keep hash-pinned entries.
 
 If `RIVERHOG_GLACIER_BUCKET` differs from `RIVERHOG_S3_BUCKET`, the Garage
 bootstrap applies and verifies the same lifecycle rule on both buckets.

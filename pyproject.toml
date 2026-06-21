@@ -42,6 +42,8 @@ planner = ["numpy>=2.0,<3.0", "scipy>=1.13,<2.0"]
 
 db = ["psycopg[binary]>=3.2,<4.0", "sqlalchemy>=2.0,<3.0"]
 
+service = ["uvicorn[standard]>=0.30,<1.0"]
+
 [project.scripts]
 riverhog-api = "riverhog_api.app:main"
 riverhog = "riverhog_cli.main:main"

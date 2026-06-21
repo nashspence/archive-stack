@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PACKAGE_RE = re.compile(r"^([A-Za-z0-9_.-]+)==([^\\\s]+)(?:\s*\\)?$")
+PACKAGE_RE = re.compile(r"^([A-Za-z0-9_.-]+)==([^\\;\s]+)(?:\s*;.*)?(?:\s*\\)?$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,8 +77,47 @@ def test_runtime_and_test_lockfiles_do_not_drift_for_shared_packages() -> None:
     )
 
 
+def test_service_lockfile_does_not_drift_from_runtime_for_shared_packages() -> None:
+    runtime = _parse_lockfile(REPO_ROOT / "requirements-runtime.txt")
+    service = _parse_lockfile(REPO_ROOT / "requirements-service.txt")
+
+    required_service_packages = {
+        "boto3",
+        "fastapi",
+        "h2",
+        "httpx",
+        "pydantic",
+        "rich",
+        "typer",
+        "uvicorn",
+    }
+    missing_from_service = sorted(required_service_packages - set(service))
+    assert not missing_from_service, (
+        "Service lock packages are missing expected runtime packages: "
+        f"{', '.join(missing_from_service)}. Regenerate requirements-service.txt."
+    )
+
+    drift = [
+        f"{name}: runtime={runtime[name].version}, service={service[name].version}"
+        for name in sorted(set(runtime) & set(service))
+        if runtime[name].version != service[name].version
+    ]
+    assert not drift, (
+        "Shared runtime/service lock packages have version drift: "
+        f"{'; '.join(drift)}. Regenerate requirements-service.txt with "
+        "requirements-runtime.txt as a constraint."
+    )
+
+    for package in ("httptools", "uvloop", "watchfiles", "websockets"):
+        assert package in service
+
+
 def test_runtime_and_test_lockfiles_use_hashes_for_every_package() -> None:
-    for lockfile in ("requirements-runtime.txt", "requirements-test.txt"):
+    for lockfile in (
+        "requirements-runtime.txt",
+        "requirements-service.txt",
+        "requirements-test.txt",
+    ):
         packages = _parse_lockfile(REPO_ROOT / lockfile)
         missing_hashes = [package.name for package in packages.values() if not package.hashes]
         assert not missing_hashes, (
