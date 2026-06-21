@@ -76,15 +76,15 @@ Feature: riverhog CLI
       And stdout mentions fetch id "fx-1"
       And stdout mentions "cloud_fetching"
       Given recovery session "rs-docs-restore-1" restore remains pending
-      When the operator runs 'riverhog hot fetch cloud-fetch cancel fx-1 --json'
+      When the operator runs 'riverhog hot fetch cancel fx-1 --json'
       Then the command exits with code 0
       And stdout is valid JSON
       And stdout mentions fetch id "fx-1"
       And stdout mentions "canceled"
-      When the operator runs 'riverhog hot fetch cloud-fetch show fx-1 --json'
+      When the operator runs 'riverhog hot fetch show fx-1 --json'
       Then the command exits with code 0
       And stdout is valid JSON
-      And stdout matches the structure of GET "/v1/fetches/fx-1/cloud-fetch"
+      And stdout matches the structure of GET "/v1/fetches/fx-1/status"
       And stdout mentions fetch id "fx-1"
       And stdout mentions "rs-docs-restore-1"
 

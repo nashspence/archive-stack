@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import Field
 
 from riverhog_api.schemas.common import RiverhogModel
+from riverhog_api.schemas.recovery_sessions import RecoverySessionListOut
 
 
 class HotStatusOut(RiverhogModel):
@@ -119,6 +120,7 @@ class FetchStatusResponse(FetchSummaryOut):
     files_preview: list[FetchFileOut]
     next_action: str
     next_action_reason: str
+    cloud_fetch: RecoverySessionListOut
     entries_limit: int
     entries_returned: int
     entries: list[FetchStatusEntryOut]

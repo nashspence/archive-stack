@@ -8,72 +8,11 @@ from fastapi.responses import StreamingResponse
 from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_recovery_session, map_recovery_session_list
 from riverhog_api.schemas.recovery_sessions import (
-    CloudFetchSessionsOut,
     RecoverySessionListOut,
     RecoverySessionOut,
 )
-from riverhog_core.domain.models import RecoverySessionListPage
 
 router = APIRouter(tags=["recovery"])
-
-
-def _cloud_fetch_payload(
-    fetch_id: str,
-    container: ContainerDep,
-    summary: RecoverySessionListPage,
-) -> CloudFetchSessionsOut:
-    fetch = container.fetches.get(fetch_id)
-    payload = map_recovery_session_list(summary)
-    payload["fetch_id"] = fetch_id
-    payload["name"] = fetch.name
-    payload["targets"] = [str(target) for target in fetch.targets]
-    return CloudFetchSessionsOut.model_validate(payload)
-
-
-@router.get("/fetches/{fetch_id}/cloud-fetch", response_model=CloudFetchSessionsOut)
-def get_cloud_fetch_sessions(
-    fetch_id: str,
-    container: ContainerDep,
-    page: int = Query(1, ge=1),
-    per_page: int = Query(25, ge=1, le=100),
-    sort: Literal[
-        "created_at",
-        "id",
-        "type",
-        "state",
-        "restore_ready_at",
-        "restore_expires_at",
-    ] = Query("created_at"),
-    order: Literal["asc", "desc"] = Query("desc"),
-    state: Literal[
-        "restore_requested",
-        "ready",
-        "paused",
-        "expired",
-        "completed",
-        "failed",
-        "canceled",
-    ]
-    | None = Query(None),
-) -> CloudFetchSessionsOut:
-    summary = container.recovery_sessions.list_for_fetch(
-        fetch_id,
-        page=page,
-        per_page=per_page,
-        sort=sort,
-        order=order,
-        state=state,
-    )
-    return _cloud_fetch_payload(fetch_id, container, summary)
-
-
-@router.post("/fetches/{fetch_id}/cloud-fetch/cancel", response_model=CloudFetchSessionsOut)
-def cancel_cloud_fetch(
-    fetch_id: str,
-    container: ContainerDep,
-) -> CloudFetchSessionsOut:
-    summary = container.recovery_sessions.cancel_for_fetch(fetch_id)
-    return _cloud_fetch_payload(fetch_id, container, summary)
 
 
 @router.get("/images/{image_id}/rebuild-session", response_model=RecoverySessionOut)

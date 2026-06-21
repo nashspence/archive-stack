@@ -6,7 +6,7 @@ from fastapi import APIRouter, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
 
 from riverhog_api.deps import ContainerDep
-from riverhog_api.mappers import map_fetch, map_fetch_list
+from riverhog_api.mappers import map_fetch, map_fetch_list, map_recovery_session_list
 from riverhog_api.schemas.fetches import (
     CompleteFetchResponse,
     CreateFetchRequest,
@@ -30,6 +30,28 @@ from riverhog_api.tus import (
 from riverhog_api.urls import public_request_url
 
 router = APIRouter(tags=["fetches"])
+
+
+def _fetch_status_payload(
+    fetch_id: str,
+    container: ContainerDep,
+    *,
+    limit: int,
+) -> dict[str, object]:
+    payload = container.fetches.status(fetch_id, limit=limit)
+    cloud_fetch = map_recovery_session_list(
+        container.recovery_sessions.list_for_fetch(
+            fetch_id,
+            page=1,
+            per_page=max(1, min(limit, 100)),
+            sort="created_at",
+            order="desc",
+        )
+    )
+    if limit <= 0:
+        cloud_fetch["sessions"] = []
+    payload["cloud_fetch"] = cloud_fetch
+    return payload
 
 
 @router.post("/hot/evict", response_model=HotEvictResponse)
@@ -116,7 +138,22 @@ def get_fetch_status(
     container: ContainerDep,
     limit: Annotated[int, Query(ge=0, le=100)] = 25,
 ) -> FetchStatusResponse:
-    payload = container.fetches.status(fetch_id, limit=limit)
+    payload = _fetch_status_payload(fetch_id, container, limit=limit)
+    return FetchStatusResponse.model_validate(payload)
+
+
+@router.post("/fetches/{fetch_id}/cancel", response_model=FetchStatusResponse)
+def cancel_fetch(
+    fetch_id: str,
+    container: ContainerDep,
+    limit: Annotated[int, Query(ge=0, le=100)] = 25,
+) -> FetchStatusResponse:
+    summary = container.fetches.get(fetch_id)
+    if summary.state.value in {"queued_cloud", "cloud_fetching"}:
+        container.recovery_sessions.cancel_for_fetch(fetch_id)
+    else:
+        container.fetches.cancel(fetch_id)
+    payload = _fetch_status_payload(fetch_id, container, limit=limit)
     return FetchStatusResponse.model_validate(payload)
 
 

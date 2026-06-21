@@ -17,7 +17,6 @@ import typer
 from riverhog_cli.client import ApiClient
 from riverhog_cli.output import (
     emit,
-    format_cloud_fetch,
     format_collection_summary,
     format_collection_upload,
     format_collections,
@@ -34,11 +33,9 @@ app = typer.Typer(help="Riverhog collection and hot-storage CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
 fetch_app = typer.Typer(help="Named fetch manifest operations.")
 hot_app = typer.Typer(help="Hot-storage operations.")
-fetch_cloud_fetch_app = typer.Typer(help="Cloud archive recovery sessions for fetches.")
 app.add_typer(collection_app, name="collection")
 app.add_typer(hot_app, name="hot")
 hot_app.add_typer(fetch_app, name="fetch")
-fetch_app.add_typer(fetch_cloud_fetch_app, name="cloud-fetch")
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
@@ -1519,47 +1516,18 @@ def fetch_start_cmd(
     emit(format_fetch(status, {"entries": status.get("entries", [])}), json_mode=False)
 
 
-@fetch_cloud_fetch_app.command("show")
-def cloud_fetch_show_cmd(
+@fetch_app.command("cancel")
+def fetch_cancel_cmd(
     fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
-    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "created_at",
-    order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
-    state: Annotated[
-        str | None,
-        typer.Option(
-            "--state",
-            help=(
-                "Filter by restore_requested, ready, paused, expired, completed, failed, "
-                "or canceled"
-            ),
-        ),
-    ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Show cloud-fetch recovery for one fetch."""
+    """Cancel an active fetch and return it to draft."""
 
-    payload = client().get_cloud_fetch_sessions(
-        fetch_id,
-        page=page,
-        per_page=per_page,
-        sort=sort,
-        order=order.casefold(),
-        state=state,
+    payload = client().cancel_fetch(fetch_id)
+    emit(
+        payload if json_mode else format_fetch(payload, {"entries": payload.get("entries", [])}),
+        json_mode=json_mode,
     )
-    emit(payload if json_mode else format_cloud_fetch(payload), json_mode=json_mode)
-
-
-@fetch_cloud_fetch_app.command("cancel")
-def cloud_fetch_cancel_cmd(
-    fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Cancel active cloud archive recovery for one fetch."""
-
-    payload = client().cancel_cloud_fetch(fetch_id)
-    emit(payload if json_mode else format_cloud_fetch(payload), json_mode=json_mode)
 
 
 def _error_code(exc: BaseException) -> str:

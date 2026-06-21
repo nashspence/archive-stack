@@ -400,6 +400,9 @@ def _format_fetch_plain(summary: Mapping[str, Any], manifest: Mapping[str, Any])
                 f"disc_missing={target.get('missing_with_disc_files', 0)} "
                 f"cloud_missing={target.get('missing_without_disc_files', 0)}"
             )
+    cloud_lines = _fetch_cloud_plain_lines(summary)
+    if cloud_lines:
+        lines.extend(cloud_lines)
     files_preview = summary.get("files_preview")
     if isinstance(files_preview, Sequence) and files_preview:
         lines.append("files preview:")
@@ -511,6 +514,31 @@ def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> Any
                 _attention_if_nonzero(target.get("missing_without_disc_files", 0)),
             )
         renderables.extend([RichText("targets", style="bold"), target_table])
+    cloud_fetch = _fetch_cloud_payload(summary)
+    if cloud_fetch is not None and _int_value(cloud_fetch.get("total", 0)) > 0:
+        cloud_table = _quiet_table("Session", "State", "Collections", "Paths", "Ready", "Expires")
+        sessions = cloud_fetch.get("sessions")
+        if isinstance(sessions, Sequence):
+            for session in sessions:
+                if not isinstance(session, Mapping):
+                    continue
+                cloud_table.add_row(
+                    str(session.get("id", "unknown")),
+                    _recovery_state_text(session.get("state", "unknown")),
+                    _preview_lines(_recovery_ids(session, "collections"), limit=3),
+                    _restore_paths_text(session),
+                    str(session.get("restore_ready_at") or "unknown"),
+                    str(session.get("restore_expires_at") or "unknown"),
+                )
+        if not cloud_table.rows:
+            cloud_table.add_row("none", "", "", "", "", "")
+        renderables.extend(
+            [
+                RichText("cloud fetch", style="bold"),
+                _fetch_cloud_scope_text(cloud_fetch),
+                cloud_table,
+            ]
+        )
     files_preview = summary.get("files_preview")
     if isinstance(files_preview, Sequence) and files_preview:
         renderables.append(RichText("files preview", style="bold"))
@@ -533,6 +561,73 @@ def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> Any
         renderables.extend([RichText("entries", style="bold"), status_table])
 
     return RichGroup(*renderables)
+
+
+def _fetch_cloud_payload(summary: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    payload = summary.get("cloud_fetch")
+    if not isinstance(payload, Mapping):
+        return None
+    return payload
+
+
+def _fetch_cloud_plain_lines(summary: Mapping[str, Any]) -> list[str]:
+    cloud_fetch = _fetch_cloud_payload(summary)
+    if cloud_fetch is None or _int_value(cloud_fetch.get("total", 0)) <= 0:
+        return []
+    lines = [
+        "cloud fetch:",
+        f"sessions: {cloud_fetch.get('sessions_returned', len(_cloud_sessions(cloud_fetch)))}/"
+        f"{cloud_fetch.get('total', 0)}",
+    ]
+    sessions = cloud_fetch.get("sessions")
+    if not isinstance(sessions, Sequence) or not sessions:
+        lines.append("- none")
+        return lines
+    for session in sessions:
+        if not isinstance(session, Mapping):
+            continue
+        lines.extend(
+            [
+                f"- {session.get('id', 'unknown')} state={session.get('state', 'unknown')}",
+                f"  collections: {_collection_ids_text(_recovery_ids(session, 'collections'))}",
+                f"  paths: {_restore_paths_text(session)}",
+                f"  ready: {session.get('restore_ready_at') or 'unknown'}",
+                f"  expires: {session.get('restore_expires_at') or 'unknown'}",
+            ]
+        )
+        if session.get("latest_message"):
+            lines.append(f"  message: {session.get('latest_message')}")
+    return lines
+
+
+def _cloud_sessions(cloud_fetch: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    sessions = cloud_fetch.get("sessions")
+    if not isinstance(sessions, Sequence) or isinstance(sessions, (str, bytes, bytearray)):
+        return []
+    return [session for session in sessions if isinstance(session, Mapping)]
+
+
+def _restore_paths_text(session: Mapping[str, Any]) -> str:
+    paths = session.get("restore_paths")
+    if paths is None:
+        return "all"
+    return _preview_lines(_string_items(paths), limit=3)
+
+
+def _fetch_cloud_scope_text(cloud_fetch: Mapping[str, Any]) -> Any:
+    text = RichText()
+    fields: list[tuple[str, object]] = [
+        ("sessions", f"{len(_cloud_sessions(cloud_fetch))}/{cloud_fetch.get('total', 0)}")
+    ]
+    for label in ("state", "type"):
+        if cloud_fetch.get(label) is not None:
+            fields.append((label, cloud_fetch.get(label)))
+    for index, (label, value) in enumerate(fields):
+        if index:
+            text.append("  ")
+        text.append(f"{label}:", style=FIELD_STYLE)
+        text.append(f" {value}")
+    return text
 
 
 def _format_fetch_files_plain(payload: Mapping[str, Any]) -> str:
@@ -702,34 +797,6 @@ def format_recovery_sessions(payload: Mapping[str, Any]) -> Any:
     if not table.rows:
         table.add_row("none", "", "", "", "", "", "")
     return RichGroup(_page_text("recovery sessions", payload), _recovery_scope_text(payload), table)
-
-
-def _format_cloud_fetch_plain(payload: Mapping[str, Any]) -> str:
-    lines = [
-        f"cloud fetch: {payload.get('fetch_id', 'unknown')}",
-        f"name: {payload.get('name', 'unknown')}",
-        "targets:",
-        *[f"- {target}" for target in _string_items(payload.get("targets"))],
-    ]
-    sessions_text = _format_recovery_sessions_plain(payload)
-    lines.append(sessions_text)
-    return "\n".join(lines)
-
-
-def format_cloud_fetch(payload: Mapping[str, Any]) -> Any:
-    if not _rich_enabled():
-        return _format_cloud_fetch_plain(payload)
-
-    overview = _detail_table()
-    overview.add_row("fetch", _entity_text(payload.get("fetch_id", "unknown")))
-    overview.add_row("name", str(payload.get("name", "unknown")))
-    overview.add_row("targets", _targets_lines(payload.get("targets")))
-    overview.add_row("sessions", str(payload.get("total", 0)))
-    return RichGroup(
-        RichText("cloud fetch", style="bold"),
-        overview,
-        format_recovery_sessions(payload),
-    )
 
 
 def _format_recovery_session_plain(payload: Mapping[str, Any]) -> str:

@@ -15,6 +15,8 @@ Riverhog is collection-first:
 - `riverhog hot fetch show` is the bounded preflight/progress view.
 - `riverhog hot fetch files` is the paged, searchable, sortable selected-file
   drill-down for a fetch.
+- `riverhog hot fetch cancel` is the single cancellation path for active
+  fetches, whether they were queued for optical media or cloud materialization.
 
 Djdan is optical-media-first:
 

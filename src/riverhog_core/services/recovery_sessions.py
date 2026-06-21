@@ -11,7 +11,7 @@ from math import ceil
 from pathlib import Path
 from typing import cast
 
-from sqlalchemy import asc, desc, func, or_, select
+from sqlalchemy import and_, asc, desc, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from riverhog_core.archive_compliance import (
@@ -24,8 +24,8 @@ from riverhog_core.catalog_models import (
     CollectionArchiveRecord,
     CollectionFileRecord,
     CollectionRecord,
+    FetchOperatorFileRecord,
     FetchRecord,
-    FetchSelectorRecord,
     FinalizedImageCollectionArtifactRecord,
     FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
@@ -78,7 +78,6 @@ from riverhog_core.recovery_payloads import (
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.compliance import file_has_registered_disc_coverage
-from riverhog_core.services.target_selection import selected_collection_files
 from riverhog_core.webhooks import (
     WebhookConfig,
     build_recovery_canceled_payload,
@@ -1025,25 +1024,21 @@ def _require_fetch(session: Session, fetch_id: str) -> FetchRecord:
     return fetch_record
 
 
-def _fetch_selector_targets(session: Session, fetch_id: str) -> tuple[str, ...]:
-    return tuple(
+def _selected_fetch_files(session: Session, fetch_id: str) -> list[CollectionFileRecord]:
+    return list(
         session.scalars(
-            select(FetchSelectorRecord.target)
-            .where(FetchSelectorRecord.fetch_id == fetch_id)
-            .order_by(FetchSelectorRecord.selector_order, FetchSelectorRecord.target)
+            select(CollectionFileRecord)
+            .join(
+                FetchOperatorFileRecord,
+                and_(
+                    FetchOperatorFileRecord.collection_id == CollectionFileRecord.collection_id,
+                    FetchOperatorFileRecord.path == CollectionFileRecord.path,
+                ),
+            )
+            .where(FetchOperatorFileRecord.fetch_id == fetch_id)
+            .order_by(FetchOperatorFileRecord.collection_id, FetchOperatorFileRecord.path)
         ).all()
     )
-
-
-def _selected_fetch_files(session: Session, fetch_id: str) -> list[CollectionFileRecord]:
-    selected_by_key: dict[tuple[str, str], CollectionFileRecord] = {}
-    targets = _fetch_selector_targets(session, fetch_id)
-    for target in targets:
-        for record in selected_collection_files(session, target, missing_ok=True):
-            selected_by_key[(record.collection_id, record.path)] = record
-    return [
-        selected_by_key[key] for key in sorted(selected_by_key, key=lambda item: (item[0], item[1]))
-    ]
 
 
 def _fetch_collection_restore_paths(
@@ -1052,27 +1047,49 @@ def _fetch_collection_restore_paths(
     fetch_record: FetchRecord,
     missing_only: bool,
 ) -> dict[str, set[str]]:
-    selected = _selected_fetch_files(session, fetch_record.fetch_id)
-    if not selected:
+    selected_exists = (
+        session.scalar(
+            select(FetchOperatorFileRecord.fetch_id)
+            .where(FetchOperatorFileRecord.fetch_id == fetch_record.fetch_id)
+            .limit(1)
+        )
+        is not None
+    )
+    stmt = (
+        select(
+            FetchOperatorFileRecord.collection_id,
+            FetchOperatorFileRecord.path,
+        )
+        .where(FetchOperatorFileRecord.fetch_id == fetch_record.fetch_id)
+        .order_by(FetchOperatorFileRecord.collection_id, FetchOperatorFileRecord.path)
+    )
+    if missing_only:
+        stmt = stmt.where(FetchOperatorFileRecord.hot.is_(False))
+    rows = session.execute(stmt).all()
+    if not rows:
+        if selected_exists and missing_only:
+            return {}
         raise NotFound(f"fetch has no files: {fetch_record.fetch_id}")
     paths_by_collection: dict[str, set[str]] = {}
-    for file_record in selected:
-        if missing_only and file_record.hot:
-            continue
-        paths_by_collection.setdefault(file_record.collection_id, set()).add(file_record.path)
+    for collection_id, path in rows:
+        paths_by_collection.setdefault(collection_id, set()).add(path)
     return paths_by_collection
 
 
 def _record_restore_paths_intersect_fetch(
+    session: Session,
     record: GlacierRecoverySessionRecord,
-    paths_by_collection: dict[str, set[str]],
+    fetch_id: str,
 ) -> bool:
     restore_paths = _restore_paths_from_json(record.restore_paths_json)
     for collection in record.collections:
-        fetch_paths = paths_by_collection.get(collection.collection_id)
-        if not fetch_paths:
-            continue
-        if restore_paths is None or set(restore_paths) & fetch_paths:
+        stmt = select(FetchOperatorFileRecord.fetch_id).where(
+            FetchOperatorFileRecord.fetch_id == fetch_id,
+            FetchOperatorFileRecord.collection_id == collection.collection_id,
+        )
+        if restore_paths is not None:
+            stmt = stmt.where(FetchOperatorFileRecord.path.in_(restore_paths))
+        if session.scalar(stmt.limit(1)) is not None:
             return True
     return False
 
@@ -1083,10 +1100,11 @@ def _collection_restore_records_for_fetch(
     fetch_record: FetchRecord,
     state: str | None,
 ) -> list[GlacierRecoverySessionRecord]:
-    paths_by_collection = _fetch_collection_restore_paths(
-        session,
-        fetch_record=fetch_record,
-        missing_only=False,
+    selected_collections = (
+        select(FetchOperatorFileRecord.collection_id)
+        .where(FetchOperatorFileRecord.fetch_id == fetch_record.fetch_id)
+        .distinct()
+        .subquery()
     )
     type_expr = func.coalesce(GlacierRecoverySessionRecord.type, "image_rebuild")
     stmt = (
@@ -1098,7 +1116,9 @@ def _collection_restore_records_for_fetch(
         )
         .where(type_expr == "collection_restore")
         .where(
-            GlacierRecoverySessionCollectionRecord.collection_id.in_(sorted(paths_by_collection))
+            GlacierRecoverySessionCollectionRecord.collection_id.in_(
+                select(selected_collections.c.collection_id)
+            )
         )
     )
     if state is not None:
@@ -1107,7 +1127,7 @@ def _collection_restore_records_for_fetch(
     return [
         record
         for record in records
-        if _record_restore_paths_intersect_fetch(record, paths_by_collection)
+        if _record_restore_paths_intersect_fetch(session, record, fetch_record.fetch_id)
     ]
 
 

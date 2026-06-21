@@ -274,6 +274,87 @@ def test_waiting_fetch_status_uses_pending_preview_without_materializing_entries
         assert session.scalars(select(FetchEntryRecord)).all() == []
 
 
+def test_cancel_djdan_fetch_discards_uploads_entries_and_returns_to_draft(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+
+    collection_id = "docs"
+    path = "file.txt"
+    target = f"{collection_id}/{path}"
+    content = b"payload\n"
+    encrypted = encrypt_recovery_payload(content, _RECOVERY_CODEC)
+    sha256 = hashlib.sha256(content).hexdigest()
+    tus_url = "http://example.invalid:1080/files/fetch-entry"
+    target_path = "/.riverhog/uploads/recovery/fx-1/e1.enc"
+    upload_store = _RaceyUploadStore({target_path: encrypted})
+    service = SqlAlchemyFetchService(
+        _config(sqlite_path),
+        _FakeHotStore({}),
+        upload_store,
+        _RECOVERY_CODEC,
+    )
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
+
+    with session_scope(session_factory) as session:
+        session.add(CollectionRecord(id=collection_id))
+        session.add(
+            CollectionFileRecord(
+                collection_id=collection_id,
+                path=path,
+                bytes=len(content),
+                sha256=sha256,
+                hot=False,
+                archived=True,
+            )
+        )
+        _add_fetch(
+            session,
+            target=target,
+            fetch_id="fx-1",
+            fetch_state=FetchState.UPLOADING.value,
+        )
+        session.flush()
+        fetch = session.get(FetchRecord, "fx-1")
+        assert fetch is not None
+        fetch.fetch_notification_sent_at = "2026-04-20T04:00:00Z"
+        fetch.fetch_notification_next_attempt_at = "2026-04-21T04:00:00Z"
+        fetch.fetch_notification_failure = "temporary failure"
+        fetch.fetch_notification_count = 2
+        session.add(
+            FetchEntryRecord(
+                fetch_id="fx-1",
+                entry_id="e1",
+                entry_order=1,
+                collection_id=collection_id,
+                path=path,
+                bytes=len(content),
+                sha256=sha256,
+                recovery_bytes=len(encrypted),
+                uploaded_bytes=3,
+                upload_expires_at="2026-04-21T04:00:00Z",
+                tus_url=tus_url,
+            )
+        )
+
+    summary = service.cancel("fx-1")
+
+    assert summary.state == FetchState.DRAFT
+    assert summary.entries_total == 1
+    assert upload_store.cancelled_uploads == [tus_url]
+    assert upload_store.deleted_targets == [target_path]
+    with session_scope(session_factory) as session:
+        fetch = session.get(FetchRecord, "fx-1")
+        assert fetch is not None
+        assert fetch.fetch_state == FetchState.DRAFT.value
+        assert fetch.fetch_notification_sent_at is None
+        assert fetch.fetch_notification_next_attempt_at is None
+        assert fetch.fetch_notification_failure is None
+        assert fetch.fetch_notification_count is None
+        assert session.scalars(select(FetchEntryRecord)).all() == []
+
+
 def test_waiting_fetch_notifications_are_delivered_and_reminded(
     tmp_path: Path,
     monkeypatch,

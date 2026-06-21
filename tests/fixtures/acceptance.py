@@ -3871,6 +3871,25 @@ class AcceptanceFetchService:
         return record.summary
 
     @_with_state_lock
+    def cancel(self, fetch_id: str) -> FetchSummary:
+        record = self._record(fetch_id)
+        if record.summary.state in {
+            FetchState.QUEUED_CLOUD,
+            FetchState.CLOUD_FETCHING,
+        }:
+            raise InvalidState("cloud fetches are canceled through recovery sessions")
+        if record.summary.state == FetchState.DONE:
+            raise InvalidState("completed fetches cannot be canceled")
+        for entry in record.entries.values():
+            entry.upload_url = None
+            entry.uploaded_bytes = 0
+            entry.uploaded_content = None
+            entry.upload_expires_at = None
+        record.entries = {}
+        record.summary = self._replace_summary(record, state=FetchState.DRAFT)
+        return record.summary
+
+    @_with_state_lock
     def evict(self, targets: list[str]) -> dict[str, object]:
         canonical_targets = self._canonical_targets(targets)
         if not canonical_targets:

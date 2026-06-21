@@ -10,14 +10,14 @@ Feature: Recovery sessions API
     And target "docs/tax/2022/invoice-123.pdf" has a draft fetch
     When the client starts fetch "fx-1" for cloud
     Then the response status is 200
-    When the client gets "/v1/fetches/fx-1/cloud-fetch"
+    When the client gets "/v1/fetches/fx-1/status"
     Then the response status is 200
     And the response cloud-fetch sessions contain recovery session "rs-docs-restore-1"
     When the client waits for recovery session "rs-docs-restore-1" state "completed"
     Then the response status is 200
     And the response recovery session state is "completed"
     When the API process restarts
-    And the client gets "/v1/fetches/fx-1/cloud-fetch"
+    And the client gets "/v1/fetches/fx-1/status"
     Then the response status is 200
     And the response cloud-fetch sessions contain recovery session "rs-docs-restore-1"
   Scenario: Hot cloud-fetch verifies manifest and proof before completing automatically

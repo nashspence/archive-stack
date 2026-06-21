@@ -64,7 +64,14 @@ Start automatic cloud materialization:
 
 ```bash
 riverhog hot fetch start fx-1 --cloud
-riverhog hot fetch cloud-fetch show fx-1
+riverhog hot fetch show fx-1
+```
+
+Cancel an active fetch, whether it was queued for `djdan` or cloud
+materialization:
+
+```bash
+riverhog hot fetch cancel fx-1
 ```
 
 ## Evict hot files
@@ -83,6 +90,6 @@ selected and evicted counts.
 - Draft fetches can be edited with `riverhog hot fetch add` and
   `riverhog hot fetch remove`.
 - A fetch is frozen once queued to `djdan` or cloud-fetch.
-- Cloud-fetch cancellation returns the fetch to draft when possible.
+- Fetch cancellation returns the fetch to draft when possible.
 - `djdan fetch` with no id clears the queued djdan fetch backlog in one guided
   session.

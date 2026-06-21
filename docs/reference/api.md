@@ -391,42 +391,20 @@ state changes leave a finalized image with no protected copies and the required
 collection Glacier archives are uploaded. The recovery processor requests and
 polls Glacier restore work automatically.
 
-#### `GET /v1/fetches/{fetch_id}/cloud-fetch`
+#### `POST /v1/fetches/{fetch_id}/cancel`
 
-Returns the cloud-fetch recovery sessions for one active hot-storage fetch.
-
-Required behavior:
-
-- returns collection-native `collection_restore` sessions that intersect the
-  files selected by the fetch
-- uses the fetch id, not a collection id, as the operator-facing handle
-- supports bounded paging and the same recovery-session sort/state filters used
-  by other recovery-session views
-- returns `not_found` when the fetch id is not active
-
-#### `POST /v1/fetches/{fetch_id}/cloud-fetch`
-
-Creates or resumes cloud archive recovery for one active hot-storage fetch.
+Cancels an active hot-storage fetch.
 
 Required behavior:
 
-- creates or resumes automatic collection-native recovery sessions for missing
-  files selected by the fetch
-- requests Glacier restore work immediately, polls readiness, verifies the
-  restored manifest/proof/archive, materializes requested files into hot
-  storage, and records temporary restore cleanup automatically
-- returns the fetch-scoped list of underlying recovery sessions
-- suppresses normal optical-media fetch reminders and physical-media upload
-  operations for the same fetch while cloud-fetch recovery is active
-
-#### `POST /v1/fetches/{fetch_id}/cloud-fetch/cancel`
-
-Cancels active cloud-fetch recovery for one active hot-storage fetch.
-
-Required behavior:
-
-- cancels active collection-native recovery sessions that intersect the fetch
-- returns the fetch-scoped list of underlying recovery sessions after canceling
+- cancels a fetch by fetch id, regardless of whether it was queued for `djdan`
+  or cloud materialization
+- for `djdan` fetches, cancels any in-flight resumable upload resources,
+  discards staged recovery bytes, deletes existing fetch entries, clears queued
+  notification state, and returns the fetch to `draft`
+- for cloud fetches, cancels active collection-native recovery sessions that
+  intersect the fetch and returns the fetch to `draft` when possible
+- returns the same fetch status payload as `GET /v1/fetches/{fetch_id}/status`
 
 #### `GET /v1/recovery-sessions`
 
@@ -688,6 +666,7 @@ Returns a bounded operator preflight/status view for one named fetch.
 - includes the same summary fields as `GET /v1/fetches/{fetch_id}`
 - includes derived hot/archive/disc coverage counts from the fetch file projection
 - includes per-target summaries, a bounded selected-file preview, and the recommended next operator action
+- includes a bounded `cloud_fetch` recovery-session list for cloud materialization progress and cancellation audit
 - includes a bounded list of pending, partial, or byte-complete entry statuses
 - does not include recovery copy hints, part metadata, or recovery-byte digests
 - does not backfill finalized-image recovery metadata
@@ -788,14 +767,6 @@ manifest remains readable after completion.
 If verification fails, the fetch remains active and incomplete. Clients should delete the affected `byte_complete` entry
 upload resource before retrying from another registered copy or from recovered media.
 
-#### `GET /v1/fetches/{fetch_id}/cloud-fetch`
-
-Lists cloud-fetch recovery sessions for one fetch.
-
-#### `POST /v1/fetches/{fetch_id}/cloud-fetch/cancel`
-
-Cancels active cloud-fetch recovery sessions for one fetch and returns the fetch to draft when possible.
-
 ## Error model
 
 All non-2xx responses return JSON with at least:
@@ -832,7 +803,7 @@ The `riverhog` CLI is collection-first and should provide:
 - `riverhog hot fetch show FETCH_ID`
 - `riverhog hot fetch files FETCH_ID [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--hot|--not-hot] [--archived|--not-archived] [--disc|--no-disc]`
 - `riverhog hot fetch start FETCH_ID [--cloud]`
-- `riverhog hot fetch cloud-fetch show|cancel FETCH_ID`
+- `riverhog hot fetch cancel FETCH_ID`
 
 `riverhog collection upload` streams files in bounded tus-compatible chunks. The default
 chunk size is 8 MiB; operators may set `RIVERHOG_UPLOAD_CHUNK_BYTES` to a
@@ -914,6 +885,7 @@ collection, hot-storage, and deep-archive filters; JSON output mirrors the
 
 - the fetch purpose, selectors, state, coverage counts, and next recommended action
 - per-target selected-file summaries
+- active or completed cloud-fetch recovery sessions when present
 - a bounded preview of selected files
 - files still pending upload
 - files currently partial and still resumable
@@ -981,7 +953,7 @@ Required behavior:
 
 - creating a fetch requires a human-readable name
 - draft fetches can be edited by adding or removing selectors
-- started fetches are frozen until they complete, fail, or a cloud-fetch cancellation returns them to draft
+- started fetches are frozen until they complete, fail, or fetch cancellation returns them to draft
 - starting a fetch without `--cloud` queues it for `djdan fetch`
 - `djdan fetch` with no id clears all queued djdan fetches in one guided session
 - starting a fetch with `--cloud` creates or resumes cloud materialization for the selected files

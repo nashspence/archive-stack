@@ -735,6 +735,10 @@ def _prepare_riverhog_expectation(
         context.expected_api_endpoint = ("POST", f"/v1/fetches/{argv[4]}/start")
         return
 
+    if argv[1:4] == ["hot", "fetch", "cancel"]:
+        context.expected_api_endpoint = ("POST", f"/v1/fetches/{argv[4]}/cancel")
+        return
+
     if argv[1:3] == ["collection", "show"]:
         collection_id = argv[3]
         context.expected_api_endpoint = ("GET", f"/v1/collections/{collection_id}")
@@ -742,30 +746,6 @@ def _prepare_riverhog_expectation(
             "GET",
             f"/v1/collections/{quote(collection_id, safe='/')}",
         ).json()
-        return
-
-    if argv[1:5] == ["hot", "fetch", "cloud-fetch", "show"]:
-        fetch_id = argv[5]
-        context.expected_api_endpoint = ("GET", f"/v1/fetches/{fetch_id}/cloud-fetch")
-        params: dict[str, object] = {
-            "page": _riverhog_option_value(argv, "--page", 1),
-            "per_page": _riverhog_option_value(argv, "--per-page", 25),
-            "sort": _riverhog_option_value(argv, "--sort", "created_at"),
-            "order": str(_riverhog_option_value(argv, "--order", "desc")).casefold(),
-        }
-        state = _riverhog_option_value(argv, "--state")
-        if state is not None:
-            params["state"] = state
-        context.expected_api_payload = acceptance_system.request(
-            "GET",
-            f"/v1/fetches/{quote(fetch_id, safe='/')}/cloud-fetch",
-            params=params,
-        ).json()
-        return
-
-    if argv[1:5] == ["hot", "fetch", "cloud-fetch", "cancel"]:
-        fetch_id = argv[5]
-        context.expected_api_endpoint = ("POST", f"/v1/fetches/{fetch_id}/cloud-fetch/cancel")
         return
 
     if argv[1:3] == ["collection", "upload"]:
@@ -3639,7 +3619,8 @@ def then_response_cloud_fetch_sessions_contain_recovery_session(
     session_id: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert session_id in {session["id"] for session in payload["sessions"]}
+    sessions_payload = payload.get("cloud_fetch", payload)
+    assert session_id in {session["id"] for session in sessions_payload["sessions"]}
 
 
 @then(parsers.parse('the response recovery session images contain only "{image_id}"'))

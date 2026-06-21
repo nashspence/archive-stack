@@ -258,6 +258,27 @@ class SqlAlchemyFetchService:
                 prefer_entries=True,
             )
 
+    def cancel(self, fetch_id: str) -> FetchSummary:
+        with session_scope(self._session_factory) as session:
+            fetch_record = _get_fetch_record(session, fetch_id)
+            if fetch_record.fetch_state in _CLOUD_FETCH_STATES:
+                raise InvalidState("cloud fetches are canceled through recovery sessions")
+            if fetch_record.fetch_state == FetchState.DONE.value:
+                raise InvalidState("completed fetches cannot be canceled")
+
+            _discard_existing_fetch_uploads(
+                session,
+                fetch_record.fetch_id,
+                self._upload_store,
+            )
+            fetch_record.fetch_state = FetchState.DRAFT.value
+            _clear_fetch_notification_state(fetch_record)
+            session.flush()
+            return fetch_summary_from_projection(
+                _get_fetch_projection(session, fetch_record.fetch_id),
+                prefer_entries=True,
+            )
+
     def evict(self, targets: Sequence[str]) -> dict[str, object]:
         canonical_targets = _canonical_targets(targets)
         if not canonical_targets:
@@ -950,6 +971,13 @@ def _replace_fetch_selectors(
         )
 
 
+def _clear_fetch_notification_state(fetch_record: FetchRecord) -> None:
+    fetch_record.fetch_notification_sent_at = None
+    fetch_record.fetch_notification_next_attempt_at = None
+    fetch_record.fetch_notification_failure = None
+    fetch_record.fetch_notification_count = None
+
+
 def _require_editable_fetch(fetch_record: FetchRecord) -> None:
     if fetch_record.fetch_state not in _EDITABLE_FETCH_STATES:
         raise InvalidState("fetch is already started and cannot be edited")
@@ -1054,6 +1082,20 @@ def _ensure_fetch_entries(
         created.append(entry)
     session.flush()
     return created
+
+
+def _discard_existing_fetch_uploads(
+    session: Session,
+    fetch_id: str,
+    upload_store: UploadStore,
+) -> None:
+    entries = _existing_fetch_entries(session, fetch_id)
+    for entry in entries:
+        target_path = _entry_upload_target_path(entry)
+        if entry.tus_url is not None:
+            upload_store.cancel_upload(entry.tus_url)
+        upload_store.delete_target(target_path)
+    session.execute(delete(FetchEntryRecord).where(FetchEntryRecord.fetch_id == fetch_id))
 
 
 def _fetch_status_payload(

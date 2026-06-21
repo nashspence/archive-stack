@@ -109,9 +109,3 @@ class RecoverySessionListOut(RiverhogModel):
     collection: str | None
     image: str | None
     sessions: list[RecoverySessionOut]
-
-
-class CloudFetchSessionsOut(RecoverySessionListOut):
-    fetch_id: str
-    name: str
-    targets: list[str]

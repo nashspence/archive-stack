@@ -416,36 +416,6 @@ class ApiClient:
             params["image"] = image
         return self._json("GET", "/v1/recovery-sessions", params=params)
 
-    def get_cloud_fetch_sessions(
-        self,
-        fetch_id: str,
-        *,
-        page: int = 1,
-        per_page: int = 25,
-        sort: str = "created_at",
-        order: str = "desc",
-        state: str | None = None,
-    ) -> dict[str, Any]:
-        params: dict[str, Any] = {
-            "page": page,
-            "per_page": per_page,
-            "sort": sort,
-            "order": order,
-        }
-        if state is not None:
-            params["state"] = state
-        return self._json(
-            "GET",
-            f"/v1/fetches/{quote(fetch_id, safe='/')}/cloud-fetch",
-            params=params,
-        )
-
-    def cancel_cloud_fetch(self, fetch_id: str) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            f"/v1/fetches/{quote(fetch_id, safe='/')}/cloud-fetch/cancel",
-        )
-
     def get_recovery_session(self, session_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/recovery-sessions/{quote(session_id, safe='/')}")
 
@@ -674,6 +644,9 @@ class ApiClient:
             f"/v1/fetches/{quote(fetch_id, safe='/')}/start",
             json={"cloud": cloud},
         )
+
+    def cancel_fetch(self, fetch_id: str) -> dict[str, Any]:
+        return self._json("POST", f"/v1/fetches/{quote(fetch_id, safe='/')}/cancel")
 
     def evict_hot_targets(self, targets: Sequence[str]) -> dict[str, Any]:
         return self._json("POST", "/v1/hot/evict", json={"targets": list(targets)})

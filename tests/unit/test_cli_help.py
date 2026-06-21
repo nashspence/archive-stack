@@ -51,17 +51,10 @@ def test_riverhog_command_help_has_summaries() -> None:
         "Show fetch preflight and progress summary.",
         "List selected files for a fetch.",
         "Queue a fetch for djdan, or for cloud recovery with --cloud.",
-        "Cloud archive recovery sessions for fetches.",
+        "Cancel an active fetch and return it to draft.",
     ):
         assert summary in fetch.stdout
-
-    cloud_fetch = runner.invoke(riverhog_app, ["hot", "fetch", "cloud-fetch", "--help"])
-    assert cloud_fetch.exit_code == 0
-    for summary in (
-        "Show cloud-fetch recovery for one fetch.",
-        "Cancel active cloud archive recovery for one fetch.",
-    ):
-        assert summary in cloud_fetch.stdout
+    assert "cloud-fetch" not in fetch.stdout
 
 
 def test_djdan_help() -> None:
