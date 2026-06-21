@@ -17,6 +17,7 @@ FIELD_STYLE = "bold #c0ad6c"
 ENTITY_ID_STYLE = "bold #8ec9cc"
 ATTENTION_STYLE = "bold #ff8933"
 _ATTENTION_TOKENS = {"under_protected", "partially_protected", "partial"}
+_FETCH_SHOW_FILE_PREVIEW_LIMIT = 8
 
 try:
     from rich.console import Console as RichConsole
@@ -402,9 +403,12 @@ def _format_fetch_plain(summary: Mapping[str, Any], manifest: Mapping[str, Any])
     files_preview = summary.get("files_preview")
     if isinstance(files_preview, Sequence) and files_preview:
         lines.append("files preview:")
-        for file in files_preview:
+        for file in files_preview[:_FETCH_SHOW_FILE_PREVIEW_LIMIT]:
             if isinstance(file, Mapping):
                 lines.extend(_fetch_file_plain_lines(file))
+        remaining = _int_value(summary.get("files", 0)) - _FETCH_SHOW_FILE_PREVIEW_LIMIT
+        if remaining > 0:
+            lines.append(f"... {remaining} more; use riverhog hot fetch files {summary.get('id')}")
     if not pending and not partial and not byte_complete:
         lines.append("entries: none")
         return "\n".join(lines)
@@ -510,9 +514,14 @@ def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> Any
     files_preview = summary.get("files_preview")
     if isinstance(files_preview, Sequence) and files_preview:
         renderables.append(RichText("files preview", style="bold"))
-        for file in files_preview:
+        for file in files_preview[:_FETCH_SHOW_FILE_PREVIEW_LIMIT]:
             if isinstance(file, Mapping):
                 renderables.extend(["", _fetch_file_record_text(file, primary=False)])
+        remaining = _int_value(summary.get("files", 0)) - _FETCH_SHOW_FILE_PREVIEW_LIMIT
+        if remaining > 0:
+            renderables.append(
+                f"... {remaining} more; use riverhog hot fetch files {summary.get('id')}"
+            )
     if pending or partial or byte_complete:
         status_table = _quiet_table("Status", "Items")
         if pending:
