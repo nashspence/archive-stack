@@ -86,13 +86,6 @@ Feature: djdan CLI
     And stdout matches the structure of GET "/v1/images"
     And stdout mentions "20260420T040001Z"
 
-  Scenario: djdan disc add emits the generated-disc registration payload
-    Given candidate "img_2026-04-20_01" is finalized
-    When the operator runs 'djdan disc add 20260420T040001Z --at "Shelf B1" --json'
-    Then the command exits with code 0
-    And stdout is valid JSON
-    And stdout mentions "20260420T040001Z-1"
-
   Scenario: djdan disc list emits a paged generated-disc listing payload
     Given candidate "img_2026-04-20_01" is finalized
     When the operator runs 'djdan disc list 20260420T040001Z --page 1 --per-page 25 --json'
@@ -128,11 +121,3 @@ Feature: djdan CLI
     And stdout mentions "images:"
     And stdout mentions "20260420T040001Z"
     And stdout mentions "protection:"
-
-  Scenario: djdan disc add prints the generated label text and state
-    Given candidate "img_2026-04-20_01" is finalized
-    When the operator runs 'djdan disc add 20260420T040001Z --at "Shelf B1"'
-    Then the command exits with code 0
-    And stdout mentions "disc: 20260420T040001Z-1"
-    And stdout mentions "label: 20260420T040001Z-1"
-    And stdout mentions "state: registered"

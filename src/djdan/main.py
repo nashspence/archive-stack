@@ -2309,22 +2309,6 @@ def disc_show_cmd(
     emit(copy if json_mode else format_disc(copy), json_mode=json_mode)
 
 
-@disc_app.command("add")
-def disc_add_cmd(
-    image_id: Annotated[str, typer.Argument(help="Finalized image id")],
-    at: Annotated[str, typer.Option("--at", help="Physical location label")],
-    copy_id: Annotated[
-        str | None,
-        typer.Option("--copy-id", help="Generated copy id to claim explicitly"),
-    ] = None,
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Register a physical disc copy."""
-
-    payload = ApiClient().register_copy(image_id, at, copy_id=copy_id)
-    _emit_disc_payload(payload, image_id=image_id, json_mode=json_mode)
-
-
 @disc_app.command("location")
 def disc_location_cmd(
     copy_id: Annotated[str, typer.Argument(help="Generated disc/copy id")],

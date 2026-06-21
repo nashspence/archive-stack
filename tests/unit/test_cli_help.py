@@ -88,7 +88,6 @@ def test_djdan_command_help_has_summaries() -> None:
     for summary in (
         "List registered burned discs.",
         "Show burned disc details.",
-        "Register a physical disc copy.",
         "Update a disc location label.",
         "Disc rebuild operations.",
     ):

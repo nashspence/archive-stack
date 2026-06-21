@@ -908,7 +908,6 @@ The `djdan` CLI is an optical-media client for a machine with an optical drive a
 - `djdan image download IMAGE_ID [-o FILE]`
 - `djdan disc list [IMAGE_ID] [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT]`
 - `djdan disc show COPY_ID`
-- `djdan disc add IMAGE_ID --at LOCATION [--copy-id GENERATED_ID]`
 - `djdan disc location COPY_ID --to LOCATION`
 - `djdan disc rebuild start COPY_ID --reason lost|damaged`
 - `djdan disc rebuild list|show|pause|resume`
@@ -923,6 +922,8 @@ For finalized-image and disc commands:
 - `djdan disc list IMAGE_ID --json` mirrors the `GET /v1/images/{image_id}/copies` response payload
 - standalone manual candidate finalization is intentionally not exposed; `djdan burn` selects and
   finalizes ready candidates as part of the guided burn workflow
+- standalone manual disc registration is intentionally not exposed; `djdan burn` registers verified physical copies as
+  part of the guided burn workflow
 - non-JSON `djdan image plan` output stays concise and line-oriented while surfacing candidate id, fill, readiness, and
   contained collections
 - non-JSON `djdan image list` is a literal paginated finalized-image listing
