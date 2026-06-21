@@ -19,6 +19,10 @@ build/
 dist/
 /.tmp
 
+# Riverhog locks dependencies with hashed requirements-*.txt files.
+# Bare `uv run` may generate this, but it is not the source of truth.
+/uv.lock
+
 .env
 .env.*
 .devcontainer/.env
