@@ -4176,57 +4176,6 @@ def test_list_jobs_does_not_scan_all_job_states_for_current_page(
     assert "queue" not in page["jobs"][0]
 
 
-def test_init_state_store_backfills_missing_job_summaries(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    runner = load_runner(tmp_path, monkeypatch)
-    runner.ensure_dirs()
-    runner.init_state_store()
-    legacy_job = {
-        "job_id": "legacy",
-        "state": "running",
-        "phase": "encoding",
-        "collection_slug": "legacy-camera",
-        "created_at": "2026-01-01T00:00:00Z",
-        "updated_at": "2026-01-01T00:00:00Z",
-    }
-    with runner.state_db() as conn:
-        conn.execute(
-            "DELETE FROM states WHERE kind = 'control' AND id = ?",
-            (runner.JOB_SUMMARY_BACKFILL_CONTROL_ID,),
-        )
-        conn.execute(
-            """
-            INSERT INTO states(kind, id, payload, updated_at)
-            VALUES('job', 'legacy', ?, '2026-01-01T00:00:00Z')
-            """,
-            (json.dumps(legacy_job),),
-        )
-        conn.commit()
-
-    runner.init_state_store()
-    page = runner.list_jobs(terminal="all", q="legacy")
-
-    assert [job["job_id"] for job in page["jobs"]] == ["legacy"]
-
-
-def test_init_state_store_skips_job_summary_backfill_after_marker(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    runner = load_runner(tmp_path, monkeypatch)
-    runner.ensure_dirs()
-    runner.init_state_store()
-
-    def fail_backfill() -> None:
-        raise AssertionError("job summary backfill should be one-time")
-
-    monkeypatch.setattr(runner, "backfill_missing_job_summaries", fail_backfill)
-
-    runner.init_state_store()
-
-
 def test_acquire_job_gpu_reuses_persisted_lease_token(
     tmp_path: Path,
     monkeypatch,

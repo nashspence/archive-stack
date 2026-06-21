@@ -252,7 +252,6 @@ JOB_LIST_SORT_COLUMNS = {
 }
 JOB_LIST_TERMINAL_FILTERS = {"active", "all", "terminal"}
 JOB_SEARCH_TOKEN_RE = re.compile(r"[0-9A-Za-z]+")
-JOB_SUMMARY_BACKFILL_CONTROL_ID = "job-summary-index-v1"
 cleanup_stop = threading.Event()
 cleanup_thread: threading.Thread | None = None
 riverhog_upload_stop = threading.Event()
@@ -1010,16 +1009,7 @@ def init_state_store() -> None:
             "CREATE VIRTUAL TABLE IF NOT EXISTS job_summaries_fts "
             "USING fts5(job_id UNINDEXED, search_text)"
         )
-        needs_job_summary_backfill = (
-            conn.execute(
-                "SELECT 1 FROM states WHERE kind = 'control' AND id = ?",
-                (JOB_SUMMARY_BACKFILL_CONTROL_ID,),
-            ).fetchone()
-            is None
-        )
         conn.commit()
-    if needs_job_summary_backfill:
-        backfill_missing_job_summaries()
 
 
 def write_state(kind: str, item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1185,54 +1175,6 @@ def upsert_job_summary(conn: sqlite3.Connection, job: dict[str, Any]) -> None:
 def delete_job_summary(conn: sqlite3.Connection, job_id: str) -> None:
     conn.execute("DELETE FROM job_summaries WHERE job_id = ?", (job_id,))
     conn.execute("DELETE FROM job_summaries_fts WHERE job_id = ?", (job_id,))
-
-
-def backfill_missing_job_summaries() -> None:
-    with closing(state_db()) as conn:
-        conn.execute(
-            """
-            DELETE FROM job_summaries
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM states
-                WHERE states.kind = 'job'
-                  AND states.id = job_summaries.job_id
-            )
-            """
-        )
-        rows = conn.execute(
-            """
-            SELECT states.payload
-            FROM states
-            LEFT JOIN job_summaries ON job_summaries.job_id = states.id
-            WHERE states.kind = 'job'
-              AND job_summaries.job_id IS NULL
-            """
-        ).fetchall()
-        for row in rows:
-            try:
-                job = json.loads(str(row["payload"]))
-            except json.JSONDecodeError:
-                log.exception("failed to backfill corrupt job state summary")
-                continue
-            if isinstance(job, dict):
-                upsert_job_summary(conn, job)
-        completed_at = now_iso()
-        conn.execute(
-            """
-            INSERT INTO states(kind, id, payload, updated_at)
-            VALUES('control', ?, ?, ?)
-            ON CONFLICT(kind, id) DO UPDATE SET
-                payload = excluded.payload,
-                updated_at = excluded.updated_at
-            """,
-            (
-                JOB_SUMMARY_BACKFILL_CONTROL_ID,
-                json.dumps({"completed_at": completed_at}, sort_keys=True),
-                completed_at,
-            ),
-        )
-        conn.commit()
 
 
 def job_search_match_query(value: str | None) -> str | None:
