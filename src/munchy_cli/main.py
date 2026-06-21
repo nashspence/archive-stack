@@ -15,7 +15,7 @@ import typer
 from pydantic import ValidationError
 
 from munchy.local_files import FileHashCache, LocalFileCandidate, hash_local_file_candidates
-from munchy.profiles import EncodeProfile, ProfileError, load_encode_profile
+from munchy.profiles import EncodeProfile, ProfileError, load_encode_profiles
 from munchy.runner_client import (
     ATTENTION_STYLE,
     DEFAULT_UPLOAD_CHUNK_MIB,
@@ -107,9 +107,9 @@ def emit(payload: Any, *, json_mode: bool) -> None:
     console.print(payload)
 
 
-def _load_profile_or_exit(path: Path) -> EncodeProfile:
+def _load_profiles_or_exit(path: Path) -> dict[str, EncodeProfile]:
     try:
-        return load_encode_profile(path)
+        return load_encode_profiles(path)
     except (OSError, ProfileError, ValidationError) as exc:
         raise typer.BadParameter(str(exc), param_hint=str(path)) from exc
 
@@ -172,36 +172,53 @@ def _mapping(value: object, *, label: str) -> dict[str, Any]:
     return dict(value)
 
 
-def _plain_profile(path: Path, profile: EncodeProfile) -> str:
-    archive = profile.archive
-    lines = [
-        f"profile: {path}",
-        f"target: {profile.target}",
-        f"container: {archive.container}",
-        f"video: {archive.video.codec} quality={archive.video.quality}",
-        f"audio: {archive.audio.codec} bitrate={archive.audio.bitrate}",
-    ]
-    if profile.description:
-        lines.append(f"description: {profile.description}")
+def _quality(value: int | None) -> str:
+    return "default" if value is None else str(value)
+
+
+def _plain_profiles(path: Path, profiles: Mapping[str, EncodeProfile]) -> str:
+    lines = [f"profiles: {path} count={len(profiles)}"]
+    for name, profile in profiles.items():
+        archive = profile.archive
+        lines.append(f"- {name}")
+        lines.append(f"  target: {profile.target}")
+        lines.append(f"  container: {archive.container}")
+        lines.append(f"  archive: {archive.codec} quality={_quality(archive.quality)}")
+        if archive.max_height is not None:
+            lines.append(f"  max_height: {archive.max_height}")
+        if archive.preset:
+            lines.append(f"  preset: {archive.preset}")
+        audio = archive.audio
+        audio_bits: list[str] = [audio.codec]
+        if audio.bitrate:
+            audio_bits.append(f"bitrate={audio.bitrate}")
+        if audio.sample_rate:
+            audio_bits.append(f"sample_rate={audio.sample_rate}")
+        lines.append("  audio: " + " ".join(audio_bits))
     return "\n".join(lines)
 
 
-def format_profile(path: Path, profile: EncodeProfile) -> Any:
+def format_profiles(path: Path, profiles: Mapping[str, EncodeProfile]) -> Any:
     if not _rich_enabled():
-        return _plain_profile(path, profile)
+        return _plain_profiles(path, profiles)
 
-    table = _detail_table()
-    table.add_row("path", str(path))
-    table.add_row("target", _entity_text(profile.target))
-    table.add_row("container", str(profile.archive.container))
-    table.add_row("video", f"{profile.archive.video.codec} quality={profile.archive.video.quality}")
-    table.add_row(
-        "audio",
-        f"{profile.archive.audio.codec} bitrate={profile.archive.audio.bitrate}",
-    )
-    if profile.description:
-        table.add_row("description", profile.description)
-    title = RichText("profile ", style="bold")
+    table = _quiet_table("Profile", "Target", "Container", "Quality", "Height", "Preset", "Audio")
+    for name, profile in profiles.items():
+        archive = profile.archive
+        audio = archive.audio
+        audio_summary = str(audio.codec)
+        if audio.bitrate:
+            audio_summary = f"{audio_summary} {audio.bitrate}"
+        table.add_row(
+            _entity_text(name),
+            profile.target,
+            archive.container,
+            _quality(archive.quality),
+            "" if archive.max_height is None else str(archive.max_height),
+            archive.preset or "",
+            audio_summary,
+        )
+    title = RichText("profiles ", style="bold")
     title.append(path.name, style=ENTITY_ID_STYLE)
     return RichGroup(title, table)
 
@@ -357,7 +374,14 @@ def _configured_groups(config: Mapping[str, Any]) -> dict[str, Any]:
 def _configured_profiles(config: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(config.get("profiles"), Mapping):
         return {}
-    return dict(config["profiles"])
+    profiles: dict[str, Any] = {}
+    for name, raw_profile in dict(config["profiles"]).items():
+        try:
+            profile = EncodeProfile.model_validate(raw_profile)
+        except ValidationError as exc:
+            raise typer.BadParameter(f"profile {name}: {exc}") from exc
+        profiles[str(name)] = profile.runner_payload()
+    return profiles
 
 
 def _normalize_group_payload(
@@ -679,20 +703,28 @@ def validate_profile(
     path: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Validate an encode profile file."""
+    """Validate Munchy runner encode profile config."""
 
-    profile = _load_profile_or_exit(path)
+    profiles = _load_profiles_or_exit(path)
     payload = {
         "path": str(path),
+        "profile_count": len(profiles),
+        "profiles": [
+            {
+                "name": name,
+                "target": profile.target,
+                "container": profile.archive.container,
+                "quality": profile.archive.quality,
+            }
+            for name, profile in profiles.items()
+        ],
         "valid": True,
-        "target": profile.target,
-        "container": profile.archive.container,
-        "quality": profile.archive.video.quality,
     }
     if json_mode:
         emit(payload, json_mode=True)
         return
-    emit(f"{path}: ok", json_mode=False)
+    plural = "profile" if len(profiles) == 1 else "profiles"
+    emit(f"{path}: ok ({len(profiles)} {plural})", json_mode=False)
 
 
 @profile_app.command("show")
@@ -700,11 +732,14 @@ def show_profile(
     path: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Show a normalized encode profile."""
+    """Show normalized Munchy runner encode profile config."""
 
-    profile = _load_profile_or_exit(path)
-    payload = profile.runner_payload()
-    emit(payload if json_mode else format_profile(path, profile), json_mode=json_mode)
+    profiles = _load_profiles_or_exit(path)
+    payload = {
+        "path": str(path),
+        "profiles": {name: profile.runner_payload() for name, profile in profiles.items()},
+    }
+    emit(payload if json_mode else format_profiles(path, profiles), json_mode=json_mode)
 
 
 @job_app.command("start")

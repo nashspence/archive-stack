@@ -42,6 +42,11 @@ encode-profile inspection and runner job operations, including `munchy job start
 file/directory uploads, `munchy job list`, `munchy job show`, `munchy job watch`, and
 `munchy job cancel`.
 
+The canonical Munchy encode-profile contract is the runner/Jeb profile shape used in job configs:
+flat `[archive]` AV1/NVENC settings with nested `[archive.audio]`, optionally collected under
+`[profiles.<name>]` tables. The CLI profile commands validate and display that same contract so
+private Jeb/family-archive generated configs and direct Munchy configs do not drift apart.
+
 Munchy operator webhook payloads identify themselves with `source = "munchy"` and the canonical
 emoji `🤤`.
 

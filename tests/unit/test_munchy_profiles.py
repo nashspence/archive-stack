@@ -8,6 +8,7 @@ from munchy.profiles import (
     ProfileError,
     artifact_drop_reason_map,
     load_encode_profile,
+    load_encode_profiles,
     normalize_artifact_drop_selector,
 )
 
@@ -27,11 +28,15 @@ def test_rejects_invalid_artifact_drop_selector() -> None:
 def test_validates_av1_nvenc_profile_and_drop_reasons() -> None:
     profile = EncodeProfile.model_validate(
         {
+            "schema_version": 1,
             "target": "munchy-av1-nvenc",
+            "name": "camera-archive",
             "archive": {
+                "codec": "av1_nvenc",
                 "container": "webm",
-                "video": {"quality": 52, "preset": "p6"},
-                "audio": {"bitrate": "28k"},
+                "quality": 52,
+                "preset": "p6",
+                "audio": {"bitrate": "28k", "frame_duration": 40},
             },
             "source": {
                 "artifact_drops": [
@@ -42,7 +47,8 @@ def test_validates_av1_nvenc_profile_and_drop_reasons() -> None:
     )
 
     assert profile.archive.container == "webm"
-    assert profile.archive.video.quality == 52
+    assert profile.archive.quality == 52
+    assert profile.archive.audio.frame_duration == 40
     assert artifact_drop_reason_map(profile) == {"stream:4": "gyro data intentionally discarded"}
 
 
@@ -60,17 +66,17 @@ def test_rejects_duplicate_artifact_drops() -> None:
         )
 
 
-def test_loads_nested_encode_profile_document(tmp_path) -> None:  # type: ignore[no-untyped-def]
+def test_loads_standalone_runner_encode_profile_document(tmp_path) -> None:  # type: ignore[no-untyped-def]
     profile_path = tmp_path / "profile.toml"
     profile_path.write_text(
         """
-[encode_profile]
+schema_version = 1
 target = "munchy-av1-nvenc"
+name = "camera-archive"
 
-[encode_profile.archive]
+[archive]
+codec = "av1_nvenc"
 container = "mkv"
-
-[encode_profile.archive.video]
 quality = 49
 """.strip(),
         encoding="utf-8",
@@ -79,5 +85,35 @@ quality = 49
     profile = load_encode_profile(profile_path)
 
     assert profile.target == "munchy-av1-nvenc"
+    assert profile.name == "camera-archive"
     assert profile.archive.container == "mkv"
-    assert profile.archive.video.quality == 49
+    assert profile.archive.quality == 49
+
+
+def test_loads_profiles_from_runner_job_config(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    config_path = tmp_path / "job.toml"
+    config_path.write_text(
+        """
+[profiles.camera]
+schema_version = 1
+target = "munchy-av1-nvenc"
+name = "camera"
+
+[profiles.camera.archive]
+codec = "av1_nvenc"
+container = "webm"
+quality = 38
+
+[profiles.passthrough]
+schema_version = 1
+target = "munchy-av1-nvenc"
+name = "passthrough"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    profiles = load_encode_profiles(config_path)
+
+    assert set(profiles) == {"camera", "passthrough"}
+    assert profiles["camera"].archive.container == "webm"
+    assert profiles["camera"].archive.quality == 38

@@ -21,8 +21,8 @@ def test_munchy_help() -> None:
 def test_munchy_command_help_has_summaries() -> None:
     profile = runner.invoke(app, ["profile", "--help"])
     assert profile.exit_code == 0
-    assert "Validate an encode profile file." in profile.stdout
-    assert "Show a normalized encode profile." in profile.stdout
+    assert "Validate Munchy runner encode profile config." in profile.stdout
+    assert "Show normalized Munchy runner encode profile config." in profile.stdout
     assert "dump-json" not in profile.stdout
 
     job = runner.invoke(app, ["job", "--help"])
@@ -42,11 +42,11 @@ def test_munchy_profile_validate(tmp_path) -> None:  # type: ignore[no-untyped-d
     profile_path.write_text(
         """
 target = "munchy-av1-nvenc"
+name = "camera"
 
 [archive]
+codec = "av1_nvenc"
 container = "webm"
-
-[archive.video]
 quality = 52
 """.strip(),
         encoding="utf-8",
@@ -55,7 +55,7 @@ quality = 52
     result = runner.invoke(app, ["profile", "validate", str(profile_path)])
 
     assert result.exit_code == 0
-    assert f"{profile_path}: ok" in result.stdout
+    assert f"{profile_path}: ok (1 profile)" in result.stdout
 
 
 def test_munchy_profile_validate_json(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -63,11 +63,11 @@ def test_munchy_profile_validate_json(tmp_path) -> None:  # type: ignore[no-unty
     profile_path.write_text(
         """
 target = "munchy-av1-nvenc"
+name = "camera"
 
 [archive]
+codec = "av1_nvenc"
 container = "webm"
-
-[archive.video]
 quality = 52
 """.strip(),
         encoding="utf-8",
@@ -78,24 +78,61 @@ quality = 52
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload == {
-        "container": "webm",
         "path": str(profile_path),
-        "quality": 52,
-        "target": "munchy-av1-nvenc",
+        "profile_count": 1,
+        "profiles": [
+            {
+                "container": "webm",
+                "name": "camera",
+                "quality": 52,
+                "target": "munchy-av1-nvenc",
+            }
+        ],
         "valid": True,
     }
 
 
 def test_munchy_profile_show_json(tmp_path) -> None:  # type: ignore[no-untyped-def]
     profile_path = tmp_path / "profile.toml"
-    profile_path.write_text('target = "munchy-av1-nvenc"\n', encoding="utf-8")
+    profile_path.write_text(
+        """
+schema_version = 1
+target = "munchy-av1-nvenc"
+name = "camera"
+""".strip(),
+        encoding="utf-8",
+    )
 
     result = runner.invoke(app, ["profile", "show", str(profile_path), "--json"])
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert payload["target"] == "munchy-av1-nvenc"
-    assert payload["archive"]["container"] == "mkv"
+    assert payload["profiles"]["camera"]["target"] == "munchy-av1-nvenc"
+    assert payload["profiles"]["camera"]["archive"]["container"] == "mkv"
+
+
+def test_munchy_profile_show_accepts_job_config_profiles(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    config_path = tmp_path / "job.toml"
+    config_path.write_text(
+        """
+[profiles.camera]
+schema_version = 1
+target = "munchy-av1-nvenc"
+name = "camera"
+
+[profiles.camera.archive]
+codec = "av1_nvenc"
+container = "webm"
+quality = 38
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["profile", "show", str(config_path), "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["profiles"]["camera"]["archive"]["container"] == "webm"
 
 
 def test_munchy_job_list(monkeypatch) -> None:  # type: ignore[no-untyped-def]

@@ -60,6 +60,15 @@ or with a richer job config:
 munchy job start ./incoming/camera --collection example-camera --config config/examples/munchy/job.toml
 ```
 
+Munchy encode profiles use the same runner/Jeb contract everywhere. A profile
+config may be either a standalone runner encode profile or a job/Jeb config with
+`[profiles.<name>]` tables:
+
+```bash
+munchy profile validate config/examples/munchy/job.toml
+munchy profile show config/examples/munchy/av1-nvenc-profile.toml
+```
+
 Important environment variables:
 
 - `MUNCHY_RUNNER_STATE_DIR`
