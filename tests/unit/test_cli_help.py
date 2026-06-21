@@ -30,19 +30,8 @@ def test_riverhog_command_help_has_summaries() -> None:
         "Cancel an open collection upload session.",
         "Wait for collection finalization to finish.",
         "Show collection storage and recovery details.",
-        "Collection deep-archive restore operations.",
     ):
         assert summary in collection.stdout
-
-    restore = runner.invoke(riverhog_app, ["collection", "restore", "--help"])
-    assert restore.exit_code == 0
-    for summary in (
-        "List collection restore sessions.",
-        "Show a collection restore session.",
-        "Start or resume an automatic collection restore.",
-        "Cancel an active collection restore session.",
-    ):
-        assert summary in restore.stdout
 
     hot = runner.invoke(riverhog_app, ["hot", "--help"])
     assert hot.exit_code == 0
@@ -51,8 +40,18 @@ def test_riverhog_command_help_has_summaries() -> None:
         "Release a hot-storage pin.",
         "List pinned hot-storage sets.",
         "Show hot-storage fetch progress.",
+        "Cloud archive fetch operations for hot-storage fetches.",
     ):
         assert summary in hot.stdout
+
+    cloud_fetch = runner.invoke(riverhog_app, ["hot", "cloud-fetch", "--help"])
+    assert cloud_fetch.exit_code == 0
+    for summary in (
+        "Show cloud-fetch recovery for one hot fetch.",
+        "Start or resume cloud archive recovery for one hot fetch.",
+        "Cancel active cloud archive recovery for one hot fetch.",
+    ):
+        assert summary in cloud_fetch.stdout
 
 
 def test_djdan_help() -> None:

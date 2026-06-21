@@ -546,9 +546,9 @@ def _recovery_operator_guidance(*, stage: str, recovery_type: str) -> tuple[str,
     if stage == "started":
         if recovery_type == "collection_restore":
             return (
-                "Wait for Riverhog to restore missing pinned files automatically",
+                "Wait for Riverhog to finish cloud-fetch recovery",
                 (
-                    "Glacier recovery has started for missing pinned hot files. "
+                    "Cloud-fetch recovery has started for missing pinned hot files. "
                     "This is rare, expected to take a long time, and means Riverhog "
                     "is recovering the safely archived collection data."
                 ),
@@ -566,7 +566,7 @@ def _recovery_operator_guidance(*, stage: str, recovery_type: str) -> tuple[str,
         if recovery_type == "collection_restore":
             return (
                 "No operator action required",
-                "Glacier recovery completed and the missing pinned files are hot again.",
+                "Cloud-fetch recovery completed and the missing pinned files are hot again.",
             )
         return (
             "No operator action required",
@@ -574,9 +574,9 @@ def _recovery_operator_guidance(*, stage: str, recovery_type: str) -> tuple[str,
         )
     if recovery_type == "collection_restore":
         return (
-            "Wait for Riverhog to finish materializing files",
+            "Wait for Riverhog to finish cloud-fetch materialization",
             (
-                "Glacier recovery data is ready. Riverhog will materialize missing "
+                "Cloud-fetch recovery data is ready. Riverhog will materialize missing "
                 "pinned files automatically before cleanup."
             ),
         )

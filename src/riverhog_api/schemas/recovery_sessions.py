@@ -111,5 +111,6 @@ class RecoverySessionListOut(RiverhogModel):
     sessions: list[RecoverySessionOut]
 
 
-class CollectionRestoreStartRequest(RiverhogModel):
-    paths: list[str] | None = None
+class CloudFetchSessionsOut(RecoverySessionListOut):
+    fetch_id: str
+    target: str

@@ -8,34 +8,80 @@ from fastapi.responses import StreamingResponse
 from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_recovery_session, map_recovery_session_list
 from riverhog_api.schemas.recovery_sessions import (
-    CollectionRestoreStartRequest,
+    CloudFetchSessionsOut,
     RecoverySessionListOut,
     RecoverySessionOut,
 )
+from riverhog_core.domain.models import RecoverySessionListPage
 
 router = APIRouter(tags=["recovery"])
 
 
-@router.get("/collections/{collection_id:path}/restore-session", response_model=RecoverySessionOut)
-def get_collection_restore_session(
-    collection_id: str,
+def _cloud_fetch_payload(
+    fetch_id: str,
     container: ContainerDep,
-) -> RecoverySessionOut:
-    summary = container.recovery_sessions.get_for_collection(collection_id)
-    return RecoverySessionOut.model_validate(map_recovery_session(summary))
+    summary: RecoverySessionListPage,
+) -> CloudFetchSessionsOut:
+    fetch = container.fetches.get(fetch_id)
+    payload = map_recovery_session_list(summary)
+    payload["fetch_id"] = fetch_id
+    payload["target"] = str(fetch.target)
+    return CloudFetchSessionsOut.model_validate(payload)
 
 
-@router.post("/collections/{collection_id:path}/restore-session", response_model=RecoverySessionOut)
-def create_or_resume_collection_restore_session(
-    collection_id: str,
+@router.get("/fetches/{fetch_id}/cloud-fetch", response_model=CloudFetchSessionsOut)
+def get_cloud_fetch_sessions(
+    fetch_id: str,
     container: ContainerDep,
-    request: CollectionRestoreStartRequest | None = None,
-) -> RecoverySessionOut:
-    summary = container.recovery_sessions.create_or_resume_for_collection(
-        collection_id,
-        paths=None if request is None else request.paths,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=100),
+    sort: Literal[
+        "created_at",
+        "id",
+        "type",
+        "state",
+        "restore_ready_at",
+        "restore_expires_at",
+    ] = Query("created_at"),
+    order: Literal["asc", "desc"] = Query("desc"),
+    state: Literal[
+        "restore_requested",
+        "ready",
+        "paused",
+        "expired",
+        "completed",
+        "failed",
+        "canceled",
+    ]
+    | None = Query(None),
+) -> CloudFetchSessionsOut:
+    summary = container.recovery_sessions.list_for_fetch(
+        fetch_id,
+        page=page,
+        per_page=per_page,
+        sort=sort,
+        order=order,
+        state=state,
     )
-    return RecoverySessionOut.model_validate(map_recovery_session(summary))
+    return _cloud_fetch_payload(fetch_id, container, summary)
+
+
+@router.post("/fetches/{fetch_id}/cloud-fetch", response_model=CloudFetchSessionsOut)
+def create_or_resume_cloud_fetch(
+    fetch_id: str,
+    container: ContainerDep,
+) -> CloudFetchSessionsOut:
+    summary = container.recovery_sessions.create_or_resume_for_fetch(fetch_id)
+    return _cloud_fetch_payload(fetch_id, container, summary)
+
+
+@router.post("/fetches/{fetch_id}/cloud-fetch/cancel", response_model=CloudFetchSessionsOut)
+def cancel_cloud_fetch(
+    fetch_id: str,
+    container: ContainerDep,
+) -> CloudFetchSessionsOut:
+    summary = container.recovery_sessions.cancel_for_fetch(fetch_id)
+    return _cloud_fetch_payload(fetch_id, container, summary)
 
 
 @router.get("/images/{image_id}/rebuild-session", response_model=RecoverySessionOut)

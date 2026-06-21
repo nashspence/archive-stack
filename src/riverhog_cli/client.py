@@ -416,25 +416,37 @@ class ApiClient:
             params["image"] = image
         return self._json("GET", "/v1/recovery-sessions", params=params)
 
-    def get_collection_restore_session(self, collection_id: str) -> dict[str, Any]:
+    def get_cloud_fetch_sessions(
+        self,
+        fetch_id: str,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        sort: str = "created_at",
+        order: str = "desc",
+        state: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "page": page,
+            "per_page": per_page,
+            "sort": sort,
+            "order": order,
+        }
+        if state is not None:
+            params["state"] = state
         return self._json(
             "GET",
-            f"/v1/collections/{quote(collection_id, safe='/')}/restore-session",
+            f"/v1/fetches/{quote(fetch_id, safe='/')}/cloud-fetch",
+            params=params,
         )
 
-    def create_or_resume_collection_restore_session(
-        self,
-        collection_id: str,
-        *,
-        paths: Sequence[str] | None = None,
-    ) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {}
-        if paths is not None:
-            kwargs["json"] = {"paths": list(paths)}
+    def create_or_resume_cloud_fetch(self, fetch_id: str) -> dict[str, Any]:
+        return self._json("POST", f"/v1/fetches/{quote(fetch_id, safe='/')}/cloud-fetch")
+
+    def cancel_cloud_fetch(self, fetch_id: str) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/collections/{quote(collection_id, safe='/')}/restore-session",
-            **kwargs,
+            f"/v1/fetches/{quote(fetch_id, safe='/')}/cloud-fetch/cancel",
         )
 
     def get_recovery_session(self, session_id: str) -> dict[str, Any]:

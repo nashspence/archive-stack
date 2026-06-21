@@ -208,7 +208,7 @@ def test_build_recovery_lifecycle_payloads_are_explicit_about_glacier_work() -> 
     assert completed["operator_action"] == "No operator action required"
     assert completed["notification"] == {
         "title": "🐷 docs",
-        "body": "Oink, Glacier recovery is done, and the missing pinned files are hot again.",
+        "body": "Oink, cloud-fetch recovery is done, and the missing pinned files are hot again.",
     }
 
 

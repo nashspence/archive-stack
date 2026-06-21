@@ -737,9 +737,9 @@
       "event": "glacier_recovery.ready",
       "category": "glacier_recovery",
       "source": "riverhog_core.services.recovery_sessions",
-      "purpose": "Temporary restored Glacier data is available for image rebuild or automatic pinned-file materialization.",
+      "purpose": "Temporary restored Glacier data is available for image rebuild or cloud-fetch materialization.",
       "operator_urgency": "time_sensitive",
-      "operator_action": "depends on type: image_rebuild requires rebuild/burn; collection_restore is automatic",
+      "operator_action": "depends on type: image_rebuild requires rebuild/burn; collection_restore is automatic cloud-fetch materialization",
       "delivery": {
         "mode": "durable",
         "retry": true,
@@ -756,7 +756,7 @@
         "collection_restore": {
           "actor": "riverhog",
           "title_template": "{emoji} {subject_40}",
-          "body_template": "Oink, Glacier data is ready. I'm restoring the missing pinned files now."
+          "body_template": "Oink, Glacier data is ready. I'm cloud-fetching the missing pinned files now."
         }
       },
       "required_payload_fields": [
@@ -787,7 +787,7 @@
       "source": "riverhog_core.services.recovery_sessions",
       "purpose": "Reminder that temporary restored Glacier data is still available and the recovery session is incomplete.",
       "operator_urgency": "time_sensitive",
-      "operator_action": "depends on type: image_rebuild requires rebuild/burn; collection_restore is automatic",
+      "operator_action": "depends on type: image_rebuild requires rebuild/burn; collection_restore is automatic cloud-fetch materialization",
       "reminder_of": "glacier_recovery.ready",
       "delivery": {
         "mode": "durable",
@@ -805,7 +805,7 @@
         "collection_restore": {
           "actor": "riverhog",
           "title_template": "{emoji} {subject_40}",
-          "body_template": "Oink, I'm still rooting through recovered Glacier data for pinned files."
+          "body_template": "Oink, I'm still cloud-fetching pinned files from recovered Glacier data."
         }
       },
       "required_payload_fields": [
@@ -852,7 +852,7 @@
         "collection_restore": {
           "actor": "riverhog",
           "title_template": "{emoji} {subject_40}",
-          "body_template": "Oink, Glacier recovery is done, and the missing pinned files are hot again."
+          "body_template": "Oink, cloud-fetch recovery is done, and the missing pinned files are hot again."
         }
       },
       "required_payload_fields": [
@@ -896,7 +896,7 @@
         "collection_restore": {
           "actor": "riverhog",
           "title_template": "{emoji} {subject_40}",
-          "body_template": "Oink, restore materialization hit a retryable issue: {error_80}. Next retry: {next_retry_at}."
+          "body_template": "Oink, cloud-fetch materialization hit a retryable issue: {error_80}. Next retry: {next_retry_at}."
         }
       },
       "required_payload_fields": [
@@ -944,7 +944,7 @@
         "collection_restore": {
           "actor": "riverhog",
           "title_template": "{emoji} {subject_40}",
-          "body_template": "Oink! Collection restore stopped: {error_80}. Please inspect Riverhog; I will not retry this."
+          "body_template": "Oink! Cloud-fetch recovery stopped: {error_80}. Please inspect Riverhog; I will not retry this."
         }
       },
       "required_payload_fields": [
@@ -1015,7 +1015,7 @@
       "event": "glacier_recovery.canceled",
       "category": "glacier_recovery",
       "source": "riverhog_core.services.recovery_sessions",
-      "purpose": "The operator canceled an active collection restore session.",
+      "purpose": "The operator canceled active cloud-fetch recovery.",
       "operator_urgency": "passive",
       "operator_action": "none",
       "delivery": {
@@ -1033,7 +1033,7 @@
         "collection_restore": {
           "actor": "riverhog",
           "title_template": "{emoji} {subject_40}",
-          "body_template": "Oink, collection restore was canceled by the operator."
+          "body_template": "Oink, cloud-fetch recovery was canceled by the operator."
         }
       },
       "required_payload_fields": [

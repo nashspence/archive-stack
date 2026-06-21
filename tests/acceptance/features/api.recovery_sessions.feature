@@ -1,27 +1,25 @@
 @acceptance @api @mvp
 Feature: Recovery sessions API
-  Glacier-backed recovery sessions track collection restores and image rebuilds from collection-native archive packages.
+  Glacier-backed recovery sessions track cloud-fetch recovery and image rebuilds from collection-native archive packages.
 
   Background:
     Given an archive with planner fixtures
     And collection "docs" has uploaded Glacier archive package
-  Scenario: Starting a collection restore creates a durable automatic restore session
-    When the client posts to "/v1/collections/docs/restore-session"
+  Scenario: Starting a hot cloud-fetch creates durable automatic restore sessions
+    Given archived target "docs/tax/2022/invoice-123.pdf" is pinned with fetch "fx-1"
+    When the client posts to "/v1/fetches/fx-1/cloud-fetch"
     Then the response status is 200
-    And the response recovery session type is "collection_restore"
-    And the response recovery session id is "rs-docs-restore-1"
-    And the response recovery session collections contain only "docs"
-    And the response recovery session images are empty
+    And the response cloud-fetch sessions contain recovery session "rs-docs-restore-1"
     When the client waits for recovery session "rs-docs-restore-1" state "completed"
     Then the response status is 200
     And the response recovery session state is "completed"
     When the API process restarts
-    And the client gets "/v1/collections/docs/restore-session"
+    And the client gets "/v1/fetches/fx-1/cloud-fetch"
     Then the response status is 200
-    And the response recovery session id is "rs-docs-restore-1"
-    And the response recovery session state is "completed"
-  Scenario: Collection restore verifies manifest and proof before completing automatically
-    Given the client posts to "/v1/collections/docs/restore-session"
+    And the response cloud-fetch sessions contain recovery session "rs-docs-restore-1"
+  Scenario: Hot cloud-fetch verifies manifest and proof before completing automatically
+    Given archived target "docs/tax/2022/invoice-123.pdf" is pinned with fetch "fx-1"
+    And the client posts to "/v1/fetches/fx-1/cloud-fetch"
     When the client waits for recovery session "rs-docs-restore-1" state "completed"
     Then the response status is 200
     And the response recovery session type is "collection_restore"
@@ -29,8 +27,9 @@ Feature: Recovery sessions API
     And the response recovery session collection "docs" glacier state is "uploaded"
     And the response recovery session collection "docs" collection manifest state is "uploaded"
     And the response recovery session collection "docs" OTS proof state is "uploaded"
-  Scenario: Collection restore materializes selected files into hot storage automatically
-    When the client posts to "/v1/collections/docs/restore-session" to restore collection file "tax/2022/invoice-123.pdf"
+  Scenario: Hot cloud-fetch materializes selected files into hot storage automatically
+    Given archived target "docs/tax/2022/invoice-123.pdf" is pinned with fetch "fx-1"
+    When the client posts to "/v1/fetches/fx-1/cloud-fetch"
     And the client waits for recovery session "rs-docs-restore-1" state "completed"
     Then the response status is 200
     And the response recovery session state is "completed"

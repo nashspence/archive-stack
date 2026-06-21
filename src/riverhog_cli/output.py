@@ -545,6 +545,31 @@ def format_recovery_sessions(payload: Mapping[str, Any]) -> Any:
     return RichGroup(_page_text("recovery sessions", payload), _recovery_scope_text(payload), table)
 
 
+def _format_cloud_fetch_plain(payload: Mapping[str, Any]) -> str:
+    lines = [
+        f"cloud fetch: {payload.get('fetch_id', 'unknown')}",
+        f"target: {payload.get('target', 'unknown')}",
+    ]
+    sessions_text = _format_recovery_sessions_plain(payload)
+    lines.append(sessions_text)
+    return "\n".join(lines)
+
+
+def format_cloud_fetch(payload: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        return _format_cloud_fetch_plain(payload)
+
+    overview = _detail_table()
+    overview.add_row("fetch", _entity_text(payload.get("fetch_id", "unknown")))
+    overview.add_row("target", str(payload.get("target", "unknown")))
+    overview.add_row("sessions", str(payload.get("total", 0)))
+    return RichGroup(
+        RichText("cloud fetch", style="bold"),
+        overview,
+        format_recovery_sessions(payload),
+    )
+
+
 def _format_recovery_session_plain(payload: Mapping[str, Any]) -> str:
     lines = [
         f"recovery session: {payload.get('id', 'unknown')}",

@@ -61,28 +61,27 @@ Feature: riverhog CLI
       And stdout matches the structure of GET "/v1/fetches/fx-1"
       And stdout mentions fetch id "fx-1"
 
-    Scenario: riverhog collection restore exposes start, list, and show payloads
-      Given an archive with planner fixtures
+    Scenario: riverhog hot cloud-fetch exposes start, cancel, and show payloads
+      Given archived target "docs/tax/2022/invoice-123.pdf" is pinned with fetch "fx-1"
       And collection "docs" has uploaded Glacier archive package
-      When the operator runs 'riverhog collection restore start docs --json'
+      When the operator runs 'riverhog hot cloud-fetch start fx-1 --json'
       Then the command exits with code 0
       And stdout is valid JSON
+      And stdout mentions fetch id "fx-1"
       And stdout mentions "collection_restore"
       And stdout mentions "rs-docs-restore-1"
       Given recovery session "rs-docs-restore-1" restore remains pending
-      When the operator runs 'riverhog collection restore cancel rs-docs-restore-1 --json'
+      When the operator runs 'riverhog hot cloud-fetch cancel fx-1 --json'
       Then the command exits with code 0
       And stdout is valid JSON
+      And stdout mentions fetch id "fx-1"
       And stdout mentions "canceled"
-      When the operator runs 'riverhog collection restore list --json'
+      When the operator runs 'riverhog hot cloud-fetch show fx-1 --json'
       Then the command exits with code 0
       And stdout is valid JSON
-      And stdout matches the structure of GET "/v1/recovery-sessions"
+      And stdout matches the structure of GET "/v1/fetches/fx-1/cloud-fetch"
+      And stdout mentions fetch id "fx-1"
       And stdout mentions "rs-docs-restore-1"
-      When the operator runs 'riverhog collection restore show rs-docs-restore-1 --json'
-      Then the command exits with code 0
-      And stdout is valid JSON
-      And stdout matches the structure of GET "/v1/recovery-sessions/rs-docs-restore-1"
 
   Rule: Human mode remains concise and stable
     Scenario: riverhog collection upload ingests and archives a local collection source

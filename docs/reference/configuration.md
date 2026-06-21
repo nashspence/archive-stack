@@ -846,8 +846,8 @@ rejected at startup so stale local-development env files fail loudly.
 - default: unset
 
 Optional public API base URL used when Riverhog builds webhook links back to
-collection uploads, fetch manifests, collection restore sessions, image rebuild
-sessions, and finalized-image ISO downloads.
+collection uploads, fetch manifests, fetch-scoped cloud-fetch recovery sessions,
+image rebuild sessions, and finalized-image ISO downloads.
 
 ## `INCOMPLETE_UPLOAD_TTL`
 

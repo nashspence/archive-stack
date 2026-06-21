@@ -17,9 +17,11 @@ from riverhog_core.catalog_models import (
     FetchEntryRecord,
     FileCopyRecord,
     FinalizedImageRecord,
+    GlacierRecoverySessionCollectionRecord,
+    GlacierRecoverySessionRecord,
     HotFetchOperatorSummaryRecord,
 )
-from riverhog_core.domain.enums import FetchState
+from riverhog_core.domain.enums import FetchState, RecoverySessionState
 from riverhog_core.domain.errors import Conflict, HashMismatch, InvalidState, NotFound
 from riverhog_core.domain.models import FetchCopyHint, FetchSummary
 from riverhog_core.domain.selectors import parse_target
@@ -56,6 +58,12 @@ from riverhog_core.webhooks import (
     post_webhook,
     utcnow,
 )
+
+_ACTIVE_CLOUD_FETCH_STATES = {
+    RecoverySessionState.RESTORE_REQUESTED.value,
+    RecoverySessionState.READY.value,
+    RecoverySessionState.PAUSED.value,
+}
 
 
 def _read_collection_file_content(
@@ -178,6 +186,7 @@ class SqlAlchemyFetchService:
             )
             _sync_upload_progress(pin_record, entries, self._upload_store)
             _expire_incomplete_uploads(pin_record, entries, self._upload_store)
+            _raise_if_fetch_is_cloud_fetching(session, pin_record, entries)
             entry = _get_entry(entries, entry_id)
 
             target_path = _entry_upload_target_path(entry)
@@ -215,6 +224,7 @@ class SqlAlchemyFetchService:
                 self._hot_store,
                 self._recovery_payload_codec,
             )
+            _raise_if_fetch_is_cloud_fetching(session, pin_record, entries)
             entry = _get_entry(entries, entry_id)
             _expire_incomplete_upload_for_entry(pin_record, entry, self._upload_store)
 
@@ -345,6 +355,8 @@ class SqlAlchemyFetchService:
                 _expire_incomplete_uploads(pin_record, entries, self._upload_store)
                 if pin_record.fetch_state != FetchState.WAITING_MEDIA.value:
                     continue
+                if _active_cloud_fetch_session_id(session, pin_record, entries) is not None:
+                    continue
                 if _notify_fetch_waiting(
                     config=self._config,
                     pin_record=pin_record,
@@ -365,6 +377,7 @@ class SqlAlchemyFetchService:
             )
             _sync_upload_progress(pin_record, entries, self._upload_store)
             _expire_incomplete_uploads(pin_record, entries, self._upload_store)
+            _raise_if_fetch_is_cloud_fetching(session, pin_record, entries)
 
             if pin_record.fetch_state == FetchState.DONE.value:
                 return {
@@ -517,6 +530,68 @@ def _notify_fetch_waiting(
     else:
         pin_record.fetch_notification_next_attempt_at = None
     return True
+
+
+def _active_cloud_fetch_session_id(
+    session: Session,
+    pin_record: ActivePinRecord,
+    entries: list[FetchEntryRecord],
+) -> str | None:
+    paths_by_collection: dict[str, set[str]] = {}
+    for entry in entries:
+        paths_by_collection.setdefault(entry.collection_id, set()).add(entry.path)
+    if not paths_by_collection:
+        return None
+
+    type_expr = func.coalesce(GlacierRecoverySessionRecord.type, "image_rebuild")
+    rows = session.execute(
+        select(
+            GlacierRecoverySessionRecord,
+            GlacierRecoverySessionCollectionRecord.collection_id,
+        )
+        .join(
+            GlacierRecoverySessionCollectionRecord,
+            GlacierRecoverySessionCollectionRecord.session_id
+            == GlacierRecoverySessionRecord.session_id,
+        )
+        .where(type_expr == "collection_restore")
+        .where(GlacierRecoverySessionRecord.state.in_(_ACTIVE_CLOUD_FETCH_STATES))
+        .where(
+            GlacierRecoverySessionCollectionRecord.collection_id.in_(sorted(paths_by_collection))
+        )
+        .order_by(GlacierRecoverySessionRecord.created_at.desc())
+    ).all()
+    for record, collection_id in rows:
+        fetch_paths = paths_by_collection.get(collection_id)
+        if not fetch_paths:
+            continue
+        restore_paths = _restore_paths_from_json(record.restore_paths_json)
+        if restore_paths is None or set(restore_paths) & fetch_paths:
+            return str(record.session_id)
+    return None
+
+
+def _raise_if_fetch_is_cloud_fetching(
+    session: Session,
+    pin_record: ActivePinRecord,
+    entries: list[FetchEntryRecord],
+) -> None:
+    session_id = _active_cloud_fetch_session_id(session, pin_record, entries)
+    if session_id is None:
+        return
+    raise InvalidState(
+        f"fetch {pin_record.fetch_id} is actively being cloud-fetched by {session_id}; "
+        "wait for cloud-fetch to finish before running djdan fetch"
+    )
+
+
+def _restore_paths_from_json(raw_value: str | None) -> tuple[str, ...] | None:
+    if raw_value is None:
+        return None
+    loaded = json.loads(raw_value)
+    if not isinstance(loaded, list):
+        raise InvalidState("cloud-fetch restore paths are corrupt")
+    return tuple(str(item) for item in loaded)
 
 
 def _fetch_copy_payload(entries: list[FetchEntryRecord]) -> list[dict[str, str]]:

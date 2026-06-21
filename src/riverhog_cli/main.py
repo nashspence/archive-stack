@@ -17,6 +17,7 @@ import typer
 from riverhog_cli.client import ApiClient
 from riverhog_cli.output import (
     emit,
+    format_cloud_fetch,
     format_collection_summary,
     format_collection_upload,
     format_collections,
@@ -24,8 +25,6 @@ from riverhog_cli.output import (
     format_find,
     format_hot_pins,
     format_pin,
-    format_recovery_session,
-    format_recovery_sessions,
     format_release,
 )
 from riverhog_cli.upload_progress import CollectionUploadProgress, make_collection_upload_progress
@@ -33,11 +32,11 @@ from riverhog_core.domain.errors import Conflict, NotFound, RiverhogError, Servi
 
 app = typer.Typer(help="Riverhog collection and hot-storage CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
-collection_restore_app = typer.Typer(help="Collection deep-archive restore operations.")
 hot_app = typer.Typer(help="Pinned hot-storage set operations.")
+hot_cloud_fetch_app = typer.Typer(help="Cloud archive fetch operations for hot-storage fetches.")
 app.add_typer(collection_app, name="collection")
-collection_app.add_typer(collection_restore_app, name="restore")
 app.add_typer(hot_app, name="hot")
+hot_app.add_typer(hot_cloud_fetch_app, name="cloud-fetch")
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
@@ -1344,93 +1343,6 @@ def show_cmd(
     emit(format_collection_summary(payload, glacier_payload), json_mode=False)
 
 
-@collection_restore_app.command("list")
-def collection_restore_list_cmd(
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
-    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "created_at",
-    order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
-    state: Annotated[
-        str | None,
-        typer.Option(
-            "--state",
-            help=(
-                "Filter by restore_requested, ready, paused, expired, completed, failed, "
-                "or canceled"
-            ),
-        ),
-    ] = None,
-    collection: Annotated[
-        str | None,
-        typer.Option("--collection", help="Restrict restore sessions to one collection"),
-    ] = None,
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """List collection restore sessions."""
-
-    normalized_order = order.casefold()
-    payload = client().list_recovery_sessions(
-        page=page,
-        per_page=per_page,
-        sort=sort,
-        order=normalized_order,
-        recovery_type="collection_restore",
-        state=state,
-        collection=collection,
-    )
-    emit(payload if json_mode else format_recovery_sessions(payload), json_mode=json_mode)
-
-
-@collection_restore_app.command("show")
-def collection_restore_show_cmd(
-    session_or_collection: Annotated[
-        str,
-        typer.Argument(help="Recovery session id or collection id"),
-    ],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Show a collection restore session."""
-
-    api = client()
-    try:
-        payload = api.get_recovery_session(session_or_collection)
-    except NotFound:
-        payload = api.get_collection_restore_session(session_or_collection)
-    emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
-
-
-@collection_restore_app.command("start")
-def collection_restore_start_cmd(
-    collection: Annotated[str, typer.Argument(help="Collection id")],
-    paths: Annotated[
-        list[str] | None,
-        typer.Option(
-            "--path",
-            help="Collection file path to restore; repeatable. Omit to restore all files.",
-        ),
-    ] = None,
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Start or resume an automatic collection restore."""
-
-    payload = client().create_or_resume_collection_restore_session(
-        collection,
-        paths=paths,
-    )
-    emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
-
-
-@collection_restore_app.command("cancel")
-def collection_restore_cancel_cmd(
-    session_id: Annotated[str, typer.Argument(help="Collection restore session id")],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Cancel an active collection restore session."""
-
-    payload = client().cancel_recovery_session(session_id)
-    emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
-
-
 @hot_app.command("pin")
 def pin_cmd(
     target: Annotated[str, typer.Argument(help="Target selector")],
@@ -1479,6 +1391,60 @@ def fetch_cmd(
         return
     status = api.get_fetch_status(fetch_id)
     emit(format_fetch(status, {"entries": status.get("entries", [])}), json_mode=False)
+
+
+@hot_cloud_fetch_app.command("show")
+def cloud_fetch_show_cmd(
+    fetch_id: Annotated[str, typer.Argument(help="Fetch id from hot list")],
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "created_at",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
+    state: Annotated[
+        str | None,
+        typer.Option(
+            "--state",
+            help=(
+                "Filter by restore_requested, ready, paused, expired, completed, failed, "
+                "or canceled"
+            ),
+        ),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Show cloud-fetch recovery for one hot fetch."""
+
+    payload = client().get_cloud_fetch_sessions(
+        fetch_id,
+        page=page,
+        per_page=per_page,
+        sort=sort,
+        order=order.casefold(),
+        state=state,
+    )
+    emit(payload if json_mode else format_cloud_fetch(payload), json_mode=json_mode)
+
+
+@hot_cloud_fetch_app.command("start")
+def cloud_fetch_start_cmd(
+    fetch_id: Annotated[str, typer.Argument(help="Fetch id from hot list")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Start or resume cloud archive recovery for one hot fetch."""
+
+    payload = client().create_or_resume_cloud_fetch(fetch_id)
+    emit(payload if json_mode else format_cloud_fetch(payload), json_mode=json_mode)
+
+
+@hot_cloud_fetch_app.command("cancel")
+def cloud_fetch_cancel_cmd(
+    fetch_id: Annotated[str, typer.Argument(help="Fetch id from hot list")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Cancel active cloud archive recovery for one hot fetch."""
+
+    payload = client().cancel_cloud_fetch(fetch_id)
+    emit(payload if json_mode else format_cloud_fetch(payload), json_mode=json_mode)
 
 
 def _error_code(exc: BaseException) -> str:

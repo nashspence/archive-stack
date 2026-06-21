@@ -245,8 +245,9 @@ A recovery session exposes at least:
 Recovery-session rules:
 
 - `type` is `collection_restore` or `image_rebuild`
-- `collection_restore` restores collection content from the collection archive,
-  manifest, and OTS proof
+- `collection_restore` is the internal collection-native session type behind
+  fetch-scoped cloud-fetch recovery; it restores collection content from the
+  collection archive, manifest, and OTS proof
 - `image_rebuild` restores the collection archives needed to rebuild a lost
   finalized image from persisted coverage metadata
 - session cost estimates count the required collection archive restores

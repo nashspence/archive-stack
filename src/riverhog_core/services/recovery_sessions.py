@@ -293,6 +293,100 @@ class SqlAlchemyRecoverySessionService:
             self._record_processing_failure(session_id=session_id, exc=exc)
         return self.get(session_id)
 
+    def list_for_fetch(
+        self,
+        fetch_id: str,
+        *,
+        page: int,
+        per_page: int,
+        sort: str,
+        order: str,
+        state: str | None = None,
+    ) -> RecoverySessionListPage:
+        if page < 1:
+            raise BadRequest("page must be greater than or equal to 1")
+        if per_page < 1 or per_page > 100:
+            raise BadRequest("per_page must be between 1 and 100")
+        if sort not in _RECOVERY_SESSION_SORT_FIELDS:
+            raise BadRequest(
+                f"sort must be one of {', '.join(sorted(_RECOVERY_SESSION_SORT_FIELDS))}"
+            )
+        if order not in {"asc", "desc"}:
+            raise BadRequest("order must be asc or desc")
+        if state is not None and state not in _PUBLIC_RECOVERY_STATES:
+            raise BadRequest(f"state must be one of {', '.join(sorted(_PUBLIC_RECOVERY_STATES))}")
+
+        with session_scope(self._session_factory) as session:
+            pin_record = _require_fetch_pin(session, fetch_id)
+            records = _collection_restore_records_for_fetch(
+                session,
+                pin_record=pin_record,
+                state=state,
+            )
+            records = _sort_recovery_records(records, sort=sort, order=order)
+            total = len(records)
+            start = (page - 1) * per_page
+            return RecoverySessionListPage(
+                page=page,
+                per_page=per_page,
+                total=total,
+                pages=ceil(total / per_page) if total else 0,
+                sort=sort,
+                order=order,
+                type="collection_restore",
+                state=state,
+                collection=None,
+                image=None,
+                sessions=[
+                    _session_summary(session, record, config=self._config)
+                    for record in records[start : start + per_page]
+                ],
+            )
+
+    def create_or_resume_for_fetch(self, fetch_id: str) -> RecoverySessionListPage:
+        with session_scope(self._session_factory) as session:
+            pin_record = _require_fetch_pin(session, fetch_id)
+            restore_paths_by_collection = _fetch_collection_restore_paths(
+                session,
+                pin_record=pin_record,
+                missing_only=True,
+            )
+
+        for collection_id, paths in sorted(restore_paths_by_collection.items()):
+            self.create_or_resume_for_collection(collection_id, paths=sorted(paths))
+
+        return self.list_for_fetch(
+            fetch_id,
+            page=1,
+            per_page=100,
+            sort="created_at",
+            order="desc",
+        )
+
+    def cancel_for_fetch(self, fetch_id: str) -> RecoverySessionListPage:
+        with session_scope(self._session_factory) as session:
+            pin_record = _require_fetch_pin(session, fetch_id)
+            session_ids = [
+                record.session_id
+                for record in _collection_restore_records_for_fetch(
+                    session,
+                    pin_record=pin_record,
+                    state=None,
+                )
+                if record.state in _ACTIVE_RECOVERY_STATES
+            ]
+
+        for session_id in session_ids:
+            self.cancel(session_id)
+
+        return self.list_for_fetch(
+            fetch_id,
+            page=1,
+            per_page=100,
+            sort="created_at",
+            order="desc",
+        )
+
     def get_for_image(self, image_id: str) -> RecoverySessionSummary:
         with session_scope(self._session_factory) as session:
             record = _latest_session_for_image(session, image_id)
@@ -406,7 +500,7 @@ class SqlAlchemyRecoverySessionService:
                     recovery_payload_codec=self._recovery_payload_codec,
                 )
             raise InvalidState("recovery session has no collection archives to rebuild image")
-        raise InvalidState("collection restore sessions do not provide ISO downloads")
+        raise InvalidState("cloud-fetch recovery sessions do not provide ISO downloads")
 
     def process_due_sessions(self, *, limit: int = 100) -> int:
         if limit < 1:
@@ -914,6 +1008,103 @@ def _selected_pin_files(session: Session, raw_target: str) -> list[CollectionFil
     return selected_collection_files(session, raw_target, missing_ok=True)
 
 
+def _require_fetch_pin(session: Session, fetch_id: str) -> ActivePinRecord:
+    pin_record = session.scalar(select(ActivePinRecord).where(ActivePinRecord.fetch_id == fetch_id))
+    if pin_record is None:
+        raise NotFound(f"fetch not found: {fetch_id}")
+    return pin_record
+
+
+def _fetch_collection_restore_paths(
+    session: Session,
+    *,
+    pin_record: ActivePinRecord,
+    missing_only: bool,
+) -> dict[str, set[str]]:
+    selected = _selected_pin_files(session, pin_record.target)
+    if not selected:
+        raise NotFound(f"fetch target has no files: {pin_record.fetch_id}")
+    paths_by_collection: dict[str, set[str]] = {}
+    for file_record in selected:
+        if missing_only and file_record.hot:
+            continue
+        paths_by_collection.setdefault(file_record.collection_id, set()).add(file_record.path)
+    return paths_by_collection
+
+
+def _record_restore_paths_intersect_fetch(
+    record: GlacierRecoverySessionRecord,
+    paths_by_collection: dict[str, set[str]],
+) -> bool:
+    restore_paths = _restore_paths_from_json(record.restore_paths_json)
+    for collection in record.collections:
+        fetch_paths = paths_by_collection.get(collection.collection_id)
+        if not fetch_paths:
+            continue
+        if restore_paths is None or set(restore_paths) & fetch_paths:
+            return True
+    return False
+
+
+def _collection_restore_records_for_fetch(
+    session: Session,
+    *,
+    pin_record: ActivePinRecord,
+    state: str | None,
+) -> list[GlacierRecoverySessionRecord]:
+    paths_by_collection = _fetch_collection_restore_paths(
+        session,
+        pin_record=pin_record,
+        missing_only=False,
+    )
+    type_expr = func.coalesce(GlacierRecoverySessionRecord.type, "image_rebuild")
+    stmt = (
+        select(GlacierRecoverySessionRecord)
+        .join(
+            GlacierRecoverySessionCollectionRecord,
+            GlacierRecoverySessionCollectionRecord.session_id
+            == GlacierRecoverySessionRecord.session_id,
+        )
+        .where(type_expr == "collection_restore")
+        .where(
+            GlacierRecoverySessionCollectionRecord.collection_id.in_(sorted(paths_by_collection))
+        )
+    )
+    if state is not None:
+        stmt = stmt.where(GlacierRecoverySessionRecord.state == state)
+    records = session.scalars(stmt).unique().all()
+    return [
+        record
+        for record in records
+        if _record_restore_paths_intersect_fetch(record, paths_by_collection)
+    ]
+
+
+def _sort_recovery_records(
+    records: list[GlacierRecoverySessionRecord],
+    *,
+    sort: str,
+    order: str,
+) -> list[GlacierRecoverySessionRecord]:
+    def sort_value(record: GlacierRecoverySessionRecord) -> str:
+        return str(
+            {
+                "created_at": record.created_at,
+                "id": record.session_id,
+                "type": record.type or "image_rebuild",
+                "state": record.state,
+                "restore_ready_at": record.restore_ready_at or "",
+                "restore_expires_at": record.restore_expires_at or "",
+            }[sort]
+        )
+
+    return sorted(
+        records,
+        key=lambda record: (sort_value(record), record.session_id),
+        reverse=order == "desc",
+    )
+
+
 def _hot_file_available_for_audit(
     hot_store: HotStore,
     file_record: CollectionFileRecord,
@@ -1278,7 +1469,7 @@ def _restore_paths_from_json(raw_value: str | None) -> tuple[str, ...] | None:
         return None
     loaded = json.loads(raw_value)
     if not isinstance(loaded, list):
-        raise InvalidState("collection restore paths are corrupt")
+        raise InvalidState("cloud-fetch recovery paths are corrupt")
     return tuple(str(item) for item in loaded)
 
 
@@ -1490,7 +1681,7 @@ def _cancel_recovery_session_record(
     record.started_notification_next_attempt_at = None
     record.completed_notification_next_attempt_at = None
     record.latest_message = (
-        "Collection restore was canceled by the operator; Riverhog will not materialize "
+        "Cloud-fetch recovery was canceled by the operator; Riverhog will not materialize "
         "files for this session."
     )
     _notify_recovery_canceled(session, record=record, config=config, current=current)
@@ -1502,7 +1693,7 @@ def _pause_recovery_session_record(
     current: datetime,
 ) -> None:
     if (record.type or "image_rebuild") != "image_rebuild":
-        raise InvalidState("collection restore sessions can be canceled, not paused")
+        raise InvalidState("cloud-fetch recovery sessions can be canceled, not paused")
     if record.state == RecoverySessionState.PAUSED.value:
         return
     if record.state not in {
@@ -1528,7 +1719,7 @@ def _resume_recovery_session_record(
     current: datetime,
 ) -> None:
     if (record.type or "image_rebuild") != "image_rebuild":
-        raise InvalidState("collection restore sessions cannot be resumed from pause")
+        raise InvalidState("cloud-fetch recovery sessions cannot be resumed from pause")
     if record.state != RecoverySessionState.PAUSED.value:
         raise InvalidState("image rebuild session is not paused")
     resume_state = record.paused_from_state or RecoverySessionState.RESTORE_REQUESTED.value
@@ -1594,7 +1785,7 @@ def _complete_recovery_session_record(
     record.restore_expires_at = record.completed_at
     if (record.type or "image_rebuild") == "collection_restore":
         record.latest_message = (
-            "Collection restore completed; requested files are materialized and temporary "
+            "Cloud-fetch recovery completed; requested files are materialized and temporary "
             "archive restore cleanup was recorded."
         )
     else:

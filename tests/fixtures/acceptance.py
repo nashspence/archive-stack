@@ -2510,6 +2510,151 @@ class AcceptanceRecoverySessionService:
         self.state.recovery_sessions_by_id[session_id] = record
         return self._summary(record)
 
+    @_with_state_lock
+    def list_for_fetch(
+        self,
+        fetch_id: str,
+        *,
+        page: int,
+        per_page: int,
+        sort: str,
+        order: str,
+        state: str | None = None,
+    ) -> RecoverySessionListPage:
+        if page < 1:
+            raise BadRequest("page must be greater than or equal to 1")
+        if per_page < 1 or per_page > 100:
+            raise BadRequest("per_page must be between 1 and 100")
+        if order not in {"asc", "desc"}:
+            raise BadRequest("order must be asc or desc")
+        record = self._fetch_record(fetch_id)
+        records = self._collection_restore_records_for_fetch(record, state=state)
+
+        def sort_value(item: AcceptanceRecoverySessionRecord) -> object:
+            if sort == "id":
+                return item.session_id
+            if sort == "type":
+                return item.type
+            if sort == "state":
+                return item.state.value
+            if sort == "restore_ready_at":
+                return item.restore_ready_at or ""
+            if sort == "restore_expires_at":
+                return item.restore_expires_at or ""
+            if sort == "created_at":
+                return item.created_at
+            raise BadRequest(
+                "sort must be one of created_at, id, restore_expires_at, "
+                "restore_ready_at, state, type"
+            )
+
+        records.sort(key=lambda item: (sort_value(item), item.session_id))
+        if order == "desc":
+            records.reverse()
+        total = len(records)
+        pages = (total + per_page - 1) // per_page if total else 0
+        start = (page - 1) * per_page
+        return RecoverySessionListPage(
+            page=page,
+            per_page=per_page,
+            total=total,
+            pages=pages,
+            sort=sort,
+            order=order,
+            type="collection_restore",
+            state=state,
+            collection=None,
+            image=None,
+            sessions=[self._summary(item) for item in records[start : start + per_page]],
+        )
+
+    @_with_state_lock
+    def create_or_resume_for_fetch(self, fetch_id: str) -> RecoverySessionListPage:
+        fetch = self._fetch_record(fetch_id)
+        paths_by_collection = self._fetch_restore_paths(fetch, missing_only=True)
+        for collection_id, paths in sorted(paths_by_collection.items()):
+            self.create_or_resume_for_collection(str(collection_id), paths=sorted(paths))
+        return self.list_for_fetch(
+            fetch_id,
+            page=1,
+            per_page=100,
+            sort="created_at",
+            order="desc",
+        )
+
+    @_with_state_lock
+    def cancel_for_fetch(self, fetch_id: str) -> RecoverySessionListPage:
+        fetch = self._fetch_record(fetch_id)
+        active_states = {
+            RecoverySessionState.RESTORE_REQUESTED,
+            RecoverySessionState.READY,
+            RecoverySessionState.PAUSED,
+        }
+        session_ids = [
+            record.session_id
+            for record in self._collection_restore_records_for_fetch(fetch, state=None)
+            if record.state in active_states
+        ]
+        for session_id in session_ids:
+            self.cancel(session_id)
+        return self.list_for_fetch(
+            fetch_id,
+            page=1,
+            per_page=100,
+            sort="created_at",
+            order="desc",
+        )
+
+    def _fetch_record(self, fetch_id: str) -> FetchRecord:
+        try:
+            return self.state.fetches[FetchId(fetch_id)]
+        except KeyError as exc:
+            raise NotFound(f"fetch not found: {fetch_id}") from exc
+
+    def _fetch_restore_paths(
+        self,
+        fetch: FetchRecord,
+        *,
+        missing_only: bool,
+    ) -> dict[CollectionId, set[str]]:
+        paths_by_collection: dict[CollectionId, set[str]] = {}
+        for entry in fetch.entries.values():
+            stored = self.state.files_by_collection[entry.collection_id][entry.path]
+            if missing_only and stored.hot:
+                continue
+            paths_by_collection.setdefault(entry.collection_id, set()).add(entry.path)
+        return paths_by_collection
+
+    def _collection_restore_records_for_fetch(
+        self,
+        fetch: FetchRecord,
+        *,
+        state: str | None,
+    ) -> list[AcceptanceRecoverySessionRecord]:
+        paths_by_collection = self._fetch_restore_paths(fetch, missing_only=False)
+        records: list[AcceptanceRecoverySessionRecord] = []
+        for record in self.state.recovery_sessions_by_id.values():
+            if record.type != "collection_restore":
+                continue
+            if state is not None and record.state.value != state:
+                continue
+            if self._record_intersects_fetch(record, paths_by_collection):
+                records.append(record)
+        return records
+
+    @staticmethod
+    def _record_intersects_fetch(
+        record: AcceptanceRecoverySessionRecord,
+        paths_by_collection: dict[CollectionId, set[str]],
+    ) -> bool:
+        for collection_id in record.collection_ids:
+            fetch_paths = paths_by_collection.get(collection_id)
+            if not fetch_paths:
+                continue
+            if record.restore_paths is None or set(record.restore_paths) & fetch_paths:
+                return True
+        return False
+
     def _normalize_collection_restore_paths(
         self,
         collection_id: CollectionId,
@@ -2606,7 +2751,7 @@ class AcceptanceRecoverySessionService:
             record.restore_next_poll_at = None
             record.next_reminder_at = None
             record.latest_message = (
-                "Collection restore was canceled by the operator; Riverhog will not materialize "
+                "Cloud-fetch recovery was canceled by the operator; Riverhog will not materialize "
                 "files for this session."
             )
             return self._summary(record)
@@ -2618,7 +2763,7 @@ class AcceptanceRecoverySessionService:
             if record is None:
                 raise NotFound(f"recovery session not found: {session_id}")
             if record.type != "image_rebuild":
-                raise InvalidState("collection restore sessions can be canceled, not paused")
+                raise InvalidState("cloud-fetch recovery sessions can be canceled, not paused")
             if record.state == RecoverySessionState.PAUSED:
                 return self._summary(record)
             if record.state not in {
@@ -2647,7 +2792,7 @@ class AcceptanceRecoverySessionService:
             if record is None:
                 raise NotFound(f"recovery session not found: {session_id}")
             if record.type != "image_rebuild":
-                raise InvalidState("collection restore sessions cannot be resumed from pause")
+                raise InvalidState("cloud-fetch recovery sessions cannot be resumed from pause")
             if record.state != RecoverySessionState.PAUSED:
                 raise InvalidState("image rebuild session is not paused")
             current_text = _acceptance_isoformat(datetime.now(UTC))
@@ -2913,7 +3058,7 @@ class AcceptanceRecoverySessionService:
         record.restore_next_poll_at = None
         record.next_reminder_at = None
         record.latest_message = (
-            "Collection restore completed; requested files are materialized and temporary "
+            "Cloud-fetch recovery completed; requested files are materialized and temporary "
             "archive restore cleanup was recorded."
         )
 
@@ -3782,6 +3927,7 @@ class AcceptanceFetchService:
         self._expire_stale_upload_record(record)
         if record.summary.state == FetchState.DONE:
             raise InvalidState("fetch is already complete")
+        self._raise_if_cloud_fetching(record)
         entry = record.entries.get(EntryId(entry_id))
         if entry is None:
             raise NotFound(f"entry not found: {entry_id}")
@@ -3809,6 +3955,7 @@ class AcceptanceFetchService:
     ) -> dict[str, object]:
         record = self._record(fetch_id)
         self._expire_stale_upload_record(record)
+        self._raise_if_cloud_fetching(record)
         entry = record.entries.get(EntryId(entry_id))
         if entry is None:
             raise NotFound(f"entry not found: {entry_id}")
@@ -3892,6 +4039,8 @@ class AcceptanceFetchService:
             record.summary = self._replace_summary(record)
             if record.summary.state != FetchState.WAITING_MEDIA:
                 continue
+            if self._active_cloud_fetch_session_id(record) is not None:
+                continue
             if (
                 record.notification_sent_at is not None
                 and record.notification_next_attempt_at is not None
@@ -3948,6 +4097,7 @@ class AcceptanceFetchService:
                 "state": record.summary.state.value,
                 "hot": self._hot_payload(str(record.summary.target)),
             }
+        self._raise_if_cloud_fetching(record)
         if any(
             self._entry_upload_state(entry, fetch_state=record.summary.state) != "byte_complete"
             for entry in record.entries.values()
@@ -4003,6 +4153,39 @@ class AcceptanceFetchService:
             return self.state.fetches[FetchId(fetch_id)]
         except KeyError as exc:
             raise NotFound(f"fetch not found: {fetch_id}") from exc
+
+    def _active_cloud_fetch_session_id(self, fetch: FetchRecord) -> str | None:
+        paths_by_collection: dict[CollectionId, set[str]] = {}
+        for entry in fetch.entries.values():
+            paths_by_collection.setdefault(entry.collection_id, set()).add(entry.path)
+        active_states = {
+            RecoverySessionState.RESTORE_REQUESTED,
+            RecoverySessionState.READY,
+            RecoverySessionState.PAUSED,
+        }
+        for record in sorted(
+            self.state.recovery_sessions_by_id.values(),
+            key=lambda item: item.created_at,
+            reverse=True,
+        ):
+            if record.type != "collection_restore" or record.state not in active_states:
+                continue
+            for collection_id in record.collection_ids:
+                fetch_paths = paths_by_collection.get(collection_id)
+                if not fetch_paths:
+                    continue
+                if record.restore_paths is None or set(record.restore_paths) & fetch_paths:
+                    return record.session_id
+        return None
+
+    def _raise_if_cloud_fetching(self, fetch: FetchRecord) -> None:
+        session_id = self._active_cloud_fetch_session_id(fetch)
+        if session_id is None:
+            return
+        raise InvalidState(
+            f"fetch {fetch.summary.id} is actively being cloud-fetched by {session_id}; "
+            "wait for cloud-fetch to finish before running djdan fetch"
+        )
 
     def _replace_summary(
         self, record: FetchRecord, *, state: FetchState | None = None

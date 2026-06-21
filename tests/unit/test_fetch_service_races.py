@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Iterable, Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from sqlalchemy import select
 
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
@@ -16,8 +18,11 @@ from riverhog_core.catalog_models import (
     FetchEntryRecord,
     FileCopyRecord,
     FinalizedImageRecord,
+    GlacierRecoverySessionCollectionRecord,
+    GlacierRecoverySessionRecord,
 )
-from riverhog_core.domain.enums import FetchState
+from riverhog_core.domain.enums import FetchState, RecoverySessionState
+from riverhog_core.domain.errors import InvalidState
 from riverhog_core.recovery_payloads import encrypt_recovery_payload
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.fetches import SqlAlchemyFetchService, _sync_upload_progress
@@ -343,6 +348,112 @@ def test_waiting_fetch_notifications_are_delivered_and_reminded(
     assert service.deliver_due_waiting_notifications(limit=10) == 1
     assert payloads[-1]["event"] == "fetches.waiting_media.reminder"
     assert payloads[-1]["reminder_count"] == 1
+
+
+def test_active_cloud_fetch_suppresses_media_fetch_notifications_and_uploads(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+
+    collection_id = "docs"
+    path = "file.txt"
+    target = f"{collection_id}/{path}"
+    content = b"needs cloud recovery\n"
+    encrypted = encrypt_recovery_payload(content, _RECOVERY_CODEC)
+    sha256 = hashlib.sha256(content).hexdigest()
+
+    with session_scope(make_session_factory(sqlite_url(sqlite_path))) as session:
+        session.add(CollectionRecord(id=collection_id))
+        session.add(
+            CollectionFileRecord(
+                collection_id=collection_id,
+                path=path,
+                bytes=len(content),
+                sha256=sha256,
+                hot=False,
+                archived=True,
+            )
+        )
+        session.add(
+            ActivePinRecord(
+                target=target,
+                fetch_id="fx-1",
+                fetch_order=1,
+                fetch_state=FetchState.WAITING_MEDIA.value,
+            )
+        )
+        session.add(
+            FetchEntryRecord(
+                fetch_id="fx-1",
+                entry_id="e1",
+                entry_order=1,
+                collection_id=collection_id,
+                path=path,
+                bytes=len(content),
+                sha256=sha256,
+                recovery_bytes=len(encrypted),
+                uploaded_bytes=0,
+                upload_expires_at=None,
+                tus_url=None,
+            )
+        )
+        session.add(
+            GlacierRecoverySessionRecord(
+                session_id="rs-docs-restore-1",
+                type="collection_restore",
+                state=RecoverySessionState.RESTORE_REQUESTED.value,
+                created_at="2026-05-31T12:00:00Z",
+                restore_requested_at="2026-05-31T12:00:00Z",
+                restore_ready_at=None,
+                restore_next_poll_at=None,
+                restore_expires_at=None,
+                completed_at=None,
+                canceled_at=None,
+                paused_at=None,
+                paused_from_state=None,
+                latest_message=None,
+                retrieval_tier="Bulk",
+                hold_days=7,
+                warnings_json="[]",
+                restore_paths_json=json.dumps([path]),
+            )
+        )
+        session.add(
+            GlacierRecoverySessionCollectionRecord(
+                session_id="rs-docs-restore-1",
+                collection_id=collection_id,
+                collection_order=0,
+            )
+        )
+
+    config = replace(
+        _config(sqlite_path),
+        operator_webhook_url="http://example.invalid/webhooks/operator",
+        public_base_url="https://riverhog.example.test",
+    )
+    service = SqlAlchemyFetchService(
+        config,
+        _FakeHotStore({}),
+        _RaceyUploadStore({}),
+        _RECOVERY_CODEC,
+    )
+    payloads: list[dict[str, object]] = []
+
+    def _post_webhook(*, config, payload):
+        payloads.append(payload)
+
+    monkeypatch.setattr("riverhog_core.services.fetches.post_webhook", _post_webhook)
+
+    assert service.deliver_due_waiting_notifications(limit=10) == 0
+    assert payloads == []
+    with pytest.raises(InvalidState, match="actively being cloud-fetched"):
+        service.create_or_resume_upload("fx-1", "e1")
+    with pytest.raises(InvalidState, match="actively being cloud-fetched"):
+        service.append_upload_chunk("fx-1", "e1", offset=0, checksum="", content=b"partial")
+    with pytest.raises(InvalidState, match="actively being cloud-fetched"):
+        service.complete("fx-1")
 
 
 def test_stale_sync_does_not_rollback_completed_fetch_state(tmp_path: Path) -> None:

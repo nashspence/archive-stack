@@ -391,43 +391,46 @@ state changes leave a finalized image with no protected copies and the required
 collection Glacier archives are uploaded. The recovery processor requests and
 polls Glacier restore work automatically.
 
-#### `GET /v1/collections/{collection_id}/restore-session`
+#### `GET /v1/fetches/{fetch_id}/cloud-fetch`
 
-Returns the latest `collection_restore` recovery session for one collection.
-
-Required behavior:
-
-- returns the latest durable restore session for that collection, including
-  expired or completed sessions
-- returns `not_found` when no restore session has been created for that
-  collection
-
-#### `POST /v1/collections/{collection_id}/restore-session`
-
-Creates or resumes one `collection_restore` recovery session for one collection.
-
-Optional request body:
-
-- `paths` — list of logical file paths within the collection archive. Omit or
-  pass `null` to restore the whole collection.
+Returns the cloud-fetch recovery sessions for one active hot-storage fetch.
 
 Required behavior:
 
-- creates or resumes an automatic restore session only when the collection has
-  an uploaded and verified Glacier archive package
+- returns collection-native `collection_restore` sessions that intersect the
+  files selected by the fetch
+- uses the fetch id, not a collection id, as the operator-facing handle
+- supports bounded paging and the same recovery-session sort/state filters used
+  by other recovery-session views
+- returns `not_found` when the fetch id is not active
+
+#### `POST /v1/fetches/{fetch_id}/cloud-fetch`
+
+Creates or resumes cloud archive recovery for one active hot-storage fetch.
+
+Required behavior:
+
+- creates or resumes automatic collection-native recovery sessions for missing
+  files selected by the fetch
 - requests Glacier restore work immediately, polls readiness, verifies the
-  restored manifest/proof/archive, materializes the requested files into hot
+  restored manifest/proof/archive, materializes requested files into hot
   storage, and records temporary restore cleanup automatically
-- repeated calls while one active session exists return that same active session
-  rather than creating duplicates
-- repeated calls may broaden an active selected-path restore; omitting `paths`
-  broadens the active restore to the whole collection
-- an expired or completed session does not block creating a new session id for
-  the same collection
+- returns the fetch-scoped list of underlying recovery sessions
+- suppresses normal optical-media fetch reminders and physical-media upload
+  operations for the same fetch while cloud-fetch recovery is active
+
+#### `POST /v1/fetches/{fetch_id}/cloud-fetch/cancel`
+
+Cancels active cloud-fetch recovery for one active hot-storage fetch.
+
+Required behavior:
+
+- cancels active collection-native recovery sessions that intersect the fetch
+- returns the fetch-scoped list of underlying recovery sessions after canceling
 
 #### `GET /v1/recovery-sessions`
 
-Returns a paged inventory of Glacier-backed collection restore and image rebuild
+Returns a paged inventory of Glacier-backed cloud-fetch and image rebuild
 sessions.
 
 Supported query parameters:
@@ -445,12 +448,12 @@ Required behavior:
 
 - list views are bounded database lookups and do not scan archive objects or hot
   storage
-- collection restore operator views filter with `type=collection_restore`
+- cloud-fetch operator views filter with `type=collection_restore`
 - image rebuild operator views filter with `type=image_rebuild`
 
 #### `GET /v1/recovery-sessions/{session_id}`
 
-Returns one Glacier-backed collection restore or image rebuild session by durable
+Returns one Glacier-backed cloud-fetch or image rebuild session by durable
 session id.
 
 Required behavior:
@@ -459,8 +462,8 @@ Required behavior:
 - the response includes recovery `type`, operator warnings,
   notification state, covered collections, and any finalized images involved in
   an image rebuild
-- collection restore responses include `restore_paths`; `null` means the whole
-  collection is in scope
+- cloud-fetch recovery responses include `restore_paths`; `null` means the
+  whole collection is in scope
 - the response includes `progress.archive_verification`, `progress.extraction`,
   and `progress.materialization`, each one of `pending`, `in_progress`,
   `completed`, or `failed`
@@ -475,7 +478,7 @@ Required behavior:
 - completion transitions the session to `completed`
 - completion records cleanup or lifecycle handoff for restored Standard-storage data instead of waiting for Riverhog's
   session expiry
-- collection restore sessions complete automatically after requested files are
+- cloud-fetch recovery sessions complete automatically after requested files are
   materialized; `djdan burn` uses this endpoint after rebuilding replacement
   image copies from a ready image rebuild session
 
@@ -779,9 +782,9 @@ The `riverhog` CLI is collection-first and should provide:
 - `riverhog collection upload SLUG ROOT [--timestamp YYYYMMDDTHHMMSSZ] [--wait finalized|staged]`
 - `riverhog collection watch COLLECTION_UPLOAD_ID`
 - `riverhog collection cancel COLLECTION_UPLOAD_ID`
-- `riverhog collection restore list|show|start`
 - `riverhog hot list`
 - `riverhog hot show FETCH_ID`
+- `riverhog hot cloud-fetch show|start|cancel FETCH_ID`
 - `riverhog hot pin TARGET`
 - `riverhog hot unpin TARGET`
 

@@ -212,11 +212,16 @@ def test_recovery_session_client_methods_use_canonical_endpoints(monkeypatch) ->
         state="ready",
         collection="tax/2022 reports",
     )
-    client.create_or_resume_collection_restore_session(
-        "tax/2022 reports",
-        paths=["invoice 123.pdf"],
+    client.get_cloud_fetch_sessions(
+        "fx-1",
+        page=2,
+        per_page=10,
+        sort="state",
+        order="asc",
+        state="ready",
     )
-    client.get_collection_restore_session("tax/2022 reports")
+    client.create_or_resume_cloud_fetch("fx-1")
+    client.cancel_cloud_fetch("fx-1")
     client.get_recovery_session("rs-docs-restore-1")
     client.complete_recovery_session("rs-docs-restore-1")
     client.cancel_recovery_session("rs-docs-restore-1")
@@ -228,32 +233,38 @@ def test_recovery_session_client_methods_use_canonical_endpoints(monkeypatch) ->
         "https://api.test/v1/recovery-sessions?page=2&per_page=10&sort=state&"
         "order=asc&type=collection_restore&state=ready&collection=tax%2F2022+reports"
     )
-    assert captured[1][0] == "POST"
-    assert captured[1][1] == ("https://api.test/v1/collections/tax/2022%20reports/restore-session")
-    assert '"paths":["invoice 123.pdf"]' in captured[1][2]
-    assert captured[2][0] == "GET"
-    assert captured[2][1] == ("https://api.test/v1/collections/tax/2022%20reports/restore-session")
+    assert captured[1][0] == "GET"
+    assert captured[1][1] == (
+        "https://api.test/v1/fetches/fx-1/cloud-fetch?page=2&per_page=10&sort=state&"
+        "order=asc&state=ready"
+    )
+    assert captured[2] == ("POST", "https://api.test/v1/fetches/fx-1/cloud-fetch", "")
     assert captured[3] == (
+        "POST",
+        "https://api.test/v1/fetches/fx-1/cloud-fetch/cancel",
+        "",
+    )
+    assert captured[4] == (
         "GET",
         "https://api.test/v1/recovery-sessions/rs-docs-restore-1",
         "",
     )
-    assert captured[4] == (
+    assert captured[5] == (
         "POST",
         "https://api.test/v1/recovery-sessions/rs-docs-restore-1/complete",
         "",
     )
-    assert captured[5] == (
+    assert captured[6] == (
         "POST",
         "https://api.test/v1/recovery-sessions/rs-docs-restore-1/cancel",
         "",
     )
-    assert captured[6] == (
+    assert captured[7] == (
         "POST",
         "https://api.test/v1/recovery-sessions/rs-20260420T040001Z-rebuild-1/pause",
         "",
     )
-    assert captured[7] == (
+    assert captured[8] == (
         "POST",
         "https://api.test/v1/recovery-sessions/rs-20260420T040001Z-rebuild-1/resume",
         "",

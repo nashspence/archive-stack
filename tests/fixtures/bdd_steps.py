@@ -679,65 +679,40 @@ def _prepare_riverhog_expectation(
         ).json()
         return
 
-    if argv[1:4] == ["collection", "restore", "list"]:
-        context.expected_api_endpoint = ("GET", "/v1/recovery-sessions")
+    if argv[1:4] == ["hot", "cloud-fetch", "show"]:
+        fetch_id = argv[4]
+        context.expected_api_endpoint = ("GET", f"/v1/fetches/{fetch_id}/cloud-fetch")
         params: dict[str, object] = {
             "page": _riverhog_option_value(argv, "--page", 1),
             "per_page": _riverhog_option_value(argv, "--per-page", 25),
             "sort": _riverhog_option_value(argv, "--sort", "created_at"),
             "order": str(_riverhog_option_value(argv, "--order", "desc")).casefold(),
-            "type": "collection_restore",
         }
         state = _riverhog_option_value(argv, "--state")
-        collection = _riverhog_option_value(argv, "--collection")
         if state is not None:
             params["state"] = state
-        if collection is not None:
-            params["collection"] = collection
         context.expected_api_payload = acceptance_system.request(
             "GET",
-            "/v1/recovery-sessions",
+            f"/v1/fetches/{quote(fetch_id, safe='/')}/cloud-fetch",
             params=params,
         ).json()
         return
 
-    if argv[1:4] == ["collection", "restore", "start"]:
-        collection_id = argv[4]
-        context.expected_api_endpoint = ("POST", f"/v1/collections/{collection_id}/restore-session")
+    if argv[1:4] == ["hot", "cloud-fetch", "start"]:
+        fetch_id = argv[4]
+        context.expected_api_endpoint = ("POST", f"/v1/fetches/{fetch_id}/cloud-fetch")
         context.expected_api_payload = acceptance_system.request(
             "POST",
-            f"/v1/collections/{quote(collection_id, safe='/')}/restore-session",
+            f"/v1/fetches/{quote(fetch_id, safe='/')}/cloud-fetch",
         ).json()
         return
 
-    if argv[1:4] == ["collection", "restore", "show"]:
-        session_or_collection = argv[4]
-        if session_or_collection.startswith("rs-"):
-            context.expected_api_endpoint = (
-                "GET",
-                f"/v1/recovery-sessions/{session_or_collection}",
-            )
-            context.expected_api_payload = acceptance_system.request(
-                "GET",
-                f"/v1/recovery-sessions/{quote(session_or_collection, safe='/')}",
-            ).json()
-        else:
-            context.expected_api_endpoint = (
-                "GET",
-                f"/v1/collections/{session_or_collection}/restore-session",
-            )
-            context.expected_api_payload = acceptance_system.request(
-                "GET",
-                f"/v1/collections/{quote(session_or_collection, safe='/')}/restore-session",
-            ).json()
-        return
-
-    if argv[1:4] == ["collection", "restore", "cancel"]:
-        session_id = argv[4]
-        context.expected_api_endpoint = ("POST", f"/v1/recovery-sessions/{session_id}/cancel")
+    if argv[1:4] == ["hot", "cloud-fetch", "cancel"]:
+        fetch_id = argv[4]
+        context.expected_api_endpoint = ("POST", f"/v1/fetches/{fetch_id}/cloud-fetch/cancel")
         context.expected_api_payload = acceptance_system.request(
             "POST",
-            f"/v1/recovery-sessions/{quote(session_id, safe='/')}/cancel",
+            f"/v1/fetches/{quote(fetch_id, safe='/')}/cloud-fetch/cancel",
         ).json()
         return
 
@@ -3527,6 +3502,15 @@ def then_response_recovery_session_type_is(
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     assert payload["type"] == session_type
+
+
+@then(parsers.parse('the response cloud-fetch sessions contain recovery session "{session_id}"'))
+def then_response_cloud_fetch_sessions_contain_recovery_session(
+    acceptance_context: AcceptanceScenarioContext,
+    session_id: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert session_id in {session["id"] for session in payload["sessions"]}
 
 
 @then(parsers.parse('the response recovery session images contain only "{image_id}"'))

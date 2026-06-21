@@ -388,51 +388,6 @@ paths:
                 $ref: "#/components/schemas/CollectionSummary"
         default:
           $ref: "#/components/responses/Error"
-  /collections/{collection_id}/restore-session:
-    get:
-      summary: Get the latest collection restore session
-      description: Returns the latest `collection_restore` recovery session for one collection, including expired or completed sessions.
-      operationId: getCollectionRestoreSession
-      parameters:
-        - in: path
-          name: collection_id
-          required: true
-          description: Canonical collection id. Slash-bearing ids occupy multiple path segments under `/collections/`.
-          schema: { type: string }
-      responses:
-        "200":
-          description: Recovery session summary
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/RecoverySession"
-        default:
-          $ref: "#/components/responses/Error"
-    post:
-      summary: Create or resume one collection restore session
-      description: Creates or resumes one automatic `collection_restore` recovery session when the collection has an uploaded and verified Glacier archive package. Riverhog requests the Glacier restore, polls readiness, materializes the requested files, and records cleanup automatically.
-      operationId: createOrResumeCollectionRestoreSession
-      parameters:
-        - in: path
-          name: collection_id
-          required: true
-          description: Canonical collection id. Slash-bearing ids occupy multiple path segments under `/collections/`.
-          schema: { type: string }
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/CollectionRestoreStartRequest"
-      responses:
-        "200":
-          description: Recovery session summary
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/RecoverySession"
-        default:
-          $ref: "#/components/responses/Error"
   /plan:
     get:
       summary: Get current burn plan
@@ -634,7 +589,7 @@ paths:
   /recovery-sessions:
     get:
       summary: List recovery sessions
-      description: Returns a paged inventory of Glacier-backed collection restore and image rebuild sessions, with filters for type, state, collection, and image.
+      description: Returns a paged inventory of Glacier-backed cloud-fetch and image rebuild sessions, with filters for type, state, collection, and image.
       operationId: listRecoverySessions
       parameters:
         - in: query
@@ -709,7 +664,7 @@ paths:
   /recovery-sessions/{session_id}:
     get:
       summary: Get one recovery session
-      description: Returns one Glacier-backed collection restore or image rebuild session by durable session id.
+      description: Returns one Glacier-backed cloud-fetch or image rebuild session by durable session id.
       operationId: getRecoverySession
       parameters:
         - in: path
@@ -746,8 +701,8 @@ paths:
           $ref: "#/components/responses/Error"
   /recovery-sessions/{session_id}/cancel:
     post:
-      summary: Cancel one active collection restore session
-      description: Cancels one active `collection_restore` recovery session and stops automatic materialization. Image rebuild sessions are paused and resumed instead of canceled.
+      summary: Cancel one active cloud-fetch recovery session
+      description: Cancels one active fetch-scoped cloud-fetch recovery session by durable session id and stops automatic materialization. Image rebuild sessions are paused and resumed instead of canceled.
       operationId: cancelRecoverySession
       parameters:
         - in: path
@@ -1117,6 +1072,86 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/FetchSummary"
+        default:
+          $ref: "#/components/responses/Error"
+  /fetches/{fetch_id}/cloud-fetch:
+    get:
+      summary: Get cloud-fetch recovery sessions
+      description: Returns collection-native recovery sessions that are making this hot-storage fetch available from cloud archive.
+      operationId: getCloudFetchSessions
+      parameters:
+        - in: path
+          name: fetch_id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: page
+          schema: { type: integer, default: 1, minimum: 1 }
+        - in: query
+          name: per_page
+          schema: { type: integer, default: 25, minimum: 1, maximum: 100 }
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [created_at, id, type, state, restore_ready_at, restore_expires_at]
+            default: created_at
+        - in: query
+          name: order
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+        - in: query
+          name: state
+          required: false
+          schema:
+            type: string
+            enum: [restore_requested, ready, paused, expired, completed, failed, canceled]
+      responses:
+        "200":
+          description: Cloud-fetch recovery sessions for this fetch
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CloudFetchSessions"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      summary: Start or resume cloud-fetch recovery
+      description: Creates or resumes collection-native recovery sessions for missing files in this hot-storage fetch. While active, normal optical-media fetch reminders and upload operations are suppressed for the same fetch.
+      operationId: createOrResumeCloudFetch
+      parameters:
+        - in: path
+          name: fetch_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Cloud-fetch recovery sessions for this fetch
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CloudFetchSessions"
+        default:
+          $ref: "#/components/responses/Error"
+  /fetches/{fetch_id}/cloud-fetch/cancel:
+    post:
+      summary: Cancel active cloud-fetch recovery
+      description: Cancels active collection-native cloud-fetch recovery sessions for this hot-storage fetch.
+      operationId: cancelCloudFetch
+      parameters:
+        - in: path
+          name: fetch_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Cloud-fetch recovery sessions for this fetch
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CloudFetchSessions"
         default:
           $ref: "#/components/responses/Error"
   /fetches/{fetch_id}/status:
@@ -2181,6 +2216,16 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RecoverySession"
+    CloudFetchSessions:
+      allOf:
+        - $ref: "#/components/schemas/RecoverySessionList"
+        - type: object
+          required: [fetch_id, target]
+          properties:
+            fetch_id:
+              type: string
+            target:
+              type: string
     RecoverySession:
       type: object
       required:
@@ -2309,15 +2354,6 @@ components:
         materialization:
           type: string
           enum: [pending, in_progress, completed, failed]
-    CollectionRestoreStartRequest:
-      type: object
-      properties:
-        paths:
-          oneOf:
-            - type: array
-              items:
-                type: string
-            - type: "null"
     RecoverySessionImage:
       type: object
       required: [id, filename, collection_ids, rebuild_state]
