@@ -581,11 +581,11 @@ class ImageCopyEventRecord(Base):
     )
 
 
-class ActivePinRecord(Base):
-    __tablename__ = "active_pins"
+class FetchRecord(Base):
+    __tablename__ = "fetches"
 
-    target: Mapped[str] = mapped_column(String, primary_key=True)
-    fetch_id: Mapped[str] = mapped_column(String, unique=True)
+    fetch_id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String)
     fetch_order: Mapped[int] = mapped_column(Integer, unique=True)
     fetch_state: Mapped[str] = mapped_column(String)
     fetch_notification_sent_at: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -595,20 +595,48 @@ class ActivePinRecord(Base):
     )
     fetch_notification_failure: Mapped[str | None] = mapped_column(String, nullable=True)
     fetch_notification_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    operator_summary: Mapped[HotFetchOperatorSummaryRecord | None] = relationship(
-        back_populates="pin",
+    selectors: Mapped[list[FetchSelectorRecord]] = relationship(
+        back_populates="fetch",
+        cascade="all, delete-orphan",
+    )
+    entries: Mapped[list[FetchEntryRecord]] = relationship(
+        cascade="all, delete-orphan",
+    )
+    operator_summary: Mapped[FetchOperatorSummaryRecord | None] = relationship(
+        back_populates="fetch",
         cascade="all, delete-orphan",
         uselist=False,
     )
 
 
-class HotFetchOperatorSummaryRecord(Base):
-    __tablename__ = "hot_fetch_operator_summaries"
+class FetchSelectorRecord(Base):
+    __tablename__ = "fetch_selectors"
 
+    fetch_id: Mapped[str] = mapped_column(String, primary_key=True)
     target: Mapped[str] = mapped_column(String, primary_key=True)
-    fetch_id: Mapped[str] = mapped_column(String, unique=True)
+    selector_order: Mapped[int] = mapped_column(Integer)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["fetch_id"],
+            ["fetches.fetch_id"],
+            ondelete="CASCADE",
+        ),
+        Index("idx_fetch_selectors_order", "fetch_id", "selector_order"),
+    )
+
+    fetch: Mapped[FetchRecord] = relationship(back_populates="selectors")
+
+
+class FetchOperatorSummaryRecord(Base):
+    __tablename__ = "fetch_operator_summaries"
+
+    fetch_id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String)
     fetch_order: Mapped[int] = mapped_column(Integer)
     fetch_state: Mapped[str] = mapped_column(String)
+    selectors: Mapped[int] = mapped_column(BigInteger, default=0)
+    targets_text: Mapped[str] = mapped_column(String, default="")
     files: Mapped[int] = mapped_column(BigInteger, default=0)
     bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     hot_files: Mapped[int] = mapped_column(BigInteger, default=0)
@@ -629,14 +657,14 @@ class HotFetchOperatorSummaryRecord(Base):
 
     __table_args__ = (
         ForeignKeyConstraint(
-            ["target"],
-            ["active_pins.target"],
+            ["fetch_id"],
+            ["fetches.fetch_id"],
             ondelete="CASCADE",
             onupdate="CASCADE",
         ),
     )
 
-    pin: Mapped[ActivePinRecord] = relationship(back_populates="operator_summary")
+    fetch: Mapped[FetchRecord] = relationship(back_populates="operator_summary")
 
 
 class FetchEntryRecord(Base):
@@ -657,7 +685,7 @@ class FetchEntryRecord(Base):
     __table_args__ = (
         ForeignKeyConstraint(
             ["fetch_id"],
-            ["active_pins.fetch_id"],
+            ["fetches.fetch_id"],
             ondelete="CASCADE",
         ),
     )

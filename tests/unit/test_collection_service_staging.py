@@ -14,7 +14,6 @@ from sqlalchemy import select
 
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
-    ActivePinRecord,
     CollectionArchiveRecord,
     CollectionFileRecord,
     CollectionRecord,
@@ -1143,10 +1142,6 @@ def test_completed_collection_upload_promotes_from_staging_and_cleans_up(
     assert hot_store.get_collection_file(collection_id, relpath) == content
     assert staging_target in upload_store.deleted_targets
     assert [payload["event"] for payload in webhook_payloads] == ["collections.upload_staged"]
-    with session_scope(make_session_factory(sqlite_url(sqlite_path))) as session:
-        pin = session.get(ActivePinRecord, f"{collection_id}/")
-        assert pin is not None
-        assert pin.fetch_state == "done"
 
 
 def test_glacier_archive_worker_prioritizes_resumable_multipart_upload(

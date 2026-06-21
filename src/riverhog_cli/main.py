@@ -22,21 +22,22 @@ from riverhog_cli.output import (
     format_collection_upload,
     format_collections,
     format_fetch,
+    format_fetches,
     format_find,
-    format_hot_pins,
-    format_pin,
-    format_release,
+    format_hot_evict,
 )
 from riverhog_cli.upload_progress import CollectionUploadProgress, make_collection_upload_progress
 from riverhog_core.domain.errors import Conflict, NotFound, RiverhogError, ServiceUnavailable
 
 app = typer.Typer(help="Riverhog collection and hot-storage CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
-hot_app = typer.Typer(help="Pinned hot-storage set operations.")
-hot_cloud_fetch_app = typer.Typer(help="Cloud archive fetch operations for hot-storage fetches.")
+fetch_app = typer.Typer(help="Named fetch manifest operations.")
+hot_app = typer.Typer(help="Hot-storage operations.")
+fetch_cloud_fetch_app = typer.Typer(help="Cloud archive recovery sessions for fetches.")
 app.add_typer(collection_app, name="collection")
 app.add_typer(hot_app, name="hot")
-hot_app.add_typer(hot_cloud_fetch_app, name="cloud-fetch")
+hot_app.add_typer(fetch_app, name="fetch")
+fetch_app.add_typer(fetch_cloud_fetch_app, name="cloud-fetch")
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
@@ -1343,46 +1344,87 @@ def show_cmd(
     emit(format_collection_summary(payload, glacier_payload), json_mode=False)
 
 
-@hot_app.command("pin")
-def pin_cmd(
-    target: Annotated[str, typer.Argument(help="Target selector")],
+@fetch_app.command("create")
+def fetch_create_cmd(
+    name: Annotated[str, typer.Option("--name", "-n", help="Human-readable fetch purpose")],
+    targets: Annotated[
+        list[str] | None,
+        typer.Argument(help="Optional target selectors to add immediately"),
+    ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Pin a target into hot storage."""
+    """Create a named editable fetch."""
 
-    payload = client().pin(target)
-    emit(payload if json_mode else format_pin(payload), json_mode=json_mode)
+    payload = client().create_fetch(name=name, targets=targets or [])
+    emit(payload if json_mode else format_fetch(payload, {"entries": []}), json_mode=json_mode)
 
 
-@hot_app.command("unpin")
-def release_cmd(
-    target: Annotated[str, typer.Argument(help="Target selector")],
+@hot_app.command("evict")
+def hot_evict_cmd(
+    targets: Annotated[list[str], typer.Argument(help="Target selectors to evict")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Release a hot-storage pin."""
+    """Evict compliant hot files by selector."""
 
-    payload = client().release(target)
-    emit(payload if json_mode else format_release(payload), json_mode=json_mode)
+    payload = client().evict_hot_targets(targets)
+    emit(payload if json_mode else format_hot_evict(payload), json_mode=json_mode)
 
 
-@hot_app.command("list")
-def pins_cmd(
+@fetch_app.command("add")
+def fetch_add_cmd(
+    fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
+    targets: Annotated[list[str], typer.Argument(help="Target selectors to add")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Add target selectors to an editable fetch."""
+
+    payload = client().add_fetch_targets(fetch_id, targets)
+    emit(payload if json_mode else format_fetch(payload, {"entries": []}), json_mode=json_mode)
+
+
+@fetch_app.command("remove")
+def fetch_remove_cmd(
+    fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
+    targets: Annotated[list[str], typer.Argument(help="Target selectors to remove")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Remove target selectors from an editable fetch."""
+
+    payload = client().remove_fetch_targets(fetch_id, targets)
+    emit(payload if json_mode else format_fetch(payload, {"entries": []}), json_mode=json_mode)
+
+
+@fetch_app.command("list")
+def fetches_cmd(
     page: Annotated[int, typer.Option("--page", min=1)] = 1,
     per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    state: Annotated[str | None, typer.Option("--state", help="Filter by fetch state")] = None,
+    query: Annotated[
+        str | None, typer.Option("--query", "-q", help="Search id, name, targets")
+    ] = None,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "order",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """List pinned hot-storage sets."""
+    """List named fetches."""
 
-    payload = client().list_pins(page=page, per_page=per_page)
-    emit(payload if json_mode else format_hot_pins(payload), json_mode=json_mode)
+    payload = client().list_fetches(
+        page=page,
+        per_page=per_page,
+        state=state,
+        query=query,
+        sort=sort,
+        order=order.casefold(),
+    )
+    emit(payload if json_mode else format_fetches(payload), json_mode=json_mode)
 
 
-@hot_app.command("show")
+@fetch_app.command("show")
 def fetch_cmd(
     fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Show hot-storage fetch progress."""
+    """Show fetch progress."""
 
     api = client()
     if json_mode:
@@ -1393,9 +1435,23 @@ def fetch_cmd(
     emit(format_fetch(status, {"entries": status.get("entries", [])}), json_mode=False)
 
 
-@hot_cloud_fetch_app.command("show")
+@fetch_app.command("start")
+def fetch_start_cmd(
+    fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
+    cloud: Annotated[
+        bool, typer.Option("--cloud", help="Queue for cloud archive recovery")
+    ] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Queue a fetch for djdan, or for cloud recovery with --cloud."""
+
+    payload = client().start_fetch(fetch_id, cloud=cloud)
+    emit(payload if json_mode else format_fetch(payload, {"entries": []}), json_mode=json_mode)
+
+
+@fetch_cloud_fetch_app.command("show")
 def cloud_fetch_show_cmd(
-    fetch_id: Annotated[str, typer.Argument(help="Fetch id from hot list")],
+    fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
     page: Annotated[int, typer.Option("--page", min=1)] = 1,
     per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "created_at",
@@ -1412,7 +1468,7 @@ def cloud_fetch_show_cmd(
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Show cloud-fetch recovery for one hot fetch."""
+    """Show cloud-fetch recovery for one fetch."""
 
     payload = client().get_cloud_fetch_sessions(
         fetch_id,
@@ -1425,23 +1481,12 @@ def cloud_fetch_show_cmd(
     emit(payload if json_mode else format_cloud_fetch(payload), json_mode=json_mode)
 
 
-@hot_cloud_fetch_app.command("start")
-def cloud_fetch_start_cmd(
-    fetch_id: Annotated[str, typer.Argument(help="Fetch id from hot list")],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Start or resume cloud archive recovery for one hot fetch."""
-
-    payload = client().create_or_resume_cloud_fetch(fetch_id)
-    emit(payload if json_mode else format_cloud_fetch(payload), json_mode=json_mode)
-
-
-@hot_cloud_fetch_app.command("cancel")
+@fetch_cloud_fetch_app.command("cancel")
 def cloud_fetch_cancel_cmd(
-    fetch_id: Annotated[str, typer.Argument(help="Fetch id from hot list")],
+    fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Cancel active cloud archive recovery for one hot fetch."""
+    """Cancel active cloud archive recovery for one fetch."""
 
     payload = client().cancel_cloud_fetch(fetch_id)
     emit(payload if json_mode else format_cloud_fetch(payload), json_mode=json_mode)

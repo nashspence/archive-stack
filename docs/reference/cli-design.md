@@ -10,8 +10,8 @@ Riverhog is collection-first:
 
 - `riverhog collection ...` owns collection catalog, detail, file listing, and
   upload session controls.
-- `riverhog hot ...` owns pinned hot-storage sets, fetch status, and
-  fetch-scoped cloud archive recovery.
+- `riverhog hot ...` owns named fetch manifests, hot-file eviction, and
+  fetch-scoped cloud archive materialization.
 
 Djdan is optical-media-first:
 

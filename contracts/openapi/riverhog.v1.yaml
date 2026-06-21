@@ -972,65 +972,31 @@ paths:
                     $ref: "#/components/schemas/CopySummary"
         default:
           $ref: "#/components/responses/Error"
-  /pin:
+  /hot/evict:
     post:
-      summary: Pin a target into hot storage
-      description: Creates or reuses one exact pin that remains active until release, including across service restarts.
-      operationId: pinTarget
+      summary: Evict protected hot files
+      description: Evicts hot files selected by one or more target selectors, refusing any file without verified disc protection.
+      operationId: evictHotTargets
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [target]
-              properties:
-                target:
-                  $ref: "#/components/schemas/Target"
+              $ref: "#/components/schemas/HotEvictRequest"
       responses:
         "200":
-          description: Pin result
+          description: Hot eviction result
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PinResponse"
+                $ref: "#/components/schemas/HotEvictResponse"
         default:
           $ref: "#/components/responses/Error"
-  /release:
-    post:
-      summary: Release an exact pin target
-      operationId: releaseTarget
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [target]
-              properties:
-                target:
-                  $ref: "#/components/schemas/Target"
-      responses:
-        "200":
-          description: Release result
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [target, pin]
-                properties:
-                  target:
-                    $ref: "#/components/schemas/Target"
-                  pin:
-                    type: boolean
-                    const: false
-        default:
-          $ref: "#/components/responses/Error"
-  /pins:
+  /fetches:
     get:
-      summary: List active pins
-      description: Lists durable exact pins that remain active until release.
-      operationId: listPins
+      summary: List fetches
+      description: Lists named editable fetch manifests and queued fetch work.
+      operationId: listFetches
       parameters:
         - in: query
           name: page
@@ -1038,27 +1004,132 @@ paths:
         - in: query
           name: per_page
           schema: { type: integer, default: 25, minimum: 1, maximum: 100 }
+        - in: query
+          name: state
+          required: false
+          schema:
+            oneOf:
+              - type: string
+              - type: "null"
+        - in: query
+          name: q
+          required: false
+          schema:
+            oneOf:
+              - type: string
+              - type: "null"
+        - in: query
+          name: sort
+          schema: { type: string, default: order }
+        - in: query
+          name: order
+          schema: { type: string, default: asc }
       responses:
         "200":
-          description: Active pins
+          description: Fetch page
           content:
             application/json:
               schema:
-                type: object
-                required: [page, per_page, total, pages, pins]
-                properties:
-                  page: { type: integer }
-                  per_page: { type: integer }
-                  total: { type: integer }
-                  pages: { type: integer }
-                  pins:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/PinSummary"
+                $ref: "#/components/schemas/FetchesResponse"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      summary: Create a fetch
+      description: Creates a named editable fetch, optionally with initial target selectors.
+      operationId: createFetch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateFetchRequest"
+      responses:
+        "200":
+          description: Fetch summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FetchSummary"
+        default:
+          $ref: "#/components/responses/Error"
+  /fetches/{fetch_id}/targets:
+    post:
+      summary: Add fetch targets
+      description: Adds target selectors to an editable draft fetch.
+      operationId: addFetchTargets
+      parameters:
+        - in: path
+          name: fetch_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FetchTargetsRequest"
+      responses:
+        "200":
+          description: Fetch summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FetchSummary"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      summary: Remove fetch targets
+      description: Removes target selectors from an editable draft fetch.
+      operationId: removeFetchTargets
+      parameters:
+        - in: path
+          name: fetch_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FetchTargetsRequest"
+      responses:
+        "200":
+          description: Fetch summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FetchSummary"
+        default:
+          $ref: "#/components/responses/Error"
+  /fetches/{fetch_id}/start:
+    post:
+      summary: Start a fetch
+      description: Queues a draft fetch for djdan, or for automatic cloud-fetch recovery when `cloud` is true.
+      operationId: startFetch
+      parameters:
+        - in: path
+          name: fetch_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartFetchRequest"
+      responses:
+        "200":
+          description: Fetch summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FetchSummary"
+        default:
+          $ref: "#/components/responses/Error"
   /fetches/{fetch_id}:
     get:
       summary: Get fetch summary
-      description: Returns one durable pin-scoped fetch summary while the exact pin remains active.
+      description: Returns one durable named fetch summary.
       operationId: getFetch
       parameters:
         - in: path
@@ -1117,24 +1188,6 @@ paths:
                 $ref: "#/components/schemas/CloudFetchSessions"
         default:
           $ref: "#/components/responses/Error"
-    post:
-      summary: Start or resume cloud-fetch recovery
-      description: Creates or resumes collection-native recovery sessions for missing files in this hot-storage fetch. While active, normal optical-media fetch reminders and upload operations are suppressed for the same fetch.
-      operationId: createOrResumeCloudFetch
-      parameters:
-        - in: path
-          name: fetch_id
-          required: true
-          schema: { type: string }
-      responses:
-        "200":
-          description: Cloud-fetch recovery sessions for this fetch
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/CloudFetchSessions"
-        default:
-          $ref: "#/components/responses/Error"
   /fetches/{fetch_id}/cloud-fetch/cancel:
     post:
       summary: Cancel active cloud-fetch recovery
@@ -1157,7 +1210,7 @@ paths:
   /fetches/{fetch_id}/status:
     get:
       summary: Get lightweight fetch status
-      description: Returns one durable pin-scoped fetch summary plus a bounded list of pending, partial, or byte-complete entry statuses for human operator display. This endpoint does not include recovery copy hints and does not backfill finalized-image recovery metadata; use the fetch manifest for automated recovery.
+      description: Returns one named fetch summary plus a bounded list of pending, partial, or byte-complete entry statuses for human operator display. This endpoint does not include recovery copy hints and does not backfill finalized-image recovery metadata; use the fetch manifest for automated recovery.
       operationId: getFetchStatus
       parameters:
         - in: path
@@ -1184,7 +1237,7 @@ paths:
   /fetches/{fetch_id}/manifest:
     get:
       summary: Get fetch manifest
-      description: Returns the stable fetch manifest and any unexpired upload progress for one active exact pin. Copy recovery lengths come from registered disc-copy metadata, and missing recovery digests are backfilled from the finalized image root before the manifest is returned, so archived-only files do not need hot plaintext to publish a manifest.
+      description: Returns the stable fetch manifest and any unexpired upload progress for one named fetch. Copy recovery lengths come from registered disc-copy metadata, and missing recovery digests are backfilled from the finalized image root before the manifest is returned, so archived-only files do not need hot plaintext to publish a manifest.
       operationId: getFetchManifest
       parameters:
         - in: path
@@ -1387,7 +1440,7 @@ components:
       description: Canonical projected-path selector relative to the hot-view root. Directory selectors end with `/` and file selectors do not.
     FetchState:
       type: string
-      enum: [waiting_media, uploading, verifying, done, failed]
+      enum: [draft, queued_djdan, uploading, verifying, queued_cloud, cloud_fetching, done, failed]
     FetchEntryUploadState:
       type: string
       enum: [pending, partial, byte_complete, uploaded]
@@ -2220,12 +2273,16 @@ components:
       allOf:
         - $ref: "#/components/schemas/RecoverySessionList"
         - type: object
-          required: [fetch_id, target]
+          required: [fetch_id, name, targets]
           properties:
             fetch_id:
               type: string
-            target:
+            name:
               type: string
+            targets:
+              type: array
+              items:
+                $ref: "#/components/schemas/Target"
     RecoverySession:
       type: object
       required:
@@ -2389,29 +2446,61 @@ components:
           enum: [ready, waiting]
         present_bytes: { type: integer }
         missing_bytes: { type: integer }
-    PinSummary:
+    CreateFetchRequest:
       type: object
-      required: [target, fetch]
+      required: [name]
       properties:
-        target:
-          $ref: "#/components/schemas/Target"
-        fetch:
-          $ref: "#/components/schemas/FetchHint"
-    FetchHint:
-      type: object
-      required: [id, state]
-      properties:
-        id: { type: string }
-        state:
-          $ref: "#/components/schemas/FetchState"
-        files: { type: integer }
-        bytes: { type: integer }
-        missing_bytes: { type: integer }
-        copy_count: { type: integer }
-        copies:
+        name: { type: string }
+        targets:
           type: array
           items:
-            $ref: "#/components/schemas/FetchCopyHint"
+            $ref: "#/components/schemas/Target"
+    FetchTargetsRequest:
+      type: object
+      required: [targets]
+      properties:
+        targets:
+          type: array
+          items:
+            $ref: "#/components/schemas/Target"
+    StartFetchRequest:
+      type: object
+      properties:
+        cloud:
+          type: boolean
+          default: false
+    HotEvictRequest:
+      type: object
+      required: [targets]
+      properties:
+        targets:
+          type: array
+          items:
+            $ref: "#/components/schemas/Target"
+    HotEvictResponse:
+      type: object
+      required: [targets, files, bytes, evicted_files, evicted_bytes]
+      properties:
+        targets:
+          type: array
+          items:
+            $ref: "#/components/schemas/Target"
+        files: { type: integer }
+        bytes: { type: integer }
+        evicted_files: { type: integer }
+        evicted_bytes: { type: integer }
+    FetchesResponse:
+      type: object
+      required: [page, per_page, total, pages, fetches]
+      properties:
+        page: { type: integer }
+        per_page: { type: integer }
+        total: { type: integer }
+        pages: { type: integer }
+        fetches:
+          type: array
+          items:
+            $ref: "#/components/schemas/FetchSummary"
     FetchCopyHint:
       type: object
       required: [id, volume_id, location]
@@ -2426,7 +2515,8 @@ components:
       required:
         [
           id,
-          target,
+          name,
+          targets,
           state,
           files,
           bytes,
@@ -2442,14 +2532,17 @@ components:
         ]
       properties:
         id: { type: string }
-        target:
-          $ref: "#/components/schemas/Target"
+        name: { type: string }
+        targets:
+          type: array
+          items:
+            $ref: "#/components/schemas/Target"
         state:
           $ref: "#/components/schemas/FetchState"
         files: { type: integer }
         bytes:
           type: integer
-          description: Total logical-file bytes selected by the exact pin.
+          description: Total logical-file bytes selected by the fetch.
         entries_total: { type: integer }
         entries_pending: { type: integer }
         entries_partial: { type: integer }
@@ -2585,11 +2678,14 @@ components:
             $ref: "#/components/schemas/FetchManifestEntryCopy"
     FetchManifest:
       type: object
-      required: [id, target, entries]
+      required: [id, name, targets, entries]
       properties:
         id: { type: string }
-        target:
-          $ref: "#/components/schemas/Target"
+        name: { type: string }
+        targets:
+          type: array
+          items:
+            $ref: "#/components/schemas/Target"
         entries:
           type: array
           items:
@@ -2650,17 +2746,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/SearchFile"
-    PinResponse:
-      type: object
-      required: [target, pin, hot, fetch]
-      properties:
-        target:
-          $ref: "#/components/schemas/Target"
-        pin: { type: boolean, const: true }
-        hot:
-          $ref: "#/components/schemas/HotStatus"
-        fetch:
-          $ref: "#/components/schemas/FetchHint"
     FetchUploadSession:
       type: object
       required: [entry, protocol, upload_url, offset, length, checksum_algorithm, expires_at]

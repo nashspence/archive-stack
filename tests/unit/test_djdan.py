@@ -681,7 +681,7 @@ def test_djdan_fetch_recovers_in_memory_and_reports_progress(monkeypatch) -> Non
     )
 
     assert result.exit_code == 0
-    assert json.loads(result.stdout) == {"id": "fx-1", "state": "done"}
+    assert json.loads(result.stdout) == {"fetches": [{"id": "fx-1", "state": "done"}]}
     assert "20260420T040001Z-1" in result.stderr
     assert "current file" in result.stderr
     assert "manifest" in result.stderr
@@ -1276,7 +1276,7 @@ def test_djdan_fetch_resumes_split_entry_from_session_offset(monkeypatch) -> Non
     )
 
     assert result.exit_code == 0
-    assert json.loads(result.stdout) == {"id": "fx-1", "state": "done"}
+    assert json.loads(result.stdout) == {"fetches": [{"id": "fx-1", "state": "done"}]}
     assert "20260420T040003Z-1" not in result.stderr
     assert "20260420T040004Z-1" in result.stderr
     assert uploaded == [

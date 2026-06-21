@@ -21,7 +21,8 @@ class _DoneFetchClient:
     def get_fetch_status(self, fetch_id: str) -> dict[str, Any]:
         return {
             "id": fetch_id,
-            "target": "docs/",
+            "name": "Docs",
+            "targets": ["docs/"],
             "state": "done",
             "files": 3,
             "bytes": 30,
@@ -49,7 +50,7 @@ def test_hot_show_done_fetch_does_not_request_manifest(monkeypatch) -> None:
     monkeypatch.setattr(riverhog_cli.main, "client", lambda: fake_client)
     monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
 
-    result = runner.invoke(app, ["hot", "show", "fx-done"])
+    result = runner.invoke(app, ["hot", "fetch", "show", "fx-done"])
 
     assert result.exit_code == 0
     assert "fetch: fx-done (done)" in result.stdout
@@ -60,37 +61,52 @@ def test_hot_show_done_fetch_does_not_request_manifest(monkeypatch) -> None:
 
 def test_hot_list_passes_page_options_and_emits_paged_json(monkeypatch) -> None:
     class FakeClient:
-        def list_pins(self, *, page: int = 1, per_page: int = 25) -> dict[str, Any]:
+        def list_fetches(
+            self,
+            *,
+            page: int = 1,
+            per_page: int = 25,
+            state: str | None = None,
+            query: str | None = None,
+            sort: str = "order",
+            order: str = "asc",
+        ) -> dict[str, Any]:
             assert page == 2
             assert per_page == 1
+            assert state is None
+            assert query is None
+            assert sort == "order"
+            assert order == "asc"
             return {
                 "page": page,
                 "per_page": per_page,
                 "total": 2,
                 "pages": 2,
-                "pins": [
+                "fetches": [
                     {
-                        "target": "docs/photos/",
-                        "fetch": {
-                            "id": "fx-2",
-                            "state": "waiting_media",
-                            "files": 4,
-                            "bytes": 40,
-                            "missing_bytes": 40,
-                            "copy_count": 0,
-                            "copies": [],
-                        },
+                        "id": "fx-2",
+                        "name": "Photos",
+                        "targets": ["docs/photos/"],
+                        "state": "queued_djdan",
+                        "files": 4,
+                        "bytes": 40,
+                        "missing_bytes": 40,
+                        "copy_count": 0,
+                        "copies": [],
                     }
                 ],
             }
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
 
-    result = runner.invoke(app, ["hot", "list", "--page", "2", "--per-page", "1", "--json"])
+    result = runner.invoke(
+        app,
+        ["hot", "fetch", "list", "--page", "2", "--per-page", "1", "--json"],
+    )
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["page"] == 2
     assert payload["per_page"] == 1
     assert payload["total"] == 2
-    assert payload["pins"][0]["fetch"]["id"] == "fx-2"
+    assert payload["fetches"][0]["id"] == "fx-2"

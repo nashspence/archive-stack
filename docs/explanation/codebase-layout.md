@@ -18,7 +18,6 @@ src/
       search.py
       planning.py
       copies.py
-      pins.py
       fetches.py
       contracts.py
     ports/
@@ -26,7 +25,6 @@ src/
       clock.py
       copy_store.py
       crypto.py
-      fetch_store.py
       hot_store.py
       ids.py
       optical_reader.py
@@ -59,7 +57,6 @@ src/
       search.py
       plan.py
       images.py
-      pins.py
     schemas/
       common.py
       collections.py
@@ -67,7 +64,6 @@ src/
       search.py
       plan.py
       images.py
-      pins.py
   riverhog_cli/
     main.py
     client.py

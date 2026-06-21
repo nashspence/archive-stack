@@ -453,11 +453,11 @@ def build_recovery_failed_payload(
     return payload
 
 
-def build_fetch_waiting_payload(
+def build_fetch_queued_payload(
     *,
     config: WebhookConfig,
     fetch_id: str,
-    target: str,
+    name: str,
     files: int,
     bytes: int,
     copies: list[dict[str, str]],
@@ -466,10 +466,10 @@ def build_fetch_waiting_payload(
     reminder: bool,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
-        "event": "fetches.waiting_media.reminder" if reminder else "fetches.waiting_media",
-        "type": "fetch_waiting_media",
+        "event": "fetches.queued_djdan.reminder" if reminder else "fetches.queued_djdan",
+        "type": "fetch_queued_djdan",
         "fetch_id": fetch_id,
-        "target": target,
+        "name": name,
         "delivered_at": isoformat_z(delivered_at),
         "reminder_count": reminder_count + (1 if reminder else 0),
         "reminder_interval_seconds": config.reminder_interval_seconds,
@@ -479,12 +479,12 @@ def build_fetch_waiting_payload(
         "operator_urgency": "time_sensitive",
         "operator_action": f"Run `djdan fetch {fetch_id}`",
         "operator_message": (
-            "Riverhog is waiting for optical-media recovery before this pinned target "
+            "Riverhog has a fetch queued for optical-media recovery before these files "
             "can be hot again."
         ),
-        "notification": _fetch_waiting_notification(
+        "notification": _fetch_queued_notification(
             reminder=reminder,
-            target=target,
+            name=name,
         ),
     }
     if config.base_url:
@@ -548,7 +548,7 @@ def _recovery_operator_guidance(*, stage: str, recovery_type: str) -> tuple[str,
             return (
                 "Wait for Riverhog to finish cloud-fetch recovery",
                 (
-                    "Cloud-fetch recovery has started for missing pinned hot files. "
+                    "Cloud-fetch recovery has started for missing fetch-selected files. "
                     "This is rare, expected to take a long time, and means Riverhog "
                     "is recovering the safely archived collection data."
                 ),
@@ -566,7 +566,7 @@ def _recovery_operator_guidance(*, stage: str, recovery_type: str) -> tuple[str,
         if recovery_type == "collection_restore":
             return (
                 "No operator action required",
-                "Cloud-fetch recovery completed and the missing pinned files are hot again.",
+                "Cloud-fetch recovery completed and the missing fetch files are hot again.",
             )
         return (
             "No operator action required",
@@ -577,7 +577,7 @@ def _recovery_operator_guidance(*, stage: str, recovery_type: str) -> tuple[str,
             "Wait for Riverhog to finish cloud-fetch materialization",
             (
                 "Cloud-fetch recovery data is ready. Riverhog will materialize missing "
-                "pinned files automatically before cleanup."
+                "fetch files automatically before cleanup."
             ),
         )
     return (
@@ -867,10 +867,10 @@ def _copy_label_needed_notification(*, label_text: str) -> dict[str, str]:
     )
 
 
-def _fetch_waiting_notification(*, reminder: bool, target: str) -> dict[str, str]:
+def _fetch_queued_notification(*, reminder: bool, name: str) -> dict[str, str]:
     return _canonical_notification_from_contract(
-        event="fetches.waiting_media.reminder" if reminder else "fetches.waiting_media",
-        subject=_target_subject(target),
+        event="fetches.queued_djdan.reminder" if reminder else "fetches.queued_djdan",
+        subject=_target_subject(name),
     )
 
 

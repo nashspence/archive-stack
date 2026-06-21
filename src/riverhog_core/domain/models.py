@@ -289,7 +289,8 @@ class FetchCopyHint:
 @dataclass(frozen=True)
 class FetchSummary:
     id: FetchId
-    target: TargetStr
+    name: str
+    targets: tuple[TargetStr, ...]
     state: FetchState
     files: int
     bytes: int
@@ -305,18 +306,12 @@ class FetchSummary:
 
 
 @dataclass(frozen=True)
-class PinSummary:
-    target: TargetStr
-    fetch: FetchSummary
-
-
-@dataclass(frozen=True)
-class PinListPage:
+class FetchListPage:
     page: int
     per_page: int
     total: int
     pages: int
-    pins: list[PinSummary]
+    fetches: list[FetchSummary]
 
 
 @dataclass(frozen=True)

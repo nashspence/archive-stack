@@ -446,7 +446,7 @@ class _StubFetchUploads:
     def expire_stale_uploads(self) -> None:
         return None
 
-    def deliver_due_waiting_notifications(self, *, limit: int = 100) -> int:
+    def deliver_due_queued_notifications(self, *, limit: int = 100) -> int:
         assert limit >= 0
         return 0
 
@@ -601,7 +601,7 @@ class _StubRecoverySessions:
     def process_due_sessions(self, *, limit: int) -> None:
         assert limit >= 0
 
-    def repair_missing_pinned_hot_files(self, *, limit: int) -> None:
+    def repair_missing_fetch_hot_files(self, *, limit: int) -> None:
         assert limit >= 0
 
 
@@ -618,7 +618,6 @@ def _contract_runtime_container(
         glacier_reporting=_StubGlacierReporting(),  # type: ignore[arg-type]
         recovery_sessions=_StubRecoverySessions(),  # type: ignore[arg-type]
         copies=SimpleNamespace(),
-        pins=SimpleNamespace(),
         fetches=_StubFetchUploads(),  # type: ignore[arg-type]
         files=_StubFiles(),  # type: ignore[arg-type]
     )

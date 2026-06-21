@@ -194,7 +194,7 @@ Automated multipart recovery uses the fetch manifest as its recovery contract.
 - any temporary buffering used during recovery is an internal implementation detail
 - the default recovery reader supports mounted optical filesystems directly and raw optical devices through `xorriso`
 - incomplete upload state expires after `INCOMPLETE_UPLOAD_TTL` since the last accepted chunk and the manifest returns to
-  `waiting_media`
+  `queued_djdan`
 - `djdan` reports precise progress for the current file and the whole manifest throughout recovery and upload
 
 Expected multipart flow:

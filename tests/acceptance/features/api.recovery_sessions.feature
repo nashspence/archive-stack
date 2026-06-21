@@ -6,8 +6,11 @@ Feature: Recovery sessions API
     Given an archive with planner fixtures
     And collection "docs" has uploaded Glacier archive package
   Scenario: Starting a hot cloud-fetch creates durable automatic restore sessions
-    Given archived target "docs/tax/2022/invoice-123.pdf" is pinned with fetch "fx-1"
-    When the client posts to "/v1/fetches/fx-1/cloud-fetch"
+    Given file "docs/tax/2022/invoice-123.pdf" is archived
+    And target "docs/tax/2022/invoice-123.pdf" has a draft fetch
+    When the client starts fetch "fx-1" for cloud
+    Then the response status is 200
+    When the client gets "/v1/fetches/fx-1/cloud-fetch"
     Then the response status is 200
     And the response cloud-fetch sessions contain recovery session "rs-docs-restore-1"
     When the client waits for recovery session "rs-docs-restore-1" state "completed"
@@ -18,8 +21,9 @@ Feature: Recovery sessions API
     Then the response status is 200
     And the response cloud-fetch sessions contain recovery session "rs-docs-restore-1"
   Scenario: Hot cloud-fetch verifies manifest and proof before completing automatically
-    Given archived target "docs/tax/2022/invoice-123.pdf" is pinned with fetch "fx-1"
-    And the client posts to "/v1/fetches/fx-1/cloud-fetch"
+    Given file "docs/tax/2022/invoice-123.pdf" is archived
+    And target "docs/tax/2022/invoice-123.pdf" has a draft fetch
+    And the client starts fetch "fx-1" for cloud
     When the client waits for recovery session "rs-docs-restore-1" state "completed"
     Then the response status is 200
     And the response recovery session type is "collection_restore"
@@ -28,8 +32,9 @@ Feature: Recovery sessions API
     And the response recovery session collection "docs" collection manifest state is "uploaded"
     And the response recovery session collection "docs" OTS proof state is "uploaded"
   Scenario: Hot cloud-fetch materializes selected files into hot storage automatically
-    Given archived target "docs/tax/2022/invoice-123.pdf" is pinned with fetch "fx-1"
-    When the client posts to "/v1/fetches/fx-1/cloud-fetch"
+    Given file "docs/tax/2022/invoice-123.pdf" is archived
+    And target "docs/tax/2022/invoice-123.pdf" has a draft fetch
+    When the client starts fetch "fx-1" for cloud
     And the client waits for recovery session "rs-docs-restore-1" state "completed"
     Then the response status is 200
     And the response recovery session state is "completed"

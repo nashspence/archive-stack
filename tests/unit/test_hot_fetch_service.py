@@ -15,10 +15,10 @@ from riverhog_core.catalog_models import (
     FinalizedImageRecord,
     ImageCopyRecord,
 )
-from riverhog_core.domain.errors import Conflict
+from riverhog_core.domain.errors import Conflict, NotFound
 from riverhog_core.ports.hot_store import HotFileStat
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.pins import SqlAlchemyPinService
+from riverhog_core.services.fetches import SqlAlchemyFetchService
 from tests.unit.db_helpers import sqlite_url
 
 
@@ -204,16 +204,15 @@ def _hot_paths(sqlite_path: Path) -> set[str]:
         }
 
 
-def test_releasing_one_file_removes_only_that_file(tmp_path: Path) -> None:
+def test_evicting_one_file_removes_only_that_file(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     initialize_db(sqlite_url(sqlite_path))
     hot_store = _FakeHotStore()
     _seed_hot_docs(sqlite_path, hot_store)
     _mark_docs_fully_compliant(sqlite_path)
-    service = SqlAlchemyPinService(_config(sqlite_path), hot_store, _FakeUploadStore())
+    service = SqlAlchemyFetchService(_config(sqlite_path), hot_store, _FakeUploadStore())
 
-    service.pin("docs/tax/2022/invoice-123.pdf")
-    service.release("docs/tax/2022/invoice-123.pdf")
+    service.evict(["docs/tax/2022/invoice-123.pdf"])
 
     assert hot_store.deleted == [("docs", "tax/2022/invoice-123.pdf")]
     assert _hot_paths(sqlite_path) == {
@@ -222,33 +221,32 @@ def test_releasing_one_file_removes_only_that_file(tmp_path: Path) -> None:
     }
 
 
-def test_releasing_broad_pin_preserves_remaining_narrow_pin(tmp_path: Path) -> None:
+def test_evicting_broad_target_removes_all_selected_hot_files(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     initialize_db(sqlite_url(sqlite_path))
     hot_store = _FakeHotStore()
     _seed_hot_docs(sqlite_path, hot_store)
     _mark_docs_fully_compliant(sqlite_path)
-    service = SqlAlchemyPinService(_config(sqlite_path), hot_store, _FakeUploadStore())
+    service = SqlAlchemyFetchService(_config(sqlite_path), hot_store, _FakeUploadStore())
 
-    service.pin("docs/tax/")
-    service.pin("docs/tax/2022/invoice-123.pdf")
-    service.release("docs/tax/")
+    service.evict(["docs/tax/"])
 
-    assert hot_store.deleted == [("docs", "tax/2022/receipt-456.pdf")]
-    assert _hot_paths(sqlite_path) == {
-        "tax/2022/invoice-123.pdf",
-        "letters/cover.txt",
-    }
+    assert hot_store.deleted == [
+        ("docs", "tax/2022/invoice-123.pdf"),
+        ("docs", "tax/2022/receipt-456.pdf"),
+    ]
+    assert _hot_paths(sqlite_path) == {"letters/cover.txt"}
 
 
-def test_releasing_missing_pin_does_not_remove_unrelated_hot_files(tmp_path: Path) -> None:
+def test_evicting_missing_target_does_not_remove_unrelated_hot_files(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     initialize_db(sqlite_url(sqlite_path))
     hot_store = _FakeHotStore()
     _seed_hot_docs(sqlite_path, hot_store)
-    service = SqlAlchemyPinService(_config(sqlite_path), hot_store, _FakeUploadStore())
+    service = SqlAlchemyFetchService(_config(sqlite_path), hot_store, _FakeUploadStore())
 
-    service.release("docs/missing/")
+    with pytest.raises(NotFound, match="target not found"):
+        service.evict(["docs/missing/"])
 
     assert hot_store.deleted == []
     assert _hot_paths(sqlite_path) == {
@@ -258,17 +256,15 @@ def test_releasing_missing_pin_does_not_remove_unrelated_hot_files(tmp_path: Pat
     }
 
 
-def test_releasing_noncompliant_pin_is_refused(tmp_path: Path) -> None:
+def test_evicting_noncompliant_target_is_refused(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     initialize_db(sqlite_url(sqlite_path))
     hot_store = _FakeHotStore()
     _seed_hot_docs(sqlite_path, hot_store)
-    service = SqlAlchemyPinService(_config(sqlite_path), hot_store, _FakeUploadStore())
+    service = SqlAlchemyFetchService(_config(sqlite_path), hot_store, _FakeUploadStore())
 
-    service.pin("docs/tax/2022/invoice-123.pdf")
-
-    with pytest.raises(Conflict, match="non-compliant file"):
-        service.release("docs/tax/2022/invoice-123.pdf")
+    with pytest.raises(Conflict, match="without verified disc protection"):
+        service.evict(["docs/tax/2022/invoice-123.pdf"])
 
     assert hot_store.deleted == []
     assert _hot_paths(sqlite_path) == {
@@ -278,7 +274,7 @@ def test_releasing_noncompliant_pin_is_refused(tmp_path: Path) -> None:
     }
 
 
-def test_listing_pins_reports_aggregate_fetch_stats_without_copy_hints(tmp_path: Path) -> None:
+def test_listing_fetches_reports_aggregate_stats_from_projection(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     initialize_db(sqlite_url(sqlite_path))
     hot_store = _FakeHotStore()
@@ -288,15 +284,17 @@ def test_listing_pins_reports_aggregate_fetch_stats_without_copy_hints(tmp_path:
         receipt = session.get(CollectionFileRecord, ("docs", "tax/2022/receipt-456.pdf"))
         assert receipt is not None
         receipt.hot = False
-    service = SqlAlchemyPinService(_config(sqlite_path), hot_store, _FakeUploadStore())
+    service = SqlAlchemyFetchService(_config(sqlite_path), hot_store, _FakeUploadStore())
 
-    service.pin("docs/tax/")
-    page = service.list_pins(page=1, per_page=25)
+    fetch = service.create(name="Tax docs", targets=["docs/tax/"])
+    assert str(fetch.id) == "fx-1"
+    page = service.list(page=1, per_page=25)
 
     assert page.total == 1
-    assert len(page.pins) == 1
-    fetch = page.pins[0].fetch
-    assert str(page.pins[0].target) == "docs/tax/"
+    assert len(page.fetches) == 1
+    fetch = page.fetches[0]
+    assert fetch.name == "Tax docs"
+    assert [str(target) for target in fetch.targets] == ["docs/tax/"]
     assert fetch.files == 2
     assert fetch.bytes == len(b"invoice") + len(b"receipt")
     assert fetch.missing_bytes == len(b"receipt")

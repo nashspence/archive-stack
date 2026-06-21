@@ -2,7 +2,7 @@
 
 ## Decision
 
-Riverhog search returns projected-path selectors that can be used directly by pin and release.
+Riverhog search returns projected-path selectors that can be used directly by fetch editing and hot eviction.
 
 ## Reason
 

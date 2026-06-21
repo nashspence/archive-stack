@@ -1,6 +1,6 @@
 @acceptance @cli @mvp
 Feature: riverhog CLI
-  The main CLI is focused on collections and pinned hot-storage sets.
+  The main CLI is focused on collections, fetch work orders, and protected hot storage.
 
   Rule: JSON mode emits machine-readable payloads
     Scenario: riverhog collection list emits a compact collection listing payload
@@ -27,56 +27,51 @@ Feature: riverhog CLI
       And stdout matches the structure of GET "/v1/search"
       And stdout mentions "receipt-456.pdf"
 
-    Scenario: riverhog hot pin emits the API pin payload
+    Scenario: riverhog hot fetch create emits a draft fetch payload
       Given target "docs/tax/2022/invoice-123.pdf" is valid
-      When the operator runs 'riverhog hot pin "docs/tax/2022/invoice-123.pdf" --json'
+      When the operator runs 'riverhog hot fetch create --name "Tax recovery" "docs/tax/2022/invoice-123.pdf" --json'
       Then the command exits with code 0
       And stdout is valid JSON
-      And stdout matches the structure of POST "/v1/pin"
+      And stdout mentions fetch id "fx-1"
+      And stdout mentions "Tax recovery"
+      And stdout mentions "draft"
 
-    Scenario: riverhog hot unpin emits the API release payload
-      Given target "docs/tax/2022/invoice-123.pdf" is valid
-      When the operator runs 'riverhog hot unpin "docs/tax/2022/invoice-123.pdf" --json'
+    Scenario: riverhog hot fetch list emits named fetches
+      Given archived target "docs/tax/2022/invoice-123.pdf" has queued fetch "fx-1"
+      When the operator runs 'riverhog hot fetch list --page 1 --per-page 25 --json'
       Then the command exits with code 0
       And stdout is valid JSON
-      And stdout matches the structure of POST "/v1/release"
-
-    Scenario: riverhog hot list emits fetch associations for active pins
-      Given archived target "docs/tax/2022/invoice-123.pdf" is pinned with fetch "fx-1"
-      When the operator runs 'riverhog hot list --page 1 --per-page 25 --json'
-      Then the command exits with code 0
-      And stdout is valid JSON
-      And stdout matches the structure of GET "/v1/pins"
+      And stdout matches the structure of GET "/v1/fetches"
       And stdout mentions "per_page"
       And stdout mentions "total"
       And stdout mentions target "docs/tax/2022/invoice-123.pdf"
       And stdout mentions fetch id "fx-1"
-      And stdout mentions "waiting_media"
+      And stdout mentions "queued_djdan"
 
-    Scenario: riverhog hot show emits one fetch summary payload
+    Scenario: riverhog hot fetch show emits one fetch summary payload
       Given fetch "fx-1" exists for target "docs/tax/2022/invoice-123.pdf"
-      When the operator runs 'riverhog hot show "fx-1" --json'
+      When the operator runs 'riverhog hot fetch show "fx-1" --json'
       Then the command exits with code 0
       And stdout is valid JSON
       And stdout matches the structure of GET "/v1/fetches/fx-1"
       And stdout mentions fetch id "fx-1"
 
-    Scenario: riverhog hot cloud-fetch exposes start, cancel, and show payloads
-      Given archived target "docs/tax/2022/invoice-123.pdf" is pinned with fetch "fx-1"
+    Scenario: riverhog hot fetch start can queue cloud-fetch recovery
+      Given file "docs/tax/2022/invoice-123.pdf" is archived
       And collection "docs" has uploaded Glacier archive package
-      When the operator runs 'riverhog hot cloud-fetch start fx-1 --json'
+      And target "docs/tax/2022/invoice-123.pdf" has a draft fetch
+      When the operator runs 'riverhog hot fetch start fx-1 --cloud --json'
       Then the command exits with code 0
       And stdout is valid JSON
       And stdout mentions fetch id "fx-1"
-      And stdout mentions "collection_restore"
-      And stdout mentions "rs-docs-restore-1"
+      And stdout mentions "cloud_fetching"
       Given recovery session "rs-docs-restore-1" restore remains pending
-      When the operator runs 'riverhog hot cloud-fetch cancel fx-1 --json'
+      When the operator runs 'riverhog hot fetch cloud-fetch cancel fx-1 --json'
       Then the command exits with code 0
       And stdout is valid JSON
       And stdout mentions fetch id "fx-1"
       And stdout mentions "canceled"
-      When the operator runs 'riverhog hot cloud-fetch show fx-1 --json'
+      When the operator runs 'riverhog hot fetch cloud-fetch show fx-1 --json'
       Then the command exits with code 0
       And stdout is valid JSON
       And stdout matches the structure of GET "/v1/fetches/fx-1/cloud-fetch"
@@ -121,17 +116,9 @@ Feature: riverhog CLI
       And stdout mentions "paths: tax/2022/invoice-123.pdf"
       And stdout mentions "label=20260420T040001Z-1"
 
-    Scenario: riverhog hot pin prints fetch guidance when recovery is needed
-      Given pinning target "docs/tax/2022/invoice-123.pdf" requires fetch "fx-1"
-      When the operator runs 'riverhog hot pin "docs/tax/2022/invoice-123.pdf"'
-      Then the command exits with code 0
-      And stdout mentions target "docs/tax/2022/invoice-123.pdf"
-      And stdout mentions fetch id "fx-1"
-      And stdout mentions at least one candidate copy id
-
-    Scenario: riverhog hot show lists pending files for one pin manifest
+    Scenario: riverhog hot fetch show lists pending files for one manifest
       Given fetch "fx-1" exists for target "docs/tax/2022/invoice-123.pdf"
-      When the operator runs 'riverhog hot show "fx-1"'
+      When the operator runs 'riverhog hot fetch show "fx-1"'
       Then the command exits with code 0
       And stdout mentions fetch id "fx-1"
       And stdout mentions "pending"

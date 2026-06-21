@@ -24,7 +24,6 @@ def test_initialize_db_creates_current_baseline_schema(tmp_path: Path) -> None:
     inspector = inspect(engine)
     table_names = set(inspector.get_table_names())
     assert {
-        "active_pins",
         "collection_archives",
         "collection_files",
         "collection_image_operator_summaries",
@@ -34,6 +33,9 @@ def test_initialize_db_creates_current_baseline_schema(tmp_path: Path) -> None:
         "collections",
         "disc_operator_summaries",
         "fetch_entries",
+        "fetch_operator_summaries",
+        "fetch_selectors",
+        "fetches",
         "file_copies",
         "finalized_image_collection_artifacts",
         "finalized_image_coverage_parts",
@@ -43,7 +45,6 @@ def test_initialize_db_creates_current_baseline_schema(tmp_path: Path) -> None:
         "glacier_recovery_session_images",
         "glacier_recovery_sessions",
         "glacier_usage_snapshots",
-        "hot_fetch_operator_summaries",
         "image_copies",
         "image_copy_events",
         "image_operator_summaries",

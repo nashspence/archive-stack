@@ -187,12 +187,11 @@ receipt on the same upload row before promoting hot files. A restart after
 Glacier completion therefore resumes from the recorded receipt instead of
 rebuilding or re-uploading the archive.
 
-After finalization, under-protected collections remain pinned in hot storage.
-The Glacier recovery worker audits active pins at startup and before planner
-refreshes. Missing pinned files with registered disc coverage wait for the
-normal `djdan fetch` flow; missing pinned files without registered disc coverage
-create or resume an automatic collection Glacier restore session. Once S3 makes
-the archive package readable, Riverhog verifies the manifest, proof, and
+After finalization, under-protected files remain hot and are not evictable until
+verified disc coverage exists. Fetches are the operator-facing recovery unit:
+they can be queued to the normal `djdan fetch` flow or started with cloud-fetch
+to create or resume an automatic collection Glacier restore session. Once S3
+makes the archive package readable, Riverhog verifies the manifest, proof, and
 selected archive members before writing those files back to hot storage.
 
 During promotion, each hot file is written with byte and

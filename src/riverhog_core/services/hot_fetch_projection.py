@@ -1,21 +1,25 @@
 from __future__ import annotations
 
-from riverhog_core.catalog_models import HotFetchOperatorSummaryRecord
+from riverhog_core.catalog_models import FetchOperatorSummaryRecord
 from riverhog_core.domain.enums import FetchState
-from riverhog_core.domain.models import FetchSummary, PinSummary
+from riverhog_core.domain.models import FetchSummary
 from riverhog_core.domain.types import FetchId, TargetStr
 
 
-def fetch_summary_from_hot_projection(
-    row: HotFetchOperatorSummaryRecord,
+def fetch_summary_from_projection(
+    row: FetchOperatorSummaryRecord,
     *,
     prefer_entries: bool,
 ) -> FetchSummary:
     state = FetchState(row.fetch_state)
+    targets = tuple(
+        TargetStr(target) for target in str(row.targets_text or "").splitlines() if target.strip()
+    )
     if prefer_entries and state != FetchState.DONE and row.entries_total > 0:
         return FetchSummary(
             id=FetchId(row.fetch_id),
-            target=TargetStr(row.target),
+            name=row.name,
+            targets=targets,
             state=state,
             files=int(row.entries_total or 0),
             bytes=int(row.entry_bytes or 0),
@@ -31,7 +35,8 @@ def fetch_summary_from_hot_projection(
         )
     return FetchSummary(
         id=FetchId(row.fetch_id),
-        target=TargetStr(row.target),
+        name=row.name,
+        targets=targets,
         state=state,
         files=int(row.files or 0),
         bytes=int(row.bytes or 0),
@@ -44,11 +49,4 @@ def fetch_summary_from_hot_projection(
         uploaded_bytes=int(row.hot_bytes or 0),
         missing_bytes=int(row.missing_bytes or 0),
         upload_state_expires_at=None,
-    )
-
-
-def pin_summary_from_hot_projection(row: HotFetchOperatorSummaryRecord) -> PinSummary:
-    return PinSummary(
-        target=TargetStr(row.target),
-        fetch=fetch_summary_from_hot_projection(row, prefer_entries=False),
     )

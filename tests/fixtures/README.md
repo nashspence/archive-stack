@@ -23,8 +23,8 @@ Guidelines:
 - Every byte count used by acceptance tests must derive from real fixture files, not hand-entered constants.
 - Optical fixtures should model both successful recovery and the two important failure modes:
   missing payload and server-side rejection of incorrect recovered bytes.
-- If release reconciliation is asynchronous internally, acceptance helpers should provide an eventual assertion such as
-  wait_until_hot_matches_pins().
+- If hot-eviction reconciliation is asynchronous internally, acceptance helpers should provide an eventual assertion for
+  the expected hot-file state.
 - CLI acceptance tests should use the same fixture families as the API acceptance tests instead of inventing parallel state.
 
 Spec harness synchronization:

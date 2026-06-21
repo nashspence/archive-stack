@@ -195,9 +195,11 @@ Feature: Plan and images API
     Scenario: Registering a copy writes physical disc paths to the fetch manifest
       When the client posts to "/v1/images/20260420T040001Z/copies" with location "Shelf B1"
       Then the response status is 200
-      When the client posts to "/v1/pin" with target "docs/tax/2022/invoice-123.pdf"
+      When the client creates fetch "Tax manifest" with target "docs/tax/2022/invoice-123.pdf"
       Then the response status is 200
       And a fetch id is returned
+      When the client starts fetch "fx-1" for djdan
+      Then the response status is 200
       When the client gets the manifest for the returned fetch
       Then the response status is 200
       And fetch manifest entry "e1" has at least one copy with a disc_path

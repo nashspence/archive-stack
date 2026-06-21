@@ -5,7 +5,7 @@ Feature: djdan CLI
   manifest, not client-local recovery files.
 
   Background:
-    Given split archived target "docs/tax/2022/invoice-123.pdf" is pinned with fetch "fx-1"
+    Given split archived target "docs/tax/2022/invoice-123.pdf" has queued fetch "fx-1"
     And fetch "fx-1" has a stable manifest
     And a configured optical reader can recover every required entry
 

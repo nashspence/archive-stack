@@ -8,8 +8,9 @@ Use these core nouns consistently:
 - `candidate` — one provisional planner proposal that may be re-allocated
 - `image` — one finalized ISO artifact
 - `copy` — one physical burned disc of an image
-- `pin` — a declared requirement to keep a target materialized in hot storage
-- `fetch` — the pin-scoped recovery manifest for one exact selector
+- `fetch` — a named, operator-created manifest of target selectors that can be
+  fulfilled from optical media or cloud archive data
+- `hot eviction` — explicit removal of compliant hot bytes from the fast cache
 - `recovery_session` — an automatic Glacier restore or image rebuild workflow
 
 ## Core terms
@@ -44,11 +45,10 @@ The server-side materialized cache of file bytes currently available without opt
 
 Selectors operate over the projected hot namespace, not over literal hot-store paths on disk.
 
-Immediately after collection finalization, files are hot cache entries but not
-eligible for release unless the collection is fully compliant. Under-protected
-collections remain pinned in hot storage until enough verified physical copies
-exist. Operators use `release` to remove compliant pins and delete their no
-longer pinned hot bytes in one operation.
+Immediately after collection finalization, files are hot cache entries.
+Under-protected files are not evictable until enough verified physical copies
+exist. Operators use `riverhog hot evict` to synchronously remove compliant hot
+bytes from the cache.
 
 ### Durable authoritative state
 
@@ -59,7 +59,7 @@ This includes at least:
 - collections and their coverage summaries
 - collection Glacier archive package state
 - finalized images and registered copies
-- exact pins and their fetch manifests
+- named fetch manifests and their selector targets
 - hot-residency state and any unexpired resumable-upload progress
 
 Implementations may rebuild derived projections during restart while keeping the same authoritative state.
@@ -293,13 +293,18 @@ A fetch summary exposes at least:
 
 Definitions:
 
-- `bytes` — total logical-file bytes selected by the exact pin
+- `bytes` — total logical-file bytes selected by the fetch targets
 - `uploaded_bytes` — accepted bytes in the fetch's ordered recovery-byte upload streams
 - `missing_bytes` — remaining bytes in those ordered recovery-byte upload streams
 
-### Pin summary
+### Fetch summary
 
-A pin summary exposes at least:
+A fetch summary exposes at least:
 
-- `target`
-- `fetch`
+- `id`
+- `name`
+- `targets`
+- `state`
+- `files`
+- `bytes`
+- `missing_bytes`

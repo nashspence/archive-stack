@@ -440,9 +440,6 @@ class ApiClient:
             params=params,
         )
 
-    def create_or_resume_cloud_fetch(self, fetch_id: str) -> dict[str, Any]:
-        return self._json("POST", f"/v1/fetches/{quote(fetch_id, safe='/')}/cloud-fetch")
-
     def cancel_cloud_fetch(self, fetch_id: str) -> dict[str, Any]:
         return self._json(
             "POST",
@@ -632,14 +629,54 @@ class ApiClient:
             ),
         )
 
-    def pin(self, target: str) -> dict[str, Any]:
-        return self._json("POST", "/v1/pin", json={"target": target})
+    def list_fetches(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        state: str | None = None,
+        query: str | None = None,
+        sort: str = "order",
+        order: str = "asc",
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "page": page,
+            "per_page": per_page,
+            "sort": sort,
+            "order": order,
+        }
+        if state is not None:
+            params["state"] = state
+        if query:
+            params["q"] = query
+        return self._json("GET", "/v1/fetches", params=params)
 
-    def release(self, target: str) -> dict[str, Any]:
-        return self._json("POST", "/v1/release", json={"target": target})
+    def create_fetch(self, *, name: str, targets: Sequence[str]) -> dict[str, Any]:
+        return self._json("POST", "/v1/fetches", json={"name": name, "targets": list(targets)})
 
-    def list_pins(self, *, page: int = 1, per_page: int = 25) -> dict[str, Any]:
-        return self._json("GET", "/v1/pins", params={"page": page, "per_page": per_page})
+    def add_fetch_targets(self, fetch_id: str, targets: Sequence[str]) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/fetches/{quote(fetch_id, safe='/')}/targets",
+            json={"targets": list(targets)},
+        )
+
+    def remove_fetch_targets(self, fetch_id: str, targets: Sequence[str]) -> dict[str, Any]:
+        return self._json(
+            "DELETE",
+            f"/v1/fetches/{quote(fetch_id, safe='/')}/targets",
+            json={"targets": list(targets)},
+        )
+
+    def start_fetch(self, fetch_id: str, *, cloud: bool = False) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/fetches/{quote(fetch_id, safe='/')}/start",
+            json={"cloud": cloud},
+        )
+
+    def evict_hot_targets(self, targets: Sequence[str]) -> dict[str, Any]:
+        return self._json("POST", "/v1/hot/evict", json={"targets": list(targets)})
 
     def get_fetch(self, fetch_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/fetches/{fetch_id}")

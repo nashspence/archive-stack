@@ -113,4 +113,5 @@ class RecoverySessionListOut(RiverhogModel):
 
 class CloudFetchSessionsOut(RecoverySessionListOut):
     fetch_id: str
-    target: str
+    name: str
+    targets: list[str]

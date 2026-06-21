@@ -2,23 +2,18 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Any
-
-import pytest
 
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
-    ActivePinRecord,
     CollectionFileRecord,
     CollectionRecord,
     FetchEntryRecord,
-    HotFetchOperatorSummaryRecord,
+    FetchOperatorSummaryRecord,
+    FetchRecord,
+    FetchSelectorRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services import fetches as fetches_service
-from riverhog_core.services import pins as pins_service
 from riverhog_core.services.fetches import SqlAlchemyFetchService
-from riverhog_core.services.pins import SqlAlchemyPinService
 from tests.unit.db_helpers import sqlite_url
 
 
@@ -41,15 +36,15 @@ def _sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-def _summary_row(sqlite_path: Path, target: str) -> HotFetchOperatorSummaryRecord:
+def _summary_row(sqlite_path: Path, fetch_id: str) -> FetchOperatorSummaryRecord:
     session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
-        row = session.get(HotFetchOperatorSummaryRecord, target)
+        row = session.get(FetchOperatorSummaryRecord, fetch_id)
         assert row is not None
         return row
 
 
-def _seed_pin(sqlite_path: Path) -> None:
+def _seed_fetch(sqlite_path: Path) -> None:
     session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         session.add(CollectionRecord(id="docs"))
@@ -74,22 +69,31 @@ def _seed_pin(sqlite_path: Path) -> None:
             ]
         )
         session.add(
-            ActivePinRecord(
-                target="docs/",
+            FetchRecord(
                 fetch_id="fx-1",
+                name="Docs restore",
                 fetch_order=1,
-                fetch_state="waiting_media",
+                fetch_state="queued_djdan",
+            )
+        )
+        session.add(
+            FetchSelectorRecord(
+                fetch_id="fx-1",
+                target="docs/",
+                selector_order=1,
             )
         )
 
 
-def test_hot_fetch_operator_projection_tracks_pin_and_entry_changes(tmp_path: Path) -> None:
+def test_fetch_operator_projection_tracks_selector_and_entry_changes(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(sqlite_path))
-    _seed_pin(sqlite_path)
+    _seed_fetch(sqlite_path)
 
-    row = _summary_row(sqlite_path, "docs/")
+    row = _summary_row(sqlite_path, "fx-1")
     assert row.fetch_id == "fx-1"
+    assert row.name == "Docs restore"
+    assert row.targets_text == "docs/"
     assert row.files == 2
     assert row.bytes == 150
     assert row.hot_files == 1
@@ -116,7 +120,7 @@ def test_hot_fetch_operator_projection_tracks_pin_and_entry_changes(tmp_path: Pa
             )
         )
 
-    row = _summary_row(sqlite_path, "docs/")
+    row = _summary_row(sqlite_path, "fx-1")
     assert row.entries_total == 1
     assert row.entries_pending == 0
     assert row.entries_partial == 1
@@ -134,21 +138,21 @@ def test_hot_fetch_operator_projection_tracks_pin_and_entry_changes(tmp_path: Pa
         entry.uploaded_bytes = 120
         entry.upload_expires_at = None
 
-    row = _summary_row(sqlite_path, "docs/")
+    row = _summary_row(sqlite_path, "fx-1")
     assert row.entries_partial == 0
     assert row.entries_byte_complete == 1
     assert row.upload_missing_bytes == 0
     assert row.upload_state_expires_at is None
 
     with session_scope(session_factory) as session:
-        pin = session.get(ActivePinRecord, "docs/")
-        assert pin is not None
-        pin.fetch_state = "done"
+        fetch = session.get(FetchRecord, "fx-1")
+        assert fetch is not None
+        fetch.fetch_state = "done"
         missing_file = session.get(CollectionFileRecord, ("docs", "missing.txt"))
         assert missing_file is not None
         missing_file.hot = True
 
-    row = _summary_row(sqlite_path, "docs/")
+    row = _summary_row(sqlite_path, "fx-1")
     assert row.fetch_state == "done"
     assert row.hot_files == 2
     assert row.missing_files == 0
@@ -165,38 +169,19 @@ def test_hot_fetch_operator_projection_tracks_pin_and_entry_changes(tmp_path: Pa
     assert done_status["entries"] == []
 
 
-def test_hot_list_and_show_read_operator_projection(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_fetch_list_and_show_read_operator_projection(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(sqlite_path))
-    _seed_pin(sqlite_path)
-
-    def fail_if_old_target_stats_path_is_used(*_args: object, **_kwargs: object) -> Any:
-        raise AssertionError("hot operator views should read the projection")
-
-    monkeypatch.setattr(
-        pins_service,
-        "selected_collection_file_stats",
-        fail_if_old_target_stats_path_is_used,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        fetches_service,
-        "_summary_from_target_stats",
-        fail_if_old_target_stats_path_is_used,
-    )
+    _seed_fetch(sqlite_path)
 
     config = _config(sqlite_path)
-    pin_service = SqlAlchemyPinService(config, object(), object())  # type: ignore[arg-type]
-    page = pin_service.list_pins(page=1, per_page=1)
-    assert page.total == 1
-    assert [pin.target for pin in page.pins] == ["docs/"]
-    assert page.pins[0].fetch.files == 2
-    assert page.pins[0].fetch.missing_bytes == 100
-
     fetch_service = SqlAlchemyFetchService(config, object(), object())  # type: ignore[arg-type]
+    page = fetch_service.list(page=1, per_page=1)
+    assert page.total == 1
+    assert [str(fetch.id) for fetch in page.fetches] == ["fx-1"]
+    assert page.fetches[0].files == 2
+    assert page.fetches[0].missing_bytes == 100
+
     summary = fetch_service.get("fx-1")
     assert summary.files == 2
     assert summary.entries_pending == 1

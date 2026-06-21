@@ -13,7 +13,6 @@ from riverhog_core.services.contracts import (
     FileService,
     GlacierReportingService,
     GlacierUploadService,
-    PinService,
     PlanningService,
     RecoverySessionService,
     SearchService,
@@ -25,7 +24,6 @@ from tests.fixtures.acceptance import (
     AcceptanceFileService,
     AcceptanceGlacierReportingService,
     AcceptanceGlacierUploadService,
-    AcceptancePinService,
     AcceptancePlanningService,
     AcceptanceRecoverySessionService,
     AcceptanceSearchService,
@@ -39,7 +37,6 @@ SERVICE_SYNC_CONTRACTS = {
     "glacier_reporting": (AcceptanceGlacierReportingService, GlacierReportingService),
     "recovery_sessions": (AcceptanceRecoverySessionService, RecoverySessionService),
     "copies": (AcceptanceCopyService, CopyService),
-    "pins": (AcceptancePinService, PinService),
     "fetches": (AcceptanceFetchService, FetchService),
     "files": (AcceptanceFileService, FileService),
 }
@@ -97,7 +94,9 @@ DELEGATED_HELPER_STATE_ACCESS = {
     "seed_image_fixtures": "delegates candidate image registration to locked AcceptanceState",
     "seed_planner_fixtures": "delegates planner setup to locked fixture seed helpers",
     "seed_split_planner_fixtures": "delegates split planner setup to locked fixture seed helpers",
-    "pins_list": "sizes a complete page from fixture pin state, then delegates pin listing",
+    "fetch_targets_list": (
+        "sizes a complete page from fixture fetch state, then delegates fetch listing"
+    ),
 }
 
 LIFECYCLE_HELPER_STATE_ACCESS = {

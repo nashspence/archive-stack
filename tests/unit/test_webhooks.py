@@ -10,7 +10,7 @@ from riverhog_core.webhooks import (
     WebhookConfig,
     build_collection_lifecycle_payload,
     build_copy_label_needed_payload,
-    build_fetch_waiting_payload,
+    build_fetch_queued_payload,
     build_images_ready_payload,
     build_jeb_event_payload,
     build_munchy_job_payload,
@@ -60,8 +60,8 @@ def test_operator_webhook_contract_covers_current_events() -> None:
         "images.ready",
         "images.ready.reminder",
         "images.copy_label_needed",
-        "fetches.waiting_media",
-        "fetches.waiting_media.reminder",
+        "fetches.queued_djdan",
+        "fetches.queued_djdan.reminder",
         "glacier_recovery.started",
         "glacier_recovery.ready",
         "glacier_recovery.ready.reminder",
@@ -87,7 +87,7 @@ def test_operator_webhook_contract_covers_current_events() -> None:
     assert events["jeb.issue"]["delivery"]["reminder"] is True
     assert events["job.upload_waiting.reminder"]["operator_urgency"] == "time_sensitive"
     assert events["job.upload_waiting.reminder"]["delivery"]["reminder"] is True
-    assert events["fetches.waiting_media"]["delivery"]["mode"] == "durable"
+    assert events["fetches.queued_djdan"]["delivery"]["mode"] == "durable"
     assert events["glacier_recovery.started"]["operator_urgency"] == "time_sensitive"
     assert events["glacier_recovery.failed"]["operator_urgency"] == "critical"
     assert events["glacier_recovery.paused.reminder"]["delivery"]["reminder"] is True
@@ -208,7 +208,7 @@ def test_build_recovery_lifecycle_payloads_are_explicit_about_glacier_work() -> 
     assert completed["operator_action"] == "No operator action required"
     assert completed["notification"] == {
         "title": "🐷 docs",
-        "body": "Oink, cloud-fetch recovery is done, and the missing pinned files are hot again.",
+        "body": "Oink, cloud-fetch recovery is done, and the missing fetch files are hot again.",
     }
 
 
@@ -278,11 +278,11 @@ def test_build_recovery_retry_failure_cancel_and_pause_payloads() -> None:
     )
 
 
-def test_build_fetch_waiting_payload_names_operator_action() -> None:
-    payload = build_fetch_waiting_payload(
+def test_build_fetch_queued_payload_names_operator_action() -> None:
+    payload = build_fetch_queued_payload(
         config=WebhookConfig(url="https://example.test/hook", base_url="https://api.test"),
         fetch_id="fx-1",
-        target="docs/tax/2022/invoice-123.pdf",
+        name="Recover invoice",
         files=1,
         bytes=1234,
         copies=[
@@ -297,11 +297,11 @@ def test_build_fetch_waiting_payload_names_operator_action() -> None:
         reminder=False,
     )
 
-    assert payload["event"] == "fetches.waiting_media"
+    assert payload["event"] == "fetches.queued_djdan"
     assert payload["operator_action"] == "Run `djdan fetch fx-1`"
     assert payload["manifest_url"] == "https://api.test/v1/fetches/fx-1/manifest"
     assert payload["notification"] == {
-        "title": "👨🏻‍🎤 invoice-123.pdf",
+        "title": "👨🏻‍🎤 Recover invoice",
         "body": (
             "Need that disc read, friend! Run `djdan fetch` so I can get those files hot again."
         ),

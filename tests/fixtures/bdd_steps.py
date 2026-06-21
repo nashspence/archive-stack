@@ -488,6 +488,31 @@ def _ensure_candidate_fixture(
     raise AssertionError(f"unsupported candidate fixture: {candidate_id}")
 
 
+def _create_started_fetch_for_target(
+    acceptance_system: AcceptanceSystem,
+    target: str,
+    *,
+    expected_fetch_id: str | None = None,
+    cloud: bool = False,
+) -> str:
+    response = acceptance_system.request(
+        "POST",
+        "/v1/fetches",
+        json_body={"name": f"Fetch {target}", "targets": [target]},
+    )
+    assert response.status_code == 200, response.text
+    fetch_id = str(response.json()["id"])
+    if expected_fetch_id is not None:
+        assert fetch_id == expected_fetch_id
+    response = acceptance_system.request(
+        "POST",
+        f"/v1/fetches/{quote(fetch_id, safe='/')}/start",
+        json_body={"cloud": cloud},
+    )
+    assert response.status_code == 200, response.text
+    return fetch_id
+
+
 def _prepare_riverhog_expectation(
     acceptance_system: AcceptanceSystem,
     context: AcceptanceScenarioContext,
@@ -496,22 +521,12 @@ def _prepare_riverhog_expectation(
     if not argv or argv[0] != "riverhog":
         return
 
-    if argv[1:3] == ["hot", "pin"]:
-        context.expected_api_endpoint = ("POST", "/v1/pin")
-        context.expected_api_payload = acceptance_system.request(
-            "POST",
-            "/v1/pin",
-            json_body={"target": argv[3]},
-        ).json()
+    if argv[1:3] == ["hot", "evict"]:
+        context.expected_api_endpoint = ("POST", "/v1/hot/evict")
         return
 
-    if argv[1:3] == ["hot", "unpin"]:
-        context.expected_api_endpoint = ("POST", "/v1/release")
-        context.expected_api_payload = acceptance_system.request(
-            "POST",
-            "/v1/release",
-            json_body={"target": argv[3]},
-        ).json()
+    if argv[1:4] == ["hot", "fetch", "create"]:
+        context.expected_api_endpoint = ("POST", "/v1/fetches")
         return
 
     if len(argv) > 1 and argv[1] == "find":
@@ -649,25 +664,45 @@ def _prepare_riverhog_expectation(
         }
         return
 
-    if argv[1:3] == ["hot", "list"]:
-        context.expected_api_endpoint = ("GET", "/v1/pins")
+    if argv[1:4] == ["hot", "fetch", "list"]:
+        context.expected_api_endpoint = ("GET", "/v1/fetches")
         params = {
             "page": _riverhog_option_value(argv, "--page", 1),
             "per_page": _riverhog_option_value(argv, "--per-page", 25),
+            "sort": _riverhog_option_value(argv, "--sort", "order"),
+            "order": str(_riverhog_option_value(argv, "--order", "asc")).casefold(),
         }
+        state = _riverhog_option_value(argv, "--state")
+        query = _riverhog_option_value(argv, "--query")
+        if state is not None:
+            params["state"] = state
+        if query is not None:
+            params["q"] = query
         context.expected_api_payload = acceptance_system.request(
             "GET",
-            "/v1/pins",
+            "/v1/fetches",
             params=params,
         ).json()
         return
 
-    if argv[1:3] == ["hot", "show"]:
-        fetch_id = argv[3]
+    if argv[1:4] == ["hot", "fetch", "show"]:
+        fetch_id = argv[4]
         context.expected_api_endpoint = ("GET", f"/v1/fetches/{fetch_id}")
         context.expected_api_payload = acceptance_system.request(
             "GET", f"/v1/fetches/{fetch_id}"
         ).json()
+        return
+
+    if argv[1:4] == ["hot", "fetch", "add"]:
+        context.expected_api_endpoint = ("POST", f"/v1/fetches/{argv[4]}/targets")
+        return
+
+    if argv[1:4] == ["hot", "fetch", "remove"]:
+        context.expected_api_endpoint = ("DELETE", f"/v1/fetches/{argv[4]}/targets")
+        return
+
+    if argv[1:4] == ["hot", "fetch", "start"]:
+        context.expected_api_endpoint = ("POST", f"/v1/fetches/{argv[4]}/start")
         return
 
     if argv[1:3] == ["collection", "show"]:
@@ -679,8 +714,8 @@ def _prepare_riverhog_expectation(
         ).json()
         return
 
-    if argv[1:4] == ["hot", "cloud-fetch", "show"]:
-        fetch_id = argv[4]
+    if argv[1:5] == ["hot", "fetch", "cloud-fetch", "show"]:
+        fetch_id = argv[5]
         context.expected_api_endpoint = ("GET", f"/v1/fetches/{fetch_id}/cloud-fetch")
         params: dict[str, object] = {
             "page": _riverhog_option_value(argv, "--page", 1),
@@ -698,22 +733,9 @@ def _prepare_riverhog_expectation(
         ).json()
         return
 
-    if argv[1:4] == ["hot", "cloud-fetch", "start"]:
-        fetch_id = argv[4]
-        context.expected_api_endpoint = ("POST", f"/v1/fetches/{fetch_id}/cloud-fetch")
-        context.expected_api_payload = acceptance_system.request(
-            "POST",
-            f"/v1/fetches/{quote(fetch_id, safe='/')}/cloud-fetch",
-        ).json()
-        return
-
-    if argv[1:4] == ["hot", "cloud-fetch", "cancel"]:
-        fetch_id = argv[4]
+    if argv[1:5] == ["hot", "fetch", "cloud-fetch", "cancel"]:
+        fetch_id = argv[5]
         context.expected_api_endpoint = ("POST", f"/v1/fetches/{fetch_id}/cloud-fetch/cancel")
-        context.expected_api_payload = acceptance_system.request(
-            "POST",
-            f"/v1/fetches/{quote(fetch_id, safe='/')}/cloud-fetch/cancel",
-        ).json()
         return
 
     if argv[1:3] == ["collection", "upload"]:
@@ -1011,11 +1033,14 @@ def given_collection_upload_has_completed_verification_and_is_archiving(
     acceptance_system.seed_candidate_for_collection(upload_collection_id)
 
 
-@given(parsers.parse('target "{target}" is already pinned'))
-@given(parsers.parse('target "{target}" is pinned'))
-def given_target_is_pinned(acceptance_system: AcceptanceSystem, target: str) -> None:
+@given(parsers.parse('target "{target}" has a draft fetch'))
+def given_target_has_draft_fetch(acceptance_system: AcceptanceSystem, target: str) -> None:
     _ensure_target_fixture(acceptance_system, target)
-    resp = acceptance_system.request("POST", "/v1/pin", json_body={"target": target})
+    resp = acceptance_system.request(
+        "POST",
+        "/v1/fetches",
+        json_body={"name": f"Fetch {target}", "targets": [target]},
+    )
     assert resp.status_code == 200, resp.text
 
 
@@ -1023,12 +1048,6 @@ def given_target_is_pinned(acceptance_system: AcceptanceSystem, target: str) -> 
 def given_target_is_fully_compliant(acceptance_system: AcceptanceSystem, target: str) -> None:
     _ensure_target_fixture(acceptance_system, target)
     acceptance_system.seed_docs_tax_fully_compliant()
-
-
-@given(parsers.parse('target "{target}" is not pinned'))
-def given_target_is_not_pinned(acceptance_system: AcceptanceSystem, target: str) -> None:
-    resp = acceptance_system.request("POST", "/v1/release", json_body={"target": target})
-    assert resp.status_code == 200, resp.text
 
 
 @given(parsers.parse('target "{target}" is valid'))
@@ -1065,15 +1084,14 @@ def given_hot_backing_bytes_for_file_are_missing(
     acceptance_system.delete_hot_backing_file(target)
 
 
-@given(parsers.parse('archived target "{target}" is pinned with fetch "{fetch_id}"'))
-def given_archived_target_is_pinned_with_fetch(
+@given(parsers.parse('archived target "{target}" has queued fetch "{fetch_id}"'))
+def given_archived_target_has_queued_fetch(
     acceptance_system: AcceptanceSystem,
     target: str,
     fetch_id: str,
 ) -> None:
     acceptance_system.seed_docs_archive()
-    resp = acceptance_system.request("POST", "/v1/pin", json_body={"target": target})
-    assert resp.status_code == 200, resp.text
+    _create_started_fetch_for_target(acceptance_system, target, expected_fetch_id=fetch_id)
 
 
 @given(parsers.parse('split archived fetch "{fetch_id}" exists for target "{target}"'))
@@ -1083,19 +1101,17 @@ def given_split_archived_fetch_exists(
     target: str,
 ) -> None:
     acceptance_system.seed_docs_archive_with_split_invoice()
-    resp = acceptance_system.request("POST", "/v1/pin", json_body={"target": target})
-    assert resp.status_code == 200, resp.text
+    _create_started_fetch_for_target(acceptance_system, target, expected_fetch_id=fetch_id)
 
 
-@given(parsers.parse('split archived target "{target}" is pinned with fetch "{fetch_id}"'))
-def given_split_archived_target_is_pinned_with_fetch(
+@given(parsers.parse('split archived target "{target}" has queued fetch "{fetch_id}"'))
+def given_split_archived_target_has_queued_fetch(
     acceptance_system: AcceptanceSystem,
     target: str,
     fetch_id: str,
 ) -> None:
     acceptance_system.seed_docs_archive_with_split_invoice()
-    resp = acceptance_system.request("POST", "/v1/pin", json_body={"target": target})
-    assert resp.status_code == 200, resp.text
+    _create_started_fetch_for_target(acceptance_system, target, expected_fetch_id=fetch_id)
 
 
 @given(parsers.parse('fetch "{fetch_id}" already exists for target "{target}"'))
@@ -1106,8 +1122,7 @@ def given_fetch_exists_for_target(
     target: str,
 ) -> None:
     acceptance_system.seed_docs_archive()
-    resp = acceptance_system.request("POST", "/v1/pin", json_body={"target": target})
-    assert resp.status_code == 200, resp.text
+    _create_started_fetch_for_target(acceptance_system, target, expected_fetch_id=fetch_id)
 
 
 @given(parsers.parse('fetch "{fetch_id}" exists'))
@@ -1116,8 +1131,11 @@ def given_fetch_exists(
     fetch_id: str,
 ) -> None:
     acceptance_system.seed_docs_archive()
-    resp = acceptance_system.request("POST", "/v1/pin", json_body={"target": TAX_DIRECTORY_TARGET})
-    assert resp.status_code == 200, resp.text
+    _create_started_fetch_for_target(
+        acceptance_system,
+        TAX_DIRECTORY_TARGET,
+        expected_fetch_id=fetch_id,
+    )
 
 
 @given(parsers.parse('fetch "{fetch_id}" has a stable manifest'))
@@ -1138,8 +1156,11 @@ def given_fetch_has_partial_upload_in_progress(
     entry_id: str,
 ) -> None:
     acceptance_system.seed_docs_archive()
-    resp = acceptance_system.request("POST", "/v1/pin", json_body={"target": INVOICE_TARGET})
-    assert resp.status_code == 200, resp.text
+    _create_started_fetch_for_target(
+        acceptance_system,
+        INVOICE_TARGET,
+        expected_fetch_id=fetch_id,
+    )
     manifest = acceptance_system.fetches.manifest(fetch_id)
     entry_ids = [item["id"] for item in manifest["entries"]]
     assert entry_id in entry_ids
@@ -1292,8 +1313,11 @@ def given_fetch_exists_with_entry(
     entry_id: str,
 ) -> None:
     acceptance_system.seed_docs_archive()
-    resp = acceptance_system.request("POST", "/v1/pin", json_body={"target": INVOICE_TARGET})
-    assert resp.status_code == 200, resp.text
+    _create_started_fetch_for_target(
+        acceptance_system,
+        INVOICE_TARGET,
+        expected_fetch_id=fetch_id,
+    )
     manifest = acceptance_system.fetches.manifest(fetch_id)
     entry_ids = [item["id"] for item in manifest["entries"]]
     assert entry_id in entry_ids
@@ -1333,21 +1357,18 @@ def given_fetch_entries_are_uploaded(
     acceptance_system: AcceptanceSystem,
     fetch_id: str,
 ) -> None:
-    target = str(acceptance_system.fetches.get(fetch_id).target)
-    resp = acceptance_system.request("POST", "/v1/pin", json_body={"target": target})
-    assert resp.status_code == 200, resp.text
+    assert acceptance_system.fetches.get(fetch_id).targets
     acceptance_system.upload_required_entries(fetch_id)
 
 
-@given(parsers.parse('pinning target "{target}" requires fetch "{fetch_id}"'))
-def given_pinning_target_requires_fetch(
+@given(parsers.parse('fetching target "{target}" requires fetch "{fetch_id}"'))
+def given_fetching_target_requires_fetch(
     acceptance_system: AcceptanceSystem,
     target: str,
     fetch_id: str,
 ) -> None:
     acceptance_system.seed_docs_archive()
-    resp = acceptance_system.request("POST", "/v1/pin", json_body={"target": target})
-    assert resp.status_code == 200, resp.text
+    _create_started_fetch_for_target(acceptance_system, target, expected_fetch_id=fetch_id)
 
 
 @given(parsers.parse('candidate "{candidate_id}" exists'))
@@ -1815,6 +1836,84 @@ def when_client_posts_with_target(
     target: str,
 ) -> None:
     response = acceptance_system.request("POST", path, json_body={"target": target})
+    _set_response(acceptance_context, response)
+
+
+@given(parsers.parse('the client creates fetch "{name}" with target "{target}"'))
+@when(parsers.parse('the client creates fetch "{name}" with target "{target}"'))
+def when_client_creates_fetch_with_target(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+    name: str,
+    target: str,
+) -> None:
+    response = acceptance_system.request(
+        "POST",
+        "/v1/fetches",
+        json_body={"name": name, "targets": [target]},
+    )
+    if response.status_code == 200:
+        acceptance_context.last_fetch_id = str(response.json()["id"])
+    _set_response(acceptance_context, response)
+
+
+@when(parsers.parse('the client adds target "{target}" to fetch "{fetch_id}"'))
+def when_client_adds_target_to_fetch(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+    target: str,
+    fetch_id: str,
+) -> None:
+    response = acceptance_system.request(
+        "POST",
+        f"/v1/fetches/{quote(fetch_id, safe='/')}/targets",
+        json_body={"targets": [target]},
+    )
+    _set_response(acceptance_context, response)
+
+
+@when(parsers.parse('the client removes target "{target}" from fetch "{fetch_id}"'))
+def when_client_removes_target_from_fetch(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+    target: str,
+    fetch_id: str,
+) -> None:
+    response = acceptance_system.request(
+        "DELETE",
+        f"/v1/fetches/{quote(fetch_id, safe='/')}/targets",
+        json_body={"targets": [target]},
+    )
+    _set_response(acceptance_context, response)
+
+
+@given(parsers.parse('the client starts fetch "{fetch_id}" for djdan'))
+@when(parsers.parse('the client starts fetch "{fetch_id}" for djdan'))
+def when_client_starts_fetch_for_djdan(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+    fetch_id: str,
+) -> None:
+    response = acceptance_system.request(
+        "POST",
+        f"/v1/fetches/{quote(fetch_id, safe='/')}/start",
+        json_body={"cloud": False},
+    )
+    _set_response(acceptance_context, response)
+
+
+@given(parsers.parse('the client starts fetch "{fetch_id}" for cloud'))
+@when(parsers.parse('the client starts fetch "{fetch_id}" for cloud'))
+def when_client_starts_fetch_for_cloud(
+    acceptance_system: AcceptanceSystem,
+    acceptance_context: AcceptanceScenarioContext,
+    fetch_id: str,
+) -> None:
+    response = acceptance_system.request(
+        "POST",
+        f"/v1/fetches/{quote(fetch_id, safe='/')}/start",
+        json_body={"cloud": True},
+    )
     _set_response(acceptance_context, response)
 
 
@@ -2698,28 +2797,34 @@ def then_each_file_result_contains_copies_if_archived(
     assert all("archived" in result for result in payload["files"])
 
 
-@then("every returned target is valid input for pin")
-def then_every_returned_target_is_valid_input_for_pin(
+@then("every returned target is valid input for fetch creation")
+def then_every_returned_target_is_valid_input_for_fetch_creation(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     for target in [item["target"] for item in payload["files"]]:
-        assert (
-            acceptance_system.request("POST", "/v1/pin", json_body={"target": target}).status_code
-            == 200
+        response = acceptance_system.request(
+            "POST",
+            "/v1/fetches",
+            json_body={"name": f"Fetch {target}", "targets": [target]},
         )
+        assert response.status_code == 200, response.text
 
 
-@then("every returned target is valid input for release")
-def then_every_returned_target_is_valid_input_for_release(
+@then("every returned target is valid input for hot eviction")
+def then_every_returned_target_is_valid_input_for_hot_eviction(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     for target in [item["target"] for item in payload["files"]]:
-        response = acceptance_system.request("POST", "/v1/release", json_body={"target": target})
-        assert response.status_code in {200, 409}, response.text
+        response = acceptance_system.request(
+            "POST",
+            "/v1/hot/evict",
+            json_body={"targets": [target]},
+        )
+        assert response.status_code in {200, 404, 409}, response.text
         if response.status_code == 409:
             assert response.json()["error"]["code"] == "conflict"
 
@@ -2739,22 +2844,13 @@ def then_response_contains_target(
     target: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    if "files" in payload:
+    if isinstance(payload.get("files"), list):
         assert target in [item["target"] for item in payload["files"]]
         return
+    if "targets" in payload:
+        assert target in payload["targets"]
+        return
     assert payload["target"] == target
-
-
-@then("pin is true")
-def then_pin_is_true(acceptance_context: AcceptanceScenarioContext) -> None:
-    payload = _json_payload(_require_response(acceptance_context))
-    assert payload["pin"] is True
-
-
-@then("pin is false")
-def then_pin_is_false(acceptance_context: AcceptanceScenarioContext) -> None:
-    payload = _json_payload(_require_response(acceptance_context))
-    assert payload["pin"] is False
 
 
 @then(parsers.parse('hot state is "{state}"'))
@@ -2780,21 +2876,27 @@ def then_missing_bytes_is_greater_than_zero(
     assert payload["hot"]["missing_bytes"] > 0
 
 
-@given(parsers.parse('the client has already pinned "{target}"'))
-def given_client_has_already_pinned(
+@given(parsers.parse('the client has already created fetch for "{target}"'))
+def given_client_has_already_created_fetch(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
     target: str,
 ) -> None:
-    response = acceptance_system.request("POST", "/v1/pin", json_body={"target": target})
+    response = acceptance_system.request(
+        "POST",
+        "/v1/fetches",
+        json_body={"name": f"Fetch {target}", "targets": [target]},
+    )
     assert response.status_code == 200, response.text
-    acceptance_context.last_fetch_id = response.json()["fetch"]["id"]
+    acceptance_context.last_fetch_id = response.json()["id"]
 
 
 @then("a fetch id is returned")
 def then_fetch_id_is_returned(acceptance_context: AcceptanceScenarioContext) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    fetch_id = payload["fetch"]["id"]
+    fetch_id = payload.get("id")
+    if fetch_id is None and payload.get("fetch") is not None:
+        fetch_id = payload["fetch"]["id"]
     assert fetch_id
     acceptance_context.last_fetch_id = str(fetch_id)
 
@@ -2804,7 +2906,7 @@ def then_returned_fetch_id_is_same_as_before(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert payload["fetch"]["id"] == acceptance_context.last_fetch_id
+    assert payload.get("id") == acceptance_context.last_fetch_id
 
 
 @when("the client gets the manifest for the returned fetch")
@@ -2860,60 +2962,58 @@ def then_returned_fetch_id_is(
     fetch_id: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert payload["fetch"]["id"] == fetch_id
+    assert payload.get("id") == fetch_id
 
 
-@then(parsers.parse('"/v1/pins" contains target "{target}" exactly once'))
-def then_pins_contains_target_exactly_once(
+@then(parsers.parse('"/v1/fetches" contains target "{target}" exactly once'))
+def then_fetches_contains_target_exactly_once(
     acceptance_system: AcceptanceSystem,
     target: str,
 ) -> None:
-    pins = [item["target"] for item in acceptance_system.request("GET", "/v1/pins").json()["pins"]]
-    assert pins.count(target) == 1
+    targets = acceptance_system.fetch_targets_list()
+    assert targets.count(target) == 1
 
 
-@then(parsers.parse('"/v1/pins" does not contain target "{target}"'))
-def then_pins_does_not_contain_target(
+@then(parsers.parse('"/v1/fetches" does not contain target "{target}"'))
+def then_fetches_does_not_contain_target(
     acceptance_system: AcceptanceSystem,
     target: str,
 ) -> None:
-    pins = [item["target"] for item in acceptance_system.request("GET", "/v1/pins").json()["pins"]]
-    assert target not in pins
+    assert target not in acceptance_system.fetch_targets_list()
 
 
-@then(parsers.parse('"/v1/pins" still contains target "{target}"'))
-def then_pins_still_contains_target(
+@then(parsers.parse('"/v1/fetches" contains target "{target}"'))
+def then_fetches_contains_target(
     acceptance_system: AcceptanceSystem,
     target: str,
 ) -> None:
-    pins = [item["target"] for item in acceptance_system.request("GET", "/v1/pins").json()["pins"]]
-    assert target in pins
+    assert target in acceptance_system.fetch_targets_list()
 
 
-def _pin_entry(acceptance_system: AcceptanceSystem, target: str) -> dict[str, object]:
-    pins = acceptance_system.request("GET", "/v1/pins").json()["pins"]
-    for entry in pins:
-        if entry["target"] == target:
+def _fetch_entry_for_target(acceptance_system: AcceptanceSystem, target: str) -> dict[str, object]:
+    fetches = acceptance_system.request("GET", "/v1/fetches").json()["fetches"]
+    for entry in fetches:
+        if target in entry["targets"]:
             return entry
-    raise AssertionError(f'pin entry not found for target "{target}"')
+    raise AssertionError(f'fetch entry not found for target "{target}"')
 
 
-@then(parsers.parse('"/v1/pins" entry for target "{target}" contains fetch id "{fetch_id}"'))
-def then_pins_entry_contains_fetch_id(
+@then(parsers.parse('"/v1/fetches" entry for target "{target}" contains fetch id "{fetch_id}"'))
+def then_fetches_entry_contains_fetch_id(
     acceptance_system: AcceptanceSystem,
     target: str,
     fetch_id: str,
 ) -> None:
-    assert _pin_entry(acceptance_system, target)["fetch"]["id"] == fetch_id
+    assert _fetch_entry_for_target(acceptance_system, target)["id"] == fetch_id
 
 
-@then(parsers.parse('"/v1/pins" entry for target "{target}" contains fetch state "{state}"'))
-def then_pins_entry_contains_fetch_state(
+@then(parsers.parse('"/v1/fetches" entry for target "{target}" contains fetch state "{state}"'))
+def then_fetches_entry_contains_fetch_state(
     acceptance_system: AcceptanceSystem,
     target: str,
     state: str,
 ) -> None:
-    assert _pin_entry(acceptance_system, target)["fetch"]["state"] == state
+    assert _fetch_entry_for_target(acceptance_system, target)["state"] == state
 
 
 @then(parsers.parse('file "{target}" remains hot'))
@@ -3215,13 +3315,12 @@ def then_credentials_cannot_list_prefix_in_bucket(
     )
 
 
-@then(parsers.parse('target "{target}" is pinned'))
-@then(parsers.parse('target "{target}" remains pinned'))
-def then_target_is_pinned(
+@then(parsers.parse('target "{target}" is selected by a fetch'))
+def then_target_is_selected_by_fetch(
     acceptance_system: AcceptanceSystem,
     target: str,
 ) -> None:
-    assert target in acceptance_system.pins_list()
+    assert target in acceptance_system.fetch_targets_list()
 
 
 @then(parsers.parse('the error code is "{code}"'))
@@ -4268,6 +4367,10 @@ def then_stdout_reports_fetch_state(
 ) -> None:
     payload = acceptance_context.stdout_json
     assert isinstance(payload, dict)
+    if "fetches" in payload:
+        assert payload["fetches"]
+        assert payload["fetches"][-1]["state"] == state
+        return
     assert payload["state"] == state
 
 
@@ -4278,11 +4381,11 @@ def then_target_for_fetch_is_hot(
 ) -> None:
     fetch_resp = acceptance_system.request("GET", f"/v1/fetches/{fetch_id}")
     assert fetch_resp.status_code == 200, fetch_resp.text
-    target = fetch_resp.json()["target"]
-    files_resp = acceptance_system.request("GET", "/v1/files", params={"target": target})
-    assert files_resp.status_code == 200, files_resp.text
-    files = files_resp.json()["files"]
-    assert bool(files) and all(record["hot"] for record in files)
+    for target in fetch_resp.json()["targets"]:
+        files_resp = acceptance_system.request("GET", "/v1/files", params={"target": target})
+        assert files_resp.status_code == 200, files_resp.text
+        files = files_resp.json()["files"]
+        assert bool(files) and all(record["hot"] for record in files)
 
 
 @then(parsers.parse('image "{image_id}" has physical_copies_registered {count:d}'))

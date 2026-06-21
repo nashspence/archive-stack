@@ -6,4 +6,4 @@ Riverhog file introspection exposes projected logical file state without becomin
 
 ## Reason
 
-Operators need to inspect collection contents and hot availability without bypassing pin, release, upload, or recovery workflows.
+Operators need to inspect collection contents and hot availability without bypassing fetch, eviction, upload, or recovery workflows.

@@ -18,7 +18,6 @@ from riverhog_core.services.contracts import (
     FileService,
     GlacierReportingService,
     GlacierUploadService,
-    PinService,
     PlanningService,
     RecoverySessionService,
     SearchService,
@@ -28,7 +27,6 @@ from riverhog_core.services.fetches import SqlAlchemyFetchService
 from riverhog_core.services.files import SqlAlchemyFileService
 from riverhog_core.services.glacier_reporting import SqlAlchemyGlacierReportingService
 from riverhog_core.services.glacier_uploads import SqlAlchemyGlacierUploadService
-from riverhog_core.services.pins import SqlAlchemyPinService
 from riverhog_core.services.planning import SqlAlchemyPlanningService
 from riverhog_core.services.recovery_sessions import SqlAlchemyRecoverySessionService
 from riverhog_core.services.search import SqlAlchemySearchService
@@ -47,7 +45,6 @@ class ServiceContainer:
     glacier_reporting: GlacierReportingService
     recovery_sessions: RecoverySessionService
     copies: CopyService
-    pins: PinService
     fetches: FetchService
     files: FileService
 
@@ -94,7 +91,6 @@ def default_container() -> ServiceContainer:
             recovery_payload_codec=recovery_payload_codec,
         ),
         copies=SqlAlchemyCopyService(config, hot_store, recovery_payload_codec),
-        pins=SqlAlchemyPinService(config, hot_store, upload_store),
         fetches=SqlAlchemyFetchService(config, hot_store, upload_store, recovery_payload_codec),
         files=SqlAlchemyFileService(config, hot_store),
     )

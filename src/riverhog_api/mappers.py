@@ -8,6 +8,7 @@ from riverhog_core.domain.models import (
     CollectionSummary,
     CopyHistoryEntry,
     CopySummary,
+    FetchListPage,
     FetchSummary,
     GlacierArchiveStatus,
     GlacierCollectionContribution,
@@ -16,7 +17,6 @@ from riverhog_core.domain.models import (
     GlacierUsageReport,
     GlacierUsageSnapshot,
     GlacierUsageTotals,
-    PinSummary,
     RecoveryCoverage,
     RecoveryNotificationStatus,
     RecoverySessionCollection,
@@ -331,7 +331,8 @@ def map_collection_coverage_image(
 def map_fetch(summary: FetchSummary) -> dict[str, object]:
     return {
         "id": str(summary.id),
-        "target": str(summary.target),
+        "name": summary.name,
+        "targets": [str(target) for target in summary.targets],
         "state": summary.state.value,
         "files": summary.files,
         "bytes": summary.bytes,
@@ -350,19 +351,11 @@ def map_fetch(summary: FetchSummary) -> dict[str, object]:
     }
 
 
-def map_pin(summary: PinSummary) -> dict[str, object]:
+def map_fetch_list(summary: FetchListPage) -> dict[str, object]:
     return {
-        "target": str(summary.target),
-        "fetch": {
-            "id": str(summary.fetch.id),
-            "state": summary.fetch.state.value,
-            "files": summary.fetch.files,
-            "bytes": summary.fetch.bytes,
-            "missing_bytes": summary.fetch.missing_bytes,
-            "copy_count": len(summary.fetch.copies),
-            "copies": [
-                {"id": str(copy.id), "volume_id": copy.volume_id, "location": copy.location}
-                for copy in summary.fetch.copies
-            ],
-        },
+        "page": summary.page,
+        "per_page": summary.per_page,
+        "total": summary.total,
+        "pages": summary.pages,
+        "fetches": [map_fetch(fetch) for fetch in summary.fetches],
     }

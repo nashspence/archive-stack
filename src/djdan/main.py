@@ -2388,9 +2388,70 @@ def disc_verify_cmd(
     _emit_disc_payload(payload, image_id=image_id, json_mode=json_mode)
 
 
+def _run_fetch_workflow(client: ApiClient, fetch_id: str, *, device: str) -> dict[str, Any]:
+    manifest = client.get_fetch_manifest(fetch_id)
+    reader = build_optical_reader()
+    entries = tuple(_entry_from_manifest(entry) for entry in manifest.get("entries", []))
+    sessions = {
+        entry.id: _upload_session_from_payload(
+            entry,
+            client.create_or_resume_fetch_entry_upload(fetch_id, entry.id),
+        )
+        for entry in entries
+    }
+    progress = ProgressReporter.begin(
+        entries,
+        uploaded_bytes_by_entry={entry.id: sessions[entry.id].offset for entry in entries},
+    )
+    prompt_state = DiscPromptState()
+    for entry in entries:
+        _upload_entry_from_disc(
+            entry,
+            sessions[entry.id],
+            client=client,
+            reader=reader,
+            device=device,
+            progress=progress,
+            prompt_state=prompt_state,
+        )
+
+    try:
+        return client.complete_fetch(fetch_id)
+    except HashMismatch as exc:
+        _reset_byte_complete_uploads(client, fetch_id, entries, progress)
+        raise RuntimeError(f"final fetch verification failed: {exc}") from exc
+
+
+def _queued_djdan_fetch_ids(client: ApiClient) -> list[str]:
+    fetch_ids: list[str] = []
+    seen: set[str] = set()
+    for state in ("uploading", "queued_djdan"):
+        page = 1
+        while True:
+            payload = client.list_fetches(
+                page=page,
+                per_page=100,
+                state=state,
+                sort="order",
+                order="asc",
+            )
+            for fetch in payload.get("fetches", []):
+                if not isinstance(fetch, dict):
+                    continue
+                fetch_id = str(fetch.get("id"))
+                if fetch_id in seen:
+                    continue
+                seen.add(fetch_id)
+                fetch_ids.append(fetch_id)
+            if page >= int(payload.get("pages", 0)):
+                break
+            page += 1
+    return fetch_ids
+
+
 @app.command("fetch")
 def fetch_cmd(
-    fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
+    fetch_id: Annotated[str | None, typer.Argument(help="Optional fetch id")] = None,
     device: Annotated[str, typer.Option("--device", help="Optical device path")] = "/dev/sr0",
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
@@ -2398,42 +2459,19 @@ def fetch_cmd(
 
     try:
         client = ApiClient()
-        manifest = client.get_fetch_manifest(fetch_id)
-        reader = build_optical_reader()
-        entries = tuple(_entry_from_manifest(entry) for entry in manifest.get("entries", []))
-        sessions = {
-            entry.id: _upload_session_from_payload(
-                entry,
-                client.create_or_resume_fetch_entry_upload(fetch_id, entry.id),
-            )
-            for entry in entries
-        }
-        progress = ProgressReporter.begin(
-            entries,
-            uploaded_bytes_by_entry={entry.id: sessions[entry.id].offset for entry in entries},
-        )
-        prompt_state = DiscPromptState()
-        for entry in entries:
-            _upload_entry_from_disc(
-                entry,
-                sessions[entry.id],
-                client=client,
-                reader=reader,
-                device=device,
-                progress=progress,
-                prompt_state=prompt_state,
-            )
-
-        try:
-            payload = client.complete_fetch(fetch_id)
-        except HashMismatch as exc:
-            _reset_byte_complete_uploads(client, fetch_id, entries, progress)
-            raise RuntimeError(f"final fetch verification failed: {exc}") from exc
+        fetch_ids = [fetch_id] if fetch_id is not None else _queued_djdan_fetch_ids(client)
+        if not fetch_ids:
+            emit({"fetches": [], "message": "no fetches queued for djdan"}, json_mode=json_mode)
+            return
+        completed: list[dict[str, Any]] = []
+        for current_fetch_id in fetch_ids:
+            typer.echo(f"djdan: fetching {current_fetch_id}", err=True)
+            completed.append(_run_fetch_workflow(client, current_fetch_id, device=device))
     except (RiverhogError, RuntimeError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
-    emit(payload, json_mode=json_mode)
+    emit({"fetches": completed}, json_mode=json_mode)
 
 
 @app.command("burn")

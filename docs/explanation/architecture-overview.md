@@ -6,7 +6,7 @@ The runtime uses four cooperating surfaces.
 
 The catalog is the durable authoritative metadata layer. It tracks collections,
 logical files, file hashes, collection Glacier archive state, physical copy
-coverage, pins, fetches, upload state, and hot presence across service restarts.
+coverage, fetches, upload state, and hot presence across service restarts.
 
 ## Upload staging
 
@@ -64,22 +64,18 @@ staged upload files from the shared tusd filesystem directory. A retry after
 restart resumes the archive multipart upload, the completed archive receipt, or
 the hot-file promotion phase according to the last durable state.
 
-## Pinned Hot Storage
+## Hot Storage And Fetches
 
 New uploads enter planner jurisdiction after Glacier archival and verified
-promotion into hot storage. Until the required verified disc copies exist, the
-collection remains pinned. A pinned collection or file cannot be released while
-it is non-compliant, and releasing a compliant pin immediately removes matching
-hot files that are not covered by another active pin.
+promotion into hot storage. Until the required verified disc copies exist,
+matching files are not evictable. Once files are compliant, `riverhog hot evict`
+can remove the selected hot bytes synchronously.
 
-Riverhog audits active pins at startup, during recovery sweeps, and before
-planner refreshes. If pinned files are missing from hot storage, registered disc
-coverage takes precedence: Riverhog leaves the pin waiting for the normal
-prompt-based `djdan fetch` flow. If no registered disc coverage exists for a
-missing file, Riverhog automatically creates or resumes a collection Glacier
-restore session, waits for S3 to make the archive package readable, verifies the
-manifest/proof/archive members, and writes the selected files back to hot
-storage.
+Operators create named fetch manifests when they need hot bytes materialized
+again. A fetch can be queued to the prompt-based `djdan fetch` optical-media
+workflow, or started with cloud-fetch so Riverhog automatically restores the
+selected collection archive data, verifies it, materializes the selected files,
+and cleans up temporary Glacier restore state.
 
 ## Read-only browsing
 
@@ -87,35 +83,34 @@ Read-only WebDAV exposes the committed `collections/` namespace for day-to-day
 browsing and download. It must not expose `.riverhog/`, and it is never an upload
 surface.
 
-## Why pins exist
+## Why fetches and eviction exist
 
 Users do not delete or restore by mutating storage surfaces. Instead they:
 
-- pin a selector into hot
-- release a previously pinned target
-- let the system materialize or reconcile hot state based on active pins
+- create a named fetch and add target selectors to it
+- start that fetch for optical media or cloud-fetch materialization
+- evict compliant hot bytes explicitly when they no longer need fast access
 
 This keeps intent explicit and makes the system safer than inferring meaning
 from storage mutations.
 
-## Restore flow
+## Fetch flow
 
-1. The user pins a target.
-2. The system creates or reuses one fetch manifest for that exact selector.
+1. The user creates a named fetch and adds one or more target selectors.
+2. The system keeps a fetch-keyed summary projection for fast operator list and
+   show commands.
 3. If all selected bytes are already hot, the fetch manifest is immediately satisfied.
-4. If some bytes are archived but not hot, Riverhog can either guide optical
-   recovery from verified physical copies or start a Glacier collection-restore
-   session for the selected collection content.
+4. If some bytes are archived but not hot, the operator starts the fetch for
+   `djdan fetch` or with `--cloud`.
 5. The server stages the uploaded recovery bytes under `.riverhog/uploads/`, verifies
    and decrypts them, then promotes the recovered logical file into
    `collections/{collection_id}/{path}`.
-6. The explicit pin remains active after fetch completion, and the satisfied fetch manifest remains readable until
-   release.
+6. The fetch remains readable after completion as the recovery record for that
+   named operator intent.
 
-## Release flow
+## Evict flow
 
-1. The user releases an exact selector.
-2. Riverhog refuses the release if any selected file is not yet fully compliant.
-3. The system removes that exact pin, if present.
-4. Hot files selected by that released pin are removed when no remaining pin still covers them.
-5. Unrelated hot files are left alone, and a missing exact pin is a successful no-op.
+1. The user asks `riverhog hot evict` to remove one or more selectors from hot storage.
+2. Riverhog refuses if any selected file lacks verified disc protection.
+3. Riverhog deletes selected compliant hot files synchronously and reports what changed.
+4. Unrelated hot files are left alone.

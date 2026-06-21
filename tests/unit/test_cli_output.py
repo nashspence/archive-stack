@@ -10,12 +10,12 @@ from riverhog_cli.output import (
     format_disc,
     format_discs,
     format_fetch,
+    format_fetches,
     format_find,
     format_glacier_report,
-    format_hot_pins,
+    format_hot_evict,
     format_image,
     format_images,
-    format_pin,
     format_recovery_session,
     format_recovery_sessions,
 )
@@ -446,44 +446,43 @@ def test_format_collections_can_fall_back_to_plain_text(monkeypatch: pytest.Monk
     assert "docs protection=partially_protected" in rendered
 
 
-def test_format_hot_pins_uses_compact_pin_table(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_format_fetches_uses_compact_fetch_table(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
     monkeypatch.setenv("TERM", "xterm-256color")
 
     rendered = _render(
-        format_hot_pins(
+        format_fetches(
             {
                 "page": 1,
                 "pages": 1,
                 "per_page": 25,
                 "total": 1,
-                "pins": [
+                "fetches": [
                     {
-                        "target": "docs/tax/2022/invoice-123.pdf",
-                        "fetch": {
-                            "id": "fx-1",
-                            "state": "waiting_media",
-                            "files": 2,
-                            "bytes": 33,
-                            "missing_bytes": 11,
-                        },
+                        "id": "fx-1",
+                        "name": "Tax invoice",
+                        "targets": ["docs/tax/2022/invoice-123.pdf"],
+                        "state": "queued_djdan",
+                        "files": 2,
+                        "bytes": 33,
+                        "missing_bytes": 11,
                     }
                 ],
             }
         )
     )
 
-    assert "hot pins page 1/1" in rendered
+    assert "fetches page 1/1" in rendered
     assert "docs/tax/2022/invoice-123.pdf" in rendered
     assert "fx-1" in rendered
-    assert "waiting_media" in rendered
+    assert "queued_djdan" in rendered
     assert "2" in rendered
     assert "33 B" in rendered
     header_line = next(
-        line for line in rendered.splitlines() if "Fetch" in line and "Target" in line
+        line for line in rendered.splitlines() if "Fetch" in line and "Targets" in line
     )
     row_line = next(line for line in rendered.splitlines() if "fx-1" in line)
-    assert header_line.index("Fetch") < header_line.index("Target")
+    assert header_line.index("Fetch") < header_line.index("Targets")
     assert row_line.index("fx-1") < row_line.index("docs/tax/2022/invoice-123.pdf")
 
 
@@ -587,39 +586,26 @@ def test_format_disc_uses_detail_table(monkeypatch: pytest.MonkeyPatch) -> None:
     assert styled.count("38;2;142;201;204") == 1
 
 
-def test_format_pin_uses_detail_table(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_format_hot_evict_uses_detail_table(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
     monkeypatch.setenv("TERM", "xterm-256color")
 
     rendered = _render(
-        format_pin(
+        format_hot_evict(
             {
-                "target": "docs/",
-                "pin": True,
-                "hot": {"state": "partial", "present_bytes": 12, "missing_bytes": 21},
-                "fetch": {
-                    "id": "fx-1",
-                    "state": "waiting_media",
-                    "files": 2,
-                    "bytes": 33,
-                    "missing_bytes": 21,
-                    "copies": [
-                        {
-                            "id": "copy-1",
-                            "label_text": "copy-1",
-                            "location": "Shelf B1",
-                            "verification_state": "verified",
-                        }
-                    ],
-                },
+                "targets": ["docs/"],
+                "files": 2,
+                "bytes": 33,
+                "evicted_files": 1,
+                "evicted_bytes": 12,
             }
         )
     )
 
-    assert "hot pin" in rendered
+    assert "hot evict" in rendered
     assert "docs/" in rendered
-    assert "waiting_media" in rendered
-    assert "copy-1 @ Shelf B1" in rendered
+    assert "33 B" in rendered
+    assert "12 B" in rendered
 
 
 def test_format_fetch_uses_entry_preview(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -628,7 +614,13 @@ def test_format_fetch_uses_entry_preview(monkeypatch: pytest.MonkeyPatch) -> Non
 
     rendered = _render(
         format_fetch(
-            {"id": "fx-1", "target": "docs/", "state": "waiting_media", "files": 10},
+            {
+                "id": "fx-1",
+                "name": "Docs",
+                "targets": ["docs/"],
+                "state": "queued_djdan",
+                "files": 10,
+            },
             {
                 "entries": [
                     {"path": f"file-{index}.txt", "bytes": 1, "upload_state": "pending"}
@@ -650,7 +642,13 @@ def test_format_fetch_omits_empty_entries_table(monkeypatch: pytest.MonkeyPatch)
 
     rendered = _render(
         format_fetch(
-            {"id": "fx-4", "target": "docs/", "state": "done", "files": 10},
+            {
+                "id": "fx-4",
+                "name": "Docs",
+                "targets": ["docs/"],
+                "state": "done",
+                "files": 10,
+            },
             {"entries": []},
         )
     )
@@ -668,7 +666,13 @@ def test_format_fetch_partial_entries_do_not_use_coverage_attention_color(
 
     rendered = _render_styled(
         format_fetch(
-            {"id": "fx-4", "target": "docs/", "state": "waiting_media", "files": 10},
+            {
+                "id": "fx-4",
+                "name": "Docs",
+                "targets": ["docs/"],
+                "state": "queued_djdan",
+                "files": 10,
+            },
             {
                 "entries": [
                     {

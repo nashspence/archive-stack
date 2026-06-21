@@ -1,39 +1,32 @@
 @acceptance @api @mvp
 Feature: Fetches API
-  A fetch manifest is the recovery view of one exact pinned selector.
+  A fetch is a named operator work order containing one or more target selectors.
 
-  Rule: Pinning a hot selector still yields a satisfied fetch manifest
+  Rule: Fetches are named and editable before they are queued
     Background:
       Given collection "docs" exists and is fully hot
 
-    Scenario: Pinning a hot selector returns a done fetch manifest
-      When the client posts to "/v1/pin" with target "docs/"
+    Scenario: Create a draft fetch
+      When the client creates fetch "Tax audit" with target "docs/tax/2022/invoice-123.pdf"
       Then the response status is 200
-      And pin is true
-      And hot state is "ready"
-      And missing_bytes is 0
-      And a fetch id is returned
-      And fetch state is "done"
+      And the response contains "id", "name", "targets", "state", "files", "bytes", "entries_total", "entries_pending", "entries_partial", "entries_byte_complete", "entries_uploaded", "uploaded_bytes", "missing_bytes", "copies", and "upload_state_expires_at"
+      And fetch state is "draft"
+      And the response contains target "docs/tax/2022/invoice-123.pdf"
 
-  Rule: Pinning cold archived data creates a fetch
-    Background:
-      Given file "docs/tax/2022/invoice-123.pdf" is archived
-      And file "docs/tax/2022/invoice-123.pdf" is not hot
-
-    Scenario: Pin a cold archived file
-      When the client posts to "/v1/pin" with target "docs/tax/2022/invoice-123.pdf"
+    Scenario: Edit a draft fetch target list
+      Given the client creates fetch "Tax packet" with target "docs/tax/2022/invoice-123.pdf"
+      When the client adds target "docs/tax/2022/receipt-456.pdf" to fetch "fx-1"
       Then the response status is 200
-      And pin is true
-      And hot state is "waiting"
-      And missing_bytes is greater than 0
-      And a fetch id is returned
-      And fetch state is "waiting_media"
-
-    Scenario: Repeating the same pin reuses the active fetch
-      Given the client has already pinned "docs/tax/2022/invoice-123.pdf"
-      When the client posts to "/v1/pin" with target "docs/tax/2022/invoice-123.pdf"
+      And the response contains target "docs/tax/2022/receipt-456.pdf"
+      When the client removes target "docs/tax/2022/invoice-123.pdf" from fetch "fx-1"
       Then the response status is 200
-      And the returned fetch id is the same as before
+      And the response contains target "docs/tax/2022/receipt-456.pdf"
+
+    Scenario: Start a draft fetch for djdan
+      Given the client creates fetch "Tax recovery" with target "docs/tax/2022/invoice-123.pdf"
+      When the client starts fetch "fx-1" for djdan
+      Then the response status is 200
+      And fetch state is "queued_djdan"
 
   Rule: Fetch manifests are stable and complete
     Background:
@@ -42,7 +35,14 @@ Feature: Fetches API
     Scenario: Read a fetch summary
       When the client gets "/v1/fetches/fx-1"
       Then the response status is 200
-      And the response contains "id", "target", "state", "files", "bytes", "entries_total", "entries_pending", "entries_partial", "entries_byte_complete", "entries_uploaded", "uploaded_bytes", "missing_bytes", "copies", and "upload_state_expires_at"
+      And the response contains "id", "name", "targets", "state", "files", "bytes", "entries_total", "entries_pending", "entries_partial", "entries_byte_complete", "entries_uploaded", "uploaded_bytes", "missing_bytes", "copies", and "upload_state_expires_at"
+
+    Scenario: List fetches after restart
+      When the API process restarts
+      And the client gets "/v1/fetches"
+      Then the response status is 200
+      And "/v1/fetches" entry for target "docs/tax/2022/invoice-123.pdf" contains fetch id "fx-1"
+      And "/v1/fetches" entry for target "docs/tax/2022/invoice-123.pdf" contains fetch state "queued_djdan"
 
     Scenario: Read the manifest twice
       When the client gets "/v1/fetches/fx-1/manifest"
@@ -52,18 +52,6 @@ Feature: Fetches API
       And both manifests contain the same logical file set
 
     Scenario: Read a manifest entry upload view
-      When the client gets "/v1/fetches/fx-1/manifest"
-      Then the response status is 200
-      And fetch manifest entry "e1" contains "recovery_bytes", "upload_state", "uploaded_bytes", and "upload_state_expires_at"
-
-  Rule: Active fetches survive service restarts
-    Scenario: Restarting the API preserves an active pin-scoped fetch
-      Given archived target "docs/tax/2022/invoice-123.pdf" is pinned with fetch "fx-1"
-      When the API process restarts
-      And the client gets "/v1/pins"
-      Then the response status is 200
-      And "/v1/pins" entry for target "docs/tax/2022/invoice-123.pdf" contains fetch id "fx-1"
-      And "/v1/pins" entry for target "docs/tax/2022/invoice-123.pdf" contains fetch state "waiting_media"
       When the client gets "/v1/fetches/fx-1/manifest"
       Then the response status is 200
       And fetch manifest entry "e1" contains "recovery_bytes", "upload_state", "uploaded_bytes", and "upload_state_expires_at"
@@ -81,7 +69,7 @@ Feature: Fetches API
       When background expiry cleanup resets fetch "fx-1" entry "e1"
       And the client gets "/v1/fetches/fx-1"
       Then the response status is 200
-      And fetch state is "waiting_media"
+      And fetch state is "queued_djdan"
       When the client gets "/v1/fetches/fx-1/manifest"
       Then the response status is 200
       And fetch manifest entry "e1" contains "recovery_bytes", "upload_state", "uploaded_bytes", and "upload_state_expires_at"
@@ -171,4 +159,3 @@ Feature: Fetches API
       Then the response status is 200
       And fetch state is "done"
       And target "docs/tax/2022/invoice-123.pdf" is hot
-      And target "docs/tax/2022/invoice-123.pdf" remains pinned

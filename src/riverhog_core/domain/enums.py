@@ -4,9 +4,12 @@ from enum import StrEnum
 
 
 class FetchState(StrEnum):
-    WAITING_MEDIA = "waiting_media"
+    DRAFT = "draft"
+    QUEUED_DJDAN = "queued_djdan"
     UPLOADING = "uploading"
     VERIFYING = "verifying"
+    QUEUED_CLOUD = "queued_cloud"
+    CLOUD_FETCHING = "cloud_fetching"
     DONE = "done"
     FAILED = "failed"
 

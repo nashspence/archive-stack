@@ -58,6 +58,7 @@ from riverhog_core.domain.models import (
     CopyHistoryEntry,
     CopySummary,
     FetchCopyHint,
+    FetchListPage,
     FetchSummary,
     GlacierArchiveStatus,
     GlacierCollectionContribution,
@@ -66,8 +67,6 @@ from riverhog_core.domain.models import (
     GlacierUsageReport,
     GlacierUsageSnapshot,
     GlacierUsageTotals,
-    PinListPage,
-    PinSummary,
     RecoveryCoverage,
     RecoveryNotificationStatus,
     RecoverySessionCollection,
@@ -97,7 +96,7 @@ from riverhog_core.iso.streaming import IsoStream, build_iso_cmd_from_root
 from riverhog_core.planner.manifest import MANIFEST_FILENAME
 from riverhog_core.webhooks import (
     WebhookConfig,
-    build_fetch_waiting_payload,
+    build_fetch_queued_payload,
     build_recovery_paused_reminder_payload,
     build_recovery_ready_payload,
 )
@@ -415,7 +414,6 @@ class AcceptanceState:
     candidates_by_id: dict[ImageId, CandidateRecord] = field(default_factory=dict)
     finalized_images_by_id: dict[ImageId, CandidateRecord] = field(default_factory=dict)
     copy_summaries: dict[tuple[str, CopyId], CopySummary] = field(default_factory=dict)
-    exact_pins: set[TargetStr] = field(default_factory=set)
     fetches: dict[FetchId, FetchRecord] = field(default_factory=dict)
     collection_uploads: dict[CollectionId, CollectionUploadRecord] = field(default_factory=dict)
     collection_glacier_status_by_collection: dict[CollectionId, GlacierArchiveStatus] = field(
@@ -1021,23 +1019,6 @@ class AcceptanceState:
     def is_hot(self, raw_target: str) -> bool:
         selected = self.selected_files(raw_target, missing_ok=True)
         return bool(selected) and all(record.hot for record in selected)
-
-    def reconcile_hot_from_pins(self) -> None:
-        selected_paths: set[tuple[CollectionId, str]] = set()
-        for raw_target in self.exact_pins:
-            for record in self.selected_files(str(raw_target), missing_ok=True):
-                selected_paths.add((record.collection_id, record.path))
-        for collection_files in self.files_by_collection.values():
-            for record in collection_files.values():
-                record.hot = (record.collection_id, record.path) in selected_paths
-
-    def release_hot_files_no_longer_pinned(self, raw_target: str) -> None:
-        released_files = self.selected_files(raw_target, missing_ok=True)
-        for record in released_files:
-            if record.hot and not any(
-                self._record_matches_target(record, str(target)) for target in self.exact_pins
-            ):
-                record.hot = False
 
     def file_is_fully_compliant(self, record: StoredFile) -> bool:
         covering_images = [
@@ -2359,7 +2340,7 @@ class AcceptanceRecoverySessionService:
         self.state = state
 
     @_with_state_lock
-    def repair_missing_pinned_hot_files(
+    def repair_missing_fetch_hot_files(
         self,
         *,
         limit: int = 100,
@@ -2571,6 +2552,11 @@ class AcceptanceRecoverySessionService:
     @_with_state_lock
     def create_or_resume_for_fetch(self, fetch_id: str) -> RecoverySessionListPage:
         fetch = self._fetch_record(fetch_id)
+        if fetch.summary.state == FetchState.QUEUED_CLOUD:
+            fetch.summary = AcceptanceFetchService(self.state)._replace_summary(
+                fetch,
+                state=FetchState.CLOUD_FETCHING,
+            )
         paths_by_collection = self._fetch_restore_paths(fetch, missing_only=True)
         for collection_id, paths in sorted(paths_by_collection.items()):
             self.create_or_resume_for_collection(str(collection_id), paths=sorted(paths))
@@ -2585,6 +2571,14 @@ class AcceptanceRecoverySessionService:
     @_with_state_lock
     def cancel_for_fetch(self, fetch_id: str) -> RecoverySessionListPage:
         fetch = self._fetch_record(fetch_id)
+        if fetch.summary.state in {
+            FetchState.QUEUED_CLOUD,
+            FetchState.CLOUD_FETCHING,
+        }:
+            fetch.summary = AcceptanceFetchService(self.state)._replace_summary(
+                fetch,
+                state=FetchState.DRAFT,
+            )
         active_states = {
             RecoverySessionState.RESTORE_REQUESTED,
             RecoverySessionState.READY,
@@ -3769,23 +3763,153 @@ class AcceptanceFetchService:
         self.state = state
 
     @_with_state_lock
-    def find_reusable_fetch(self, target: TargetStr) -> FetchSummary | None:
-        for record in self.state.fetches.values():
-            if record.summary.target != target:
-                continue
-            if record.summary.state == FetchState.FAILED:
-                continue
-            return record.summary
-        return None
+    def create(self, *, name: str, targets: list[str] | None = None) -> FetchSummary:
+        canonical_targets = self._canonical_targets(targets or [])
+        selected = self._selected_files_for_targets(canonical_targets, missing_ok=True)
+        return self._create_fetch_record(
+            name=name,
+            targets=canonical_targets,
+            files=selected,
+            initial_state=FetchState.DRAFT,
+        )
 
     @_with_state_lock
-    def create_fetch(
+    def list(
         self,
-        target: TargetStr,
-        files: list[StoredFile],
         *,
+        page: int,
+        per_page: int,
+        state: str | None = None,
+        q: str | None = None,
+        sort: str = "order",
+        order: str = "asc",
+    ) -> FetchListPage:
+        normalized_order = order.casefold()
+        if normalized_order not in {"asc", "desc"}:
+            raise BadRequest("order must be asc or desc")
+        if sort not in {"id", "name", "state", "order", "files", "bytes", "missing_bytes"}:
+            raise BadRequest("invalid fetch sort field")
+        summaries = [self._replace_summary(record) for record in self.state.fetches.values()]
+        if state is not None:
+            summaries = [summary for summary in summaries if summary.state.value == state]
+        if q:
+            needle = q.casefold()
+            summaries = [
+                summary
+                for summary in summaries
+                if needle
+                in " ".join(
+                    [
+                        str(summary.id),
+                        summary.name,
+                        summary.state.value,
+                        " ".join(str(target) for target in summary.targets),
+                    ]
+                ).casefold()
+            ]
+        sort_key = {
+            "id": lambda summary: str(summary.id),
+            "name": lambda summary: summary.name,
+            "state": lambda summary: summary.state.value,
+            "order": lambda summary: int(str(summary.id).removeprefix("fx-") or 0),
+            "files": lambda summary: summary.files,
+            "bytes": lambda summary: summary.bytes,
+            "missing_bytes": lambda summary: summary.missing_bytes,
+        }[sort]
+        summaries.sort(key=sort_key, reverse=normalized_order == "desc")
+        total = len(summaries)
+        pages = math.ceil(total / per_page) if total else 0
+        start = (page - 1) * per_page
+        return FetchListPage(
+            page=page,
+            per_page=per_page,
+            total=total,
+            pages=pages,
+            fetches=summaries[start : start + per_page],
+        )
+
+    @_with_state_lock
+    def add_targets(self, fetch_id: str, targets: list[str]) -> FetchSummary:
+        record = self._record(fetch_id)
+        self._require_editable(record)
+        canonical_targets = self._canonical_targets(targets)
+        existing = [str(target) for target in record.summary.targets]
+        merged = [*existing, *[target for target in canonical_targets if target not in existing]]
+        self._replace_targets(record, merged)
+        return record.summary
+
+    @_with_state_lock
+    def remove_targets(self, fetch_id: str, targets: list[str]) -> FetchSummary:
+        record = self._record(fetch_id)
+        self._require_editable(record)
+        removals = set(self._canonical_targets(targets))
+        remaining = [
+            str(target) for target in record.summary.targets if str(target) not in removals
+        ]
+        self._replace_targets(record, remaining)
+        return record.summary
+
+    @_with_state_lock
+    def start(self, fetch_id: str, *, cloud: bool = False) -> FetchSummary:
+        record = self._record(fetch_id)
+        if record.summary.state == FetchState.DONE:
+            raise InvalidState("fetch is already complete")
+        if record.summary.state in {
+            FetchState.QUEUED_DJDAN,
+            FetchState.UPLOADING,
+            FetchState.VERIFYING,
+            FetchState.QUEUED_CLOUD,
+            FetchState.CLOUD_FETCHING,
+        }:
+            raise InvalidState("fetch is already started")
+        if record.summary.state != FetchState.DRAFT:
+            raise InvalidState(f"fetch cannot be started from state {record.summary.state.value}")
+        if not record.summary.targets:
+            raise InvalidState("fetch has no targets")
+        state = FetchState.QUEUED_CLOUD if cloud else FetchState.QUEUED_DJDAN
+        record.summary = self._replace_summary(record, state=state)
+        return record.summary
+
+    @_with_state_lock
+    def evict(self, targets: list[str]) -> dict[str, object]:
+        canonical_targets = self._canonical_targets(targets)
+        if not canonical_targets:
+            raise BadRequest("at least one target is required")
+        selected = self._selected_files_for_targets(canonical_targets)
+        noncompliant = [
+            record for record in selected if not self.state.file_is_fully_compliant(record)
+        ]
+        if noncompliant:
+            first = noncompliant[0]
+            raise Conflict(
+                "cannot evict hot file without verified disc protection: "
+                f"{first.collection_id}/{first.path}"
+            )
+        evicted_files = 0
+        evicted_bytes = 0
+        for record in selected:
+            if not record.hot:
+                continue
+            record.hot = False
+            evicted_files += 1
+            evicted_bytes += record.bytes
+        return {
+            "targets": canonical_targets,
+            "files": len(selected),
+            "bytes": sum(record.bytes for record in selected),
+            "evicted_files": evicted_files,
+            "evicted_bytes": evicted_bytes,
+        }
+
+    @_with_state_lock
+    def _create_fetch_record(
+        self,
+        *,
+        name: str,
+        targets: list[str],
+        files: list[StoredFile],
         fetch_id: str | None = None,
-        initial_state: FetchState = FetchState.WAITING_MEDIA,
+        initial_state: FetchState = FetchState.DRAFT,
     ) -> FetchSummary:
         if fetch_id is None:
             self.state.next_fetch_number += 1
@@ -3793,21 +3917,11 @@ class AcceptanceFetchService:
         else:
             self.state.reserve_fetch_id(fetch_id)
         fetch_key = FetchId(fetch_id)
-        entries = {
-            EntryId(f"e{index}"): FetchEntryRecord(
-                id=EntryId(f"e{index}"),
-                collection_id=record.collection_id,
-                path=record.path,
-                bytes=record.bytes,
-                sha256=record.sha256,
-                content=record.content,
-                copies=list(record.copies),
-            )
-            for index, record in enumerate(sorted(files, key=lambda item: item.path), start=1)
-        }
+        entries = self._entries_for_files(files)
         summary = FetchSummary(
             id=fetch_key,
-            target=target,
+            name=name,
+            targets=tuple(TargetStr(target) for target in targets),
             state=initial_state,
             files=len(entries),
             bytes=sum(entry.bytes for entry in entries.values()),
@@ -3819,23 +3933,6 @@ class AcceptanceFetchService:
         return record.summary
 
     @_with_state_lock
-    def find_for_target(self, target: TargetStr) -> FetchSummary:
-        summary = self.find_reusable_fetch(target)
-        if summary is None:
-            raise NotFound(f"fetch not found for target: {target}")
-        return summary
-
-    @_with_state_lock
-    def remove_for_target(self, target: TargetStr) -> None:
-        to_delete = [
-            fetch_id
-            for fetch_id, record in self.state.fetches.items()
-            if record.summary.target == target
-        ]
-        for fetch_id in to_delete:
-            del self.state.fetches[fetch_id]
-
-    @_with_state_lock
     def get(self, fetch_id: str) -> FetchSummary:
         record = self._record(fetch_id)
         self._expire_stale_upload_record(record)
@@ -3845,11 +3942,13 @@ class AcceptanceFetchService:
     @_with_state_lock
     def manifest(self, fetch_id: str) -> dict[str, object]:
         record = self._record(fetch_id)
+        self._require_djdan_fetch(record)
         self._expire_stale_upload_record(record)
         record.summary = self._replace_summary(record)
         return {
             "id": str(record.summary.id),
-            "target": str(record.summary.target),
+            "name": record.summary.name,
+            "targets": [str(target) for target in record.summary.targets],
             "entries": [
                 {
                     "id": str(entry.id),
@@ -3900,7 +3999,8 @@ class AcceptanceFetchService:
                     break
         return {
             "id": str(record.summary.id),
-            "target": str(record.summary.target),
+            "name": record.summary.name,
+            "targets": [str(target) for target in record.summary.targets],
             "state": record.summary.state.value,
             "files": record.summary.files,
             "bytes": record.summary.bytes,
@@ -3924,6 +4024,7 @@ class AcceptanceFetchService:
     @_with_state_lock
     def create_or_resume_upload(self, fetch_id: str, entry_id: str) -> dict[str, object]:
         record = self._record(fetch_id)
+        self._require_djdan_fetch(record)
         self._expire_stale_upload_record(record)
         if record.summary.state == FetchState.DONE:
             raise InvalidState("fetch is already complete")
@@ -3980,7 +4081,7 @@ class AcceptanceFetchService:
         else:
             entry.upload_expires_at = None
 
-        if record.summary.state == FetchState.WAITING_MEDIA:
+        if record.summary.state == FetchState.QUEUED_DJDAN:
             record.summary = self._replace_summary(record, state=FetchState.UPLOADING)
         else:
             record.summary = self._replace_summary(record)
@@ -4017,7 +4118,7 @@ class AcceptanceFetchService:
         entry.uploaded_content = None
         entry.upload_expires_at = None
         if record.summary.state == FetchState.UPLOADING:
-            record.summary = self._replace_summary(record, state=FetchState.WAITING_MEDIA)
+            record.summary = self._replace_summary(record, state=FetchState.QUEUED_DJDAN)
         else:
             record.summary = self._replace_summary(record)
 
@@ -4027,7 +4128,7 @@ class AcceptanceFetchService:
             self._expire_stale_upload_record(record)
 
     @_with_state_lock
-    def deliver_due_waiting_notifications(self, *, limit: int = 100) -> int:
+    def deliver_due_queued_notifications(self, *, limit: int = 100) -> int:
         if limit < 1:
             return 0
         current = datetime.now(UTC)
@@ -4037,7 +4138,7 @@ class AcceptanceFetchService:
                 return delivered
             self._expire_stale_upload_record(record)
             record.summary = self._replace_summary(record)
-            if record.summary.state != FetchState.WAITING_MEDIA:
+            if record.summary.state != FetchState.QUEUED_DJDAN:
                 continue
             if self._active_cloud_fetch_session_id(record) is not None:
                 continue
@@ -4050,10 +4151,10 @@ class AcceptanceFetchService:
             reminder = record.notification_sent_at is not None
             try:
                 self.state.deliver_webhook_payload(
-                    build_fetch_waiting_payload(
+                    build_fetch_queued_payload(
                         config=self.state.webhook_config(),
                         fetch_id=str(record.summary.id),
-                        target=str(record.summary.target),
+                        name=record.summary.name,
                         files=record.summary.files,
                         bytes=record.summary.bytes,
                         copies=[
@@ -4095,8 +4196,9 @@ class AcceptanceFetchService:
             return {
                 "id": str(record.summary.id),
                 "state": record.summary.state.value,
-                "hot": self._hot_payload(str(record.summary.target)),
+                "hot": self._hot_payload_for_fetch(record),
             }
+        self._require_djdan_fetch(record)
         self._raise_if_cloud_fetching(record)
         if any(
             self._entry_upload_state(entry, fetch_state=record.summary.state) != "byte_complete"
@@ -4111,7 +4213,7 @@ class AcceptanceFetchService:
             entry.upload_url = None
             entry.upload_expires_at = None
         record.summary = self._replace_summary(record, state=FetchState.DONE)
-        hot = self._hot_payload(str(record.summary.target))
+        hot = self._hot_payload_for_fetch(record)
         return {
             "id": str(record.summary.id),
             "state": record.summary.state.value,
@@ -4126,7 +4228,7 @@ class AcceptanceFetchService:
             entry.uploaded_bytes = len(recovery_stream)
             entry.uploaded_content = recovery_stream
             entry.upload_expires_at = None
-        if record.summary.state == FetchState.WAITING_MEDIA:
+        if record.summary.state == FetchState.QUEUED_DJDAN:
             record.summary = self._replace_summary(record, state=FetchState.UPLOADING)
         else:
             record.summary = self._replace_summary(record)
@@ -4142,11 +4244,81 @@ class AcceptanceFetchService:
         entry.uploaded_bytes = len(partial)
         entry.uploaded_content = partial
         entry.upload_expires_at = FIXTURE_UPLOAD_EXPIRES_AT
-        if record.summary.state == FetchState.WAITING_MEDIA:
+        if record.summary.state == FetchState.QUEUED_DJDAN:
             record.summary = self._replace_summary(record, state=FetchState.UPLOADING)
         else:
             record.summary = self._replace_summary(record)
         return len(partial)
+
+    @staticmethod
+    def _canonical_targets(targets: list[str]) -> list[str]:
+        return [parse_target(target).canonical for target in targets]
+
+    def _selected_files_for_targets(
+        self,
+        targets: list[str],
+        *,
+        missing_ok: bool = False,
+    ) -> list[StoredFile]:
+        selected_by_key: dict[tuple[CollectionId, str], StoredFile] = {}
+        for target in targets:
+            for record in self.state.selected_files(target, missing_ok=missing_ok):
+                selected_by_key[(record.collection_id, record.path)] = record
+        if targets and not selected_by_key and not missing_ok:
+            raise NotFound("fetch targets matched no files")
+        return [
+            selected_by_key[key]
+            for key in sorted(selected_by_key, key=lambda item: (str(item[0]), item[1]))
+        ]
+
+    def _replace_targets(self, record: FetchRecord, targets: list[str]) -> None:
+        selected = self._selected_files_for_targets(targets, missing_ok=True)
+        record.entries = self._entries_for_files(selected)
+        summary = record.summary
+        record.summary = FetchSummary(
+            id=summary.id,
+            name=summary.name,
+            targets=tuple(TargetStr(target) for target in targets),
+            state=summary.state,
+            files=len(record.entries),
+            bytes=sum(entry.bytes for entry in record.entries.values()),
+            copies=self._summary_copies(record.entries.values()),
+        )
+        record.summary = self._replace_summary(record)
+
+    @staticmethod
+    def _entries_for_files(files: list[StoredFile]) -> dict[EntryId, FetchEntryRecord]:
+        return {
+            EntryId(f"e{index}"): FetchEntryRecord(
+                id=EntryId(f"e{index}"),
+                collection_id=record.collection_id,
+                path=record.path,
+                bytes=record.bytes,
+                sha256=record.sha256,
+                content=record.content,
+                copies=list(record.copies),
+            )
+            for index, record in enumerate(
+                sorted(files, key=lambda item: (str(item.collection_id), item.path)),
+                start=1,
+            )
+        }
+
+    @staticmethod
+    def _require_editable(record: FetchRecord) -> None:
+        if record.summary.state != FetchState.DRAFT:
+            raise InvalidState(f"fetch cannot be edited from state {record.summary.state.value}")
+
+    @staticmethod
+    def _require_djdan_fetch(record: FetchRecord) -> None:
+        if record.summary.state == FetchState.DONE:
+            return
+        if record.summary.state not in {
+            FetchState.QUEUED_DJDAN,
+            FetchState.UPLOADING,
+            FetchState.VERIFYING,
+        }:
+            raise InvalidState("fetch is not queued for djdan")
 
     def _record(self, fetch_id: str) -> FetchRecord:
         try:
@@ -4223,7 +4395,8 @@ class AcceptanceFetchService:
         ]
         return FetchSummary(
             id=summary.id,
-            target=summary.target,
+            name=summary.name,
+            targets=summary.targets,
             state=effective_state,
             files=summary.files,
             bytes=summary.bytes,
@@ -4253,7 +4426,7 @@ class AcceptanceFetchService:
             entry.uploaded_content = None
             entry.upload_expires_at = None
         if expired and record.summary.state == FetchState.UPLOADING:
-            record.summary = self._replace_summary(record, state=FetchState.WAITING_MEDIA)
+            record.summary = self._replace_summary(record, state=FetchState.QUEUED_DJDAN)
         else:
             record.summary = self._replace_summary(record)
 
@@ -4382,8 +4555,11 @@ class AcceptanceFetchService:
         if actual_sha != entry.sha256:
             raise HashMismatch("sha256 did not match expected entry hash")
 
-    def _hot_payload(self, raw_target: str) -> dict[str, object]:
-        selected = self.state.selected_files(raw_target)
+    def _hot_payload_for_fetch(self, record: FetchRecord) -> dict[str, object]:
+        selected = self._selected_files_for_targets(
+            [str(target) for target in record.summary.targets],
+            missing_ok=True,
+        )
         present_bytes = sum(record.bytes for record in selected if record.hot)
         missing_bytes = sum(record.bytes for record in selected if not record.hot)
         return {
@@ -4391,92 +4567,6 @@ class AcceptanceFetchService:
             "present_bytes": present_bytes,
             "missing_bytes": missing_bytes,
         }
-
-
-class AcceptancePinService:
-    def __init__(self, state: AcceptanceState, fetches: AcceptanceFetchService) -> None:
-        self.state = state
-        self.fetches = fetches
-
-    @_with_state_lock
-    def pin(self, raw_target: str) -> dict[str, object]:
-        target = parse_target(raw_target)
-        canonical = cast(TargetStr, target.canonical)
-        selected = self.state.selected_files(target.canonical)
-        self.state.exact_pins.add(canonical)
-
-        present_bytes = sum(record.bytes for record in selected if record.hot)
-        missing_bytes = sum(record.bytes for record in selected if not record.hot)
-        summary = self.fetches.find_reusable_fetch(canonical)
-        if summary is None:
-            summary = self.fetches.create_fetch(
-                canonical,
-                selected,
-                initial_state=FetchState.DONE if missing_bytes == 0 else FetchState.WAITING_MEDIA,
-            )
-        fetch_payload = {
-            "id": str(summary.id),
-            "state": summary.state.value,
-            "copies": [
-                {"id": str(copy.id), "volume_id": copy.volume_id, "location": copy.location}
-                for copy in summary.copies
-            ],
-        }
-        return {
-            "target": str(canonical),
-            "pin": True,
-            "hot": {
-                "state": "ready" if missing_bytes == 0 else "waiting",
-                "present_bytes": present_bytes,
-                "missing_bytes": missing_bytes,
-            },
-            "fetch": fetch_payload,
-        }
-
-    @_with_state_lock
-    def release(self, raw_target: str) -> dict[str, object]:
-        target = parse_target(raw_target)
-        canonical = cast(TargetStr, target.canonical)
-        if canonical not in self.state.exact_pins:
-            return {
-                "target": str(canonical),
-                "pin": False,
-            }
-        selected = self.state.selected_files(str(canonical), missing_ok=True)
-        noncompliant = [
-            record for record in selected if not self.state.file_is_fully_compliant(record)
-        ]
-        if noncompliant:
-            first = noncompliant[0]
-            raise Conflict(
-                "cannot release hot storage pin for non-compliant file: "
-                f"{first.collection_id}/{first.path}"
-            )
-        self.state.exact_pins.discard(canonical)
-        self.fetches.remove_for_target(canonical)
-        self.state.release_hot_files_no_longer_pinned(str(canonical))
-        return {
-            "target": str(canonical),
-            "pin": False,
-        }
-
-    @_with_state_lock
-    def list_pins(self, *, page: int, per_page: int) -> PinListPage:
-        pins = [
-            PinSummary(target=target, fetch=self.fetches.find_for_target(target))
-            for target in sorted(self.state.exact_pins)
-        ]
-        total = len(pins)
-        pages = math.ceil(total / per_page) if total else 0
-        start = (page - 1) * per_page
-        stop = start + per_page
-        return PinListPage(
-            page=page,
-            per_page=per_page,
-            total=total,
-            pages=pages,
-            pins=pins[start:stop],
-        )
 
 
 class AcceptanceFileService:
@@ -4711,7 +4801,6 @@ class AcceptanceSystem:
     glacier_reporting: AcceptanceGlacierReportingService
     recovery_sessions: AcceptanceRecoverySessionService
     copies: AcceptanceCopyService
-    pins: AcceptancePinService
     fetches: AcceptanceFetchService
     files: AcceptanceFileService
     _container_slot: _ContainerSlot
@@ -4738,7 +4827,6 @@ class AcceptanceSystem:
         recovery_sessions = AcceptanceRecoverySessionService(state)
         copies = AcceptanceCopyService(state)
         fetches = AcceptanceFetchService(state)
-        pins = AcceptancePinService(state, fetches)
         files = AcceptanceFileService(state)
 
         container = ServiceContainer(
@@ -4749,7 +4837,6 @@ class AcceptanceSystem:
             glacier_reporting=glacier_reporting,
             recovery_sessions=recovery_sessions,
             copies=copies,
-            pins=pins,
             fetches=fetches,
             files=files,
         )
@@ -4778,7 +4865,6 @@ class AcceptanceSystem:
             glacier_reporting=glacier_reporting,
             recovery_sessions=recovery_sessions,
             copies=copies,
-            pins=pins,
             fetches=fetches,
             files=files,
             _container_slot=container_slot,
@@ -4818,7 +4904,6 @@ class AcceptanceSystem:
             self.glacier_reporting = restarted.glacier_reporting
             self.recovery_sessions = restarted.recovery_sessions
             self.copies = restarted.copies
-            self.pins = restarted.pins
             self.fetches = restarted.fetches
             self.files = restarted.files
             self._container_slot = restarted._container_slot
@@ -4836,7 +4921,6 @@ class AcceptanceSystem:
             self.glacier_reporting = reset.glacier_reporting
             self.recovery_sessions = reset.recovery_sessions
             self.copies = reset.copies
-            self.pins = reset.pins
             self.fetches = reset.fetches
             self.files = reset.files
             self._container_slot.container = reset._container_slot.container
@@ -5810,10 +5894,10 @@ class AcceptanceSystem:
         assert prefix
         return credentials != storage
 
-    def pins_list(self) -> list[str]:
-        per_page = max(len(self.state.exact_pins), 1)
-        page = self.pins.list_pins(page=1, per_page=per_page)
-        return [str(item.target) for item in page.pins]
+    def fetch_targets_list(self) -> list[str]:
+        per_page = max(len(self.state.fetches), 1)
+        page = self.fetches.list(page=1, per_page=per_page)
+        return [str(target) for fetch in page.fetches for target in fetch.targets]
 
     def uploaded_entry_content(self, fetch_id: str, entry_path: str) -> bytes | None:
         with self.state.lock:

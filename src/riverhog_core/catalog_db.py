@@ -49,11 +49,13 @@ _COLLECTION_IMAGE_OPERATOR_SUMMARY_COLUMNS = (
     "covered_paths_total",
     "updated_at",
 )
-_HOT_FETCH_OPERATOR_SUMMARY_COLUMNS = (
-    "target",
+_FETCH_OPERATOR_SUMMARY_COLUMNS = (
     "fetch_id",
+    "name",
     "fetch_order",
     "fetch_state",
+    "selectors",
+    "targets_text",
     "files",
     "bytes",
     "hot_files",
@@ -198,14 +200,20 @@ def _ensure_schema_indexes(engine: Engine) -> None:
         )
         conn.execute(
             text(
-                "CREATE INDEX IF NOT EXISTS ix_hot_fetch_operator_summaries_fetch_id "
-                "ON hot_fetch_operator_summaries (fetch_id)"
+                "CREATE INDEX IF NOT EXISTS ix_fetch_operator_summaries_state "
+                "ON fetch_operator_summaries (fetch_state, fetch_order, fetch_id)"
             )
         )
         conn.execute(
             text(
-                "CREATE INDEX IF NOT EXISTS ix_hot_fetch_operator_summaries_order "
-                "ON hot_fetch_operator_summaries (fetch_order, target)"
+                "CREATE INDEX IF NOT EXISTS ix_fetch_operator_summaries_order "
+                "ON fetch_operator_summaries (fetch_order, fetch_id)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_fetch_selectors_target "
+                "ON fetch_selectors (target, fetch_id)"
             )
         )
         conn.execute(
@@ -297,6 +305,144 @@ def _ensure_schema_columns(engine: Engine) -> None:
     if "approved_at" in recovery_columns:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE glacier_recovery_sessions DROP COLUMN approved_at"))
+
+
+def _transition_pin_schema_to_fetches(engine: Engine) -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    if "active_pins" not in table_names:
+        return
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+INSERT INTO fetches (
+    fetch_id,
+    name,
+    fetch_order,
+    fetch_state,
+    fetch_notification_sent_at,
+    fetch_notification_next_attempt_at,
+    fetch_notification_failure,
+    fetch_notification_count
+)
+SELECT
+    active_pins.fetch_id,
+    active_pins.target,
+    active_pins.fetch_order,
+    CASE active_pins.fetch_state
+        WHEN 'waiting_media' THEN 'queued_djdan'
+        ELSE active_pins.fetch_state
+    END,
+    active_pins.fetch_notification_sent_at,
+    active_pins.fetch_notification_next_attempt_at,
+    active_pins.fetch_notification_failure,
+    active_pins.fetch_notification_count
+FROM active_pins
+WHERE active_pins.fetch_id IS NOT NULL
+    AND NOT EXISTS (
+        SELECT 1
+        FROM fetches
+        WHERE fetches.fetch_id = active_pins.fetch_id
+    )
+"""
+            )
+        )
+        conn.execute(
+            text(
+                """
+INSERT INTO fetch_selectors (fetch_id, target, selector_order)
+SELECT active_pins.fetch_id, active_pins.target, 1
+FROM active_pins
+WHERE active_pins.fetch_id IS NOT NULL
+    AND NOT EXISTS (
+        SELECT 1
+        FROM fetch_selectors
+        WHERE fetch_selectors.fetch_id = active_pins.fetch_id
+            AND fetch_selectors.target = active_pins.target
+    )
+"""
+            )
+        )
+        if conn.dialect.name == "postgresql":
+            conn.execute(
+                text(
+                    "ALTER TABLE fetch_entries "
+                    "DROP CONSTRAINT IF EXISTS fetch_entries_fetch_id_fkey"
+                )
+            )
+            conn.execute(
+                text(
+                    """
+DELETE FROM fetch_entries
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM fetches
+    WHERE fetches.fetch_id = fetch_entries.fetch_id
+)
+"""
+                )
+            )
+            conn.execute(
+                text(
+                    """
+ALTER TABLE fetch_entries
+ADD CONSTRAINT fetch_entries_fetch_id_fkey
+FOREIGN KEY (fetch_id)
+REFERENCES fetches(fetch_id)
+ON DELETE CASCADE
+"""
+                )
+            )
+        _drop_legacy_hot_fetch_projection(conn)
+        if conn.dialect.name == "postgresql":
+            conn.execute(text("DROP TABLE IF EXISTS hot_fetch_operator_summaries CASCADE"))
+            conn.execute(text("DROP TABLE IF EXISTS active_pins CASCADE"))
+
+
+def _drop_legacy_hot_fetch_projection(conn: Connection) -> None:
+    if conn.dialect.name == "sqlite":
+        for trigger_name in (
+            "riverhog_hfos_active_pins_insert",
+            "riverhog_hfos_active_pins_update",
+            "riverhog_hfos_collection_files_insert",
+            "riverhog_hfos_collection_files_update",
+            "riverhog_hfos_collection_files_delete",
+            "riverhog_hfos_fetch_entries_insert",
+            "riverhog_hfos_fetch_entries_update",
+            "riverhog_hfos_fetch_entries_delete",
+        ):
+            conn.execute(text(f"DROP TRIGGER IF EXISTS {trigger_name}"))
+        return
+
+    if conn.dialect.name != "postgresql":
+        return
+
+    for trigger_name, table_name in (
+        ("riverhog_hfos_active_pins_insert", "active_pins"),
+        ("riverhog_hfos_active_pins_update", "active_pins"),
+        ("riverhog_hfos_collection_files_insert", "collection_files"),
+        ("riverhog_hfos_collection_files_update", "collection_files"),
+        ("riverhog_hfos_collection_files_delete", "collection_files"),
+        ("riverhog_hfos_fetch_entries_insert", "fetch_entries"),
+        ("riverhog_hfos_fetch_entries_update", "fetch_entries"),
+        ("riverhog_hfos_fetch_entries_delete", "fetch_entries"),
+    ):
+        conn.execute(text(f"DROP TRIGGER IF EXISTS {trigger_name} ON {table_name}"))
+
+    for function_name in (
+        "riverhog_refresh_hot_fetch_operator_summaries(text[])",
+        "riverhog_hfos_from_new_active_pins()",
+        "riverhog_hfos_from_changed_active_pins()",
+        "riverhog_hfos_from_new_files()",
+        "riverhog_hfos_from_old_files()",
+        "riverhog_hfos_from_changed_files()",
+        "riverhog_hfos_from_new_fetch_entries()",
+        "riverhog_hfos_from_old_fetch_entries()",
+        "riverhog_hfos_from_changed_fetch_entries()",
+    ):
+        conn.execute(text(f"DROP FUNCTION IF EXISTS {function_name} CASCADE"))
 
 
 def _collection_operator_summary_select_sql(affected_collections_sql: str) -> str:
@@ -2069,7 +2215,7 @@ $riverhog$;
         )
 
 
-def _hot_fetch_target_selects_file_sql(
+def _fetch_selector_selects_file_sql(
     *,
     target: str,
     collection_id: str,
@@ -2085,38 +2231,76 @@ def _hot_fetch_target_selects_file_sql(
     )
 
 
-def _hot_fetch_operator_summary_select_sql(affected_targets_sql: str) -> str:
-    target_match = _hot_fetch_target_selects_file_sql(
-        target="affected_pins.target",
+def _fetch_targets_agg_sql(conn: Connection) -> str:
+    if conn.dialect.name == "sqlite":
+        return "COALESCE(group_concat(ordered_selectors.target, char(10)), '')"
+    return "COALESCE(string_agg(ordered_selectors.target, chr(10)), '')"
+
+
+def _fetch_operator_summary_select_sql(
+    conn: Connection,
+    affected_fetches_sql: str,
+) -> str:
+    target_match = _fetch_selector_selects_file_sql(
+        target="fetch_selectors.target",
         collection_id="collection_files.collection_id",
         path="collection_files.path",
     )
+    targets_text = _fetch_targets_agg_sql(conn)
     return f"""
 SELECT *
 FROM (
-    WITH affected_targets(target) AS (
-        {affected_targets_sql}
+    WITH affected_fetches(fetch_id) AS (
+        {affected_fetches_sql}
     ),
-    distinct_targets AS (
-        SELECT DISTINCT target
-        FROM affected_targets
-        WHERE target IS NOT NULL
+    distinct_fetches AS (
+        SELECT DISTINCT fetch_id
+        FROM affected_fetches
+        WHERE fetch_id IS NOT NULL
     ),
-    affected_pins AS (
-        SELECT active_pins.*
-        FROM active_pins
-        JOIN distinct_targets
-            ON distinct_targets.target = active_pins.target
+    fetch_rows AS (
+        SELECT fetches.*
+        FROM fetches
+        JOIN distinct_fetches
+            ON distinct_fetches.fetch_id = fetches.fetch_id
+    ),
+    ordered_selectors AS (
+        SELECT fetch_selectors.*
+        FROM fetch_selectors
+        JOIN fetch_rows
+            ON fetch_rows.fetch_id = fetch_selectors.fetch_id
+        ORDER BY fetch_selectors.fetch_id, fetch_selectors.selector_order, fetch_selectors.target
+    ),
+    selector_stats AS (
+        SELECT
+            ordered_selectors.fetch_id,
+            COUNT(ordered_selectors.target) AS selectors,
+            {targets_text} AS targets_text
+        FROM ordered_selectors
+        GROUP BY ordered_selectors.fetch_id
+    ),
+    selected_files AS (
+        SELECT DISTINCT
+            fetch_rows.fetch_id,
+            collection_files.collection_id,
+            collection_files.path,
+            collection_files.bytes,
+            collection_files.hot
+        FROM fetch_rows
+        JOIN fetch_selectors
+            ON fetch_selectors.fetch_id = fetch_rows.fetch_id
+        JOIN collection_files
+            ON {target_match}
     ),
     file_stats AS (
         SELECT
-            affected_pins.target,
-            COUNT(collection_files.path) AS files,
-            COALESCE(SUM(collection_files.bytes), 0) AS bytes,
+            selected_files.fetch_id,
+            COUNT(selected_files.path) AS files,
+            COALESCE(SUM(selected_files.bytes), 0) AS bytes,
             COALESCE(
                 SUM(
                     CASE
-                        WHEN collection_files.hot IS TRUE THEN 1
+                        WHEN selected_files.hot IS TRUE THEN 1
                         ELSE 0
                     END
                 ),
@@ -2125,20 +2309,18 @@ FROM (
             COALESCE(
                 SUM(
                     CASE
-                        WHEN collection_files.hot IS TRUE THEN collection_files.bytes
+                        WHEN selected_files.hot IS TRUE THEN selected_files.bytes
                         ELSE 0
                     END
                 ),
                 0
             ) AS hot_bytes
-        FROM affected_pins
-        LEFT JOIN collection_files
-            ON {target_match}
-        GROUP BY affected_pins.target
+        FROM selected_files
+        GROUP BY selected_files.fetch_id
     ),
     entry_stats AS (
         SELECT
-            affected_pins.target,
+            fetch_rows.fetch_id,
             COUNT(fetch_entries.entry_id) AS entries_total,
             COALESCE(
                 SUM(
@@ -2176,7 +2358,7 @@ FROM (
                         WHEN fetch_entries.entry_id IS NOT NULL
                             AND fetch_entries.recovery_bytes > 0
                             AND fetch_entries.uploaded_bytes >= fetch_entries.recovery_bytes
-                            AND affected_pins.fetch_state != 'done'
+                            AND fetch_rows.fetch_state != 'done'
                         THEN 1
                         ELSE 0
                     END
@@ -2189,7 +2371,7 @@ FROM (
                         WHEN fetch_entries.entry_id IS NOT NULL
                             AND fetch_entries.recovery_bytes > 0
                             AND fetch_entries.uploaded_bytes >= fetch_entries.recovery_bytes
-                            AND affected_pins.fetch_state = 'done'
+                            AND fetch_rows.fetch_state = 'done'
                         THEN 1
                         ELSE 0
                     END
@@ -2200,16 +2382,18 @@ FROM (
             COALESCE(SUM(fetch_entries.recovery_bytes), 0) AS entry_recovery_bytes,
             COALESCE(SUM(fetch_entries.uploaded_bytes), 0) AS uploaded_bytes,
             MAX(fetch_entries.upload_expires_at) AS upload_state_expires_at
-        FROM affected_pins
+        FROM fetch_rows
         LEFT JOIN fetch_entries
-            ON fetch_entries.fetch_id = affected_pins.fetch_id
-        GROUP BY affected_pins.target
+            ON fetch_entries.fetch_id = fetch_rows.fetch_id
+        GROUP BY fetch_rows.fetch_id
     )
     SELECT
-        affected_pins.target,
-        affected_pins.fetch_id,
-        affected_pins.fetch_order,
-        affected_pins.fetch_state,
+        fetch_rows.fetch_id,
+        fetch_rows.name,
+        fetch_rows.fetch_order,
+        fetch_rows.fetch_state,
+        COALESCE(selector_stats.selectors, 0) AS selectors,
+        COALESCE(selector_stats.targets_text, '') AS targets_text,
         COALESCE(file_stats.files, 0) AS files,
         COALESCE(file_stats.bytes, 0) AS bytes,
         COALESCE(file_stats.hot_files, 0) AS hot_files,
@@ -2233,117 +2417,132 @@ FROM (
         END AS upload_missing_bytes,
         entry_stats.upload_state_expires_at,
         CAST(CURRENT_TIMESTAMP AS TEXT) AS updated_at
-    FROM affected_pins
+    FROM fetch_rows
+    LEFT JOIN selector_stats
+        ON selector_stats.fetch_id = fetch_rows.fetch_id
     LEFT JOIN file_stats
-        ON file_stats.target = affected_pins.target
+        ON file_stats.fetch_id = fetch_rows.fetch_id
     LEFT JOIN entry_stats
-        ON entry_stats.target = affected_pins.target
-) AS hot_fetch_operator_summary_refresh
+        ON entry_stats.fetch_id = fetch_rows.fetch_id
+) AS fetch_operator_summary_refresh
 """
 
 
-def _hot_fetch_operator_summary_upsert_sql(
+def _fetch_operator_summary_upsert_sql(
     conn: Connection,
-    affected_targets_sql: str,
+    affected_fetches_sql: str,
 ) -> str:
-    columns = ", ".join(_HOT_FETCH_OPERATOR_SUMMARY_COLUMNS)
-    select_sql = _hot_fetch_operator_summary_select_sql(affected_targets_sql)
+    columns = ", ".join(_FETCH_OPERATOR_SUMMARY_COLUMNS)
+    select_sql = _fetch_operator_summary_select_sql(conn, affected_fetches_sql)
     if conn.dialect.name == "sqlite":
-        return f"INSERT OR REPLACE INTO hot_fetch_operator_summaries ({columns}) {select_sql}"
+        return f"INSERT OR REPLACE INTO fetch_operator_summaries ({columns}) {select_sql}"
     updates = ", ".join(
         f"{column} = EXCLUDED.{column}"
-        for column in _HOT_FETCH_OPERATOR_SUMMARY_COLUMNS
-        if column != "target"
+        for column in _FETCH_OPERATOR_SUMMARY_COLUMNS
+        if column != "fetch_id"
     )
     return (
-        f"INSERT INTO hot_fetch_operator_summaries ({columns}) "
+        f"INSERT INTO fetch_operator_summaries ({columns}) "
         f"{select_sql} "
-        f"ON CONFLICT (target) DO UPDATE SET {updates}"
+        f"ON CONFLICT (fetch_id) DO UPDATE SET {updates}"
     )
 
 
-def _refresh_hot_fetch_operator_summaries(
+def _refresh_fetch_operator_summaries(
     conn: Connection,
-    affected_targets_sql: str,
+    affected_fetches_sql: str,
 ) -> None:
-    conn.execute(text(_hot_fetch_operator_summary_upsert_sql(conn, affected_targets_sql)))
+    conn.execute(text(_fetch_operator_summary_upsert_sql(conn, affected_fetches_sql)))
 
 
-def _install_hot_fetch_operator_projection(engine: Engine) -> None:
+def _install_fetch_operator_projection(engine: Engine) -> None:
     with engine.begin() as conn:
         if conn.dialect.name == "sqlite":
-            _install_sqlite_hot_fetch_operator_projection(conn)
+            _install_sqlite_fetch_operator_projection(conn)
             return
         if conn.dialect.name == "postgresql":
-            _install_postgresql_hot_fetch_operator_projection(conn)
+            _install_postgresql_fetch_operator_projection(conn)
             return
         raise RuntimeError(f"unsupported catalog backend: {conn.dialect.name}")
 
 
-def _sqlite_hot_fetch_operator_refresh(affected_targets_sql: str) -> str:
-    columns = ", ".join(_HOT_FETCH_OPERATOR_SUMMARY_COLUMNS)
-    select_sql = _hot_fetch_operator_summary_select_sql(affected_targets_sql)
-    return f"INSERT OR REPLACE INTO hot_fetch_operator_summaries ({columns}) {select_sql};"
+def _sqlite_fetch_operator_refresh(conn: Connection, affected_fetches_sql: str) -> str:
+    columns = ", ".join(_FETCH_OPERATOR_SUMMARY_COLUMNS)
+    select_sql = _fetch_operator_summary_select_sql(conn, affected_fetches_sql)
+    return f"INSERT OR REPLACE INTO fetch_operator_summaries ({columns}) {select_sql};"
 
 
-def _sqlite_affected_pin_targets_for_file(collection_id: str, path: str) -> str:
-    return "SELECT target FROM active_pins WHERE " + _hot_fetch_target_selects_file_sql(
-        target="active_pins.target",
+def _sqlite_affected_fetch_ids_for_file(collection_id: str, path: str) -> str:
+    return "SELECT fetch_id FROM fetch_selectors WHERE " + _fetch_selector_selects_file_sql(
+        target="fetch_selectors.target",
         collection_id=collection_id,
         path=path,
     )
 
 
-def _install_sqlite_hot_fetch_operator_projection(conn: Connection) -> None:
+def _install_sqlite_fetch_operator_projection(conn: Connection) -> None:
     trigger_sql = {
-        "riverhog_hfos_active_pins_insert": (
-            "active_pins",
-            _sqlite_hot_fetch_operator_refresh("SELECT NEW.target AS target"),
+        "riverhog_fos_fetches_insert": (
+            "fetches",
+            _sqlite_fetch_operator_refresh(conn, "SELECT NEW.fetch_id AS fetch_id"),
         ),
-        "riverhog_hfos_active_pins_update": (
-            "active_pins",
-            _sqlite_hot_fetch_operator_refresh(
-                "SELECT OLD.target AS target UNION SELECT NEW.target AS target"
+        "riverhog_fos_fetches_update": (
+            "fetches",
+            _sqlite_fetch_operator_refresh(
+                conn, "SELECT OLD.fetch_id AS fetch_id UNION SELECT NEW.fetch_id AS fetch_id"
             ),
         ),
-        "riverhog_hfos_collection_files_insert": (
-            "collection_files",
-            _sqlite_hot_fetch_operator_refresh(
-                _sqlite_affected_pin_targets_for_file("NEW.collection_id", "NEW.path")
+        "riverhog_fos_fetch_selectors_insert": (
+            "fetch_selectors",
+            _sqlite_fetch_operator_refresh(conn, "SELECT NEW.fetch_id AS fetch_id"),
+        ),
+        "riverhog_fos_fetch_selectors_update": (
+            "fetch_selectors",
+            _sqlite_fetch_operator_refresh(
+                conn, "SELECT OLD.fetch_id AS fetch_id UNION SELECT NEW.fetch_id AS fetch_id"
             ),
         ),
-        "riverhog_hfos_collection_files_update": (
+        "riverhog_fos_fetch_selectors_delete": (
+            "fetch_selectors",
+            _sqlite_fetch_operator_refresh(conn, "SELECT OLD.fetch_id AS fetch_id"),
+        ),
+        "riverhog_fos_collection_files_insert": (
             "collection_files",
-            _sqlite_hot_fetch_operator_refresh(
-                _sqlite_affected_pin_targets_for_file("OLD.collection_id", "OLD.path")
+            _sqlite_fetch_operator_refresh(
+                conn,
+                _sqlite_affected_fetch_ids_for_file("NEW.collection_id", "NEW.path"),
+            ),
+        ),
+        "riverhog_fos_collection_files_update": (
+            "collection_files",
+            _sqlite_fetch_operator_refresh(
+                conn,
+                _sqlite_affected_fetch_ids_for_file("OLD.collection_id", "OLD.path")
                 + " UNION "
-                + _sqlite_affected_pin_targets_for_file("NEW.collection_id", "NEW.path")
+                + _sqlite_affected_fetch_ids_for_file("NEW.collection_id", "NEW.path"),
             ),
         ),
-        "riverhog_hfos_collection_files_delete": (
+        "riverhog_fos_collection_files_delete": (
             "collection_files",
-            _sqlite_hot_fetch_operator_refresh(
-                _sqlite_affected_pin_targets_for_file("OLD.collection_id", "OLD.path")
+            _sqlite_fetch_operator_refresh(
+                conn,
+                _sqlite_affected_fetch_ids_for_file("OLD.collection_id", "OLD.path"),
             ),
         ),
-        "riverhog_hfos_fetch_entries_insert": (
+        "riverhog_fos_fetch_entries_insert": (
             "fetch_entries",
-            _sqlite_hot_fetch_operator_refresh(
-                "SELECT target FROM active_pins WHERE fetch_id = NEW.fetch_id"
+            _sqlite_fetch_operator_refresh(conn, "SELECT NEW.fetch_id AS fetch_id"),
+        ),
+        "riverhog_fos_fetch_entries_update": (
+            "fetch_entries",
+            _sqlite_fetch_operator_refresh(
+                conn,
+                "SELECT OLD.fetch_id AS fetch_id UNION SELECT NEW.fetch_id AS fetch_id",
             ),
         ),
-        "riverhog_hfos_fetch_entries_update": (
+        "riverhog_fos_fetch_entries_delete": (
             "fetch_entries",
-            _sqlite_hot_fetch_operator_refresh(
-                "SELECT target FROM active_pins WHERE fetch_id = OLD.fetch_id "
-                "UNION SELECT target FROM active_pins WHERE fetch_id = NEW.fetch_id"
-            ),
-        ),
-        "riverhog_hfos_fetch_entries_delete": (
-            "fetch_entries",
-            _sqlite_hot_fetch_operator_refresh(
-                "SELECT target FROM active_pins WHERE fetch_id = OLD.fetch_id"
-            ),
+            _sqlite_fetch_operator_refresh(conn, "SELECT OLD.fetch_id AS fetch_id"),
         ),
     }
     for trigger_name, (table_name, body) in trigger_sql.items():
@@ -2356,35 +2555,35 @@ def _install_sqlite_hot_fetch_operator_projection(conn: Connection) -> None:
         )
 
 
-def _install_postgresql_hot_fetch_operator_projection(conn: Connection) -> None:
-    target_match = _hot_fetch_target_selects_file_sql(
-        target="active_pins.target",
+def _install_postgresql_fetch_operator_projection(conn: Connection) -> None:
+    target_match = _fetch_selector_selects_file_sql(
+        target="fetch_selectors.target",
         collection_id="affected_files.collection_id",
         path="affected_files.path",
     )
-    refresh_sql = _hot_fetch_operator_summary_upsert_sql(
+    refresh_sql = _fetch_operator_summary_upsert_sql(
         conn,
-        "SELECT unnest(p_targets) AS target",
+        "SELECT unnest(p_fetch_ids) AS fetch_id",
     )
     conn.execute(
         text(
             f"""
-CREATE OR REPLACE FUNCTION riverhog_refresh_hot_fetch_operator_summaries(
-    p_targets text[]
+CREATE OR REPLACE FUNCTION riverhog_refresh_fetch_operator_summaries(
+    p_fetch_ids text[]
 ) RETURNS void
 LANGUAGE plpgsql
 AS $riverhog$
 BEGIN
-    IF p_targets IS NULL OR cardinality(p_targets) = 0 THEN
+    IF p_fetch_ids IS NULL OR cardinality(p_fetch_ids) = 0 THEN
         RETURN;
     END IF;
 
-    DELETE FROM hot_fetch_operator_summaries
-    WHERE target = ANY(p_targets)
+    DELETE FROM fetch_operator_summaries
+    WHERE fetch_id = ANY(p_fetch_ids)
         AND NOT EXISTS (
             SELECT 1
-            FROM active_pins
-            WHERE active_pins.target = hot_fetch_operator_summaries.target
+            FROM fetches
+            WHERE fetches.fetch_id = fetch_operator_summaries.fetch_id
         );
 
     {refresh_sql};
@@ -2394,50 +2593,97 @@ $riverhog$;
         )
     )
     trigger_functions = {
-        "riverhog_hfos_from_new_active_pins": """
-CREATE OR REPLACE FUNCTION riverhog_hfos_from_new_active_pins()
+        "riverhog_fos_from_new_fetches": """
+CREATE OR REPLACE FUNCTION riverhog_fos_from_new_fetches()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
 BEGIN
-    PERFORM riverhog_refresh_hot_fetch_operator_summaries(
-        ARRAY(SELECT DISTINCT target::text FROM new_rows WHERE target IS NOT NULL)
+    PERFORM riverhog_refresh_fetch_operator_summaries(
+        ARRAY(SELECT DISTINCT fetch_id::text FROM new_rows WHERE fetch_id IS NOT NULL)
     );
     RETURN NULL;
 END;
 $riverhog$;
 """,
-        "riverhog_hfos_from_changed_active_pins": """
-CREATE OR REPLACE FUNCTION riverhog_hfos_from_changed_active_pins()
+        "riverhog_fos_from_changed_fetches": """
+CREATE OR REPLACE FUNCTION riverhog_fos_from_changed_fetches()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
 BEGIN
-    PERFORM riverhog_refresh_hot_fetch_operator_summaries(
+    PERFORM riverhog_refresh_fetch_operator_summaries(
         ARRAY(
-            SELECT DISTINCT target::text
+            SELECT DISTINCT fetch_id::text
             FROM (
-                SELECT target::text AS target FROM old_rows
+                SELECT fetch_id::text AS fetch_id FROM old_rows
                 UNION
-                SELECT target::text AS target FROM new_rows
+                SELECT fetch_id::text AS fetch_id FROM new_rows
             ) AS affected
-            WHERE target IS NOT NULL
+            WHERE fetch_id IS NOT NULL
         )
     );
     RETURN NULL;
 END;
 $riverhog$;
 """,
-        "riverhog_hfos_from_new_files": f"""
-CREATE OR REPLACE FUNCTION riverhog_hfos_from_new_files()
+        "riverhog_fos_from_old_fetch_selectors": """
+CREATE OR REPLACE FUNCTION riverhog_fos_from_old_fetch_selectors()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
 BEGIN
-    PERFORM riverhog_refresh_hot_fetch_operator_summaries(
+    PERFORM riverhog_refresh_fetch_operator_summaries(
+        ARRAY(SELECT DISTINCT fetch_id::text FROM old_rows WHERE fetch_id IS NOT NULL)
+    );
+    RETURN NULL;
+END;
+$riverhog$;
+""",
+        "riverhog_fos_from_new_fetch_selectors": """
+CREATE OR REPLACE FUNCTION riverhog_fos_from_new_fetch_selectors()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $riverhog$
+BEGIN
+    PERFORM riverhog_refresh_fetch_operator_summaries(
+        ARRAY(SELECT DISTINCT fetch_id::text FROM new_rows WHERE fetch_id IS NOT NULL)
+    );
+    RETURN NULL;
+END;
+$riverhog$;
+""",
+        "riverhog_fos_from_changed_fetch_selectors": """
+CREATE OR REPLACE FUNCTION riverhog_fos_from_changed_fetch_selectors()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $riverhog$
+BEGIN
+    PERFORM riverhog_refresh_fetch_operator_summaries(
         ARRAY(
-            SELECT DISTINCT active_pins.target::text
-            FROM active_pins
+            SELECT DISTINCT fetch_id::text
+            FROM (
+                SELECT fetch_id::text AS fetch_id FROM old_rows
+                UNION
+                SELECT fetch_id::text AS fetch_id FROM new_rows
+            ) AS affected
+            WHERE fetch_id IS NOT NULL
+        )
+    );
+    RETURN NULL;
+END;
+$riverhog$;
+""",
+        "riverhog_fos_from_new_files": f"""
+CREATE OR REPLACE FUNCTION riverhog_fos_from_new_files()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $riverhog$
+BEGIN
+    PERFORM riverhog_refresh_fetch_operator_summaries(
+        ARRAY(
+            SELECT DISTINCT fetch_selectors.fetch_id::text
+            FROM fetch_selectors
             JOIN new_rows AS affected_files
                 ON {target_match}
         )
@@ -2446,16 +2692,16 @@ BEGIN
 END;
 $riverhog$;
 """,
-        "riverhog_hfos_from_old_files": f"""
-CREATE OR REPLACE FUNCTION riverhog_hfos_from_old_files()
+        "riverhog_fos_from_old_files": f"""
+CREATE OR REPLACE FUNCTION riverhog_fos_from_old_files()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
 BEGIN
-    PERFORM riverhog_refresh_hot_fetch_operator_summaries(
+    PERFORM riverhog_refresh_fetch_operator_summaries(
         ARRAY(
-            SELECT DISTINCT active_pins.target::text
-            FROM active_pins
+            SELECT DISTINCT fetch_selectors.fetch_id::text
+            FROM fetch_selectors
             JOIN old_rows AS affected_files
                 ON {target_match}
         )
@@ -2464,16 +2710,16 @@ BEGIN
 END;
 $riverhog$;
 """,
-        "riverhog_hfos_from_changed_files": f"""
-CREATE OR REPLACE FUNCTION riverhog_hfos_from_changed_files()
+        "riverhog_fos_from_changed_files": f"""
+CREATE OR REPLACE FUNCTION riverhog_fos_from_changed_files()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
 BEGIN
-    PERFORM riverhog_refresh_hot_fetch_operator_summaries(
+    PERFORM riverhog_refresh_fetch_operator_summaries(
         ARRAY(
-            SELECT DISTINCT active_pins.target::text
-            FROM active_pins
+            SELECT DISTINCT fetch_selectors.fetch_id::text
+            FROM fetch_selectors
             JOIN (
                 SELECT collection_id, path FROM old_rows
                 UNION
@@ -2486,58 +2732,47 @@ BEGIN
 END;
 $riverhog$;
 """,
-        "riverhog_hfos_from_new_fetch_entries": """
-CREATE OR REPLACE FUNCTION riverhog_hfos_from_new_fetch_entries()
+        "riverhog_fos_from_new_fetch_entries": """
+CREATE OR REPLACE FUNCTION riverhog_fos_from_new_fetch_entries()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
 BEGIN
-    PERFORM riverhog_refresh_hot_fetch_operator_summaries(
-        ARRAY(
-            SELECT DISTINCT active_pins.target::text
-            FROM active_pins
-            JOIN new_rows
-                ON new_rows.fetch_id = active_pins.fetch_id
-        )
+    PERFORM riverhog_refresh_fetch_operator_summaries(
+        ARRAY(SELECT DISTINCT fetch_id::text FROM new_rows WHERE fetch_id IS NOT NULL)
     );
     RETURN NULL;
 END;
 $riverhog$;
 """,
-        "riverhog_hfos_from_old_fetch_entries": """
-CREATE OR REPLACE FUNCTION riverhog_hfos_from_old_fetch_entries()
+        "riverhog_fos_from_old_fetch_entries": """
+CREATE OR REPLACE FUNCTION riverhog_fos_from_old_fetch_entries()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
 BEGIN
-    PERFORM riverhog_refresh_hot_fetch_operator_summaries(
-        ARRAY(
-            SELECT DISTINCT active_pins.target::text
-            FROM active_pins
-            JOIN old_rows
-                ON old_rows.fetch_id = active_pins.fetch_id
-        )
+    PERFORM riverhog_refresh_fetch_operator_summaries(
+        ARRAY(SELECT DISTINCT fetch_id::text FROM old_rows WHERE fetch_id IS NOT NULL)
     );
     RETURN NULL;
 END;
 $riverhog$;
 """,
-        "riverhog_hfos_from_changed_fetch_entries": """
-CREATE OR REPLACE FUNCTION riverhog_hfos_from_changed_fetch_entries()
+        "riverhog_fos_from_changed_fetch_entries": """
+CREATE OR REPLACE FUNCTION riverhog_fos_from_changed_fetch_entries()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
 BEGIN
-    PERFORM riverhog_refresh_hot_fetch_operator_summaries(
+    PERFORM riverhog_refresh_fetch_operator_summaries(
         ARRAY(
-            SELECT DISTINCT active_pins.target::text
-            FROM active_pins
-            JOIN (
-                SELECT fetch_id FROM old_rows
+            SELECT DISTINCT fetch_id::text
+            FROM (
+                SELECT fetch_id::text AS fetch_id FROM old_rows
                 UNION
-                SELECT fetch_id FROM new_rows
-            ) AS affected_entries
-                ON affected_entries.fetch_id = active_pins.fetch_id
+                SELECT fetch_id::text AS fetch_id FROM new_rows
+            ) AS affected
+            WHERE fetch_id IS NOT NULL
         )
     );
     RETURN NULL;
@@ -2550,60 +2785,81 @@ $riverhog$;
 
     triggers = (
         (
-            "riverhog_hfos_active_pins_insert",
-            "active_pins",
+            "riverhog_fos_fetches_insert",
+            "fetches",
             "AFTER INSERT",
             "REFERENCING NEW TABLE AS new_rows",
-            "riverhog_hfos_from_new_active_pins",
+            "riverhog_fos_from_new_fetches",
         ),
         (
-            "riverhog_hfos_active_pins_update",
-            "active_pins",
+            "riverhog_fos_fetches_update",
+            "fetches",
             "AFTER UPDATE",
             "REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows",
-            "riverhog_hfos_from_changed_active_pins",
+            "riverhog_fos_from_changed_fetches",
         ),
         (
-            "riverhog_hfos_collection_files_insert",
+            "riverhog_fos_fetch_selectors_insert",
+            "fetch_selectors",
+            "AFTER INSERT",
+            "REFERENCING NEW TABLE AS new_rows",
+            "riverhog_fos_from_new_fetch_selectors",
+        ),
+        (
+            "riverhog_fos_fetch_selectors_update",
+            "fetch_selectors",
+            "AFTER UPDATE",
+            "REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows",
+            "riverhog_fos_from_changed_fetch_selectors",
+        ),
+        (
+            "riverhog_fos_fetch_selectors_delete",
+            "fetch_selectors",
+            "AFTER DELETE",
+            "REFERENCING OLD TABLE AS old_rows",
+            "riverhog_fos_from_old_fetch_selectors",
+        ),
+        (
+            "riverhog_fos_collection_files_insert",
             "collection_files",
             "AFTER INSERT",
             "REFERENCING NEW TABLE AS new_rows",
-            "riverhog_hfos_from_new_files",
+            "riverhog_fos_from_new_files",
         ),
         (
-            "riverhog_hfos_collection_files_update",
+            "riverhog_fos_collection_files_update",
             "collection_files",
             "AFTER UPDATE",
             "REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows",
-            "riverhog_hfos_from_changed_files",
+            "riverhog_fos_from_changed_files",
         ),
         (
-            "riverhog_hfos_collection_files_delete",
+            "riverhog_fos_collection_files_delete",
             "collection_files",
             "AFTER DELETE",
             "REFERENCING OLD TABLE AS old_rows",
-            "riverhog_hfos_from_old_files",
+            "riverhog_fos_from_old_files",
         ),
         (
-            "riverhog_hfos_fetch_entries_insert",
+            "riverhog_fos_fetch_entries_insert",
             "fetch_entries",
             "AFTER INSERT",
             "REFERENCING NEW TABLE AS new_rows",
-            "riverhog_hfos_from_new_fetch_entries",
+            "riverhog_fos_from_new_fetch_entries",
         ),
         (
-            "riverhog_hfos_fetch_entries_update",
+            "riverhog_fos_fetch_entries_update",
             "fetch_entries",
             "AFTER UPDATE",
             "REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows",
-            "riverhog_hfos_from_changed_fetch_entries",
+            "riverhog_fos_from_changed_fetch_entries",
         ),
         (
-            "riverhog_hfos_fetch_entries_delete",
+            "riverhog_fos_fetch_entries_delete",
             "fetch_entries",
             "AFTER DELETE",
             "REFERENCING OLD TABLE AS old_rows",
-            "riverhog_hfos_from_old_fetch_entries",
+            "riverhog_fos_from_old_fetch_entries",
         ),
     )
     for trigger_name, table_name, timing, referencing, function_name in triggers:
@@ -2626,7 +2882,6 @@ def initialize_db(database_url: str) -> None:
     It is safe to call multiple times; all operations are idempotent.
     """
     from riverhog_core.catalog_models import (  # noqa: PLC0415 - avoid circular import at module level
-        ActivePinRecord,
         CandidateCoveredPathRecord,
         CollectionArchiveRecord,
         CollectionFileRecord,
@@ -2637,6 +2892,9 @@ def initialize_db(database_url: str) -> None:
         CollectionUploadRecord,
         DiscOperatorSummaryRecord,
         FetchEntryRecord,
+        FetchOperatorSummaryRecord,
+        FetchRecord,
+        FetchSelectorRecord,
         FileCopyRecord,
         FinalizedImageCollectionArtifactRecord,
         FinalizedImageCoveragePartRecord,
@@ -2646,7 +2904,6 @@ def initialize_db(database_url: str) -> None:
         GlacierRecoverySessionImageRecord,
         GlacierRecoverySessionRecord,
         GlacierUsageSnapshotRecord,
-        HotFetchOperatorSummaryRecord,
         ImageCopyEventRecord,
         ImageCopyRecord,
         ImageOperatorSummaryRecord,
@@ -2654,7 +2911,6 @@ def initialize_db(database_url: str) -> None:
     )
 
     _ = (
-        ActivePinRecord,
         CandidateCoveredPathRecord,
         CollectionArchiveRecord,
         CollectionFileRecord,
@@ -2663,6 +2919,9 @@ def initialize_db(database_url: str) -> None:
         CollectionRecord,
         DiscOperatorSummaryRecord,
         FetchEntryRecord,
+        FetchOperatorSummaryRecord,
+        FetchRecord,
+        FetchSelectorRecord,
         FileCopyRecord,
         FinalizedImageCollectionArtifactRecord,
         FinalizedImageCoveragePartRecord,
@@ -2672,7 +2931,6 @@ def initialize_db(database_url: str) -> None:
         GlacierRecoverySessionCollectionRecord,
         GlacierRecoverySessionRecord,
         GlacierUsageSnapshotRecord,
-        HotFetchOperatorSummaryRecord,
         ImageOperatorSummaryRecord,
         ImageCopyEventRecord,
         ImageCopyRecord,
@@ -2683,6 +2941,7 @@ def initialize_db(database_url: str) -> None:
     engine = create_catalog_engine(database_url)
     _check_database_is_baseline_compatible(engine)
     Base.metadata.create_all(engine)
+    _transition_pin_schema_to_fetches(engine)
     _ensure_schema_columns(engine)
     _ensure_schema_indexes(engine)
     _ensure_schema_baseline_marker(engine)
@@ -2690,7 +2949,7 @@ def initialize_db(database_url: str) -> None:
     _install_collection_image_operator_projection(engine)
     _install_image_operator_projection(engine)
     _install_disc_operator_projection(engine)
-    _install_hot_fetch_operator_projection(engine)
+    _install_fetch_operator_projection(engine)
 
 
 def make_session_factory(database_url: str) -> sessionmaker[Session]:

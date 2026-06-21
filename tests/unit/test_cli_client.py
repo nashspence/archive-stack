@@ -220,7 +220,7 @@ def test_recovery_session_client_methods_use_canonical_endpoints(monkeypatch) ->
         order="asc",
         state="ready",
     )
-    client.create_or_resume_cloud_fetch("fx-1")
+    client.start_fetch("fx-1", cloud=True)
     client.cancel_cloud_fetch("fx-1")
     client.get_recovery_session("rs-docs-restore-1")
     client.complete_recovery_session("rs-docs-restore-1")
@@ -238,7 +238,11 @@ def test_recovery_session_client_methods_use_canonical_endpoints(monkeypatch) ->
         "https://api.test/v1/fetches/fx-1/cloud-fetch?page=2&per_page=10&sort=state&"
         "order=asc&state=ready"
     )
-    assert captured[2] == ("POST", "https://api.test/v1/fetches/fx-1/cloud-fetch", "")
+    assert captured[2] == (
+        "POST",
+        "https://api.test/v1/fetches/fx-1/start",
+        '{"cloud":true}',
+    )
     assert captured[3] == (
         "POST",
         "https://api.test/v1/fetches/fx-1/cloud-fetch/cancel",

@@ -252,16 +252,16 @@ once per collection archive package and once per encrypted manifest/proof. Lower
 values are useful for deterministic local integration tests; deployed archives
 should use the default unless operational testing shows a clear need to tune it.
 
-## Pinned Hot-File Repair
+## Fetch Hot-File Repair
 
 Collections that are safely archived in Glacier but are not yet protected by
-the required verified disc copies remain pinned in hot storage. Riverhog audits
-active pins in the background at startup, during Glacier recovery sweeps, and
-before planner refreshes. If a pinned hot file is missing or size/checksum
-mismatched, Riverhog chooses the least surprising recovery path for that exact
-file:
+the required verified disc copies remain hot and are not evictable. Riverhog
+audits active fetches in the background at startup, during Glacier recovery
+sweeps, and before planner refreshes. If a fetch-selected hot file is missing
+or size/checksum mismatched, Riverhog chooses the least surprising recovery path
+for that exact file:
 
-- If registered disc coverage exists, the pin is left waiting for the normal
+- If registered disc coverage exists, the fetch is queued for the normal
   `djdan fetch` prompt-based media flow.
 - If no registered disc coverage exists for that file, Riverhog automatically
   creates or resumes a collection Glacier restore session, requests the restore,
@@ -504,9 +504,9 @@ failure, Riverhog sends a fresh critical notification so the collection does not
 get forgotten. Ready burn candidates use `images.ready`; if
 operator reminders are explicitly enabled, repeats use `images.ready.reminder`.
 After `djdan` verifies a burned disc but before the operator confirms the
-physical label, it triggers `images.copy_label_needed`. If pinned hot files are
-missing but registered physical media can recover them, Riverhog emits
-`fetches.waiting_media` and then `fetches.waiting_media.reminder` once per
+physical label, it triggers `images.copy_label_needed`. If fetch-selected hot
+files are missing but registered physical media can recover them, Riverhog emits
+`fetches.queued_djdan` and then `fetches.queued_djdan.reminder` once per
 `RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL` while it is still waiting for the
 operator to run `djdan fetch`. Glacier recovery is rare and intentionally more
 explicit: `glacier_recovery.started` means Riverhog has asked Glacier to
@@ -865,7 +865,7 @@ When the TTL expires:
 - the pending `tusd` upload is cancelled
 - any incomplete staged recovery upload is deleted
 - the fetch entry returns to `pending`
-- the fetch manifest returns to `waiting_media` if any selected bytes are still not hot
+- the fetch manifest returns to `queued_djdan` if any selected bytes are still not hot
 - `upload_state_expires_at` becomes `null` until a new upload session is opened
 
 ## `RIVERHOG_UPLOAD_SESSION_IDLE_TTL`

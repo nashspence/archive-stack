@@ -23,7 +23,7 @@ The `djdan` CLI is the recovery client for a machine with an optical drive.
 
 If recovery is interrupted after upload has started, the server-side manifest keeps resumable upload state for
 `INCOMPLETE_UPLOAD_TTL` after the last accepted chunk. The default is `24h`. After that boundary, incomplete upload
-data is discarded and the manifest returns to `waiting_media`.
+data is discarded and the manifest returns to `queued_djdan`.
 
 If final server verification rejects a `byte_complete` entry, `djdan fetch` cancels that entry upload resource before
 exiting. The manifest stays active and incomplete with the rejected entry back at offset `0`. Try another registered copy

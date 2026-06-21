@@ -9,8 +9,8 @@ All JSON endpoints are under `/v1`. Requests and responses use JSON unless other
 Resumable upload URLs returned by the JSON API are Riverhog-managed tus-compatible resources.
 
 Unless this contract explicitly says otherwise, authoritative resources created through the API remain addressable across
-service restarts, including collections, finalized images, registered copies, active pins, active fetch manifests, and
-unexpired upload progress.
+service restarts, including collections, finalized images, registered copies, active fetch manifests, and unexpired upload
+progress.
 
 ### Collections
 
@@ -264,7 +264,7 @@ Required behavior:
 
 - the `target` query parameter carries one canonical selector over the projected hot namespace
 - the response includes pagination metadata, the canonical `target`, and a `files` array
-- returned files use the same projected-path syntax accepted by `pin` and `release`
+- returned files use the same projected-path syntax accepted by fetch and hot-eviction commands
 - file results include current hot availability
 - file results include available copies, if any
 - missing or non-matching targets return an empty list rather than `not_found`
@@ -608,73 +608,92 @@ Required behavior:
 - if `RIVERHOG_OPERATOR_WEBHOOK_URL` is configured, Riverhog emits `images.copy_label_needed`
 - webhook delivery failures are logged and do not block the burn workflow
 
-### Pins
+### Hot Eviction
 
-#### `POST /v1/pin`
+#### `POST /v1/hot/evict`
 
-Pins a target into hot storage.
-
-Required behavior:
-
-- the `target` field carries one canonical selector over the projected hot namespace
-- successful pin keeps the target desired in hot until explicitly released
-- every successful exact pin creates or reuses one fetch manifest for that same selector
-- if all targeted bytes are already hot, the returned fetch manifest is already in state `done`
-- if some targeted bytes are archived but not hot, the returned fetch manifest is created or reused in a non-`done`
-  state
-- if a fetch manifest is waiting for optical media and
-  `RIVERHOG_OPERATOR_WEBHOOK_URL` is configured, Riverhog emits
-  `fetches.waiting_media` and daily `fetches.waiting_media.reminder` events
-  until the manifest leaves `waiting_media` or reminders are disabled
-- repeated pin of the same canonical selector is idempotent
-- a successful pin remains active across service restart until explicitly released
-
-#### `POST /v1/release`
-
-Releases exactly one canonical selector pin.
+Removes selected compliant files from committed hot storage.
 
 Required behavior:
 
-- releasing a non-existent exact pin is a successful no-op
-- releasing a broader pin must not remove narrower remaining pins
-- releasing a narrower pin must not remove broader remaining pins
-- releasing the last exact pin for one selector abandons and removes that selector's fetch manifest
-- releasing one exact fully compliant pin also removes selected hot files that are no longer covered by a remaining pin
-- releasing a non-compliant pinned file or collection fails; Riverhog keeps under-protected bytes pinned hot until enough
-  verified physical copies exist
-- releasing a missing pin must not remove unrelated hot files
-
-#### `GET /v1/pins`
-
-Lists active pins. Supports `page` and `per_page`.
-
-Required behavior:
-
-- every returned pin includes its associated fetch id, current fetch state, file
-  count, byte count, and missing hot-storage bytes
-- responses include `page`, `per_page`, `total`, and `pages`
-- pin list rows are compact summaries; use fetch detail/manifest commands for
-  recovery copy detail
+- the `targets` field carries one or more canonical selectors over the projected hot namespace
+- every selected file must already have the required verified disc protection
+- under-protected selections fail with `conflict` and do not evict partial data
+- a selector that matches no files fails with `not_found`
+- eviction is synchronous and returns selected file/byte counts plus evicted file/byte counts
+- eviction does not create, start, or cancel a fetch
 
 ### Fetches
 
+#### `GET /v1/fetches`
+
+Lists named fetch manifests. Supports `page`, `per_page`, `state`, `q`, `sort`, and `order`.
+
+Required behavior:
+
+- responses include `page`, `per_page`, `total`, and `pages`
+- every fetch includes id, name, targets, state, file count, byte count, missing hot-storage bytes, upload progress, and
+  copy hints when useful for the current state
+- list/show output is served from fetch-keyed summary projection data and must not scan unbounded collection-file rows
+  for routine operator views
+
+#### `POST /v1/fetches`
+
+Creates one draft named fetch.
+
+Required behavior:
+
+- `name` is required and carries the operator's human-readable purpose
+- optional `targets` use canonical projected-path selector syntax
+- a draft fetch can have no targets so the operator can build it incrementally
+- adding targets immediately refreshes the fetch summary projection
+- duplicate target selectors are ignored
+
+#### `POST /v1/fetches/{fetch_id}/targets`
+
+Adds target selectors to a draft fetch.
+
+#### `DELETE /v1/fetches/{fetch_id}/targets`
+
+Removes target selectors from a draft fetch.
+
+Required behavior for target editing:
+
+- only `draft` fetches are editable
+- editing fails once a fetch is queued to djdan, uploading, verifying, queued to cloud, cloud-fetching, done, or failed
+- editing is a frequent operator path and should use set-based catalog work with bounded response time
+
+#### `POST /v1/fetches/{fetch_id}/start`
+
+Freezes a draft fetch and chooses its fulfillment path.
+
+Required behavior:
+
+- `cloud=false` queues the fetch for the prompt-based `djdan fetch` workflow and moves it to `queued_djdan`
+- `cloud=true` starts cloud-fetch materialization and moves it through `queued_cloud`/`cloud_fetching`
+- a fetch with no targets cannot start
+- starting an already-started fetch fails with `invalid_state`
+- if a fetch is queued to djdan and `RIVERHOG_OPERATOR_WEBHOOK_URL` is configured, Riverhog emits
+  `fetches.queued_djdan` and then `fetches.queued_djdan.reminder` on the configured reminder interval while it remains
+  queued
+
 #### `GET /v1/fetches/{fetch_id}`
 
-Returns one pin-scoped fetch summary.
+Returns one named fetch summary.
 
 #### `GET /v1/fetches/{fetch_id}/status`
 
-Returns a lightweight operator status view for one pin-scoped fetch.
+Returns a lightweight operator status view for one named fetch.
 
 - includes the same summary fields as `GET /v1/fetches/{fetch_id}`
 - includes a bounded list of pending, partial, or byte-complete entry statuses
 - does not include recovery copy hints, part metadata, or recovery-byte digests
 - does not backfill finalized-image recovery metadata
-- intended for human `riverhog hot show` output
+- intended for human `riverhog hot fetch show` output
 
 #### `GET /v1/fetches/{fetch_id}/manifest`
 
-Returns a stable manifest for the exact pin lifetime.
+Returns a stable manifest for the named fetch.
 
 - the fetch manifest is the source of truth for automated multipart recovery
 - multipart logical files include part-level recovery hints
@@ -695,10 +714,10 @@ Returns a stable manifest for the exact pin lifetime.
 - `byte_complete` means the full ordered recovery-byte stream has been accepted but `POST /complete` has not yet finished server-side verification and materialization
 - those hints drive disc sequencing and resumable recovery in `djdan`
 - incomplete upload state expires after `INCOMPLETE_UPLOAD_TTL` since the last accepted chunk and the manifest returns to
-  `waiting_media`
+  `queued_djdan`
 - fetch summaries expose an audit field such as `upload_state_expires_at`
 - fetch summaries expose separate `entries_byte_complete` and `entries_uploaded` counts
-- the fetch manifest and any unexpired upload progress survive service restart while the exact pin remains active
+- the fetch manifest and any unexpired upload progress survive service restart while the fetch remains active
 
 #### `POST /v1/fetches/{fetch_id}/entries/{entry_id}/upload`
 
@@ -749,10 +768,18 @@ Required behavior:
 #### `POST /v1/fetches/{fetch_id}/complete`
 
 Marks the fetch manifest satisfied once all required entries have been uploaded, verified, and materialized. The
-manifest remains readable while the exact pin remains active.
+manifest remains readable after completion.
 
 If verification fails, the fetch remains active and incomplete. Clients should delete the affected `byte_complete` entry
 upload resource before retrying from another registered copy or from recovered media.
+
+#### `GET /v1/fetches/{fetch_id}/cloud-fetch`
+
+Lists cloud-fetch recovery sessions for one fetch.
+
+#### `POST /v1/fetches/{fetch_id}/cloud-fetch/cancel`
+
+Cancels active cloud-fetch recovery sessions for one fetch and returns the fetch to draft when possible.
 
 ## Error model
 
@@ -782,11 +809,14 @@ The `riverhog` CLI is collection-first and should provide:
 - `riverhog collection upload SLUG ROOT [--timestamp YYYYMMDDTHHMMSSZ] [--wait finalized|staged]`
 - `riverhog collection watch COLLECTION_UPLOAD_ID`
 - `riverhog collection cancel COLLECTION_UPLOAD_ID`
-- `riverhog hot list`
-- `riverhog hot show FETCH_ID`
-- `riverhog hot cloud-fetch show|start|cancel FETCH_ID`
-- `riverhog hot pin TARGET`
-- `riverhog hot unpin TARGET`
+- `riverhog hot evict TARGET...`
+- `riverhog hot fetch list [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--state STATE] [--query TEXT]`
+- `riverhog hot fetch create --name NAME [TARGET...]`
+- `riverhog hot fetch add FETCH_ID TARGET...`
+- `riverhog hot fetch remove FETCH_ID TARGET...`
+- `riverhog hot fetch show FETCH_ID`
+- `riverhog hot fetch start FETCH_ID [--cloud]`
+- `riverhog hot fetch cloud-fetch show|cancel FETCH_ID`
 
 `riverhog collection upload` streams files in bounded tus-compatible chunks. The default
 chunk size is 8 MiB; operators may set `RIVERHOG_UPLOAD_CHUNK_BYTES` to a
@@ -810,7 +840,7 @@ findings, proxy guidance, and tuning procedure behind these defaults.
 override the scheme and host of absolute upload URLs while preserving the
 API-provided path, which is useful when bulk upload traffic is sent through a
 local tunnel. `RIVERHOG_HOST_HEADER` and `RIVERHOG_TLS_VERIFY=false` let
-operators pin the connect address to a LAN IP while still routing through a
+operators bind the connect address to a LAN IP while still routing through a
 name-based reverse proxy during DNS outages or hairpin edge cases. During
 uploads the CLI
 prints manifest, resume, per-file, and throttled total progress messages to
@@ -864,7 +894,7 @@ collection, hot-storage, and deep-archive filters; JSON output mirrors the
 - generated disc ids, exact label text, locations, and verification state
 - direct collection archive object paths and manifest/OTS proof state
 
-`riverhog hot show FETCH_ID` should provide a concise human-readable listing of:
+`riverhog hot fetch show FETCH_ID` should provide a concise human-readable listing of:
 
 - files still pending upload
 - files currently partial and still resumable
@@ -876,7 +906,7 @@ collection, hot-storage, and deep-archive filters; JSON output mirrors the
 The `djdan` CLI is an optical-media client for a machine with an optical drive and should provide:
 
 - `djdan burn [--device DEVICE] [--staging-dir DIR] [--simulate]`
-- `djdan fetch FETCH_ID [--device DEVICE]`
+- `djdan fetch [FETCH_ID] [--device DEVICE]`
 - `djdan image plan [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--iso-ready|--not-ready]`
 - `djdan image list [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--has-discs|--no-discs]`
 - `djdan image show IMAGE_ID`
@@ -926,18 +956,18 @@ Required behavior:
 
 ## Behavioral invariants
 
-- pinning the same selector twice results in exactly one active pin
-- pinning the same exact selector twice reuses the same fetch manifest while that exact pin remains present
-- releasing a target not currently pinned is a successful no-op
-- a file is logically required in hot if and only if at least one active pin selects it
-- immediately after collection finalization, every file in a non-compliant collection is pinned hot by default
-- releasing a pinned file or subtree is allowed only after every selected file is fully compliant
-- releasing a file pin removes only that selected file unless another active pin still covers it
-- every active pin has exactly one associated fetch manifest, even when the selected bytes are already hot
+- creating a fetch requires a human-readable name
+- draft fetches can be edited by adding or removing selectors
+- started fetches are frozen until they complete, fail, or a cloud-fetch cancellation returns them to draft
+- starting a fetch without `--cloud` queues it for `djdan fetch`
+- `djdan fetch` with no id clears all queued djdan fetches in one guided session
+- starting a fetch with `--cloud` creates or resumes cloud materialization for the selected files
+- evicting hot files is allowed only after every selected file is fully compliant
+- eviction removes only the selected hot files and never creates recovery intent
 - a file restored by a completed fetch is hot
 - hot file content is directly downloadable when the target selects exactly one file
 - archived-only file content is recoverable through fetch/upload, not through hot-content download
-- upload-state expiry for a manifest discards incomplete partial uploads and returns that manifest to `waiting_media`
+- upload-state expiry for a manifest discards incomplete partial uploads and returns that manifest to `queued_djdan`
 - `INCOMPLETE_UPLOAD_TTL` defaults to `24h`
 - fetch upload progress is tracked per logical file, not per disc fragment
 - every entry returned by `GET /v1/plan` is provisional and exposes `candidate_id`
@@ -953,4 +983,4 @@ Required behavior:
 - collection ingest finalizes only after every required file verifies and the
   collection Glacier archive package uploads and verifies
 - the same canonical selector string means the same projected file set everywhere in API and CLI
-- file availability shown by search, file introspection, pins, and CLI status uses the same hot/archived meaning
+- file availability shown by search, file introspection, fetches, and CLI status uses the same hot/archived meaning

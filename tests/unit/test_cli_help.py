@@ -16,7 +16,7 @@ def test_riverhog_help() -> None:
     assert "Riverhog collection and hot-storage CLI." in result.stdout
     assert "Search collection file targets." in result.stdout
     assert "Collection catalog and upload operations." in result.stdout
-    assert "Pinned hot-storage set operations." in result.stdout
+    assert "Hot-storage operations." in result.stdout
     assert "collection" in result.stdout
     assert "hot" in result.stdout
 
@@ -36,20 +36,29 @@ def test_riverhog_command_help_has_summaries() -> None:
     hot = runner.invoke(riverhog_app, ["hot", "--help"])
     assert hot.exit_code == 0
     for summary in (
-        "Pin a target into hot storage.",
-        "Release a hot-storage pin.",
-        "List pinned hot-storage sets.",
-        "Show hot-storage fetch progress.",
-        "Cloud archive fetch operations for hot-storage fetches.",
+        "Evict compliant hot files by selector.",
+        "Named fetch manifest operations.",
     ):
         assert summary in hot.stdout
 
-    cloud_fetch = runner.invoke(riverhog_app, ["hot", "cloud-fetch", "--help"])
+    fetch = runner.invoke(riverhog_app, ["hot", "fetch", "--help"])
+    assert fetch.exit_code == 0
+    for summary in (
+        "Create a named editable fetch.",
+        "Add target selectors to an editable fetch.",
+        "Remove target selectors from an editable fetch.",
+        "List named fetches.",
+        "Show fetch progress.",
+        "Queue a fetch for djdan, or for cloud recovery with --cloud.",
+        "Cloud archive recovery sessions for fetches.",
+    ):
+        assert summary in fetch.stdout
+
+    cloud_fetch = runner.invoke(riverhog_app, ["hot", "fetch", "cloud-fetch", "--help"])
     assert cloud_fetch.exit_code == 0
     for summary in (
-        "Show cloud-fetch recovery for one hot fetch.",
-        "Start or resume cloud archive recovery for one hot fetch.",
-        "Cancel active cloud archive recovery for one hot fetch.",
+        "Show cloud-fetch recovery for one fetch.",
+        "Cancel active cloud archive recovery for one fetch.",
     ):
         assert summary in cloud_fetch.stdout
 

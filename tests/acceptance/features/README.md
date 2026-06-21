@@ -13,7 +13,7 @@ Conventions:
 - Scenario titles should remain stable even if implementation details change.
 - Step wording is intentionally repetitive where it protects exact semantics, especially for:
   - selector validity
-  - pin/release exact-selector behavior
+  - fetch-editing and hot-eviction selector behavior
   - archived vs hot coverage
   - fetch lifecycle and hash verification
 - `riverhog` and `djdan` acceptance cases are contract tests for CLI behavior, not internal command structure.

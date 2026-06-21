@@ -3,12 +3,24 @@ from __future__ import annotations
 from pydantic import Field
 
 from riverhog_api.schemas.common import RiverhogModel
-from riverhog_api.schemas.pins import FetchHintCopyOut, HotStatusOut
+
+
+class HotStatusOut(RiverhogModel):
+    state: str
+    present_bytes: int
+    missing_bytes: int
+
+
+class FetchCopyHintOut(RiverhogModel):
+    id: str
+    volume_id: str
+    location: str
 
 
 class FetchSummaryOut(RiverhogModel):
     id: str
-    target: str
+    name: str
+    targets: list[str]
     state: str
     files: int
     bytes: int
@@ -20,7 +32,40 @@ class FetchSummaryOut(RiverhogModel):
     uploaded_bytes: int
     missing_bytes: int
     upload_state_expires_at: str | None
-    copies: list[FetchHintCopyOut]
+    copies: list[FetchCopyHintOut]
+
+
+class FetchesResponse(RiverhogModel):
+    page: int
+    per_page: int
+    total: int
+    pages: int
+    fetches: list[FetchSummaryOut]
+
+
+class CreateFetchRequest(RiverhogModel):
+    name: str
+    targets: list[str] = Field(default_factory=list)
+
+
+class FetchTargetsRequest(RiverhogModel):
+    targets: list[str]
+
+
+class StartFetchRequest(RiverhogModel):
+    cloud: bool = False
+
+
+class HotEvictRequest(RiverhogModel):
+    targets: list[str]
+
+
+class HotEvictResponse(RiverhogModel):
+    targets: list[str]
+    files: int
+    bytes: int
+    evicted_files: int
+    evicted_bytes: int
 
 
 class FetchStatusEntryOut(RiverhogModel):
@@ -72,7 +117,8 @@ class FetchManifestEntryOut(RiverhogModel):
 
 class FetchManifestResponse(RiverhogModel):
     id: str
-    target: str
+    name: str
+    targets: list[str]
     entries: list[FetchManifestEntryOut]
 
 

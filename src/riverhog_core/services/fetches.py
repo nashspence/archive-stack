@@ -2,30 +2,32 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import delete, func, or_, select
-from sqlalchemy.orm import Session, object_session, selectinload
+from sqlalchemy import asc, delete, desc, func, or_, select
+from sqlalchemy.orm import Session, object_session
 from sqlalchemy.sql.elements import ColumnElement
 
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
-    ActivePinRecord,
     CollectionFileRecord,
     FetchEntryRecord,
+    FetchOperatorSummaryRecord,
+    FetchRecord,
+    FetchSelectorRecord,
     FileCopyRecord,
     FinalizedImageRecord,
     GlacierRecoverySessionCollectionRecord,
     GlacierRecoverySessionRecord,
-    HotFetchOperatorSummaryRecord,
 )
 from riverhog_core.domain.enums import FetchState, RecoverySessionState
-from riverhog_core.domain.errors import Conflict, HashMismatch, InvalidState, NotFound
-from riverhog_core.domain.models import FetchCopyHint, FetchSummary
+from riverhog_core.domain.errors import BadRequest, Conflict, HashMismatch, InvalidState, NotFound
+from riverhog_core.domain.models import FetchCopyHint, FetchListPage, FetchSummary
 from riverhog_core.domain.selectors import parse_target
-from riverhog_core.domain.types import CopyId, FetchId, TargetStr
+from riverhog_core.domain.types import CopyId
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.recovery_payloads import (
@@ -36,11 +38,12 @@ from riverhog_core.recovery_payloads import (
     encrypt_recovery_payload,
 )
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.compliance import file_is_fully_compliant
 from riverhog_core.services.copy_recovery_metadata import (
     CopyRecoveryMetadata,
     read_copy_recovery_metadata,
 )
-from riverhog_core.services.hot_fetch_projection import fetch_summary_from_hot_projection
+from riverhog_core.services.hot_fetch_projection import fetch_summary_from_projection
 from riverhog_core.services.resumable_uploads import (
     UploadLifecycleState,
     create_or_resume_upload_state,
@@ -49,21 +52,23 @@ from riverhog_core.services.resumable_uploads import (
     upload_expiry_timestamp,
 )
 from riverhog_core.services.target_selection import (
-    selected_collection_file_stats,
     selected_collection_files,
 )
-from riverhog_core.webhooks import (
-    WebhookConfig,
-    build_fetch_waiting_payload,
-    post_webhook,
-    utcnow,
-)
+from riverhog_core.webhooks import WebhookConfig, build_fetch_queued_payload, post_webhook, utcnow
 
 _ACTIVE_CLOUD_FETCH_STATES = {
     RecoverySessionState.RESTORE_REQUESTED.value,
     RecoverySessionState.READY.value,
     RecoverySessionState.PAUSED.value,
 }
+_FETCH_SORT_FIELDS = {"id", "name", "state", "order", "files", "bytes", "missing_bytes"}
+_EDITABLE_FETCH_STATES = {FetchState.DRAFT.value}
+_DJDAN_FETCH_STATES = {
+    FetchState.QUEUED_DJDAN.value,
+    FetchState.UPLOADING.value,
+    FetchState.VERIFYING.value,
+}
+_CLOUD_FETCH_STATES = {FetchState.QUEUED_CLOUD.value, FetchState.CLOUD_FETCHING.value}
 
 
 def _read_collection_file_content(
@@ -119,15 +124,196 @@ class SqlAlchemyFetchService:
         self._upload_ttl = config.incomplete_upload_ttl
         self._session_factory = make_session_factory(config.database_url)
 
+    def create(self, *, name: str, targets: Sequence[str] | None = None) -> FetchSummary:
+        normalized_name = _normalize_fetch_name(name)
+        canonical_targets = _canonical_targets(targets or [])
+        with session_scope(self._session_factory) as session:
+            fetch_order = _next_fetch_order(session)
+            fetch_record = FetchRecord(
+                fetch_id=f"fx-{fetch_order}",
+                name=normalized_name,
+                fetch_order=fetch_order,
+                fetch_state=FetchState.DRAFT.value,
+            )
+            session.add(fetch_record)
+            _replace_fetch_selectors(session, fetch_record, canonical_targets)
+            session.flush()
+            return fetch_summary_from_projection(
+                _get_fetch_projection(session, fetch_record.fetch_id),
+                prefer_entries=True,
+            )
+
+    def list(
+        self,
+        *,
+        page: int,
+        per_page: int,
+        state: str | None = None,
+        q: str | None = None,
+        sort: str = "order",
+        order: str = "asc",
+    ) -> FetchListPage:
+        if page < 1:
+            raise BadRequest("page must be at least 1")
+        if per_page < 1 or per_page > 100:
+            raise BadRequest("per_page must be between 1 and 100")
+        if state is not None and state not in {item.value for item in FetchState}:
+            raise BadRequest("state must be a valid fetch state")
+        if sort not in _FETCH_SORT_FIELDS:
+            raise BadRequest(f"sort must be one of {', '.join(sorted(_FETCH_SORT_FIELDS))}")
+        if order not in {"asc", "desc"}:
+            raise BadRequest("order must be asc or desc")
+
+        with session_scope(self._session_factory) as session:
+            stmt = select(FetchOperatorSummaryRecord)
+            if state is not None:
+                stmt = stmt.where(FetchOperatorSummaryRecord.fetch_state == state)
+            if q:
+                pattern = f"%{q}%"
+                stmt = stmt.where(
+                    or_(
+                        FetchOperatorSummaryRecord.fetch_id.like(pattern),
+                        FetchOperatorSummaryRecord.name.like(pattern),
+                        FetchOperatorSummaryRecord.targets_text.like(pattern),
+                    )
+                )
+
+            total = int(session.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
+            sort_expr = {
+                "id": FetchOperatorSummaryRecord.fetch_id,
+                "name": FetchOperatorSummaryRecord.name,
+                "state": FetchOperatorSummaryRecord.fetch_state,
+                "order": FetchOperatorSummaryRecord.fetch_order,
+                "files": FetchOperatorSummaryRecord.files,
+                "bytes": FetchOperatorSummaryRecord.bytes,
+                "missing_bytes": FetchOperatorSummaryRecord.missing_bytes,
+            }[sort]
+            direction = desc if order == "desc" else asc
+            rows = session.scalars(
+                stmt.order_by(direction(sort_expr), asc(FetchOperatorSummaryRecord.fetch_id))
+                .offset((page - 1) * per_page)
+                .limit(per_page)
+            ).all()
+            return FetchListPage(
+                page=page,
+                per_page=per_page,
+                total=total,
+                pages=(total + per_page - 1) // per_page if total else 0,
+                fetches=[fetch_summary_from_projection(row, prefer_entries=True) for row in rows],
+            )
+
+    def add_targets(self, fetch_id: str, targets: Sequence[str]) -> FetchSummary:
+        canonical_targets = _canonical_targets(targets)
+        if not canonical_targets:
+            raise BadRequest("at least one target is required")
+        with session_scope(self._session_factory) as session:
+            fetch_record = _get_fetch_record(session, fetch_id)
+            _require_editable_fetch(fetch_record)
+            existing = {selector.target for selector in _fetch_selectors(session, fetch_id)}
+            merged = [
+                *sorted(existing),
+                *[target for target in canonical_targets if target not in existing],
+            ]
+            _replace_fetch_selectors(session, fetch_record, merged)
+            session.flush()
+            return fetch_summary_from_projection(
+                _get_fetch_projection(session, fetch_record.fetch_id),
+                prefer_entries=True,
+            )
+
+    def remove_targets(self, fetch_id: str, targets: Sequence[str]) -> FetchSummary:
+        canonical_targets = set(_canonical_targets(targets))
+        if not canonical_targets:
+            raise BadRequest("at least one target is required")
+        with session_scope(self._session_factory) as session:
+            fetch_record = _get_fetch_record(session, fetch_id)
+            _require_editable_fetch(fetch_record)
+            remaining = [
+                selector.target
+                for selector in _fetch_selectors(session, fetch_id)
+                if selector.target not in canonical_targets
+            ]
+            _replace_fetch_selectors(session, fetch_record, remaining)
+            session.flush()
+            return fetch_summary_from_projection(
+                _get_fetch_projection(session, fetch_record.fetch_id),
+                prefer_entries=True,
+            )
+
+    def start(self, fetch_id: str, *, cloud: bool = False) -> FetchSummary:
+        with session_scope(self._session_factory) as session:
+            fetch_record = _get_fetch_record(session, fetch_id)
+            _require_startable_fetch(fetch_record)
+            if not _fetch_selectors(session, fetch_id):
+                raise InvalidState("fetch has no targets")
+            fetch_record.fetch_state = (
+                FetchState.QUEUED_CLOUD.value if cloud else FetchState.QUEUED_DJDAN.value
+            )
+            session.flush()
+            return fetch_summary_from_projection(
+                _get_fetch_projection(session, fetch_record.fetch_id),
+                prefer_entries=True,
+            )
+
+    def evict(self, targets: Sequence[str]) -> dict[str, object]:
+        canonical_targets = _canonical_targets(targets)
+        if not canonical_targets:
+            raise BadRequest("at least one target is required")
+        with session_scope(self._session_factory) as session:
+            selected_by_key: dict[tuple[str, str], CollectionFileRecord] = {}
+            for target in canonical_targets:
+                for record in selected_collection_files(session, target):
+                    selected_by_key[(record.collection_id, record.path)] = record
+            selected = [
+                selected_by_key[key]
+                for key in sorted(selected_by_key, key=lambda item: (item[0], item[1]))
+            ]
+            if not selected:
+                raise NotFound("target selectors matched no files")
+            noncompliant = [
+                record
+                for record in selected
+                if not file_is_fully_compliant(
+                    session,
+                    collection_id=record.collection_id,
+                    path=record.path,
+                )
+            ]
+            if noncompliant:
+                first = noncompliant[0]
+                raise Conflict(
+                    "cannot evict hot file without verified disc protection: "
+                    f"{first.collection_id}/{first.path}"
+                )
+            evicted_files = 0
+            evicted_bytes = 0
+            for record in selected:
+                if not record.hot:
+                    continue
+                try:
+                    self._hot_store.delete_collection_file(record.collection_id, record.path)
+                except FileNotFoundError:
+                    pass
+                record.hot = False
+                evicted_files += 1
+                evicted_bytes += int(record.bytes)
+            return {
+                "targets": canonical_targets,
+                "files": len(selected),
+                "bytes": sum(int(record.bytes) for record in selected),
+                "evicted_files": evicted_files,
+                "evicted_bytes": evicted_bytes,
+            }
+
     def get(self, fetch_id: str) -> FetchSummary:
         with session_scope(self._session_factory) as session:
-            row = _get_hot_fetch_projection(session, fetch_id)
-            return fetch_summary_from_hot_projection(row, prefer_entries=True)
+            row = _get_fetch_projection(session, fetch_id)
+            return fetch_summary_from_projection(row, prefer_entries=True)
 
     def status(self, fetch_id: str, *, limit: int = 25) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
-            row = _get_hot_fetch_projection(session, fetch_id)
-            summary = fetch_summary_from_hot_projection(row, prefer_entries=True)
+            row = _get_fetch_projection(session, fetch_id)
+            summary = fetch_summary_from_projection(row, prefer_entries=True)
             if summary.state == FetchState.DONE:
                 entries: list[dict[str, object]] = []
             elif row.entries_total > 0:
@@ -138,9 +324,9 @@ class SqlAlchemyFetchService:
                     limit=limit,
                 )
             else:
-                entries = _pending_status_entries_from_target_query(
+                entries = _pending_status_entries_from_fetch_query(
                     session,
-                    row.target,
+                    row.fetch_id,
                     limit,
                 )
             return _fetch_status_payload(
@@ -151,23 +337,25 @@ class SqlAlchemyFetchService:
 
     def manifest(self, fetch_id: str) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
-            pin_record = _get_pin_record(session, fetch_id)
+            fetch_record = _get_fetch_record(session, fetch_id)
+            _require_djdan_fetch(fetch_record)
             entries = _ensure_fetch_entries(
                 session,
-                pin_record,
+                fetch_record,
                 self._hot_store,
                 self._recovery_payload_codec,
             )
-            _sync_upload_progress(pin_record, entries, self._upload_store)
-            _expire_incomplete_uploads(pin_record, entries, self._upload_store)
+            _sync_upload_progress(fetch_record, entries, self._upload_store)
+            _expire_incomplete_uploads(fetch_record, entries, self._upload_store)
             return {
-                "id": pin_record.fetch_id,
-                "target": pin_record.target,
+                "id": fetch_record.fetch_id,
+                "name": fetch_record.name,
+                "targets": _fetch_target_values(session, fetch_record.fetch_id),
                 "entries": [
                     _manifest_entry_payload(
                         entry,
                         recovery_payload_codec=self._recovery_payload_codec,
-                        fetch_state=FetchState(pin_record.fetch_state),
+                        fetch_state=FetchState(fetch_record.fetch_state),
                     )
                     for entry in entries
                 ],
@@ -175,18 +363,19 @@ class SqlAlchemyFetchService:
 
     def create_or_resume_upload(self, fetch_id: str, entry_id: str) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
-            pin_record = _get_pin_record(session, fetch_id)
-            if pin_record.fetch_state == FetchState.DONE.value:
+            fetch_record = _get_fetch_record(session, fetch_id)
+            _require_djdan_fetch(fetch_record)
+            if fetch_record.fetch_state == FetchState.DONE.value:
                 raise InvalidState("fetch is already complete")
             entries = _ensure_fetch_entries(
                 session,
-                pin_record,
+                fetch_record,
                 self._hot_store,
                 self._recovery_payload_codec,
             )
-            _sync_upload_progress(pin_record, entries, self._upload_store)
-            _expire_incomplete_uploads(pin_record, entries, self._upload_store)
-            _raise_if_fetch_is_cloud_fetching(session, pin_record, entries)
+            _sync_upload_progress(fetch_record, entries, self._upload_store)
+            _expire_incomplete_uploads(fetch_record, entries, self._upload_store)
+            _raise_if_fetch_is_cloud_fetching(session, fetch_record, entries)
             entry = _get_entry(entries, entry_id)
 
             target_path = _entry_upload_target_path(entry)
@@ -200,10 +389,10 @@ class SqlAlchemyFetchService:
             _apply_entry_upload_lifecycle_state(entry, updated)
 
             if (
-                pin_record.fetch_state == FetchState.WAITING_MEDIA.value
+                fetch_record.fetch_state == FetchState.QUEUED_DJDAN.value
                 and entry.uploaded_bytes > 0
             ):
-                pin_record.fetch_state = FetchState.UPLOADING.value
+                fetch_record.fetch_state = FetchState.UPLOADING.value
 
             return _entry_upload_payload(entry)
 
@@ -217,16 +406,17 @@ class SqlAlchemyFetchService:
         content: bytes,
     ) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
-            pin_record = _get_pin_record(session, fetch_id)
+            fetch_record = _get_fetch_record(session, fetch_id)
+            _require_djdan_fetch(fetch_record)
             entries = _ensure_fetch_entries(
                 session,
-                pin_record,
+                fetch_record,
                 self._hot_store,
                 self._recovery_payload_codec,
             )
-            _raise_if_fetch_is_cloud_fetching(session, pin_record, entries)
+            _raise_if_fetch_is_cloud_fetching(session, fetch_record, entries)
             entry = _get_entry(entries, entry_id)
-            _expire_incomplete_upload_for_entry(pin_record, entry, self._upload_store)
+            _expire_incomplete_upload_for_entry(fetch_record, entry, self._upload_store)
 
             if entry.tus_url is None:
                 raise Conflict(f"fetch entry upload is not resumable: {entry_id}")
@@ -248,8 +438,8 @@ class SqlAlchemyFetchService:
             else:
                 entry.upload_expires_at = upload_expiry_timestamp(self._upload_ttl)
 
-            if pin_record.fetch_state == FetchState.WAITING_MEDIA.value:
-                pin_record.fetch_state = FetchState.UPLOADING.value
+            if fetch_record.fetch_state == FetchState.QUEUED_DJDAN.value:
+                fetch_record.fetch_state = FetchState.UPLOADING.value
 
             return {
                 "offset": entry.uploaded_bytes,
@@ -259,15 +449,16 @@ class SqlAlchemyFetchService:
 
     def get_entry_upload(self, fetch_id: str, entry_id: str) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
-            pin_record = _get_pin_record(session, fetch_id)
+            fetch_record = _get_fetch_record(session, fetch_id)
+            _require_djdan_fetch(fetch_record)
             entries = _ensure_fetch_entries(
                 session,
-                pin_record,
+                fetch_record,
                 self._hot_store,
                 self._recovery_payload_codec,
             )
-            _sync_upload_progress(pin_record, entries, self._upload_store)
-            _expire_incomplete_uploads(pin_record, entries, self._upload_store)
+            _sync_upload_progress(fetch_record, entries, self._upload_store)
+            _expire_incomplete_uploads(fetch_record, entries, self._upload_store)
             entry = _get_entry(entries, entry_id)
 
             if entry.tus_url is None:
@@ -276,15 +467,16 @@ class SqlAlchemyFetchService:
 
     def cancel_entry_upload(self, fetch_id: str, entry_id: str) -> None:
         with session_scope(self._session_factory) as session:
-            pin_record = _get_pin_record(session, fetch_id)
+            fetch_record = _get_fetch_record(session, fetch_id)
+            _require_djdan_fetch(fetch_record)
             entries = _ensure_fetch_entries(
                 session,
-                pin_record,
+                fetch_record,
                 self._hot_store,
                 self._recovery_payload_codec,
             )
-            _sync_upload_progress(pin_record, entries, self._upload_store)
-            _expire_incomplete_uploads(pin_record, entries, self._upload_store)
+            _sync_upload_progress(fetch_record, entries, self._upload_store)
+            _expire_incomplete_uploads(fetch_record, entries, self._upload_store)
             entry = _get_entry(entries, entry_id)
 
             if entry.tus_url is None:
@@ -300,28 +492,28 @@ class SqlAlchemyFetchService:
                     upload_expires_at=None,
                 ),
             )
-            if pin_record.fetch_state == FetchState.UPLOADING.value:
-                pin_record.fetch_state = FetchState.WAITING_MEDIA.value
+            if fetch_record.fetch_state == FetchState.UPLOADING.value:
+                fetch_record.fetch_state = FetchState.QUEUED_DJDAN.value
 
     def expire_stale_uploads(self) -> None:
         with session_scope(self._session_factory) as session:
-            pin_records = session.scalars(
-                select(ActivePinRecord).where(ActivePinRecord.fetch_id.is_not(None))
+            fetch_records = session.scalars(
+                select(FetchRecord).where(FetchRecord.fetch_state.in_(_DJDAN_FETCH_STATES))
             ).all()
-            for pin_record in pin_records:
+            for fetch_record in fetch_records:
                 entries = list(
                     session.scalars(
                         select(FetchEntryRecord)
-                        .where(FetchEntryRecord.fetch_id == pin_record.fetch_id)
+                        .where(FetchEntryRecord.fetch_id == fetch_record.fetch_id)
                         .order_by(FetchEntryRecord.entry_order)
                     ).all()
                 )
                 if not entries:
                     continue
-                _sync_upload_progress(pin_record, entries, self._upload_store)
-                _expire_incomplete_uploads(pin_record, entries, self._upload_store)
+                _sync_upload_progress(fetch_record, entries, self._upload_store)
+                _expire_incomplete_uploads(fetch_record, entries, self._upload_store)
 
-    def deliver_due_waiting_notifications(self, *, limit: int = 100) -> int:
+    def deliver_due_queued_notifications(self, *, limit: int = 100) -> int:
         if limit < 1 or not self._config.operator_webhook_url:
             return 0
 
@@ -329,37 +521,37 @@ class SqlAlchemyFetchService:
         current_text = _isoformat_z(current)
         delivered = 0
         with session_scope(self._session_factory) as session:
-            pins = session.scalars(
-                select(ActivePinRecord)
-                .where(ActivePinRecord.fetch_state == FetchState.WAITING_MEDIA.value)
+            fetches = session.scalars(
+                select(FetchRecord)
+                .where(FetchRecord.fetch_state == FetchState.QUEUED_DJDAN.value)
                 .where(
                     or_(
-                        ActivePinRecord.fetch_notification_sent_at.is_(None),
+                        FetchRecord.fetch_notification_sent_at.is_(None),
                         (
-                            ActivePinRecord.fetch_notification_next_attempt_at.is_not(None)
-                            & (ActivePinRecord.fetch_notification_next_attempt_at <= current_text)
+                            FetchRecord.fetch_notification_next_attempt_at.is_not(None)
+                            & (FetchRecord.fetch_notification_next_attempt_at <= current_text)
                         ),
                     )
                 )
-                .order_by(ActivePinRecord.fetch_order)
+                .order_by(FetchRecord.fetch_order)
                 .limit(limit)
             ).all()
-            for pin_record in pins:
+            for fetch_record in fetches:
                 entries = _ensure_fetch_entries(
                     session,
-                    pin_record,
+                    fetch_record,
                     self._hot_store,
                     self._recovery_payload_codec,
                 )
-                _sync_upload_progress(pin_record, entries, self._upload_store)
-                _expire_incomplete_uploads(pin_record, entries, self._upload_store)
-                if pin_record.fetch_state != FetchState.WAITING_MEDIA.value:
+                _sync_upload_progress(fetch_record, entries, self._upload_store)
+                _expire_incomplete_uploads(fetch_record, entries, self._upload_store)
+                if fetch_record.fetch_state != FetchState.QUEUED_DJDAN.value:
                     continue
-                if _active_cloud_fetch_session_id(session, pin_record, entries) is not None:
+                if _active_cloud_fetch_session_id(session, fetch_record, entries) is not None:
                     continue
-                if _notify_fetch_waiting(
+                if _notify_fetch_queued(
                     config=self._config,
-                    pin_record=pin_record,
+                    fetch_record=fetch_record,
                     entries=entries,
                     current=current,
                 ):
@@ -368,32 +560,33 @@ class SqlAlchemyFetchService:
 
     def complete(self, fetch_id: str) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
-            pin_record = _get_pin_record(session, fetch_id)
+            fetch_record = _get_fetch_record(session, fetch_id)
+            _require_djdan_fetch(fetch_record)
             entries = _ensure_fetch_entries(
                 session,
-                pin_record,
+                fetch_record,
                 self._hot_store,
                 self._recovery_payload_codec,
             )
-            _sync_upload_progress(pin_record, entries, self._upload_store)
-            _expire_incomplete_uploads(pin_record, entries, self._upload_store)
-            _raise_if_fetch_is_cloud_fetching(session, pin_record, entries)
+            _sync_upload_progress(fetch_record, entries, self._upload_store)
+            _expire_incomplete_uploads(fetch_record, entries, self._upload_store)
+            _raise_if_fetch_is_cloud_fetching(session, fetch_record, entries)
 
-            if pin_record.fetch_state == FetchState.DONE.value:
+            if fetch_record.fetch_state == FetchState.DONE.value:
                 return {
-                    "id": pin_record.fetch_id,
-                    "state": pin_record.fetch_state,
-                    "hot": _hot_payload(session, pin_record.target),
+                    "id": fetch_record.fetch_id,
+                    "state": fetch_record.fetch_state,
+                    "hot": _hot_payload_for_fetch(session, fetch_record.fetch_id),
                 }
 
             if any(
-                _entry_upload_state(entry, fetch_state=FetchState(pin_record.fetch_state))
+                _entry_upload_state(entry, fetch_state=FetchState(fetch_record.fetch_state))
                 != "byte_complete"
                 for entry in entries
             ):
                 raise InvalidState("fetch is missing required entry uploads")
 
-            pin_record.fetch_state = FetchState.VERIFYING.value
+            fetch_record.fetch_state = FetchState.VERIFYING.value
             for entry in entries:
                 target_path = _entry_upload_target_path(entry)
                 encrypted = self._upload_store.read_target(target_path)
@@ -453,56 +646,54 @@ class SqlAlchemyFetchService:
                     raise NotFound(f"file not found for fetch entry: {entry.path}")
                 file_record.hot = True
 
-            pin_record.fetch_state = FetchState.DONE.value
+            fetch_record.fetch_state = FetchState.DONE.value
             return {
-                "id": pin_record.fetch_id,
-                "state": pin_record.fetch_state,
-                "hot": _hot_payload(session, pin_record.target),
+                "id": fetch_record.fetch_id,
+                "state": fetch_record.fetch_state,
+                "hot": _hot_payload_for_fetch(session, fetch_record.fetch_id),
             }
 
 
-def _get_pin_record(session: Session, fetch_id: str) -> ActivePinRecord:
-    pin_record = session.scalar(select(ActivePinRecord).where(ActivePinRecord.fetch_id == fetch_id))
-    if pin_record is None:
+def _get_fetch_record(session: Session, fetch_id: str) -> FetchRecord:
+    fetch_record = session.get(FetchRecord, fetch_id)
+    if fetch_record is None:
         raise NotFound(f"fetch not found: {fetch_id}")
-    return pin_record
+    return fetch_record
 
 
-def _get_hot_fetch_projection(
+def _get_fetch_projection(
     session: Session,
     fetch_id: str,
-) -> HotFetchOperatorSummaryRecord:
+) -> FetchOperatorSummaryRecord:
     row = session.scalar(
-        select(HotFetchOperatorSummaryRecord).where(
-            HotFetchOperatorSummaryRecord.fetch_id == fetch_id
-        )
+        select(FetchOperatorSummaryRecord).where(FetchOperatorSummaryRecord.fetch_id == fetch_id)
     )
     if row is None:
         raise NotFound(f"fetch not found: {fetch_id}")
     return row
 
 
-def _notify_fetch_waiting(
+def _notify_fetch_queued(
     *,
     config: RuntimeConfig,
-    pin_record: ActivePinRecord,
+    fetch_record: FetchRecord,
     entries: list[FetchEntryRecord],
     current: datetime,
 ) -> bool:
     if not config.operator_webhook_url:
-        pin_record.fetch_notification_next_attempt_at = None
-        pin_record.fetch_notification_failure = None
+        fetch_record.fetch_notification_next_attempt_at = None
+        fetch_record.fetch_notification_failure = None
         return False
-    reminder = pin_record.fetch_notification_sent_at is not None
-    current_count = int(pin_record.fetch_notification_count or 0)
+    reminder = fetch_record.fetch_notification_sent_at is not None
+    current_count = int(fetch_record.fetch_notification_count or 0)
     webhook_config = _webhook_config(config)
     try:
         post_webhook(
             config=webhook_config,
-            payload=build_fetch_waiting_payload(
+            payload=build_fetch_queued_payload(
                 config=webhook_config,
-                fetch_id=pin_record.fetch_id,
-                target=pin_record.target,
+                fetch_id=fetch_record.fetch_id,
+                name=fetch_record.name,
                 files=len(entries),
                 bytes=sum(int(entry.bytes) for entry in entries),
                 copies=_fetch_copy_payload(entries),
@@ -512,29 +703,29 @@ def _notify_fetch_waiting(
             ),
         )
     except Exception as exc:
-        pin_record.fetch_notification_failure = str(exc).strip() or exc.__class__.__name__
-        pin_record.fetch_notification_next_attempt_at = _isoformat_z(
+        fetch_record.fetch_notification_failure = str(exc).strip() or exc.__class__.__name__
+        fetch_record.fetch_notification_next_attempt_at = _isoformat_z(
             current + config.operator_webhook_retry_delay
         )
         return False
 
-    if pin_record.fetch_notification_sent_at is None:
-        pin_record.fetch_notification_sent_at = _isoformat_z(current)
+    if fetch_record.fetch_notification_sent_at is None:
+        fetch_record.fetch_notification_sent_at = _isoformat_z(current)
     if reminder:
         current_count += 1
-    pin_record.fetch_notification_count = current_count
-    pin_record.fetch_notification_failure = None
+    fetch_record.fetch_notification_count = current_count
+    fetch_record.fetch_notification_failure = None
     interval = config.operator_webhook_reminder_interval
     if interval.total_seconds() > 0:
-        pin_record.fetch_notification_next_attempt_at = _isoformat_z(current + interval)
+        fetch_record.fetch_notification_next_attempt_at = _isoformat_z(current + interval)
     else:
-        pin_record.fetch_notification_next_attempt_at = None
+        fetch_record.fetch_notification_next_attempt_at = None
     return True
 
 
 def _active_cloud_fetch_session_id(
     session: Session,
-    pin_record: ActivePinRecord,
+    fetch_record: FetchRecord,
     entries: list[FetchEntryRecord],
 ) -> str | None:
     paths_by_collection: dict[str, set[str]] = {}
@@ -573,14 +764,14 @@ def _active_cloud_fetch_session_id(
 
 def _raise_if_fetch_is_cloud_fetching(
     session: Session,
-    pin_record: ActivePinRecord,
+    fetch_record: FetchRecord,
     entries: list[FetchEntryRecord],
 ) -> None:
-    session_id = _active_cloud_fetch_session_id(session, pin_record, entries)
+    session_id = _active_cloud_fetch_session_id(session, fetch_record, entries)
     if session_id is None:
         return
     raise InvalidState(
-        f"fetch {pin_record.fetch_id} is actively being cloud-fetched by {session_id}; "
+        f"fetch {fetch_record.fetch_id} is actively being cloud-fetched by {session_id}; "
         "wait for cloud-fetch to finish before running djdan fetch"
     )
 
@@ -626,69 +817,100 @@ def _isoformat_z(value: datetime) -> str:
     return value.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _selected_files(session: Session, raw_target: str) -> list[CollectionFileRecord]:
-    target = parse_target(raw_target)
-    records = session.scalars(
-        select(CollectionFileRecord).options(selectinload(CollectionFileRecord.copies))
-    ).all()
-    selected = [
-        record
-        for record in records
-        if (
-            f"{record.collection_id}/{record.path}".startswith(target.canonical)
-            if target.is_dir
-            else f"{record.collection_id}/{record.path}" == target.canonical
+def _normalize_fetch_name(name: str) -> str:
+    normalized = " ".join(name.strip().split())
+    if not normalized:
+        raise BadRequest("fetch name is required")
+    return normalized
+
+
+def _canonical_targets(targets: Sequence[str]) -> list[str]:
+    canonical: list[str] = []
+    seen: set[str] = set()
+    for raw_target in targets:
+        target = parse_target(raw_target)
+        value = target.canonical
+        if value in seen:
+            continue
+        seen.add(value)
+        canonical.append(value)
+    return canonical
+
+
+def _next_fetch_order(session: Session) -> int:
+    max_fetch_order = session.scalar(select(func.max(FetchRecord.fetch_order)))
+    return int(max_fetch_order or 0) + 1
+
+
+def _fetch_selectors(session: Session, fetch_id: str) -> list[FetchSelectorRecord]:
+    return list(
+        session.scalars(
+            select(FetchSelectorRecord)
+            .where(FetchSelectorRecord.fetch_id == fetch_id)
+            .order_by(FetchSelectorRecord.selector_order, FetchSelectorRecord.target)
+        ).all()
+    )
+
+
+def _fetch_target_values(session: Session, fetch_id: str) -> tuple[str, ...]:
+    return tuple(selector.target for selector in _fetch_selectors(session, fetch_id))
+
+
+def _replace_fetch_selectors(
+    session: Session,
+    fetch_record: FetchRecord,
+    targets: list[str],
+) -> None:
+    session.execute(
+        delete(FetchSelectorRecord).where(FetchSelectorRecord.fetch_id == fetch_record.fetch_id)
+    )
+    for index, target in enumerate(targets, start=1):
+        session.add(
+            FetchSelectorRecord(
+                fetch_id=fetch_record.fetch_id,
+                target=target,
+                selector_order=index,
+            )
         )
+
+
+def _require_editable_fetch(fetch_record: FetchRecord) -> None:
+    if fetch_record.fetch_state not in _EDITABLE_FETCH_STATES:
+        raise InvalidState("fetch is already started and cannot be edited")
+
+
+def _require_startable_fetch(fetch_record: FetchRecord) -> None:
+    if fetch_record.fetch_state == FetchState.DONE.value:
+        raise InvalidState("fetch is already complete")
+    if fetch_record.fetch_state in _DJDAN_FETCH_STATES | _CLOUD_FETCH_STATES:
+        raise InvalidState("fetch is already started")
+    if fetch_record.fetch_state != FetchState.DRAFT.value:
+        raise InvalidState(f"fetch cannot be started from state {fetch_record.fetch_state}")
+
+
+def _require_djdan_fetch(fetch_record: FetchRecord) -> None:
+    if fetch_record.fetch_state == FetchState.DONE.value:
+        return
+    if fetch_record.fetch_state not in _DJDAN_FETCH_STATES:
+        raise InvalidState("fetch is not queued for djdan")
+
+
+def _selected_files_for_fetch(
+    session: Session,
+    fetch_id: str,
+    *,
+    load_copies: bool,
+) -> list[CollectionFileRecord]:
+    selected_by_key: dict[tuple[str, str], CollectionFileRecord] = {}
+    targets = _fetch_target_values(session, fetch_id)
+    for target in targets:
+        for record in selected_collection_files(session, target, load_copies=load_copies):
+            selected_by_key[(record.collection_id, record.path)] = record
+    if targets and not selected_by_key:
+        raise NotFound(f"fetch targets matched no files: {fetch_id}")
+    return [
+        selected_by_key[key] for key in sorted(selected_by_key, key=lambda item: (item[0], item[1]))
     ]
-    if not selected:
-        raise NotFound(f"target not found: {raw_target}")
-    return selected
-
-
-def _done_summary_from_target_stats(
-    session: Session,
-    pin_record: ActivePinRecord,
-) -> FetchSummary:
-    summary = _summary_from_target_stats(session, pin_record)
-    return FetchSummary(
-        id=summary.id,
-        target=summary.target,
-        state=FetchState.DONE,
-        files=summary.files,
-        bytes=summary.bytes,
-        copies=[],
-        entries_total=summary.entries_total,
-        entries_pending=summary.entries_pending,
-        entries_partial=0,
-        entries_byte_complete=0,
-        entries_uploaded=summary.entries_uploaded,
-        uploaded_bytes=summary.uploaded_bytes,
-        missing_bytes=summary.missing_bytes,
-        upload_state_expires_at=None,
-    )
-
-
-def _summary_from_target_stats(
-    session: Session,
-    pin_record: ActivePinRecord,
-) -> FetchSummary:
-    stats = selected_collection_file_stats(session, pin_record.target)
-    return FetchSummary(
-        id=FetchId(pin_record.fetch_id),
-        target=TargetStr(pin_record.target),
-        state=FetchState(pin_record.fetch_state),
-        files=stats.files,
-        bytes=stats.bytes,
-        copies=[],
-        entries_total=stats.files,
-        entries_pending=stats.missing_files,
-        entries_partial=0,
-        entries_byte_complete=0,
-        entries_uploaded=stats.hot_files,
-        uploaded_bytes=stats.hot_bytes,
-        missing_bytes=stats.missing_bytes,
-        upload_state_expires_at=None,
-    )
 
 
 def _existing_fetch_entries(
@@ -706,15 +928,15 @@ def _existing_fetch_entries(
 
 def _ensure_fetch_entries(
     session: Session,
-    pin_record: ActivePinRecord,
+    fetch_record: FetchRecord,
     hot_store: HotStore,
     recovery_payload_codec: RecoveryPayloadCodec,
 ) -> list[FetchEntryRecord]:
-    existing = _existing_fetch_entries(session, pin_record.fetch_id)
+    existing = _existing_fetch_entries(session, fetch_record.fetch_id)
     if existing:
         return existing
 
-    selected = _selected_files(session, pin_record.target)
+    selected = _selected_files_for_fetch(session, fetch_record.fetch_id, load_copies=False)
     created: list[FetchEntryRecord] = []
     for index, file_record in enumerate(
         sorted(selected, key=lambda item: (item.collection_id, item.path)), start=1
@@ -740,7 +962,7 @@ def _ensure_fetch_entries(
             recovery_bytes = sum(len(p) for p in payloads)
 
         entry = FetchEntryRecord(
-            fetch_id=pin_record.fetch_id,
+            fetch_id=fetch_record.fetch_id,
             entry_id=f"e{index}",
             entry_order=index,
             collection_id=file_record.collection_id,
@@ -758,50 +980,6 @@ def _ensure_fetch_entries(
     return created
 
 
-def _summary_from_records(
-    pin_record: ActivePinRecord,
-    entries: list[FetchEntryRecord],
-    *,
-    include_copies: bool = True,
-) -> FetchSummary:
-    fetch_state = FetchState(pin_record.fetch_state)
-    entries_total = len(entries)
-    entries_pending = sum(
-        1 for entry in entries if _entry_upload_state(entry, fetch_state=fetch_state) == "pending"
-    )
-    entries_partial = sum(
-        1 for entry in entries if _entry_upload_state(entry, fetch_state=fetch_state) == "partial"
-    )
-    entries_byte_complete = sum(
-        1
-        for entry in entries
-        if _entry_upload_state(entry, fetch_state=fetch_state) == "byte_complete"
-    )
-    entries_uploaded = sum(
-        1 for entry in entries if _entry_upload_state(entry, fetch_state=fetch_state) == "uploaded"
-    )
-    uploaded_bytes = sum(entry.uploaded_bytes for entry in entries)
-    missing_bytes = max(sum(_entry_recovery_bytes(entry) for entry in entries) - uploaded_bytes, 0)
-    expiries = [entry.upload_expires_at for entry in entries if entry.upload_expires_at is not None]
-
-    return FetchSummary(
-        id=FetchId(pin_record.fetch_id),
-        target=TargetStr(pin_record.target),
-        state=FetchState(pin_record.fetch_state),
-        files=len(entries),
-        bytes=sum(entry.bytes for entry in entries),
-        copies=_summary_copies(entries) if include_copies else [],
-        entries_total=entries_total,
-        entries_pending=entries_pending,
-        entries_partial=entries_partial,
-        entries_byte_complete=entries_byte_complete,
-        entries_uploaded=entries_uploaded,
-        uploaded_bytes=uploaded_bytes,
-        missing_bytes=missing_bytes,
-        upload_state_expires_at=max(expiries) if expiries else None,
-    )
-
-
 def _fetch_status_payload(
     summary: FetchSummary,
     *,
@@ -810,7 +988,8 @@ def _fetch_status_payload(
 ) -> dict[str, object]:
     return {
         "id": str(summary.id),
-        "target": str(summary.target),
+        "name": summary.name,
+        "targets": [str(target) for target in summary.targets],
         "state": summary.state.value,
         "files": summary.files,
         "bytes": summary.bytes,
@@ -920,12 +1099,17 @@ def _target_file_match_clause(raw_target: str) -> ColumnElement[bool]:
     return full_path == target.canonical
 
 
-def _pending_status_entries_from_target_query(
+def _pending_status_entries_from_fetch_query(
     session: Session,
-    raw_target: str,
+    fetch_id: str,
     limit: int,
 ) -> list[dict[str, object]]:
     if limit <= 0:
+        return []
+    clauses = [
+        _target_file_match_clause(target) for target in _fetch_target_values(session, fetch_id)
+    ]
+    if not clauses:
         return []
     selected_files = (
         select(
@@ -937,7 +1121,8 @@ def _pending_status_entries_from_target_query(
             .over(order_by=(CollectionFileRecord.collection_id, CollectionFileRecord.path))
             .label("entry_order"),
         )
-        .where(_target_file_match_clause(raw_target))
+        .where(or_(*clauses))
+        .distinct()
         .subquery()
     )
     rows = session.execute(
@@ -963,34 +1148,6 @@ def _pending_status_entries_from_target_query(
         )
         for row in rows
     ]
-
-
-def _pending_status_entries_from_target(
-    session: Session,
-    raw_target: str,
-    limit: int,
-) -> list[dict[str, object]]:
-    if limit <= 0:
-        return []
-    out: list[dict[str, object]] = []
-    selected = selected_collection_files(session, raw_target, load_copies=False)
-    for index, record in enumerate(selected, start=1):
-        if record.hot:
-            continue
-        out.append(
-            _status_entry_payload(
-                f"e{index}",
-                collection_id=record.collection_id,
-                path=record.path,
-                bytes_=record.bytes,
-                upload_state="pending",
-                uploaded_bytes=0,
-                upload_state_expires_at=None,
-            )
-        )
-        if len(out) >= limit:
-            break
-    return out
 
 
 def _summary_copies(entries: list[FetchEntryRecord]) -> list[FetchCopyHint]:
@@ -1288,7 +1445,7 @@ def _apply_entry_upload_lifecycle_state(
 
 
 def _expire_incomplete_uploads(
-    pin_record: ActivePinRecord,
+    fetch_record: FetchRecord,
     entries: list[FetchEntryRecord],
     upload_store: UploadStore,
 ) -> None:
@@ -1304,12 +1461,12 @@ def _expire_incomplete_uploads(
         if not did_expire:
             continue
         expired = True
-    if expired and pin_record.fetch_state == FetchState.UPLOADING.value:
-        pin_record.fetch_state = FetchState.WAITING_MEDIA.value
+    if expired and fetch_record.fetch_state == FetchState.UPLOADING.value:
+        fetch_record.fetch_state = FetchState.QUEUED_DJDAN.value
 
 
 def _expire_incomplete_upload_for_entry(
-    pin_record: ActivePinRecord,
+    fetch_record: FetchRecord,
     entry: FetchEntryRecord,
     upload_store: UploadStore,
 ) -> None:
@@ -1320,12 +1477,12 @@ def _expire_incomplete_upload_for_entry(
         upload_store=upload_store,
     )
     _apply_entry_upload_lifecycle_state(entry, updated)
-    if did_expire and pin_record.fetch_state == FetchState.UPLOADING.value:
-        pin_record.fetch_state = FetchState.WAITING_MEDIA.value
+    if did_expire and fetch_record.fetch_state == FetchState.UPLOADING.value:
+        fetch_record.fetch_state = FetchState.QUEUED_DJDAN.value
 
 
 def _sync_upload_progress(
-    pin_record: ActivePinRecord,
+    fetch_record: FetchRecord,
     entries: list[FetchEntryRecord],
     upload_store: UploadStore,
 ) -> None:
@@ -1341,8 +1498,8 @@ def _sync_upload_progress(
         _apply_entry_upload_lifecycle_state(entry, updated)
         if entry.uploaded_bytes > 0:
             any_uploaded = True
-    if any_uploaded and pin_record.fetch_state == FetchState.WAITING_MEDIA.value:
-        pin_record.fetch_state = FetchState.UPLOADING.value
+    if any_uploaded and fetch_record.fetch_state == FetchState.QUEUED_DJDAN.value:
+        fetch_record.fetch_state = FetchState.UPLOADING.value
 
 
 def _get_entry(entries: list[FetchEntryRecord], entry_id: str) -> FetchEntryRecord:
@@ -1368,8 +1525,8 @@ def _entry_upload_target_path(entry: FetchEntryRecord) -> str:
     return f"/.riverhog/uploads/recovery/{entry.fetch_id}/{entry.entry_id}.enc"
 
 
-def _hot_payload(session: Session, raw_target: str) -> dict[str, object]:
-    selected = _selected_files(session, raw_target)
+def _hot_payload_for_fetch(session: Session, fetch_id: str) -> dict[str, object]:
+    selected = _selected_files_for_fetch(session, fetch_id, load_copies=False)
     present_bytes = sum(record.bytes for record in selected if record.hot)
     missing_bytes = sum(record.bytes for record in selected if not record.hot)
     return {

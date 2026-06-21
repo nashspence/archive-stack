@@ -9,13 +9,12 @@ from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from riverhog_core.archive_object_paths import archive_storage_prefix_from_object_path
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
-    ActivePinRecord,
     CollectionArchiveRecord,
     CollectionFileRecord,
     CollectionRecord,
@@ -29,7 +28,6 @@ from riverhog_core.collection_archives import (
     build_collection_archive_package_from_prebuilt_artifacts,
     collection_archive_size,
 )
-from riverhog_core.domain.enums import FetchState
 from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadedPart,
     ArchiveMultipartUploadState,
@@ -47,7 +45,6 @@ from riverhog_core.recovery_payloads import (
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collections import _collection_upload_target_path
-from riverhog_core.services.compliance import collection_is_fully_compliant
 from riverhog_core.services.glacier_reporting import record_glacier_usage_snapshot
 from riverhog_core.services.planning import (
     cache_collection_manifest_artifacts,
@@ -670,7 +667,6 @@ class SqlAlchemyGlacierUploadService:
                 archive = CollectionArchiveRecord(collection_id=collection_id)
                 session.add(archive)
             _apply_archive_receipt(archive, receipt)
-            _ensure_default_hot_pin(session, collection_id=collection_id)
             session.delete(upload)
             record_glacier_usage_snapshot(session, config=self._config)
 
@@ -1346,23 +1342,6 @@ def enqueue_collection_archive_upload(
         return
     upload.state = "archiving"
     upload.archive_next_attempt_at = next_attempt_at
-
-
-def _ensure_default_hot_pin(session: Session, *, collection_id: str) -> None:
-    if collection_is_fully_compliant(session, collection_id=collection_id):
-        return
-    target = f"{collection_id}/"
-    if session.get(ActivePinRecord, target) is not None:
-        return
-    fetch_order = int(session.scalar(select(func.max(ActivePinRecord.fetch_order))) or 0) + 1
-    session.add(
-        ActivePinRecord(
-            target=target,
-            fetch_id=f"fx-{fetch_order}",
-            fetch_order=fetch_order,
-            fetch_state=FetchState.DONE.value,
-        )
-    )
 
 
 def _upload_files_complete(file_records: list[CollectionUploadFileRecord]) -> bool:

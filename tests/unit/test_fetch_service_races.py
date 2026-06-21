@@ -12,10 +12,11 @@ from sqlalchemy import select
 
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
-    ActivePinRecord,
     CollectionFileRecord,
     CollectionRecord,
     FetchEntryRecord,
+    FetchRecord,
+    FetchSelectorRecord,
     FileCopyRecord,
     FinalizedImageRecord,
     GlacierRecoverySessionCollectionRecord,
@@ -30,6 +31,31 @@ from tests.fixtures.crypto import FixtureRecoveryPayloadCodec
 from tests.unit.db_helpers import sqlite_url
 
 _RECOVERY_CODEC = FixtureRecoveryPayloadCodec()
+
+
+def _add_fetch(
+    session,
+    *,
+    target: str,
+    fetch_id: str,
+    fetch_order: int = 1,
+    fetch_state: str,
+) -> None:
+    session.add(
+        FetchRecord(
+            fetch_id=fetch_id,
+            name=target,
+            fetch_order=fetch_order,
+            fetch_state=fetch_state,
+        )
+    )
+    session.add(
+        FetchSelectorRecord(
+            fetch_id=fetch_id,
+            target=target,
+            selector_order=1,
+        )
+    )
 
 
 class _FakeHotStore:
@@ -155,13 +181,11 @@ def test_done_fetch_summary_uses_aggregate_stats_without_materializing_entries(
                     archived=True,
                 )
             )
-        session.add(
-            ActivePinRecord(
-                target=f"{collection_id}/",
-                fetch_id="fx-done",
-                fetch_order=1,
-                fetch_state=FetchState.DONE.value,
-            )
+        _add_fetch(
+            session,
+            target=f"{collection_id}/",
+            fetch_id="fx-done",
+            fetch_state=FetchState.DONE.value,
         )
 
     service = SqlAlchemyFetchService(
@@ -209,13 +233,11 @@ def test_waiting_fetch_status_uses_pending_preview_without_materializing_entries
                     archived=True,
                 )
             )
-        session.add(
-            ActivePinRecord(
-                target=f"{collection_id}/",
-                fetch_id="fx-waiting",
-                fetch_order=1,
-                fetch_state=FetchState.WAITING_MEDIA.value,
-            )
+        _add_fetch(
+            session,
+            target=f"{collection_id}/",
+            fetch_id="fx-waiting",
+            fetch_state=FetchState.QUEUED_DJDAN.value,
         )
 
     service = SqlAlchemyFetchService(
@@ -227,14 +249,14 @@ def test_waiting_fetch_status_uses_pending_preview_without_materializing_entries
 
     summary = service.get("fx-waiting")
 
-    assert summary.state == FetchState.WAITING_MEDIA
+    assert summary.state == FetchState.QUEUED_DJDAN
     assert summary.entries_total == len(files)
     assert summary.entries_pending == len(files)
     assert summary.copies == []
 
     status = service.status("fx-waiting", limit=3)
 
-    assert status["state"] == FetchState.WAITING_MEDIA.value
+    assert status["state"] == FetchState.QUEUED_DJDAN.value
     assert status["entries_total"] == len(files)
     assert status["entries_pending"] == len(files)
     assert status["entries_returned"] == 3
@@ -291,13 +313,11 @@ def test_waiting_fetch_notifications_are_delivered_and_reminded(
                 recovery_sha256=hashlib.sha256(encrypted).hexdigest(),
             )
         )
-        session.add(
-            ActivePinRecord(
-                target=target,
-                fetch_id="fx-1",
-                fetch_order=1,
-                fetch_state=FetchState.WAITING_MEDIA.value,
-            )
+        _add_fetch(
+            session,
+            target=target,
+            fetch_id="fx-1",
+            fetch_state=FetchState.QUEUED_DJDAN.value,
         )
         session.add(
             FetchEntryRecord(
@@ -337,16 +357,16 @@ def test_waiting_fetch_notifications_are_delivered_and_reminded(
     monkeypatch.setattr("riverhog_core.services.fetches.utcnow", lambda: start)
     monkeypatch.setattr("riverhog_core.services.fetches.post_webhook", _post_webhook)
 
-    assert service.deliver_due_waiting_notifications(limit=10) == 1
-    assert payloads[-1]["event"] == "fetches.waiting_media"
+    assert service.deliver_due_queued_notifications(limit=10) == 1
+    assert payloads[-1]["event"] == "fetches.queued_djdan"
     assert payloads[-1]["operator_action"] == "Run `djdan fetch fx-1`"
 
     monkeypatch.setattr(
         "riverhog_core.services.fetches.utcnow",
         lambda: start + timedelta(seconds=6),
     )
-    assert service.deliver_due_waiting_notifications(limit=10) == 1
-    assert payloads[-1]["event"] == "fetches.waiting_media.reminder"
+    assert service.deliver_due_queued_notifications(limit=10) == 1
+    assert payloads[-1]["event"] == "fetches.queued_djdan.reminder"
     assert payloads[-1]["reminder_count"] == 1
 
 
@@ -376,13 +396,11 @@ def test_active_cloud_fetch_suppresses_media_fetch_notifications_and_uploads(
                 archived=True,
             )
         )
-        session.add(
-            ActivePinRecord(
-                target=target,
-                fetch_id="fx-1",
-                fetch_order=1,
-                fetch_state=FetchState.WAITING_MEDIA.value,
-            )
+        _add_fetch(
+            session,
+            target=target,
+            fetch_id="fx-1",
+            fetch_state=FetchState.QUEUED_DJDAN.value,
         )
         session.add(
             FetchEntryRecord(
@@ -446,7 +464,7 @@ def test_active_cloud_fetch_suppresses_media_fetch_notifications_and_uploads(
 
     monkeypatch.setattr("riverhog_core.services.fetches.post_webhook", _post_webhook)
 
-    assert service.deliver_due_waiting_notifications(limit=10) == 0
+    assert service.deliver_due_queued_notifications(limit=10) == 0
     assert payloads == []
     with pytest.raises(InvalidState, match="actively being cloud-fetched"):
         service.create_or_resume_upload("fx-1", "e1")
@@ -515,13 +533,11 @@ def test_stale_sync_does_not_rollback_completed_fetch_state(tmp_path: Path) -> N
                 recovery_sha256=hashlib.sha256(encrypted).hexdigest(),
             )
         )
-        session.add(
-            ActivePinRecord(
-                target=target,
-                fetch_id="fx-1",
-                fetch_order=1,
-                fetch_state=FetchState.UPLOADING.value,
-            )
+        _add_fetch(
+            session,
+            target=target,
+            fetch_id="fx-1",
+            fetch_state=FetchState.UPLOADING.value,
         )
         session.add(
             FetchEntryRecord(
@@ -540,29 +556,25 @@ def test_stale_sync_does_not_rollback_completed_fetch_state(tmp_path: Path) -> N
         )
 
     with session_scope(session_factory) as stale_session:
-        stale_pin = stale_session.scalar(
-            select(ActivePinRecord).where(ActivePinRecord.fetch_id == "fx-1")
-        )
+        stale_fetch = stale_session.get(FetchRecord, "fx-1")
         stale_entries = stale_session.scalars(
             select(FetchEntryRecord)
             .where(FetchEntryRecord.fetch_id == "fx-1")
             .order_by(FetchEntryRecord.entry_order)
         ).all()
-        assert stale_pin is not None
+        assert stale_fetch is not None
 
         completed = service.complete("fx-1")
         assert completed["state"] == FetchState.DONE.value
 
-        _sync_upload_progress(stale_pin, stale_entries, upload_store)
+        _sync_upload_progress(stale_fetch, stale_entries, upload_store)
 
     manifest = service.manifest("fx-1")
     assert manifest["entries"][0]["upload_state"] == "uploaded"
     assert manifest["entries"][0]["uploaded_bytes"] == len(encrypted)
 
     with session_scope(session_factory) as session:
-        pin_record = session.scalar(
-            select(ActivePinRecord).where(ActivePinRecord.fetch_id == "fx-1")
-        )
+        fetch_record = session.get(FetchRecord, "fx-1")
         entry_record = session.get(
             FetchEntryRecord,
             {
@@ -571,9 +583,9 @@ def test_stale_sync_does_not_rollback_completed_fetch_state(tmp_path: Path) -> N
             },
         )
 
-        assert pin_record is not None
+        assert fetch_record is not None
         assert entry_record is not None
-        assert pin_record.fetch_state == FetchState.DONE.value
+        assert fetch_record.fetch_state == FetchState.DONE.value
         assert entry_record.uploaded_bytes == len(encrypted)
         assert entry_record.tus_url is None
 
@@ -642,13 +654,11 @@ def test_cold_fetch_manifest_uses_registered_disc_payload_metadata(tmp_path: Pat
                 part_sha256=None,
             )
         )
-        session.add(
-            ActivePinRecord(
-                target=target,
-                fetch_id="fx-cold",
-                fetch_order=1,
-                fetch_state=FetchState.WAITING_MEDIA.value,
-            )
+        _add_fetch(
+            session,
+            target=target,
+            fetch_id="fx-cold",
+            fetch_state=FetchState.QUEUED_DJDAN.value,
         )
 
     manifest = service.manifest("fx-cold")
@@ -723,13 +733,11 @@ def test_cold_split_fetch_complete_uses_registered_part_sizes(tmp_path: Path) ->
                     part_sha256=None,
                 )
             )
-        session.add(
-            ActivePinRecord(
-                target=target,
-                fetch_id="fx-split",
-                fetch_order=1,
-                fetch_state=FetchState.UPLOADING.value,
-            )
+        _add_fetch(
+            session,
+            target=target,
+            fetch_id="fx-split",
+            fetch_state=FetchState.UPLOADING.value,
         )
         session.add(
             FetchEntryRecord(
@@ -822,18 +830,16 @@ def test_cold_fetch_manifest_can_select_multiple_collections_by_prefix(
                     part_sha256=None,
                 )
             )
-        session.add(
-            ActivePinRecord(
-                target="2025/",
-                fetch_id="fx-multi",
-                fetch_order=1,
-                fetch_state=FetchState.WAITING_MEDIA.value,
-            )
+        _add_fetch(
+            session,
+            target="2025/",
+            fetch_id="fx-multi",
+            fetch_state=FetchState.QUEUED_DJDAN.value,
         )
 
     manifest = service.manifest("fx-multi")
 
-    assert manifest["target"] == "2025/"
+    assert manifest["targets"] == ("2025/",)
     assert [
         (entry["id"], entry["collection_id"], entry["path"]) for entry in manifest["entries"]
     ] == [
@@ -929,13 +935,11 @@ def test_cold_fetch_complete_restores_matching_paths_across_collections(
                     tus_url=f"/uploads/fx-multi/e{index}",
                 )
             )
-        session.add(
-            ActivePinRecord(
-                target="2025/",
-                fetch_id="fx-multi",
-                fetch_order=1,
-                fetch_state=FetchState.UPLOADING.value,
-            )
+        _add_fetch(
+            session,
+            target="2025/",
+            fetch_id="fx-multi",
+            fetch_state=FetchState.UPLOADING.value,
         )
 
     manifest = service.manifest("fx-multi")

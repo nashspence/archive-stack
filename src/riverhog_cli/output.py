@@ -302,60 +302,9 @@ def format_copies(payload: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _format_pin_plain(payload: Mapping[str, Any]) -> str:
-    lines = [
-        f"target: {payload['target']}",
-        f"pin: {'true' if payload.get('pin') else 'false'}",
-    ]
-
-    hot = payload.get("hot")
-    if isinstance(hot, Mapping):
-        lines.append(
-            "hot: "
-            f"{hot.get('state', 'unknown')} "
-            f"(present={hot.get('present_bytes', 0)} missing={hot.get('missing_bytes', 0)})"
-        )
-
-    fetch = payload.get("fetch")
-    if isinstance(fetch, Mapping):
-        lines.append(f"fetch: {fetch.get('id', 'unknown')} ({fetch.get('state', 'unknown')})")
-        copies = fetch.get("copies")
-        if isinstance(copies, Sequence):
-            lines.append("candidate copies:")
-            if copies:
-                lines.extend(
-                    f"- {_copy_label(copy)}" for copy in copies if isinstance(copy, Mapping)
-                )
-            else:
-                lines.append("- none")
-
-    return "\n".join(lines)
-
-
-def format_pin(payload: Mapping[str, Any]) -> Any:
-    if not _rich_enabled():
-        return _format_pin_plain(payload)
-
-    table = _detail_table()
-    table.add_row("target", str(payload.get("target", "unknown")))
-    table.add_row("pin", "yes" if payload.get("pin") else "no")
-
-    hot = payload.get("hot")
-    if isinstance(hot, Mapping):
-        table.add_row("hot", _attention_text(hot.get("state", "unknown")))
-        table.add_row("present", _bytes_text(hot.get("present_bytes", 0)))
-        table.add_row("missing", _bytes_text(hot.get("missing_bytes", 0)))
-
-    fetch = payload.get("fetch")
-    if isinstance(fetch, Mapping):
-        table.add_row("fetch", _entity_text(fetch.get("id", "unknown")))
-        table.add_row("fetch state", _attention_text(fetch.get("state", "unknown")))
-        table.add_row("fetch files", str(fetch.get("files", 0)))
-        table.add_row("fetch bytes", _bytes_text(fetch.get("bytes", 0)))
-        table.add_row("fetch missing", _bytes_text(fetch.get("missing_bytes", 0)))
-        table.add_row("candidate copies", _copy_lines(fetch.get("copies")))
-
-    return RichGroup(RichText("hot pin", style="bold"), table)
+def _targets_lines(value: object, *, limit: int = 8) -> str:
+    targets = _string_items(value)
+    return _preview_lines(targets, limit=limit)
 
 
 def _fetch_status_lines(manifest: Mapping[str, Any]) -> tuple[list[str], list[str], list[str]]:
@@ -398,7 +347,9 @@ def _format_fetch_plain(summary: Mapping[str, Any], manifest: Mapping[str, Any])
 
     lines = [
         f"fetch: {summary.get('id', 'unknown')} ({summary.get('state', 'unknown')})",
-        f"target: {summary.get('target', 'unknown')}",
+        f"name: {summary.get('name', 'unknown')}",
+        "targets:",
+        *[f"- {target}" for target in _string_items(summary.get("targets"))],
     ]
     if not pending and not partial and not byte_complete:
         lines.append("entries: none")
@@ -422,7 +373,8 @@ def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> Any
     pending, partial, byte_complete = _fetch_status_lines(manifest)
     table = _detail_table()
     table.add_row("fetch", _entity_text(summary.get("id", "unknown")))
-    table.add_row("target", str(summary.get("target", "unknown")))
+    table.add_row("name", str(summary.get("name", "unknown")))
+    table.add_row("targets", _targets_lines(summary.get("targets")))
     table.add_row("state", _attention_text(summary.get("state", "unknown")))
     table.add_row("files", str(summary.get("files", 0)))
     table.add_row("bytes", _bytes_text(summary.get("bytes", 0)))
@@ -548,7 +500,9 @@ def format_recovery_sessions(payload: Mapping[str, Any]) -> Any:
 def _format_cloud_fetch_plain(payload: Mapping[str, Any]) -> str:
     lines = [
         f"cloud fetch: {payload.get('fetch_id', 'unknown')}",
-        f"target: {payload.get('target', 'unknown')}",
+        f"name: {payload.get('name', 'unknown')}",
+        "targets:",
+        *[f"- {target}" for target in _string_items(payload.get("targets"))],
     ]
     sessions_text = _format_recovery_sessions_plain(payload)
     lines.append(sessions_text)
@@ -561,7 +515,8 @@ def format_cloud_fetch(payload: Mapping[str, Any]) -> Any:
 
     overview = _detail_table()
     overview.add_row("fetch", _entity_text(payload.get("fetch_id", "unknown")))
-    overview.add_row("target", str(payload.get("target", "unknown")))
+    overview.add_row("name", str(payload.get("name", "unknown")))
+    overview.add_row("targets", _targets_lines(payload.get("targets")))
     overview.add_row("sessions", str(payload.get("total", 0)))
     return RichGroup(
         RichText("cloud fetch", style="bold"),
@@ -853,79 +808,79 @@ def format_collections(payload: Mapping[str, Any]) -> Any:
     return RichGroup(_page_text("collections", payload), table)
 
 
-def _format_hot_pins_plain(payload: Mapping[str, Any]) -> str:
-    prefix = "hot pins:"
-    if "page" in payload:
-        prefix = (
-            "hot pins: "
-            f"page {payload.get('page', 1)}/{payload.get('pages', 0)} "
-            f"per_page={payload.get('per_page', 25)} "
-            f"total={payload.get('total', 0)}"
-        )
-    pins = payload.get("pins")
-    if not isinstance(pins, Sequence) or not pins:
-        return f"{prefix}\n- none"
-    lines = [prefix]
-    for pin in pins:
-        if not isinstance(pin, Mapping):
+def _format_fetches_plain(payload: Mapping[str, Any]) -> str:
+    lines = [
+        "fetches: "
+        f"page {payload.get('page', 1)}/{payload.get('pages', 0)} "
+        f"per_page={payload.get('per_page', 25)} "
+        f"total={payload.get('total', 0)}"
+    ]
+    fetches = payload.get("fetches")
+    if not isinstance(fetches, Sequence) or not fetches:
+        lines.append("- none")
+        return "\n".join(lines)
+    for fetch in fetches:
+        if not isinstance(fetch, Mapping):
             continue
-        fetch = pin.get("fetch")
-        if isinstance(fetch, Mapping):
-            copies = fetch.get("copies")
-            copy_count = fetch.get(
-                "copy_count",
-                len(copies) if isinstance(copies, Sequence) else None,
-            )
-            lines.append(
-                f"- fetch={fetch.get('id', 'unknown')} "
-                f"target={pin.get('target', 'unknown')} "
-                f"state={fetch.get('state', 'unknown')} "
-                f"files={fetch.get('files', 0)} "
-                f"bytes={fetch.get('bytes', 0)} "
-                f"missing={fetch.get('missing_bytes', 0)}"
-                + (f" copies={copy_count}" if copy_count is not None else "")
-            )
-        else:
-            lines.append(f"- fetch=none target={pin.get('target', 'unknown')}")
+        lines.append(
+            f"- {fetch.get('id', 'unknown')} "
+            f"name={fetch.get('name', 'unknown')} "
+            f"state={fetch.get('state', 'unknown')} "
+            f"files={fetch.get('files', 0)} "
+            f"bytes={fetch.get('bytes', 0)} "
+            f"missing={fetch.get('missing_bytes', 0)}"
+        )
+        targets = _string_items(fetch.get("targets"))
+        if targets:
+            lines.append(f"  targets: {', '.join(targets)}")
     return "\n".join(lines)
 
 
-def format_hot_pins(payload: Mapping[str, Any]) -> Any:
+def format_fetches(payload: Mapping[str, Any]) -> Any:
     if not _rich_enabled():
-        return _format_hot_pins_plain(payload)
-    table = _quiet_table("Fetch", "Target", "State", "Missing", "Files", "Bytes")
-    pins = payload.get("pins")
-    if isinstance(pins, Sequence):
-        for pin in pins:
-            if not isinstance(pin, Mapping):
+        return _format_fetches_plain(payload)
+    table = _quiet_table("Fetch", "Name", "State", "Missing", "Files", "Bytes", "Targets")
+    fetches = payload.get("fetches")
+    if isinstance(fetches, Sequence):
+        for fetch in fetches:
+            if not isinstance(fetch, Mapping):
                 continue
-            fetch = pin.get("fetch")
-            fetch_id = "none"
-            state = "unknown"
-            if isinstance(fetch, Mapping):
-                fetch_id = str(fetch.get("id", "unknown"))
-                state = str(fetch.get("state", "unknown"))
-                files = str(fetch.get("files", 0))
-                bytes_text = _bytes_text(fetch.get("bytes", 0))
-                missing = _bytes_text(fetch.get("missing_bytes", 0))
-            else:
-                files = "0"
-                bytes_text = "0 B"
-                missing = "0 B"
             table.add_row(
-                _entity_text(fetch_id) if fetch_id != "none" else fetch_id,
-                str(pin.get("target", "unknown")),
-                _attention_text(state),
-                missing,
-                files,
-                bytes_text,
+                _entity_text(fetch.get("id", "unknown")),
+                str(fetch.get("name", "unknown")),
+                _attention_text(fetch.get("state", "unknown")),
+                _bytes_text(fetch.get("missing_bytes", 0)),
+                str(fetch.get("files", 0)),
+                _bytes_text(fetch.get("bytes", 0)),
+                _targets_lines(fetch.get("targets"), limit=3),
             )
     if not table.rows:
-        table.add_row("none", "", "", "", "", "")
-    title = (
-        _page_text("hot pins", payload) if "page" in payload else RichText("hot pins", style="bold")
+        table.add_row("none", "", "", "", "", "", "")
+    return RichGroup(_page_text("fetches", payload), table)
+
+
+def _format_hot_evict_plain(payload: Mapping[str, Any]) -> str:
+    return "\n".join(
+        [
+            f"targets: {', '.join(_string_items(payload.get('targets')))}",
+            f"selected: {payload.get('files', 0)} files {payload.get('bytes', 0)} bytes",
+            "evicted: "
+            f"{payload.get('evicted_files', 0)} files "
+            f"{payload.get('evicted_bytes', 0)} bytes",
+        ]
     )
-    return RichGroup(title, table)
+
+
+def format_hot_evict(payload: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        return _format_hot_evict_plain(payload)
+    table = _detail_table()
+    table.add_row("targets", _targets_lines(payload.get("targets")))
+    table.add_row("selected files", str(payload.get("files", 0)))
+    table.add_row("selected bytes", _bytes_text(payload.get("bytes", 0)))
+    table.add_row("evicted files", str(payload.get("evicted_files", 0)))
+    table.add_row("evicted bytes", _bytes_text(payload.get("evicted_bytes", 0)))
+    return RichGroup(RichText("hot evict", style="bold"), table)
 
 
 def _format_images_plain(payload: Mapping[str, Any]) -> str:
@@ -1043,24 +998,6 @@ def format_image(image: Mapping[str, Any]) -> Any:
     )
     table.add_row("collections", _collection_ids_lines(image.get("collection_ids")))
     return RichGroup(RichText("image", style="bold"), table)
-
-
-def _format_release_plain(payload: Mapping[str, Any]) -> str:
-    return "\n".join(
-        [
-            f"target: {payload.get('target', 'unknown')}",
-            f"pin: {'true' if payload.get('pin') else 'false'}",
-        ]
-    )
-
-
-def format_release(payload: Mapping[str, Any]) -> Any:
-    if not _rich_enabled():
-        return _format_release_plain(payload)
-    table = _detail_table()
-    table.add_row("target", str(payload.get("target", "unknown")))
-    table.add_row("pin", "yes" if payload.get("pin") else "no")
-    return RichGroup(RichText("hot pin", style="bold"), table)
 
 
 def _disc_copy_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:

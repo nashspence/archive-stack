@@ -6,13 +6,19 @@ from fastapi import APIRouter, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
 
 from riverhog_api.deps import ContainerDep
-from riverhog_api.mappers import map_fetch
+from riverhog_api.mappers import map_fetch, map_fetch_list
 from riverhog_api.schemas.fetches import (
     CompleteFetchResponse,
+    CreateFetchRequest,
+    FetchesResponse,
     FetchManifestResponse,
     FetchStatusResponse,
     FetchSummaryOut,
+    FetchTargetsRequest,
     FetchUploadSessionResponse,
+    HotEvictRequest,
+    HotEvictResponse,
+    StartFetchRequest,
 )
 from riverhog_api.tus import (
     tus_delete_headers,
@@ -23,6 +29,78 @@ from riverhog_api.tus import (
 from riverhog_api.urls import public_request_url
 
 router = APIRouter(tags=["fetches"])
+
+
+@router.post("/hot/evict", response_model=HotEvictResponse)
+def evict_hot_targets(
+    request: HotEvictRequest,
+    container: ContainerDep,
+) -> HotEvictResponse:
+    payload = container.fetches.evict(request.targets)
+    return HotEvictResponse.model_validate(payload)
+
+
+@router.get("/fetches", response_model=FetchesResponse)
+def list_fetches(
+    container: ContainerDep,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=100),
+    state: str | None = Query(None),
+    q: str | None = Query(None),
+    sort: str = Query("order"),
+    order: str = Query("asc"),
+) -> FetchesResponse:
+    summary = container.fetches.list(
+        page=page,
+        per_page=per_page,
+        state=state,
+        q=q,
+        sort=sort,
+        order=order,
+    )
+    return FetchesResponse.model_validate(map_fetch_list(summary))
+
+
+@router.post("/fetches", response_model=FetchSummaryOut)
+def create_fetch(
+    request: CreateFetchRequest,
+    container: ContainerDep,
+) -> FetchSummaryOut:
+    summary = container.fetches.create(name=request.name, targets=request.targets)
+    return FetchSummaryOut.model_validate(map_fetch(summary))
+
+
+@router.post("/fetches/{fetch_id}/targets", response_model=FetchSummaryOut)
+def add_fetch_targets(
+    fetch_id: str,
+    request: FetchTargetsRequest,
+    container: ContainerDep,
+) -> FetchSummaryOut:
+    summary = container.fetches.add_targets(fetch_id, request.targets)
+    return FetchSummaryOut.model_validate(map_fetch(summary))
+
+
+@router.delete("/fetches/{fetch_id}/targets", response_model=FetchSummaryOut)
+def remove_fetch_targets(
+    fetch_id: str,
+    request: FetchTargetsRequest,
+    container: ContainerDep,
+) -> FetchSummaryOut:
+    summary = container.fetches.remove_targets(fetch_id, request.targets)
+    return FetchSummaryOut.model_validate(map_fetch(summary))
+
+
+@router.post("/fetches/{fetch_id}/start", response_model=FetchSummaryOut)
+def start_fetch(
+    fetch_id: str,
+    request: StartFetchRequest,
+    container: ContainerDep,
+) -> FetchSummaryOut:
+    summary = container.fetches.start(fetch_id, cloud=request.cloud)
+    if request.cloud:
+        container.recovery_sessions.create_or_resume_for_fetch(fetch_id)
+        summary = container.fetches.get(fetch_id)
+    return FetchSummaryOut.model_validate(map_fetch(summary))
 
 
 @router.get("/fetches/{fetch_id}", response_model=FetchSummaryOut)

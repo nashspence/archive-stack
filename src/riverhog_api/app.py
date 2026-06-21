@@ -21,7 +21,6 @@ from riverhog_api.routers.files import router as files_router
 from riverhog_api.routers.glacier import router as glacier_router
 from riverhog_api.routers.images import router as images_router
 from riverhog_api.routers.internal import router as internal_router
-from riverhog_api.routers.pins import router as pins_router
 from riverhog_api.routers.plan import router as plan_router
 from riverhog_api.routers.recovery_sessions import router as recovery_sessions_router
 from riverhog_api.routers.search import router as search_router
@@ -115,16 +114,16 @@ def _process_glacier_recovery_sessions(
     *,
     startup_hot_repair_audit: bool = False,
 ) -> None:
-    container.recovery_sessions.repair_missing_pinned_hot_files(
+    container.recovery_sessions.repair_missing_fetch_hot_files(
         limit=10_000 if startup_hot_repair_audit else 100
     )
-    container.fetches.deliver_due_waiting_notifications(limit=100)
+    container.fetches.deliver_due_queued_notifications(limit=100)
     container.recovery_sessions.process_due_sessions(limit=10)
 
 
 def _process_planner_refresh(container: ServiceContainer) -> None:
-    container.recovery_sessions.repair_missing_pinned_hot_files(limit=100)
-    container.fetches.deliver_due_waiting_notifications(limit=100)
+    container.recovery_sessions.repair_missing_fetch_hot_files(limit=100)
+    container.fetches.deliver_due_queued_notifications(limit=100)
     container.planning.process_due_refresh(limit=1)
 
 
@@ -208,7 +207,7 @@ async def _run_glacier_recovery_reaper(
             startup_hot_repair_audit = False
             if current_startup_hot_repair_audit:
                 _LOG.info(
-                    "startup pinned hot-file audit queued in background; API startup is not blocked"
+                    "startup fetch hot-file audit queued in background; API startup is not blocked"
                 )
             await asyncio.to_thread(
                 _process_glacier_recovery_sessions,
@@ -383,7 +382,6 @@ def create_app(
     app.include_router(plan_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(images_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(glacier_router, prefix="/v1", dependencies=auth_deps)
-    app.include_router(pins_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(fetches_router, prefix="/v1", dependencies=auth_deps)
     return app
 

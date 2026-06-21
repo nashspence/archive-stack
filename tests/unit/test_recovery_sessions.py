@@ -11,10 +11,11 @@ import pytest
 
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
-    ActivePinRecord,
     CollectionArchiveRecord,
     CollectionFileRecord,
     CollectionRecord,
+    FetchRecord,
+    FetchSelectorRecord,
     FileCopyRecord,
     FinalizedImageCollectionArtifactRecord,
     FinalizedImageCoveragePartRecord,
@@ -232,6 +233,30 @@ def _config(sqlite_path: Path, **overrides: object) -> RuntimeConfig:
         ots_verify_command=(sys.executable, "-m", "tests.fixtures.ots_stamp_command"),
     )
     return replace(config, **overrides)
+
+
+def _add_fetch(
+    session,
+    *,
+    target: str,
+    fetch_id: str = "fx-1",
+    fetch_state: str = FetchState.DONE.value,
+) -> None:
+    session.add(
+        FetchRecord(
+            fetch_id=fetch_id,
+            name=target,
+            fetch_order=1,
+            fetch_state=fetch_state,
+        )
+    )
+    session.add(
+        FetchSelectorRecord(
+            fetch_id=fetch_id,
+            target=target,
+            selector_order=1,
+        )
+    )
 
 
 def _seed_finalized_image(
@@ -930,7 +955,7 @@ def test_collection_restore_materializes_selected_files_to_hot_storage(
         assert row.hot is True
 
 
-def test_missing_pinned_hot_file_without_disc_coverage_restores_from_glacier(
+def test_missing_fetch_hot_file_without_disc_coverage_restores_from_glacier(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -946,13 +971,9 @@ def test_missing_pinned_hot_file_without_disc_coverage_restores_from_glacier(
     package = _docs_collection_archive_package()
     _seed_collection_archive(sqlite_path, package)
     with session_scope(make_session_factory(sqlite_url(sqlite_path))) as session:
-        session.add(
-            ActivePinRecord(
-                target="docs/tax/2022/invoice-123.pdf",
-                fetch_id="fx-1",
-                fetch_order=1,
-                fetch_state=FetchState.DONE.value,
-            )
+        _add_fetch(
+            session,
+            target="docs/tax/2022/invoice-123.pdf",
         )
 
     store = _FakeArchiveStore(collection_packages={"docs": package})
@@ -968,7 +989,7 @@ def test_missing_pinned_hot_file_without_disc_coverage_restores_from_glacier(
         lambda: datetime(2026, 4, 20, 4, 0, tzinfo=UTC),
     )
 
-    assert recovery_service.repair_missing_pinned_hot_files(limit=10) == 1
+    assert recovery_service.repair_missing_fetch_hot_files(limit=10) == 1
 
     restored_path = "tax/2022/invoice-123.pdf"
     assert hot_store.puts == {("docs", restored_path): DOCS_FILES[restored_path]}
@@ -981,14 +1002,14 @@ def test_missing_pinned_hot_file_without_disc_coverage_restores_from_glacier(
     ]
     with session_scope(make_session_factory(sqlite_url(sqlite_path))) as session:
         row = session.get(CollectionFileRecord, {"collection_id": "docs", "path": restored_path})
-        pin = session.get(ActivePinRecord, "docs/tax/2022/invoice-123.pdf")
+        fetch = session.get(FetchRecord, "fx-1")
         assert row is not None
         assert row.hot is True
-        assert pin is not None
-        assert pin.fetch_state == FetchState.DONE.value
+        assert fetch is not None
+        assert fetch.fetch_state == FetchState.DONE.value
 
 
-def test_missing_pinned_hot_file_with_disc_coverage_waits_for_djdan_fetch(
+def test_missing_fetch_hot_file_with_disc_coverage_waits_for_djdan_fetch(
     tmp_path: Path,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
@@ -1001,13 +1022,9 @@ def test_missing_pinned_hot_file_with_disc_coverage_waits_for_djdan_fetch(
         archived=True,
     )
     with session_scope(make_session_factory(sqlite_url(sqlite_path))) as session:
-        session.add(
-            ActivePinRecord(
-                target="docs/tax/2022/invoice-123.pdf",
-                fetch_id="fx-1",
-                fetch_order=1,
-                fetch_state=FetchState.DONE.value,
-            )
+        _add_fetch(
+            session,
+            target="docs/tax/2022/invoice-123.pdf",
         )
         session.add(
             FileCopyRecord(
@@ -1029,7 +1046,7 @@ def test_missing_pinned_hot_file_with_disc_coverage_waits_for_djdan_fetch(
         hot_store,
     )
 
-    assert recovery_service.repair_missing_pinned_hot_files(limit=10) == 1
+    assert recovery_service.repair_missing_fetch_hot_files(limit=10) == 1
 
     assert store.restore_requests == []
     assert hot_store.puts == {}
@@ -1038,11 +1055,11 @@ def test_missing_pinned_hot_file_with_disc_coverage_waits_for_djdan_fetch(
             CollectionFileRecord,
             {"collection_id": "docs", "path": "tax/2022/invoice-123.pdf"},
         )
-        pin = session.get(ActivePinRecord, "docs/tax/2022/invoice-123.pdf")
+        fetch = session.get(FetchRecord, "fx-1")
         assert row is not None
         assert row.hot is False
-        assert pin is not None
-        assert pin.fetch_state == FetchState.WAITING_MEDIA.value
+        assert fetch is not None
+        assert fetch.fetch_state == FetchState.QUEUED_DJDAN.value
 
 
 def test_collection_restore_streams_large_selected_file_to_hot_storage(

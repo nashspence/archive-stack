@@ -25,7 +25,8 @@ def _cloud_fetch_payload(
     fetch = container.fetches.get(fetch_id)
     payload = map_recovery_session_list(summary)
     payload["fetch_id"] = fetch_id
-    payload["target"] = str(fetch.target)
+    payload["name"] = fetch.name
+    payload["targets"] = [str(target) for target in fetch.targets]
     return CloudFetchSessionsOut.model_validate(payload)
 
 
@@ -63,15 +64,6 @@ def get_cloud_fetch_sessions(
         order=order,
         state=state,
     )
-    return _cloud_fetch_payload(fetch_id, container, summary)
-
-
-@router.post("/fetches/{fetch_id}/cloud-fetch", response_model=CloudFetchSessionsOut)
-def create_or_resume_cloud_fetch(
-    fetch_id: str,
-    container: ContainerDep,
-) -> CloudFetchSessionsOut:
-    summary = container.recovery_sessions.create_or_resume_for_fetch(fetch_id)
     return _cloud_fetch_payload(fetch_id, container, summary)
 
 

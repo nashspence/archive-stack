@@ -1,6 +1,6 @@
 @acceptance @api @mvp
 Feature: Search API
-  The API returns a paged file inventory with stable projected-path selectors that can be reused directly by pin and release.
+  The API returns a paged file inventory with stable projected-path selectors that can be reused directly by fetch creation and hot eviction.
 
   Background:
     Given an archive containing deterministic fixture collections
@@ -20,8 +20,8 @@ Feature: Search API
   Scenario: Search selectors are directly reusable
     When the client gets "/v1/search?q=japan&page=1&per_page=25"
     Then the response status is 200
-    And every returned target is valid input for pin
-    And every returned target is valid input for release
+    And every returned target is valid input for fetch creation
+    And every returned target is valid input for hot eviction
 
   Scenario: Search is paginated
     When the client gets "/v1/search?q=a&page=1&per_page=1"

@@ -21,10 +21,11 @@ from riverhog_core.archive_compliance import (
 )
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
-    ActivePinRecord,
     CollectionArchiveRecord,
     CollectionFileRecord,
     CollectionRecord,
+    FetchRecord,
+    FetchSelectorRecord,
     FinalizedImageCollectionArtifactRecord,
     FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
@@ -317,10 +318,10 @@ class SqlAlchemyRecoverySessionService:
             raise BadRequest(f"state must be one of {', '.join(sorted(_PUBLIC_RECOVERY_STATES))}")
 
         with session_scope(self._session_factory) as session:
-            pin_record = _require_fetch_pin(session, fetch_id)
+            fetch_record = _require_fetch(session, fetch_id)
             records = _collection_restore_records_for_fetch(
                 session,
-                pin_record=pin_record,
+                fetch_record=fetch_record,
                 state=state,
             )
             records = _sort_recovery_records(records, sort=sort, order=order)
@@ -345,10 +346,12 @@ class SqlAlchemyRecoverySessionService:
 
     def create_or_resume_for_fetch(self, fetch_id: str) -> RecoverySessionListPage:
         with session_scope(self._session_factory) as session:
-            pin_record = _require_fetch_pin(session, fetch_id)
+            fetch_record = _require_fetch(session, fetch_id)
+            if fetch_record.fetch_state == FetchState.QUEUED_CLOUD.value:
+                fetch_record.fetch_state = FetchState.CLOUD_FETCHING.value
             restore_paths_by_collection = _fetch_collection_restore_paths(
                 session,
-                pin_record=pin_record,
+                fetch_record=fetch_record,
                 missing_only=True,
             )
 
@@ -365,16 +368,21 @@ class SqlAlchemyRecoverySessionService:
 
     def cancel_for_fetch(self, fetch_id: str) -> RecoverySessionListPage:
         with session_scope(self._session_factory) as session:
-            pin_record = _require_fetch_pin(session, fetch_id)
+            fetch_record = _require_fetch(session, fetch_id)
             session_ids = [
                 record.session_id
                 for record in _collection_restore_records_for_fetch(
                     session,
-                    pin_record=pin_record,
+                    fetch_record=fetch_record,
                     state=None,
                 )
                 if record.state in _ACTIVE_RECOVERY_STATES
             ]
+            if fetch_record.fetch_state in {
+                FetchState.QUEUED_CLOUD.value,
+                FetchState.CLOUD_FETCHING.value,
+            }:
+                fetch_record.fetch_state = FetchState.DRAFT.value
 
         for session_id in session_ids:
             self.cancel(session_id)
@@ -672,7 +680,7 @@ class SqlAlchemyRecoverySessionService:
                     next_retry_at=next_retry_at,
                 )
 
-    def repair_missing_pinned_hot_files(self, *, limit: int = 100) -> int:
+    def repair_missing_fetch_hot_files(self, *, limit: int = 100) -> int:
         if limit < 1 or self._hot_store is None:
             return 0
         hot_store = self._hot_store
@@ -681,15 +689,17 @@ class SqlAlchemyRecoverySessionService:
         operator_fetches = 0
         missing_count = 0
         with session_scope(self._session_factory) as session:
-            pins = session.scalars(
-                select(ActivePinRecord).order_by(ActivePinRecord.fetch_order)
+            fetches = session.scalars(
+                select(FetchRecord)
+                .where(FetchRecord.fetch_state != FetchState.DRAFT.value)
+                .order_by(FetchRecord.fetch_order)
             ).all()
-            for pin in pins:
+            for fetch_record in fetches:
                 if missing_count >= limit:
                     break
-                selected = _selected_pin_files(session, pin.target)
+                selected = _selected_fetch_files(session, fetch_record.fetch_id)
                 listed_hot_files: dict[str, dict[str, int]] = {}
-                missing_for_pin: list[CollectionFileRecord] = []
+                missing_for_fetch: list[CollectionFileRecord] = []
                 for file_record in selected:
                     if missing_count >= limit:
                         break
@@ -703,7 +713,7 @@ class SqlAlchemyRecoverySessionService:
                             file_record.hot = True
                         continue
                     file_record.hot = False
-                    missing_for_pin.append(file_record)
+                    missing_for_fetch.append(file_record)
                     missing_count += 1
                     if file_has_registered_disc_coverage(
                         session,
@@ -716,14 +726,18 @@ class SqlAlchemyRecoverySessionService:
                             file_record.collection_id,
                             set(),
                         ).add(file_record.path)
-                if missing_for_pin:
-                    pin.fetch_state = FetchState.WAITING_MEDIA.value
-                elif pin.fetch_state != FetchState.DONE.value:
-                    pin.fetch_state = FetchState.DONE.value
+                if missing_for_fetch:
+                    if fetch_record.fetch_state == FetchState.DONE.value:
+                        fetch_record.fetch_state = FetchState.QUEUED_DJDAN.value
+                elif fetch_record.fetch_state not in {
+                    FetchState.DRAFT.value,
+                    FetchState.DONE.value,
+                }:
+                    fetch_record.fetch_state = FetchState.DONE.value
 
         if missing_count:
             _LOG.info(
-                "pinned hot-file audit found missing files: total=%s "
+                "fetch hot-file audit found missing files: total=%s "
                 "operator_fetch_files=%s glacier_restore_collections=%s",
                 missing_count,
                 operator_fetches,
@@ -732,7 +746,7 @@ class SqlAlchemyRecoverySessionService:
 
         restored_collections = 0
         for collection_id, paths in sorted(glacier_restore_paths.items()):
-            if self._restore_missing_pinned_files_from_glacier(
+            if self._restore_missing_fetch_files_from_glacier(
                 collection_id=collection_id,
                 paths=sorted(paths),
             ):
@@ -740,10 +754,10 @@ class SqlAlchemyRecoverySessionService:
 
         if restored_collections:
             with session_scope(self._session_factory) as session:
-                _sync_pin_states_after_hot_repair(session, hot_store=hot_store)
+                _sync_fetch_states_after_hot_repair(session, hot_store=hot_store)
         return missing_count
 
-    def _restore_missing_pinned_files_from_glacier(
+    def _restore_missing_fetch_files_from_glacier(
         self,
         *,
         collection_id: str,
@@ -761,7 +775,7 @@ class SqlAlchemyRecoverySessionService:
             if summary.state == RecoverySessionState.COMPLETED:
                 return True
             _LOG.info(
-                "automatic Glacier restore is pending for missing pinned files: "
+                "automatic Glacier restore is pending for missing fetch files: "
                 "collection=%s session=%s state=%s",
                 collection_id,
                 summary.id,
@@ -770,7 +784,7 @@ class SqlAlchemyRecoverySessionService:
             return False
         except Exception:
             _LOG.exception(
-                "automatic Glacier restore for missing pinned files failed: collection=%s",
+                "automatic Glacier restore for missing fetch files failed: collection=%s",
                 collection_id,
             )
             return False
@@ -1004,26 +1018,43 @@ def ensure_glacier_recovery_session_for_image(
     _create_recovery_session(session, config=config, image=image)
 
 
-def _selected_pin_files(session: Session, raw_target: str) -> list[CollectionFileRecord]:
-    return selected_collection_files(session, raw_target, missing_ok=True)
-
-
-def _require_fetch_pin(session: Session, fetch_id: str) -> ActivePinRecord:
-    pin_record = session.scalar(select(ActivePinRecord).where(ActivePinRecord.fetch_id == fetch_id))
-    if pin_record is None:
+def _require_fetch(session: Session, fetch_id: str) -> FetchRecord:
+    fetch_record = session.get(FetchRecord, fetch_id)
+    if fetch_record is None:
         raise NotFound(f"fetch not found: {fetch_id}")
-    return pin_record
+    return fetch_record
+
+
+def _fetch_selector_targets(session: Session, fetch_id: str) -> tuple[str, ...]:
+    return tuple(
+        session.scalars(
+            select(FetchSelectorRecord.target)
+            .where(FetchSelectorRecord.fetch_id == fetch_id)
+            .order_by(FetchSelectorRecord.selector_order, FetchSelectorRecord.target)
+        ).all()
+    )
+
+
+def _selected_fetch_files(session: Session, fetch_id: str) -> list[CollectionFileRecord]:
+    selected_by_key: dict[tuple[str, str], CollectionFileRecord] = {}
+    targets = _fetch_selector_targets(session, fetch_id)
+    for target in targets:
+        for record in selected_collection_files(session, target, missing_ok=True):
+            selected_by_key[(record.collection_id, record.path)] = record
+    return [
+        selected_by_key[key] for key in sorted(selected_by_key, key=lambda item: (item[0], item[1]))
+    ]
 
 
 def _fetch_collection_restore_paths(
     session: Session,
     *,
-    pin_record: ActivePinRecord,
+    fetch_record: FetchRecord,
     missing_only: bool,
 ) -> dict[str, set[str]]:
-    selected = _selected_pin_files(session, pin_record.target)
+    selected = _selected_fetch_files(session, fetch_record.fetch_id)
     if not selected:
-        raise NotFound(f"fetch target has no files: {pin_record.fetch_id}")
+        raise NotFound(f"fetch has no files: {fetch_record.fetch_id}")
     paths_by_collection: dict[str, set[str]] = {}
     for file_record in selected:
         if missing_only and file_record.hot:
@@ -1049,12 +1080,12 @@ def _record_restore_paths_intersect_fetch(
 def _collection_restore_records_for_fetch(
     session: Session,
     *,
-    pin_record: ActivePinRecord,
+    fetch_record: FetchRecord,
     state: str | None,
 ) -> list[GlacierRecoverySessionRecord]:
     paths_by_collection = _fetch_collection_restore_paths(
         session,
-        pin_record=pin_record,
+        fetch_record=fetch_record,
         missing_only=False,
     )
     type_expr = func.coalesce(GlacierRecoverySessionRecord.type, "image_rebuild")
@@ -1162,14 +1193,18 @@ def _missing_hot_paths(
     return missing
 
 
-def _sync_pin_states_after_hot_repair(session: Session, *, hot_store: HotStore) -> None:
-    pins = session.scalars(select(ActivePinRecord).order_by(ActivePinRecord.fetch_order)).all()
-    for pin in pins:
-        selected = _selected_pin_files(session, pin.target)
+def _sync_fetch_states_after_hot_repair(session: Session, *, hot_store: HotStore) -> None:
+    fetches = session.scalars(
+        select(FetchRecord)
+        .where(FetchRecord.fetch_state != FetchState.DRAFT.value)
+        .order_by(FetchRecord.fetch_order)
+    ).all()
+    for fetch_record in fetches:
+        selected = _selected_fetch_files(session, fetch_record.fetch_id)
         if selected and all(
             _hot_file_available(hot_store, file_record) for file_record in selected
         ):
-            pin.fetch_state = FetchState.DONE.value
+            fetch_record.fetch_state = FetchState.DONE.value
 
 
 def _create_recovery_session(
