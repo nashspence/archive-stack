@@ -589,7 +589,7 @@ restore-ready and expiry cleanup.
 - type: duration
 - default: `48h`
 
-Operator-facing restore-latency estimate shown while one approved recovery
+Operator-facing restore-latency estimate shown while one requested recovery
 session waits for archive restore completion. Real readiness is driven by the
 archive object's restore/readability status when a production archive store is
 configured.

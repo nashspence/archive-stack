@@ -10,8 +10,7 @@ Feature: Outbound operator webhooks
     And the client posts to "/v1/images/20260420T040001Z/copies" with id "20260420T040001Z-2" and location "Shelf B1"
     And the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-1" with state "lost"
     And the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-2" with state "damaged"
-    When the client posts to "/v1/recovery-sessions/rs-20260420T040001Z-rebuild-1/approve"
-    And the client waits for captured webhook event "glacier_recovery.ready"
+    When the client waits for captured webhook event "glacier_recovery.ready"
     Then the captured webhook payload field "session_id" equals "rs-20260420T040001Z-rebuild-1"
     And the captured webhook payload field "type" equals "image_rebuild"
     And the captured webhook payload images contain only "20260420T040001Z"
@@ -30,8 +29,7 @@ Feature: Outbound operator webhooks
     And the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-1" with state "lost"
     And the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-2" with state "damaged"
     And the captured webhook sink fails event "glacier_recovery.ready" with status 503 once
-    When the client posts to "/v1/recovery-sessions/rs-20260420T040001Z-rebuild-1/approve"
-    And the client waits for captured webhook attempt "glacier_recovery.ready" result "failed"
+    When the client waits for captured webhook attempt "glacier_recovery.ready" result "failed"
     Then captured webhook event "glacier_recovery.ready" has 0 successful deliveries
     And captured webhook event "glacier_recovery.ready" has 1 attempts with result "failed"
     When the client waits for captured webhook event "glacier_recovery.ready"
@@ -50,8 +48,7 @@ Feature: Outbound operator webhooks
     And the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-1" with state "lost"
     And the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-2" with state "damaged"
     And the captured webhook sink times out event "glacier_recovery.ready" once
-    When the client posts to "/v1/recovery-sessions/rs-20260420T040001Z-rebuild-1/approve"
-    And the client waits for captured webhook attempt "glacier_recovery.ready" result "timeout"
+    When the client waits for captured webhook attempt "glacier_recovery.ready" result "timeout"
     Then captured webhook event "glacier_recovery.ready" has 0 successful deliveries
     And captured webhook event "glacier_recovery.ready" has 1 attempts with result "timeout"
     When the client waits up to 40 seconds for captured webhook event "glacier_recovery.ready"

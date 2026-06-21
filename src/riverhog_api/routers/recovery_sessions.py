@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_recovery_session, map_recovery_session_list
 from riverhog_api.schemas.recovery_sessions import (
-    CollectionRestoreMaterializeRequest,
+    CollectionRestoreStartRequest,
     RecoverySessionListOut,
     RecoverySessionOut,
 )
@@ -29,17 +29,12 @@ def get_collection_restore_session(
 def create_or_resume_collection_restore_session(
     collection_id: str,
     container: ContainerDep,
+    request: CollectionRestoreStartRequest | None = None,
 ) -> RecoverySessionOut:
-    summary = container.recovery_sessions.create_or_resume_for_collection(collection_id)
-    return RecoverySessionOut.model_validate(map_recovery_session(summary))
-
-
-@router.post("/images/{image_id}/rebuild-session", response_model=RecoverySessionOut)
-def create_or_resume_image_rebuild_session(
-    image_id: str,
-    container: ContainerDep,
-) -> RecoverySessionOut:
-    summary = container.recovery_sessions.create_or_resume_for_image(image_id)
+    summary = container.recovery_sessions.create_or_resume_for_collection(
+        collection_id,
+        paths=None if request is None else request.paths,
+    )
     return RecoverySessionOut.model_validate(map_recovery_session(summary))
 
 
@@ -71,7 +66,6 @@ def list_recovery_sessions(
         Query(alias="type"),
     ] = None,
     state: Literal[
-        "pending_approval",
         "restore_requested",
         "ready",
         "expired",
@@ -103,39 +97,12 @@ def get_recovery_session(
     return RecoverySessionOut.model_validate(map_recovery_session(summary))
 
 
-@router.post("/recovery-sessions/{session_id}/approve", response_model=RecoverySessionOut)
-def approve_recovery_session(
-    session_id: str,
-    container: ContainerDep,
-) -> RecoverySessionOut:
-    summary = container.recovery_sessions.approve(session_id)
-    return RecoverySessionOut.model_validate(map_recovery_session(summary))
-
-
 @router.post("/recovery-sessions/{session_id}/complete", response_model=RecoverySessionOut)
 def complete_recovery_session(
     session_id: str,
     container: ContainerDep,
 ) -> RecoverySessionOut:
     summary = container.recovery_sessions.complete(session_id)
-    return RecoverySessionOut.model_validate(map_recovery_session(summary))
-
-
-@router.post(
-    "/recovery-sessions/{session_id}/collections/{collection_id:path}/materialize",
-    response_model=RecoverySessionOut,
-)
-def materialize_collection_restore_files(
-    session_id: str,
-    collection_id: str,
-    request: CollectionRestoreMaterializeRequest,
-    container: ContainerDep,
-) -> RecoverySessionOut:
-    summary = container.recovery_sessions.materialize_collection_files(
-        session_id,
-        collection_id,
-        paths=request.paths,
-    )
     return RecoverySessionOut.model_validate(map_recovery_session(summary))
 
 

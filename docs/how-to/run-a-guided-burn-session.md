@@ -121,22 +121,23 @@ does not clear burn backlog.
 
 ## Recover an image rebuild session
 
-Use `djdan image rebuild` when `djdan burn` reports that ordinary backlog is
-clear but image rebuild work remains.
+Use `djdan image rebuild` to inspect restore progress when `djdan burn` reports
+that ordinary backlog is clear but image rebuild restore work is still pending.
 
 1. Run `djdan image rebuild list` to list the active recovery sessions.
-2. Run `djdan image rebuild approve <session-id>` once to approve the restore request if the session is still
-   `pending_approval`.
-3. Wait until the session reports `ready`.
-4. Run `djdan image rebuild burn <session-id>` to rebuild and stage the ISO data from
-   restored collection archives, then burn the needed replacement copies.
-5. If that run is interrupted after staging or after partial burn work, run the same command again to resume from the
-   local checkpoints and staged ISO artifacts.
+2. Wait until the session reports `ready`; `djdan image rebuild show <session-id>`
+   shows the current restore state and latest operator message.
+3. Once the session is `ready`, run `djdan burn` again. It rebuilds and stages
+   the ISO data from restored collection archives, then burns the needed
+   replacement copies.
+4. If that run is interrupted after staging or after partial burn work, run
+   `djdan burn` again to resume from the local checkpoints and staged ISO
+   artifacts.
 
 Examples:
 
 ```bash
 djdan image rebuild list
-djdan image rebuild approve rs-20260420T040001Z-rebuild-1
-djdan image rebuild burn rs-20260420T040001Z-rebuild-1
+djdan image rebuild show rs-20260420T040001Z-rebuild-1
+djdan burn
 ```

@@ -272,26 +272,30 @@ Expected multipart flow:
 
 ## Recovery Sessions
 
-`djdan image rebuild` owns `image_rebuild` recovery sessions after one or more
-finalized images lose all protected copies.
+`djdan image rebuild` lists `image_rebuild` recovery sessions after one or more
+finalized images lose all protected copies. Replacement burns stay in the normal
+`djdan burn` workflow.
 
 - `djdan image rebuild list` lists active image-rebuild recovery
   sessions and the finalized images attached to each one
-- `djdan image rebuild approve SESSION` approves the archive restore and exits after the
-  restore request is submitted
+- `djdan image rebuild show SESSION` shows restore readiness, attached images,
+  and latest operator message
+- while a session is still `restore_requested`, `djdan burn` exits cleanly and
+  reports the recovery session that is blocking burn backlog
+- once the session is `ready`, `djdan burn` stages and burns the replacement
+  media automatically
 - recovery-session readiness is driven by archive-store restore status, not only by the operator-facing latency
   estimate
 - AWS S3 Glacier Deep Archive Bulk recovery should be expected to wait roughly
   48 hours; Riverhog polls S3 restore state and uses the configured ready TTL as
   the temporary-copy window once S3 reports the archive object restored
-- with a session id in `ready`, `djdan image rebuild burn SESSION` stages every still-needed
-  rebuilt image ISO in that session before burn work starts so a later retry can
-  resume from local artifacts
+- for a ready session, `djdan burn` stages every still-needed rebuilt image ISO
+  in that session before burn work starts so a later retry can resume from local
+  artifacts
 - ready sessions stage ISO bytes rebuilt from restored collection archives and
   persisted image coverage metadata
 - if the restore window expires after local staging succeeded,
-  `djdan image rebuild burn SESSION` can still resume from the staged ISO
-  artifacts already on disk
+  `djdan burn` can still resume from the staged ISO artifacts already on disk
 - recovery burns reuse the same local checkpoint behavior as `djdan burn`, including resume from unfinished
   burned-media verification or label confirmation
 - when the recovery session finishes, Riverhog marks the session completed,

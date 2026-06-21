@@ -53,8 +53,6 @@ def test_acceptance_system_can_serve_real_iso_streams_from_fake_backed_state(
             )
             assert response.status_code == 200, response.text
         session = system.recovery_sessions.get_for_image(image_id)
-        response = system.request("POST", f"/v1/recovery-sessions/{session.id}/approve")
-        assert response.status_code == 200, response.text
         system.wait_for_recovery_session_state(str(session.id), "ready")
 
         response = system.request(

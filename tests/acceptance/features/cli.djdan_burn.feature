@@ -37,12 +37,13 @@ Feature: djdan burn CLI
     And the client posts to "/v1/images/20260420T040001Z/copies" with id "20260420T040001Z-2" and location "Shelf B1"
     And the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-1" with state "lost"
     And the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-2" with state "damaged"
+    And recovery session "rs-20260420T040001Z-rebuild-1" restore remains pending
     When the operator runs djdan burn
     Then the command exits with code 0
     And stdout mentions "burn backlog already clear"
-    And stdout mentions "image rebuild work remains"
+    And stdout mentions "burn backlog is waiting for image rebuild restore work"
     And stdout mentions "rs-20260420T040001Z-rebuild-1"
-    And stdout mentions "pending_approval"
+    And stdout mentions "restore_requested"
     And stdout does not mention "20260420T040001Z-3"
     And copy "20260420T040001Z-3" for image "20260420T040001Z" state is "needed"
 

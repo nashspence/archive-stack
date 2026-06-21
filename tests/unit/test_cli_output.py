@@ -135,7 +135,7 @@ def test_format_recovery_sessions_use_session_as_primary_id(
             {
                 "id": "rs-20260420T040001Z-rebuild-1",
                 "type": "image_rebuild",
-                "state": "pending_approval",
+                "state": "restore_requested",
                 "restore_ready_at": None,
                 "restore_expires_at": None,
                 "collections": [{"id": "docs"}],
@@ -147,10 +147,9 @@ def test_format_recovery_sessions_use_session_as_primary_id(
     rendered = _render_styled(format_recovery_sessions(payload))
 
     assert "rs-20260420T040001Z-rebuild-1" in rendered
-    assert "pending_approval" in rendered
+    assert "restore_requested" in rendered
     assert rendered.count("38;2;142;201;204") == 1
     assert "38;2;192;173;108" in rendered
-    assert "38;2;255;137;51" in rendered
 
 
 def test_format_recovery_session_keeps_related_ids_plain(
@@ -166,11 +165,11 @@ def test_format_recovery_session_keeps_related_ids_plain(
                 "type": "collection_restore",
                 "state": "ready",
                 "created_at": "2026-04-20T04:00:00Z",
-                "approved_at": "2026-04-20T04:00:01Z",
                 "restore_requested_at": "2026-04-20T04:00:01Z",
                 "restore_ready_at": "2026-04-20T04:00:02Z",
                 "restore_expires_at": "2026-04-21T04:00:02Z",
                 "completed_at": None,
+                "restore_paths": ["tax/2022/invoice-123.pdf"],
                 "latest_message": "Restored collection files are ready.",
                 "warnings": [],
                 "progress": {

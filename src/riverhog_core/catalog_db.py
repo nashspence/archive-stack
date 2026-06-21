@@ -258,6 +258,24 @@ def _ensure_schema_indexes(engine: Engine) -> None:
         )
 
 
+def _ensure_schema_columns(engine: Engine) -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    if "glacier_recovery_sessions" not in table_names:
+        return
+    recovery_columns = {
+        column["name"] for column in inspector.get_columns("glacier_recovery_sessions")
+    }
+    if "restore_paths_json" not in recovery_columns:
+        with engine.begin() as conn:
+            conn.execute(
+                text("ALTER TABLE glacier_recovery_sessions ADD COLUMN restore_paths_json TEXT")
+            )
+    if "approved_at" in recovery_columns:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE glacier_recovery_sessions DROP COLUMN approved_at"))
+
+
 def _collection_operator_summary_select_sql(affected_collections_sql: str) -> str:
     return f"""
 SELECT *
@@ -2642,6 +2660,7 @@ def initialize_db(database_url: str) -> None:
     engine = create_catalog_engine(database_url)
     _check_database_is_baseline_compatible(engine)
     Base.metadata.create_all(engine)
+    _ensure_schema_columns(engine)
     _ensure_schema_indexes(engine)
     _ensure_schema_baseline_marker(engine)
     _install_collection_operator_projection(engine)

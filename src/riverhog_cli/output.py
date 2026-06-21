@@ -446,7 +446,7 @@ def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> Any
 def _recovery_state_text(value: object) -> Any:
     text = str(value)
     normalized = text.casefold().replace("-", "_")
-    if normalized in {"pending_approval", "expired", "failed"}:
+    if normalized in {"expired", "failed"}:
         return _styled_text(text, ATTENTION_STYLE)
     return _attention_text(text)
 
@@ -551,12 +551,18 @@ def _format_recovery_session_plain(payload: Mapping[str, Any]) -> str:
         f"type: {payload.get('type', 'unknown')}",
         f"state: {payload.get('state', 'unknown')}",
         f"created_at: {payload.get('created_at', 'unknown')}",
-        f"approved_at: {payload.get('approved_at') or 'none'}",
         f"restore_requested_at: {payload.get('restore_requested_at') or 'none'}",
         f"restore_ready_at: {payload.get('restore_ready_at') or 'none'}",
         f"restore_expires_at: {payload.get('restore_expires_at') or 'none'}",
         f"completed_at: {payload.get('completed_at') or 'none'}",
     ]
+    if payload.get("type") == "collection_restore":
+        restore_paths = _string_items(payload.get("restore_paths"))
+        lines.append("restore_paths:")
+        if restore_paths:
+            lines.extend(f"- {path}" for path in restore_paths)
+        else:
+            lines.append("- all")
     if payload.get("latest_message"):
         lines.append(f"latest_message: {payload.get('latest_message')}")
 
@@ -675,11 +681,15 @@ def format_recovery_session(payload: Mapping[str, Any]) -> Any:
     overview.add_row("type", str(payload.get("type", "unknown")))
     overview.add_row("state", _recovery_state_text(payload.get("state", "unknown")))
     overview.add_row("created", str(payload.get("created_at", "unknown")))
-    overview.add_row("approved", str(payload.get("approved_at") or "none"))
     overview.add_row("restore requested", str(payload.get("restore_requested_at") or "none"))
     overview.add_row("ready", str(payload.get("restore_ready_at") or "none"))
     overview.add_row("expires", str(payload.get("restore_expires_at") or "none"))
     overview.add_row("completed", str(payload.get("completed_at") or "none"))
+    if payload.get("type") == "collection_restore":
+        restore_paths = _string_items(payload.get("restore_paths"))
+        overview.add_row(
+            "restore paths", _preview_lines(restore_paths, limit=8) if restore_paths else "all"
+        )
     if payload.get("latest_message"):
         overview.add_row("message", str(payload.get("latest_message")))
 
@@ -1020,6 +1030,15 @@ def _format_disc_plain(payload: Mapping[str, Any]) -> str:
     history = copy_payload.get("history")
     if isinstance(history, Sequence):
         lines.append(f"history: {len(history)} event(s)")
+    recovery_session = payload.get("recovery_session")
+    if isinstance(recovery_session, Mapping):
+        lines.append(
+            "rebuild: "
+            f"{recovery_session.get('id', 'unknown')} "
+            f"state={recovery_session.get('state', 'unknown')}"
+        )
+        if recovery_session.get("latest_message"):
+            lines.append(f"rebuild_message: {recovery_session.get('latest_message')}")
     return "\n".join(lines)
 
 
@@ -1044,6 +1063,16 @@ def format_disc(payload: Mapping[str, Any]) -> Any:
     )
     if copy_payload.get("created_at"):
         table.add_row("created", str(copy_payload.get("created_at")))
+
+    recovery_session = payload.get("recovery_session")
+    if isinstance(recovery_session, Mapping):
+        table.add_row("rebuild", _entity_text(recovery_session.get("id", "unknown")))
+        table.add_row(
+            "rebuild state",
+            _recovery_state_text(recovery_session.get("state", "unknown")),
+        )
+        if recovery_session.get("latest_message"):
+            table.add_row("rebuild message", str(recovery_session.get("latest_message")))
 
     renderables: list[Any] = [RichText("disc", style="bold"), table]
     history = copy_payload.get("history")

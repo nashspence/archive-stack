@@ -212,13 +212,11 @@ def test_recovery_session_client_methods_use_canonical_endpoints(monkeypatch) ->
         state="ready",
         collection="tax/2022 reports",
     )
-    client.create_or_resume_collection_restore_session("tax/2022 reports")
-    client.get_collection_restore_session("tax/2022 reports")
-    client.materialize_collection_restore_files(
-        "rs-tax-restore-1",
+    client.create_or_resume_collection_restore_session(
         "tax/2022 reports",
         paths=["invoice 123.pdf"],
     )
+    client.get_collection_restore_session("tax/2022 reports")
 
     assert captured[0][0] == "GET"
     assert captured[0][1] == (
@@ -227,14 +225,9 @@ def test_recovery_session_client_methods_use_canonical_endpoints(monkeypatch) ->
     )
     assert captured[1][0] == "POST"
     assert captured[1][1] == ("https://api.test/v1/collections/tax/2022%20reports/restore-session")
+    assert '"paths":["invoice 123.pdf"]' in captured[1][2]
     assert captured[2][0] == "GET"
     assert captured[2][1] == ("https://api.test/v1/collections/tax/2022%20reports/restore-session")
-    assert captured[3][0] == "POST"
-    assert captured[3][1] == (
-        "https://api.test/v1/recovery-sessions/rs-tax-restore-1/collections/"
-        "tax/2022%20reports/materialize"
-    )
-    assert '"paths":["invoice 123.pdf"]' in captured[3][2]
 
 
 def test_client_can_override_host_header_for_pinned_lan_routes(monkeypatch) -> None:

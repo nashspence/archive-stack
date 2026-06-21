@@ -42,7 +42,7 @@ from riverhog_core.collection_archives import (
     verify_collection_manifest_proof,
 )
 from riverhog_core.domain.enums import CopyState, FetchState, GlacierState, RecoverySessionState
-from riverhog_core.domain.errors import BadRequest, Conflict, InvalidState, NotFound
+from riverhog_core.domain.errors import BadRequest, InvalidState, NotFound
 from riverhog_core.domain.models import (
     CollectionManifestStatus,
     GlacierArchiveStatus,
@@ -90,9 +90,14 @@ from riverhog_core.webhooks import (
 _LOG = logging.getLogger(__name__)
 
 _ACTIVE_RECOVERY_STATES = {
-    RecoverySessionState.PENDING_APPROVAL.value,
     RecoverySessionState.RESTORE_REQUESTED.value,
     RecoverySessionState.READY.value,
+}
+_PUBLIC_RECOVERY_STATES = {
+    RecoverySessionState.RESTORE_REQUESTED.value,
+    RecoverySessionState.READY.value,
+    RecoverySessionState.EXPIRED.value,
+    RecoverySessionState.COMPLETED.value,
 }
 _RECOVERY_SESSION_SORT_FIELDS = {
     "created_at",
@@ -170,11 +175,8 @@ class SqlAlchemyRecoverySessionService:
             raise BadRequest("order must be asc or desc")
         if recovery_type is not None and recovery_type not in _RECOVERY_SESSION_TYPES:
             raise BadRequest(f"type must be one of {', '.join(sorted(_RECOVERY_SESSION_TYPES))}")
-        if state is not None and state not in {item.value for item in RecoverySessionState}:
-            raise BadRequest(
-                "state must be one of "
-                f"{', '.join(sorted(item.value for item in RecoverySessionState))}"
-            )
+        if state is not None and state not in _PUBLIC_RECOVERY_STATES:
+            raise BadRequest(f"state must be one of {', '.join(sorted(_PUBLIC_RECOVERY_STATES))}")
 
         type_expr = func.coalesce(GlacierRecoverySessionRecord.type, "image_rebuild")
         stmt = select(GlacierRecoverySessionRecord)
@@ -243,17 +245,49 @@ class SqlAlchemyRecoverySessionService:
                 raise NotFound(f"recovery session not found for collection: {collection_id}")
             return _session_summary(session, record, config=self._config)
 
-    def create_or_resume_for_collection(self, collection_id: str) -> RecoverySessionSummary:
+    def create_or_resume_for_collection(
+        self,
+        collection_id: str,
+        *,
+        paths: Sequence[str] | None = None,
+    ) -> RecoverySessionSummary:
+        current = utcnow()
         with session_scope(self._session_factory) as session:
             collection = _require_collection(session, collection_id)
             active = _active_session_for_collection(session, collection_id)
             if active is not None:
+                _merge_collection_restore_paths(
+                    session,
+                    record=active,
+                    collection_id=collection.id,
+                    paths=paths,
+                )
+                _request_restore_if_needed(
+                    session,
+                    record=active,
+                    archive_store=self._archive_store,
+                    config=self._config,
+                    current=current,
+                )
                 return _session_summary(session, active, config=self._config)
             _require_collection_archive_uploaded(collection)
             created = _create_collection_restore_session(
                 session,
                 config=self._config,
                 collection=collection,
+                paths=_normalize_collection_restore_paths(
+                    session,
+                    collection_id=collection.id,
+                    paths=paths,
+                ),
+                created_at=_isoformat_z(current),
+            )
+            _request_restore_if_needed(
+                session,
+                record=created,
+                archive_store=self._archive_store,
+                config=self._config,
+                current=current,
             )
             return _session_summary(session, created, config=self._config)
 
@@ -264,233 +298,21 @@ class SqlAlchemyRecoverySessionService:
                 raise NotFound(f"recovery session not found for image: {image_id}")
             return _session_summary(session, record, config=self._config)
 
-    def create_or_resume_for_image(self, image_id: str) -> RecoverySessionSummary:
-        with session_scope(self._session_factory) as session:
-            image = _require_image(session, image_id)
-            active = _active_session_for_image(session, image_id)
-            if active is not None:
-                return _session_summary(session, active, config=self._config)
-            _require_image_collections_archived(session, image)
-            if _protected_copy_count(session, image_id) > 0:
-                raise Conflict(
-                    "image still has protected copies and does not require "
-                    f"archive recovery: {image_id}"
-                )
-            reusable = _reusable_pending_approval_session(session)
-            if reusable is not None:
-                attached = _attach_image_to_session(
-                    session,
-                    record=reusable,
-                    image=image,
-                    config=self._config,
-                )
-                return _session_summary(session, attached, config=self._config)
-            created = _create_recovery_session(session, config=self._config, image=image)
-            return _session_summary(session, created, config=self._config)
-
-    def approve(self, session_id: str) -> RecoverySessionSummary:
-        current = utcnow()
-        now = _isoformat_z(current)
-        estimated_ready_at = _isoformat_z(current + self._config.glacier_recovery_restore_latency)
-        with session_scope(self._session_factory) as session:
-            record = session.get(GlacierRecoverySessionRecord, session_id)
-            if record is None:
-                raise NotFound(f"recovery session not found: {session_id}")
-            if record.state == RecoverySessionState.EXPIRED.value:
-                raise InvalidState(
-                    "recovery session expired; re-initiate recovery to request restore"
-                )
-            if record.state != RecoverySessionState.PENDING_APPROVAL.value:
-                raise InvalidState("recovery session is not waiting for approval")
-            if (record.type or "image_rebuild") == "image_rebuild":
-                _sync_session_collections_for_images(session, record)
-                session.flush()
-            collections = _session_collections(session, record=record)
-            if not collections:
-                raise InvalidState("recovery session has no collection archives to restore")
-            statuses = [
-                self._archive_store.request_collection_archive_restore(
-                    collection_id=archive.collection_id,
-                    object_path=archive.archive_object_path,
-                    retrieval_tier=record.retrieval_tier,
-                    hold_days=record.hold_days,
-                    requested_at=now,
-                    estimated_ready_at=estimated_ready_at,
-                    manifest_object_path=archive.manifest_object_path,
-                    proof_object_path=archive.proof_object_path,
-                )
-                for archive in (
-                    _require_collection_archive_objects(collection) for collection in collections
-                )
-            ]
-            record.state = RecoverySessionState.RESTORE_REQUESTED.value
-            record.approved_at = now
-            record.restore_requested_at = now
-            record.restore_ready_at = (
-                _max_timestamp(
-                    status.ready_at for status in statuses if status.ready_at is not None
-                )
-                or estimated_ready_at
-            )
-            record.restore_expires_at = _min_timestamp(
-                status.expires_at for status in statuses if status.expires_at is not None
-            )
-            record.restore_next_poll_at = _isoformat_z(
-                current + self._config.glacier_recovery_sweep_interval
-            )
-            record.latest_message = (
-                "Archive restore requested; wait for the ready notification before downloading or "
-                "burning replacement media."
-            )
-            _notify_recovery_started(
-                session,
-                record=record,
-                config=self._config,
-                current=current,
-            )
-            return _session_summary(session, record, config=self._config)
-
     def complete(self, session_id: str) -> RecoverySessionSummary:
         current = utcnow()
-        now = _isoformat_z(current)
         with session_scope(self._session_factory) as session:
             record = session.get(GlacierRecoverySessionRecord, session_id)
             if record is None:
                 raise NotFound(f"recovery session not found: {session_id}")
-            if record.state not in {
-                RecoverySessionState.READY.value,
-                RecoverySessionState.EXPIRED.value,
-            }:
-                raise InvalidState("recovery session is not ready to complete")
-            collections = _session_collections(session, record=record)
-            if not collections:
-                raise InvalidState("recovery session has no collection archives to complete")
-            if record.state == RecoverySessionState.READY.value:
-                record.archive_verification_state = "in_progress"
-                session.flush()
-                _verify_restored_collection_archives(
-                    session,
-                    archive_store=self._archive_store,
-                    collections=collections,
-                    proof_verifier=self._proof_verifier,
-                )
-                record.archive_verification_state = "completed"
-            for collection in collections:
-                archive = _require_collection_archive_objects(collection)
-                self._archive_store.cleanup_collection_archive_restore(
-                    collection_id=collection.id,
-                    object_path=archive.archive_object_path,
-                    manifest_object_path=archive.manifest_object_path,
-                    proof_object_path=archive.proof_object_path,
-                )
-            record.state = RecoverySessionState.COMPLETED.value
-            record.completed_at = now
-            record.next_reminder_at = None
-            record.restore_expires_at = now
-            record.latest_message = (
-                "Recovery session completed and restored ISO cleanup was recorded."
-            )
-            _notify_recovery_completed(
+            _complete_recovery_session_record(
                 session,
                 record=record,
+                archive_store=self._archive_store,
+                proof_verifier=self._proof_verifier,
                 config=self._config,
                 current=current,
+                verify_archives=True,
             )
-            return _session_summary(session, record, config=self._config)
-
-    def materialize_collection_files(
-        self,
-        session_id: str,
-        collection_id: str,
-        *,
-        paths: Sequence[str],
-    ) -> RecoverySessionSummary:
-        if self._hot_store is None:
-            raise InvalidState("recovery session service has no hot store for materialization")
-        selected_paths = {normalize_relpath(path) for path in paths}
-        if not selected_paths:
-            raise InvalidState("at least one collection file path is required")
-        with session_scope(self._session_factory) as session:
-            record = session.get(GlacierRecoverySessionRecord, session_id)
-            if record is None:
-                raise NotFound(f"recovery session not found: {session_id}")
-            if record.state != RecoverySessionState.READY.value:
-                raise InvalidState("recovery session is not ready to materialize files")
-            collection = _require_collection(session, collection_id)
-            session_collection_ids = {
-                current.id for current in _session_collections(session, record=record)
-            }
-            if collection.id not in session_collection_ids:
-                raise NotFound(f"collection not found in recovery session: {collection_id}")
-            expected_files = _collection_archive_expected_files(
-                session,
-                collection_id=collection.id,
-            )
-            expected_paths = {file.path for file in expected_files}
-            missing_paths = sorted(selected_paths - expected_paths)
-            if missing_paths:
-                raise NotFound(f"collection file not found: {missing_paths[0]}")
-            archive = _require_collection_archive_objects(collection)
-            record.archive_verification_state = "in_progress"
-            record.extraction_state = "in_progress"
-            record.materialization_state = "in_progress"
-            session.flush()
-            manifest_bytes = self._archive_store.read_restored_collection_manifest(
-                collection_id=archive.collection_id,
-                object_path=archive.manifest_object_path,
-            )
-            verify_collection_manifest(
-                manifest_bytes=manifest_bytes,
-                expected_sha256=archive.manifest_sha256,
-                collection_id=archive.collection_id,
-                files=expected_files,
-            )
-            proof_bytes = self._archive_store.read_restored_collection_manifest_proof(
-                collection_id=archive.collection_id,
-                object_path=archive.proof_object_path,
-            )
-            verify_collection_manifest_proof(
-                proof_bytes=proof_bytes,
-                expected_sha256=archive.proof_sha256,
-                manifest_bytes=manifest_bytes,
-                verifier=self._proof_verifier,
-            )
-            record.archive_verification_state = "completed"
-            materialized: list[str] = []
-            archive_chunks = self._archive_store.iter_restored_collection_archive(
-                collection_id=archive.collection_id,
-                object_path=archive.archive_object_path,
-            )
-            for (
-                path,
-                content_chunks,
-                content_length,
-            ) in iter_verified_collection_archive_file_chunks(
-                archive_chunks,
-                files=expected_files,
-                selected_paths=selected_paths,
-            ):
-                self._hot_store.put_collection_file_stream(
-                    collection.id,
-                    path,
-                    content_chunks,
-                    content_length=content_length,
-                )
-                row = session.get(
-                    CollectionFileRecord,
-                    {"collection_id": collection.id, "path": path},
-                )
-                if row is not None:
-                    row.hot = True
-                materialized.append(path)
-            record.extraction_state = "completed"
-            record.materialization_state = "completed"
-            record.latest_message = (
-                "Selected collection files were verified and materialized to hot storage."
-            )
-            if len(materialized) != len(selected_paths):
-                missing = sorted(selected_paths - set(materialized))
-                raise ValueError(f"collection archive missing selected member: {missing[0]}")
             return _session_summary(session, record, config=self._config)
 
     def iter_restored_iso(self, session_id: str, image_id: str) -> Iterator[bytes]:
@@ -692,43 +514,14 @@ class SqlAlchemyRecoverySessionService:
     ) -> bool:
         if self._hot_store is None:
             return False
-        hot_store = self._hot_store
         if not paths:
             return False
         try:
-            summary = self.create_or_resume_for_collection(collection_id)
-            if summary.state == RecoverySessionState.PENDING_APPROVAL:
-                _LOG.info(
-                    "requesting automatic Glacier restore for missing pinned files: "
-                    "collection=%s files=%s",
-                    collection_id,
-                    len(paths),
-                )
-                summary = self.approve(summary.id)
+            summary = self.create_or_resume_for_collection(collection_id, paths=paths)
             if summary.state == RecoverySessionState.RESTORE_REQUESTED:
                 self._process_one(session_id=summary.id)
                 summary = self.get(summary.id)
-            if summary.state == RecoverySessionState.READY:
-                missing_paths = _missing_hot_paths(
-                    self._session_factory,
-                    hot_store,
-                    collection_id=collection_id,
-                    paths=paths,
-                )
-                if not missing_paths:
-                    return False
-                _LOG.info(
-                    "materializing missing pinned files from restored Glacier archive: "
-                    "collection=%s files=%s",
-                    collection_id,
-                    len(missing_paths),
-                )
-                self.materialize_collection_files(
-                    summary.id,
-                    collection_id,
-                    paths=missing_paths,
-                )
-                self.complete(summary.id)
+            if summary.state == RecoverySessionState.COMPLETED:
                 return True
             _LOG.info(
                 "automatic Glacier restore is pending for missing pinned files: "
@@ -766,6 +559,13 @@ class SqlAlchemyRecoverySessionService:
                 return
 
             if record.state == RecoverySessionState.RESTORE_REQUESTED.value:
+                _request_restore_if_needed(
+                    session,
+                    record=record,
+                    archive_store=self._archive_store,
+                    config=self._config,
+                    current=current,
+                )
                 _notify_recovery_started(
                     session,
                     record=record,
@@ -788,8 +588,8 @@ class SqlAlchemyRecoverySessionService:
                         )
                     else:
                         record.latest_message = (
-                            "Restored collection archive is ready; Riverhog can materialize "
-                            "missing pinned files."
+                            "Restored collection archive is ready; Riverhog will materialize "
+                            "the requested files automatically."
                         )
                     _notify_recovery_ready(
                         session,
@@ -798,6 +598,16 @@ class SqlAlchemyRecoverySessionService:
                         current=current,
                         reminder=False,
                     )
+                    if (record.type or "image_rebuild") == "collection_restore":
+                        _auto_materialize_collection_restore(
+                            session,
+                            record=record,
+                            archive_store=self._archive_store,
+                            hot_store=self._hot_store,
+                            proof_verifier=self._proof_verifier,
+                            config=self._config,
+                            current=current,
+                        )
                     return
                 if status.state == "expired":
                     record.state = RecoverySessionState.EXPIRED.value
@@ -814,6 +624,22 @@ class SqlAlchemyRecoverySessionService:
                 record.latest_message = (
                     status.message
                     or "Archive restore is still in progress; Riverhog will poll again."
+                )
+                return
+
+            if (
+                record.state == RecoverySessionState.READY.value
+                and (record.type or "image_rebuild") == "collection_restore"
+                and record.materialization_state != "completed"
+            ):
+                _auto_materialize_collection_restore(
+                    session,
+                    record=record,
+                    archive_store=self._archive_store,
+                    hot_store=self._hot_store,
+                    proof_verifier=self._proof_verifier,
+                    config=self._config,
+                    current=current,
                 )
                 return
 
@@ -918,7 +744,7 @@ def ensure_glacier_recovery_session_for_image(
         return
     if _active_session_for_image(session, image_id) is not None:
         return
-    reusable = _reusable_pending_approval_session(session)
+    reusable = _reusable_queued_image_rebuild_session(session)
     if reusable is not None:
         _attach_image_to_session(session, record=reusable, image=image, config=config)
         return
@@ -1001,6 +827,7 @@ def _create_recovery_session(
     *,
     config: RuntimeConfig,
     image: FinalizedImageRecord,
+    created_at: str | None = None,
 ) -> GlacierRecoverySessionRecord:
     existing_ids = session.scalars(
         select(GlacierRecoverySessionRecord.session_id)
@@ -1011,7 +838,7 @@ def _create_recovery_session(
         .where(GlacierRecoverySessionImageRecord.image_id == image.image_id)
     ).all()
     session_id = _generated_recovery_session_id(image.image_id, existing_ids=existing_ids)
-    created_at = _isoformat_z(utcnow())
+    created_at = created_at or _isoformat_z(utcnow())
     collections = [
         _require_collection(session, collection_id)
         for collection_id in _image_collection_ids(session, image.image_id)
@@ -1024,23 +851,21 @@ def _create_recovery_session(
     record = GlacierRecoverySessionRecord(
         session_id=session_id,
         type="image_rebuild",
-        state=RecoverySessionState.PENDING_APPROVAL.value,
+        state=RecoverySessionState.RESTORE_REQUESTED.value,
         created_at=created_at,
-        approved_at=None,
         restore_requested_at=None,
         restore_ready_at=None,
         restore_next_poll_at=None,
         restore_expires_at=None,
         completed_at=None,
-        latest_message=(
-            "Approve the archive restore before Riverhog requests archived collection data."
-        ),
+        latest_message="Archive restore queued; Riverhog will request archived collection data.",
         retrieval_tier=config.glacier_recovery_retrieval_tier,
         hold_days=_restore_hold_days(config),
         warnings_json=json.dumps(list(warnings)),
         reminder_count=0,
         next_reminder_at=None,
         last_notified_at=None,
+        restore_paths_json=None,
     )
     session.add(record)
     session.flush()
@@ -1061,6 +886,8 @@ def _create_collection_restore_session(
     *,
     config: RuntimeConfig,
     collection: CollectionRecord,
+    paths: tuple[str, ...] | None,
+    created_at: str | None = None,
 ) -> GlacierRecoverySessionRecord:
     existing_ids = session.scalars(
         select(GlacierRecoverySessionRecord.session_id)
@@ -1075,28 +902,26 @@ def _create_collection_restore_session(
         collection.id,
         existing_ids=existing_ids,
     )
-    created_at = _isoformat_z(utcnow())
+    created_at = created_at or _isoformat_z(utcnow())
     warnings = _build_warnings(config=config)
     record = GlacierRecoverySessionRecord(
         session_id=session_id,
         type="collection_restore",
-        state=RecoverySessionState.PENDING_APPROVAL.value,
+        state=RecoverySessionState.RESTORE_REQUESTED.value,
         created_at=created_at,
-        approved_at=None,
         restore_requested_at=None,
         restore_ready_at=None,
         restore_next_poll_at=None,
         restore_expires_at=None,
         completed_at=None,
-        latest_message=(
-            "Approve the archive restore before Riverhog requests archived collection data."
-        ),
+        latest_message="Archive restore queued; Riverhog will materialize requested files.",
         retrieval_tier=config.glacier_recovery_retrieval_tier,
         hold_days=_restore_hold_days(config),
         warnings_json=json.dumps(list(warnings)),
         reminder_count=0,
         next_reminder_at=None,
         last_notified_at=None,
+        restore_paths_json=_restore_paths_json(paths),
     )
     session.add(record)
     session.flush()
@@ -1204,6 +1029,322 @@ def _require_collection_archive_objects(collection: CollectionRecord) -> _Collec
         proof_object_path=archive.ots_object_path,
         manifest_sha256=archive.manifest_sha256,
         proof_sha256=archive.ots_sha256,
+    )
+
+
+def _request_restore_if_needed(
+    session: Session,
+    *,
+    record: GlacierRecoverySessionRecord,
+    archive_store: ArchiveStore,
+    config: RuntimeConfig,
+    current: datetime,
+) -> None:
+    if record.state != RecoverySessionState.RESTORE_REQUESTED.value:
+        return
+    if record.restore_requested_at is not None:
+        return
+    if (record.type or "image_rebuild") == "image_rebuild":
+        _sync_session_collections_for_images(session, record)
+        session.flush()
+    collections = _session_collections(session, record=record)
+    if not collections:
+        raise InvalidState("recovery session has no collection archives to restore")
+    requested_at = _isoformat_z(current)
+    estimated_ready_at = _isoformat_z(current + config.glacier_recovery_restore_latency)
+    statuses = [
+        archive_store.request_collection_archive_restore(
+            collection_id=archive.collection_id,
+            object_path=archive.archive_object_path,
+            retrieval_tier=record.retrieval_tier,
+            hold_days=record.hold_days,
+            requested_at=requested_at,
+            estimated_ready_at=estimated_ready_at,
+            manifest_object_path=archive.manifest_object_path,
+            proof_object_path=archive.proof_object_path,
+        )
+        for archive in (
+            _require_collection_archive_objects(collection) for collection in collections
+        )
+    ]
+    record.restore_requested_at = requested_at
+    record.restore_ready_at = (
+        _max_timestamp(status.ready_at for status in statuses if status.ready_at is not None)
+        or estimated_ready_at
+    )
+    record.restore_expires_at = _min_timestamp(
+        status.expires_at for status in statuses if status.expires_at is not None
+    )
+    record.restore_next_poll_at = _isoformat_z(current + config.glacier_recovery_sweep_interval)
+    if (record.type or "image_rebuild") == "image_rebuild":
+        record.latest_message = (
+            "Archive restore requested; wait until the session is ready before burning "
+            "replacement media."
+        )
+    else:
+        record.latest_message = (
+            "Archive restore requested; Riverhog will materialize the requested files when "
+            "the archive is ready."
+        )
+    _notify_recovery_started(
+        session,
+        record=record,
+        config=config,
+        current=current,
+    )
+
+
+def _restore_paths_json(paths: tuple[str, ...] | None) -> str | None:
+    if paths is None:
+        return None
+    return json.dumps(list(paths), separators=(",", ":"))
+
+
+def _restore_paths_from_json(raw_value: str | None) -> tuple[str, ...] | None:
+    if raw_value is None:
+        return None
+    loaded = json.loads(raw_value)
+    if not isinstance(loaded, list):
+        raise InvalidState("collection restore paths are corrupt")
+    return tuple(str(item) for item in loaded)
+
+
+def _normalize_collection_restore_paths(
+    session: Session,
+    *,
+    collection_id: str,
+    paths: Sequence[str] | None,
+) -> tuple[str, ...] | None:
+    if paths is None:
+        return None
+    normalized = tuple(dict.fromkeys(normalize_relpath(path) for path in paths))
+    if not normalized:
+        return None
+    expected_paths = {
+        file.path
+        for file in _collection_archive_expected_files(session, collection_id=collection_id)
+    }
+    missing_paths = sorted(set(normalized) - expected_paths)
+    if missing_paths:
+        raise NotFound(f"collection file not found: {missing_paths[0]}")
+    return tuple(sorted(normalized))
+
+
+def _merge_collection_restore_paths(
+    session: Session,
+    *,
+    record: GlacierRecoverySessionRecord,
+    collection_id: str,
+    paths: Sequence[str] | None,
+) -> None:
+    if (record.type or "image_rebuild") != "collection_restore":
+        return
+    incoming = _normalize_collection_restore_paths(
+        session, collection_id=collection_id, paths=paths
+    )
+    if incoming is None:
+        record.restore_paths_json = None
+        return
+    existing = _restore_paths_from_json(record.restore_paths_json)
+    if existing is None:
+        return
+    record.restore_paths_json = _restore_paths_json(tuple(sorted(set(existing) | set(incoming))))
+
+
+def _collection_restore_paths(
+    session: Session,
+    *,
+    record: GlacierRecoverySessionRecord,
+    collection: CollectionRecord,
+) -> tuple[str, ...]:
+    requested = _restore_paths_from_json(record.restore_paths_json)
+    if requested is not None:
+        return requested
+    return tuple(
+        file.path
+        for file in _collection_archive_expected_files(session, collection_id=collection.id)
+    )
+
+
+def _materialize_collection_files(
+    session: Session,
+    *,
+    record: GlacierRecoverySessionRecord,
+    collection: CollectionRecord,
+    paths: set[str],
+    archive_store: ArchiveStore,
+    hot_store: HotStore,
+    proof_verifier: ProofVerifier,
+) -> None:
+    session_collection_ids = {
+        current.id for current in _session_collections(session, record=record)
+    }
+    if collection.id not in session_collection_ids:
+        raise NotFound(f"collection not found in recovery session: {collection.id}")
+    expected_files = _collection_archive_expected_files(
+        session,
+        collection_id=collection.id,
+    )
+    expected_paths = {file.path for file in expected_files}
+    missing_paths = sorted(paths - expected_paths)
+    if missing_paths:
+        raise NotFound(f"collection file not found: {missing_paths[0]}")
+    archive = _require_collection_archive_objects(collection)
+    record.archive_verification_state = "in_progress"
+    record.extraction_state = "in_progress"
+    record.materialization_state = "in_progress"
+    session.flush()
+    manifest_bytes = archive_store.read_restored_collection_manifest(
+        collection_id=archive.collection_id,
+        object_path=archive.manifest_object_path,
+    )
+    verify_collection_manifest(
+        manifest_bytes=manifest_bytes,
+        expected_sha256=archive.manifest_sha256,
+        collection_id=archive.collection_id,
+        files=expected_files,
+    )
+    proof_bytes = archive_store.read_restored_collection_manifest_proof(
+        collection_id=archive.collection_id,
+        object_path=archive.proof_object_path,
+    )
+    verify_collection_manifest_proof(
+        proof_bytes=proof_bytes,
+        expected_sha256=archive.proof_sha256,
+        manifest_bytes=manifest_bytes,
+        verifier=proof_verifier,
+    )
+    record.archive_verification_state = "completed"
+    materialized: list[str] = []
+    archive_chunks = archive_store.iter_restored_collection_archive(
+        collection_id=archive.collection_id,
+        object_path=archive.archive_object_path,
+    )
+    for path, content_chunks, content_length in iter_verified_collection_archive_file_chunks(
+        archive_chunks,
+        files=expected_files,
+        selected_paths=paths,
+    ):
+        hot_store.put_collection_file_stream(
+            collection.id,
+            path,
+            content_chunks,
+            content_length=content_length,
+        )
+        row = session.get(
+            CollectionFileRecord,
+            {"collection_id": collection.id, "path": path},
+        )
+        if row is not None:
+            row.hot = True
+        materialized.append(path)
+    record.extraction_state = "completed"
+    record.materialization_state = "completed"
+    record.latest_message = (
+        "Requested collection files were verified and materialized to hot storage."
+    )
+    if len(materialized) != len(paths):
+        missing = sorted(paths - set(materialized))
+        raise ValueError(f"collection archive missing selected member: {missing[0]}")
+
+
+def _auto_materialize_collection_restore(
+    session: Session,
+    *,
+    record: GlacierRecoverySessionRecord,
+    archive_store: ArchiveStore,
+    hot_store: HotStore | None,
+    proof_verifier: ProofVerifier,
+    config: RuntimeConfig,
+    current: datetime,
+) -> None:
+    if hot_store is None:
+        record.latest_message = (
+            "Restored collection archive is ready, but this service has no hot store for "
+            "automatic materialization."
+        )
+        return
+    collections = _session_collections(session, record=record)
+    if not collections:
+        raise InvalidState("recovery session has no collection archives to materialize")
+    for collection in collections:
+        paths = set(_collection_restore_paths(session, record=record, collection=collection))
+        if not paths:
+            continue
+        _materialize_collection_files(
+            session,
+            record=record,
+            collection=collection,
+            paths=paths,
+            archive_store=archive_store,
+            hot_store=hot_store,
+            proof_verifier=proof_verifier,
+        )
+    _complete_recovery_session_record(
+        session,
+        record=record,
+        archive_store=archive_store,
+        proof_verifier=proof_verifier,
+        config=config,
+        current=current,
+        verify_archives=False,
+    )
+
+
+def _complete_recovery_session_record(
+    session: Session,
+    *,
+    record: GlacierRecoverySessionRecord,
+    archive_store: ArchiveStore,
+    proof_verifier: ProofVerifier,
+    config: RuntimeConfig,
+    current: datetime,
+    verify_archives: bool,
+) -> None:
+    if record.state not in {
+        RecoverySessionState.READY.value,
+        RecoverySessionState.EXPIRED.value,
+    }:
+        raise InvalidState("recovery session is not ready to complete")
+    collections = _session_collections(session, record=record)
+    if not collections:
+        raise InvalidState("recovery session has no collection archives to complete")
+    if record.state == RecoverySessionState.READY.value and verify_archives:
+        record.archive_verification_state = "in_progress"
+        session.flush()
+        _verify_restored_collection_archives(
+            session,
+            archive_store=archive_store,
+            collections=collections,
+            proof_verifier=proof_verifier,
+        )
+        record.archive_verification_state = "completed"
+    for collection in collections:
+        archive = _require_collection_archive_objects(collection)
+        archive_store.cleanup_collection_archive_restore(
+            collection_id=collection.id,
+            object_path=archive.archive_object_path,
+            manifest_object_path=archive.manifest_object_path,
+            proof_object_path=archive.proof_object_path,
+        )
+    record.state = RecoverySessionState.COMPLETED.value
+    record.completed_at = _isoformat_z(current)
+    record.next_reminder_at = None
+    record.restore_expires_at = record.completed_at
+    if (record.type or "image_rebuild") == "collection_restore":
+        record.latest_message = (
+            "Collection restore completed; requested files are materialized and temporary "
+            "archive restore cleanup was recorded."
+        )
+    else:
+        record.latest_message = (
+            "Image rebuild recovery completed and archive restore cleanup was recorded."
+        )
+    _notify_recovery_completed(
+        session,
+        record=record,
+        config=config,
+        current=current,
     )
 
 
@@ -1713,13 +1854,15 @@ def _latest_session_for_collection(
     )
 
 
-def _reusable_pending_approval_session(session: Session) -> GlacierRecoverySessionRecord | None:
+def _reusable_queued_image_rebuild_session(session: Session) -> GlacierRecoverySessionRecord | None:
     return cast(
         GlacierRecoverySessionRecord | None,
         session.scalar(
             select(GlacierRecoverySessionRecord)
             .where(
-                GlacierRecoverySessionRecord.state == RecoverySessionState.PENDING_APPROVAL.value
+                GlacierRecoverySessionRecord.type == "image_rebuild",
+                GlacierRecoverySessionRecord.state == RecoverySessionState.RESTORE_REQUESTED.value,
+                GlacierRecoverySessionRecord.restore_requested_at.is_(None),
             )
             .order_by(GlacierRecoverySessionRecord.created_at.desc())
             .limit(1)
@@ -1840,11 +1983,13 @@ def _session_summary(
         type=record.type or "image_rebuild",
         state=RecoverySessionState(record.state),
         created_at=record.created_at,
-        approved_at=record.approved_at,
         restore_requested_at=record.restore_requested_at,
         restore_ready_at=record.restore_ready_at,
         restore_expires_at=record.restore_expires_at,
         completed_at=record.completed_at,
+        restore_paths=_restore_paths_from_json(record.restore_paths_json)
+        if (record.type or "image_rebuild") == "collection_restore"
+        else None,
         latest_message=record.latest_message,
         warnings=warnings,
         notification=notification,
@@ -1873,8 +2018,6 @@ def _collection_glacier_archive_status(
 
 def _recovery_session_image_rebuild_state(record: GlacierRecoverySessionRecord) -> str:
     state = RecoverySessionState(record.state)
-    if state == RecoverySessionState.PENDING_APPROVAL:
-        return "pending"
     if state == RecoverySessionState.RESTORE_REQUESTED:
         return "restoring_collections"
     if state in {RecoverySessionState.READY, RecoverySessionState.COMPLETED}:

@@ -386,17 +386,10 @@ Required behavior:
   image, including expired or completed sessions
 - returns `not_found` when no recovery session has been created for that image
 
-#### `POST /v1/images/{image_id}/rebuild-session`
-
-Creates or resumes one `image_rebuild` recovery session for one finalized image.
-
-Required behavior:
-
-- creates a new `pending_approval` session only when the finalized image has no
-  remaining protected copies and the collections required to rebuild it have
-  uploaded collection Glacier archives
-- repeated calls while one active session exists return that same active session rather than creating duplicates
-- an expired or completed session does not block creating a new session id for the same image
+Image rebuild sessions are not manually started. Riverhog creates them when copy
+state changes leave a finalized image with no protected copies and the required
+collection Glacier archives are uploaded. The recovery processor requests and
+polls Glacier restore work automatically.
 
 #### `GET /v1/collections/{collection_id}/restore-session`
 
@@ -413,12 +406,22 @@ Required behavior:
 
 Creates or resumes one `collection_restore` recovery session for one collection.
 
+Optional request body:
+
+- `paths` — list of logical file paths within the collection archive. Omit or
+  pass `null` to restore the whole collection.
+
 Required behavior:
 
-- creates a new `pending_approval` session only when the collection has an
-  uploaded and verified Glacier archive package
+- creates or resumes an automatic restore session only when the collection has
+  an uploaded and verified Glacier archive package
+- requests Glacier restore work immediately, polls readiness, verifies the
+  restored manifest/proof/archive, materializes the requested files into hot
+  storage, and records temporary restore cleanup automatically
 - repeated calls while one active session exists return that same active session
   rather than creating duplicates
+- repeated calls may broaden an active selected-path restore; omitting `paths`
+  broadens the active restore to the whole collection
 - an expired or completed session does not block creating a new session id for
   the same collection
 
@@ -434,8 +437,7 @@ Supported query parameters:
   `restore_expires_at`
 - `order`: `asc` or `desc`
 - `type`: `collection_restore` or `image_rebuild`
-- `state`: `pending_approval`, `restore_requested`, `ready`, `expired`, or
-  `completed`
+- `state`: `restore_requested`, `ready`, `expired`, or `completed`
 - `collection`: restricts results to sessions attached to one collection id
 - `image`: restricts results to sessions attached to one finalized image id
 
@@ -454,24 +456,14 @@ session id.
 Required behavior:
 
 - recovery sessions remain addressable across service restart
-- the response includes recovery `type`, cost estimate, operator warnings,
+- the response includes recovery `type`, operator warnings,
   notification state, covered collections, and any finalized images involved in
   an image rebuild
+- collection restore responses include `restore_paths`; `null` means the whole
+  collection is in scope
 - the response includes `progress.archive_verification`, `progress.extraction`,
   and `progress.materialization`, each one of `pending`, `in_progress`,
   `completed`, or `failed`
-
-#### `POST /v1/recovery-sessions/{session_id}/approve`
-
-Approves one pending recovery session cost estimate.
-
-Required behavior:
-
-- approval is required before Riverhog requests restore work
-- approval transitions the session from `pending_approval` to `restore_requested`
-- readiness is based on archive-store restore status or direct archive-object readability, not only on the configured
-  latency estimate
-- approving an expired session is rejected with `invalid_state` and explains that recovery must be re-initiated
 
 #### `POST /v1/recovery-sessions/{session_id}/complete`
 
@@ -479,29 +471,13 @@ Completes one ready recovery session.
 
 Required behavior:
 
-- completion is only valid from `ready`
+- completion is only valid from `ready` or `expired`
 - completion transitions the session to `completed`
 - completion records cleanup or lifecycle handoff for restored Standard-storage data instead of waiting for Riverhog's
   session expiry
-
-#### `POST /v1/recovery-sessions/{session_id}/collections/{collection_id}/materialize`
-
-Materializes selected logical files from a ready `collection_restore` session
-into committed hot storage.
-
-Required request body:
-
-- `paths` — non-empty list of logical file paths within the collection archive
-
-Required behavior:
-
-- succeeds only when the recovery session is `ready`
-- the collection must belong to that recovery session
-- Riverhog verifies the restored manifest, proof, archive membership, selected
-  member byte counts, and selected member SHA-256 values before writing hot bytes
-- only requested paths are materialized to hot storage
-- the response reports completed archive verification, extraction, and
-  materialization progress
+- collection restore sessions complete automatically after requested files are
+  materialized; `djdan burn` uses this endpoint after rebuilding replacement
+  image copies from a ready image rebuild session
 
 #### `GET /v1/recovery-sessions/{session_id}/images/{image_id}/iso`
 
@@ -513,8 +489,8 @@ Required behavior:
 - the image must belong to that recovery session
 - the response streams bytes from the rebuilt image artifact produced from
   restored collection archives and persisted coverage metadata
-- `djdan image rebuild burn` uses this endpoint for replacement burns instead of
-  `GET /v1/images/{image_id}/iso`
+- `djdan burn` uses this endpoint for replacement burns from active image
+  rebuild sessions instead of `GET /v1/images/{image_id}/iso`
 
 #### `GET /v1/glacier`
 
@@ -803,7 +779,7 @@ The `riverhog` CLI is collection-first and should provide:
 - `riverhog collection upload SLUG ROOT [--timestamp YYYYMMDDTHHMMSSZ] [--wait finalized|staged]`
 - `riverhog collection watch COLLECTION_UPLOAD_ID`
 - `riverhog collection cancel COLLECTION_UPLOAD_ID`
-- `riverhog collection restore list|show|start|approve|materialize|complete`
+- `riverhog collection restore list|show|start`
 - `riverhog hot list`
 - `riverhog hot show FETCH_ID`
 - `riverhog hot pin TARGET`
@@ -902,8 +878,7 @@ The `djdan` CLI is an optical-media client for a machine with an optical drive a
 - `djdan image list [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--collection ID] [--has-discs|--no-discs]`
 - `djdan image show IMAGE_ID`
 - `djdan image download IMAGE_ID [-o FILE]`
-- `djdan image rebuild list|show|approve|burn`
-- `djdan image rebuild burn SESSION_ID [--device DEVICE] [--staging-dir DIR]`
+- `djdan image rebuild list|show`
 - `djdan disc list [IMAGE_ID] [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT]`
 - `djdan disc show COPY_ID`
 - `djdan disc add IMAGE_ID --at LOCATION [--copy-id GENERATED_ID]`

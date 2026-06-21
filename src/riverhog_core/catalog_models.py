@@ -398,7 +398,6 @@ class GlacierRecoverySessionRecord(Base):
     type: Mapped[str | None] = mapped_column(String, default="image_rebuild", nullable=True)
     state: Mapped[str] = mapped_column(String)
     created_at: Mapped[str] = mapped_column(String)
-    approved_at: Mapped[str | None] = mapped_column(String, nullable=True)
     restore_requested_at: Mapped[str | None] = mapped_column(String, nullable=True)
     restore_ready_at: Mapped[str | None] = mapped_column(String, nullable=True)
     restore_next_poll_at: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -438,6 +437,7 @@ class GlacierRecoverySessionRecord(Base):
         default="pending",
         nullable=True,
     )
+    restore_paths_json: Mapped[str | None] = mapped_column(String, nullable=True)
 
     images: Mapped[list[GlacierRecoverySessionImageRecord]] = relationship(
         back_populates="session",

@@ -32,7 +32,6 @@ class GlacierState(StrEnum):
 
 
 class RecoverySessionState(StrEnum):
-    PENDING_APPROVAL = "pending_approval"
     RESTORE_REQUESTED = "restore_requested"
     READY = "ready"
     EXPIRED = "expired"

@@ -1354,7 +1354,7 @@ def collection_restore_list_cmd(
         str | None,
         typer.Option(
             "--state",
-            help="Filter by pending_approval, restore_requested, ready, expired, or completed",
+            help="Filter by restore_requested, ready, expired, or completed",
         ),
     ] = None,
     collection: Annotated[
@@ -1399,55 +1399,21 @@ def collection_restore_show_cmd(
 @collection_restore_app.command("start")
 def collection_restore_start_cmd(
     collection: Annotated[str, typer.Argument(help="Collection id")],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Start or resume a collection restore."""
-
-    payload = client().create_or_resume_collection_restore_session(collection)
-    emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
-
-
-@collection_restore_app.command("approve")
-def collection_restore_approve_cmd(
-    session_id: Annotated[str, typer.Argument(help="Recovery session id")],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Approve a pending collection restore."""
-
-    payload = client().approve_recovery_session(session_id)
-    emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
-
-
-@collection_restore_app.command("materialize")
-def collection_restore_materialize_cmd(
-    session_id: Annotated[str, typer.Argument(help="Recovery session id")],
-    collection: Annotated[str, typer.Argument(help="Collection id in the recovery session")],
     paths: Annotated[
         list[str] | None,
-        typer.Option("--path", help="Collection file path to materialize; repeatable"),
+        typer.Option(
+            "--path",
+            help="Collection file path to restore; repeatable. Omit to restore all files.",
+        ),
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Record restored files as materialized."""
+    """Start or resume an automatic collection restore."""
 
-    if not paths:
-        raise typer.BadParameter("at least one --path is required", param_hint="--path")
-    payload = client().materialize_collection_restore_files(
-        session_id,
+    payload = client().create_or_resume_collection_restore_session(
         collection,
         paths=paths,
     )
-    emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
-
-
-@collection_restore_app.command("complete")
-def collection_restore_complete_cmd(
-    session_id: Annotated[str, typer.Argument(help="Recovery session id")],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Complete a ready collection restore."""
-
-    payload = client().complete_recovery_session(session_id)
     emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
 
 

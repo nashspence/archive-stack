@@ -10,7 +10,7 @@ Use these core nouns consistently:
 - `copy` — one physical burned disc of an image
 - `pin` — a declared requirement to keep a target materialized in hot storage
 - `fetch` — the pin-scoped recovery manifest for one exact selector
-- `recovery_session` — an approved Glacier restore or image rebuild workflow
+- `recovery_session` — an automatic Glacier restore or image rebuild workflow
 
 ## Core terms
 

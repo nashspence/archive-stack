@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import typer
 
@@ -253,6 +253,7 @@ class BurnBacklogItem:
     fill: float
     expected_bytes: int | None = None
     target_bytes: int | None = None
+    recovery_session_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,7 +286,7 @@ class DiscPromptState:
 
 _PENDING_BURN_STATES = {"needed", "burning"}
 _PROTECTED_COPY_STATES = {"registered", "verified"}
-_ACTIVE_RECOVERY_SESSION_STATES = {"pending_approval", "restore_requested", "ready"}
+_ACTIVE_RECOVERY_SESSION_STATES = {"restore_requested", "ready"}
 
 
 @dataclass(slots=True)
@@ -1026,31 +1027,45 @@ def _image_has_resumable_copy_verification(
     )
 
 
-def _is_standard_burn_backlog_image(client: ApiClient, image_id: str) -> bool:
+def _copy_states_for_image(client: ApiClient, image_id: str) -> set[str]:
     copies = client.list_copies(image_id).get("copies", [])
-    if not isinstance(copies, list) or not copies:
-        return False
-
-    states = {
+    if not isinstance(copies, list):
+        return set()
+    return {
         str(copy.get("state"))
         for copy in copies
         if isinstance(copy, dict) and copy.get("state") is not None
     }
+
+
+def _image_needs_recovery_iso_source(client: ApiClient, image_id: str) -> bool:
+    states = _copy_states_for_image(client, image_id)
+    if not states:
+        return False
+    has_pending = bool(states & _PENDING_BURN_STATES)
+    return has_pending
+
+
+def _is_standard_burn_backlog_image(client: ApiClient, image_id: str) -> bool:
+    states = _copy_states_for_image(client, image_id)
+    if not states:
+        return False
+
     has_pending = bool(states & _PENDING_BURN_STATES)
     has_protected = bool(states & _PROTECTED_COPY_STATES)
     all_pending = bool(states) and states <= _PENDING_BURN_STATES
     if not has_pending:
         return False
-    if all_pending and not has_protected:
-        if not hasattr(client, "get_recovery_session_for_image"):
-            return True
+    if hasattr(client, "get_recovery_session_for_image"):
         try:
             payload = client.get_recovery_session_for_image(image_id)
         except NotFound:
-            return True
-        recovery_state = str(payload.get("state"))
-        if recovery_state in {"pending_approval", "restore_requested", "ready", "expired"}:
-            return False
+            pass
+        else:
+            if str(payload.get("state")) in {"restore_requested", "ready", "expired"}:
+                return False
+    if all_pending and not has_protected:
+        return True
     if all_pending:
         return True
     if has_protected:
@@ -1058,9 +1073,76 @@ def _is_standard_burn_backlog_image(client: ApiClient, image_id: str) -> bool:
     return False
 
 
+def _get_image_recovery_session(
+    client: ApiClient,
+    image_id: str,
+) -> dict[str, Any] | None:
+    get_recovery_session = getattr(client, "get_recovery_session_for_image", None)
+    if get_recovery_session is None:
+        return None
+    try:
+        return cast(dict[str, Any], get_recovery_session(image_id))
+    except NotFound:
+        return None
+
+
+def _recovery_session_filename(
+    payload: dict[str, Any],
+    image_id: str,
+    fallback: str,
+) -> str:
+    images = payload.get("images", [])
+    if isinstance(images, list):
+        for image in images:
+            if not isinstance(image, dict) or str(image.get("id")) != image_id:
+                continue
+            filename = image.get("filename")
+            if filename is not None:
+                return str(filename)
+    return fallback
+
+
+def _recovery_burn_backlog_item(
+    client: ApiClient,
+    image: dict[str, Any],
+    *,
+    staging_dir: Path | None,
+) -> BurnBacklogItem | None:
+    image_id = str(image["id"])
+    if not _image_needs_recovery_iso_source(client, image_id):
+        return None
+    payload = _get_image_recovery_session(client, image_id)
+    if payload is None:
+        return None
+    state = str(payload.get("state"))
+    if state == "restore_requested":
+        return None
+    hint = _recovery_session_hint_from_payload(payload)
+    if state == "expired":
+        if staging_dir is None or not _can_resume_expired_recovery_session(
+            hint,
+            client=client,
+            staging_dir=staging_dir,
+        ):
+            return None
+    elif state != "ready":
+        return None
+    return BurnBacklogItem(
+        image_id=image_id,
+        candidate_id=None,
+        filename=_recovery_session_filename(payload, image_id, str(image["filename"])),
+        fill=float(image.get("fill", 0)),
+        expected_bytes=_optional_int(image.get("bytes")),
+        target_bytes=_optional_int(image.get("target_bytes")),
+        recovery_session_id=hint.session_id,
+    )
+
+
 def _discover_burn_backlog(
     client: ApiClient,
     session_state: BurnSessionState | None = None,
+    *,
+    staging_dir: Path | None = None,
 ) -> list[BurnBacklogItem]:
     items: list[BurnBacklogItem] = []
 
@@ -1092,6 +1174,14 @@ def _discover_burn_backlog(
 
     for image in _images_missing_copy_coverage(client, session_state):
         image_id = str(image["id"])
+        recovery_item = _recovery_burn_backlog_item(
+            client,
+            image,
+            staging_dir=staging_dir,
+        )
+        if recovery_item is not None:
+            items.append(recovery_item)
+            continue
         if not _image_has_resumable_copy_verification(
             client,
             image_id,
@@ -1126,11 +1216,14 @@ def _discover_recovery_handoffs(client: ApiClient) -> list[RecoveryHandoff]:
             payload = client.get_recovery_session_for_image(image_id)
         except NotFound:
             continue
+        state = str(payload.get("state"))
+        if state in {"ready", "completed"}:
+            continue
         handoffs.append(
             RecoveryHandoff(
                 image_id=image_id,
                 session_id=str(payload["id"]),
-                state=str(payload["state"]),
+                state=state,
                 latest_message=(
                     str(payload["latest_message"])
                     if payload.get("latest_message") is not None
@@ -1144,7 +1237,7 @@ def _discover_recovery_handoffs(client: ApiClient) -> list[RecoveryHandoff]:
 def _report_recovery_handoffs(handoffs: list[RecoveryHandoff]) -> None:
     if not handoffs:
         return
-    typer.echo("ordinary burn backlog is clear, but image rebuild work remains")
+    typer.echo("burn backlog is waiting for image rebuild restore work")
     for handoff in handoffs:
         typer.echo(f"{handoff.image_id}: recovery session {handoff.session_id} is {handoff.state}")
         if handoff.latest_message:
@@ -1170,45 +1263,6 @@ def _recovery_session_hint_from_payload(payload: dict[str, Any]) -> RecoverySess
         ),
         images=images,
     )
-
-
-def _discover_active_recovery_sessions(client: ApiClient) -> list[RecoverySessionHint]:
-    sessions_by_id: dict[str, RecoverySessionHint] = {}
-    page = 1
-    while True:
-        payload = client.list_recovery_sessions(
-            page=page,
-            per_page=100,
-            sort="created_at",
-            order="desc",
-            recovery_type="image_rebuild",
-        )
-        sessions = payload.get("sessions", [])
-        if isinstance(sessions, list):
-            for session_payload in sessions:
-                if not isinstance(session_payload, dict):
-                    continue
-                hint = _recovery_session_hint_from_payload(session_payload)
-                if hint.state not in _ACTIVE_RECOVERY_SESSION_STATES:
-                    continue
-                sessions_by_id.setdefault(hint.session_id, hint)
-        if page >= int(payload.get("pages", 0) or 0):
-            break
-        page += 1
-    return sorted(sessions_by_id.values(), key=lambda current: current.session_id)
-
-
-def _report_recovery_sessions(sessions: list[RecoverySessionHint]) -> None:
-    if not sessions:
-        typer.echo("no active recovery sessions")
-        return
-    for session in sessions:
-        image_ids = ", ".join(image.image_id for image in session.images) or "(no images)"
-        typer.echo(f"recovery session {session.session_id} is {session.state}")
-        typer.echo(f"type: {session.type}")
-        typer.echo(f"images: {image_ids}")
-        if session.latest_message:
-            typer.echo(session.latest_message)
 
 
 def _clear_recovery_artifacts(
@@ -1285,6 +1339,40 @@ def _clear_completed_burn_artifacts(
         )
 
 
+def _maybe_complete_recovery_session_after_burn(
+    client: ApiClient,
+    session_id: str,
+    *,
+    session_state: BurnSessionState,
+    staging_dir: Path,
+) -> None:
+    try:
+        payload = client.get_recovery_session(session_id)
+    except NotFound:
+        return
+    state = str(payload.get("state"))
+    if state == "completed":
+        return
+    if state not in {"ready", "expired"}:
+        return
+    hint = _recovery_session_hint_from_payload(payload)
+    for image in hint.images:
+        if _image_requires_recovery_burn(client, image.image_id):
+            return
+        if _image_has_resumable_copy_verification(
+            client,
+            image.image_id,
+            session_state,
+        ):
+            return
+    client.complete_recovery_session(session_id)
+    _clear_recovery_artifacts(
+        session_state,
+        staging_dir=staging_dir,
+        images=hint.images,
+    )
+
+
 def _image_requires_recovery_burn(client: ApiClient, image_id: str) -> bool:
     copies_payload = client.list_copies(image_id)
     return any(
@@ -1324,163 +1412,6 @@ def _can_resume_expired_recovery_session(
         if not iso_path.is_file():
             return False
     return True
-
-
-def _recover_session_image(
-    image: RecoverySessionImageHint,
-    *,
-    client: ApiClient,
-    staging_dir: Path,
-    session_state: BurnSessionState,
-    iso_verifier: Any,
-    burner: Any,
-    media_verifier: Any,
-    prompts: Any,
-    device: str,
-    recovery_session_id: str,
-) -> list[str]:
-    typer.echo(f"recovering image {image.image_id}", err=True)
-    file_count = _image_file_count(client, image.image_id)
-    target_bytes = _image_target_bytes(client, image.image_id)
-    completed: list[str] = []
-    while True:
-        copies_payload = client.list_copies(image.image_id)
-        pending_copies = [
-            copy_payload
-            for copy_payload in copies_payload.get("copies", [])
-            if isinstance(copy_payload, dict)
-            and str(copy_payload.get("state")) in _PENDING_BURN_STATES
-        ]
-        if not pending_copies:
-            return completed
-        completed.append(
-            _burn_pending_copy(
-                pending_copies[0],
-                client=client,
-                image_id=image.image_id,
-                filename=image.filename,
-                file_count=file_count,
-                staging_dir=staging_dir,
-                session_state=session_state,
-                iso_verifier=iso_verifier,
-                burner=burner,
-                media_verifier=media_verifier,
-                prompts=prompts,
-                device=device,
-                recovery_session_id=recovery_session_id,
-                target_bytes=target_bytes,
-            )
-        )
-
-
-def _stage_recovery_session_images(
-    recovery_session: RecoverySessionHint,
-    *,
-    client: ApiClient,
-    staging_dir: Path,
-    session_state: BurnSessionState,
-    iso_verifier: Any,
-) -> None:
-    for image in recovery_session.images:
-        if not _image_requires_recovery_burn(client, image.image_id):
-            continue
-        _ensure_staged_iso(
-            client,
-            image.image_id,
-            image.filename,
-            staging_dir=staging_dir,
-            verifier=iso_verifier,
-            session_state=session_state,
-            recovery_session_id=recovery_session.session_id,
-        )
-
-
-def _process_recovery_session(
-    recovery_session: RecoverySessionHint,
-    *,
-    client: ApiClient,
-    staging_dir: Path,
-    session_state: BurnSessionState,
-    iso_verifier: Any,
-    burner: Any,
-    media_verifier: Any,
-    prompts: Any,
-    device: str,
-) -> tuple[RecoverySessionHint, list[str]]:
-    session_id = recovery_session.session_id
-    state = recovery_session.state
-    typer.echo(f"selected recovery session {session_id}", err=True)
-
-    if state == "expired":
-        if not _can_resume_expired_recovery_session(
-            recovery_session,
-            client=client,
-            staging_dir=staging_dir,
-        ):
-            raise RuntimeError(
-                recovery_session.latest_message
-                or f"recovery session expired and must be re-initiated: {session_id}"
-            )
-        typer.echo(
-            "restore window expired remotely; resuming from local staged ISO artifacts",
-            err=True,
-        )
-        state = "ready"
-    if state == "completed":
-        return (recovery_session, [])
-
-    if state == "pending_approval":
-        typer.echo(f"approving recovery session {session_id}", err=True)
-        payload = client.approve_recovery_session(session_id)
-        recovery_session = _recovery_session_hint_from_payload(payload)
-        state = recovery_session.state
-
-    if state == "restore_requested":
-        return (recovery_session, [])
-
-    if state != "ready":
-        raise RuntimeError(f"unsupported recovery session state for {session_id}: {state}")
-
-    _stage_recovery_session_images(
-        recovery_session,
-        client=client,
-        staging_dir=staging_dir,
-        session_state=session_state,
-        iso_verifier=iso_verifier,
-    )
-
-    completed_copy_ids: list[str] = []
-    for image in recovery_session.images:
-        completed_copy_ids.extend(
-            _recover_session_image(
-                image,
-                client=client,
-                staging_dir=staging_dir,
-                session_state=session_state,
-                iso_verifier=iso_verifier,
-                burner=burner,
-                media_verifier=media_verifier,
-                prompts=prompts,
-                device=device,
-                recovery_session_id=recovery_session.session_id,
-            )
-        )
-    client.complete_recovery_session(session_id)
-    _clear_recovery_artifacts(
-        session_state,
-        staging_dir=staging_dir,
-        images=recovery_session.images,
-    )
-    return (
-        RecoverySessionHint(
-            session_id=recovery_session.session_id,
-            type=recovery_session.type,
-            state="completed",
-            latest_message=("Recovery session completed and restored ISO cleanup was recorded."),
-            images=recovery_session.images,
-        ),
-        completed_copy_ids,
-    )
 
 
 def _ensure_staged_iso(
@@ -1548,6 +1479,37 @@ def _ensure_staged_iso(
     image_progress.verified_sha256 = _sha256_file(iso_path)
     session_state.save()
     return iso_path
+
+
+def _stage_recovery_session_images(
+    client: ApiClient,
+    recovery_session_id: str,
+    *,
+    staging_dir: Path,
+    session_state: BurnSessionState,
+    iso_verifier: Any,
+) -> RecoverySessionHint:
+    payload = client.get_recovery_session(recovery_session_id)
+    if str(payload.get("state")) == "expired":
+        typer.echo(
+            "restore window expired remotely; resuming from local staged ISO artifacts",
+            err=True,
+        )
+    hint = _recovery_session_hint_from_payload(payload)
+    for image in hint.images:
+        if not _image_requires_recovery_burn(client, image.image_id):
+            continue
+        _ensure_staged_iso(
+            client,
+            image.image_id,
+            image.filename,
+            staging_dir=staging_dir,
+            verifier=iso_verifier,
+            session_state=session_state,
+            recovery_session_id=recovery_session_id,
+            expected_total_bytes=_image_target_bytes(client, image.image_id),
+        )
+    return hint
 
 
 def _register_burned_copy(
@@ -1810,6 +1772,7 @@ def _simulate_pending_copy(
     burner: Any,
     prompts: Any,
     device: str,
+    recovery_session_id: str | None = None,
     expected_total_bytes: int | None = None,
     target_bytes: int | None = None,
 ) -> str:
@@ -1825,6 +1788,7 @@ def _simulate_pending_copy(
         staging_dir=staging_dir,
         verifier=iso_verifier,
         session_state=session_state,
+        recovery_session_id=recovery_session_id,
         expected_total_bytes=expected_total_bytes,
     )
     typer.echo(f"simulating burn copy {copy_id} from {iso_path}", err=True)
@@ -1881,8 +1845,21 @@ def _process_burn_backlog_item(
             fill=item.fill,
         )
         typer.echo(
-            f"selected image {image_id} ({summary})",
+            (
+                f"selected recovered image {image_id} ({summary})"
+                if item.recovery_session_id is not None
+                else f"selected image {image_id} ({summary})"
+            ),
             err=True,
+        )
+
+    if item.recovery_session_id is not None:
+        _stage_recovery_session_images(
+            client,
+            item.recovery_session_id,
+            staging_dir=staging_dir,
+            session_state=session_state,
+            iso_verifier=iso_verifier,
         )
 
     payload = client.list_copies(image_id)
@@ -1915,6 +1892,7 @@ def _process_burn_backlog_item(
                     burner=burner,
                     prompts=prompts,
                     device=device,
+                    recovery_session_id=item.recovery_session_id,
                     expected_total_bytes=expected_total_bytes,
                     target_bytes=target_bytes,
                 )
@@ -1933,6 +1911,7 @@ def _process_burn_backlog_item(
                 media_verifier=media_verifier,
                 prompts=prompts,
                 device=device,
+                recovery_session_id=item.recovery_session_id,
                 expected_total_bytes=expected_total_bytes,
                 target_bytes=target_bytes,
             )
@@ -1944,6 +1923,13 @@ def _process_burn_backlog_item(
             staging_dir=staging_dir,
             image_id=image_id,
         )
+        if item.recovery_session_id is not None:
+            _maybe_complete_recovery_session_after_burn(
+                client,
+                item.recovery_session_id,
+                session_state=session_state,
+                staging_dir=staging_dir,
+            )
     return completed
 
 
@@ -2235,6 +2221,19 @@ def _emit_disc_payload(payload: dict[str, Any], *, image_id: str, json_mode: boo
     emit(payload if json_mode else format_disc(human_payload), json_mode=json_mode)
 
 
+def _disc_payload_with_recovery_status(
+    client: ApiClient,
+    payload: dict[str, Any],
+    *,
+    image_id: str,
+) -> dict[str, Any]:
+    try:
+        recovery_session = client.get_recovery_session_for_image(image_id)
+    except NotFound:
+        return payload
+    return {**payload, "recovery_session": recovery_session}
+
+
 def _validate_disc_sort(sort: str) -> None:
     if sort not in _DISC_SORT_FIELDS:
         raise typer.BadParameter(
@@ -2346,7 +2345,12 @@ def disc_mark_lost_cmd(
     """Mark a disc as lost."""
 
     image_id = _image_id_from_copy_id(copy_id)
-    payload = ApiClient().update_copy(image_id, copy_id, state="lost")
+    client = ApiClient()
+    payload = _disc_payload_with_recovery_status(
+        client,
+        client.update_copy(image_id, copy_id, state="lost"),
+        image_id=image_id,
+    )
     _emit_disc_payload(payload, image_id=image_id, json_mode=json_mode)
 
 
@@ -2358,7 +2362,12 @@ def disc_mark_damaged_cmd(
     """Mark a disc as damaged."""
 
     image_id = _image_id_from_copy_id(copy_id)
-    payload = ApiClient().update_copy(image_id, copy_id, state="damaged")
+    client = ApiClient()
+    payload = _disc_payload_with_recovery_status(
+        client,
+        client.update_copy(image_id, copy_id, state="damaged"),
+        image_id=image_id,
+    )
     _emit_disc_payload(payload, image_id=image_id, json_mode=json_mode)
 
 
@@ -2466,7 +2475,11 @@ def burn_cmd(
         simulated_copy_ids: list[str] = []
 
         while True:
-            backlog = _discover_burn_backlog(client, session_state)
+            backlog = _discover_burn_backlog(
+                client,
+                session_state,
+                staging_dir=resolved_staging_dir,
+            )
             if not backlog:
                 break
             copy_ids = _process_burn_backlog_item(
@@ -2603,7 +2616,7 @@ def image_rebuild_list_cmd(
         str | None,
         typer.Option(
             "--state",
-            help="Filter by pending_approval, restore_requested, ready, expired, or completed",
+            help="Filter by restore_requested, ready, expired, or completed",
         ),
     ] = None,
     include_all: Annotated[
@@ -2645,106 +2658,6 @@ def image_rebuild_show_cmd(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
-
-
-@image_rebuild_app.command("approve")
-def image_rebuild_approve_cmd(
-    session_id: Annotated[str, typer.Argument(help="Recovery session id")],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Approve a pending image rebuild."""
-
-    try:
-        api = ApiClient()
-        _require_image_rebuild(api.get_recovery_session(session_id))
-        payload = api.approve_recovery_session(session_id)
-    except (RiverhogError, RuntimeError) as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
-    emit(payload if json_mode else format_recovery_session(payload), json_mode=json_mode)
-
-
-@image_rebuild_app.command("burn")
-def image_rebuild_burn_cmd(
-    session_id: Annotated[
-        str,
-        typer.Argument(help="Recovery session id"),
-    ],
-    device: Annotated[
-        str | None,
-        typer.Option(
-            "--device",
-            help="Optical device path; omitted uses the platform default burner",
-        ),
-    ] = None,
-    staging_dir: Annotated[
-        Path | None,
-        typer.Option("--staging-dir", help="Local staging directory for ISO downloads"),
-    ] = None,
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Burn recovered copies for a rebuild."""
-
-    try:
-        client = ApiClient()
-        payload = client.get_recovery_session(session_id)
-        _require_image_rebuild(payload)
-        recovery_session = _recovery_session_hint_from_payload(payload)
-        iso_verifier = build_iso_verifier()
-        burner = build_disc_burner()
-        media_verifier = build_burned_media_verifier()
-        prompts = build_burn_prompts()
-        resolved_staging_dir = (staging_dir or _default_staging_dir()).expanduser()
-        resolved_device = device or _default_burn_device()
-        session_state = BurnSessionState.load(_burn_state_path(resolved_staging_dir))
-        recovery_session, completed_copy_ids = _process_recovery_session(
-            recovery_session,
-            client=client,
-            staging_dir=resolved_staging_dir,
-            session_state=session_state,
-            iso_verifier=iso_verifier,
-            burner=burner,
-            media_verifier=media_verifier,
-            prompts=prompts,
-            device=resolved_device,
-        )
-    except (RiverhogError, RuntimeError) as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
-
-    if recovery_session.state == "restore_requested":
-        if json_mode:
-            emit(
-                {
-                    "session_id": session_id,
-                    "type": recovery_session.type,
-                    "state": recovery_session.state,
-                    "latest_message": recovery_session.latest_message,
-                    "completed_copy_ids": completed_copy_ids,
-                },
-                json_mode=True,
-            )
-        else:
-            typer.echo(f"rebuild session {session_id} is restore_requested")
-            if recovery_session.latest_message:
-                typer.echo(recovery_session.latest_message)
-        return
-
-    if json_mode:
-        emit(
-            {
-                "session_id": session_id,
-                "type": recovery_session.type,
-                "state": recovery_session.state,
-                "latest_message": recovery_session.latest_message,
-                "completed_copy_ids": completed_copy_ids,
-            },
-            json_mode=True,
-        )
-        return
-    typer.echo(f"rebuild session {session_id} completed")
-    for copy_id in completed_copy_ids:
-        typer.echo(copy_id)
 
 
 def main() -> None:

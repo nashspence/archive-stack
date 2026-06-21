@@ -238,11 +238,13 @@ def map_recovery_session(summary: RecoverySessionSummary) -> dict[str, object]:
         "type": summary.type,
         "state": summary.state.value,
         "created_at": summary.created_at,
-        "approved_at": summary.approved_at,
         "restore_requested_at": summary.restore_requested_at,
         "restore_ready_at": summary.restore_ready_at,
         "restore_expires_at": summary.restore_expires_at,
         "completed_at": summary.completed_at,
+        "restore_paths": None
+        if summary.restore_paths is None
+        else [str(path) for path in summary.restore_paths],
         "latest_message": summary.latest_message,
         "warnings": list(summary.warnings),
         "notification": map_recovery_notification(summary.notification),

@@ -1407,9 +1407,10 @@ def test_discover_recovery_handoffs_for_images_that_require_recovery() -> None:
             assert image_id == "20260420T040001Z"
             return {
                 "id": "rs-20260420T040001Z-1",
-                "state": "pending_approval",
+                "state": "restore_requested",
                 "latest_message": (
-                    "Approve the archive restore before Riverhog requests archived collection data."
+                    "Archive restore requested; wait until the session is ready before "
+                    "burning replacement media."
                 ),
             }
 
@@ -1417,15 +1418,16 @@ def test_discover_recovery_handoffs_for_images_that_require_recovery() -> None:
         djdan_main.RecoveryHandoff(
             image_id="20260420T040001Z",
             session_id="rs-20260420T040001Z-1",
-            state="pending_approval",
+            state="restore_requested",
             latest_message=(
-                "Approve the archive restore before Riverhog requests archived collection data."
+                "Archive restore requested; wait until the session is ready before "
+                "burning replacement media."
             ),
         )
     ]
 
 
-def test_discover_active_recovery_sessions_dedupes_multi_image_sessions() -> None:
+def test_list_image_rebuild_sessions_defaults_to_active_states() -> None:
     class FakeClient:
         def list_recovery_sessions(
             self,
@@ -1435,60 +1437,59 @@ def test_discover_active_recovery_sessions_dedupes_multi_image_sessions() -> Non
             sort: str,
             order: str,
             recovery_type: str,
+            state: str | None = None,
         ) -> dict[str, object]:
-            assert (page, per_page, sort, order, recovery_type) == (
-                1,
+            assert (per_page, sort, order, recovery_type) == (
                 100,
                 "created_at",
                 "desc",
                 "image_rebuild",
             )
+            if state != "restore_requested":
+                return {"page": page, "pages": 0, "sessions": []}
             return {
-                "page": 1,
+                "page": page,
                 "pages": 1,
                 "sessions": [
                     {
                         "id": "rs-20260420T040001Z-1",
-                        "state": "pending_approval",
+                        "state": "restore_requested",
                         "latest_message": (
-                            "Approve the archive restore before Riverhog requests "
-                            "archived collection data."
+                            "Archive restore requested; wait until the session is ready "
+                            "before burning replacement media."
                         ),
                         "images": [
                             {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"},
                             {"id": "20260420T040003Z", "filename": "20260420T040003Z.iso"},
                         ],
-                    },
-                    {
-                        "id": "rs-completed",
-                        "state": "completed",
-                        "latest_message": "done",
-                        "images": [],
-                    },
+                    }
                 ],
             }
 
-    sessions = djdan_main._discover_active_recovery_sessions(FakeClient())
+    payload = djdan_main._list_image_rebuild_sessions(
+        FakeClient(),
+        page=1,
+        per_page=25,
+        sort="created_at",
+        order="desc",
+        state=None,
+        include_all=False,
+    )
 
-    assert sessions == [
-        djdan_main.RecoverySessionHint(
-            session_id="rs-20260420T040001Z-1",
-            type="image_rebuild",
-            state="pending_approval",
-            latest_message=(
-                "Approve the archive restore before Riverhog requests archived collection data."
+    assert payload["total"] == 1
+    assert payload["sessions"] == [
+        {
+            "id": "rs-20260420T040001Z-1",
+            "state": "restore_requested",
+            "latest_message": (
+                "Archive restore requested; wait until the session is ready "
+                "before burning replacement media."
             ),
-            images=(
-                djdan_main.RecoverySessionImageHint(
-                    image_id="20260420T040001Z",
-                    filename="20260420T040001Z.iso",
-                ),
-                djdan_main.RecoverySessionImageHint(
-                    image_id="20260420T040003Z",
-                    filename="20260420T040003Z.iso",
-                ),
-            ),
-        )
+            "images": [
+                {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"},
+                {"id": "20260420T040003Z", "filename": "20260420T040003Z.iso"},
+            ],
+        }
     ]
 
 
@@ -1530,7 +1531,7 @@ def test_djdan_recover_lists_active_sessions(monkeypatch) -> None:
             state: str | None = None,
         ) -> dict[str, object]:
             assert recovery_type == "image_rebuild"
-            if state not in {"pending_approval", "ready", "restore_requested"}:
+            if state not in {"restore_requested", "ready"}:
                 return {"page": page, "pages": 0, "sessions": []}
             return {
                 "page": page,
@@ -1538,17 +1539,17 @@ def test_djdan_recover_lists_active_sessions(monkeypatch) -> None:
                 "sessions": [
                     {
                         "id": "rs-20260420T040001Z-1",
-                        "state": "pending_approval",
+                        "state": "restore_requested",
                         "latest_message": (
-                            "Approve the archive restore before Riverhog requests archived "
-                            "collection data."
+                            "Archive restore requested; wait until the session is ready before "
+                            "burning replacement media."
                         ),
                         "images": [
                             {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"},
                         ],
                     }
                 ]
-                if state == "pending_approval"
+                if state == "restore_requested"
                 else [],
             }
 
@@ -1558,36 +1559,48 @@ def test_djdan_recover_lists_active_sessions(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert "rs-20260420T040001Z-1" in result.stdout
-    assert "pending_approval" in result.stdout
+    assert "restore_requested" in result.stdout
     assert "20260420T040001Z" in result.stdout
 
 
-def test_djdan_recover_approves_waiting_session(monkeypatch, tmp_path: Path) -> None:
+def test_djdan_recover_reports_waiting_session(monkeypatch, tmp_path: Path) -> None:
     class FakeClient:
-        def list_images(self, *, page: int, per_page: int, sort: str, order: str):
-            return {"page": 1, "pages": 0, "images": []}
+        def get_plan(self, *, page: int, per_page: int, sort: str, order: str, iso_ready: bool):
+            return {"page": 1, "pages": 0, "candidates": []}
 
-        def get_recovery_session(self, session_id: str) -> dict[str, object]:
-            assert session_id == "rs-20260420T040001Z-1"
+        def list_images(self, *, page: int, per_page: int, sort: str, order: str):
             return {
-                "id": session_id,
-                "state": "pending_approval",
-                "latest_message": (
-                    "Approve the archive restore before Riverhog requests archived collection data."
-                ),
+                "page": 1,
+                "pages": 1,
                 "images": [
-                    {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"},
+                    {
+                        "id": "20260420T040001Z",
+                        "filename": "20260420T040001Z.iso",
+                        "fill": 0.9,
+                        "physical_copies_registered": 0,
+                        "physical_copies_required": 2,
+                    }
                 ],
             }
 
-        def approve_recovery_session(self, session_id: str) -> dict[str, object]:
-            assert session_id == "rs-20260420T040001Z-1"
+        def list_copies(self, image_id: str) -> dict[str, object]:
+            assert image_id == "20260420T040001Z"
             return {
-                "id": session_id,
+                "copies": [
+                    {"id": "20260420T040001Z-1", "state": "lost"},
+                    {"id": "20260420T040001Z-2", "state": "damaged"},
+                    {"id": "20260420T040001Z-3", "state": "needed"},
+                ]
+            }
+
+        def get_recovery_session_for_image(self, image_id: str) -> dict[str, object]:
+            assert image_id == "20260420T040001Z"
+            return {
+                "id": "rs-20260420T040001Z-1",
                 "state": "restore_requested",
                 "latest_message": (
-                    "Archive restore requested; wait for the ready notification before "
-                    "downloading or burning replacement media."
+                    "Archive restore requested; wait until the session is ready before "
+                    "burning replacement media."
                 ),
                 "images": [
                     {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"},
@@ -1602,11 +1615,15 @@ def test_djdan_recover_approves_waiting_session(monkeypatch, tmp_path: Path) -> 
 
     result = runner.invoke(
         djdan_main.app,
-        ["image", "rebuild", "burn", "rs-20260420T040001Z-1", "--staging-dir", str(tmp_path)],
+        ["burn", "--device", "/dev/fake-sr0", "--staging-dir", str(tmp_path)],
+        input="\n",
     )
 
     assert result.exit_code == 0
-    assert "rebuild session rs-20260420T040001Z-1 is restore_requested" in result.stdout
+    assert "burn backlog already clear" in result.stdout
+    assert "burn backlog is waiting for image rebuild restore work" in result.stdout
+    assert "rs-20260420T040001Z-1" in result.stdout
+    assert "restore_requested" in result.stdout
     assert "Archive restore requested" in result.stdout
 
 
@@ -1661,8 +1678,23 @@ def test_djdan_recover_ready_session_burns_replacements_and_cleans_staging(
                     "location": None,
                 }
 
+        def get_plan(self, *, page: int, per_page: int, sort: str, order: str, iso_ready: bool):
+            return {"page": 1, "pages": 0, "candidates": []}
+
         def list_images(self, *, page: int, per_page: int, sort: str, order: str):
-            return {"page": 1, "pages": 0, "images": []}
+            return {
+                "page": 1,
+                "pages": 1,
+                "images": [
+                    {
+                        "id": image_id,
+                        "filename": f"{image_id}.iso",
+                        "fill": 0.9,
+                        "physical_copies_registered": self._verified_count(),
+                        "physical_copies_required": 2,
+                    }
+                ],
+            }
 
         def get_recovery_session(self, session_id: str) -> dict[str, object]:
             return {
@@ -1671,6 +1703,10 @@ def test_djdan_recover_ready_session_burns_replacements_and_cleans_staging(
                 "latest_message": "Restored ISO data is ready.",
                 "images": [{"id": image_id, "filename": f"{image_id}.iso"}],
             }
+
+        def get_recovery_session_for_image(self, image_id_arg: str) -> dict[str, object]:
+            assert image_id_arg == image_id
+            return self.get_recovery_session("rs-20260420T040001Z-1")
 
         def list_copies(self, image_id_arg: str) -> dict[str, object]:
             assert image_id_arg == image_id
@@ -1761,10 +1797,7 @@ def test_djdan_recover_ready_session_burns_replacements_and_cleans_staging(
     result = runner.invoke(
         djdan_main.app,
         [
-            "image",
-            "rebuild",
             "burn",
-            "rs-20260420T040001Z-1",
             "--device",
             "/dev/fake-sr0",
             "--staging-dir",
@@ -1773,7 +1806,7 @@ def test_djdan_recover_ready_session_burns_replacements_and_cleans_staging(
     )
 
     assert result.exit_code == 0
-    assert "rebuild session rs-20260420T040001Z-1 completed" in result.stdout
+    assert "burn backlog cleared" in result.stdout
     assert f"{image_id}-3" in result.stdout
     assert f"{image_id}-4" in result.stdout
     assert client.completed_sessions == ["rs-20260420T040001Z-1"]
@@ -1819,8 +1852,30 @@ def test_djdan_recover_can_finish_expired_session_from_local_staging(
                 },
             }
 
+        def _verified_count(self) -> int:
+            return sum(
+                1
+                for copy in self.copy_states.values()
+                if copy["state"] in {"registered", "verified"}
+            )
+
+        def get_plan(self, *, page: int, per_page: int, sort: str, order: str, iso_ready: bool):
+            return {"page": 1, "pages": 0, "candidates": []}
+
         def list_images(self, *, page: int, per_page: int, sort: str, order: str):
-            return {"page": 1, "pages": 0, "images": []}
+            return {
+                "page": 1,
+                "pages": 1,
+                "images": [
+                    {
+                        "id": image_id,
+                        "filename": f"{image_id}.iso",
+                        "fill": 0.9,
+                        "physical_copies_registered": self._verified_count(),
+                        "physical_copies_required": 1,
+                    }
+                ],
+            }
 
         def get_recovery_session(self, session_id: str) -> dict[str, object]:
             return {
@@ -1832,6 +1887,10 @@ def test_djdan_recover_can_finish_expired_session_from_local_staging(
                 ),
                 "images": [{"id": image_id, "filename": f"{image_id}.iso"}],
             }
+
+        def get_recovery_session_for_image(self, image_id_arg: str) -> dict[str, object]:
+            assert image_id_arg == image_id
+            return self.get_recovery_session("rs-20260420T040001Z-1")
 
         def list_copies(self, image_id_arg: str) -> dict[str, object]:
             assert image_id_arg == image_id
@@ -1917,10 +1976,7 @@ def test_djdan_recover_can_finish_expired_session_from_local_staging(
     result = runner.invoke(
         djdan_main.app,
         [
-            "image",
-            "rebuild",
             "burn",
-            "rs-20260420T040001Z-1",
             "--device",
             "/dev/fake-sr0",
             "--staging-dir",
@@ -1929,7 +1985,7 @@ def test_djdan_recover_can_finish_expired_session_from_local_staging(
     )
 
     assert result.exit_code == 0
-    assert "rebuild session rs-20260420T040001Z-1 completed" in result.stdout
+    assert "burn backlog cleared" in result.stdout
     assert (
         "restore window expired remotely; resuming from local staged ISO artifacts" in result.stderr
     )
@@ -1970,8 +2026,30 @@ def test_djdan_recover_stages_all_pending_session_images_before_first_burn(
                 },
             }
 
+        def get_plan(self, *, page: int, per_page: int, sort: str, order: str, iso_ready: bool):
+            return {"page": 1, "pages": 0, "candidates": []}
+
         def list_images(self, *, page: int, per_page: int, sort: str, order: str):
-            return {"page": 1, "pages": 0, "images": []}
+            return {
+                "page": 1,
+                "pages": 1,
+                "images": [
+                    {
+                        "id": image_one,
+                        "filename": f"{image_one}.iso",
+                        "fill": 0.95,
+                        "physical_copies_registered": 0,
+                        "physical_copies_required": 1,
+                    },
+                    {
+                        "id": image_two,
+                        "filename": f"{image_two}.iso",
+                        "fill": 0.9,
+                        "physical_copies_registered": 0,
+                        "physical_copies_required": 1,
+                    },
+                ],
+            }
 
         def get_recovery_session(self, session_id: str) -> dict[str, object]:
             return {
@@ -1983,6 +2061,10 @@ def test_djdan_recover_stages_all_pending_session_images_before_first_burn(
                     {"id": image_two, "filename": f"{image_two}.iso"},
                 ],
             }
+
+        def get_recovery_session_for_image(self, image_id: str) -> dict[str, object]:
+            assert image_id in {image_one, image_two}
+            return self.get_recovery_session("rs-20260420T040001Z-1")
 
         def list_copies(self, image_id: str) -> dict[str, object]:
             return {"copies": list(self.copy_states[image_id].values())}
@@ -2070,10 +2152,7 @@ def test_djdan_recover_stages_all_pending_session_images_before_first_burn(
     result = runner.invoke(
         djdan_main.app,
         [
-            "image",
-            "rebuild",
             "burn",
-            "rs-20260420T040001Z-1",
             "--device",
             "/dev/fake-sr0",
             "--staging-dir",
@@ -2127,9 +2206,10 @@ def test_djdan_burn_reports_recovery_handoffs_when_no_standard_backlog_exists(
             assert image_id == "20260420T040001Z"
             return {
                 "id": "rs-20260420T040001Z-1",
-                "state": "pending_approval",
+                "state": "restore_requested",
                 "latest_message": (
-                    "Approve the archive restore before Riverhog requests archived collection data."
+                    "Archive restore requested; wait until the session is ready before "
+                    "burning replacement media."
                 ),
             }
 
@@ -2143,10 +2223,10 @@ def test_djdan_burn_reports_recovery_handoffs_when_no_standard_backlog_exists(
 
     assert result.exit_code == 0
     assert "burn backlog already clear" in result.stdout
-    assert "image rebuild work remains" in result.stdout
+    assert "burn backlog is waiting for image rebuild restore work" in result.stdout
     assert "rs-20260420T040001Z-1" in result.stdout
-    assert "pending_approval" in result.stdout
-    assert "Approve the archive restore" in result.stdout
+    assert "restore_requested" in result.stdout
+    assert "Archive restore requested" in result.stdout
 
 
 def test_djdan_burn_cleans_stale_completed_staging_when_backlog_is_clear(
@@ -2246,7 +2326,7 @@ def test_djdan_burn_without_device_uses_platform_default(
     class FakeClient:
         pass
 
-    def fake_discover_burn_backlog(client, session_state=None):
+    def fake_discover_burn_backlog(client, session_state=None, *, staging_dir=None):
         nonlocal discover_calls
         discover_calls += 1
         if discover_calls == 1:

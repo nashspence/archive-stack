@@ -410,7 +410,7 @@ paths:
           $ref: "#/components/responses/Error"
     post:
       summary: Create or resume one collection restore session
-      description: Creates one pending-approval `collection_restore` recovery session when the collection has an uploaded and verified Glacier archive package, or returns the active session if one already exists.
+      description: Creates or resumes one automatic `collection_restore` recovery session when the collection has an uploaded and verified Glacier archive package. Riverhog requests the Glacier restore, polls readiness, materializes the requested files, and records cleanup automatically.
       operationId: createOrResumeCollectionRestoreSession
       parameters:
         - in: path
@@ -418,6 +418,12 @@ paths:
           required: true
           description: Canonical collection id. Slash-bearing ids occupy multiple path segments under `/collections/`.
           schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CollectionRestoreStartRequest"
       responses:
         "200":
           description: Recovery session summary
@@ -625,24 +631,6 @@ paths:
                 $ref: "#/components/schemas/RecoverySession"
         default:
           $ref: "#/components/responses/Error"
-    post:
-      summary: Create or resume one image rebuild session
-      description: Creates one pending-approval `image_rebuild` recovery session when a finalized image has no remaining protected copies and the required collection archives are uploaded, or returns the active session if one already exists.
-      operationId: createOrResumeImageRebuildSession
-      parameters:
-        - in: path
-          name: image_id
-          required: true
-          schema: { type: string }
-      responses:
-        "200":
-          description: Recovery session summary
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/RecoverySession"
-        default:
-          $ref: "#/components/responses/Error"
   /recovery-sessions:
     get:
       summary: List recovery sessions
@@ -693,7 +681,7 @@ paths:
           schema:
             oneOf:
               - type: string
-                enum: [pending_approval, restore_requested, ready, expired, completed]
+                enum: [restore_requested, ready, expired, completed]
               - type: "null"
         - in: query
           name: collection
@@ -737,25 +725,6 @@ paths:
                 $ref: "#/components/schemas/RecoverySession"
         default:
           $ref: "#/components/responses/Error"
-  /recovery-sessions/{session_id}/approve:
-    post:
-      summary: Approve one recovery session cost estimate
-      description: Approves one pending recovery session so Riverhog can request Glacier restore work for the required collection archives.
-      operationId: approveRecoverySession
-      parameters:
-        - in: path
-          name: session_id
-          required: true
-          schema: { type: string }
-      responses:
-        "200":
-          description: Approved recovery session summary
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/RecoverySession"
-        default:
-          $ref: "#/components/responses/Error"
   /recovery-sessions/{session_id}/complete:
     post:
       summary: Complete one ready recovery session
@@ -769,36 +738,6 @@ paths:
       responses:
         "200":
           description: Completed recovery session summary
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/RecoverySession"
-        default:
-          $ref: "#/components/responses/Error"
-  /recovery-sessions/{session_id}/collections/{collection_id}/materialize:
-    post:
-      summary: Materialize restored collection files to hot storage
-      description: Verifies a ready collection restore archive package, extracts the selected logical file paths, and writes those files into committed hot storage.
-      operationId: materializeCollectionRestoreFiles
-      parameters:
-        - in: path
-          name: session_id
-          required: true
-          schema: { type: string }
-        - in: path
-          name: collection_id
-          required: true
-          description: Canonical collection id in the ready recovery session. Slash-bearing ids occupy multiple path segments.
-          schema: { type: string }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/CollectionRestoreMaterializeRequest"
-      responses:
-        "200":
-          description: Recovery session summary with completed materialization progress
           content:
             application/json:
               schema:
@@ -2171,7 +2110,7 @@ components:
         state:
           oneOf:
             - type: string
-              enum: [pending_approval, restore_requested, ready, expired, completed]
+              enum: [restore_requested, ready, expired, completed]
             - type: "null"
         collection:
           oneOf:
@@ -2197,15 +2136,10 @@ components:
           enum: [collection_restore, image_rebuild]
         state:
           type: string
-          enum: [pending_approval, restore_requested, ready, expired, completed]
+          enum: [restore_requested, ready, expired, completed]
         created_at:
           type: string
           format: date-time
-        approved_at:
-          oneOf:
-            - type: string
-              format: date-time
-            - type: "null"
         restore_requested_at:
           oneOf:
             - type: string
@@ -2225,6 +2159,12 @@ components:
           oneOf:
             - type: string
               format: date-time
+            - type: "null"
+        restore_paths:
+          oneOf:
+            - type: array
+              items:
+                type: string
             - type: "null"
         latest_message:
           oneOf:
@@ -2277,14 +2217,15 @@ components:
         materialization:
           type: string
           enum: [pending, in_progress, completed, failed]
-    CollectionRestoreMaterializeRequest:
+    CollectionRestoreStartRequest:
       type: object
-      required: [paths]
       properties:
         paths:
-          type: array
-          items:
-            type: string
+          oneOf:
+            - type: array
+              items:
+                type: string
+            - type: "null"
     RecoverySessionImage:
       type: object
       required: [id, filename, collection_ids, rebuild_state]

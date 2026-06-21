@@ -136,11 +136,11 @@ class RecoverySessionSummary:
     type: str
     state: RecoverySessionState
     created_at: str
-    approved_at: str | None
     restore_requested_at: str | None
     restore_ready_at: str | None
     restore_expires_at: str | None
     completed_at: str | None
+    restore_paths: tuple[str, ...] | None
     latest_message: str | None
     warnings: tuple[str, ...]
     notification: RecoveryNotificationStatus

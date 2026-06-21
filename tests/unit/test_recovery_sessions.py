@@ -28,7 +28,7 @@ from riverhog_core.collection_archives import (
     build_collection_archive_package,
 )
 from riverhog_core.domain.enums import FetchState, RecoverySessionState
-from riverhog_core.domain.errors import InvalidState
+from riverhog_core.domain.errors import NotFound
 from riverhog_core.finalized_image_coverage import (
     read_finalized_image_collection_artifacts,
     read_finalized_image_coverage_parts,
@@ -131,6 +131,11 @@ class _FakeArchiveStore:
         assert requested_at
         assert manifest_object_path is not None
         assert proof_object_path is not None
+        if estimated_ready_at is not None:
+            current = recovery_sessions_module.utcnow()
+            ready_at = datetime.fromisoformat(estimated_ready_at.replace("Z", "+00:00"))
+            if current < ready_at:
+                return ArchiveRestoreStatus(state="requested", ready_at=estimated_ready_at)
         return ArchiveRestoreStatus(state="ready", ready_at=estimated_ready_at)
 
     def iter_restored_collection_archive(
@@ -345,7 +350,7 @@ def _seed_docs_collection_archive(sqlite_path: Path) -> CollectionArchivePackage
     return package
 
 
-def test_double_copy_loss_creates_pending_recovery_session(tmp_path: Path) -> None:
+def test_double_copy_loss_creates_queued_recovery_session(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
     initialize_db(sqlite_url(sqlite_path))
@@ -368,7 +373,7 @@ def test_double_copy_loss_creates_pending_recovery_session(tmp_path: Path) -> No
     session = recovery_service.get_for_image("20260420T040001Z")
 
     assert session.id == "rs-20260420T040001Z-rebuild-1"
-    assert session.state == RecoverySessionState.PENDING_APPROVAL
+    assert session.state == RecoverySessionState.RESTORE_REQUESTED
     assert session.notification.webhook_configured is False
     assert [str(image.id) for image in session.images] == ["20260420T040001Z"]
 
@@ -400,7 +405,7 @@ def test_recovery_sessions_can_be_listed_and_filtered(tmp_path: Path) -> None:
         sort="created_at",
         order="desc",
         recovery_type="collection_restore",
-        state="pending_approval",
+        state="restore_requested",
         collection="docs",
     )
     rebuild_page = recovery_service.list(
@@ -455,10 +460,16 @@ def test_image_recovery_requires_uploaded_collection_archive(tmp_path: Path) -> 
     _seed_finalized_image(sqlite_path, image_root)
 
     config = _config(sqlite_path)
+    copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
     recovery_service = SqlAlchemyRecoverySessionService(config, _FakeArchiveStore())
 
-    with pytest.raises(InvalidState, match="image collections are not archived"):
-        recovery_service.create_or_resume_for_image("20260420T040001Z")
+    copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
+    copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
+    copy_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
+    copy_service.update("20260420T040001Z", "20260420T040001Z-2", state="damaged")
+
+    with pytest.raises(NotFound, match="recovery session not found"):
+        recovery_service.get_for_image("20260420T040001Z")
 
 
 def test_recovery_session_processes_ready_and_expired_states(
@@ -490,9 +501,10 @@ def test_recovery_session_processes_ready_and_expired_states(
 
     start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
     monkeypatch.setattr("riverhog_core.services.recovery_sessions.utcnow", lambda: start)
-    approved = recovery_service.approve("rs-20260420T040001Z-rebuild-1")
-    assert approved.state == RecoverySessionState.RESTORE_REQUESTED
-    assert approved.restore_ready_at == "2026-04-20T04:00:10Z"
+    assert recovery_service.process_due_sessions() == 1
+    requested = recovery_service.get("rs-20260420T040001Z-rebuild-1")
+    assert requested.state == RecoverySessionState.RESTORE_REQUESTED
+    assert requested.restore_ready_at == "2026-04-20T04:00:10Z"
 
     monkeypatch.setattr(
         "riverhog_core.services.recovery_sessions.utcnow",
@@ -543,14 +555,13 @@ def test_collection_restore_requests_and_verifies_manifest_and_proof(
     def _post_webhook(*, config, payload):
         payloads.append(payload)
 
+    start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
+    monkeypatch.setattr("riverhog_core.services.recovery_sessions.utcnow", lambda: start)
     monkeypatch.setattr("riverhog_core.services.recovery_sessions.post_webhook", _post_webhook)
 
     session = recovery_service.create_or_resume_for_collection("docs")
-    start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
-    monkeypatch.setattr("riverhog_core.services.recovery_sessions.utcnow", lambda: start)
-    approved = recovery_service.approve(session.id)
 
-    assert approved.state == RecoverySessionState.RESTORE_REQUESTED
+    assert session.state == RecoverySessionState.RESTORE_REQUESTED
     assert store.restore_requests == [
         (
             "glacier/archives/opaque-docs/archive.tar.age",
@@ -627,7 +638,6 @@ def test_recovery_completed_notification_retries_after_failure(
     monkeypatch.setattr("riverhog_core.services.recovery_sessions.post_webhook", _post_webhook)
 
     session = recovery_service.create_or_resume_for_collection("docs")
-    recovery_service.approve(session.id)
     assert recovery_service.process_due_sessions() == 1
     completed = recovery_service.complete(session.id)
 
@@ -689,7 +699,7 @@ def test_recovery_started_notification_retries_while_restore_is_pending(
     monkeypatch.setattr("riverhog_core.services.recovery_sessions.post_webhook", _post_webhook)
 
     session = recovery_service.create_or_resume_for_collection("docs")
-    recovery_service.approve(session.id)
+    assert session.state == RecoverySessionState.RESTORE_REQUESTED
 
     monkeypatch.setattr(
         "riverhog_core.services.recovery_sessions.utcnow",
@@ -723,20 +733,19 @@ def test_collection_restore_materializes_selected_files_to_hot_storage(
     )
     recovery_service = SqlAlchemyRecoverySessionService(config, store, hot_store)
 
-    session = recovery_service.create_or_resume_for_collection("docs")
     monkeypatch.setattr(
         "riverhog_core.services.recovery_sessions.utcnow",
         lambda: datetime(2026, 4, 20, 4, 0, tzinfo=UTC),
     )
-    recovery_service.approve(session.id)
-    assert recovery_service.process_due_sessions() == 1
-
-    materialized = recovery_service.materialize_collection_files(
-        session.id,
+    session = recovery_service.create_or_resume_for_collection(
         "docs",
         paths=["tax/2022/invoice-123.pdf"],
     )
+    assert recovery_service.process_due_sessions() == 1
 
+    materialized = recovery_service.get(session.id)
+
+    assert materialized.state == RecoverySessionState.COMPLETED
     assert materialized.progress.archive_verification == "completed"
     assert materialized.progress.extraction == "completed"
     assert materialized.progress.materialization == "completed"
@@ -903,19 +912,12 @@ def test_collection_restore_streams_large_selected_file_to_hot_storage(
     )
     recovery_service = SqlAlchemyRecoverySessionService(config, store, hot_store)
 
-    session = recovery_service.create_or_resume_for_collection("docs")
     monkeypatch.setattr(
         "riverhog_core.services.recovery_sessions.utcnow",
         lambda: datetime(2026, 4, 20, 4, 0, tzinfo=UTC),
     )
-    recovery_service.approve(session.id)
+    recovery_service.create_or_resume_for_collection("docs", paths=["large.bin"])
     assert recovery_service.process_due_sessions() == 1
-
-    recovery_service.materialize_collection_files(
-        session.id,
-        "docs",
-        paths=["large.bin"],
-    )
 
     key = ("docs", "large.bin")
     assert hot_store.byte_put_paths == []
@@ -955,20 +957,17 @@ def test_collection_restore_does_not_materialize_selected_file_with_bad_sha256(
     )
     recovery_service = SqlAlchemyRecoverySessionService(config, store, hot_store)
 
-    session = recovery_service.create_or_resume_for_collection("docs")
     monkeypatch.setattr(
         "riverhog_core.services.recovery_sessions.utcnow",
         lambda: datetime(2026, 4, 20, 4, 0, tzinfo=UTC),
     )
-    recovery_service.approve(session.id)
-    assert recovery_service.process_due_sessions() == 1
+    recovery_service.create_or_resume_for_collection(
+        "docs",
+        paths=["tax/2022/invoice-123.pdf"],
+    )
 
     with pytest.raises(ValueError, match="member sha256 mismatch"):
-        recovery_service.materialize_collection_files(
-            session.id,
-            "docs",
-            paths=["tax/2022/invoice-123.pdf"],
-        )
+        recovery_service.process_due_sessions()
 
     assert hot_store.puts == {}
 
@@ -1002,12 +1001,11 @@ def test_collection_restore_rejects_empty_proof_before_completion(
         recovery_payload_codec=_RECOVERY_CODEC,
     )
 
-    session = recovery_service.create_or_resume_for_collection("docs")
     monkeypatch.setattr(
         "riverhog_core.services.recovery_sessions.utcnow",
         lambda: datetime(2026, 4, 20, 4, 0, tzinfo=UTC),
     )
-    recovery_service.approve(session.id)
+    session = recovery_service.create_or_resume_for_collection("docs")
     assert recovery_service.process_due_sessions() == 1
 
     with pytest.raises(ValueError, match="proof is empty"):
@@ -1045,12 +1043,11 @@ def test_collection_restore_rejects_corrupt_archive_before_completion(
     )
     recovery_service = SqlAlchemyRecoverySessionService(config, store)
 
-    session = recovery_service.create_or_resume_for_collection("docs")
     monkeypatch.setattr(
         "riverhog_core.services.recovery_sessions.utcnow",
         lambda: datetime(2026, 4, 20, 4, 0, tzinfo=UTC),
     )
-    recovery_service.approve(session.id)
+    session = recovery_service.create_or_resume_for_collection("docs")
     assert recovery_service.process_due_sessions() == 1
 
     with pytest.raises(ValueError, match="member sha256 mismatch"):
@@ -1088,7 +1085,6 @@ def test_image_rebuild_verifies_manifest_and_proof_before_streaming_archive(
     copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
     copy_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
     copy_service.update("20260420T040001Z", "20260420T040001Z-2", state="damaged")
-    recovery_service.approve("rs-20260420T040001Z-rebuild-1")
     assert recovery_service.process_due_sessions() == 1
 
     def _fake_iso(**kwargs: object):
@@ -1243,7 +1239,7 @@ def test_recovery_session_retries_initial_ready_notification_before_reminders(
     start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
     monkeypatch.setattr("riverhog_core.services.recovery_sessions.utcnow", lambda: start)
     monkeypatch.setattr("riverhog_core.services.recovery_sessions.post_webhook", _post_webhook)
-    recovery_service.approve("rs-20260420T040001Z-rebuild-1")
+    assert recovery_service.process_due_sessions() == 1
 
     monkeypatch.setattr(
         "riverhog_core.services.recovery_sessions.utcnow",
@@ -1316,7 +1312,7 @@ def test_recovery_session_retries_initial_ready_notification_before_expiring(
     start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
     monkeypatch.setattr("riverhog_core.services.recovery_sessions.utcnow", lambda: start)
     monkeypatch.setattr("riverhog_core.services.recovery_sessions.post_webhook", _post_webhook)
-    recovery_service.approve("rs-20260420T040001Z-rebuild-1")
+    assert recovery_service.process_due_sessions() == 1
 
     monkeypatch.setattr(
         "riverhog_core.services.recovery_sessions.utcnow",
@@ -1347,7 +1343,7 @@ def test_recovery_session_retries_initial_ready_notification_before_expiring(
     ]
 
 
-def test_pending_recovery_session_can_group_multiple_images_before_approval(
+def test_queued_recovery_session_can_group_multiple_images_before_restore_request(
     tmp_path: Path,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
@@ -1385,7 +1381,7 @@ def test_pending_recovery_session_can_group_multiple_images_before_approval(
 
     session = recovery_service.get("rs-20260420T040001Z-rebuild-1")
 
-    assert session.state == RecoverySessionState.PENDING_APPROVAL
+    assert session.state == RecoverySessionState.RESTORE_REQUESTED
     assert [str(image.id) for image in session.images] == [
         "20260420T040001Z",
         "20260420T040003Z",

@@ -581,34 +581,21 @@ class _StubRecoverySessions:
         _ = collection_id
         return {}
 
-    def create_or_resume_for_collection(self, collection_id: str) -> dict[str, object]:
-        _ = collection_id
+    def create_or_resume_for_collection(
+        self,
+        collection_id: str,
+        *,
+        paths: list[str] | None = None,
+    ) -> dict[str, object]:
+        _ = collection_id, paths
         return {}
 
     def get_for_image(self, image_id: str) -> dict[str, object]:
         _ = image_id
         return {}
 
-    def create_or_resume_for_image(self, image_id: str) -> dict[str, object]:
-        _ = image_id
-        return {}
-
-    def approve(self, session_id: str) -> dict[str, object]:
-        _ = session_id
-        return {}
-
     def complete(self, session_id: str) -> dict[str, object]:
         _ = session_id
-        return {}
-
-    def materialize_collection_files(
-        self,
-        session_id: str,
-        collection_id: str,
-        *,
-        paths: list[str],
-    ) -> dict[str, object]:
-        _ = session_id, collection_id, paths
         return {}
 
     def process_due_sessions(self, *, limit: int) -> None:

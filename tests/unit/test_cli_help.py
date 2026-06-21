@@ -39,10 +39,7 @@ def test_riverhog_command_help_has_summaries() -> None:
     for summary in (
         "List collection restore sessions.",
         "Show a collection restore session.",
-        "Start or resume a collection restore.",
-        "Approve a pending collection restore.",
-        "Record restored files as materialized.",
-        "Complete a ready collection restore.",
+        "Start or resume an automatic collection restore.",
     ):
         assert summary in restore.stdout
 
@@ -88,8 +85,6 @@ def test_djdan_command_help_has_summaries() -> None:
     for summary in (
         "List image rebuild sessions.",
         "Show an image rebuild session.",
-        "Approve a pending image rebuild.",
-        "Burn recovered copies for a rebuild.",
     ):
         assert summary in rebuild.stdout
 

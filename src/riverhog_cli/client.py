@@ -425,40 +425,25 @@ class ApiClient:
     def create_or_resume_collection_restore_session(
         self,
         collection_id: str,
+        *,
+        paths: Sequence[str] | None = None,
     ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {}
+        if paths is not None:
+            kwargs["json"] = {"paths": list(paths)}
         return self._json(
             "POST",
             f"/v1/collections/{quote(collection_id, safe='/')}/restore-session",
+            **kwargs,
         )
 
     def get_recovery_session(self, session_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/recovery-sessions/{quote(session_id, safe='/')}")
 
-    def approve_recovery_session(self, session_id: str) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            f"/v1/recovery-sessions/{quote(session_id, safe='/')}/approve",
-        )
-
     def complete_recovery_session(self, session_id: str) -> dict[str, Any]:
         return self._json(
             "POST",
             f"/v1/recovery-sessions/{quote(session_id, safe='/')}/complete",
-        )
-
-    def materialize_collection_restore_files(
-        self,
-        session_id: str,
-        collection_id: str,
-        *,
-        paths: Sequence[str],
-    ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            "/v1/recovery-sessions/"
-            f"{quote(session_id, safe='/')}/collections/"
-            f"{quote(collection_id, safe='/')}/materialize",
-            json={"paths": list(paths)},
         )
 
     def _download(

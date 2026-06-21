@@ -44,13 +44,13 @@ class RecoverySessionOut(RiverhogModel):
 
     id: str
     type: Literal["collection_restore", "image_rebuild"] = "image_rebuild"
-    state: Literal["pending_approval", "restore_requested", "ready", "expired", "completed"]
+    state: Literal["restore_requested", "ready", "expired", "completed"]
     created_at: str
-    approved_at: str | None
     restore_requested_at: str | None
     restore_ready_at: str | None
     restore_expires_at: str | None
     completed_at: str | None
+    restore_paths: list[str] | None = None
     latest_message: str | None
     warnings: list[str]
     notification: RecoveryNotificationStatusOut
@@ -74,11 +74,11 @@ class RecoverySessionListOut(RiverhogModel):
     ]
     order: Literal["asc", "desc"]
     type: Literal["collection_restore", "image_rebuild"] | None
-    state: Literal["pending_approval", "restore_requested", "ready", "expired", "completed"] | None
+    state: Literal["restore_requested", "ready", "expired", "completed"] | None
     collection: str | None
     image: str | None
     sessions: list[RecoverySessionOut]
 
 
-class CollectionRestoreMaterializeRequest(RiverhogModel):
-    paths: list[str]
+class CollectionRestoreStartRequest(RiverhogModel):
+    paths: list[str] | None = None

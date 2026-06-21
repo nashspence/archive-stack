@@ -385,7 +385,7 @@ class AcceptanceRecoverySessionRecord:
     type: str = "image_rebuild"
     image_ids: tuple[ImageId, ...] = ()
     collection_ids: tuple[CollectionId, ...] = ()
-    approved_at: str | None = None
+    restore_paths: tuple[str, ...] | None = None
     restore_requested_at: str | None = None
     restore_ready_at: str | None = None
     restore_next_poll_at: str | None = None
@@ -616,10 +616,7 @@ class AcceptanceState:
         if self.active_recovery_session(image_id) is not None:
             return
         pending_rebuild = self.active_image_rebuild_session()
-        if (
-            pending_rebuild is not None
-            and pending_rebuild.state == RecoverySessionState.PENDING_APPROVAL
-        ):
+        if pending_rebuild is not None and pending_rebuild.restore_requested_at is None:
             image_key = ImageId(image_id)
             if image_key not in pending_rebuild.image_ids:
                 pending_rebuild.image_ids = tuple(sorted((*pending_rebuild.image_ids, image_key)))
@@ -632,19 +629,18 @@ class AcceptanceState:
         self.recovery_sessions_by_id[session_id] = AcceptanceRecoverySessionRecord(
             session_id=session_id,
             image_id=image_key,
-            state=RecoverySessionState.PENDING_APPROVAL,
+            state=RecoverySessionState.RESTORE_REQUESTED,
             created_at=_acceptance_isoformat(datetime.now(UTC)),
             type="image_rebuild",
             image_ids=(image_key,),
             collection_ids=required_collection_ids,
             latest_message=(
-                "Approve the archive restore before Riverhog requests archived collection data."
+                "Archive restore queued; Riverhog will request archived collection data."
             ),
         )
 
     def active_image_rebuild_session(self) -> AcceptanceRecoverySessionRecord | None:
         active_states = {
-            RecoverySessionState.PENDING_APPROVAL,
             RecoverySessionState.RESTORE_REQUESTED,
             RecoverySessionState.READY,
         }
@@ -659,7 +655,6 @@ class AcceptanceState:
 
     def active_recovery_session(self, image_id: str) -> AcceptanceRecoverySessionRecord | None:
         active_states = {
-            RecoverySessionState.PENDING_APPROVAL,
             RecoverySessionState.RESTORE_REQUESTED,
             RecoverySessionState.READY,
         }
@@ -2454,7 +2449,12 @@ class AcceptanceRecoverySessionService:
         return self._summary(sorted(sessions, key=lambda record: record.created_at)[-1])
 
     @_with_state_lock
-    def create_or_resume_for_collection(self, collection_id: str) -> RecoverySessionSummary:
+    def create_or_resume_for_collection(
+        self,
+        collection_id: str,
+        *,
+        paths: Sequence[str] | None = None,
+    ) -> RecoverySessionSummary:
         normalized_collection_id = CollectionId(normalize_collection_id(collection_id))
         if (
             self.state.collection_glacier_status(str(normalized_collection_id)).state
@@ -2464,8 +2464,11 @@ class AcceptanceRecoverySessionService:
                 "collection archive is not uploaded and cannot be restored yet: "
                 f"{normalized_collection_id}"
             )
+        normalized_paths = self._normalize_collection_restore_paths(
+            normalized_collection_id,
+            paths,
+        )
         active_states = {
-            RecoverySessionState.PENDING_APPROVAL,
             RecoverySessionState.RESTORE_REQUESTED,
             RecoverySessionState.READY,
         }
@@ -2475,22 +2478,74 @@ class AcceptanceRecoverySessionService:
                 and normalized_collection_id in record.collection_ids
                 and record.state in active_states
             ):
+                if normalized_paths is None:
+                    record.restore_paths = None
+                elif record.restore_paths is not None:
+                    record.restore_paths = tuple(sorted({*record.restore_paths, *normalized_paths}))
                 return self._summary(record)
+        current = datetime.now(UTC)
         session_id = self._generated_collection_restore_session_id(str(normalized_collection_id))
         record = AcceptanceRecoverySessionRecord(
             session_id=session_id,
             image_id=ImageId(""),
-            state=RecoverySessionState.PENDING_APPROVAL,
-            created_at=_acceptance_isoformat(datetime.now(UTC)),
+            state=RecoverySessionState.RESTORE_REQUESTED,
+            created_at=_acceptance_isoformat(current),
             type="collection_restore",
             image_ids=(),
             collection_ids=(normalized_collection_id,),
-            latest_message=(
-                "Approve the archive restore before Riverhog requests archived collection data."
-            ),
+            restore_paths=normalized_paths,
+            latest_message="Archive restore queued; Riverhog will materialize requested files.",
         )
+        self._request_restore(record, current)
         self.state.recovery_sessions_by_id[session_id] = record
         return self._summary(record)
+
+    def _normalize_collection_restore_paths(
+        self,
+        collection_id: CollectionId,
+        paths: Sequence[str] | None,
+    ) -> tuple[str, ...] | None:
+        if paths is None:
+            return None
+        normalized_paths = tuple(dict.fromkeys(normalize_relpath(path) for path in paths))
+        if not normalized_paths:
+            return None
+        collection_files = self.state.files_by_collection.get(collection_id)
+        if collection_files is None:
+            raise NotFound(f"collection not found: {collection_id}")
+        missing_paths = sorted(set(normalized_paths) - set(collection_files))
+        if missing_paths:
+            raise NotFound(f"collection file not found: {missing_paths[0]}")
+        return tuple(sorted(normalized_paths))
+
+    def _request_restore(
+        self,
+        record: AcceptanceRecoverySessionRecord,
+        current: datetime,
+    ) -> None:
+        if record.restore_requested_at is not None:
+            return
+        current_text = _acceptance_isoformat(current)
+        estimated_ready_at = _acceptance_isoformat(
+            current + timedelta(seconds=_GLACIER_RECOVERY_RESTORE_LATENCY_SECONDS)
+        )
+        record.state = RecoverySessionState.RESTORE_REQUESTED
+        record.restore_requested_at = current_text
+        record.restore_ready_at = estimated_ready_at
+        record.restore_expires_at = None
+        record.restore_next_poll_at = _acceptance_isoformat(
+            current + timedelta(seconds=_GLACIER_RECOVERY_SWEEP_INTERVAL_SECONDS)
+        )
+        if record.type == "collection_restore":
+            record.latest_message = (
+                "Archive restore requested; Riverhog will materialize the requested files "
+                "when the archive is ready."
+            )
+            return
+        record.latest_message = (
+            "Archive restore requested; wait until the session is ready before burning "
+            "replacement media."
+        )
 
     @_with_state_lock
     def get_for_image(self, image_id: str) -> RecoverySessionSummary:
@@ -2498,67 +2553,6 @@ class AcceptanceRecoverySessionService:
             record = self.state.latest_recovery_session(image_id)
             if record is None:
                 raise NotFound(f"recovery session not found for image: {image_id}")
-            return self._summary(record)
-
-    @_with_state_lock
-    def create_or_resume_for_image(self, image_id: str) -> RecoverySessionSummary:
-        with self.state.lock:
-            image = self.state.finalized_images_by_id.get(ImageId(image_id))
-            if image is None:
-                raise NotFound(f"image not found: {image_id}")
-            active = self.state.active_recovery_session(image_id)
-            if active is not None:
-                return self._summary(active)
-            collection_ids = tuple(
-                sorted({collection_id for collection_id, _ in image.covered_paths})
-            )
-            if not collection_ids or any(
-                self.state.collection_glacier_status(collection_id).state != GlacierState.UPLOADED
-                for collection_id in collection_ids
-            ):
-                raise InvalidState(
-                    "required collection archives are not uploaded and cannot rebuild image: "
-                    f"{image_id}"
-                )
-            if self.state._protected_copy_count(image_id) > 0:
-                raise Conflict(
-                    "image still has protected copies and does not require "
-                    f"archive recovery: {image_id}"
-                )
-            self.state.ensure_glacier_recovery_session(image_id)
-            record = self.state.active_recovery_session(image_id)
-            assert record is not None
-            return self._summary(record)
-
-    @_with_state_lock
-    def approve(self, session_id: str) -> RecoverySessionSummary:
-        with self.state.lock:
-            record = self.state.recovery_sessions_by_id.get(session_id)
-            if record is None:
-                raise NotFound(f"recovery session not found: {session_id}")
-            if record.state == RecoverySessionState.EXPIRED:
-                raise InvalidState(
-                    "recovery session expired; re-initiate recovery to request restore"
-                )
-            if record.state != RecoverySessionState.PENDING_APPROVAL:
-                raise InvalidState("recovery session is not waiting for approval")
-            current = datetime.now(UTC)
-            current_text = _acceptance_isoformat(current)
-            estimated_ready_at = _acceptance_isoformat(
-                current + timedelta(seconds=_GLACIER_RECOVERY_RESTORE_LATENCY_SECONDS)
-            )
-            record.state = RecoverySessionState.RESTORE_REQUESTED
-            record.approved_at = current_text
-            record.restore_requested_at = current_text
-            record.restore_ready_at = estimated_ready_at
-            record.restore_expires_at = None
-            record.restore_next_poll_at = _acceptance_isoformat(
-                current + timedelta(seconds=_GLACIER_RECOVERY_SWEEP_INTERVAL_SECONDS)
-            )
-            record.latest_message = (
-                "Archive restore requested; wait for the ready notification before "
-                "downloading or burning replacement media."
-            )
             return self._summary(record)
 
     @_with_state_lock
@@ -2580,41 +2574,6 @@ class AcceptanceRecoverySessionService:
             record.next_reminder_at = None
             record.latest_message = (
                 "Recovery session completed and restored ISO cleanup was recorded."
-            )
-            return self._summary(record)
-
-    @_with_state_lock
-    def materialize_collection_files(
-        self,
-        session_id: str,
-        collection_id: str,
-        *,
-        paths: Sequence[str],
-    ) -> RecoverySessionSummary:
-        with self.state.lock:
-            record = self.state.recovery_sessions_by_id.get(session_id)
-            if record is None:
-                raise NotFound(f"recovery session not found: {session_id}")
-            if record.state != RecoverySessionState.READY:
-                raise InvalidState("recovery session is not ready to materialize files")
-            normalized_collection_id = CollectionId(normalize_collection_id(collection_id))
-            if normalized_collection_id not in record.collection_ids:
-                raise NotFound(f"collection not found in recovery session: {collection_id}")
-            selected_paths = tuple(normalize_relpath(path) for path in paths)
-            if not selected_paths:
-                raise InvalidState("at least one collection file path is required")
-            collection_files = self.state.files_by_collection.get(normalized_collection_id)
-            if collection_files is None:
-                raise NotFound(f"collection not found: {collection_id}")
-            for path in selected_paths:
-                if path not in collection_files:
-                    raise NotFound(f"collection file not found: {path}")
-                collection_files[path].hot = True
-            record.archive_verification_state = "completed"
-            record.extraction_state = "completed"
-            record.materialization_state = "completed"
-            record.latest_message = (
-                "Selected collection files were verified and materialized to hot storage."
             )
             return self._summary(record)
 
@@ -2665,6 +2624,13 @@ class AcceptanceRecoverySessionService:
             ):
                 if processed >= limit:
                     break
+                if (
+                    record.state == RecoverySessionState.RESTORE_REQUESTED
+                    and record.restore_requested_at is None
+                ):
+                    self._request_restore(record, current)
+                    processed += 1
+                    continue
                 if (
                     record.state == RecoverySessionState.RESTORE_REQUESTED
                     and record.restore_ready_at is not None
@@ -2749,6 +2715,7 @@ class AcceptanceRecoverySessionService:
             "verify the ISO, and burn replacement media before cleanup."
         )
         if record.type == "collection_restore":
+            self._complete_collection_restore(record, current)
             return
         image = self.state.finalized_images_by_id[record.image_id]
         try:
@@ -2784,6 +2751,34 @@ class AcceptanceRecoverySessionService:
             current + timedelta(seconds=_OPERATOR_WEBHOOK_REMINDER_INTERVAL_SECONDS)
         )
 
+    def _complete_collection_restore(
+        self,
+        record: AcceptanceRecoverySessionRecord,
+        current: datetime,
+    ) -> None:
+        for collection_id in record.collection_ids:
+            collection_files = self.state.files_by_collection.get(collection_id)
+            if collection_files is None:
+                raise NotFound(f"collection not found: {collection_id}")
+            selected_paths = record.restore_paths or tuple(sorted(collection_files))
+            for path in selected_paths:
+                if path not in collection_files:
+                    raise NotFound(f"collection file not found: {path}")
+                collection_files[path].hot = True
+        current_text = _acceptance_isoformat(current)
+        record.archive_verification_state = "completed"
+        record.extraction_state = "completed"
+        record.materialization_state = "completed"
+        record.state = RecoverySessionState.COMPLETED
+        record.completed_at = current_text
+        record.restore_expires_at = current_text
+        record.restore_next_poll_at = None
+        record.next_reminder_at = None
+        record.latest_message = (
+            "Collection restore completed; requested files are materialized and temporary "
+            "archive restore cleanup was recorded."
+        )
+
     def _generated_collection_restore_session_id(self, collection_id: str) -> str:
         existing_ids = set(self.state.recovery_sessions_by_id)
         safe_collection_id = collection_id.replace("/", "-")
@@ -2817,11 +2812,11 @@ class AcceptanceRecoverySessionService:
             type=record.type,
             state=record.state,
             created_at=record.created_at,
-            approved_at=record.approved_at,
             restore_requested_at=record.restore_requested_at,
             restore_ready_at=record.restore_ready_at,
             restore_expires_at=record.restore_expires_at,
             completed_at=record.completed_at,
+            restore_paths=record.restore_paths if record.type == "collection_restore" else None,
             latest_message=record.latest_message,
             warnings=warnings,
             notification=RecoveryNotificationStatus(
@@ -2933,8 +2928,6 @@ def _acceptance_isoformat(value: datetime) -> str:
 
 
 def _acceptance_rebuild_state(record: AcceptanceRecoverySessionRecord) -> str:
-    if record.state == RecoverySessionState.PENDING_APPROVAL:
-        return "pending"
     if record.state == RecoverySessionState.RESTORE_REQUESTED:
         return "restoring_collections"
     if record.state in {RecoverySessionState.READY, RecoverySessionState.COMPLETED}:
@@ -4645,13 +4638,13 @@ class AcceptanceSystem:
             self.state.recovery_sessions_by_id[session_id] = AcceptanceRecoverySessionRecord(
                 session_id=session_id,
                 image_id=ImageId(image_id),
-                state=RecoverySessionState.PENDING_APPROVAL,
+                state=RecoverySessionState.RESTORE_REQUESTED,
                 created_at=_acceptance_isoformat(datetime.now(UTC)),
                 type="image_rebuild",
                 image_ids=(ImageId(image_id),),
                 collection_ids=collection_ids,
                 latest_message=(
-                    "Approve the archive restore before Riverhog requests archived collection data."
+                    "Archive restore queued; Riverhog will request archived collection data."
                 ),
             )
 

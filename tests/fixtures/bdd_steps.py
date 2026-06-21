@@ -7,7 +7,7 @@ import os
 import re
 import shlex
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qsl, quote, urlsplit
 
@@ -15,6 +15,7 @@ import httpx
 import pytest
 from pytest_bdd import given, parsers, then, when
 
+from riverhog_core.domain.enums import RecoverySessionState
 from riverhog_core.domain.selectors import parse_target
 from riverhog_core.fs_paths import normalize_collection_id
 from tests.fixtures.acceptance import AcceptanceSystem
@@ -731,9 +732,6 @@ def _prepare_riverhog_expectation(
             ).json()
         return
 
-    if argv[1:4] == ["collection", "restore", "approve"]:
-        return
-
     if argv[1:3] == ["collection", "upload"]:
         return
 
@@ -1440,6 +1438,28 @@ def given_image_rebuild_session_exists_for_image(
     acceptance_system.ensure_image_rebuild_session(session_id=session_id, image_id=image_id)
 
 
+@given(parsers.parse('recovery session "{session_id}" restore remains pending'))
+def given_recovery_session_restore_remains_pending(
+    acceptance_system: AcceptanceSystem,
+    session_id: str,
+) -> None:
+    now = datetime.now(UTC)
+    now_text = now.isoformat(timespec="seconds").replace("+00:00", "Z")
+    future_text = (now + timedelta(hours=1)).isoformat(timespec="seconds").replace("+00:00", "Z")
+    with acceptance_system.state.lock:
+        record = acceptance_system.state.recovery_sessions_by_id.get(session_id)
+        assert record is not None, f"recovery session not found: {session_id}"
+        record.state = RecoverySessionState.RESTORE_REQUESTED
+        record.restore_requested_at = record.restore_requested_at or now_text
+        record.restore_ready_at = future_text
+        record.restore_next_poll_at = future_text
+        record.restore_expires_at = None
+        record.latest_message = (
+            "Archive restore requested; wait until the session is ready before burning "
+            "replacement media."
+        )
+
+
 def _search_collection_file_paths(
     acceptance_system: AcceptanceSystem,
     collection_id: str,
@@ -1611,8 +1631,8 @@ def when_client_posts(
     _set_response(acceptance_context, response)
 
 
-@when(parsers.parse('the client posts to "{path}" to materialize collection file "{file_path}"'))
-def when_client_posts_to_materialize_collection_file(
+@when(parsers.parse('the client posts to "{path}" to restore collection file "{file_path}"'))
+def when_client_posts_to_restore_collection_file(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
     path: str,
@@ -2171,24 +2191,6 @@ def when_operator_runs_djdan_burn(
         acceptance_system,
         acceptance_context,
         "burn",
-        "--device",
-        _configured_optical_acceptance_device(),
-    )
-
-
-@when(parsers.parse('the operator runs djdan image rebuild burn "{session_id}"'))
-def when_operator_runs_djdan_recover(
-    acceptance_system: AcceptanceSystem,
-    acceptance_context: AcceptanceScenarioContext,
-    session_id: str,
-) -> None:
-    _run_djdan_command(
-        acceptance_system,
-        acceptance_context,
-        "image",
-        "rebuild",
-        "burn",
-        session_id,
         "--device",
         _configured_optical_acceptance_device(),
     )
