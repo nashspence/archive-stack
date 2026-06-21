@@ -910,7 +910,7 @@ The `djdan` CLI is an optical-media client for a machine with an optical drive a
 - `djdan disc show COPY_ID`
 - `djdan disc add IMAGE_ID --at LOCATION [--copy-id GENERATED_ID]`
 - `djdan disc location COPY_ID --to LOCATION`
-- `djdan disc rebuild COPY_ID --reason lost|damaged`
+- `djdan disc rebuild start COPY_ID --reason lost|damaged`
 - `djdan disc rebuild list|show|pause|resume`
 
 For finalized-image and disc commands:

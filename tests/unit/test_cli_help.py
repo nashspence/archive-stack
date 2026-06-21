@@ -90,20 +90,31 @@ def test_djdan_command_help_has_summaries() -> None:
         "Show burned disc details.",
         "Register a physical disc copy.",
         "Update a disc location label.",
-        "Report a lost/damaged disc and inspect rebuild work.",
+        "Disc rebuild operations.",
     ):
         assert summary in disc.stdout
 
     rebuild = runner.invoke(disc_app, ["disc", "rebuild", "--help"])
     assert rebuild.exit_code == 0
     for summary in (
-        "Report a lost/damaged disc and inspect rebuild work.",
-        "--reason",
-        "lost or damaged",
-        "COPY_ID for declaration",
-        "resume SESSION",
+        "Disc rebuild operations.",
+        "Start rebuild work for a lost or damaged disc.",
+        "List disc rebuild sessions.",
+        "Show a disc rebuild session.",
+        "Pause an active disc rebuild session.",
+        "Resume a paused disc rebuild session.",
     ):
         assert summary in rebuild.stdout
+
+    rebuild_start = runner.invoke(disc_app, ["disc", "rebuild", "start", "--help"])
+    assert rebuild_start.exit_code == 0
+    for summary in (
+        "Start rebuild work for a lost or damaged disc.",
+        "copy_id",
+        "--reason",
+        "lost or damaged",
+    ):
+        assert summary in rebuild_start.stdout
 
 
 def test_jeb_help_has_command_summaries(capsys: pytest.CaptureFixture[str]) -> None:

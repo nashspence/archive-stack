@@ -1608,7 +1608,7 @@ def test_disc_rebuild_declares_lost_or_damaged_disc(monkeypatch) -> None:
 
     result = runner.invoke(
         djdan_main.app,
-        ["disc", "rebuild", "20260420T040001Z-1", "--reason", "lost", "--json"],
+        ["disc", "rebuild", "start", "20260420T040001Z-1", "--reason", "lost", "--json"],
     )
 
     assert result.exit_code == 0

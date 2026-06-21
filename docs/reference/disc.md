@@ -272,7 +272,7 @@ Expected multipart flow:
 
 ## Recovery Sessions
 
-- `djdan disc rebuild COPY_ID --reason lost|damaged` marks a burned disc
+- `djdan disc rebuild start COPY_ID --reason lost|damaged` marks a burned disc
   lost or damaged and shows the rebuild work needed to restore coverage
 - `djdan disc rebuild list` lists active image-rebuild recovery sessions and
   the finalized images attached to each one
