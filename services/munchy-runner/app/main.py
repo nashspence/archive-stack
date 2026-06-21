@@ -35,7 +35,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from munchy.filesystem_metadata import write_filesystem_metadata_map
 from munchy.profiles import (
     MUNCHY_PROFILE_TARGET,
-    normalize_artifact_drop_selector,
+    ArchiveContainer,
+    EncodeProfile,
 )
 from munchy.uvicorn_logging import uvicorn_log_config_without_health_access_logs
 from riverhog_cli.client import ApiClient
@@ -220,7 +221,6 @@ UploadState = Literal["pending", "partial", "uploaded", "consumed"]
 ArchiveMode = Literal["av1_nvenc", "originals", "passthrough"]
 WorkflowMode = Literal["archive", "review_only", "collection_preview"]
 TaskName = Literal["archive_video", "qcut_video", "audio_review"]
-ArchiveContainer = Literal["mkv", "webm"]
 NotifyEvent = Literal[
     "job.received",
     "review.handoff",
@@ -537,118 +537,6 @@ class ClientPreflightFailedNotificationRequest(BaseModel):
     @classmethod
     def validate_profile_group(cls, value: str) -> str:
         return validate_profile_group_name(value)
-
-
-class ArchiveAudioProfile(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    codec: Literal["opus"] = "opus"
-    bitrate: str | None = Field(default=None, min_length=2, max_length=16)
-    sample_rate: int | None = Field(default=None, ge=8000, le=192000)
-    channels: int | None = Field(default=None, ge=1, le=8)
-    application: Literal["audio", "voip", "lowdelay"] | None = None
-    frame_duration: float | None = None
-    cutoff: int | None = Field(default=None, ge=0, le=24000)
-    compression_level: int | None = Field(default=None, ge=0, le=10)
-    vbr: Literal["on", "off", "constrained"] | bool | None = None
-
-    @field_validator("bitrate")
-    @classmethod
-    def validate_bitrate(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        lowered = value.strip().lower()
-        number = lowered[:-1] if lowered.endswith(("k", "m")) else lowered
-        try:
-            parsed = float(number)
-        except ValueError as exc:
-            raise ValueError("bitrate must look like 28k, 128k, or 1m") from exc
-        if parsed <= 0:
-            raise ValueError("bitrate must look like 28k, 128k, or 1m")
-        return lowered
-
-    @field_validator("frame_duration")
-    @classmethod
-    def validate_frame_duration(cls, value: float | None) -> float | None:
-        if value is None:
-            return None
-        allowed = {2.5, 5.0, 10.0, 20.0, 40.0, 60.0}
-        if float(value) not in allowed:
-            raise ValueError("frame_duration must be one of 2.5, 5, 10, 20, 40, or 60")
-        return float(value)
-
-
-class ArchiveEncodeProfile(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    codec: Literal["av1_nvenc"] = "av1_nvenc"
-    container: ArchiveContainer = "mkv"
-    quality: int | None = Field(default=None, ge=0, le=63)
-    max_height: int | None = Field(default=None, ge=2, le=4320)
-    fps_mode: Literal["passthrough", "halve_60_to_30"] = "passthrough"
-    output_fps: float | None = Field(default=None, gt=0, le=240)
-    scale_flags: Literal["fast_bilinear", "bilinear", "bicubic", "lanczos", "spline"] = "lanczos"
-    pix_fmt: Literal["p010le", "yuv420p"] | None = None
-    preset: str | None = Field(default=None, min_length=2, max_length=8)
-    tune: Literal["hq", "ll", "ull", "lossless", "uhq"] | None = None
-    audio: ArchiveAudioProfile = Field(default_factory=ArchiveAudioProfile)
-
-    @field_validator("preset")
-    @classmethod
-    def validate_preset(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        lowered = value.strip().lower()
-        if lowered not in {"p1", "p2", "p3", "p4", "p5", "p6", "p7"}:
-            raise ValueError("preset must be p1 through p7")
-        return lowered
-
-
-class SourceArtifactDropProfile(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    selector: str = Field(min_length=1, max_length=120)
-    reason: str = Field(min_length=1, max_length=1000)
-
-    @field_validator("selector")
-    @classmethod
-    def validate_selector(cls, value: str) -> str:
-        return normalize_artifact_drop_selector(value)
-
-    @field_validator("reason")
-    @classmethod
-    def validate_reason(cls, value: str) -> str:
-        reason = value.strip()
-        if not reason:
-            raise ValueError("artifact drop reason must not be blank")
-        return reason
-
-
-class SourcePreservationProfile(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    artifact_drops: list[SourceArtifactDropProfile] = Field(default_factory=list)
-
-    @field_validator("artifact_drops")
-    @classmethod
-    def validate_unique_selectors(
-        cls,
-        value: list[SourceArtifactDropProfile],
-    ) -> list[SourceArtifactDropProfile]:
-        selectors = [item.selector for item in value]
-        if len(selectors) != len(set(selectors)):
-            raise ValueError("source artifact drop selectors must be unique")
-        return value
-
-
-class EncodeProfile(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    schema_version: Literal[1] = 1
-    target: Literal["munchy-av1-nvenc"] = MUNCHY_PROFILE_TARGET
-    name: str | None = Field(default=None, min_length=1, max_length=120)
-    source: SourcePreservationProfile | None = None
-    archive: ArchiveEncodeProfile = Field(default_factory=ArchiveEncodeProfile)
 
 
 class ProfileGroupConfig(BaseModel):
@@ -2915,9 +2803,7 @@ def profile_name_for(encode_profile: dict[str, Any] | None) -> str:
 
 def profile_group_dump(group: ProfileGroupConfig) -> dict[str, Any]:
     encode_profile = (
-        group.encode_profile.model_dump(exclude_none=True)
-        if group.encode_profile is not None
-        else None
+        group.encode_profile.runner_payload() if group.encode_profile is not None else None
     )
     return {
         "archive_mode": group.archive_mode,
@@ -7135,7 +7021,7 @@ def create_job(req: CreateJobRequest, background_tasks: BackgroundTasks) -> dict
             "profile": req.encode_profile.name
             if req.encode_profile and req.encode_profile.name
             else "av1-nvenc-high",
-            "encode_profile": req.encode_profile.model_dump(exclude_none=True)
+            "encode_profile": req.encode_profile.runner_payload()
             if req.encode_profile is not None
             else None,
             "groups": groups,
