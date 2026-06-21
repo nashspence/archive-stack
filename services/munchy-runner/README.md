@@ -43,8 +43,21 @@ Inspect active work with the Munchy CLI:
 
 ```bash
 munchy job list --runner-url http://127.0.0.1:8092
+munchy job show <job-id> --runner-url http://127.0.0.1:8092
 munchy job watch <job-id> --runner-url http://127.0.0.1:8092
-munchy job cancel <job-id> --runner-url http://127.0.0.1:8092 --cleanup --yes
+munchy job cancel <job-id> --runner-url http://127.0.0.1:8092 --cleanup
+```
+
+Start a standalone job with either a direct profile group:
+
+```bash
+munchy job start ./incoming/camera --collection example-camera --group video --riverhog
+```
+
+or with a richer job config:
+
+```bash
+munchy job start ./incoming/camera --collection example-camera --config config/examples/munchy/job.toml
 ```
 
 Important environment variables:
@@ -112,6 +125,9 @@ front-sensor/recording.webm
 ```
 
 The runner rejects ambiguous uploads that omit the profile-group directory.
+
+For structured profile-routing jobs, the CLI uploads ordinary relative paths and
+the runner assigns profile groups from the job's routing rules.
 
 ## Archive Handoff Lifecycle
 

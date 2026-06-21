@@ -37,6 +37,11 @@ Munchy jobs may either use explicit `<profile-group>/<file>` paths or structured
 server-side profile routing. Profile-group names and routing rules are the stable boundary between
 device-specific private configuration and generic public encode behavior.
 
+The `munchy` CLI is intended to be usable directly, not only through private wrappers. It exposes
+encode-profile inspection and runner job operations, including `munchy job start` for local
+file/directory uploads, `munchy job list`, `munchy job show`, `munchy job watch`, and
+`munchy job cancel`.
+
 Munchy operator webhook payloads identify themselves with `source = "munchy"` and the canonical
 emoji `🤤`.
 

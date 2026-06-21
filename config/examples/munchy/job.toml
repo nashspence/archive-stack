@@ -1,0 +1,57 @@
+[job]
+workflow_mode = "archive"
+cleanup_local_on_success = false
+
+[job.riverhog]
+enabled = true
+wait = "finalized"
+
+[job.notify]
+enabled = false
+recipients = ["operator"]
+
+[profiles.example-camera]
+schema_version = 1
+target = "munchy-av1-nvenc"
+name = "example-camera"
+
+[profiles.example-camera.archive]
+codec = "av1_nvenc"
+container = "webm"
+quality = 38
+max_height = 720
+fps_mode = "passthrough"
+scale_flags = "lanczos"
+pix_fmt = "p010le"
+preset = "p7"
+tune = "uhq"
+
+[profiles.example-camera.archive.audio]
+codec = "opus"
+bitrate = "28k"
+sample_rate = 24000
+channels = 1
+application = "audio"
+frame_duration = 40
+cutoff = 12000
+compression_level = 10
+vbr = "on"
+
+[groups.video]
+profile = "example-camera"
+archive_mode = "av1_nvenc"
+gpu_tasks = ["archive_video"]
+
+[groups.passthrough]
+archive_mode = "originals"
+gpu_tasks = []
+
+[[job.profile_routing.routes]]
+id = "example-camera-video"
+group = "video"
+suffixes = [".mp4", ".mov", ".mkv", ".webm"]
+
+[[job.profile_routing.routes]]
+id = "passthrough-artifacts"
+group = "passthrough"
+suffixes = [".xml", ".json", ".txt", ".srt", ".vtt", ".nfo"]
