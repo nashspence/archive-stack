@@ -74,6 +74,16 @@ _FETCH_OPERATOR_SUMMARY_COLUMNS = (
     "upload_state_expires_at",
     "updated_at",
 )
+_FETCH_OPERATOR_FILE_COLUMNS = (
+    "fetch_id",
+    "collection_id",
+    "path",
+    "bytes",
+    "hot",
+    "archived",
+    "registered_disc_coverage",
+    "updated_at",
+)
 _IMAGE_OPERATOR_SUMMARY_COLUMNS = (
     "image_id",
     "filename",
@@ -214,6 +224,36 @@ def _ensure_schema_indexes(engine: Engine) -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS ix_fetch_selectors_target "
                 "ON fetch_selectors (target, fetch_id)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_fetch_operator_files_path "
+                "ON fetch_operator_files (fetch_id, path, collection_id)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_fetch_operator_files_bytes "
+                "ON fetch_operator_files (fetch_id, bytes, collection_id, path)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_fetch_operator_files_hot "
+                "ON fetch_operator_files (fetch_id, hot, collection_id, path)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_fetch_operator_files_archived "
+                "ON fetch_operator_files (fetch_id, archived, collection_id, path)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_fetch_operator_files_disc "
+                "ON fetch_operator_files (fetch_id, registered_disc_coverage, collection_id, path)"
             )
         )
         conn.execute(
@@ -2099,15 +2139,110 @@ def _fetch_targets_agg_sql(conn: Connection) -> str:
     return "COALESCE(string_agg(ordered_selectors.target, chr(10)), '')"
 
 
-def _fetch_operator_summary_select_sql(
-    conn: Connection,
-    affected_fetches_sql: str,
-) -> str:
+def _fetch_operator_file_select_sql(affected_fetches_sql: str) -> str:
     target_match = _fetch_selector_selects_file_sql(
         target="fetch_selectors.target",
         collection_id="collection_files.collection_id",
         path="collection_files.path",
     )
+    return f"""
+SELECT *
+FROM (
+    WITH affected_fetches(fetch_id) AS (
+        {affected_fetches_sql}
+    ),
+    distinct_fetches AS (
+        SELECT DISTINCT fetch_id
+        FROM affected_fetches
+        WHERE fetch_id IS NOT NULL
+    ),
+    fetch_rows AS (
+        SELECT fetches.fetch_id
+        FROM fetches
+        JOIN distinct_fetches
+            ON distinct_fetches.fetch_id = fetches.fetch_id
+    ),
+    selected_files AS (
+        SELECT DISTINCT
+            fetch_rows.fetch_id,
+            collection_files.collection_id,
+            collection_files.path,
+            collection_files.bytes,
+            collection_files.hot,
+            collection_files.archived,
+            EXISTS (
+                SELECT 1
+                FROM file_copies
+                WHERE file_copies.collection_id = collection_files.collection_id
+                    AND file_copies.path = collection_files.path
+            ) AS registered_disc_coverage,
+            CAST(CURRENT_TIMESTAMP AS TEXT) AS updated_at
+        FROM fetch_rows
+        JOIN fetch_selectors
+            ON fetch_selectors.fetch_id = fetch_rows.fetch_id
+        JOIN collection_files
+            ON {target_match}
+    )
+    SELECT
+        fetch_id,
+        collection_id,
+        path,
+        bytes,
+        hot,
+        archived,
+        registered_disc_coverage,
+        updated_at
+    FROM selected_files
+) AS fetch_operator_file_refresh
+"""
+
+
+def _fetch_operator_file_delete_sql(affected_fetches_sql: str) -> str:
+    return f"""
+DELETE FROM fetch_operator_files
+WHERE fetch_id IN (
+    SELECT DISTINCT fetch_id
+    FROM (
+        {affected_fetches_sql}
+    ) AS affected_fetches
+    WHERE fetch_id IS NOT NULL
+)
+"""
+
+
+def _fetch_operator_file_upsert_sql(
+    conn: Connection,
+    affected_fetches_sql: str,
+) -> str:
+    columns = ", ".join(_FETCH_OPERATOR_FILE_COLUMNS)
+    select_sql = _fetch_operator_file_select_sql(affected_fetches_sql)
+    if conn.dialect.name == "sqlite":
+        return f"INSERT OR REPLACE INTO fetch_operator_files ({columns}) {select_sql}"
+    updates = ", ".join(
+        f"{column} = EXCLUDED.{column}"
+        for column in _FETCH_OPERATOR_FILE_COLUMNS
+        if column not in {"fetch_id", "collection_id", "path"}
+    )
+    return (
+        f"INSERT INTO fetch_operator_files ({columns}) "
+        f"{select_sql} "
+        "ON CONFLICT (fetch_id, collection_id, path) DO UPDATE SET "
+        f"{updates}"
+    )
+
+
+def _refresh_fetch_operator_files(
+    conn: Connection,
+    affected_fetches_sql: str,
+) -> None:
+    conn.execute(text(_fetch_operator_file_delete_sql(affected_fetches_sql)))
+    conn.execute(text(_fetch_operator_file_upsert_sql(conn, affected_fetches_sql)))
+
+
+def _fetch_operator_summary_select_sql(
+    conn: Connection,
+    affected_fetches_sql: str,
+) -> str:
     targets_text = _fetch_targets_agg_sql(conn)
     return f"""
 SELECT *
@@ -2142,17 +2277,10 @@ FROM (
         GROUP BY ordered_selectors.fetch_id
     ),
     selected_files AS (
-        SELECT DISTINCT
-            fetch_rows.fetch_id,
-            collection_files.collection_id,
-            collection_files.path,
-            collection_files.bytes,
-            collection_files.hot
-        FROM fetch_rows
-        JOIN fetch_selectors
-            ON fetch_selectors.fetch_id = fetch_rows.fetch_id
-        JOIN collection_files
-            ON {target_match}
+        SELECT fetch_operator_files.*
+        FROM fetch_operator_files
+        JOIN fetch_rows
+            ON fetch_rows.fetch_id = fetch_operator_files.fetch_id
     ),
     file_stats AS (
         SELECT
@@ -2317,6 +2445,21 @@ def _refresh_fetch_operator_summaries(
     conn.execute(text(_fetch_operator_summary_upsert_sql(conn, affected_fetches_sql)))
 
 
+def _backfill_fetch_operator_projection_if_needed(conn: Connection) -> None:
+    fetch_count = int(conn.execute(text("SELECT COUNT(*) FROM fetches")).scalar() or 0)
+    if fetch_count <= 0:
+        return
+    file_count = int(conn.execute(text("SELECT COUNT(*) FROM fetch_operator_files")).scalar() or 0)
+    summary_count = int(
+        conn.execute(text("SELECT COUNT(*) FROM fetch_operator_summaries")).scalar() or 0
+    )
+    if file_count > 0 and summary_count >= fetch_count:
+        return
+    affected_fetches_sql = "SELECT fetch_id FROM fetches"
+    _refresh_fetch_operator_files(conn, affected_fetches_sql)
+    _refresh_fetch_operator_summaries(conn, affected_fetches_sql)
+
+
 def _install_fetch_operator_projection(engine: Engine) -> None:
     with engine.begin() as conn:
         if conn.dialect.name == "sqlite":
@@ -2332,6 +2475,21 @@ def _sqlite_fetch_operator_refresh(conn: Connection, affected_fetches_sql: str) 
     columns = ", ".join(_FETCH_OPERATOR_SUMMARY_COLUMNS)
     select_sql = _fetch_operator_summary_select_sql(conn, affected_fetches_sql)
     return f"INSERT OR REPLACE INTO fetch_operator_summaries ({columns}) {select_sql};"
+
+
+def _sqlite_fetch_operator_files_refresh(conn: Connection, affected_fetches_sql: str) -> str:
+    return (
+        f"{_fetch_operator_file_delete_sql(affected_fetches_sql)}; "
+        f"{_fetch_operator_file_upsert_sql(conn, affected_fetches_sql)};"
+    )
+
+
+def _sqlite_fetch_operator_full_refresh(conn: Connection, affected_fetches_sql: str) -> str:
+    return (
+        _sqlite_fetch_operator_files_refresh(conn, affected_fetches_sql)
+        + " "
+        + _sqlite_fetch_operator_refresh(conn, affected_fetches_sql)
+    )
 
 
 def _sqlite_affected_fetch_ids_for_file(collection_id: str, path: str) -> str:
@@ -2356,28 +2514,28 @@ def _install_sqlite_fetch_operator_projection(conn: Connection) -> None:
         ),
         "riverhog_fos_fetch_selectors_insert": (
             "fetch_selectors",
-            _sqlite_fetch_operator_refresh(conn, "SELECT NEW.fetch_id AS fetch_id"),
+            _sqlite_fetch_operator_full_refresh(conn, "SELECT NEW.fetch_id AS fetch_id"),
         ),
         "riverhog_fos_fetch_selectors_update": (
             "fetch_selectors",
-            _sqlite_fetch_operator_refresh(
+            _sqlite_fetch_operator_full_refresh(
                 conn, "SELECT OLD.fetch_id AS fetch_id UNION SELECT NEW.fetch_id AS fetch_id"
             ),
         ),
         "riverhog_fos_fetch_selectors_delete": (
             "fetch_selectors",
-            _sqlite_fetch_operator_refresh(conn, "SELECT OLD.fetch_id AS fetch_id"),
+            _sqlite_fetch_operator_full_refresh(conn, "SELECT OLD.fetch_id AS fetch_id"),
         ),
         "riverhog_fos_collection_files_insert": (
             "collection_files",
-            _sqlite_fetch_operator_refresh(
+            _sqlite_fetch_operator_full_refresh(
                 conn,
                 _sqlite_affected_fetch_ids_for_file("NEW.collection_id", "NEW.path"),
             ),
         ),
         "riverhog_fos_collection_files_update": (
             "collection_files",
-            _sqlite_fetch_operator_refresh(
+            _sqlite_fetch_operator_full_refresh(
                 conn,
                 _sqlite_affected_fetch_ids_for_file("OLD.collection_id", "OLD.path")
                 + " UNION "
@@ -2386,7 +2544,30 @@ def _install_sqlite_fetch_operator_projection(conn: Connection) -> None:
         ),
         "riverhog_fos_collection_files_delete": (
             "collection_files",
-            _sqlite_fetch_operator_refresh(
+            _sqlite_fetch_operator_full_refresh(
+                conn,
+                _sqlite_affected_fetch_ids_for_file("OLD.collection_id", "OLD.path"),
+            ),
+        ),
+        "riverhog_fos_file_copies_insert": (
+            "file_copies",
+            _sqlite_fetch_operator_full_refresh(
+                conn,
+                _sqlite_affected_fetch_ids_for_file("NEW.collection_id", "NEW.path"),
+            ),
+        ),
+        "riverhog_fos_file_copies_update": (
+            "file_copies",
+            _sqlite_fetch_operator_full_refresh(
+                conn,
+                _sqlite_affected_fetch_ids_for_file("OLD.collection_id", "OLD.path")
+                + " UNION "
+                + _sqlite_affected_fetch_ids_for_file("NEW.collection_id", "NEW.path"),
+            ),
+        ),
+        "riverhog_fos_file_copies_delete": (
+            "file_copies",
+            _sqlite_fetch_operator_full_refresh(
                 conn,
                 _sqlite_affected_fetch_ids_for_file("OLD.collection_id", "OLD.path"),
             ),
@@ -2415,6 +2596,7 @@ def _install_sqlite_fetch_operator_projection(conn: Connection) -> None:
                 f"CREATE TRIGGER {trigger_name} AFTER {operation} ON {table_name} BEGIN {body} END"
             )
         )
+    _backfill_fetch_operator_projection_if_needed(conn)
 
 
 def _install_postgresql_fetch_operator_projection(conn: Connection) -> None:
@@ -2423,9 +2605,35 @@ def _install_postgresql_fetch_operator_projection(conn: Connection) -> None:
         collection_id="affected_files.collection_id",
         path="affected_files.path",
     )
-    refresh_sql = _fetch_operator_summary_upsert_sql(
+    file_refresh_sql = _fetch_operator_file_upsert_sql(
         conn,
         "SELECT unnest(p_fetch_ids) AS fetch_id",
+    )
+    summary_refresh_sql = _fetch_operator_summary_upsert_sql(
+        conn,
+        "SELECT unnest(p_fetch_ids) AS fetch_id",
+    )
+    conn.execute(
+        text(
+            f"""
+CREATE OR REPLACE FUNCTION riverhog_refresh_fetch_operator_files(
+    p_fetch_ids text[]
+) RETURNS void
+LANGUAGE plpgsql
+AS $riverhog$
+BEGIN
+    IF p_fetch_ids IS NULL OR cardinality(p_fetch_ids) = 0 THEN
+        RETURN;
+    END IF;
+
+    DELETE FROM fetch_operator_files
+    WHERE fetch_id = ANY(p_fetch_ids);
+
+    {file_refresh_sql};
+END;
+$riverhog$;
+"""
+        )
     )
     conn.execute(
         text(
@@ -2448,7 +2656,27 @@ BEGIN
             WHERE fetches.fetch_id = fetch_operator_summaries.fetch_id
         );
 
-    {refresh_sql};
+    {summary_refresh_sql};
+END;
+$riverhog$;
+"""
+        )
+    )
+    conn.execute(
+        text(
+            """
+CREATE OR REPLACE FUNCTION riverhog_refresh_fetch_operator_selection(
+    p_fetch_ids text[]
+) RETURNS void
+LANGUAGE plpgsql
+AS $riverhog$
+BEGIN
+    IF p_fetch_ids IS NULL OR cardinality(p_fetch_ids) = 0 THEN
+        RETURN;
+    END IF;
+
+    PERFORM riverhog_refresh_fetch_operator_files(p_fetch_ids);
+    PERFORM riverhog_refresh_fetch_operator_summaries(p_fetch_ids);
 END;
 $riverhog$;
 """
@@ -2495,7 +2723,7 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
 BEGIN
-    PERFORM riverhog_refresh_fetch_operator_summaries(
+    PERFORM riverhog_refresh_fetch_operator_selection(
         ARRAY(SELECT DISTINCT fetch_id::text FROM old_rows WHERE fetch_id IS NOT NULL)
     );
     RETURN NULL;
@@ -2508,7 +2736,7 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
 BEGIN
-    PERFORM riverhog_refresh_fetch_operator_summaries(
+    PERFORM riverhog_refresh_fetch_operator_selection(
         ARRAY(SELECT DISTINCT fetch_id::text FROM new_rows WHERE fetch_id IS NOT NULL)
     );
     RETURN NULL;
@@ -2521,7 +2749,7 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
 BEGIN
-    PERFORM riverhog_refresh_fetch_operator_summaries(
+    PERFORM riverhog_refresh_fetch_operator_selection(
         ARRAY(
             SELECT DISTINCT fetch_id::text
             FROM (
@@ -2542,7 +2770,7 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
 BEGIN
-    PERFORM riverhog_refresh_fetch_operator_summaries(
+    PERFORM riverhog_refresh_fetch_operator_selection(
         ARRAY(
             SELECT DISTINCT fetch_selectors.fetch_id::text
             FROM fetch_selectors
@@ -2560,7 +2788,7 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
 BEGIN
-    PERFORM riverhog_refresh_fetch_operator_summaries(
+    PERFORM riverhog_refresh_fetch_operator_selection(
         ARRAY(
             SELECT DISTINCT fetch_selectors.fetch_id::text
             FROM fetch_selectors
@@ -2578,7 +2806,65 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
 BEGIN
-    PERFORM riverhog_refresh_fetch_operator_summaries(
+    PERFORM riverhog_refresh_fetch_operator_selection(
+        ARRAY(
+            SELECT DISTINCT fetch_selectors.fetch_id::text
+            FROM fetch_selectors
+            JOIN (
+                SELECT collection_id, path FROM old_rows
+                UNION
+                SELECT collection_id, path FROM new_rows
+            ) AS affected_files
+                ON {target_match}
+        )
+    );
+    RETURN NULL;
+END;
+$riverhog$;
+""",
+        "riverhog_fos_from_new_file_copies": f"""
+CREATE OR REPLACE FUNCTION riverhog_fos_from_new_file_copies()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $riverhog$
+BEGIN
+    PERFORM riverhog_refresh_fetch_operator_selection(
+        ARRAY(
+            SELECT DISTINCT fetch_selectors.fetch_id::text
+            FROM fetch_selectors
+            JOIN new_rows AS affected_files
+                ON {target_match}
+        )
+    );
+    RETURN NULL;
+END;
+$riverhog$;
+""",
+        "riverhog_fos_from_old_file_copies": f"""
+CREATE OR REPLACE FUNCTION riverhog_fos_from_old_file_copies()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $riverhog$
+BEGIN
+    PERFORM riverhog_refresh_fetch_operator_selection(
+        ARRAY(
+            SELECT DISTINCT fetch_selectors.fetch_id::text
+            FROM fetch_selectors
+            JOIN old_rows AS affected_files
+                ON {target_match}
+        )
+    );
+    RETURN NULL;
+END;
+$riverhog$;
+""",
+        "riverhog_fos_from_changed_file_copies": f"""
+CREATE OR REPLACE FUNCTION riverhog_fos_from_changed_file_copies()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $riverhog$
+BEGIN
+    PERFORM riverhog_refresh_fetch_operator_selection(
         ARRAY(
             SELECT DISTINCT fetch_selectors.fetch_id::text
             FROM fetch_selectors
@@ -2703,6 +2989,27 @@ $riverhog$;
             "riverhog_fos_from_old_files",
         ),
         (
+            "riverhog_fos_file_copies_insert",
+            "file_copies",
+            "AFTER INSERT",
+            "REFERENCING NEW TABLE AS new_rows",
+            "riverhog_fos_from_new_file_copies",
+        ),
+        (
+            "riverhog_fos_file_copies_update",
+            "file_copies",
+            "AFTER UPDATE",
+            "REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows",
+            "riverhog_fos_from_changed_file_copies",
+        ),
+        (
+            "riverhog_fos_file_copies_delete",
+            "file_copies",
+            "AFTER DELETE",
+            "REFERENCING OLD TABLE AS old_rows",
+            "riverhog_fos_from_old_file_copies",
+        ),
+        (
             "riverhog_fos_fetch_entries_insert",
             "fetch_entries",
             "AFTER INSERT",
@@ -2735,6 +3042,7 @@ $riverhog$;
                 f"EXECUTE FUNCTION {function_name}()"
             )
         )
+    _backfill_fetch_operator_projection_if_needed(conn)
 
 
 def initialize_db(database_url: str) -> None:
@@ -2754,6 +3062,7 @@ def initialize_db(database_url: str) -> None:
         CollectionUploadRecord,
         DiscOperatorSummaryRecord,
         FetchEntryRecord,
+        FetchOperatorFileRecord,
         FetchOperatorSummaryRecord,
         FetchRecord,
         FetchSelectorRecord,
@@ -2781,6 +3090,7 @@ def initialize_db(database_url: str) -> None:
         CollectionRecord,
         DiscOperatorSummaryRecord,
         FetchEntryRecord,
+        FetchOperatorFileRecord,
         FetchOperatorSummaryRecord,
         FetchRecord,
         FetchSelectorRecord,

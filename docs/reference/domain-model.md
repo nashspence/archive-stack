@@ -156,6 +156,20 @@ Definitions:
 - `image_coverage` — finalized-image physical coverage details for this
   collection, including registered copies
 
+### Fetch operator projections
+
+Fetch operator views are maintained as fetch-keyed projections:
+
+- `fetch_operator_summaries` stores the bounded list/show summary fields for
+  each fetch
+- `fetch_operator_files` stores the resolved logical files selected by each
+  fetch target, including current hot, archive, and registered disc coverage
+
+`riverhog hot fetch list`, `riverhog hot fetch show`, and
+`riverhog hot fetch files` read these projections for routine operator display.
+They must not resolve selectors by scanning unbounded collection-file rows at
+read time.
+
 ### Candidate summary
 
 A candidate summary exposes at least:

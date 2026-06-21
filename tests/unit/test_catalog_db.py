@@ -33,6 +33,7 @@ def test_initialize_db_creates_current_baseline_schema(tmp_path: Path) -> None:
         "collections",
         "disc_operator_summaries",
         "fetch_entries",
+        "fetch_operator_files",
         "fetch_operator_summaries",
         "fetch_selectors",
         "fetches",
@@ -69,6 +70,7 @@ def test_initialize_db_creates_current_baseline_schema(tmp_path: Path) -> None:
         for table in (
             "candidate_covered_paths",
             "collection_upload_files",
+            "fetch_operator_files",
             "finalized_image_covered_paths",
             "finalized_image_coverage_parts",
         )
@@ -77,6 +79,8 @@ def test_initialize_db_creates_current_baseline_schema(tmp_path: Path) -> None:
     assert {
         "ix_candidate_covered_paths_collection_path",
         "idx_collection_upload_files_collection_order",
+        "ix_fetch_operator_files_bytes",
+        "ix_fetch_operator_files_path",
         "ix_finalized_image_covered_paths_collection_path",
         "ix_finalized_image_coverage_parts_collection_path",
     }.issubset(index_names)

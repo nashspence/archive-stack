@@ -607,6 +607,10 @@ class FetchRecord(Base):
         cascade="all, delete-orphan",
         uselist=False,
     )
+    operator_files: Mapped[list[FetchOperatorFileRecord]] = relationship(
+        back_populates="fetch",
+        cascade="all, delete-orphan",
+    )
 
 
 class FetchSelectorRecord(Base):
@@ -665,6 +669,69 @@ class FetchOperatorSummaryRecord(Base):
     )
 
     fetch: Mapped[FetchRecord] = relationship(back_populates="operator_summary")
+
+
+class FetchOperatorFileRecord(Base):
+    __tablename__ = "fetch_operator_files"
+
+    fetch_id: Mapped[str] = mapped_column(String, primary_key=True)
+    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    path: Mapped[str] = mapped_column(String, primary_key=True)
+    bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    hot: Mapped[bool] = mapped_column(Boolean, default=False)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    registered_disc_coverage: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["fetch_id"],
+            ["fetches.fetch_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["collection_id", "path"],
+            ["collection_files.collection_id", "collection_files.path"],
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_fetch_operator_files_path",
+            "fetch_id",
+            "path",
+            "collection_id",
+        ),
+        Index(
+            "ix_fetch_operator_files_bytes",
+            "fetch_id",
+            "bytes",
+            "collection_id",
+            "path",
+        ),
+        Index(
+            "ix_fetch_operator_files_hot",
+            "fetch_id",
+            "hot",
+            "collection_id",
+            "path",
+        ),
+        Index(
+            "ix_fetch_operator_files_archived",
+            "fetch_id",
+            "archived",
+            "collection_id",
+            "path",
+        ),
+        Index(
+            "ix_fetch_operator_files_disc",
+            "fetch_id",
+            "registered_disc_coverage",
+            "collection_id",
+            "path",
+        ),
+    )
+
+    fetch: Mapped[FetchRecord] = relationship(back_populates="operator_files")
 
 
 class FetchEntryRecord(Base):

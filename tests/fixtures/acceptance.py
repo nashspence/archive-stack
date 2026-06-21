@@ -3975,6 +3975,19 @@ class AcceptanceFetchService:
         record = self._record(fetch_id)
         self._expire_stale_upload_record(record)
         record.summary = self._replace_summary(record)
+        selected_files = self._selected_files_for_record(record)
+        file_rollup = self._fetch_file_rollup(selected_files)
+        files_preview = (
+            [
+                self._fetch_file_payload(file)
+                for file in sorted(
+                    selected_files, key=lambda item: (str(item.collection_id), item.path)
+                )[:limit]
+            ]
+            if limit > 0
+            else []
+        )
+        next_action, next_action_reason = self._fetch_next_action(record.summary, file_rollup)
         entries: list[dict[str, object]] = []
         if limit > 0:
             for entry in record.entries.values():
@@ -4004,6 +4017,14 @@ class AcceptanceFetchService:
             "state": record.summary.state.value,
             "files": record.summary.files,
             "bytes": record.summary.bytes,
+            "hot_files": file_rollup["hot_files"],
+            "hot_bytes": file_rollup["hot_bytes"],
+            "archived_files": file_rollup["archived_files"],
+            "archived_bytes": file_rollup["archived_bytes"],
+            "registered_disc_files": file_rollup["registered_disc_files"],
+            "missing_files": file_rollup["missing_files"],
+            "missing_with_disc_files": file_rollup["missing_with_disc_files"],
+            "missing_without_disc_files": file_rollup["missing_without_disc_files"],
             "entries_total": record.summary.entries_total,
             "entries_pending": record.summary.entries_pending,
             "entries_partial": record.summary.entries_partial,
@@ -4019,6 +4040,82 @@ class AcceptanceFetchService:
             "entries_limit": limit,
             "entries_returned": len(entries),
             "entries": entries,
+            "target_summaries": self._fetch_target_summaries(record),
+            "files_preview_limit": limit,
+            "files_preview_returned": len(files_preview),
+            "files_preview": files_preview,
+            "next_action": next_action,
+            "next_action_reason": next_action_reason,
+        }
+
+    @_with_state_lock
+    def files(
+        self,
+        fetch_id: str,
+        *,
+        page: int,
+        per_page: int,
+        sort: str,
+        order: str,
+        q: str | None = None,
+        hot: bool | None = None,
+        archived: bool | None = None,
+        disc_coverage: bool | None = None,
+    ) -> dict[str, object]:
+        if page < 1:
+            raise BadRequest("page must be greater than or equal to 1")
+        if per_page < 1 or per_page > 100:
+            raise BadRequest("per_page must be between 1 and 100")
+        if sort not in {"target", "collection", "path", "bytes", "hot", "archived", "disc"}:
+            raise BadRequest("invalid fetch file sort field")
+        normalized_order = order.casefold()
+        if normalized_order not in {"asc", "desc"}:
+            raise BadRequest("order must be asc or desc")
+        record = self._record(fetch_id)
+        rows = [self._fetch_file_payload(file) for file in self._selected_files_for_record(record)]
+        if q:
+            needle = q.casefold()
+            rows = [
+                row
+                for row in rows
+                if needle
+                in " ".join(
+                    [str(row["target"]), str(row["collection_id"]), str(row["path"])]
+                ).casefold()
+            ]
+        if hot is not None:
+            rows = [row for row in rows if row["hot"] is hot]
+        if archived is not None:
+            rows = [row for row in rows if row["archived"] is archived]
+        if disc_coverage is not None:
+            rows = [row for row in rows if row["registered_disc_coverage"] is disc_coverage]
+        rows.sort(key=lambda row: (str(row["collection_id"]), str(row["path"])))
+        sort_key = {
+            "target": lambda row: str(row["target"]),
+            "collection": lambda row: str(row["collection_id"]),
+            "path": lambda row: str(row["path"]),
+            "bytes": lambda row: int(row["bytes"]),
+            "hot": lambda row: bool(row["hot"]),
+            "archived": lambda row: bool(row["archived"]),
+            "disc": lambda row: bool(row["registered_disc_coverage"]),
+        }[sort]
+        rows.sort(key=sort_key, reverse=normalized_order == "desc")
+        total = len(rows)
+        pages = math.ceil(total / per_page) if total else 0
+        start = (page - 1) * per_page
+        return {
+            "fetch_id": fetch_id,
+            "query": q,
+            "hot": hot,
+            "archived": archived,
+            "disc_coverage": disc_coverage,
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "pages": pages,
+            "sort": sort,
+            "order": normalized_order,
+            "files": rows[start : start + per_page],
         }
 
     @_with_state_lock
@@ -4270,6 +4367,81 @@ class AcceptanceFetchService:
             selected_by_key[key]
             for key in sorted(selected_by_key, key=lambda item: (str(item[0]), item[1]))
         ]
+
+    def _selected_files_for_record(self, record: FetchRecord) -> list[StoredFile]:
+        return self._selected_files_for_targets(
+            [str(target) for target in record.summary.targets],
+            missing_ok=True,
+        )
+
+    @staticmethod
+    def _fetch_file_payload(record: StoredFile) -> dict[str, object]:
+        return {
+            "target": record.projected_target,
+            "collection_id": str(record.collection_id),
+            "path": record.path,
+            "bytes": record.bytes,
+            "hot": record.hot,
+            "archived": record.archived,
+            "registered_disc_coverage": bool(record.copies),
+        }
+
+    @staticmethod
+    def _fetch_file_rollup(files: list[StoredFile]) -> dict[str, int]:
+        hot_files = [record for record in files if record.hot]
+        archived_files = [record for record in files if record.archived]
+        registered_disc_files = [record for record in files if record.copies]
+        missing_files = [record for record in files if not record.hot]
+        missing_with_disc_files = [record for record in missing_files if record.copies]
+        missing_without_disc_files = [record for record in missing_files if not record.copies]
+        return {
+            "files": len(files),
+            "bytes": sum(record.bytes for record in files),
+            "hot_files": len(hot_files),
+            "hot_bytes": sum(record.bytes for record in hot_files),
+            "archived_files": len(archived_files),
+            "archived_bytes": sum(record.bytes for record in archived_files),
+            "registered_disc_files": len(registered_disc_files),
+            "missing_files": len(missing_files),
+            "missing_with_disc_files": len(missing_with_disc_files),
+            "missing_without_disc_files": len(missing_without_disc_files),
+        }
+
+    def _fetch_target_summaries(self, record: FetchRecord) -> list[dict[str, object]]:
+        summaries: list[dict[str, object]] = []
+        for target in record.summary.targets:
+            files = self._selected_files_for_targets([str(target)], missing_ok=True)
+            summaries.append({"target": str(target), **self._fetch_file_rollup(files)})
+        return summaries
+
+    @staticmethod
+    def _fetch_next_action(
+        summary: FetchSummary,
+        file_rollup: dict[str, int],
+    ) -> tuple[str, str]:
+        if summary.state == FetchState.DRAFT:
+            if not summary.targets:
+                return "add_targets", "add at least one target selector before starting"
+            if file_rollup["files"] <= 0:
+                return "edit_targets", "current target selectors match no files"
+            if file_rollup["missing_files"] <= 0:
+                return "already_hot", "all selected files are already hot"
+            if file_rollup["missing_without_disc_files"] > 0:
+                return "start_cloud", "some missing files have no registered disc coverage"
+            return "start_djdan", "missing files have registered disc coverage"
+        if summary.state == FetchState.QUEUED_DJDAN:
+            return "run_djdan_fetch", "queued for optical media recovery"
+        if summary.state == FetchState.UPLOADING:
+            return "continue_djdan_fetch", "optical media upload is in progress"
+        if summary.state == FetchState.VERIFYING:
+            return "wait", "server-side verification is in progress"
+        if summary.state in {FetchState.QUEUED_CLOUD, FetchState.CLOUD_FETCHING}:
+            return "monitor_cloud_fetch", "cloud materialization is active"
+        if summary.state == FetchState.DONE:
+            return "done", "all selected files are hot"
+        if summary.state == FetchState.FAILED:
+            return "inspect_failure", "fetch failed and needs operator review"
+        return "inspect", f"fetch is in state {summary.state.value}"
 
     def _replace_targets(self, record: FetchRecord, targets: list[str]) -> None:
         selected = self._selected_files_for_targets(targets, missing_ok=True)

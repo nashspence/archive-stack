@@ -6,8 +6,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any, cast
 
-from sqlalchemy import asc, delete, desc, func, or_, select
+from sqlalchemy import and_, asc, case, delete, desc, func, or_, select
 from sqlalchemy.orm import Session, object_session
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -15,6 +16,7 @@ from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionFileRecord,
     FetchEntryRecord,
+    FetchOperatorFileRecord,
     FetchOperatorSummaryRecord,
     FetchRecord,
     FetchSelectorRecord,
@@ -69,6 +71,7 @@ _DJDAN_FETCH_STATES = {
     FetchState.VERIFYING.value,
 }
 _CLOUD_FETCH_STATES = {FetchState.QUEUED_CLOUD.value, FetchState.CLOUD_FETCHING.value}
+_FETCH_FILE_SORT_FIELDS = {"target", "collection", "path", "bytes", "hot", "archived", "disc"}
 
 
 def _read_collection_file_content(
@@ -314,6 +317,9 @@ class SqlAlchemyFetchService:
         with session_scope(self._session_factory) as session:
             row = _get_fetch_projection(session, fetch_id)
             summary = fetch_summary_from_projection(row, prefer_entries=True)
+            target_summaries = _fetch_target_summaries(session, row.fetch_id)
+            file_rollup = _fetch_file_rollup(session, row.fetch_id)
+            files_preview = _fetch_file_preview(session, row.fetch_id, limit=limit)
             if summary.state == FetchState.DONE:
                 entries: list[dict[str, object]] = []
             elif row.entries_total > 0:
@@ -332,7 +338,77 @@ class SqlAlchemyFetchService:
             return _fetch_status_payload(
                 summary,
                 entries=entries,
+                target_summaries=target_summaries,
+                file_rollup=file_rollup,
+                files_preview=files_preview,
                 limit=limit,
+            )
+
+    def files(
+        self,
+        fetch_id: str,
+        *,
+        page: int,
+        per_page: int,
+        sort: str,
+        order: str,
+        q: str | None = None,
+        hot: bool | None = None,
+        archived: bool | None = None,
+        disc_coverage: bool | None = None,
+    ) -> dict[str, object]:
+        if page < 1:
+            raise BadRequest("page must be greater than or equal to 1")
+        if per_page < 1 or per_page > 100:
+            raise BadRequest("per_page must be between 1 and 100")
+        if sort not in _FETCH_FILE_SORT_FIELDS:
+            raise BadRequest(f"sort must be one of {', '.join(sorted(_FETCH_FILE_SORT_FIELDS))}")
+        if order not in {"asc", "desc"}:
+            raise BadRequest("order must be asc or desc")
+        with session_scope(self._session_factory) as session:
+            _get_fetch_projection(session, fetch_id)
+            selected_files = _selected_files_subquery(fetch_id)
+            filters = _fetch_file_filters(
+                selected_files,
+                q=q,
+                hot=hot,
+                archived=archived,
+                disc_coverage=disc_coverage,
+            )
+            total_stmt = select(func.count()).select_from(selected_files)
+            if filters:
+                total_stmt = total_stmt.where(*filters)
+            total = int(session.scalar(total_stmt) or 0)
+            rows_stmt = (
+                select(
+                    selected_files.c.collection_id,
+                    selected_files.c.path,
+                    selected_files.c.bytes,
+                    selected_files.c.hot,
+                    selected_files.c.archived,
+                    selected_files.c.registered_disc_coverage,
+                )
+                .select_from(selected_files)
+                .order_by(*_fetch_file_order(selected_files, sort=sort, order=order))
+                .offset((page - 1) * per_page)
+                .limit(per_page)
+            )
+            if filters:
+                rows_stmt = rows_stmt.where(*filters)
+            rows = session.execute(rows_stmt).all()
+            files = [_fetch_file_payload(row) for row in rows]
+            return _fetch_files_payload(
+                fetch_id,
+                page=page,
+                per_page=per_page,
+                total=total,
+                sort=sort,
+                order=order,
+                q=q,
+                hot=hot,
+                archived=archived,
+                disc_coverage=disc_coverage,
+                files=files,
             )
 
     def manifest(self, fetch_id: str) -> dict[str, object]:
@@ -984,8 +1060,12 @@ def _fetch_status_payload(
     summary: FetchSummary,
     *,
     entries: list[dict[str, object]],
+    target_summaries: list[dict[str, object]],
+    file_rollup: dict[str, int],
+    files_preview: list[dict[str, object]],
     limit: int,
 ) -> dict[str, object]:
+    next_action, next_action_reason = _fetch_next_action(summary, file_rollup)
     return {
         "id": str(summary.id),
         "name": summary.name,
@@ -993,6 +1073,14 @@ def _fetch_status_payload(
         "state": summary.state.value,
         "files": summary.files,
         "bytes": summary.bytes,
+        "hot_files": file_rollup["hot_files"],
+        "hot_bytes": file_rollup["hot_bytes"],
+        "archived_files": file_rollup["archived_files"],
+        "archived_bytes": file_rollup["archived_bytes"],
+        "registered_disc_files": file_rollup["registered_disc_files"],
+        "missing_files": file_rollup["missing_files"],
+        "missing_with_disc_files": file_rollup["missing_with_disc_files"],
+        "missing_without_disc_files": file_rollup["missing_without_disc_files"],
         "entries_total": summary.entries_total,
         "entries_pending": summary.entries_pending,
         "entries_partial": summary.entries_partial,
@@ -1008,6 +1096,12 @@ def _fetch_status_payload(
         "entries_limit": limit,
         "entries_returned": len(entries),
         "entries": entries,
+        "target_summaries": target_summaries,
+        "files_preview_limit": limit,
+        "files_preview_returned": len(files_preview),
+        "files_preview": files_preview,
+        "next_action": next_action,
+        "next_action_reason": next_action_reason,
     }
 
 
@@ -1090,13 +1184,411 @@ def _status_entries_from_query(
     ]
 
 
-def _target_file_match_clause(raw_target: str) -> ColumnElement[bool]:
+def _target_file_match_clause(
+    raw_target: str,
+    *,
+    collection_id: Any = CollectionFileRecord.collection_id,
+    path: Any = CollectionFileRecord.path,
+) -> ColumnElement[bool]:
     target = parse_target(raw_target)
-    full_path = CollectionFileRecord.collection_id + "/" + CollectionFileRecord.path
+    full_path = collection_id + "/" + path
     if target.is_dir:
         canonical = target.canonical
         return func.substr(full_path, 1, len(canonical)) == canonical
-    return full_path == target.canonical
+    return cast(ColumnElement[bool], full_path == target.canonical)
+
+
+def _selected_files_subquery(fetch_id: str) -> Any:
+    return (
+        select(
+            FetchOperatorFileRecord.collection_id.label("collection_id"),
+            FetchOperatorFileRecord.path.label("path"),
+            FetchOperatorFileRecord.bytes.label("bytes"),
+            FetchOperatorFileRecord.hot.label("hot"),
+            FetchOperatorFileRecord.archived.label("archived"),
+            FetchOperatorFileRecord.registered_disc_coverage.label("registered_disc_coverage"),
+        )
+        .where(FetchOperatorFileRecord.fetch_id == fetch_id)
+        .subquery()
+    )
+
+
+def _fetch_file_rollup(session: Session, fetch_id: str) -> dict[str, int]:
+    selected_files = _selected_files_subquery(fetch_id)
+    row = session.execute(
+        select(
+            func.count().label("files"),
+            func.coalesce(func.sum(selected_files.c.bytes), 0).label("bytes"),
+            func.coalesce(
+                func.sum(case((selected_files.c.hot.is_(True), 1), else_=0)),
+                0,
+            ).label("hot_files"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (selected_files.c.hot.is_(True), selected_files.c.bytes),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("hot_bytes"),
+            func.coalesce(
+                func.sum(case((selected_files.c.archived.is_(True), 1), else_=0)),
+                0,
+            ).label("archived_files"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (selected_files.c.archived.is_(True), selected_files.c.bytes),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("archived_bytes"),
+            func.coalesce(
+                func.sum(case((selected_files.c.registered_disc_coverage.is_(True), 1), else_=0)),
+                0,
+            ).label("registered_disc_files"),
+            func.coalesce(
+                func.sum(case((selected_files.c.hot.is_(False), 1), else_=0)),
+                0,
+            ).label("missing_files"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                selected_files.c.hot.is_(False),
+                                selected_files.c.registered_disc_coverage.is_(True),
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("missing_with_disc_files"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                selected_files.c.hot.is_(False),
+                                selected_files.c.registered_disc_coverage.is_(False),
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("missing_without_disc_files"),
+        ).select_from(selected_files)
+    ).one()
+    return {
+        "files": int(row.files or 0),
+        "bytes": int(row.bytes or 0),
+        "hot_files": int(row.hot_files or 0),
+        "hot_bytes": int(row.hot_bytes or 0),
+        "archived_files": int(row.archived_files or 0),
+        "archived_bytes": int(row.archived_bytes or 0),
+        "registered_disc_files": int(row.registered_disc_files or 0),
+        "missing_files": int(row.missing_files or 0),
+        "missing_with_disc_files": int(row.missing_with_disc_files or 0),
+        "missing_without_disc_files": int(row.missing_without_disc_files or 0),
+    }
+
+
+def _empty_fetch_file_rollup() -> dict[str, int]:
+    return {
+        "files": 0,
+        "bytes": 0,
+        "hot_files": 0,
+        "hot_bytes": 0,
+        "archived_files": 0,
+        "archived_bytes": 0,
+        "registered_disc_files": 0,
+        "missing_files": 0,
+        "missing_with_disc_files": 0,
+        "missing_without_disc_files": 0,
+    }
+
+
+def _fetch_target_summaries(session: Session, fetch_id: str) -> list[dict[str, object]]:
+    selected_files = _selected_files_subquery(fetch_id)
+    summaries: list[dict[str, object]] = []
+    for target in _fetch_target_values(session, fetch_id):
+        disc_coverage = selected_files.c.registered_disc_coverage
+        row = session.execute(
+            select(
+                func.count().label("files"),
+                func.coalesce(func.sum(selected_files.c.bytes), 0).label("bytes"),
+                func.coalesce(
+                    func.sum(case((selected_files.c.hot.is_(True), 1), else_=0)),
+                    0,
+                ).label("hot_files"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (selected_files.c.hot.is_(True), selected_files.c.bytes),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("hot_bytes"),
+                func.coalesce(
+                    func.sum(case((selected_files.c.archived.is_(True), 1), else_=0)),
+                    0,
+                ).label("archived_files"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (
+                                selected_files.c.archived.is_(True),
+                                selected_files.c.bytes,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("archived_bytes"),
+                func.coalesce(
+                    func.sum(case((disc_coverage, 1), else_=0)),
+                    0,
+                ).label("registered_disc_files"),
+                func.coalesce(
+                    func.sum(case((selected_files.c.hot.is_(False), 1), else_=0)),
+                    0,
+                ).label("missing_files"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (
+                                and_(
+                                    selected_files.c.hot.is_(False),
+                                    disc_coverage.is_(True),
+                                ),
+                                1,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("missing_with_disc_files"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (
+                                and_(
+                                    selected_files.c.hot.is_(False),
+                                    disc_coverage.is_(False),
+                                ),
+                                1,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("missing_without_disc_files"),
+            )
+            .select_from(selected_files)
+            .where(
+                _target_file_match_clause(
+                    target,
+                    collection_id=selected_files.c.collection_id,
+                    path=selected_files.c.path,
+                )
+            )
+        ).one()
+        summaries.append(
+            {
+                "target": target,
+                "files": int(row.files or 0),
+                "bytes": int(row.bytes or 0),
+                "hot_files": int(row.hot_files or 0),
+                "hot_bytes": int(row.hot_bytes or 0),
+                "archived_files": int(row.archived_files or 0),
+                "archived_bytes": int(row.archived_bytes or 0),
+                "registered_disc_files": int(row.registered_disc_files or 0),
+                "missing_files": int(row.missing_files or 0),
+                "missing_with_disc_files": int(row.missing_with_disc_files or 0),
+                "missing_without_disc_files": int(row.missing_without_disc_files or 0),
+            }
+        )
+    return summaries
+
+
+def _fetch_file_preview(
+    session: Session,
+    fetch_id: str,
+    *,
+    limit: int,
+) -> list[dict[str, object]]:
+    if limit <= 0:
+        return []
+    selected_files = _selected_files_subquery(fetch_id)
+    rows = session.execute(
+        select(
+            selected_files.c.collection_id,
+            selected_files.c.path,
+            selected_files.c.bytes,
+            selected_files.c.hot,
+            selected_files.c.archived,
+            selected_files.c.registered_disc_coverage,
+        )
+        .select_from(selected_files)
+        .order_by(selected_files.c.collection_id, selected_files.c.path)
+        .limit(limit)
+    ).all()
+    return [_fetch_file_payload(row) for row in rows]
+
+
+def _fetch_file_payload(row: Any) -> dict[str, object]:
+    return {
+        "target": f"{row.collection_id}/{row.path}",
+        "collection_id": row.collection_id,
+        "path": row.path,
+        "bytes": int(row.bytes),
+        "hot": bool(row.hot),
+        "archived": bool(row.archived),
+        "registered_disc_coverage": bool(row.registered_disc_coverage),
+    }
+
+
+def _fetch_files_payload(
+    fetch_id: str,
+    *,
+    page: int,
+    per_page: int,
+    total: int,
+    sort: str,
+    order: str,
+    q: str | None,
+    hot: bool | None,
+    archived: bool | None,
+    disc_coverage: bool | None,
+    files: list[dict[str, object]],
+) -> dict[str, object]:
+    return {
+        "fetch_id": fetch_id,
+        "query": q,
+        "hot": hot,
+        "archived": archived,
+        "disc_coverage": disc_coverage,
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "pages": (total + per_page - 1) // per_page if total else 0,
+        "sort": sort,
+        "order": order,
+        "files": files,
+    }
+
+
+def _fetch_file_filters(
+    selected_files: Any,
+    *,
+    q: str | None,
+    hot: bool | None,
+    archived: bool | None,
+    disc_coverage: bool | None,
+) -> list[ColumnElement[bool]]:
+    filters: list[ColumnElement[bool]] = []
+    if q:
+        target_text = selected_files.c.collection_id + "/" + selected_files.c.path
+        pattern = _like_pattern(q)
+        filters.append(
+            or_(
+                target_text.like(pattern, escape="\\"),
+                selected_files.c.collection_id.like(pattern, escape="\\"),
+                selected_files.c.path.like(pattern, escape="\\"),
+            )
+        )
+    if hot is not None:
+        filters.append(selected_files.c.hot.is_(hot))
+    if archived is not None:
+        filters.append(selected_files.c.archived.is_(archived))
+    if disc_coverage is not None:
+        filters.append(selected_files.c.registered_disc_coverage.is_(disc_coverage))
+    return filters
+
+
+def _fetch_file_order(selected_files: Any, *, sort: str, order: str) -> tuple[Any, ...]:
+    direction = desc if order == "desc" else asc
+    if sort == "target":
+        return (
+            direction(selected_files.c.collection_id),
+            direction(selected_files.c.path),
+        )
+    if sort == "collection":
+        return (
+            direction(selected_files.c.collection_id),
+            asc(selected_files.c.path),
+        )
+    if sort == "path":
+        return (
+            direction(selected_files.c.path),
+            asc(selected_files.c.collection_id),
+        )
+    if sort == "bytes":
+        return (
+            direction(selected_files.c.bytes),
+            asc(selected_files.c.collection_id),
+            asc(selected_files.c.path),
+        )
+    if sort == "hot":
+        return (
+            direction(selected_files.c.hot),
+            asc(selected_files.c.collection_id),
+            asc(selected_files.c.path),
+        )
+    if sort == "archived":
+        return (
+            direction(selected_files.c.archived),
+            asc(selected_files.c.collection_id),
+            asc(selected_files.c.path),
+        )
+    if sort == "disc":
+        return (
+            direction(selected_files.c.registered_disc_coverage),
+            asc(selected_files.c.collection_id),
+            asc(selected_files.c.path),
+        )
+    raise BadRequest(f"sort must be one of {', '.join(sorted(_FETCH_FILE_SORT_FIELDS))}")
+
+
+def _like_pattern(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _fetch_next_action(summary: FetchSummary, file_rollup: dict[str, int]) -> tuple[str, str]:
+    if summary.state == FetchState.DRAFT:
+        if not summary.targets:
+            return "add_targets", "add at least one target selector before starting"
+        if file_rollup["files"] <= 0:
+            return "edit_targets", "current target selectors match no files"
+        if file_rollup["missing_files"] <= 0:
+            return "already_hot", "all selected files are already hot"
+        if file_rollup["missing_without_disc_files"] > 0:
+            return (
+                "start_cloud",
+                "some missing files have no registered disc coverage",
+            )
+        return "start_djdan", "missing files have registered disc coverage"
+    if summary.state == FetchState.QUEUED_DJDAN:
+        return "run_djdan_fetch", "queued for optical media recovery"
+    if summary.state == FetchState.UPLOADING:
+        return "continue_djdan_fetch", "optical media upload is in progress"
+    if summary.state == FetchState.VERIFYING:
+        return "wait", "server-side verification is in progress"
+    if summary.state in {FetchState.QUEUED_CLOUD, FetchState.CLOUD_FETCHING}:
+        return "monitor_cloud_fetch", "cloud materialization is active"
+    if summary.state == FetchState.DONE:
+        return "done", "all selected files are hot"
+    if summary.state == FetchState.FAILED:
+        return "inspect_failure", "fetch failed and needs operator review"
+    return "inspect", f"fetch is in state {summary.state.value}"
 
 
 def _pending_status_entries_from_fetch_query(
@@ -1106,23 +1598,17 @@ def _pending_status_entries_from_fetch_query(
 ) -> list[dict[str, object]]:
     if limit <= 0:
         return []
-    clauses = [
-        _target_file_match_clause(target) for target in _fetch_target_values(session, fetch_id)
-    ]
-    if not clauses:
-        return []
     selected_files = (
         select(
-            CollectionFileRecord.collection_id.label("collection_id"),
-            CollectionFileRecord.path.label("path"),
-            CollectionFileRecord.bytes.label("bytes"),
-            CollectionFileRecord.hot.label("hot"),
+            FetchOperatorFileRecord.collection_id.label("collection_id"),
+            FetchOperatorFileRecord.path.label("path"),
+            FetchOperatorFileRecord.bytes.label("bytes"),
+            FetchOperatorFileRecord.hot.label("hot"),
             func.row_number()
-            .over(order_by=(CollectionFileRecord.collection_id, CollectionFileRecord.path))
+            .over(order_by=(FetchOperatorFileRecord.collection_id, FetchOperatorFileRecord.path))
             .label("entry_order"),
         )
-        .where(or_(*clauses))
-        .distinct()
+        .where(FetchOperatorFileRecord.fetch_id == fetch_id)
         .subquery()
     )
     rows = session.execute(

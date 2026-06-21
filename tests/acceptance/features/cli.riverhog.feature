@@ -48,13 +48,23 @@ Feature: riverhog CLI
       And stdout mentions fetch id "fx-1"
       And stdout mentions "queued_djdan"
 
-    Scenario: riverhog hot fetch show emits one fetch summary payload
+    Scenario: riverhog hot fetch show emits one fetch status payload
       Given fetch "fx-1" exists for target "docs/tax/2022/invoice-123.pdf"
       When the operator runs 'riverhog hot fetch show "fx-1" --json'
       Then the command exits with code 0
       And stdout is valid JSON
-      And stdout matches the structure of GET "/v1/fetches/fx-1"
+      And stdout matches the structure of GET "/v1/fetches/fx-1/status"
       And stdout mentions fetch id "fx-1"
+      And stdout mentions "next_action"
+
+    Scenario: riverhog hot fetch files emits a paged selected-file payload
+      Given fetch "fx-1" exists for target "docs/tax/2022/invoice-123.pdf"
+      When the operator runs 'riverhog hot fetch files "fx-1" --page 1 --per-page 25 --sort bytes --order desc --json'
+      Then the command exits with code 0
+      And stdout is valid JSON
+      And stdout matches the structure of GET "/v1/fetches/fx-1/files"
+      And stdout mentions fetch id "fx-1"
+      And stdout mentions target "docs/tax/2022/invoice-123.pdf"
 
     Scenario: riverhog hot fetch start can queue cloud-fetch recovery
       Given file "docs/tax/2022/invoice-123.pdf" is archived
@@ -121,4 +131,6 @@ Feature: riverhog CLI
       When the operator runs 'riverhog hot fetch show "fx-1"'
       Then the command exits with code 0
       And stdout mentions fetch id "fx-1"
+      And stdout mentions "targets"
+      And stdout mentions "files preview"
       And stdout mentions "pending"

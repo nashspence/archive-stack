@@ -683,13 +683,28 @@ Returns one named fetch summary.
 
 #### `GET /v1/fetches/{fetch_id}/status`
 
-Returns a lightweight operator status view for one named fetch.
+Returns a bounded operator preflight/status view for one named fetch.
 
 - includes the same summary fields as `GET /v1/fetches/{fetch_id}`
+- includes derived hot/archive/disc coverage counts from the fetch file projection
+- includes per-target summaries, a bounded selected-file preview, and the recommended next operator action
 - includes a bounded list of pending, partial, or byte-complete entry statuses
 - does not include recovery copy hints, part metadata, or recovery-byte digests
 - does not backfill finalized-image recovery metadata
 - intended for human `riverhog hot fetch show` output
+- routine status reads must be fetch-keyed projection lookups, not selector scans over unbounded collection files
+
+#### `GET /v1/fetches/{fetch_id}/files`
+
+Returns the selected logical files for one named fetch. Supports `page`,
+`per_page`, `q`, `sort`, `order`, `hot`, `archived`, and `disc_coverage`.
+
+Required behavior:
+
+- responses include `page`, `per_page`, `total`, `pages`, `sort`, `order`, and `files`
+- each file includes target, collection id, path, bytes, hot availability, archive coverage, and registered disc coverage
+- list reads are served from the fetch-keyed file projection so operator paging, sorting, and filtering stay responsive
+- intended for human and JSON `riverhog hot fetch files FETCH_ID` output
 
 #### `GET /v1/fetches/{fetch_id}/manifest`
 
@@ -815,6 +830,7 @@ The `riverhog` CLI is collection-first and should provide:
 - `riverhog hot fetch add FETCH_ID TARGET...`
 - `riverhog hot fetch remove FETCH_ID TARGET...`
 - `riverhog hot fetch show FETCH_ID`
+- `riverhog hot fetch files FETCH_ID [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--hot|--not-hot] [--archived|--not-archived] [--disc|--no-disc]`
 - `riverhog hot fetch start FETCH_ID [--cloud]`
 - `riverhog hot fetch cloud-fetch show|cancel FETCH_ID`
 
@@ -896,10 +912,17 @@ collection, hot-storage, and deep-archive filters; JSON output mirrors the
 
 `riverhog hot fetch show FETCH_ID` should provide a concise human-readable listing of:
 
+- the fetch purpose, selectors, state, coverage counts, and next recommended action
+- per-target selected-file summaries
+- a bounded preview of selected files
 - files still pending upload
 - files currently partial and still resumable
 - the expiry time for each partial upload
 - completed fetches should show summary state without fetching the full recovery manifest
+
+`riverhog hot fetch files FETCH_ID` should provide a paged, searchable,
+sortable multiline list of selected file targets without truncating the target
+path.
 
 ### `djdan`
 

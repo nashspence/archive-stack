@@ -248,6 +248,19 @@ class FetchService(Protocol):
     def evict(self, targets: Sequence[str]) -> JsonObject: ...
     def get(self, fetch_id: str) -> FetchSummary: ...
     def status(self, fetch_id: str, *, limit: int = 25) -> JsonObject: ...
+    def files(
+        self,
+        fetch_id: str,
+        *,
+        page: int,
+        per_page: int,
+        sort: str,
+        order: str,
+        q: str | None = None,
+        hot: bool | None = None,
+        archived: bool | None = None,
+        disc_coverage: bool | None = None,
+    ) -> JsonObject: ...
     def manifest(self, fetch_id: str) -> JsonObject: ...
     def create_or_resume_upload(self, fetch_id: str, entry_id: str) -> JsonObject: ...
     def append_upload_chunk(

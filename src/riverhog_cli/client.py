@@ -684,6 +684,39 @@ class ApiClient:
     def get_fetch_status(self, fetch_id: str, *, limit: int = 25) -> dict[str, Any]:
         return self._json("GET", f"/v1/fetches/{fetch_id}/status", params={"limit": limit})
 
+    def list_fetch_files(
+        self,
+        fetch_id: str,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        sort: str = "target",
+        order: str = "asc",
+        query: str | None = None,
+        hot: bool | None = None,
+        archived: bool | None = None,
+        disc_coverage: bool | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "page": page,
+            "per_page": per_page,
+            "sort": sort,
+            "order": order,
+        }
+        if query:
+            params["q"] = query
+        if hot is not None:
+            params["hot"] = hot
+        if archived is not None:
+            params["archived"] = archived
+        if disc_coverage is not None:
+            params["disc_coverage"] = disc_coverage
+        return self._json(
+            "GET",
+            f"/v1/fetches/{quote(fetch_id, safe='/')}/files",
+            params=params,
+        )
+
     def get_fetch_manifest(self, fetch_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/fetches/{fetch_id}/manifest")
 

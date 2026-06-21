@@ -3,14 +3,18 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from sqlalchemy import select
+
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionFileRecord,
     CollectionRecord,
     FetchEntryRecord,
+    FetchOperatorFileRecord,
     FetchOperatorSummaryRecord,
     FetchRecord,
     FetchSelectorRecord,
+    FileCopyRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.fetches import SqlAlchemyFetchService
@@ -42,6 +46,18 @@ def _summary_row(sqlite_path: Path, fetch_id: str) -> FetchOperatorSummaryRecord
         row = session.get(FetchOperatorSummaryRecord, fetch_id)
         assert row is not None
         return row
+
+
+def _file_rows(sqlite_path: Path, fetch_id: str) -> list[FetchOperatorFileRecord]:
+    session_factory = make_session_factory(sqlite_url(sqlite_path))
+    with session_scope(session_factory) as session:
+        return list(
+            session.scalars(
+                select(FetchOperatorFileRecord)
+                .where(FetchOperatorFileRecord.fetch_id == fetch_id)
+                .order_by(FetchOperatorFileRecord.collection_id, FetchOperatorFileRecord.path)
+            ).all()
+        )
 
 
 def _seed_fetch(sqlite_path: Path) -> None:
@@ -101,8 +117,31 @@ def test_fetch_operator_projection_tracks_selector_and_entry_changes(tmp_path: P
     assert row.missing_files == 1
     assert row.missing_bytes == 100
     assert row.entries_total == 0
+    files = _file_rows(sqlite_path, "fx-1")
+    assert [(file.collection_id, file.path, file.hot) for file in files] == [
+        ("docs", "missing.txt", False),
+        ("docs", "ready.txt", True),
+    ]
+    assert not files[0].registered_disc_coverage
 
     session_factory = make_session_factory(sqlite_url(sqlite_path))
+    with session_scope(session_factory) as session:
+        session.add(
+            FileCopyRecord(
+                collection_id="docs",
+                path="missing.txt",
+                copy_id="copy-1",
+                volume_id="BD-001",
+                location="shelf",
+                disc_path="docs/missing.txt",
+                enc_json="{}",
+            )
+        )
+
+    files = _file_rows(sqlite_path, "fx-1")
+    assert files[0].path == "missing.txt"
+    assert files[0].registered_disc_coverage
+
     with session_scope(session_factory) as session:
         session.add(
             FetchEntryRecord(
@@ -158,6 +197,7 @@ def test_fetch_operator_projection_tracks_selector_and_entry_changes(tmp_path: P
     assert row.missing_files == 0
     assert row.entries_total == 1
     assert row.entries_uploaded == 1
+    assert all(file.hot for file in _file_rows(sqlite_path, "fx-1"))
 
     fetch_service = SqlAlchemyFetchService(_config(sqlite_path), object(), object())  # type: ignore[arg-type]
     done_summary = fetch_service.get("fx-1")

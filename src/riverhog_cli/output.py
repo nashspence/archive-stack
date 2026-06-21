@@ -102,6 +102,28 @@ def _ratio_text(numerator: object, denominator: object) -> str:
     return f"{_bytes_text(value)} / {_bytes_text(total)} ({value / total * 100:.0f}%)"
 
 
+def _count_ratio_text(numerator: object, denominator: object) -> str:
+    total = _int_value(denominator)
+    value = _int_value(numerator)
+    if total <= 0:
+        return f"{value}/{total}"
+    return f"{value}/{total} ({value / total * 100:.0f}%)"
+
+
+def _attention_if_nonzero(value: object) -> Any:
+    text = str(_int_value(value))
+    if _int_value(value) > 0:
+        return _styled_text(text, ATTENTION_STYLE)
+    return text
+
+
+def _coverage_bool_text(value: object) -> Any:
+    text = str(bool(value)).lower()
+    if not bool(value):
+        return _styled_text(text, ATTENTION_STYLE)
+    return text
+
+
 def _quiet_table(*columns: str) -> Any:
     table = RichTable(box=None, show_edge=False, padding=(0, 2), collapse_padding=True)
     for index, column in enumerate(columns):
@@ -350,7 +372,39 @@ def _format_fetch_plain(summary: Mapping[str, Any], manifest: Mapping[str, Any])
         f"name: {summary.get('name', 'unknown')}",
         "targets:",
         *[f"- {target}" for target in _string_items(summary.get("targets"))],
+        "scope: "
+        f"files={summary.get('files', 0)} "
+        f"bytes={summary.get('bytes', 0)} "
+        f"hot={summary.get('hot_files', 0)}/{summary.get('files', 0)} "
+        f"archived={summary.get('archived_files', 0)}/{summary.get('files', 0)} "
+        f"disc={summary.get('registered_disc_files', 0)}/{summary.get('files', 0)} "
+        f"missing_bytes={summary.get('missing_bytes', 0)}",
     ]
+    if summary.get("next_action"):
+        lines.append(
+            f"next: {summary.get('next_action')} - {summary.get('next_action_reason', '')}"
+        )
+    target_summaries = summary.get("target_summaries")
+    if isinstance(target_summaries, Sequence) and target_summaries:
+        lines.append("target summaries:")
+        for target in target_summaries:
+            if not isinstance(target, Mapping):
+                continue
+            lines.append(
+                f"- {target.get('target', 'unknown')} "
+                f"files={target.get('files', 0)} "
+                f"bytes={target.get('bytes', 0)} "
+                f"hot={target.get('hot_files', 0)}/{target.get('files', 0)} "
+                f"missing={target.get('missing_files', 0)} "
+                f"disc_missing={target.get('missing_with_disc_files', 0)} "
+                f"cloud_missing={target.get('missing_without_disc_files', 0)}"
+            )
+    files_preview = summary.get("files_preview")
+    if isinstance(files_preview, Sequence) and files_preview:
+        lines.append("files preview:")
+        for file in files_preview:
+            if isinstance(file, Mapping):
+                lines.extend(_fetch_file_plain_lines(file))
     if not pending and not partial and not byte_complete:
         lines.append("entries: none")
         return "\n".join(lines)
@@ -366,6 +420,39 @@ def _format_fetch_plain(summary: Mapping[str, Any], manifest: Mapping[str, Any])
     return "\n".join(lines)
 
 
+def _fetch_file_plain_lines(file: Mapping[str, Any]) -> list[str]:
+    return [
+        f"- {file.get('target', 'unknown')}",
+        f"  bytes: {file.get('bytes', 0)}",
+        f"  hot: {str(file.get('hot', False)).lower()}",
+        f"  archived: {str(file.get('archived', False)).lower()}",
+        f"  disc: {str(file.get('registered_disc_coverage', False)).lower()}",
+    ]
+
+
+def _fetch_file_record_text(file: Mapping[str, Any], *, primary: bool) -> Any:
+    title_style = ENTITY_ID_STYLE if primary else ""
+    target = RichText(str(file.get("target", "unknown")), style=title_style)
+    meta = RichText("  ")
+    for index, (label, value) in enumerate(
+        (
+            ("bytes", _bytes_text(file.get("bytes", 0))),
+            ("hot", _coverage_bool_text(file.get("hot", False))),
+            ("archived", _coverage_bool_text(file.get("archived", False))),
+            ("disc", _coverage_bool_text(file.get("registered_disc_coverage", False))),
+        )
+    ):
+        if index:
+            meta.append("   ")
+        meta.append(f"{label}:", style=FIELD_STYLE)
+        if isinstance(value, RichText):
+            meta.append(" ")
+            meta.append_text(value)
+        else:
+            meta.append(f" {value}")
+    return RichGroup(target, meta)
+
+
 def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> Any:
     if not _rich_enabled():
         return _format_fetch_plain(summary, manifest)
@@ -378,10 +465,54 @@ def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> Any
     table.add_row("state", _attention_text(summary.get("state", "unknown")))
     table.add_row("files", str(summary.get("files", 0)))
     table.add_row("bytes", _bytes_text(summary.get("bytes", 0)))
+    table.add_row("hot", _count_ratio_text(summary.get("hot_files", 0), summary.get("files", 0)))
+    table.add_row(
+        "archive",
+        _count_ratio_text(summary.get("archived_files", 0), summary.get("files", 0)),
+    )
+    table.add_row(
+        "disc",
+        _count_ratio_text(summary.get("registered_disc_files", 0), summary.get("files", 0)),
+    )
     table.add_row("missing", _bytes_text(summary.get("missing_bytes", 0)))
+    if summary.get("next_action"):
+        table.add_row(
+            "next",
+            f"{summary.get('next_action')} - {summary.get('next_action_reason', '')}",
+        )
     table.add_row("copies", _copy_lines(summary.get("copies")))
 
     renderables: list[Any] = [RichText("fetch", style="bold"), table]
+    target_summaries = summary.get("target_summaries")
+    if isinstance(target_summaries, Sequence) and target_summaries:
+        target_table = _quiet_table(
+            "Target",
+            "Files",
+            "Bytes",
+            "Hot",
+            "Missing",
+            "Disc Missing",
+            "Cloud Missing",
+        )
+        for target in target_summaries:
+            if not isinstance(target, Mapping):
+                continue
+            target_table.add_row(
+                str(target.get("target", "unknown")),
+                str(target.get("files", 0)),
+                _bytes_text(target.get("bytes", 0)),
+                _count_ratio_text(target.get("hot_files", 0), target.get("files", 0)),
+                _attention_if_nonzero(target.get("missing_files", 0)),
+                _attention_if_nonzero(target.get("missing_with_disc_files", 0)),
+                _attention_if_nonzero(target.get("missing_without_disc_files", 0)),
+            )
+        renderables.extend([RichText("targets", style="bold"), target_table])
+    files_preview = summary.get("files_preview")
+    if isinstance(files_preview, Sequence) and files_preview:
+        renderables.append(RichText("files preview", style="bold"))
+        for file in files_preview:
+            if isinstance(file, Mapping):
+                renderables.extend(["", _fetch_file_record_text(file, primary=False)])
     if pending or partial or byte_complete:
         status_table = _quiet_table("Status", "Items")
         if pending:
@@ -392,6 +523,73 @@ def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> Any
             status_table.add_row("byte-complete", _preview_lines(byte_complete, limit=8))
         renderables.extend([RichText("entries", style="bold"), status_table])
 
+    return RichGroup(*renderables)
+
+
+def _format_fetch_files_plain(payload: Mapping[str, Any]) -> str:
+    lines = [
+        "fetch files: "
+        f"fetch={payload.get('fetch_id', 'unknown')} "
+        f"page {payload.get('page', 1)}/{payload.get('pages', 0)} "
+        f"per_page={payload.get('per_page', 25)} "
+        f"total={payload.get('total', 0)} "
+        f"sort={payload.get('sort', 'target')} "
+        f"order={payload.get('order', 'asc')}",
+    ]
+    if payload.get("query") is not None:
+        lines.append(f"query: {payload.get('query')}")
+    if payload.get("hot") is not None:
+        lines.append(f"hot: {str(payload.get('hot')).lower()}")
+    if payload.get("archived") is not None:
+        lines.append(f"archived: {str(payload.get('archived')).lower()}")
+    if payload.get("disc_coverage") is not None:
+        lines.append(f"disc: {str(payload.get('disc_coverage')).lower()}")
+    files = payload.get("files")
+    if not isinstance(files, Sequence) or not files:
+        lines.append("- none")
+        return "\n".join(lines)
+    for file in files:
+        if isinstance(file, Mapping):
+            lines.extend(_fetch_file_plain_lines(file))
+    return "\n".join(lines)
+
+
+def _fetch_files_scope_text(payload: Mapping[str, Any]) -> Any:
+    text = RichText()
+    fields: list[tuple[str, object]] = [
+        ("fetch", payload.get("fetch_id", "unknown")),
+        ("sort", f"{payload.get('sort', 'target')} {payload.get('order', 'asc')}"),
+    ]
+    if payload.get("query") is not None:
+        fields.insert(1, ("query", payload.get("query")))
+    if payload.get("hot") is not None:
+        fields.append(("hot", str(payload.get("hot")).lower()))
+    if payload.get("archived") is not None:
+        fields.append(("archived", str(payload.get("archived")).lower()))
+    if payload.get("disc_coverage") is not None:
+        fields.append(("disc", str(payload.get("disc_coverage")).lower()))
+    for index, (label, value) in enumerate(fields):
+        if index:
+            text.append("  ")
+        text.append(f"{label}:", style=FIELD_STYLE)
+        if label == "fetch":
+            text.append(" ")
+            text.append_text(_entity_text(value))
+        else:
+            text.append(f" {value}")
+    return text
+
+
+def format_fetch_files(payload: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        return _format_fetch_files_plain(payload)
+    renderables: list[Any] = [_page_text("fetch files", payload), _fetch_files_scope_text(payload)]
+    files = payload.get("files")
+    if not isinstance(files, Sequence) or not files:
+        return RichGroup(*renderables, "none")
+    for file in files:
+        if isinstance(file, Mapping):
+            renderables.extend(["", _fetch_file_record_text(file, primary=True)])
     return RichGroup(*renderables)
 
 

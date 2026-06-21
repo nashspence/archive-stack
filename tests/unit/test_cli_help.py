@@ -48,7 +48,8 @@ def test_riverhog_command_help_has_summaries() -> None:
         "Add target selectors to an editable fetch.",
         "Remove target selectors from an editable fetch.",
         "List named fetches.",
-        "Show fetch progress.",
+        "Show fetch preflight and progress summary.",
+        "List selected files for a fetch.",
         "Queue a fetch for djdan, or for cloud recovery with --cloud.",
         "Cloud archive recovery sessions for fetches.",
     ):

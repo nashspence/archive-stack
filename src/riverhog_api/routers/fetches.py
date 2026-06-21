@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
@@ -11,6 +11,7 @@ from riverhog_api.schemas.fetches import (
     CompleteFetchResponse,
     CreateFetchRequest,
     FetchesResponse,
+    FetchFilesResponse,
     FetchManifestResponse,
     FetchStatusResponse,
     FetchSummaryOut,
@@ -117,6 +118,35 @@ def get_fetch_status(
 ) -> FetchStatusResponse:
     payload = container.fetches.status(fetch_id, limit=limit)
     return FetchStatusResponse.model_validate(payload)
+
+
+@router.get("/fetches/{fetch_id}/files", response_model=FetchFilesResponse)
+def list_fetch_files(
+    fetch_id: str,
+    container: ContainerDep,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=100),
+    q: str | None = Query(None),
+    sort: Literal["target", "collection", "path", "bytes", "hot", "archived", "disc"] = Query(
+        "target"
+    ),
+    order: Literal["asc", "desc"] = Query("asc"),
+    hot: bool | None = Query(None),
+    archived: bool | None = Query(None),
+    disc_coverage: bool | None = Query(None),
+) -> FetchFilesResponse:
+    payload = container.fetches.files(
+        fetch_id,
+        page=page,
+        per_page=per_page,
+        q=q,
+        sort=sort.casefold(),
+        order=order.casefold(),
+        hot=hot,
+        archived=archived,
+        disc_coverage=disc_coverage,
+    )
+    return FetchFilesResponse.model_validate(payload)
 
 
 @router.get("/fetches/{fetch_id}/manifest", response_model=FetchManifestResponse)

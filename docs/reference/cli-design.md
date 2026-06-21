@@ -12,6 +12,9 @@ Riverhog is collection-first:
   upload session controls.
 - `riverhog hot ...` owns named fetch manifests, hot-file eviction, and
   fetch-scoped cloud archive materialization.
+- `riverhog hot fetch show` is the bounded preflight/progress view.
+- `riverhog hot fetch files` is the paged, searchable, sortable selected-file
+  drill-down for a fetch.
 
 Djdan is optical-media-first:
 

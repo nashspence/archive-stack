@@ -22,6 +22,7 @@ from riverhog_cli.output import (
     format_collection_upload,
     format_collections,
     format_fetch,
+    format_fetch_files,
     format_fetches,
     format_find,
     format_hot_evict,
@@ -949,6 +950,7 @@ _COLLECTION_SORT_FIELDS = {
     "protected_bytes",
 }
 _FIND_SORT_FIELDS = {"target", "collection", "path", "bytes", "hot", "archived"}
+_FETCH_FILE_SORT_FIELDS = {"target", "collection", "path", "bytes", "hot", "archived", "disc"}
 
 
 def _collection_list_glacier_payload(collection: Mapping[str, object]) -> dict[str, object] | None:
@@ -1355,8 +1357,13 @@ def fetch_create_cmd(
 ) -> None:
     """Create a named editable fetch."""
 
-    payload = client().create_fetch(name=name, targets=targets or [])
-    emit(payload if json_mode else format_fetch(payload, {"entries": []}), json_mode=json_mode)
+    api = client()
+    payload = api.create_fetch(name=name, targets=targets or [])
+    if json_mode:
+        emit(payload, json_mode=True)
+        return
+    status = api.get_fetch_status(str(payload.get("id", "unknown")))
+    emit(format_fetch(status, {"entries": status.get("entries", [])}), json_mode=False)
 
 
 @hot_app.command("evict")
@@ -1378,8 +1385,13 @@ def fetch_add_cmd(
 ) -> None:
     """Add target selectors to an editable fetch."""
 
-    payload = client().add_fetch_targets(fetch_id, targets)
-    emit(payload if json_mode else format_fetch(payload, {"entries": []}), json_mode=json_mode)
+    api = client()
+    payload = api.add_fetch_targets(fetch_id, targets)
+    if json_mode:
+        emit(payload, json_mode=True)
+        return
+    status = api.get_fetch_status(fetch_id)
+    emit(format_fetch(status, {"entries": status.get("entries", [])}), json_mode=False)
 
 
 @fetch_app.command("remove")
@@ -1390,8 +1402,13 @@ def fetch_remove_cmd(
 ) -> None:
     """Remove target selectors from an editable fetch."""
 
-    payload = client().remove_fetch_targets(fetch_id, targets)
-    emit(payload if json_mode else format_fetch(payload, {"entries": []}), json_mode=json_mode)
+    api = client()
+    payload = api.remove_fetch_targets(fetch_id, targets)
+    if json_mode:
+        emit(payload, json_mode=True)
+        return
+    status = api.get_fetch_status(fetch_id)
+    emit(format_fetch(status, {"entries": status.get("entries", [])}), json_mode=False)
 
 
 @fetch_app.command("list")
@@ -1424,15 +1441,63 @@ def fetch_cmd(
     fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Show fetch progress."""
+    """Show fetch preflight and progress summary."""
 
     api = client()
-    if json_mode:
-        summary = api.get_fetch(fetch_id)
-        emit(summary, json_mode=True)
-        return
     status = api.get_fetch_status(fetch_id)
+    if json_mode:
+        emit(status, json_mode=True)
+        return
     emit(format_fetch(status, {"entries": status.get("entries", [])}), json_mode=False)
+
+
+@fetch_app.command("files")
+def fetch_files_cmd(
+    fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
+    query: Annotated[
+        str | None, typer.Option("--query", "-q", help="Search selected file targets")
+    ] = None,
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "target",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
+    hot: Annotated[
+        bool | None,
+        typer.Option("--hot/--not-hot", help="Filter by hot-storage availability"),
+    ] = None,
+    archived: Annotated[
+        bool | None,
+        typer.Option("--archived/--not-archived", help="Filter by deep-archive coverage"),
+    ] = None,
+    disc_coverage: Annotated[
+        bool | None,
+        typer.Option("--disc/--no-disc", help="Filter by registered disc coverage"),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """List selected files for a fetch."""
+
+    normalized_sort = sort.casefold()
+    if normalized_sort not in _FETCH_FILE_SORT_FIELDS:
+        raise typer.BadParameter(
+            f"sort must be one of {', '.join(sorted(_FETCH_FILE_SORT_FIELDS))}",
+            param_hint="--sort",
+        )
+    normalized_order = order.casefold()
+    if normalized_order not in {"asc", "desc"}:
+        raise typer.BadParameter("order must be asc or desc", param_hint="--order")
+    payload = client().list_fetch_files(
+        fetch_id,
+        page=page,
+        per_page=per_page,
+        sort=normalized_sort,
+        order=normalized_order,
+        query=query,
+        hot=hot,
+        archived=archived,
+        disc_coverage=disc_coverage,
+    )
+    emit(payload if json_mode else format_fetch_files(payload), json_mode=json_mode)
 
 
 @fetch_app.command("start")
@@ -1445,8 +1510,13 @@ def fetch_start_cmd(
 ) -> None:
     """Queue a fetch for djdan, or for cloud recovery with --cloud."""
 
-    payload = client().start_fetch(fetch_id, cloud=cloud)
-    emit(payload if json_mode else format_fetch(payload, {"entries": []}), json_mode=json_mode)
+    api = client()
+    payload = api.start_fetch(fetch_id, cloud=cloud)
+    if json_mode:
+        emit(payload, json_mode=True)
+        return
+    status = api.get_fetch_status(fetch_id)
+    emit(format_fetch(status, {"entries": status.get("entries", [])}), json_mode=False)
 
 
 @fetch_cloud_fetch_app.command("show")

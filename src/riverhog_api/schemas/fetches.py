@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 
 from riverhog_api.schemas.common import RiverhogModel
@@ -78,10 +80,63 @@ class FetchStatusEntryOut(RiverhogModel):
     upload_state_expires_at: str | None
 
 
+class FetchTargetSummaryOut(RiverhogModel):
+    target: str
+    files: int
+    bytes: int
+    hot_files: int
+    hot_bytes: int
+    archived_files: int
+    archived_bytes: int
+    registered_disc_files: int
+    missing_files: int
+    missing_with_disc_files: int
+    missing_without_disc_files: int
+
+
+class FetchFileOut(RiverhogModel):
+    target: str
+    collection_id: str
+    path: str
+    bytes: int
+    hot: bool
+    archived: bool
+    registered_disc_coverage: bool
+
+
 class FetchStatusResponse(FetchSummaryOut):
+    hot_files: int
+    hot_bytes: int
+    archived_files: int
+    archived_bytes: int
+    registered_disc_files: int
+    missing_files: int
+    missing_with_disc_files: int
+    missing_without_disc_files: int
+    target_summaries: list[FetchTargetSummaryOut]
+    files_preview_limit: int
+    files_preview_returned: int
+    files_preview: list[FetchFileOut]
+    next_action: str
+    next_action_reason: str
     entries_limit: int
     entries_returned: int
     entries: list[FetchStatusEntryOut]
+
+
+class FetchFilesResponse(RiverhogModel):
+    fetch_id: str
+    query: str | None
+    hot: bool | None
+    archived: bool | None
+    disc_coverage: bool | None
+    page: int
+    per_page: int
+    total: int
+    pages: int
+    sort: Literal["target", "collection", "path", "bytes", "hot", "archived", "disc"]
+    order: Literal["asc", "desc"]
+    files: list[FetchFileOut]
 
 
 class FetchManifestCopyOut(RiverhogModel):

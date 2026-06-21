@@ -37,6 +37,20 @@ riverhog hot fetch add fx-1 'photos/'
 This selects every file projected beneath that hot-namespace directory, even
 when the files come from multiple collections.
 
+## Inspect selection
+
+Show the bounded preflight summary and next recommended action:
+
+```bash
+riverhog hot fetch show fx-1
+```
+
+List the selected files when you need to inspect or search the actual targets:
+
+```bash
+riverhog hot fetch files fx-1 --query japan --sort bytes --order desc
+```
+
 ## Start fulfillment
 
 Queue the fetch for the prompt-based optical-media workflow:

@@ -687,9 +687,39 @@ def _prepare_riverhog_expectation(
 
     if argv[1:4] == ["hot", "fetch", "show"]:
         fetch_id = argv[4]
-        context.expected_api_endpoint = ("GET", f"/v1/fetches/{fetch_id}")
+        context.expected_api_endpoint = ("GET", f"/v1/fetches/{fetch_id}/status")
         context.expected_api_payload = acceptance_system.request(
-            "GET", f"/v1/fetches/{fetch_id}"
+            "GET",
+            f"/v1/fetches/{fetch_id}/status",
+            params={"limit": 25},
+        ).json()
+        return
+
+    if argv[1:4] == ["hot", "fetch", "files"]:
+        fetch_id = argv[4]
+        context.expected_api_endpoint = ("GET", f"/v1/fetches/{fetch_id}/files")
+        params: dict[str, object] = {
+            "page": _riverhog_option_value(argv, "--page", 1),
+            "per_page": _riverhog_option_value(argv, "--per-page", 25),
+            "sort": _riverhog_option_value(argv, "--sort", "target"),
+            "order": str(_riverhog_option_value(argv, "--order", "asc")).casefold(),
+        }
+        query = _riverhog_option_value(argv, "--query")
+        hot = _riverhog_bool_flag(argv, "--hot", "--not-hot")
+        archived = _riverhog_bool_flag(argv, "--archived", "--not-archived")
+        disc = _riverhog_bool_flag(argv, "--disc", "--no-disc")
+        if query is not None:
+            params["q"] = query
+        if hot is not None:
+            params["hot"] = hot
+        if archived is not None:
+            params["archived"] = archived
+        if disc is not None:
+            params["disc_coverage"] = disc
+        context.expected_api_payload = acceptance_system.request(
+            "GET",
+            f"/v1/fetches/{fetch_id}/files",
+            params=params,
         ).json()
         return
 

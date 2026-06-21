@@ -1209,8 +1209,8 @@ paths:
           $ref: "#/components/responses/Error"
   /fetches/{fetch_id}/status:
     get:
-      summary: Get lightweight fetch status
-      description: Returns one named fetch summary plus a bounded list of pending, partial, or byte-complete entry statuses for human operator display. This endpoint does not include recovery copy hints and does not backfill finalized-image recovery metadata; use the fetch manifest for automated recovery.
+      summary: Get fetch preflight and progress status
+      description: Returns one named fetch summary plus bounded target/file previews and pending, partial, or byte-complete entry statuses for human operator display. This endpoint does not backfill finalized-image recovery metadata; use the fetch manifest for automated recovery.
       operationId: getFetchStatus
       parameters:
         - in: path
@@ -1232,6 +1232,75 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/FetchStatus"
+        default:
+          $ref: "#/components/responses/Error"
+  /fetches/{fetch_id}/files:
+    get:
+      summary: List selected files for a fetch
+      description: Returns a paged, sortable, filterable list of logical files selected by one fetch manifest. This endpoint reads the operator file projection and is intended for fast CLI inspection before starting or monitoring a fetch.
+      operationId: listFetchFiles
+      parameters:
+        - in: path
+          name: fetch_id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: page
+          required: false
+          schema: { type: integer, default: 1, minimum: 1 }
+        - in: query
+          name: per_page
+          required: false
+          schema: { type: integer, default: 25, minimum: 1, maximum: 100 }
+        - in: query
+          name: q
+          required: false
+          schema:
+            oneOf:
+              - type: string
+              - type: "null"
+        - in: query
+          name: sort
+          required: false
+          schema:
+            type: string
+            default: target
+            enum: [target, collection, path, bytes, hot, archived, disc]
+        - in: query
+          name: order
+          required: false
+          schema:
+            type: string
+            default: asc
+            enum: [asc, desc]
+        - in: query
+          name: hot
+          required: false
+          schema:
+            oneOf:
+              - type: boolean
+              - type: "null"
+        - in: query
+          name: archived
+          required: false
+          schema:
+            oneOf:
+              - type: boolean
+              - type: "null"
+        - in: query
+          name: disc_coverage
+          required: false
+          schema:
+            oneOf:
+              - type: boolean
+              - type: "null"
+      responses:
+        "200":
+          description: Fetch selected files
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FetchFilesResponse"
         default:
           $ref: "#/components/responses/Error"
   /fetches/{fetch_id}/manifest:
@@ -2586,12 +2655,97 @@ components:
             - type: string
               format: date-time
             - type: "null"
+    FetchTargetSummary:
+      type: object
+      required:
+        [
+          target,
+          files,
+          bytes,
+          hot_files,
+          hot_bytes,
+          archived_files,
+          archived_bytes,
+          registered_disc_files,
+          missing_files,
+          missing_with_disc_files,
+          missing_without_disc_files,
+        ]
+      properties:
+        target:
+          $ref: "#/components/schemas/Target"
+        files: { type: integer }
+        bytes: { type: integer }
+        hot_files: { type: integer }
+        hot_bytes: { type: integer }
+        archived_files: { type: integer }
+        archived_bytes: { type: integer }
+        registered_disc_files: { type: integer }
+        missing_files: { type: integer }
+        missing_with_disc_files: { type: integer }
+        missing_without_disc_files: { type: integer }
+    FetchFile:
+      type: object
+      required: [target, collection_id, path, bytes, hot, archived, registered_disc_coverage]
+      properties:
+        target:
+          $ref: "#/components/schemas/Target"
+        collection_id: { type: string }
+        path: { type: string }
+        bytes: { type: integer }
+        hot: { type: boolean }
+        archived: { type: boolean }
+        registered_disc_coverage: { type: boolean }
     FetchStatus:
       allOf:
         - $ref: "#/components/schemas/FetchSummary"
         - type: object
-          required: [entries_limit, entries_returned, entries]
+          required:
+            [
+              hot_files,
+              hot_bytes,
+              archived_files,
+              archived_bytes,
+              registered_disc_files,
+              missing_files,
+              missing_with_disc_files,
+              missing_without_disc_files,
+              target_summaries,
+              files_preview_limit,
+              files_preview_returned,
+              files_preview,
+              next_action,
+              next_action_reason,
+              entries_limit,
+              entries_returned,
+              entries,
+            ]
           properties:
+            hot_files: { type: integer }
+            hot_bytes: { type: integer }
+            archived_files: { type: integer }
+            archived_bytes: { type: integer }
+            registered_disc_files: { type: integer }
+            missing_files: { type: integer }
+            missing_with_disc_files: { type: integer }
+            missing_without_disc_files: { type: integer }
+            target_summaries:
+              type: array
+              items:
+                $ref: "#/components/schemas/FetchTargetSummary"
+            files_preview_limit:
+              type: integer
+              minimum: 0
+              maximum: 100
+            files_preview_returned:
+              type: integer
+              minimum: 0
+            files_preview:
+              type: array
+              items:
+                $ref: "#/components/schemas/FetchFile"
+            next_action: { type: string }
+            next_action_reason: { type: string }
             entries_limit:
               type: integer
               minimum: 0
@@ -2603,6 +2757,55 @@ components:
               type: array
               items:
                 $ref: "#/components/schemas/FetchStatusEntry"
+    FetchFilesResponse:
+      type: object
+      required:
+        [
+          fetch_id,
+          query,
+          hot,
+          archived,
+          disc_coverage,
+          page,
+          per_page,
+          total,
+          pages,
+          sort,
+          order,
+          files,
+        ]
+      properties:
+        fetch_id: { type: string }
+        query:
+          oneOf:
+            - type: string
+            - type: "null"
+        hot:
+          oneOf:
+            - type: boolean
+            - type: "null"
+        archived:
+          oneOf:
+            - type: boolean
+            - type: "null"
+        disc_coverage:
+          oneOf:
+            - type: boolean
+            - type: "null"
+        page: { type: integer }
+        per_page: { type: integer }
+        total: { type: integer }
+        pages: { type: integer }
+        sort:
+          type: string
+          enum: [target, collection, path, bytes, hot, archived, disc]
+        order:
+          type: string
+          enum: [asc, desc]
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/FetchFile"
     FetchManifestEntryCopy:
       type: object
       required: [copy, volume_id, location, disc_path, recovery_bytes, recovery_sha256]
