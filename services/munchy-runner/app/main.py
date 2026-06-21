@@ -10,6 +10,7 @@ import json
 import logging
 import logging.config
 import os
+import re
 import shutil
 import signal
 import sqlite3
@@ -238,6 +239,20 @@ DEFAULT_NOTIFY_EVENTS: list[NotifyEvent] = [
 ]
 SAFE_GROUP_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 TERMINAL_JOB_STATES = {"succeeded", "failed", "cancelled"}
+JOB_LIST_SORT_COLUMNS = {
+    "job_id": "job_id",
+    "collection_slug": "collection_slug",
+    "created_at": "created_at",
+    "finished_at": "finished_at",
+    "input_upload_id": "input_upload_id",
+    "phase": "phase",
+    "state": "state",
+    "updated_at": "updated_at",
+    "workflow_mode": "workflow_mode",
+}
+JOB_LIST_TERMINAL_FILTERS = {"active", "all", "terminal"}
+JOB_SEARCH_TOKEN_RE = re.compile(r"[0-9A-Za-z]+")
+JOB_SUMMARY_BACKFILL_CONTROL_ID = "job-summary-index-v1"
 cleanup_stop = threading.Event()
 cleanup_thread: threading.Thread | None = None
 riverhog_upload_stop = threading.Event()
@@ -952,7 +967,59 @@ def init_state_store() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS states_kind_updated_at ON states(kind, updated_at)"
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS job_summaries (
+                job_id TEXT PRIMARY KEY,
+                state TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT NOT NULL,
+                input_upload_id TEXT NOT NULL,
+                collection_slug TEXT NOT NULL,
+                collection_timestamp TEXT NOT NULL,
+                workflow_mode TEXT NOT NULL,
+                archive_mode TEXT NOT NULL,
+                profile TEXT NOT NULL,
+                terminal INTEGER NOT NULL,
+                riverhog_enabled INTEGER NOT NULL,
+                cancel_requested INTEGER NOT NULL,
+                storage_wait INTEGER NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS job_summaries_terminal_updated "
+            "ON job_summaries(terminal, updated_at, job_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS job_summaries_state_updated "
+            "ON job_summaries(state, updated_at, job_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS job_summaries_workflow_updated "
+            "ON job_summaries(workflow_mode, updated_at, job_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS job_summaries_collection_updated "
+            "ON job_summaries(collection_slug, updated_at, job_id)"
+        )
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS job_summaries_fts "
+            "USING fts5(job_id UNINDEXED, search_text)"
+        )
+        needs_job_summary_backfill = (
+            conn.execute(
+                "SELECT 1 FROM states WHERE kind = 'control' AND id = ?",
+                (JOB_SUMMARY_BACKFILL_CONTROL_ID,),
+            ).fetchone()
+            is None
+        )
         conn.commit()
+    if needs_job_summary_backfill:
+        backfill_missing_job_summaries()
 
 
 def write_state(kind: str, item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -970,6 +1037,8 @@ def write_state(kind: str, item_id: str, payload: dict[str, Any]) -> dict[str, A
             """,
             (kind, item_id, encoded, payload["updated_at"]),
         )
+        if kind == "job":
+            upsert_job_summary(conn, payload)
         conn.commit()
     return payload
 
@@ -1003,9 +1072,306 @@ def list_states(kind: str) -> list[dict[str, Any]]:
     return [json.loads(str(row["payload"])) for row in rows]
 
 
+def bool_int(value: Any) -> int:
+    return 1 if bool(value) else 0
+
+
+def job_summary_search_text(job: dict[str, Any]) -> str:
+    values = [
+        job.get("job_id"),
+        job.get("collection_slug"),
+        job.get("collection_timestamp"),
+        job.get("input_upload_id"),
+        job.get("state"),
+        job.get("phase"),
+        job.get("workflow_mode"),
+        job.get("archive_mode"),
+        job.get("profile"),
+    ]
+    return " ".join(str(value) for value in values if value)
+
+
+def upsert_job_summary(conn: sqlite3.Connection, job: dict[str, Any]) -> None:
+    job_id = str(job.get("job_id") or "")
+    if not job_id:
+        return
+    riverhog = job.get("riverhog")
+    summary = {
+        "job_id": job_id,
+        "state": str(job.get("state") or ""),
+        "phase": str(job.get("phase") or ""),
+        "created_at": str(job.get("created_at") or ""),
+        "updated_at": str(job.get("updated_at") or job.get("created_at") or ""),
+        "started_at": str(job.get("started_at") or ""),
+        "finished_at": str(job.get("finished_at") or ""),
+        "input_upload_id": str(job.get("input_upload_id") or ""),
+        "collection_slug": str(job.get("collection_slug") or ""),
+        "collection_timestamp": str(job.get("collection_timestamp") or ""),
+        "workflow_mode": str(job.get("workflow_mode") or ""),
+        "archive_mode": str(job.get("archive_mode") or ""),
+        "profile": str(job.get("profile") or ""),
+        "terminal": bool_int(job.get("state") in TERMINAL_JOB_STATES),
+        "riverhog_enabled": bool_int(isinstance(riverhog, dict) and riverhog.get("enabled")),
+        "cancel_requested": bool_int(job.get("cancel_requested")),
+        "storage_wait": bool_int(isinstance(job.get("storage_wait"), dict)),
+    }
+    conn.execute(
+        """
+        INSERT INTO job_summaries(
+            job_id,
+            state,
+            phase,
+            created_at,
+            updated_at,
+            started_at,
+            finished_at,
+            input_upload_id,
+            collection_slug,
+            collection_timestamp,
+            workflow_mode,
+            archive_mode,
+            profile,
+            terminal,
+            riverhog_enabled,
+            cancel_requested,
+            storage_wait
+        )
+        VALUES(
+            :job_id,
+            :state,
+            :phase,
+            :created_at,
+            :updated_at,
+            :started_at,
+            :finished_at,
+            :input_upload_id,
+            :collection_slug,
+            :collection_timestamp,
+            :workflow_mode,
+            :archive_mode,
+            :profile,
+            :terminal,
+            :riverhog_enabled,
+            :cancel_requested,
+            :storage_wait
+        )
+        ON CONFLICT(job_id) DO UPDATE SET
+            state = excluded.state,
+            phase = excluded.phase,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at,
+            started_at = excluded.started_at,
+            finished_at = excluded.finished_at,
+            input_upload_id = excluded.input_upload_id,
+            collection_slug = excluded.collection_slug,
+            collection_timestamp = excluded.collection_timestamp,
+            workflow_mode = excluded.workflow_mode,
+            archive_mode = excluded.archive_mode,
+            profile = excluded.profile,
+            terminal = excluded.terminal,
+            riverhog_enabled = excluded.riverhog_enabled,
+            cancel_requested = excluded.cancel_requested,
+            storage_wait = excluded.storage_wait
+        """,
+        summary,
+    )
+    conn.execute("DELETE FROM job_summaries_fts WHERE job_id = ?", (job_id,))
+    conn.execute(
+        "INSERT INTO job_summaries_fts(job_id, search_text) VALUES(?, ?)",
+        (job_id, job_summary_search_text(job)),
+    )
+
+
+def delete_job_summary(conn: sqlite3.Connection, job_id: str) -> None:
+    conn.execute("DELETE FROM job_summaries WHERE job_id = ?", (job_id,))
+    conn.execute("DELETE FROM job_summaries_fts WHERE job_id = ?", (job_id,))
+
+
+def backfill_missing_job_summaries() -> None:
+    with closing(state_db()) as conn:
+        conn.execute(
+            """
+            DELETE FROM job_summaries
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM states
+                WHERE states.kind = 'job'
+                  AND states.id = job_summaries.job_id
+            )
+            """
+        )
+        rows = conn.execute(
+            """
+            SELECT states.payload
+            FROM states
+            LEFT JOIN job_summaries ON job_summaries.job_id = states.id
+            WHERE states.kind = 'job'
+              AND job_summaries.job_id IS NULL
+            """
+        ).fetchall()
+        for row in rows:
+            try:
+                job = json.loads(str(row["payload"]))
+            except json.JSONDecodeError:
+                log.exception("failed to backfill corrupt job state summary")
+                continue
+            if isinstance(job, dict):
+                upsert_job_summary(conn, job)
+        completed_at = now_iso()
+        conn.execute(
+            """
+            INSERT INTO states(kind, id, payload, updated_at)
+            VALUES('control', ?, ?, ?)
+            ON CONFLICT(kind, id) DO UPDATE SET
+                payload = excluded.payload,
+                updated_at = excluded.updated_at
+            """,
+            (
+                JOB_SUMMARY_BACKFILL_CONTROL_ID,
+                json.dumps({"completed_at": completed_at}, sort_keys=True),
+                completed_at,
+            ),
+        )
+        conn.commit()
+
+
+def job_search_match_query(value: str | None) -> str | None:
+    if not value:
+        return None
+    tokens = JOB_SEARCH_TOKEN_RE.findall(value.casefold())
+    if not tokens:
+        return None
+    return " AND ".join(f"{token}*" for token in tokens[:8])
+
+
+def load_jobs_by_ids(job_ids: list[str]) -> list[dict[str, Any]]:
+    if not job_ids:
+        return []
+    placeholders = ", ".join("?" for _ in job_ids)
+    with closing(state_db()) as conn:
+        rows = conn.execute(
+            f"SELECT id, payload FROM states WHERE kind = 'job' AND id IN ({placeholders})",
+            job_ids,
+        ).fetchall()
+    by_id = {str(row["id"]): json.loads(str(row["payload"])) for row in rows}
+    return [by_id[job_id] for job_id in job_ids if isinstance(by_id.get(job_id), dict)]
+
+
+def list_job_summaries_page(
+    *,
+    page: int,
+    per_page: int,
+    sort: str,
+    order: str,
+    query: str | None,
+    terminal: str,
+    state: str | None,
+    workflow_mode: str | None,
+    riverhog_enabled: bool | None,
+    cancel_requested: bool | None,
+    storage_wait: bool | None,
+) -> dict[str, Any]:
+    bounded_page = max(1, page)
+    bounded_per_page = max(1, min(per_page, 500))
+    normalized_sort = sort.casefold()
+    if normalized_sort not in JOB_LIST_SORT_COLUMNS:
+        raise HTTPException(
+            status_code=400,
+            detail="sort must be one of: " + ", ".join(sorted(JOB_LIST_SORT_COLUMNS)),
+        )
+    normalized_order = order.casefold()
+    if normalized_order not in {"asc", "desc"}:
+        raise HTTPException(status_code=400, detail="order must be asc or desc")
+    normalized_terminal = terminal.casefold().replace("-", "_")
+    if normalized_terminal not in JOB_LIST_TERMINAL_FILTERS:
+        raise HTTPException(
+            status_code=400,
+            detail="terminal must be active, terminal, or all",
+        )
+
+    where: list[str] = []
+    params: list[Any] = []
+    if normalized_terminal == "active":
+        where.append("terminal = 0")
+    elif normalized_terminal == "terminal":
+        where.append("terminal = 1")
+    if state:
+        where.append("state = ?")
+        params.append(state.strip().casefold())
+    if workflow_mode:
+        where.append("workflow_mode = ?")
+        params.append(workflow_mode.strip().casefold().replace("-", "_"))
+    if riverhog_enabled is not None:
+        where.append("riverhog_enabled = ?")
+        params.append(bool_int(riverhog_enabled))
+    if cancel_requested is not None:
+        where.append("cancel_requested = ?")
+        params.append(bool_int(cancel_requested))
+    if storage_wait is not None:
+        where.append("storage_wait = ?")
+        params.append(bool_int(storage_wait))
+    search_query = job_search_match_query(query)
+    if search_query:
+        where.append(
+            "job_id IN (SELECT job_id FROM job_summaries_fts WHERE job_summaries_fts MATCH ?)"
+        )
+        params.append(search_query)
+
+    where_sql = " WHERE " + " AND ".join(where) if where else ""
+    sort_column = JOB_LIST_SORT_COLUMNS[normalized_sort]
+    direction = normalized_order.upper()
+    if sort_column == "job_id":
+        order_sql = f"job_id {direction}"
+    else:
+        order_sql = (
+            f"CASE WHEN {sort_column} = '' THEN 1 ELSE 0 END ASC, "
+            f"{sort_column} {direction}, job_id ASC"
+        )
+    offset = (bounded_page - 1) * bounded_per_page
+    with closing(state_db()) as conn:
+        total = int(
+            conn.execute(
+                f"SELECT COUNT(*) AS total FROM job_summaries{where_sql}",
+                params,
+            ).fetchone()["total"]
+        )
+        rows = conn.execute(
+            f"""
+            SELECT job_id
+            FROM job_summaries
+            {where_sql}
+            ORDER BY {order_sql}
+            LIMIT ? OFFSET ?
+            """,
+            [*params, bounded_per_page, offset],
+        ).fetchall()
+    job_ids = [str(row["job_id"]) for row in rows]
+    jobs = [compact_job_response(job, include_queue=False) for job in load_jobs_by_ids(job_ids)]
+    return {
+        "page": bounded_page,
+        "pages": (total + bounded_per_page - 1) // bounded_per_page if total else 0,
+        "per_page": bounded_per_page,
+        "total": total,
+        "sort": normalized_sort,
+        "order": normalized_order,
+        "query": query,
+        "terminal": normalized_terminal,
+        "filters": {
+            "state": state,
+            "workflow_mode": workflow_mode,
+            "riverhog_enabled": riverhog_enabled,
+            "cancel_requested": cancel_requested,
+            "storage_wait": storage_wait,
+        },
+        "jobs": jobs,
+    }
+
+
 def delete_state(kind: str, item_id: str) -> None:
     with closing(state_db()) as conn:
         conn.execute("DELETE FROM states WHERE kind = ? AND id = ?", (kind, item_id))
+        if kind == "job":
+            delete_job_summary(conn, item_id)
         conn.commit()
 
 
@@ -5686,9 +6052,9 @@ def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | No
     }
 
 
-def job_response(job: dict[str, Any]) -> dict[str, Any]:
+def job_response(job: dict[str, Any], *, include_queue: bool = True) -> dict[str, Any]:
     response = dict(job)
-    if queue := queue_info_for_job(str(job.get("job_id") or "")):
+    if include_queue and (queue := queue_info_for_job(str(job.get("job_id") or ""))):
         response["queue"] = queue
     if progress := upload_progress_for_job(job):
         response["upload_progress"] = progress
@@ -5699,8 +6065,8 @@ def job_response(job: dict[str, Any]) -> dict[str, Any]:
     return response
 
 
-def compact_job_response(job: dict[str, Any]) -> dict[str, Any]:
-    response = job_response(job)
+def compact_job_response(job: dict[str, Any], *, include_queue: bool = True) -> dict[str, Any]:
+    response = job_response(job, include_queue=include_queue)
     keys = [
         "job_id",
         "state",
@@ -6853,24 +7219,33 @@ def create_job(req: CreateJobRequest, background_tasks: BackgroundTasks) -> dict
 
 
 @app.get("/v1/jobs")
-def list_jobs(include_terminal: bool = False, limit: int = 50) -> dict[str, Any]:
-    bounded_limit = max(1, min(limit, 500))
-    jobs = [
-        compact_job_response(job)
-        for job in job_states()
-        if include_terminal or job.get("state") not in TERMINAL_JOB_STATES
-    ]
-    jobs.sort(
-        key=lambda job: str(job.get("updated_at") or job.get("created_at") or ""),
-        reverse=True,
+def list_jobs(
+    page: int = 1,
+    per_page: int = 25,
+    sort: str = "updated_at",
+    order: str = "desc",
+    q: str | None = None,
+    query: str | None = None,
+    terminal: str = "active",
+    state: str | None = None,
+    workflow_mode: str | None = None,
+    riverhog_enabled: bool | None = None,
+    cancel_requested: bool | None = None,
+    storage_wait: bool | None = None,
+) -> dict[str, Any]:
+    return list_job_summaries_page(
+        page=page,
+        per_page=per_page,
+        sort=sort,
+        order=order,
+        query=q if q is not None else query,
+        terminal=terminal,
+        state=state,
+        workflow_mode=workflow_mode,
+        riverhog_enabled=riverhog_enabled,
+        cancel_requested=cancel_requested,
+        storage_wait=storage_wait,
     )
-    return {
-        "jobs": jobs[:bounded_limit],
-        "count": min(len(jobs), bounded_limit),
-        "total_matching": len(jobs),
-        "include_terminal": include_terminal,
-        "limit": bounded_limit,
-    }
 
 
 @app.get("/v1/jobs/{job_id}")

@@ -4057,13 +4057,174 @@ def test_list_jobs_returns_recent_compact_jobs(
     )
 
     active = runner.list_jobs()
-    all_jobs = runner.list_jobs(include_terminal=True)
+    all_jobs = runner.list_jobs(terminal="all")
 
     assert [job["job_id"] for job in active["jobs"]] == ["active"]
-    assert active["count"] == 1
-    assert active["total_matching"] == 1
+    assert active["page"] == 1
+    assert active["per_page"] == 25
+    assert active["total"] == 1
+    assert active["pages"] == 1
     assert [job["job_id"] for job in all_jobs["jobs"]] == ["active", "done"]
+    assert all_jobs["total"] == 2
     assert "eager_archive" not in all_jobs["jobs"][1]
+
+
+def test_list_jobs_pages_filters_and_searches_indexed_summaries(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "running",
+            "phase": "encoding",
+            "collection_slug": "front-camera",
+            "input_upload_id": "upload-1",
+            "workflow_mode": "archive",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-03T00:00:00Z",
+            "riverhog": {"enabled": True},
+        }
+    )
+    runner.save_job(
+        {
+            "job_id": "job-2",
+            "state": "queued",
+            "phase": "queued",
+            "collection_slug": "back-camera",
+            "input_upload_id": "upload-2",
+            "workflow_mode": "review_only",
+            "created_at": "2026-01-02T00:00:00Z",
+            "updated_at": "2026-01-02T00:00:00Z",
+            "riverhog": {"enabled": False},
+        }
+    )
+    runner.save_job(
+        {
+            "job_id": "job-3",
+            "state": "succeeded",
+            "phase": "done",
+            "collection_slug": "front-camera",
+            "input_upload_id": "upload-3",
+            "workflow_mode": "archive",
+            "created_at": "2026-01-03T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "riverhog": {"enabled": True},
+        }
+    )
+
+    page = runner.list_jobs(
+        terminal="all",
+        q="front",
+        workflow_mode="archive",
+        riverhog_enabled=True,
+        sort="created_at",
+        order="asc",
+        page=1,
+        per_page=1,
+    )
+
+    assert page["total"] == 2
+    assert page["pages"] == 2
+    assert page["query"] == "front"
+    assert page["filters"]["workflow_mode"] == "archive"
+    assert page["filters"]["riverhog_enabled"] is True
+    assert [job["job_id"] for job in page["jobs"]] == ["job-1"]
+
+    second_page = runner.list_jobs(
+        terminal="all",
+        q="front",
+        workflow_mode="archive",
+        riverhog_enabled=True,
+        sort="created_at",
+        order="asc",
+        page=2,
+        per_page=1,
+    )
+
+    assert [job["job_id"] for job in second_page["jobs"]] == ["job-3"]
+
+
+def test_list_jobs_does_not_scan_all_job_states_for_current_page(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    runner.save_job(
+        {
+            "job_id": "queued",
+            "state": "queued",
+            "phase": "queued",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+    )
+
+    def fail_job_states() -> list[dict[str, object]]:
+        raise AssertionError("job list must not materialize every job state")
+
+    monkeypatch.setattr(runner, "job_states", fail_job_states)
+
+    page = runner.list_jobs(terminal="all")
+
+    assert [job["job_id"] for job in page["jobs"]] == ["queued"]
+    assert "queue" not in page["jobs"][0]
+
+
+def test_init_state_store_backfills_missing_job_summaries(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    legacy_job = {
+        "job_id": "legacy",
+        "state": "running",
+        "phase": "encoding",
+        "collection_slug": "legacy-camera",
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+    }
+    with runner.state_db() as conn:
+        conn.execute(
+            "DELETE FROM states WHERE kind = 'control' AND id = ?",
+            (runner.JOB_SUMMARY_BACKFILL_CONTROL_ID,),
+        )
+        conn.execute(
+            """
+            INSERT INTO states(kind, id, payload, updated_at)
+            VALUES('job', 'legacy', ?, '2026-01-01T00:00:00Z')
+            """,
+            (json.dumps(legacy_job),),
+        )
+        conn.commit()
+
+    runner.init_state_store()
+    page = runner.list_jobs(terminal="all", q="legacy")
+
+    assert [job["job_id"] for job in page["jobs"]] == ["legacy"]
+
+
+def test_init_state_store_skips_job_summary_backfill_after_marker(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+
+    def fail_backfill() -> None:
+        raise AssertionError("job summary backfill should be one-time")
+
+    monkeypatch.setattr(runner, "backfill_missing_job_summaries", fail_backfill)
+
+    runner.init_state_store()
 
 
 def test_acquire_job_gpu_reuses_persisted_lease_token(

@@ -43,10 +43,16 @@ Inspect active work with the Munchy CLI:
 
 ```bash
 munchy job list --runner-url http://127.0.0.1:8092
+munchy job list --runner-url http://127.0.0.1:8092 --terminal all --query camera
 munchy job show <job-id> --runner-url http://127.0.0.1:8092
 munchy job watch <job-id> --runner-url http://127.0.0.1:8092
 munchy job cancel <job-id> --runner-url http://127.0.0.1:8092 --cleanup
 ```
+
+`munchy job list` is paged and indexed by the runner: use `--page`,
+`--per-page`, `--sort`, `--order`, `--query`, and filters such as
+`--terminal`, `--state`, `--workflow`, `--riverhog`, `--cancel-requested`,
+or `--storage-wait`.
 
 Start a standalone job with either a direct profile group:
 

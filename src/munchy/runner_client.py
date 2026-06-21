@@ -1817,18 +1817,47 @@ class MunchyRunnerClient:
             path += "?compact=true"
         return self.json("GET", path)
 
-    def list_jobs(self, *, include_terminal: bool = False, limit: int = 50) -> list[dict[str, Any]]:
-        params = urllib.parse.urlencode(
-            {
-                "include_terminal": "true" if include_terminal else "false",
-                "limit": str(limit),
-            }
-        )
-        payload = self.json("GET", f"/v1/jobs?{params}")
+    def list_jobs(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        sort: str = "updated_at",
+        order: str = "desc",
+        query: str | None = None,
+        terminal: str = "active",
+        state: str | None = None,
+        workflow_mode: str | None = None,
+        riverhog_enabled: bool | None = None,
+        cancel_requested: bool | None = None,
+        storage_wait: bool | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, str] = {
+            "page": str(page),
+            "per_page": str(per_page),
+            "sort": sort,
+            "order": order,
+            "terminal": terminal,
+        }
+        if query:
+            params["q"] = query
+        if state:
+            params["state"] = state
+        if workflow_mode:
+            params["workflow_mode"] = workflow_mode
+        if riverhog_enabled is not None:
+            params["riverhog_enabled"] = "true" if riverhog_enabled else "false"
+        if cancel_requested is not None:
+            params["cancel_requested"] = "true" if cancel_requested else "false"
+        if storage_wait is not None:
+            params["storage_wait"] = "true" if storage_wait else "false"
+        encoded_params = urllib.parse.urlencode(params)
+        payload = self.json("GET", f"/v1/jobs?{encoded_params}")
         jobs = payload.get("jobs")
         if not isinstance(jobs, list):
-            raise RuntimeError(f"runner returned invalid jobs list: {payload}")
-        return [job for job in jobs if isinstance(job, dict)]
+            raise RuntimeError(f"runner returned invalid jobs page: {payload}")
+        payload["jobs"] = [job for job in jobs if isinstance(job, dict)]
+        return payload
 
     def cancel_job(self, job_id: str, *, cleanup: bool = False) -> dict[str, Any]:
         path = f"/v1/jobs/{urllib.parse.quote(job_id)}/cancel"

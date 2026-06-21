@@ -140,19 +140,87 @@ def test_munchy_job_list(monkeypatch) -> None:  # type: ignore[no-untyped-def]
         def __init__(self, base_url: str) -> None:
             assert base_url == "http://runner"
 
-        def list_jobs(self, *, include_terminal: bool, limit: int) -> list[dict[str, object]]:
-            assert include_terminal is True
-            assert limit == 2
-            return [{"job_id": "job-1", "state": "running"}]
+        def list_jobs(
+            self,
+            *,
+            page: int,
+            per_page: int,
+            sort: str,
+            order: str,
+            query: str | None,
+            terminal: str,
+            state: str | None,
+            workflow_mode: str | None,
+            riverhog_enabled: bool | None,
+            cancel_requested: bool | None,
+            storage_wait: bool | None,
+        ) -> dict[str, object]:
+            assert page == 2
+            assert per_page == 2
+            assert sort == "created_at"
+            assert order == "asc"
+            assert query == "camera"
+            assert terminal == "all"
+            assert state == "running"
+            assert workflow_mode == "archive"
+            assert riverhog_enabled is True
+            assert cancel_requested is False
+            assert storage_wait is True
+            return {
+                "page": 2,
+                "pages": 3,
+                "per_page": 2,
+                "total": 5,
+                "sort": sort,
+                "order": order,
+                "query": query,
+                "terminal": terminal,
+                "filters": {
+                    "state": state,
+                    "workflow_mode": workflow_mode,
+                    "riverhog_enabled": riverhog_enabled,
+                    "cancel_requested": cancel_requested,
+                    "storage_wait": storage_wait,
+                },
+                "jobs": [{"job_id": "job-1", "state": "running"}],
+            }
 
     monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
 
     result = runner.invoke(
         app,
-        ["job", "list", "--runner-url", "http://runner", "--all", "--limit", "2"],
+        [
+            "job",
+            "list",
+            "--runner-url",
+            "http://runner",
+            "--page",
+            "2",
+            "--per-page",
+            "2",
+            "--sort",
+            "created_at",
+            "--order",
+            "asc",
+            "--query",
+            "camera",
+            "--terminal",
+            "all",
+            "--state",
+            "running",
+            "--workflow",
+            "archive",
+            "--riverhog",
+            "true",
+            "--cancel-requested",
+            "false",
+            "--storage-wait",
+            "true",
+        ],
     )
 
     assert result.exit_code == 0
+    assert "jobs page 2/3" in result.stdout
     assert "job-1" in result.stdout
     assert "job: running" in result.stdout
 
@@ -162,15 +230,37 @@ def test_munchy_job_list_json(monkeypatch) -> None:  # type: ignore[no-untyped-d
         def __init__(self, base_url: str) -> None:
             self.base_url = base_url
 
-        def list_jobs(self, *, include_terminal: bool, limit: int) -> list[dict[str, object]]:
-            return [{"job_id": "job-1"}]
+        def list_jobs(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "page": 1,
+                "pages": 1,
+                "per_page": 25,
+                "total": 1,
+                "sort": "updated_at",
+                "order": "desc",
+                "query": None,
+                "terminal": "active",
+                "filters": {},
+                "jobs": [{"job_id": "job-1"}],
+            }
 
     monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
 
     result = runner.invoke(app, ["job", "list", "--runner-url", "http://runner", "--json"])
 
     assert result.exit_code == 0
-    assert json.loads(result.stdout) == {"jobs": [{"job_id": "job-1"}]}
+    assert json.loads(result.stdout) == {
+        "filters": {},
+        "jobs": [{"job_id": "job-1"}],
+        "order": "desc",
+        "page": 1,
+        "pages": 1,
+        "per_page": 25,
+        "query": None,
+        "sort": "updated_at",
+        "terminal": "active",
+        "total": 1,
+    }
 
 
 def test_munchy_job_list_reports_runner_errors_without_traceback(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -178,7 +268,7 @@ def test_munchy_job_list_reports_runner_errors_without_traceback(monkeypatch) ->
         def __init__(self, base_url: str) -> None:
             self.base_url = base_url
 
-        def list_jobs(self, *, include_terminal: bool, limit: int) -> list[dict[str, object]]:
+        def list_jobs(self, **_kwargs: object) -> dict[str, object]:
             raise OSError("connection refused")
 
     monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)

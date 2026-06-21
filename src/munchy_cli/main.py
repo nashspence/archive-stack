@@ -223,10 +223,27 @@ def format_profiles(path: Path, profiles: Mapping[str, EncodeProfile]) -> Any:
     return RichGroup(title, table)
 
 
-def _plain_jobs(jobs: Sequence[Mapping[str, Any]], *, include_terminal: bool, limit: int) -> str:
-    lines = [
-        f"jobs shown={len(jobs)} limit={limit} terminal={str(include_terminal).lower()}",
-    ]
+def _job_page_header(payload: Mapping[str, Any]) -> str:
+    header = (
+        f"jobs page {payload.get('page', 1)}/{payload.get('pages', 0)}  "
+        f"per_page={payload.get('per_page', 25)}  "
+        f"total={payload.get('total', 0)}  "
+        f"sort={payload.get('sort', 'updated_at')}  "
+        f"order={payload.get('order', 'desc')}  "
+        f"terminal={payload.get('terminal', 'active')}"
+    )
+    if payload.get("query"):
+        header += f"  query={payload.get('query')}"
+    filters = _mapping(payload.get("filters"), label="filters")
+    active_filters = [f"{key}={value}" for key, value in filters.items() if value is not None]
+    if active_filters:
+        header += "  " + "  ".join(active_filters)
+    return header
+
+
+def _plain_jobs(payload: Mapping[str, Any]) -> str:
+    jobs = [job for job in _sequence(payload.get("jobs")) if isinstance(job, Mapping)]
+    lines = [_job_page_header(payload)]
     if not jobs:
         lines.append("- none")
         return "\n".join(lines)
@@ -235,10 +252,11 @@ def _plain_jobs(jobs: Sequence[Mapping[str, Any]], *, include_terminal: bool, li
     return "\n".join(lines)
 
 
-def format_jobs(jobs: Sequence[Mapping[str, Any]], *, include_terminal: bool, limit: int) -> Any:
+def format_jobs(payload: Mapping[str, Any]) -> Any:
     if not _rich_enabled():
-        return _plain_jobs(jobs, include_terminal=include_terminal, limit=limit)
+        return _plain_jobs(payload)
 
+    jobs = [job for job in _sequence(payload.get("jobs")) if isinstance(job, Mapping)]
     table = _quiet_table("Job", "Collection", "State", "Phase", "Progress")
     for job in jobs:
         job_id = str(job.get("job_id") or job.get("id") or "unknown")
@@ -251,10 +269,7 @@ def format_jobs(jobs: Sequence[Mapping[str, Any]], *, include_terminal: bool, li
         )
     if not table.rows:
         table.add_row("none", "", "", "", "")
-    header = RichText(
-        f"jobs shown={len(jobs)} limit={limit} terminal={str(include_terminal).lower()}",
-        style="bold",
-    )
+    header = RichText(_job_page_header(payload), style="bold")
     return RichGroup(header, table)
 
 
@@ -317,6 +332,17 @@ def _normalize_mode(value: str | None, *, default: str, allowed: set[str], label
             param_hint=label,
         )
     return mode
+
+
+def _optional_bool(value: str | None, *, label: str) -> bool | None:
+    if value is None:
+        return None
+    normalized = value.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise typer.BadParameter(f"{label} must be true or false", param_hint=label)
 
 
 def _normalize_posix(path: str | PurePosixPath) -> str:
@@ -873,22 +899,60 @@ def list_jobs(
         str | None,
         typer.Option("--runner-url", help="Munchy runner URL; defaults to MUNCHY_RUNNER_URL"),
     ] = None,
-    all_jobs: Annotated[bool, typer.Option("--all", help="Include terminal jobs")] = False,
-    limit: Annotated[int, typer.Option("--limit", min=1, max=500)] = 50,
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=500)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "updated_at",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
+    query: Annotated[
+        str | None,
+        typer.Option("--query", "-q", help="Search job id, collection, upload, state, phase"),
+    ] = None,
+    terminal: Annotated[
+        str,
+        typer.Option("--terminal", help="active, terminal, or all"),
+    ] = "active",
+    state: Annotated[str | None, typer.Option("--state", help="Filter by job state")] = None,
+    workflow_mode: Annotated[
+        str | None,
+        typer.Option("--workflow", help="Filter by workflow mode"),
+    ] = None,
+    riverhog: Annotated[
+        str | None,
+        typer.Option("--riverhog", help="Filter Riverhog-enabled jobs: true or false"),
+    ] = None,
+    cancel_requested: Annotated[
+        str | None,
+        typer.Option("--cancel-requested", help="Filter cancel-requested jobs: true or false"),
+    ] = None,
+    storage_wait: Annotated[
+        str | None,
+        typer.Option("--storage-wait", help="Filter storage-waiting jobs: true or false"),
+    ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """List runner jobs."""
 
     client = MunchyRunnerClient(runner_url_setting(runner_url))
+    riverhog_filter = _optional_bool(riverhog, label="--riverhog")
+    cancel_requested_filter = _optional_bool(cancel_requested, label="--cancel-requested")
+    storage_wait_filter = _optional_bool(storage_wait, label="--storage-wait")
     try:
-        jobs = client.list_jobs(include_terminal=all_jobs, limit=limit)
+        payload = client.list_jobs(
+            page=page,
+            per_page=per_page,
+            sort=sort,
+            order=order,
+            query=query,
+            terminal=terminal,
+            state=state,
+            workflow_mode=workflow_mode,
+            riverhog_enabled=riverhog_filter,
+            cancel_requested=cancel_requested_filter,
+            storage_wait=storage_wait_filter,
+        )
     except Exception as exc:
         _exit_runner_error(exc)
-    payload = {"jobs": jobs}
-    emit(
-        payload if json_mode else format_jobs(jobs, include_terminal=all_jobs, limit=limit),
-        json_mode=json_mode,
-    )
+    emit(payload if json_mode else format_jobs(payload), json_mode=json_mode)
 
 
 @job_app.command("show")

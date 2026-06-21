@@ -577,12 +577,38 @@ def test_runner_client_list_jobs_validates_response() -> None:
 
     def fake_json(method: str, path: str, **_kwargs: object) -> dict[str, object]:
         assert method == "GET"
-        assert path == "/v1/jobs?include_terminal=false&limit=2"
-        return {"jobs": [{"job_id": "job-1"}, "ignored"]}
+        assert path == (
+            "/v1/jobs?page=2&per_page=5&sort=created_at&order=asc&terminal=all"
+            "&q=camera&state=running&workflow_mode=archive&riverhog_enabled=true"
+            "&cancel_requested=false&storage_wait=true"
+        )
+        return {
+            "page": 2,
+            "per_page": 5,
+            "total": 1,
+            "jobs": [{"job_id": "job-1"}, "ignored"],
+        }
 
     client.json = fake_json  # type: ignore[method-assign]
 
-    assert client.list_jobs(limit=2) == [{"job_id": "job-1"}]
+    assert client.list_jobs(
+        page=2,
+        per_page=5,
+        sort="created_at",
+        order="asc",
+        query="camera",
+        terminal="all",
+        state="running",
+        workflow_mode="archive",
+        riverhog_enabled=True,
+        cancel_requested=False,
+        storage_wait=True,
+    ) == {
+        "page": 2,
+        "per_page": 5,
+        "total": 1,
+        "jobs": [{"job_id": "job-1"}],
+    }
 
 
 def test_wait_for_job_polls_compact_status() -> None:
