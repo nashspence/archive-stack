@@ -268,6 +268,36 @@ def test_completed_structured_file_routes_by_path_without_full_upload(
     )
 
 
+def test_routed_structured_file_stays_complete_after_materialized_tusd_cleanup(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    upload_id = "upload-1"
+    file_state = {
+        "path": "phone/IMG_0001.HEIC",
+        "bytes": 5,
+        "upload_id": "phone-img-0001",
+        "input_upload_id": upload_id,
+        "structured_routing": True,
+        "resolved_group": "phone-originals",
+        "resolved_group_rel": "iphone-se2/photo/rear-heic/IMG_0001.HEIC",
+    }
+    materialized = runner.shared_input_upload_root(upload_id) / (
+        "phone-originals/iphone-se2/photo/rear-heic/IMG_0001.HEIC"
+    )
+    materialized.parent.mkdir(parents=True, exist_ok=True)
+    materialized.write_bytes(b"image")
+
+    status = runner.upload_file_status(file_state)
+
+    assert status["complete"] is True
+    assert status["upload_state"] == "uploaded"
+    assert status["uploaded_bytes"] == 5
+
+
 def test_completed_structured_file_can_route_by_probe_metadata(
     tmp_path: Path,
     monkeypatch,

@@ -1827,7 +1827,21 @@ def shared_input_file_path(file_state: dict[str, Any]) -> Path | None:
     rel_path = str(file_state.get("path") or "")
     if not input_upload_id or not rel_path:
         return None
-    return shared_input_upload_root(input_upload_id) / rel_path
+    root = shared_input_upload_root(input_upload_id)
+    original_path = root / rel_path
+    group_name = upload_file_resolved_group(file_state)
+    routed_path: Path | None = None
+    if group_name:
+        resolved = file_state.get("resolved_group_rel")
+        if isinstance(resolved, str) and resolved.strip():
+            routed_path = root / group_name / Path(normalize_posix(resolved))
+        elif rel_path.startswith(f"{group_name}/"):
+            routed_path = original_path
+    if routed_path is not None and routed_path.exists():
+        return routed_path
+    if original_path.exists():
+        return original_path
+    return routed_path or original_path
 
 
 def file_matches_size(path: Path, expected_bytes: int) -> bool:
