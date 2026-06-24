@@ -496,7 +496,6 @@ class Collector:
                 "CREATE INDEX IF NOT EXISTS idx_jeb_batches_collection_state "
                 "ON batches(collection_id, state)"
             )
-            conn.execute("DROP TABLE IF EXISTS held_signatures")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS routing_preflight_failures (
