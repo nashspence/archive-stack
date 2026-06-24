@@ -29,6 +29,8 @@ from munchy.preflight import (
 )
 from munchy.profile_routing import (
     profile_routes,
+    routing_exiftool_summary,
+    routing_file_facts,
     routing_probe_summary,
 )
 from munchy.runner_client import (
@@ -671,9 +673,10 @@ class Collector:
                 source_files = self.eligible_files(source, before=before)
                 if not source_files:
                     continue
-                if not self.preflight_source_routes(collection, source, source_files):
+                routed_files = self.preflight_source_routes(collection, source, source_files)
+                if routed_files is None:
                     continue
-                files.extend(source_files)
+                files.extend(routed_files)
         if not files:
             return None
         target_paths = [item.target_path for item in files]
@@ -836,9 +839,9 @@ class Collector:
         collection: CollectionConfig,
         source: SourceConfig,
         files: Sequence[EligibleFile],
-    ) -> bool:
+    ) -> list[EligibleFile] | None:
         if not files:
-            return True
+            return []
         target = self.target_by_name(collection.target)
         groups = munchy_groups_payload(self.config)
         profile_routing = mapping(self.config.munchy_job_defaults.get("profile_routing"))
@@ -857,7 +860,7 @@ class Collector:
                     source.id,
                     exc,
                 )
-                return False
+                return None
             self.record_munchy_preflight_failure(
                 collection=collection,
                 source=source,
@@ -865,10 +868,15 @@ class Collector:
                 error=exc,
             )
             self.notify_routing_preflight_failures(source_id=source.id)
-            return False
+            return None
         if result.get("ok"):
             self.clear_routing_preflight_failure(source.id)
-            return True
+            left_paths = {
+                str(item.get("path") or "")
+                for item in sequence(result.get("left"))
+                if isinstance(item, Mapping)
+            }
+            return [item for item in files if item.target_path not in left_paths]
         self.record_routing_preflight_failure(
             collection=collection,
             source=source,
@@ -876,7 +884,7 @@ class Collector:
             result=result,
         )
         self.notify_routing_preflight_failures(source_id=source.id)
-        return False
+        return None
 
     def routing_preflight_file(self, item: EligibleFile) -> RunnerProfileRoutingPreflightFile:
         try:
@@ -885,11 +893,23 @@ class Collector:
         except RoutingProbeError as exc:
             probe_summary = None
             probe_error = str(exc)[:1000]
+        try:
+            exiftool_summary = routing_exiftool_summary(exiftool_for_routing_preflight(item.path))
+            facts_error = None
+        except RoutingFactsError as exc:
+            exiftool_summary = None
+            facts_error = str(exc)[:1000]
         return RunnerProfileRoutingPreflightFile(
             rel_path=item.target_path,
             bytes=item.bytes,
             probe_summary=probe_summary,
             probe_error=probe_error,
+            routing_facts=routing_file_facts(
+                item.target_path,
+                probe_summary=probe_summary,
+                exiftool_summary=exiftool_summary,
+            ),
+            facts_error=facts_error,
         )
 
     def record_routing_preflight_failure(
@@ -922,7 +942,12 @@ class Collector:
                 {
                     "path": str(item.get("path") or ""),
                     "reason": str(item.get("reason") or ""),
-                    "error": str(item.get("error") or item.get("probe_error") or "")[:240],
+                    "error": str(
+                        item.get("error")
+                        or item.get("facts_error")
+                        or item.get("probe_error")
+                        or ""
+                    )[:240],
                 }
                 for item in unmatched
             ],
@@ -1907,6 +1932,10 @@ class RoutingProbeError(JebError):
     """Raised when Jeb cannot inspect media metadata for Munchy routing."""
 
 
+class RoutingFactsError(JebError):
+    """Raised when Jeb cannot inspect ExifTool metadata for Munchy routing."""
+
+
 def stable_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
@@ -1943,6 +1972,62 @@ def ffprobe_for_routing_preflight(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise RoutingProbeError("ffprobe returned non-object JSON")
     return payload
+
+
+def exiftool_for_routing_preflight(path: Path) -> dict[str, Any]:
+    try:
+        proc = subprocess.run(
+            [
+                "exiftool",
+                "-j",
+                "-a",
+                "-G1",
+                "-s",
+                "-ee",
+                "-FileName",
+                "-FileTypeExtension",
+                "-MIMEType",
+                "-Make",
+                "-Model",
+                "-Software",
+                "-LensModel",
+                "-CameraIdentifier",
+                "-CameraDirection",
+                "-ImageWidth",
+                "-ImageHeight",
+                "-Orientation",
+                "-DateTimeOriginal",
+                "-CreateDate",
+                "-CreationDate",
+                "-BurstUUID",
+                "-ContentIdentifier",
+                "-StillImageTime",
+                "-CaptureMode",
+                "-FullFrameRatePlaybackIntent",
+                "-AuxiliaryImageType",
+                "-DepthMapImage",
+                "-MPImage2",
+                str(path),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+    except FileNotFoundError as exc:
+        raise RoutingFactsError("exiftool was not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RoutingFactsError("exiftool timed out") from exc
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "exiftool failed")[-1000:]
+        raise RoutingFactsError(detail.strip())
+    try:
+        payload = json.loads(proc.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise RoutingFactsError("exiftool returned invalid JSON") from exc
+    if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
+        raise RoutingFactsError("exiftool returned no metadata object")
+    return cast(dict[str, Any], payload[0])
 
 
 def load_config(path: Path) -> JebConfig:

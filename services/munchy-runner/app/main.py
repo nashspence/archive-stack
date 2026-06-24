@@ -18,11 +18,12 @@ import subprocess
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager, closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpx
@@ -33,8 +34,16 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from munchy.filesystem_metadata import write_filesystem_metadata_map
 from munchy.profile_routing import (
+    PATH_PREDICATE_KEYS,
+    PREDICATE_KEYS,
+    ProfileRoutingFile,
     match_profile_route,
+    profile_routing_plan,
+    profile_routing_requires_exiftool,
+    profile_routing_requires_probe,
     route_requires_probe,
+    routing_exiftool_summary,
+    routing_file_facts,
     routing_probe_summary,
 )
 from munchy.profiles import (
@@ -635,143 +644,80 @@ class InputUploadStorageHint(BaseModel):
         return self
 
 
+def validate_routing_predicate(value: Mapping[str, Any], *, label: str) -> None:
+    unknown = sorted(set(value) - PREDICATE_KEYS)
+    if unknown:
+        raise ValueError(f"{label} has unknown key(s): {', '.join(unknown)}")
+    path_predicate = value.get("path")
+    if isinstance(path_predicate, Mapping):
+        path_unknown = sorted(set(path_predicate) - PATH_PREDICATE_KEYS)
+        if path_unknown:
+            raise ValueError(f"{label}.path has unknown key(s): {', '.join(path_unknown)}")
+    for key in ("all", "any"):
+        items = value.get(key)
+        if items is None:
+            continue
+        if not isinstance(items, list):
+            raise ValueError(f"{label}.{key} must be a list")
+        for index, item in enumerate(items):
+            if not isinstance(item, Mapping):
+                raise ValueError(f"{label}.{key}[{index}] must be a predicate")
+            validate_routing_predicate(item, label=f"{label}.{key}[{index}]")
+    not_item = value.get("not")
+    if not_item is not None:
+        if not isinstance(not_item, Mapping):
+            raise ValueError(f"{label}.not must be a predicate")
+        validate_routing_predicate(not_item, label=f"{label}.not")
+
+
 class ProfileRoute(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(min_length=1, max_length=120)
-    group: str = Field(min_length=1, max_length=120)
-    path_prefix: str | None = Field(default=None, min_length=1, max_length=2048)
-    path_glob: str | None = Field(default=None, min_length=1, max_length=2048)
-    filename_glob: str | None = Field(default=None, min_length=1, max_length=512)
-    suffixes: list[str] = Field(default_factory=list)
-    format_names: list[str] = Field(default_factory=list)
-    format_name_contains: list[str] = Field(default_factory=list)
-    codec_names: list[str] = Field(default_factory=list)
-    video_codec_names: list[str] = Field(default_factory=list)
-    audio_codec_names: list[str] = Field(default_factory=list)
-    video_profiles: list[str] = Field(default_factory=list)
-    pix_fmts: list[str] = Field(default_factory=list)
-    color_ranges: list[str] = Field(default_factory=list)
-    color_spaces: list[str] = Field(default_factory=list)
-    color_transfers: list[str] = Field(default_factory=list)
-    color_primaries: list[str] = Field(default_factory=list)
-    has_video: bool | None = None
-    has_audio: bool | None = None
-    video_stream_count: int | None = Field(default=None, ge=0)
-    audio_stream_count: int | None = Field(default=None, ge=0)
-    min_video_stream_count: int | None = Field(default=None, ge=0)
-    max_video_stream_count: int | None = Field(default=None, ge=0)
-    min_audio_stream_count: int | None = Field(default=None, ge=0)
-    max_audio_stream_count: int | None = Field(default=None, ge=0)
-    width: int | None = Field(default=None, ge=1)
-    height: int | None = Field(default=None, ge=1)
-    min_width: int | None = Field(default=None, ge=1)
-    max_width: int | None = Field(default=None, ge=1)
-    min_height: int | None = Field(default=None, ge=1)
-    max_height: int | None = Field(default=None, ge=1)
-    duration: float | None = Field(default=None, gt=0)
-    min_duration: float | None = Field(default=None, gt=0)
-    max_duration: float | None = Field(default=None, gt=0)
-    bit_rate: int | None = Field(default=None, ge=1)
-    min_bit_rate: int | None = Field(default=None, ge=1)
-    max_bit_rate: int | None = Field(default=None, ge=1)
-    fps: float | None = Field(default=None, gt=0)
-    min_fps: float | None = Field(default=None, gt=0)
-    max_fps: float | None = Field(default=None, gt=0)
-    audio_sample_rate: int | None = Field(default=None, ge=1)
-    min_audio_sample_rate: int | None = Field(default=None, ge=1)
-    max_audio_sample_rate: int | None = Field(default=None, ge=1)
-    audio_channels: int | None = Field(default=None, ge=1)
-    min_audio_channels: int | None = Field(default=None, ge=1)
-    max_audio_channels: int | None = Field(default=None, ge=1)
-    format_tags: dict[str, str] = Field(default_factory=dict)
-    stream_tags: dict[str, str] = Field(default_factory=dict)
-    video_tags: dict[str, str] = Field(default_factory=dict)
-    audio_tags: dict[str, str] = Field(default_factory=dict)
+    action: Literal["upload", "leave"] = "upload"
+    group: str | None = Field(default=None, min_length=1, max_length=120)
+    into: str | None = Field(default=None, min_length=1, max_length=512)
+    when: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("group")
     @classmethod
-    def validate_group(cls, value: str) -> str:
+    def validate_group(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         return validate_profile_group_name(value)
 
-    @field_validator("path_prefix")
+    @field_validator("into")
     @classmethod
-    def normalize_path_prefix(cls, value: str | None) -> str | None:
+    def normalize_output_dir(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        return normalize_posix(value.rstrip("/"))
-
-    @field_validator("path_glob", "filename_glob")
-    @classmethod
-    def normalize_glob(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        text = value.strip().lstrip("/")
+        text = normalize_posix(value.strip().rstrip("/"))
         if not text or any(part in {"", ".", ".."} for part in text.split("/")):
-            raise ValueError("glob must be normalized and relative")
+            raise ValueError("output directory must be normalized and relative")
         return text
 
-    @field_validator("suffixes")
+    @field_validator("when")
     @classmethod
-    def normalize_suffixes(cls, value: list[str]) -> list[str]:
-        suffixes: list[str] = []
-        for item in value:
-            suffix = str(item).strip().lower()
-            if not suffix:
-                continue
-            if not suffix.startswith("."):
-                suffix = f".{suffix}"
-            if suffix not in suffixes:
-                suffixes.append(suffix)
-        return suffixes
-
-    @field_validator(
-        "format_names",
-        "format_name_contains",
-        "codec_names",
-        "video_codec_names",
-        "audio_codec_names",
-        "video_profiles",
-        "pix_fmts",
-        "color_ranges",
-        "color_spaces",
-        "color_transfers",
-        "color_primaries",
-    )
-    @classmethod
-    def normalize_string_list(cls, value: list[str]) -> list[str]:
-        return list(dict.fromkeys(str(item).strip().lower() for item in value if str(item).strip()))
-
-    @field_validator("format_tags", "stream_tags", "video_tags", "audio_tags")
-    @classmethod
-    def normalize_tag_matches(cls, value: dict[str, str]) -> dict[str, str]:
-        return {
-            str(key).strip().lower(): str(match).strip().lower()
-            for key, match in value.items()
-            if str(key).strip() and str(match).strip()
-        }
+    def validate_when(cls, value: dict[str, Any]) -> dict[str, Any]:
+        validate_routing_predicate(value, label="route.when")
+        return value
 
     @model_validator(mode="after")
-    def validate_ranges(self) -> ProfileRoute:
-        for low, high, label in (
-            (self.min_video_stream_count, self.max_video_stream_count, "video stream count"),
-            (self.min_audio_stream_count, self.max_audio_stream_count, "audio stream count"),
-            (self.min_width, self.max_width, "width"),
-            (self.min_height, self.max_height, "height"),
-            (self.min_duration, self.max_duration, "duration"),
-            (self.min_bit_rate, self.max_bit_rate, "bit rate"),
-            (self.min_fps, self.max_fps, "fps"),
-            (self.min_audio_sample_rate, self.max_audio_sample_rate, "audio sample rate"),
-            (self.min_audio_channels, self.max_audio_channels, "audio channels"),
-        ):
-            if low is not None and high is not None and low > high:
-                raise ValueError(f"route {label} range has min greater than max")
+    def validate_route_semantics(self) -> ProfileRoute:
+        if self.action == "upload" and not self.group:
+            raise ValueError("upload routes require group")
+        if self.action == "leave" and self.group:
+            raise ValueError("leave routes must not set group")
+        if self.action == "leave" and self.into:
+            raise ValueError("leave routes must not set into")
         return self
 
 
 class ProfileRoutingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    gates: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    pairings: list[dict[str, Any]] = Field(default_factory=list)
     routes: list[ProfileRoute] = Field(default_factory=list)
 
     @field_validator("routes")
@@ -784,6 +730,30 @@ class ProfileRoutingConfig(BaseModel):
             raise ValueError("profile_routing route ids must be unique")
         return value
 
+    @model_validator(mode="after")
+    def validate_predicates(self) -> ProfileRoutingConfig:
+        for name, gate in self.gates.items():
+            validate_routing_predicate(gate, label=f"profile_routing.gates.{name}")
+        allowed_pairing_keys = {"id", "key", "prefer_same_stem", "still", "movie"}
+        for index, pairing in enumerate(self.pairings):
+            unknown = sorted(set(pairing) - allowed_pairing_keys)
+            if unknown:
+                raise ValueError(
+                    f"profile_routing.pairings[{index}] has unknown key(s): "
+                    + ", ".join(unknown)
+                )
+            if not str(pairing.get("id") or "").strip():
+                raise ValueError(f"profile_routing.pairings[{index}].id is required")
+            for key in ("still", "movie"):
+                predicate = pairing.get(key)
+                if not isinstance(predicate, Mapping):
+                    raise ValueError(f"profile_routing.pairings[{index}].{key} must be a predicate")
+                validate_routing_predicate(
+                    predicate,
+                    label=f"profile_routing.pairings[{index}].{key}",
+                )
+        return self
+
 
 class ProfileRoutingPreflightFile(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -793,6 +763,8 @@ class ProfileRoutingPreflightFile(BaseModel):
     sha256: str | None = Field(default=None, min_length=64, max_length=64)
     probe_summary: dict[str, Any] | None = None
     probe_error: str | None = Field(default=None, max_length=1000)
+    routing_facts: dict[str, Any] | None = None
+    facts_error: str | None = Field(default=None, max_length=1000)
 
     @field_validator("path")
     @classmethod
@@ -833,7 +805,11 @@ class ProfileRoutingPreflightRequest(BaseModel):
     @model_validator(mode="after")
     def validate_route_groups(self) -> ProfileRoutingPreflightRequest:
         group_names = set(self.groups)
-        route_groups = {route.group for route in self.profile_routing.routes}
+        route_groups = {
+            str(route.group)
+            for route in self.profile_routing.routes
+            if route.action == "upload" and route.group
+        }
         missing = sorted(route_groups - group_names)
         if missing:
             raise ValueError("profile_routing references unknown group(s): " + ", ".join(missing))
@@ -904,7 +880,11 @@ class CreateJobRequest(BaseModel):
             if not self.groups:
                 raise ValueError("profile_routing requires explicit groups")
             group_names = set(self.groups)
-            route_groups = {route.group for route in self.profile_routing.routes}
+            route_groups = {
+                route.group
+                for route in self.profile_routing.routes
+                if route.action == "upload" and route.group
+            }
             missing = sorted(route_groups - group_names)
             if missing:
                 raise ValueError(
@@ -3094,6 +3074,57 @@ def ffprobe_for_routing(path: Path) -> dict[str, Any]:
     return payload
 
 
+def exiftool_for_routing(path: Path) -> dict[str, Any]:
+    proc = subprocess.run(
+        [
+            "exiftool",
+            "-j",
+            "-a",
+            "-G1",
+            "-s",
+            "-ee",
+            "-FileName",
+            "-FileTypeExtension",
+            "-MIMEType",
+            "-Make",
+            "-Model",
+            "-Software",
+            "-LensModel",
+            "-CameraIdentifier",
+            "-CameraDirection",
+            "-ImageWidth",
+            "-ImageHeight",
+            "-Orientation",
+            "-DateTimeOriginal",
+            "-CreateDate",
+            "-CreationDate",
+            "-BurstUUID",
+            "-ContentIdentifier",
+            "-StillImageTime",
+            "-CaptureMode",
+            "-FullFrameRatePlaybackIntent",
+            "-AuxiliaryImageType",
+            "-DepthMapImage",
+            "-MPImage2",
+            str(path),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "exiftool failed")[-1000:]
+        raise RoutingFailed(f"exiftool failed for {path.name}: {detail}")
+    try:
+        payload = json.loads(proc.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise RoutingFailed(f"exiftool returned invalid JSON for {path.name}") from exc
+    if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
+        raise RoutingFailed(f"exiftool returned no metadata object for {path.name}")
+    return cast(dict[str, Any], payload[0])
+
+
 def upload_file_data_path(file_state: dict[str, Any]) -> Path:
     tusd_source = tusd_data_path(str(file_state["upload_id"]))
     if tusd_source.exists():
@@ -3104,42 +3135,106 @@ def upload_file_data_path(file_state: dict[str, Any]) -> Path:
     raise RoutingFailed(f"input file data is missing for routing: {file_state.get('path')}")
 
 
+def profile_routing_needs_exiftool(routing: Mapping[str, Any]) -> bool:
+    return profile_routing_requires_exiftool(routing)
+
+
+def profile_routing_needs_probe(routing: Mapping[str, Any]) -> bool:
+    return profile_routing_requires_probe(routing)
+
+
+def runner_profile_routing_file(
+    routing: Mapping[str, Any],
+    file_state: dict[str, Any],
+) -> ProfileRoutingFile:
+    rel_path = str(file_state["path"])
+    path = upload_file_data_path(file_state)
+    probe_summary = (
+        routing_probe_summary(ffprobe_for_routing(path))
+        if profile_routing_needs_probe(routing)
+        else None
+    )
+    exiftool_summary = (
+        routing_exiftool_summary(exiftool_for_routing(path))
+        if profile_routing_needs_exiftool(routing)
+        else None
+    )
+    return ProfileRoutingFile(
+        path=rel_path,
+        bytes=int(file_state.get("bytes") or 0),
+        sha256=str(file_state.get("sha256") or "") or None,
+        probe_summary=probe_summary,
+        routing_facts=routing_file_facts(
+            rel_path,
+            probe_summary=probe_summary,
+            exiftool_summary=exiftool_summary,
+        ),
+    )
+
+
+def apply_profile_routing_decision(
+    file_state: dict[str, Any],
+    decision: Mapping[str, Any],
+) -> bool:
+    if file_state.get("profile_routed_at"):
+        return False
+    action = str(decision.get("action") or "upload")
+    file_state["profile_route_id"] = str(decision.get("route_id") or "")
+    file_state["profile_route_action"] = action
+    if decision.get("pair_kind"):
+        file_state["profile_pair_kind"] = str(decision["pair_kind"])
+    if decision.get("pairing_id"):
+        file_state["profile_pairing_id"] = str(decision["pairing_id"])
+    if action == "leave":
+        file_state["profile_routed_at"] = now_iso()
+        return True
+    group = validate_profile_group_name(str(decision.get("group") or ""))
+    file_state["resolved_group"] = group
+    file_state["resolved_group_rel"] = str(
+        decision.get("collection_rel_path") or file_state["path"]
+    )
+    file_state["profile_routed_at"] = now_iso()
+    return True
+
+
 def route_completed_file(
     job: dict[str, Any],
     file_state: dict[str, Any],
     groups: dict[str, dict[str, Any]],
 ) -> bool:
-    if file_state.get("resolved_group"):
+    if file_state.get("resolved_group") or file_state.get("profile_route_action") == "leave":
         return False
     routing = job.get("profile_routing")
     if not isinstance(routing, dict):
         return False
     rel_path = str(file_state["path"])
-    probe_summary: dict[str, Any] | None = None
-
-    def load_probe_summary() -> dict[str, Any]:
-        nonlocal probe_summary
-        if probe_summary is None:
-            probe_summary = routing_probe_summary(
-                ffprobe_for_routing(upload_file_data_path(file_state))
-            )
-        return probe_summary
 
     match = match_profile_route(
         routing,
         rel_path,
-        probe_summary_loader=load_probe_summary,
+        routing_facts=runner_profile_routing_file(routing, file_state).routing_facts,
     )
     if match is None:
         raise RoutingFailed(f"profile routing failed for {rel_path}: no matching route")
+    if match.action == "leave":
+        return apply_profile_routing_decision(
+            file_state,
+            {"route_id": match.route_id, "action": "leave"},
+        )
     group = validate_profile_group_name(match.group)
     if group not in groups:
         raise RoutingFailed(f"profile routing failed for {rel_path}: unknown group {group}")
-    file_state["resolved_group"] = group
-    file_state["resolved_group_rel"] = rel_path
-    file_state["profile_route_id"] = match.route_id
-    file_state["profile_routed_at"] = now_iso()
-    return True
+    return apply_profile_routing_decision(
+        file_state,
+        {
+            "route_id": match.route_id,
+            "action": match.action,
+            "group": group,
+            "collection_rel_path": match.collection_rel_path or rel_path,
+            "pair_kind": match.pair_kind,
+            "pairing_id": match.pairing_id,
+        },
+    )
 
 
 def route_completed_input_files(
@@ -3150,21 +3245,52 @@ def route_completed_input_files(
     if not isinstance(job.get("profile_routing"), dict):
         return upload
     changed = False
-    for file_state in upload.get("files", []):
-        if file_state.get("resolved_group"):
-            continue
-        status = upload_file_status(file_state)
-        if not status["complete"]:
-            continue
-        changed = route_completed_file(job, file_state, groups) or changed
+    pending_files = [
+        file_state
+        for file_state in upload.get("files", [])
+        if not file_state.get("resolved_group")
+        and file_state.get("profile_route_action") != "leave"
+    ]
+    if not pending_files:
+        return upload
+    routing = cast(Mapping[str, Any], job["profile_routing"])
+    complete_files = [
+        file_state for file_state in pending_files if upload_file_status(file_state)["complete"]
+    ]
+    if not complete_files:
+        return upload
+    files_to_route = pending_files if routing.get("pairings") else complete_files
+    if len(files_to_route) != len(complete_files):
+        return upload
+    plan = profile_routing_plan(
+        routing,
+        [runner_profile_routing_file(routing, file_state) for file_state in files_to_route],
+        group_names=set(groups),
+    )
+    if not plan.ok:
+        first = plan.unmatched[0] if plan.unmatched else {}
+        reason = str(first.get("reason") or "no matching route").replace("_", " ")
+        raise RoutingFailed(
+            "profile routing failed for "
+            f"{first.get('path') or 'input upload'}: {reason}"
+        )
+    decisions = {item["path"]: item for item in [*plan.matches, *plan.left]}
+    for file_state in files_to_route:
+        changed = (
+            apply_profile_routing_decision(file_state, decisions[str(file_state["path"])])
+            or changed
+        )
     if not changed:
         return upload
 
     group_counts: dict[str, int] = {}
     route_counts: dict[str, int] = {}
+    left_count = 0
     for file_state in upload.get("files", []):
         group = file_state.get("resolved_group")
         route_id = file_state.get("profile_route_id")
+        if file_state.get("profile_route_action") == "leave":
+            left_count += 1
         if isinstance(group, str) and group:
             group_counts[group] = group_counts.get(group, 0) + 1
         if isinstance(route_id, str) and route_id:
@@ -3172,6 +3298,7 @@ def route_completed_input_files(
     job["profile_routing_result"] = {
         "updated_at": now_iso(),
         "files": sum(group_counts.values()),
+        "left_files": left_count,
         "groups": group_counts,
         "routes": route_counts,
     }
@@ -6673,17 +6800,17 @@ def capabilities() -> dict[str, Any]:
             "structured_input_path_shape": "<source-or-device>/<original-relative-path>",
             "structured_routing": True,
             "routing_match_fields": [
-                "path_prefix",
-                "path_glob",
-                "filename_glob",
-                "suffixes",
-                "format_name_contains",
-                "codec_names",
-                "width",
-                "height",
-                "fps",
-                "format_tags",
-                "stream_tags",
+                "when.all",
+                "when.any",
+                "when.not",
+                "when.path",
+                "when.fact",
+                "when.gate",
+                "when.pair",
+                "pairings",
+                "gates",
+                "into",
+                "action",
             ],
             "group_name_chars": "letters, digits, dots, underscores, dashes",
             "job_groups": True,
@@ -6824,55 +6951,34 @@ def notify_preflight_failed(req: ClientPreflightFailedNotificationRequest) -> di
 @app.post("/v1/profile-routing/preflight")
 def profile_routing_preflight(req: ProfileRoutingPreflightRequest) -> dict[str, Any]:
     routing = req.profile_routing.model_dump(exclude_none=True)
-    matches: list[dict[str, Any]] = []
-    unmatched: list[dict[str, Any]] = []
+    plan = profile_routing_plan(
+        routing,
+        [
+            ProfileRoutingFile(
+                path=item.path,
+                bytes=item.bytes,
+                sha256=item.sha256,
+                probe_summary=item.probe_summary,
+                probe_error=item.probe_error,
+                routing_facts=item.routing_facts,
+                facts_error=item.facts_error,
+            )
+            for item in req.files
+        ],
+        group_names=set(req.groups),
+    )
     probe_route_ids = [
         str(route.get("id") or f"route-{index + 1}")
         for index, route in enumerate(routing.get("routes") or [])
         if isinstance(route, dict) and route_requires_probe(route)
     ]
-    for item in req.files:
-        probe_summary = item.probe_summary
-        match = match_profile_route(
-            routing,
-            item.path,
-            probe_summary_loader=(lambda summary=probe_summary: summary)
-            if probe_summary is not None
-            else None,
-        )
-        if match is None:
-            reason = "no_matching_route"
-            if item.probe_error:
-                reason = "probe_failed"
-            elif probe_summary is None and probe_route_ids:
-                reason = "probe_summary_required"
-            unmatched.append(
-                {
-                    "path": item.path,
-                    "bytes": item.bytes,
-                    "reason": reason,
-                    "probe_error": item.probe_error,
-                    "probe_sensitive_routes": probe_route_ids[:20],
-                }
-            )
-            continue
-        matches.append(
-            {
-                "path": item.path,
-                "bytes": item.bytes,
-                "route_id": match.route_id,
-                "route_index": match.index,
-                "group": match.group,
-            }
-        )
-    return {
-        "ok": not unmatched,
-        "files_total": len(req.files),
-        "matched_files": len(matches),
-        "unmatched_files": len(unmatched),
-        "matches": matches,
-        "unmatched": unmatched,
-    }
+    for unmatched in plan.unmatched:
+        if unmatched.get("reason") == "no_matching_route":
+            item = next((file for file in req.files if file.path == unmatched.get("path")), None)
+            if item is not None and item.probe_summary is None and probe_route_ids:
+                unmatched["reason"] = "probe_summary_required"
+                unmatched["probe_sensitive_routes"] = probe_route_ids[:20]
+    return plan.as_dict()
 
 
 @app.get("/v1/admin/scheduler")

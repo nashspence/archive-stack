@@ -49,13 +49,14 @@ gpu_tasks = []
 [[job.profile_routing.routes]]
 id = "example-camera-video"
 group = "video"
-suffixes = [".mp4", ".mov", ".mkv", ".webm"]
+when = { path = { suffix_in = [".mp4", ".mov", ".mkv", ".webm"] } }
 
 [[job.profile_routing.routes]]
 id = "passthrough-artifacts"
 group = "passthrough"
-suffixes = [".xml", ".json", ".txt", ".srt", ".vtt", ".nfo"]
+when = { path = { suffix_in = [".xml", ".json", ".txt", ".srt", ".vtt", ".nfo"] } }
 
 [[job.profile_routing.routes]]
 id = "all-originals-review"
 group = "passthrough"
+when = {}

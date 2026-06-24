@@ -29,7 +29,7 @@ from munchy.preflight import (
     MediaPreflightReport,
     MediaPreflightResult,
 )
-from munchy.profile_routing import match_profile_route
+from munchy.profile_routing import ProfileRoutingFile, profile_routing_plan
 from munchy.runner_client import RunnerHttpError
 
 
@@ -96,19 +96,27 @@ def _base_config(
                         {
                             "id": "camera-video",
                             "group": "video",
-                            "path_prefix": "camera",
-                            "suffixes": [".mp4", ".mov", ".mkv", ".webm"],
+                            "when": {
+                                "path": {
+                                    "prefix": "camera",
+                                    "suffix_in": [".mp4", ".mov", ".mkv", ".webm"],
+                                }
+                            },
                         },
                         {
                             "id": "phone-video",
                             "group": "video",
-                            "path_prefix": "phone",
-                            "suffixes": [".mp4", ".mov", ".mkv", ".webm"],
+                            "when": {
+                                "path": {
+                                    "prefix": "phone",
+                                    "suffix_in": [".mp4", ".mov", ".mkv", ".webm"],
+                                }
+                            },
                         },
                         {
                             "id": "passthrough-artifacts",
                             "group": "passthrough",
-                            "suffixes": [".xml", ".json", ".txt"],
+                            "when": {"path": {"suffix_in": [".xml", ".json", ".txt"]}},
                         },
                     ]
                 },
@@ -228,57 +236,30 @@ def _accept_media_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
     monkeypatch.setattr("jeb.collector.run_media_preflight", fake_run_media_preflight)
+    monkeypatch.setattr(
+        "jeb.collector.exiftool_for_routing_preflight",
+        lambda path: {"File:FileTypeExtension": path.suffix.lstrip(".")},
+    )
 
 
 @pytest.fixture(autouse=True)
 def _route_with_shared_matcher(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_profile_routing_preflight(self, *, files, groups, profile_routing):  # type: ignore[no-untyped-def]
-        matches = []
-        unmatched = []
-        for item in files:
-            loader = (
-                (lambda summary=item.probe_summary: summary)
-                if item.probe_summary is not None
-                else None
-            )
-            match = match_profile_route(
-                profile_routing,
-                item.rel_path,
-                probe_summary_loader=loader,
-            )
-            if match is None:
-                unmatched.append(
-                    {
-                        "path": item.rel_path,
-                        "reason": "probe_failed" if item.probe_error else "no_matching_route",
-                        "probe_error": item.probe_error,
-                    }
+        return profile_routing_plan(
+            profile_routing,
+            [
+                ProfileRoutingFile(
+                    path=item.rel_path,
+                    bytes=item.bytes,
+                    probe_summary=item.probe_summary,
+                    probe_error=item.probe_error,
+                    routing_facts=item.routing_facts,
+                    facts_error=item.facts_error,
                 )
-                continue
-            if match.group not in groups:
-                unmatched.append(
-                    {
-                        "path": item.rel_path,
-                        "reason": f"unknown_group:{match.group}",
-                    }
-                )
-                continue
-            matches.append(
-                {
-                    "path": item.rel_path,
-                    "route_id": match.route_id,
-                    "route_index": match.index,
-                    "group": match.group,
-                }
-            )
-        return {
-            "ok": not unmatched,
-            "files_total": len(files),
-            "matched_files": len(matches),
-            "unmatched_files": len(unmatched),
-            "matches": matches,
-            "unmatched": unmatched,
-        }
+                for item in files
+            ],
+            group_names=set(groups),
+        ).as_dict()
 
     monkeypatch.setattr(
         "jeb.collector.MunchyRunnerClient.profile_routing_preflight",
@@ -508,7 +489,7 @@ def test_routing_preflight_allows_ordered_broad_matcher(tmp_path: Path) -> None:
         {
             "id": "phone-library-review",
             "group": "passthrough",
-            "path_prefix": "phone",
+            "when": {"path": {"prefix": "phone"}},
         }
     )
     _write_stable_file(tmp_path / "landing" / "phone" / "IMG_0001.MOV")
@@ -527,6 +508,37 @@ def test_routing_preflight_allows_ordered_broad_matcher(tmp_path: Path) -> None:
     ]
     assert collector.routing_preflight_failures() == []
     assert notifier.messages == []
+
+
+def test_routing_preflight_leave_action_excludes_file_from_batch(tmp_path: Path) -> None:
+    config = _base_config(
+        tmp_path,
+        source_ids=["phone"],
+        source_overrides={
+            "phone": {
+                "include_extensions": [".mov", ".mp4"],
+            }
+        },
+    )
+    config.munchy_job_defaults["profile_routing"]["routes"].insert(
+        0,
+        {
+            "id": "downloads",
+            "action": "leave",
+            "when": {"path": {"prefix": "phone/downloads"}},
+        },
+    )
+    _write_stable_file(tmp_path / "landing" / "phone" / "IMG_0001.MOV")
+    _write_stable_file(tmp_path / "landing" / "phone" / "downloads" / "sent.mp4")
+    collector = Collector(config, target_runners={"munchy": CompleteRunner()})
+
+    collector.run_once()
+
+    batch_id = _single_batch_id(collector)
+    assert [row["target_path"] for row in collector.batch_files(batch_id)] == [
+        "phone/IMG_0001.MOV"
+    ]
+    assert (tmp_path / "landing" / "phone" / "downloads" / "sent.mp4").exists()
 
 
 def test_routing_preflight_failure_sends_daily_reminders_without_scheduled_retry(
@@ -608,8 +620,7 @@ def test_archive_now_clears_routing_preflight_failure_after_routes_are_fixed(
         {
             "id": "phone-heic",
             "group": "passthrough",
-            "path_prefix": "phone",
-            "suffixes": [".heic"],
+            "when": {"path": {"prefix": "phone", "suffix": ".heic"}},
         }
     )
 

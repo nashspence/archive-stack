@@ -61,6 +61,8 @@ class RunnerProfileRoutingPreflightFile:
     sha256: str | None = None
     probe_summary: dict[str, Any] | None = None
     probe_error: str | None = None
+    routing_facts: dict[str, Any] | None = None
+    facts_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1422,6 +1424,8 @@ class MunchyRunnerClient:
                 "sha256": item.sha256,
                 "probe_summary": item.probe_summary,
                 "probe_error": item.probe_error,
+                "routing_facts": item.routing_facts,
+                "facts_error": item.facts_error,
             }
             for item in files
         ]

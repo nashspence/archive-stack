@@ -32,7 +32,7 @@ def write_jeb_config(tmp_path: Path) -> Path:
             [[munchy_job_defaults.profile_routing.routes]]
             id = "passthrough-text"
             group = "passthrough"
-            suffixes = [".txt"]
+            when = {{ path = {{ suffix = ".txt" }} }}
 
             [[sources]]
             id = "phone"

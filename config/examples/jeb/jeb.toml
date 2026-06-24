@@ -70,18 +70,17 @@ recipients = ["operator"]
 [[munchy_job_defaults.profile_routing.routes]]
 id = "example-camera-video"
 group = "video"
-path_prefix = "example-camera"
-suffixes = [".mp4", ".mov", ".mkv", ".webm"]
+when = { path = { prefix = "example-camera", suffix_in = [".mp4", ".mov", ".mkv", ".webm"] } }
 
 [[munchy_job_defaults.profile_routing.routes]]
 id = "passthrough-artifacts"
 group = "passthrough"
-suffixes = [".xml", ".json", ".txt", ".srt", ".vtt", ".nfo"]
+when = { path = { suffix_in = [".xml", ".json", ".txt", ".srt", ".vtt", ".nfo"] } }
 
 [[munchy_job_defaults.profile_routing.routes]]
 id = "example-phone-library-review"
 group = "passthrough"
-path_prefix = "example-phone"
+when = { path = { prefix = "example-phone" } }
 
 [[sources]]
 id = "example-camera"

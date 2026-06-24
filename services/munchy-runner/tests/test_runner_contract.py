@@ -247,8 +247,7 @@ def test_completed_structured_file_routes_by_path_without_full_upload(
                 {
                     "id": "front-door-video",
                     "group": "video",
-                    "path_prefix": "front-door",
-                    "suffixes": [".mp4"],
+                    "when": {"path": {"prefix": "front-door", "suffix": ".mp4"}},
                 }
             ]
         },
@@ -325,10 +324,13 @@ def test_completed_structured_file_can_route_by_probe_metadata(
                 {
                     "id": "iphone-4k",
                     "group": "phone-video",
-                    "path_prefix": "phone",
-                    "suffixes": [".mov"],
-                    "min_width": 3000,
-                    "format_tags": {"make": "apple"},
+                    "when": {
+                        "all": [
+                            {"path": {"prefix": "phone", "suffix": ".mov"}},
+                            {"fact": "video.long_edge", "min": 3000},
+                            {"fact": "ffprobe.format_tags.make", "equals": "apple"},
+                        ]
+                    },
                 }
             ]
         },
@@ -384,12 +386,18 @@ def test_profile_routing_preflight_uses_submitted_probe_summary(
                     {
                         "id": "iphone-live-photo-sidecar",
                         "group": "live-photo",
-                        "path_prefix": "phone",
-                        "suffixes": [".mov"],
-                        "video_codec_names": ["hevc"],
-                        "audio_codec_names": ["aac"],
-                        "max_duration": 3.0,
-                        "format_tags": {"com.apple.quicktime.model": "iphone se"},
+                        "when": {
+                            "all": [
+                                {"path": {"prefix": "phone", "suffix": ".mov"}},
+                                {"fact": "video.codec", "equals": "hevc"},
+                                {"fact": "audio.codec_name", "equals": "aac"},
+                                {"fact": "ffprobe.duration", "max": 3.0},
+                                {
+                                    "fact": "ffprobe.format_tags.com.apple.quicktime.model",
+                                    "contains": "iphone se",
+                                },
+                            ]
+                        },
                     }
                 ]
             },
@@ -405,7 +413,12 @@ def test_profile_routing_preflight_uses_submitted_probe_summary(
             "bytes": 123,
             "route_id": "iphone-live-photo-sidecar",
             "route_index": 0,
+            "action": "upload",
+            "pair_kind": None,
+            "pairing_id": None,
             "group": "live-photo",
+            "into": None,
+            "collection_rel_path": "phone/IMG_0001.MOV",
         }
     ]
 
@@ -427,8 +440,7 @@ def test_profile_routing_preflight_reports_fallthrough(
                     {
                         "id": "phone-video",
                         "group": "video",
-                        "path_prefix": "phone",
-                        "suffixes": [".mov"],
+                        "when": {"path": {"prefix": "phone", "suffix": ".mov"}},
                     }
                 ]
             },
@@ -444,7 +456,7 @@ def test_profile_routing_preflight_reports_fallthrough(
             "bytes": 123,
             "reason": "no_matching_route",
             "probe_error": None,
-            "probe_sensitive_routes": [],
+            "facts_error": None,
         }
     ]
 
@@ -479,7 +491,13 @@ def test_completed_structured_file_fails_when_no_route_matches(
         "job_id": "job-1",
         "input_upload_id": "upload-1",
         "profile_routing": {
-            "routes": [{"id": "front-door-video", "group": "video", "path_prefix": "front-door"}]
+            "routes": [
+                {
+                    "id": "front-door-video",
+                    "group": "video",
+                    "when": {"path": {"prefix": "front-door"}},
+                }
+            ]
         },
     }
 

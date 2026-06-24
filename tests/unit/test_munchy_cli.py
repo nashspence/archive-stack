@@ -436,7 +436,7 @@ gpu_tasks = []
 [[job.profile_routing.routes]]
 id = "camera-video"
 group = "video"
-suffixes = [".mp4"]
+when = { path = { suffix = ".mp4" } }
 """.strip(),
         encoding="utf-8",
     )

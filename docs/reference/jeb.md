@@ -20,8 +20,9 @@ URLs, and deployment overlays belong outside this repository.
   operator webhook.
 - `failed_notified` batches remain active and send a paced critical reminder,
   defaulting to once per day, until the operator resolves them.
-- Before batching a source, Jeb sends the source-prefixed file tree and
-  ffprobe-derived routing summaries to Munchy profile-routing preflight.
+- Before batching a source, Jeb sends the source-prefixed file tree plus
+  path, ffprobe, and ExifTool routing facts to Munchy profile-routing
+  preflight.
 - If any source file falls through the ordered Munchy routes, the whole source
   is skipped and Jeb records a durable profile-routing failure.
 - Transient Munchy preflight transport or server failures are logged and retried
@@ -35,15 +36,52 @@ URLs, and deployment overlays belong outside this repository.
 
 ## Munchy Routing
 
-Jeb does not choose encode profiles. It sends source-prefixed paths, file facts,
-and ffprobe-derived routing summaries to Munchy preflight, then includes the
-same configured `profile_routing` rules in the Munchy job request.
+Jeb does not choose encode profiles. It sends source-prefixed paths and
+normalized routing facts to Munchy preflight, then includes the same configured
+`profile_routing` rules in the Munchy job request.
 
 Route rules are ordered by priority. The first route that matches a file wins,
 and a file that falls through the full route list fails preflight. Broad routes
-are allowed because they are explicit ordered matchers. Use path prefixes,
-suffixes, and ffprobe-style metadata matches in Munchy when the source
-directory alone is not enough to choose a profile.
+are allowed because they are explicit ordered matchers. A broad final route is
+just a route with `when = {}`. Falling through every route remains a preflight
+failure.
+
+Routes use one predicate shape:
+
+```toml
+[[munchy_job_defaults.profile_routing.routes]]
+id = "example-video"
+group = "video"
+into = "camera/video"
+when = { path = { prefix = "camera", suffix_in = [".mp4", ".mov"] } }
+```
+
+Predicates support `all`, `any`, `not`, `path`, `fact`, `gate`, and `pair`.
+Useful facts include `path.*`, `video.*`, `audio.*`, `ffprobe.*`, and
+`exif.*`. For example:
+
+```toml
+[[munchy_job_defaults.profile_routing.routes]]
+id = "iphone-se2-4k60-hevc"
+group = "iphone-video"
+into = "iphone-se2/video-4k60"
+when = { all = [
+  { gate = "iphone-se2-native-camera" },
+  { path = { suffix = ".mov" } },
+  { fact = "video.resolution", equals = "4k" },
+  { fact = "video.fps", equals = 60 },
+  { fact = "video.codec", equals = "hevc" },
+] }
+```
+
+`pairings` run before route matching. Use them for multi-file captures such as
+Live Photos so the paired movie is not accidentally classified as a normal
+video.
+
+`action = "leave"` marks a matched file as intentionally kept in Jeb custody
+instead of uploaded in that batch. Use it for known but currently unarchived
+inputs such as a downloads directory. Files that do not match any route are not
+left behind silently; they fail preflight.
 
 Use a `passthrough` profile group for any recurring weekly artifact that should
 be copied into the collection without GPU work.
@@ -52,7 +90,9 @@ For incremental source enrollment, keep `include_extensions = []` if every file
 should be considered. Jeb asks Munchy to preflight the whole pending source set
 before it creates a Munchy batch:
 
-- every file has a winning route and a known group: create the batch
+- every file has a winning upload route and a known group: create the batch
+- a file has a winning `leave` route: keep it in the source directory and omit
+  it from the batch
 - any file falls through the route list: record a durable profile-routing
   failure and skip the source
 - transient Munchy preflight transport or server failure: log and try again on a
@@ -64,15 +104,6 @@ After fixing routes, run `jeb archive-now --source <source-id>`. The command
 retries preflight immediately, clears the durable failure only if Munchy accepts
 the full source set, and starts an archive attempt for the source. Use the same
 command after repairing a non-transient Munchy preflight API failure.
-
-Route matching supports path-oriented keys such as `path_prefix`, `path_glob`,
-`filename_glob`, and `suffixes`. Routes can also require ffprobe metadata with
-keys such as `format_name_contains`, `codec_names`, `width`, `height`,
-`min_width`, `max_width`, `min_height`, `max_height`, `duration`,
-`min_duration`, `max_duration`, `fps`, `min_fps`, `max_fps`,
-`video_codec_names`, `audio_codec_names`, `has_audio`, `has_video`,
-`video_stream_count`, `audio_stream_count`, `format_tags`, `video_tags`, and
-`audio_tags`.
 
 ## Webhooks
 

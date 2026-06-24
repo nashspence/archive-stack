@@ -97,10 +97,19 @@ def test_profile_routing_preflight_posts_manifest() -> None:
                     rel_path="phone/IMG_0001.MOV",
                     bytes=123,
                     probe_summary={"video_codec_name": "hevc"},
+                    routing_facts={"path.suffix": ".mov", "video.codec": "hevc"},
                 ),
             ),
             groups={"video": {"archive_mode": "av1_nvenc", "gpu_tasks": []}},
-            profile_routing={"routes": [{"id": "phone-video", "group": "video"}]},
+            profile_routing={
+                "routes": [
+                    {
+                        "id": "phone-video",
+                        "group": "video",
+                        "when": {"fact": "video.codec", "equals": "hevc"},
+                    }
+                ]
+            },
         )
 
     assert result["ok"] is True
@@ -117,10 +126,20 @@ def test_profile_routing_preflight_posts_manifest() -> None:
                         "sha256": None,
                         "probe_summary": {"video_codec_name": "hevc"},
                         "probe_error": None,
+                        "routing_facts": {"path.suffix": ".mov", "video.codec": "hevc"},
+                        "facts_error": None,
                     }
                 ],
                 "groups": {"video": {"archive_mode": "av1_nvenc", "gpu_tasks": []}},
-                "profile_routing": {"routes": [{"id": "phone-video", "group": "video"}]},
+                "profile_routing": {
+                    "routes": [
+                        {
+                            "id": "phone-video",
+                            "group": "video",
+                            "when": {"fact": "video.codec", "equals": "hevc"},
+                        }
+                    ]
+                },
             },
         }
     ]
