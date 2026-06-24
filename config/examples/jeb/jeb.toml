@@ -78,6 +78,11 @@ id = "passthrough-artifacts"
 group = "passthrough"
 suffixes = [".xml", ".json", ".txt", ".srt", ".vtt", ".nfo"]
 
+[[munchy_job_defaults.profile_routing.routes]]
+id = "example-phone-library-catchall"
+group = "passthrough"
+path_prefix = "example-phone"
+
 [[sources]]
 id = "example-camera"
 enabled = false

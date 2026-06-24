@@ -55,3 +55,7 @@ suffixes = [".mp4", ".mov", ".mkv", ".webm"]
 id = "passthrough-artifacts"
 group = "passthrough"
 suffixes = [".xml", ".json", ".txt", ".srt", ".vtt", ".nfo"]
+
+[[job.profile_routing.routes]]
+id = "catchall-originals"
+group = "passthrough"

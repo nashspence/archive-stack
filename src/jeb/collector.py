@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import fnmatch
 import hashlib
 import json
 import logging
@@ -27,6 +26,11 @@ from munchy.preflight import (
     MediaPreflightReport,
     MediaPreflightResult,
     run_media_preflight,
+)
+from munchy.profile_routing import (
+    match_profile_route,
+    profile_routes,
+    routing_probe_summary,
 )
 from munchy.runner_client import (
     MunchyRunnerClient,
@@ -796,11 +800,16 @@ class Collector:
     ) -> tuple[list[EligibleFile], list[HeldFile]]:
         accepted: list[EligibleFile] = []
         held: list[HeldFile] = []
+        profile_routing = mapping(self.config.munchy_job_defaults.get("profile_routing"))
         for item in files:
+            def load_probe_summary(path: Path = item.path) -> Mapping[str, Any]:
+                return routing_probe_summary(ffprobe_for_signature(path))
+
             try:
-                matches = matching_profile_routes(
-                    self.config.munchy_job_defaults,
-                    item,
+                match = match_profile_route(
+                    profile_routing,
+                    item.target_path,
+                    probe_summary_loader=load_probe_summary,
                 )
             except SignatureProbeError as exc:
                 held.append(
@@ -811,25 +820,23 @@ class Collector:
                     )
                 )
                 continue
-            if len(matches) == 1:
-                group = str(matches[0].get("group") or "")
-                if group in self.config.profile_groups:
-                    accepted.append(item)
-                    continue
+            if match is None:
                 held.append(
                     HeldFile(
                         item=item,
                         signature=safe_capture_signature_for_file(item.path),
-                        reason=f"unknown_profile_group:{group or 'blank'}",
+                        reason="no_matching_route",
                     )
                 )
                 continue
-            reason = "no_matching_route" if not matches else "multiple_matching_routes"
+            if match.group in self.config.profile_groups:
+                accepted.append(item)
+                continue
             held.append(
                 HeldFile(
                     item=item,
                     signature=safe_capture_signature_for_file(item.path),
-                    reason=reason,
+                    reason=f"unknown_profile_group:{match.group or 'blank'}",
                 )
             )
         return accepted, held
@@ -1893,147 +1900,6 @@ def safe_capture_signature_for_file(path: Path) -> CaptureSignature:
         return capture_signature_for_file(path, probe_error=str(exc))
 
 
-def routing_probe_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
-    raw_streams = payload.get("streams")
-    streams: Sequence[object] = raw_streams if isinstance(raw_streams, list) else ()
-    video_stream = next(
-        (
-            stream
-            for stream in streams
-            if isinstance(stream, Mapping) and stream.get("codec_type") == "video"
-        ),
-        {},
-    )
-    format_info = payload.get("format") if isinstance(payload.get("format"), Mapping) else {}
-    return {
-        "format_name": str(cast(Mapping[str, Any], format_info).get("format_name") or ""),
-        "format_tags": lower_mapping(cast(Mapping[str, Any], format_info).get("tags")),
-        "stream_tags": lower_mapping(cast(Mapping[str, Any], video_stream).get("tags")),
-        "codec_name": str(cast(Mapping[str, Any], video_stream).get("codec_name") or "").lower(),
-        "width": int(cast(Mapping[str, Any], video_stream).get("width") or 0),
-        "height": int(cast(Mapping[str, Any], video_stream).get("height") or 0),
-        "fps": parse_rate(cast(Mapping[str, Any], video_stream).get("avg_frame_rate"))
-        or parse_rate(cast(Mapping[str, Any], video_stream).get("r_frame_rate"))
-        or 0.0,
-    }
-
-
-def route_requires_probe(route: Mapping[str, Any]) -> bool:
-    probe_keys = {
-        "format_name_contains",
-        "codec_names",
-        "width",
-        "height",
-        "min_width",
-        "max_width",
-        "min_height",
-        "max_height",
-        "fps",
-        "min_fps",
-        "max_fps",
-        "format_tags",
-        "stream_tags",
-    }
-    return any(route.get(key) for key in probe_keys)
-
-
-def route_matches_path(route: Mapping[str, Any], rel_path: str) -> bool:
-    filename = rel_path.rsplit("/", 1)[-1]
-    prefix = route.get("path_prefix")
-    if isinstance(prefix, str) and prefix:
-        normalized = prefix.rstrip("/")
-        if rel_path != normalized and not rel_path.startswith(f"{normalized}/"):
-            return False
-    path_glob = route.get("path_glob")
-    if isinstance(path_glob, str) and path_glob and not fnmatch.fnmatchcase(rel_path, path_glob):
-        return False
-    filename_glob = route.get("filename_glob")
-    if (
-        isinstance(filename_glob, str)
-        and filename_glob
-        and not fnmatch.fnmatchcase(filename, filename_glob)
-    ):
-        return False
-    suffixes = [str(item).lower() for item in route.get("suffixes") or []]
-    if suffixes and not any(filename.lower().endswith(suffix) for suffix in suffixes):
-        return False
-    return True
-
-
-def route_matches_probe(route: Mapping[str, Any], summary: Mapping[str, Any]) -> bool:
-    format_needles = [str(item).lower() for item in route.get("format_name_contains") or []]
-    format_name = str(summary.get("format_name") or "").lower()
-    if format_needles and not all(needle in format_name for needle in format_needles):
-        return False
-    codec_names = [str(item).lower() for item in route.get("codec_names") or []]
-    if codec_names and str(summary.get("codec_name") or "").lower() not in codec_names:
-        return False
-    width = int(summary.get("width") or 0)
-    height = int(summary.get("height") or 0)
-    fps = float(summary.get("fps") or 0.0)
-    for key, actual_dimension in (("width", width), ("height", height)):
-        expected = route.get(key)
-        if expected is not None and actual_dimension != int(cast(int, expected)):
-            return False
-    numeric_limits: tuple[tuple[str, float, Literal["min", "max"]], ...] = (
-        ("min_width", float(width), "min"),
-        ("max_width", float(width), "max"),
-        ("min_height", float(height), "min"),
-        ("max_height", float(height), "max"),
-        ("min_fps", fps, "min"),
-        ("max_fps", fps, "max"),
-    )
-    for key, actual_limit, op in numeric_limits:
-        expected = route.get(key)
-        if expected is None:
-            continue
-        if op == "min" and actual_limit < float(cast(float, expected)):
-            return False
-        if op == "max" and actual_limit > float(cast(float, expected)):
-            return False
-    expected_fps = route.get("fps")
-    if expected_fps is not None and abs(fps - float(cast(float, expected_fps))) > 0.01:
-        return False
-
-    for tag_scope in ("format_tags", "stream_tags"):
-        expected_tags = route.get(tag_scope) or {}
-        if not isinstance(expected_tags, Mapping) or not expected_tags:
-            continue
-        actual_tags = summary.get(tag_scope) if isinstance(summary.get(tag_scope), Mapping) else {}
-        lower_actual = lower_mapping(actual_tags)
-        for key, expected in expected_tags.items():
-            actual_value = str(lower_actual.get(str(key).lower()) or "")
-            if str(expected).lower() not in actual_value:
-                return False
-    return True
-
-
-def profile_routes(defaults: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    routing = mapping(defaults.get("profile_routing"))
-    routes = routing.get("routes")
-    if not isinstance(routes, list):
-        return []
-    return [route for route in routes if isinstance(route, Mapping)]
-
-
-def matching_profile_routes(
-    defaults: Mapping[str, Any],
-    item: EligibleFile,
-) -> list[Mapping[str, Any]]:
-    matches: list[Mapping[str, Any]] = []
-    probe_summary: dict[str, Any] | None = None
-    for route in profile_routes(defaults):
-        if not route_matches_path(route, item.target_path):
-            continue
-        if route_requires_probe(route):
-            if probe_summary is None:
-                probe_summary = routing_probe_summary(ffprobe_for_signature(item.path))
-            if not route_matches_probe(route, probe_summary):
-                continue
-        matches.append(route)
-    return matches
-
-
 def load_config(path: Path) -> JebConfig:
     with path.open("rb") as handle:
         raw = tomllib.load(handle)
@@ -2101,7 +1967,7 @@ def config_from_mapping(raw: Mapping[str, Any]) -> JebConfig:
     if not profile_groups:
         raise ValueError("collections require profile_groups")
     munchy_job_defaults = mapping(raw.get("munchy_job_defaults"))
-    if not mapping(munchy_job_defaults.get("profile_routing")):
+    if not profile_routes(mapping(munchy_job_defaults.get("profile_routing"))):
         raise ValueError("munchy_job_defaults.profile_routing is required")
     return JebConfig(
         collector=collector,

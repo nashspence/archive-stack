@@ -20,8 +20,8 @@ URLs, and deployment overlays belong outside this repository.
   operator webhook.
 - `failed_notified` batches remain active and send a paced critical reminder,
   defaulting to once per day, until the operator resolves them.
-- Sources with `unmatched_policy = "hold"` do not batch files unless exactly one
-  configured Munchy profile route matches and its profile group exists.
+- Sources with `unmatched_policy = "hold"` do not batch files unless a configured
+  Munchy profile route wins and its profile group exists.
 - Held capture signatures are stored durably in SQLite and send one paced
   time-sensitive enrollment reminder per source, defaulting to once per day,
   until the signatures are resolved by config.
@@ -33,23 +33,22 @@ URLs, and deployment overlays belong outside this repository.
 Jeb does not choose encode profiles. It sends source-prefixed paths to Munchy and
 includes the configured `profile_routing` rules in the Munchy job request.
 
-Route rules should be mutually exclusive. Use path prefixes, suffixes, and
-ffprobe-style metadata matches in Munchy when the source directory alone is not
-enough to choose a profile.
+Route rules are ordered by priority. The first route that matches a file wins,
+so broad catchall routes are safe when placed after more specific routes. Use
+path prefixes, suffixes, and ffprobe-style metadata matches in Munchy when the
+source directory alone is not enough to choose a profile.
 
 Use a `passthrough` profile group for any recurring weekly artifact that should
 be copied into the collection without GPU work.
 
 For incremental source enrollment, set `unmatched_policy = "hold"` on the source
 and keep `include_extensions = []` if every file should be considered. Jeb then
-compares each eligible file with the configured profile routes before creating a
-Munchy batch:
+preflights each eligible file against the configured Munchy profile routes
+before creating a Munchy batch:
 
-- no matching route: hold the file under a capture signature
-- more than one matching route: hold the file until the routes are made
-  mutually exclusive
-- one matching route with an unknown group: hold the file until the group exists
-- one matching route with a known group: include the file in the Munchy batch
+- no winning route: hold the file under a capture signature
+- winning route with an unknown group: hold the file until the group exists
+- winning route with a known group: include the file in the Munchy batch
 
 Held files stay in the landing directory. Jeb only records signature metadata,
 example source-prefixed paths, file counts, byte totals, and mtime bounds in its

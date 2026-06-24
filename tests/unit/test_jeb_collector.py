@@ -365,6 +365,43 @@ def test_hold_policy_excludes_unmatched_signatures_from_munchy_batch(
     ]
 
 
+def test_hold_policy_allows_ordered_munchy_catchall_route(tmp_path: Path) -> None:
+    config = _base_config(
+        tmp_path,
+        source_ids=["phone"],
+        source_overrides={
+            "phone": {
+                "unmatched_policy": "hold",
+                "include_extensions": [".mov", ".heic", ".mp4"],
+            }
+        },
+    )
+    routes = config.munchy_job_defaults["profile_routing"]["routes"]
+    routes.append(
+        {
+            "id": "phone-library-catchall",
+            "group": "passthrough",
+            "path_prefix": "phone",
+        }
+    )
+    _write_stable_file(tmp_path / "landing" / "phone" / "IMG_0001.MOV")
+    _write_stable_file(tmp_path / "landing" / "phone" / "IMG_0001.HEIC")
+    _write_stable_file(tmp_path / "landing" / "phone" / "imported" / "clip.mp4")
+    notifier = RecordingNotifier([])
+    collector = Collector(config, target_runners={"munchy": CompleteRunner()}, notifier=notifier)
+
+    collector.run_once()
+
+    batch_id = _single_batch_id(collector)
+    assert [row["target_path"] for row in collector.batch_files(batch_id)] == [
+        "phone/IMG_0001.HEIC",
+        "phone/IMG_0001.MOV",
+        "phone/imported/clip.mp4",
+    ]
+    assert collector.held_signatures() == []
+    assert notifier.messages == []
+
+
 def test_held_signatures_send_daily_reminders(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
