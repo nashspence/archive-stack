@@ -30,6 +30,7 @@ from munchy.preflight import (
     MediaPreflightResult,
 )
 from munchy.profile_routing import match_profile_route
+from munchy.runner_client import RunnerHttpError
 
 
 def _base_config(
@@ -414,6 +415,80 @@ def test_routing_preflight_failure_blocks_source_and_notifies(
             "routing-preflight__phone:profile_routing:"
             "Munchy routing preflight failed: 1/2 files unmatched. "
             "Next: fix routes, then run `jeb archive-now --source phone`."
+        )
+    ]
+
+
+def test_routing_preflight_transient_http_error_retries_without_notification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _base_config(
+        tmp_path,
+        source_ids=["phone"],
+        source_overrides={"phone": {"include_extensions": [".mp4"]}},
+    )
+    _write_stable_file(tmp_path / "landing" / "phone" / "accepted.mp4")
+
+    def unavailable_preflight(self, *, files, groups, profile_routing):  # type: ignore[no-untyped-def]
+        raise RunnerHttpError(
+            "POST",
+            "http://runner.test/v1/profile-routing/preflight",
+            503,
+            b'{"detail":"Service Unavailable"}',
+        )
+
+    monkeypatch.setattr(
+        "jeb.collector.MunchyRunnerClient.profile_routing_preflight",
+        unavailable_preflight,
+    )
+    notifier = RecordingNotifier([])
+    collector = Collector(config, target_runners={"munchy": CompleteRunner()}, notifier=notifier)
+
+    collector.run_once()
+
+    assert collector.active_batch_ids() == []
+    assert collector.routing_preflight_failures() == []
+    assert notifier.messages == []
+
+
+def test_routing_preflight_non_transient_http_error_records_munchy_issue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _base_config(
+        tmp_path,
+        source_ids=["phone"],
+        source_overrides={"phone": {"include_extensions": [".mp4"]}},
+    )
+    _write_stable_file(tmp_path / "landing" / "phone" / "accepted.mp4")
+
+    def missing_endpoint_preflight(self, *, files, groups, profile_routing):  # type: ignore[no-untyped-def]
+        raise RunnerHttpError(
+            "POST",
+            "http://runner.test/v1/profile-routing/preflight",
+            404,
+            b'{"detail":"Not Found"}',
+        )
+
+    monkeypatch.setattr(
+        "jeb.collector.MunchyRunnerClient.profile_routing_preflight",
+        missing_endpoint_preflight,
+    )
+    notifier = RecordingNotifier([])
+    collector = Collector(config, target_runners={"munchy": CompleteRunner()}, notifier=notifier)
+
+    collector.run_once()
+
+    assert collector.active_batch_ids() == []
+    [failure] = collector.routing_preflight_failures()
+    assert failure["failure_kind"] == "munchy_preflight"
+    assert failure["unmatched_count"] == 0
+    assert notifier.messages == [
+        (
+            "routing-preflight__phone:munchy_preflight:"
+            "Munchy routing preflight API failed (HTTP 404); no upload started. "
+            "Next: repair Munchy, then run `jeb archive-now --source phone`."
         )
     ]
 

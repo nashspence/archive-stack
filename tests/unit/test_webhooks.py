@@ -524,6 +524,48 @@ def test_build_jeb_profile_routing_issue_payload_is_device_titled_and_actionable
     }
 
 
+def test_build_jeb_munchy_preflight_issue_payload_is_api_actionable() -> None:
+    payload = build_jeb_event_payload(
+        event="jeb.issue",
+        batch={
+            "id": "routing-preflight__nash-iphone-se2",
+            "source_id": "nash-iphone-se2",
+            "target_name": "munchy",
+            "target_type": "munchy",
+            "collection_slug": "weekly-device-artifacts",
+            "collection_timestamp": "20260624T000000Z",
+            "state": "failed",
+        },
+        message=(
+            "Munchy routing preflight API failed (HTTP 404); no upload started. "
+            "Next: repair Munchy, then run archive-now."
+        ),
+        severity="critical",
+        delivered_at=datetime(2026, 6, 24, 12, 0, tzinfo=UTC),
+        recipient="operator",
+        details={
+            "component": "munchy_preflight",
+            "error": (
+                "Munchy routing preflight API failed (HTTP 404); no upload started. "
+                "Next: repair Munchy, then run archive-now."
+            ),
+        },
+    )
+
+    assert payload["operator_urgency"] == "critical"
+    assert (
+        payload["operator_action"]
+        == "repair Munchy routing preflight, then run Jeb archive-now for the source"
+    )
+    assert payload["notification"] == {
+        "title": "🤖 nash-iphone-se2",
+        "body": (
+            "Munchy routing preflight API failed (HTTP 404); no upload started. "
+            "Next: repair Munchy, then run archive-now."
+        ),
+    }
+
+
 def test_build_copy_label_needed_payload_includes_label_and_image_url() -> None:
     payload = build_copy_label_needed_payload(
         config=WebhookConfig(url="https://example.test/hook", base_url="https://api.test"),

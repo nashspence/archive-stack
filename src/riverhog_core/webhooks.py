@@ -823,6 +823,8 @@ def _jeb_operator_urgency(*, event: str, severity: str) -> str:
 def _jeb_operator_action(*, event: str, severity: str, component: str = "") -> str:
     if event == "jeb.issue" and component == "profile_routing":
         return "fix Munchy profile routing, then run Jeb archive-now for the source"
+    if event == "jeb.issue" and component == "munchy_preflight":
+        return "repair Munchy routing preflight, then run Jeb archive-now for the source"
     if event == "jeb.issue" and severity == "critical":
         return "inspect Jeb batch details immediately"
     if event == "jeb.issue" and severity in {"error", "warning"}:

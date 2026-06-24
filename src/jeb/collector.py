@@ -87,6 +87,16 @@ def routing_preflight_notification_message(
     return f"{base} Next: fix routes, then retry Jeb archive."
 
 
+def munchy_preflight_notification_message(*, source_id: str, error: BaseException) -> str:
+    status = getattr(error, "status", None)
+    reason = f"HTTP {status}" if status is not None else error.__class__.__name__
+    base = f"Munchy routing preflight API failed ({reason}); no upload started."
+    message = f"{base} Next: repair Munchy, then run `jeb archive-now --source {source_id}`."
+    if len(message) <= ROUTING_PREFLIGHT_NOTIFICATION_BODY_LIMIT:
+        return message
+    return "Munchy routing preflight API failed. Next: repair Munchy, then retry Jeb archive."
+
+
 def plural(count: int, singular: str, plural_form: str | None = None) -> str:
     if count == 1:
         return singular
@@ -492,6 +502,7 @@ class Collector:
                 CREATE TABLE IF NOT EXISTS routing_preflight_failures (
                     source_id TEXT PRIMARY KEY,
                     state TEXT NOT NULL,
+                    failure_kind TEXT NOT NULL DEFAULT 'profile_routing',
                     collection_id TEXT NOT NULL,
                     collection_slug TEXT NOT NULL,
                     target_name TEXT NOT NULL,
@@ -511,6 +522,15 @@ class Collector:
                 )
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(routing_preflight_failures)")
+            }
+            if "failure_kind" not in columns:
+                conn.execute(
+                    "ALTER TABLE routing_preflight_failures "
+                    "ADD COLUMN failure_kind TEXT NOT NULL DEFAULT 'profile_routing'"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_jeb_routing_preflight_failures_state "
                 "ON routing_preflight_failures(state, updated_at)"
@@ -839,20 +859,14 @@ class Collector:
                     exc,
                 )
                 return False
-            result = {
-                "ok": False,
-                "files_total": len(files),
-                "matched_files": 0,
-                "unmatched_files": len(files),
-                "unmatched": [
-                    {
-                        "path": files[0].target_path,
-                        "reason": "munchy_preflight_error",
-                        "error": str(exc),
-                    }
-                ],
-                "error": str(exc),
-            }
+            self.record_munchy_preflight_failure(
+                collection=collection,
+                source=source,
+                files=files,
+                error=exc,
+            )
+            self.notify_routing_preflight_failures(source_id=source.id)
+            return False
         if result.get("ok"):
             self.clear_routing_preflight_failure(source.id)
             return True
@@ -887,7 +901,6 @@ class Collector:
         files: Sequence[EligibleFile],
         result: Mapping[str, Any],
     ) -> None:
-        now_text = iso()
         unmatched = [
             dict(item)
             for item in sequence(result.get("unmatched"))
@@ -904,6 +917,7 @@ class Collector:
             "error": optional_str(result.get("error")),
         }
         fingerprint_payload = {
+            "failure_kind": "profile_routing",
             "source_id": source.id,
             "unmatched": [
                 {
@@ -915,12 +929,80 @@ class Collector:
             ],
             "error": optional_str(result.get("error")),
         }
-        fingerprint = hashlib.sha256(stable_json(fingerprint_payload).encode()).hexdigest()[:24]
         message = routing_preflight_notification_message(
             source_id=source.id,
             file_count=file_count,
             unmatched_count=unmatched_count,
         )
+        self.store_routing_preflight_failure(
+            collection=collection,
+            source=source,
+            files=files,
+            failure_kind="profile_routing",
+            failure_payload=failure_payload,
+            fingerprint_payload=fingerprint_payload,
+            message=message,
+            file_count=file_count,
+            total_bytes=total_bytes,
+            unmatched_count=unmatched_count,
+        )
+
+    def record_munchy_preflight_failure(
+        self,
+        *,
+        collection: CollectionConfig,
+        source: SourceConfig,
+        files: Sequence[EligibleFile],
+        error: BaseException,
+    ) -> None:
+        error_text = str(error)
+        status = getattr(error, "status", None)
+        file_count = len(files)
+        total_bytes = sum(item.bytes for item in files)
+        failure_payload = {
+            "ok": False,
+            "failure_kind": "munchy_preflight",
+            "error": error_text,
+            "error_type": error.__class__.__name__,
+            "status": status,
+        }
+        fingerprint_payload = {
+            "failure_kind": "munchy_preflight",
+            "source_id": source.id,
+            "error": error_text[:500],
+            "error_type": error.__class__.__name__,
+            "status": status,
+        }
+        message = munchy_preflight_notification_message(source_id=source.id, error=error)
+        self.store_routing_preflight_failure(
+            collection=collection,
+            source=source,
+            files=files,
+            failure_kind="munchy_preflight",
+            failure_payload=failure_payload,
+            fingerprint_payload=fingerprint_payload,
+            message=message,
+            file_count=file_count,
+            total_bytes=total_bytes,
+            unmatched_count=0,
+        )
+
+    def store_routing_preflight_failure(
+        self,
+        *,
+        collection: CollectionConfig,
+        source: SourceConfig,
+        files: Sequence[EligibleFile],
+        failure_kind: Literal["profile_routing", "munchy_preflight"],
+        failure_payload: Mapping[str, Any],
+        fingerprint_payload: Mapping[str, Any],
+        message: str,
+        file_count: int,
+        total_bytes: int,
+        unmatched_count: int,
+    ) -> None:
+        now_text = iso()
+        fingerprint = hashlib.sha256(stable_json(fingerprint_payload).encode()).hexdigest()[:24]
         source_paths = [item.target_path for item in files[:20]]
         with self.connect() as conn:
             existing = conn.execute(
@@ -937,15 +1019,16 @@ class Collector:
             conn.execute(
                 """
                 INSERT INTO routing_preflight_failures(
-                    source_id, state, collection_id, collection_slug, target_name,
+                    source_id, state, failure_kind, collection_id, collection_slug, target_name,
                     source_paths_json, failure_json, fingerprint, message,
                     file_count, total_bytes, unmatched_count, first_seen_at,
                     last_seen_at, updated_at, resolved_at,
                     notified_error_fingerprint, notified_error_at
                 )
-                VALUES(?, 'failed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                VALUES(?, 'failed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
                 ON CONFLICT(source_id) DO UPDATE SET
                     state = 'failed',
+                    failure_kind = excluded.failure_kind,
                     collection_id = excluded.collection_id,
                     collection_slug = excluded.collection_slug,
                     target_name = excluded.target_name,
@@ -962,6 +1045,7 @@ class Collector:
                 """,
                 (
                     source.id,
+                    failure_kind,
                     collection.id,
                     collection.collection_slug,
                     collection.target,
@@ -1058,10 +1142,13 @@ class Collector:
             "collection_timestamp": iso(),
             "state": "failed",
         }
+        component = str(row_payload.get("failure_kind") or "profile_routing")
+        if component not in {"profile_routing", "munchy_preflight"}:
+            component = "profile_routing"
         if not self.notifier.critical_batch_issue(
             batch=batch,
             message=str(row_payload["message"]),
-            component="profile_routing",
+            component=component,
         ):
             return False
         now_text = iso()

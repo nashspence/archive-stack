@@ -23,7 +23,10 @@ URLs, and deployment overlays belong outside this repository.
 - Before batching a source, Jeb sends the source-prefixed file tree and
   ffprobe-derived routing summaries to Munchy profile-routing preflight.
 - If any source file falls through the ordered Munchy routes, the whole source
-  is skipped and Jeb records a durable routing-preflight failure.
+  is skipped and Jeb records a durable profile-routing failure.
+- Transient Munchy preflight transport or server failures are logged and retried
+  later. Non-transient Munchy API or contract failures are recorded as durable
+  `munchy_preflight` failures, not as unmatched media.
 - Routing-preflight failures send critical operator webhooks with paced daily
   reminders. Scheduled runs do not retry that source until the operator runs
   `jeb archive-now --source <source-id>` and the Munchy preflight passes.
@@ -50,14 +53,17 @@ should be considered. Jeb asks Munchy to preflight the whole pending source set
 before it creates a Munchy batch:
 
 - every file has a winning route and a known group: create the batch
-- any file falls through the route list: record a durable routing-preflight
+- any file falls through the route list: record a durable profile-routing
   failure and skip the source
-- Munchy route config is invalid: record a durable routing-preflight failure and
-  skip the source
+- transient Munchy preflight transport or server failure: log and try again on a
+  later scheduled run
+- non-transient Munchy API or contract failure: record a durable
+  `munchy_preflight` failure and skip the source
 
 After fixing routes, run `jeb archive-now --source <source-id>`. The command
 retries preflight immediately, clears the durable failure only if Munchy accepts
-the full source set, and starts an archive attempt for the source.
+the full source set, and starts an archive attempt for the source. Use the same
+command after repairing a non-transient Munchy preflight API failure.
 
 Route matching supports path-oriented keys such as `path_prefix`, `path_glob`,
 `filename_glob`, and `suffixes`. Routes can also require ffprobe metadata with
