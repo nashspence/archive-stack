@@ -22,9 +22,9 @@ URLs, and deployment overlays belong outside this repository.
   defaulting to once per day, until the operator resolves them.
 - Sources with `unmatched_policy = "hold"` do not batch files unless exactly one
   configured Munchy profile route matches and its profile group exists.
-- Held capture signatures are stored durably in SQLite and send paced critical
-  enrollment reminders, defaulting to once per day, until the signature is
-  resolved by config.
+- Held capture signatures are stored durably in SQLite and send one paced
+  time-sensitive enrollment reminder per source, defaulting to once per day,
+  until the signatures are resolved by config.
 - Source files are deleted only after Munchy reports the job is safe to delete
   and the collection uses `cleanup = "after_target_success"`.
 

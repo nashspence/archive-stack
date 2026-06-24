@@ -53,6 +53,7 @@ TRANSIENT_RETRY_INITIAL_SECONDS = 1.0
 TRANSIENT_RETRY_MAX_SECONDS = 300.0
 DEFAULT_GPU_TASKS = ("archive_video", "qcut_video")
 PREFLIGHT_MEDIA_EXTENSIONS = frozenset(MP4_LIKE_EXTENSIONS | {".mkv", ".webm"})
+HELD_SIGNATURE_NOTIFICATION_BODY_LIMIT = 120
 
 
 def format_progress_bytes(value: int) -> str:
@@ -64,6 +65,28 @@ def format_progress_bytes(value: int) -> str:
             return f"{amount:.2f} {unit}"
         amount /= 1024.0
     return f"{amount:.2f} TiB"
+
+
+def held_signature_notification_message(
+    *,
+    source_id: str,
+    signature_count: int,
+    file_count: int,
+) -> str:
+    base = (
+        f"{signature_count} {plural(signature_count, 'signature')} and "
+        f"{file_count} {plural(file_count, 'file')} held; no Munchy upload."
+    )
+    message = f"{base} Next: run `jeb signatures list --source {source_id}`."
+    if len(message) <= HELD_SIGNATURE_NOTIFICATION_BODY_LIMIT:
+        return message
+    return f"{base} Next: inspect held Jeb signatures."
+
+
+def plural(count: int, singular: str, plural_form: str | None = None) -> str:
+    if count == 1:
+        return singular
+    return plural_form or f"{singular}s"
 
 
 class JebError(RuntimeError):
@@ -296,9 +319,26 @@ class Notifier(Protocol):
         component: str,
     ) -> bool: ...
 
+    def enrollment_issue(
+        self,
+        *,
+        batch: Mapping[str, Any],
+        message: str,
+        component: str,
+    ) -> bool: ...
+
 
 class NullNotifier:
     def critical_batch_issue(
+        self,
+        *,
+        batch: Mapping[str, Any],
+        message: str,
+        component: str,
+    ) -> bool:
+        return True
+
+    def enrollment_issue(
         self,
         *,
         batch: Mapping[str, Any],
@@ -319,6 +359,38 @@ class WebhookNotifier:
         message: str,
         component: str,
     ) -> bool:
+        return self.issue(
+            batch=batch,
+            message=message,
+            component=component,
+            severity="critical",
+            log_label="critical jeb webhook",
+        )
+
+    def enrollment_issue(
+        self,
+        *,
+        batch: Mapping[str, Any],
+        message: str,
+        component: str,
+    ) -> bool:
+        return self.issue(
+            batch=batch,
+            message=message,
+            component=component,
+            severity="warning",
+            log_label="enrollment jeb webhook",
+        )
+
+    def issue(
+        self,
+        *,
+        batch: Mapping[str, Any],
+        message: str,
+        component: str,
+        severity: str,
+        log_label: str,
+    ) -> bool:
         if not self.settings.enabled:
             return True
         config = WebhookConfig(
@@ -334,7 +406,7 @@ class WebhookNotifier:
                 event="jeb.issue",
                 batch=batch,
                 message=message,
-                severity="critical",
+                severity=severity,
                 delivered_at=delivered_at,
                 recipient=recipient,
                 details={"component": component, "error": message},
@@ -342,7 +414,7 @@ class WebhookNotifier:
             try:
                 post_webhook(config=config, payload=payload)
             except Exception:
-                LOG.exception("failed to deliver critical jeb webhook for batch %s", batch["id"])
+                LOG.exception("failed to deliver %s for batch %s", log_label, batch["id"])
                 ok = False
         return ok
 
@@ -461,7 +533,6 @@ class Collector:
         self.init_db()
         for batch_id in self.active_batch_ids():
             self.process_batch(batch_id)
-        self.notify_held_signatures()
         active_collections = {
             str(row["collection_id"])
             for row in self.active_batches()
@@ -470,6 +541,7 @@ class Collector:
         for collection in self.config.collections:
             if collection.enabled and collection.id not in active_collections:
                 self.discover_collection(collection)
+        self.notify_held_signatures()
 
     def active_batches(self) -> list[sqlite3.Row]:
         terminal = tuple(sorted(TERMINAL_STATES))
@@ -853,8 +925,6 @@ class Collector:
                         ),
                     ),
                 )
-        self.notify_held_signatures(source.id)
-
     def held_signatures(
         self,
         *,
@@ -893,48 +963,73 @@ class Collector:
         return rows[0]
 
     def notify_held_signatures(self, source_id: str | None = None) -> None:
-        for row in self.held_signatures(source_id=source_id, state="held"):
-            self.notify_held_signature(row)
+        rows = self.held_signatures(source_id=source_id, state="held")
+        if not rows:
+            return
+        by_source: dict[str, list[sqlite3.Row]] = {}
+        for row in rows:
+            by_source.setdefault(str(row["source_id"]), []).append(row)
+        for held_source_id, source_rows in by_source.items():
+            self.notify_held_signature_source(held_source_id, source_rows)
 
-    def notify_held_signature(self, row: Mapping[str, Any] | sqlite3.Row) -> bool:
-        payload = dict(row)
-        source_id = str(payload["source_id"])
-        signature_id = str(payload["signature_id"])
-        reason = str(payload["reason"])
-        message = (
-            f"Jeb is holding {payload['file_count']} file(s) from {source_id} "
-            f"with unmatched capture signature {signature_id}; no Munchy upload started"
-        )
+    def notify_held_signature_source(
+        self,
+        source_id: str,
+        rows: Sequence[sqlite3.Row],
+    ) -> bool:
+        if not rows:
+            return True
+        sorted_rows = sorted(rows, key=lambda row: str(row["signature_id"]))
+        total_files = sum(int(row["file_count"]) for row in sorted_rows)
+        fingerprint_payload = [
+            {
+                "signature_id": str(row["signature_id"]),
+                "reason": str(row["reason"]),
+                "file_count": int(row["file_count"]),
+                "total_bytes": int(row["total_bytes"]),
+            }
+            for row in sorted_rows
+        ]
         fingerprint = hashlib.sha256(
-            f"held-signature:{source_id}:{signature_id}:{reason}".encode()
+            f"held-signatures:{source_id}:{stable_json(fingerprint_payload)}".encode()
         ).hexdigest()[:24]
-        if payload.get("notified_error_fingerprint") == fingerprint and not (
-            self.notification_reminder_due(payload)
+        if any(
+            row["notified_error_at"] is not None and not self.notification_reminder_due(dict(row))
+            for row in sorted_rows
         ):
             return True
+        message = held_signature_notification_message(
+            source_id=source_id,
+            signature_count=len(sorted_rows),
+            file_count=total_files,
+        )
         batch = {
-            "id": f"held-signature__{source_id}__{signature_id}",
+            "id": f"held-signatures__{source_id}",
             "source_id": source_id,
             "target_name": "munchy",
             "target_type": "munchy",
             "collection_slug": "jeb-held-signatures",
-            "collection_timestamp": str(payload["updated_at"]),
+            "collection_timestamp": iso(),
             "state": "held",
         }
-        if not self.notifier.critical_batch_issue(
+        if not self.notifier.enrollment_issue(
             batch=batch,
             message=message,
             component="enrollment",
         ):
             return False
+        now_text = iso()
         with self.connect() as conn:
-            conn.execute(
+            conn.executemany(
                 """
                 UPDATE held_signatures
                 SET notified_error_fingerprint = ?, notified_error_at = ?, updated_at = ?
                 WHERE source_id = ? AND signature_id = ?
                 """,
-                (fingerprint, iso(), iso(), source_id, signature_id),
+                [
+                    (fingerprint, now_text, now_text, source_id, str(row["signature_id"]))
+                    for row in sorted_rows
+                ],
             )
         return True
 

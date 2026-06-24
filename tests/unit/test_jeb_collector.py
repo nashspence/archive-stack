@@ -195,6 +195,16 @@ class RecordingNotifier:
         self.messages.append(f"{batch['id']}:{component}:{message}")
         return True
 
+    def enrollment_issue(
+        self,
+        *,
+        batch: dict[str, object],
+        message: str,
+        component: str,
+    ) -> bool:
+        self.messages.append(f"{batch['id']}:{component}:{message}")
+        return True
+
 
 def _write_stable_file(path: Path, content: bytes = b"video") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -348,9 +358,9 @@ def test_hold_policy_excludes_unmatched_signatures_from_munchy_batch(
     assert json.loads(held[0]["example_paths_json"]) == ["phone/IMG_0001.HEIC"]
     assert notifier.messages == [
         (
-            f"held-signature__phone__{held[0]['signature_id']}:enrollment:"
-            f"Jeb is holding 1 file(s) from phone with unmatched capture signature "
-            f"{held[0]['signature_id']}; no Munchy upload started"
+            "held-signatures__phone:enrollment:"
+            "1 signature and 1 file held; no Munchy upload. "
+            "Next: run `jeb signatures list --source phone`."
         )
     ]
 
@@ -399,6 +409,75 @@ def test_held_signatures_send_daily_reminders(
 
     collector.run_once()
 
+    assert len(notifier.messages) == 2
+
+
+def test_held_signature_notifications_aggregate_new_signatures_per_source_daily(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _base_config(
+        tmp_path,
+        source_ids=["phone"],
+        source_overrides={
+            "phone": {
+                "unmatched_policy": "hold",
+                "include_extensions": [".heic", ".dng"],
+            }
+        },
+    )
+
+    def fake_ffprobe(path: Path) -> dict[str, object]:
+        suffix = path.suffix.lower()
+        if suffix == ".dng":
+            return {
+                "format": {"format_name": "tiff"},
+                "streams": [{"codec_type": "video", "codec_name": "rawvideo"}],
+            }
+        return {
+            "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2"},
+            "streams": [{"codec_type": "video", "codec_name": "hevc"}],
+        }
+
+    monkeypatch.setattr("jeb.collector.ffprobe_for_signature", fake_ffprobe)
+    notifier = RecordingNotifier([])
+    collector = Collector(config, target_runners={"munchy": CompleteRunner()}, notifier=notifier)
+
+    _write_stable_file(tmp_path / "landing" / "phone" / "IMG_0001.HEIC")
+    collector.run_once()
+
+    assert notifier.messages == [
+        (
+            "held-signatures__phone:enrollment:"
+            "1 signature and 1 file held; no Munchy upload. "
+            "Next: run `jeb signatures list --source phone`."
+        )
+    ]
+
+    _write_stable_file(tmp_path / "landing" / "phone" / "IMG_0002.DNG")
+    collector.run_once()
+
+    held = collector.held_signatures()
+    assert len(held) == 2
+    assert len(notifier.messages) == 1
+
+    with collector.connect() as conn:
+        conn.execute(
+            """
+            UPDATE held_signatures
+            SET notified_error_at = ?
+            WHERE source_id = ?
+            """,
+            ("2026-01-01T00:00:00Z", "phone"),
+        )
+
+    collector.run_once()
+
+    assert notifier.messages[-1] == (
+        "held-signatures__phone:enrollment:"
+        "2 signatures and 2 files held; no Munchy upload. "
+        "Next: run `jeb signatures list --source phone`."
+    )
     assert len(notifier.messages) == 2
 
 

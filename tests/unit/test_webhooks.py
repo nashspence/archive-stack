@@ -484,6 +484,46 @@ def test_build_jeb_issue_payload_uses_robot_actor_and_concise_error() -> None:
     }
 
 
+def test_build_jeb_enrollment_issue_payload_is_time_sensitive_and_device_titled() -> None:
+    payload = build_jeb_event_payload(
+        event="jeb.issue",
+        batch={
+            "id": "held-signatures__nash-iphone-se2",
+            "source_id": "nash-iphone-se2",
+            "target_name": "munchy",
+            "target_type": "munchy",
+            "collection_slug": "jeb-held-signatures",
+            "collection_timestamp": "20260624T000000Z",
+            "state": "held",
+        },
+        message=(
+            "12 signatures and 64 files held; no Munchy upload. "
+            "Next: run `jeb signatures list --source nash-iphone-se2`."
+        ),
+        severity="warning",
+        delivered_at=datetime(2026, 6, 24, 12, 0, tzinfo=UTC),
+        recipient="operator",
+        details={
+            "component": "enrollment",
+            "error": (
+                "12 signatures and 64 files held; no Munchy upload. "
+                "Next: run `jeb signatures list --source nash-iphone-se2`."
+            ),
+        },
+    )
+
+    assert payload["operator_urgency"] == "time_sensitive"
+    assert payload["operator_action"] == "review held Jeb capture signatures"
+    assert payload["severity"] == "warning"
+    assert payload["notification"] == {
+        "title": "🤖 nash-iphone-se2",
+        "body": (
+            "12 signatures and 64 files held; no Munchy upload. "
+            "Next: run `jeb signatures list --source nash-iphone-se2`."
+        ),
+    }
+
+
 def test_build_copy_label_needed_payload_includes_label_and_image_url() -> None:
     payload = build_copy_label_needed_payload(
         config=WebhookConfig(url="https://example.test/hook", base_url="https://api.test"),
