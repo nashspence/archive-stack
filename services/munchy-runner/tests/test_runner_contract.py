@@ -178,18 +178,18 @@ def test_structured_input_upload_accepts_source_prefixed_paths(
     )
 
 
-def test_passthrough_profile_groups_normalize_to_copy_only(
+def test_originals_profile_groups_are_copy_only(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     runner = load_runner(tmp_path, monkeypatch)
 
     group = runner.ProfileGroupConfig(
-        archive_mode="passthrough",
+        archive_mode="originals",
         gpu_tasks=["archive_video"],
     )
     storage_group = runner.StorageGroupHint(
-        archive_mode="passthrough",
+        archive_mode="originals",
         gpu_tasks=["archive_video"],
     )
 
@@ -218,7 +218,7 @@ def test_completed_structured_file_routes_by_path_without_full_upload(
                 "structured_routing": True,
                 "groups": {
                     "video": {"archive_mode": "av1_nvenc", "gpu_tasks": ["archive_video"]},
-                    "passthrough": {"archive_mode": "passthrough", "gpu_tasks": []},
+                    "originals": {"archive_mode": "originals", "gpu_tasks": []},
                 },
             },
             "files": [
@@ -254,7 +254,7 @@ def test_completed_structured_file_routes_by_path_without_full_upload(
     }
     groups = {
         "video": {"archive_mode": "av1_nvenc", "gpu_tasks": ["archive_video"]},
-        "passthrough": {"archive_mode": "originals", "gpu_tasks": []},
+        "originals": {"archive_mode": "originals", "gpu_tasks": []},
     }
 
     routed = runner.route_completed_input_files(job, upload, groups)
@@ -925,7 +925,7 @@ def test_resume_job_preserves_fully_uploaded_riverhog_session(
         {
             "job_id": "job-1",
             "state": "failed",
-            "phase": "copying_originals:passthrough",
+            "phase": "copying_originals:originals",
             "input_upload_id": "upload-1",
             "collection_slug": "weekly-device-artifacts",
             "collection_timestamp": "20260615T030000Z",
@@ -1822,7 +1822,7 @@ def test_structured_unrouted_upload_progress_does_not_require_groups(
                     "archive_mode": "av1_nvenc",
                     "gpu_tasks": ["archive_video"],
                 },
-                "passthrough": {"archive_mode": "passthrough", "gpu_tasks": []},
+                "originals": {"archive_mode": "originals", "gpu_tasks": []},
             },
         }
     )
@@ -1870,8 +1870,8 @@ def test_wait_for_upload_groups_skips_configured_group_with_no_files(
     upload = runner.wait_for_upload_groups(
         job,
         "upload-1",
-        {"passthrough"},
-        {"passthrough": {"archive_mode": "originals", "gpu_tasks": []}},
+        {"originals"},
+        {"originals": {"archive_mode": "originals", "gpu_tasks": []}},
     )
 
     assert upload["upload_id"] == "upload-1"

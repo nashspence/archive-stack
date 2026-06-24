@@ -189,7 +189,7 @@ def normalize_posix(path: str | PurePosixPath) -> str:
 
 
 def munchy_archive_mode(value: str) -> str:
-    return "originals" if value == "passthrough" else value
+    return value
 
 
 def same_file_inode(left: Path, right: Path) -> bool:
@@ -2248,7 +2248,7 @@ def load_source_group(raw_any: Any) -> ProfileGroup:
     raw = mapping(raw_any)
     archive_mode = str(raw.get("archive_mode") or "av1_nvenc")
     tasks = raw.get("gpu_tasks")
-    if tasks is None and archive_mode in {"originals", "passthrough"}:
+    if tasks is None and archive_mode == "originals":
         gpu_tasks: tuple[str, ...] = ()
     else:
         gpu_tasks = (

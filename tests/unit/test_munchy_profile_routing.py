@@ -232,6 +232,7 @@ def test_routing_exiftool_summary_normalizes_apple_tags() -> None:
                 "EXIF:Model": "iPhone SE (2nd generation)",
                 "Composite:LensModel": "iPhone SE (2nd generation) back camera 3.99mm f/1.8",
                 "QuickTime:ContentIdentifier": "asset-id",
+                "Keys:FullFrameRatePlaybackIntent": 0,
             }
         ),
     )
@@ -241,3 +242,4 @@ def test_routing_exiftool_summary_normalizes_apple_tags() -> None:
     assert facts["exif.model_lower"] == "iphone se (2nd generation)"
     assert facts["exif.camera_direction"] == "rear"
     assert facts["exif.content_identifier"] == "asset-id"
+    assert facts["exif.full_frame_rate_playback_intent"] == "0"

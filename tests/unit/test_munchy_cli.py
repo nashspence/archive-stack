@@ -429,7 +429,7 @@ profile = "camera"
 archive_mode = "av1_nvenc"
 gpu_tasks = ["archive_video"]
 
-[groups.passthrough]
+[groups.originals]
 archive_mode = "originals"
 gpu_tasks = []
 
@@ -491,7 +491,7 @@ when = { path = { suffix = ".mp4" } }
     assert request.files[0].rel_path == "clip.mp4"
     assert request.storage_hint["structured_routing"] is True
     assert request.storage_hint["groups"]["video"]["gpu_tasks"] == ["archive_video"]
-    assert request.storage_hint["groups"]["passthrough"]["gpu_tasks"] == []
+    assert request.storage_hint["groups"]["originals"]["gpu_tasks"] == []
     assert request.job_payload["riverhog"]["enabled"] is True
     assert request.job_payload["profile_routing"]["routes"][0]["group"] == "video"
     assert (

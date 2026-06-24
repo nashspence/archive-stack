@@ -104,16 +104,16 @@ codec = "av1_nvenc"
 container = "webm"
 quality = 38
 
-[profiles.passthrough]
+[profiles.originals]
 schema_version = 1
 target = "munchy-av1-nvenc"
-name = "passthrough"
+name = "originals"
 """.strip(),
         encoding="utf-8",
     )
 
     profiles = load_encode_profiles(config_path)
 
-    assert set(profiles) == {"camera", "passthrough"}
+    assert set(profiles) == {"camera", "originals"}
     assert profiles["camera"].archive.container == "webm"
     assert profiles["camera"].archive.quality == 38

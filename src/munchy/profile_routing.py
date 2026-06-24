@@ -379,7 +379,12 @@ def exiftool_facts(summary: Mapping[str, Any]) -> dict[str, Any]:
     tag_map = cast(Mapping[str, Any], tags)
 
     def tag(name: str) -> Any:
-        return tag_map.get(name) or tag_map.get(normalize_tag_key(name))
+        normalized = normalize_tag_key(name)
+        if name in tag_map:
+            return tag_map[name]
+        if normalized in tag_map:
+            return tag_map[normalized]
+        return None
 
     width = parse_int(tag("image_width")) or 0
     height = parse_int(tag("image_height")) or 0
@@ -894,7 +899,9 @@ def normalize_metadata_value(value: Any) -> Any:
 
 
 def lowercase_value(value: Any) -> str:
-    return str(value or "").strip().lower()
+    if value is None:
+        return ""
+    return str(value).strip().lower()
 
 
 def boolish_value(value: Any) -> bool:

@@ -233,9 +233,10 @@ STORAGE_WAIT_SECONDS = max(
 )
 
 UploadState = Literal["pending", "partial", "uploaded", "consumed"]
-ArchiveMode = Literal["av1_nvenc", "originals", "passthrough"]
+ArchiveMode = Literal["av1_nvenc", "originals"]
 WorkflowMode = Literal["archive", "review_only", "collection_preview"]
 TaskName = Literal["archive_video", "qcut_video", "audio_review"]
+DEFAULT_GPU_TASKS: tuple[TaskName, ...] = ("archive_video", "qcut_video", "audio_review")
 NotifyEvent = Literal[
     "job.received",
     "review.handoff",
@@ -252,6 +253,10 @@ DEFAULT_NOTIFY_EVENTS: list[NotifyEvent] = [
     "job.upload_waiting.reminder",
     "job.succeeded",
 ]
+
+
+def default_gpu_tasks() -> list[TaskName]:
+    return list(DEFAULT_GPU_TASKS)
 SAFE_GROUP_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 TERMINAL_JOB_STATES = {"succeeded", "failed", "cancelled"}
 JOB_LIST_SORT_COLUMNS = {
@@ -301,8 +306,7 @@ def normalize_posix(value: str) -> str:
 
 
 def normalize_archive_mode(value: str | None) -> str:
-    mode = str(value or "av1_nvenc")
-    return "originals" if mode == "passthrough" else mode
+    return str(value or "av1_nvenc")
 
 
 class InsufficientStorage(RuntimeError):
@@ -577,9 +581,7 @@ class ProfileGroupConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     archive_mode: ArchiveMode = "av1_nvenc"
-    gpu_tasks: list[TaskName] = Field(
-        default_factory=lambda: ["archive_video", "qcut_video", "audio_review"]
-    )
+    gpu_tasks: list[TaskName] = Field(default_factory=default_gpu_tasks)
     encode_profile: EncodeProfile | None = None
 
     @field_validator("gpu_tasks")
@@ -588,9 +590,8 @@ class ProfileGroupConfig(BaseModel):
         return list(dict.fromkeys(value))
 
     @model_validator(mode="after")
-    def normalize_passthrough(self) -> ProfileGroupConfig:
-        if self.archive_mode == "passthrough":
-            self.archive_mode = "originals"
+    def normalize_originals(self) -> ProfileGroupConfig:
+        if self.archive_mode == "originals":
             self.gpu_tasks = []
         return self
 
@@ -607,9 +608,8 @@ class StorageGroupHint(BaseModel):
         return list(dict.fromkeys(value))
 
     @model_validator(mode="after")
-    def normalize_passthrough(self) -> StorageGroupHint:
-        if self.archive_mode == "passthrough":
-            self.archive_mode = "originals"
+    def normalize_originals(self) -> StorageGroupHint:
+        if self.archive_mode == "originals":
             self.gpu_tasks = []
         return self
 
@@ -637,9 +637,8 @@ class InputUploadStorageHint(BaseModel):
         return {validate_profile_group_name(name): group for name, group in value.items()}
 
     @model_validator(mode="after")
-    def normalize_passthrough(self) -> InputUploadStorageHint:
-        if self.archive_mode == "passthrough":
-            self.archive_mode = "originals"
+    def normalize_originals(self) -> InputUploadStorageHint:
+        if self.archive_mode == "originals":
             self.gpu_tasks = []
         return self
 
@@ -847,9 +846,7 @@ class CreateJobRequest(BaseModel):
     collection_timestamp: str | None = Field(default=None, min_length=16, max_length=32)
     workflow_mode: WorkflowMode = "archive"
     archive_mode: ArchiveMode = "av1_nvenc"
-    gpu_tasks: list[TaskName] = Field(
-        default_factory=lambda: ["archive_video", "qcut_video", "audio_review"]
-    )
+    gpu_tasks: list[TaskName] = Field(default_factory=default_gpu_tasks)
     encode_profile: EncodeProfile | None = None
     groups: dict[str, ProfileGroupConfig] = Field(default_factory=dict)
     profile_routing: ProfileRoutingConfig | None = None
@@ -873,8 +870,7 @@ class CreateJobRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_workflow_mode(self) -> CreateJobRequest:
-        if self.archive_mode == "passthrough":
-            self.archive_mode = "originals"
+        if self.archive_mode == "originals":
             self.gpu_tasks = []
         if self.profile_routing is not None:
             if not self.groups:
@@ -6779,7 +6775,7 @@ def health_ready() -> dict[str, Any]:
 def capabilities() -> dict[str, Any]:
     return {
         "workflow_modes": ["archive", "review_only", "collection_preview"],
-        "archive_modes": ["av1_nvenc", "originals", "passthrough"],
+        "archive_modes": ["av1_nvenc", "originals"],
         "gpu_tasks": ["archive_video", "qcut_video", "audio_review"],
         "encode_profile": {
             "schema_versions": [1],

@@ -324,8 +324,6 @@ def _timestamp() -> str:
 
 def _normalize_mode(value: str | None, *, default: str, allowed: set[str], label: str) -> str:
     mode = (value or default).strip().casefold().replace("-", "_")
-    if mode == "passthrough":
-        mode = "originals"
     if mode not in allowed:
         raise typer.BadParameter(
             f"{label} must be one of: " + ", ".join(sorted(allowed)),

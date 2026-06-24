@@ -83,8 +83,8 @@ def _base_config(
                     "archive_mode": "av1_nvenc",
                     "gpu_tasks": ["archive_video"],
                 },
-                "passthrough": {
-                    "archive_mode": "passthrough",
+                "originals": {
+                    "archive_mode": "originals",
                 },
             },
             "munchy_job_defaults": {
@@ -114,8 +114,8 @@ def _base_config(
                             },
                         },
                         {
-                            "id": "passthrough-artifacts",
-                            "group": "passthrough",
+                            "id": "originals-artifacts",
+                            "group": "originals",
                             "when": {"path": {"suffix_in": [".xml", ".json", ".txt"]}},
                         },
                     ]
@@ -488,7 +488,7 @@ def test_routing_preflight_allows_ordered_broad_matcher(tmp_path: Path) -> None:
     routes.append(
         {
             "id": "phone-library-review",
-            "group": "passthrough",
+            "group": "originals",
             "when": {"path": {"prefix": "phone"}},
         }
     )
@@ -619,7 +619,7 @@ def test_archive_now_clears_routing_preflight_failure_after_routes_are_fixed(
     config.munchy_job_defaults["profile_routing"]["routes"].append(
         {
             "id": "phone-heic",
-            "group": "passthrough",
+            "group": "originals",
             "when": {"path": {"prefix": "phone", "suffix": ".heic"}},
         }
     )
@@ -1063,7 +1063,7 @@ def test_munchy_payload_uses_structured_routing(tmp_path: Path) -> None:
                 "archive_mode": "av1_nvenc",
                 "gpu_tasks": ["archive_video"],
             },
-            "passthrough": {
+            "originals": {
                 "archive_mode": "originals",
                 "gpu_tasks": [],
             },
@@ -1072,7 +1072,7 @@ def test_munchy_payload_uses_structured_routing(tmp_path: Path) -> None:
     assert request.job_payload["archive_mode"] == "av1_nvenc"
     assert request.job_payload["gpu_tasks"] == []
     assert request.job_payload["groups"]["video"]["encode_profile"]["archive"]["quality"] == 38
-    assert request.job_payload["groups"]["passthrough"]["archive_mode"] == "originals"
+    assert request.job_payload["groups"]["originals"]["archive_mode"] == "originals"
     assert request.job_payload["profile_routing"]["routes"][0]["group"] == "video"
 
 

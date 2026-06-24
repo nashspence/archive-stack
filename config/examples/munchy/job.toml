@@ -42,7 +42,7 @@ profile = "example-camera"
 archive_mode = "av1_nvenc"
 gpu_tasks = ["archive_video"]
 
-[groups.passthrough]
+[groups.originals]
 archive_mode = "originals"
 gpu_tasks = []
 
@@ -52,11 +52,11 @@ group = "video"
 when = { path = { suffix_in = [".mp4", ".mov", ".mkv", ".webm"] } }
 
 [[job.profile_routing.routes]]
-id = "passthrough-artifacts"
-group = "passthrough"
+id = "originals-artifacts"
+group = "originals"
 when = { path = { suffix_in = [".xml", ".json", ".txt", ".srt", ".vtt", ".nfo"] } }
 
 [[job.profile_routing.routes]]
 id = "all-originals-review"
-group = "passthrough"
+group = "originals"
 when = {}

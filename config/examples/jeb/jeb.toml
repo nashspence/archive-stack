@@ -53,8 +53,8 @@ profile = "security-camera"
 archive_mode = "av1_nvenc"
 gpu_tasks = ["archive_video"]
 
-[profile_groups.passthrough]
-archive_mode = "passthrough"
+[profile_groups.originals]
+archive_mode = "originals"
 
 [munchy_job_defaults]
 workflow_mode = "archive"
@@ -73,13 +73,13 @@ group = "video"
 when = { path = { prefix = "example-camera", suffix_in = [".mp4", ".mov", ".mkv", ".webm"] } }
 
 [[munchy_job_defaults.profile_routing.routes]]
-id = "passthrough-artifacts"
-group = "passthrough"
+id = "originals-artifacts"
+group = "originals"
 when = { path = { suffix_in = [".xml", ".json", ".txt", ".srt", ".vtt", ".nfo"] } }
 
 [[munchy_job_defaults.profile_routing.routes]]
 id = "example-phone-library-review"
-group = "passthrough"
+group = "originals"
 when = { path = { prefix = "example-phone" } }
 
 [[sources]]
