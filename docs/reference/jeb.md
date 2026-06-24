@@ -20,6 +20,11 @@ URLs, and deployment overlays belong outside this repository.
   operator webhook.
 - `failed_notified` batches remain active and send a paced critical reminder,
   defaulting to once per day, until the operator resolves them.
+- Sources with `unmatched_policy = "hold"` do not batch files unless exactly one
+  configured Munchy profile route matches and its profile group exists.
+- Held capture signatures are stored durably in SQLite and send paced critical
+  enrollment reminders, defaulting to once per day, until the signature is
+  resolved by config.
 - Source files are deleted only after Munchy reports the job is safe to delete
   and the collection uses `cleanup = "after_target_success"`.
 
@@ -34,6 +39,32 @@ enough to choose a profile.
 
 Use a `passthrough` profile group for any recurring weekly artifact that should
 be copied into the collection without GPU work.
+
+For incremental source enrollment, set `unmatched_policy = "hold"` on the source
+and keep `include_extensions = []` if every file should be considered. Jeb then
+compares each eligible file with the configured profile routes before creating a
+Munchy batch:
+
+- no matching route: hold the file under a capture signature
+- more than one matching route: hold the file until the routes are made
+  mutually exclusive
+- one matching route with an unknown group: hold the file until the group exists
+- one matching route with a known group: include the file in the Munchy batch
+
+Held files stay in the landing directory. Jeb only records signature metadata,
+example source-prefixed paths, file counts, byte totals, and mtime bounds in its
+state database.
+
+Use `jeb signatures list`, `jeb signatures show <signature-id>`, and
+`jeb signatures probe <path>` to inspect held signatures and build new route
+rules. `probe` prints the same stable signature that Jeb records, so operators
+can test real captures before adding or changing a Munchy profile route.
+
+Route matching supports path-oriented keys such as `path_prefix`, `path_glob`,
+`filename_glob`, and `suffixes`. Routes can also require ffprobe metadata with
+keys such as `format_name_contains`, `codec_names`, `width`, `height`,
+`min_width`, `max_width`, `min_height`, `max_height`, `fps`, `min_fps`,
+`max_fps`, `format_tags`, and `stream_tags`.
 
 ## Webhooks
 

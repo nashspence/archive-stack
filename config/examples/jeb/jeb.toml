@@ -86,6 +86,15 @@ upload_prefix = "example-camera"
 stable_age = "10m"
 include_extensions = [".mp4", ".mov", ".mkv", ".webm", ".xml", ".json", ".txt"]
 
+[[sources]]
+id = "example-phone"
+enabled = false
+path = "/landing/example-phone"
+upload_prefix = "example-phone"
+stable_age = "10m"
+include_extensions = []
+unmatched_policy = "hold"
+
 [[collections]]
 id = "weekly-device-artifacts"
 enabled = true
@@ -96,4 +105,4 @@ schedule = "weekly"
 weekday = "monday"
 hour = 3
 minute = 0
-sources = ["example-camera"]
+sources = ["example-camera", "example-phone"]

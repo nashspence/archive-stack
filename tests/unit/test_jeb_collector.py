@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import subprocess
@@ -38,6 +39,7 @@ def _base_config(
     wait_for_safe_delete: bool = True,
     source_ids: list[str] | None = None,
     collector_overrides: dict[str, object] | None = None,
+    source_overrides: dict[str, dict[str, object]] | None = None,
 ) -> JebConfig:
     landing = tmp_path / "landing"
     landing.mkdir(exist_ok=True)
@@ -117,6 +119,7 @@ def _base_config(
                     "upload_prefix": source_id,
                     "stable_age": "0s",
                     "include_extensions": [".mp4", ".mov", ".mkv", ".webm", ".xml", ".json"],
+                    **(source_overrides or {}).get(source_id, {}),
                 }
                 for source_id in sources
             ],
@@ -293,6 +296,110 @@ def test_transient_target_errors_retry_without_notification(tmp_path: Path) -> N
     assert runner.calls == 2
     assert collector.load_batch(batch_id)["state"] == "target_succeeded"
     assert notifier.messages == []
+
+
+def test_hold_policy_excludes_unmatched_signatures_from_munchy_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _base_config(
+        tmp_path,
+        source_ids=["phone"],
+        source_overrides={
+            "phone": {
+                "unmatched_policy": "hold",
+                "include_extensions": [".mp4", ".heic"],
+            }
+        },
+    )
+    _write_stable_file(tmp_path / "landing" / "phone" / "accepted.mp4")
+    _write_stable_file(tmp_path / "landing" / "phone" / "IMG_0001.HEIC")
+
+    def fake_ffprobe(path: Path) -> dict[str, object]:
+        assert path.suffix.lower() == ".heic"
+        return {
+            "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2", "tags": {"make": "Apple"}},
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "hevc",
+                    "width": 4032,
+                    "height": 3024,
+                    "pix_fmt": "yuvj420p",
+                }
+            ],
+        }
+
+    monkeypatch.setattr("jeb.collector.ffprobe_for_signature", fake_ffprobe)
+    notifier = RecordingNotifier([])
+    collector = Collector(config, target_runners={"munchy": CompleteRunner()}, notifier=notifier)
+
+    collector.run_once()
+
+    batch_id = _single_batch_id(collector)
+    assert [row["target_path"] for row in collector.batch_files(batch_id)] == [
+        "phone/accepted.mp4"
+    ]
+    held = collector.held_signatures()
+    assert len(held) == 1
+    assert held[0]["source_id"] == "phone"
+    assert held[0]["reason"] == "no_matching_route"
+    assert held[0]["file_count"] == 1
+    assert json.loads(held[0]["example_paths_json"]) == ["phone/IMG_0001.HEIC"]
+    assert notifier.messages == [
+        (
+            f"held-signature__phone__{held[0]['signature_id']}:enrollment:"
+            f"Jeb is holding 1 file(s) from phone with unmatched capture signature "
+            f"{held[0]['signature_id']}; no Munchy upload started"
+        )
+    ]
+
+
+def test_held_signatures_send_daily_reminders(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _base_config(
+        tmp_path,
+        source_ids=["phone"],
+        source_overrides={
+            "phone": {
+                "unmatched_policy": "hold",
+                "include_extensions": [".heic"],
+            }
+        },
+    )
+    _write_stable_file(tmp_path / "landing" / "phone" / "IMG_0001.HEIC")
+    monkeypatch.setattr(
+        "jeb.collector.ffprobe_for_signature",
+        lambda path: {
+            "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2"},
+            "streams": [{"codec_type": "video", "codec_name": "hevc"}],
+        },
+    )
+    notifier = RecordingNotifier([])
+    collector = Collector(config, target_runners={"munchy": CompleteRunner()}, notifier=notifier)
+
+    collector.run_once()
+    held = collector.held_signatures()
+    assert len(notifier.messages) == 1
+
+    collector.run_once()
+    assert len(notifier.messages) == 1
+
+    with collector.connect() as conn:
+        conn.execute(
+            """
+            UPDATE held_signatures
+            SET notified_error_at = ?
+            WHERE source_id = ? AND signature_id = ?
+            """,
+            ("2026-01-01T00:00:00Z", "phone", held[0]["signature_id"]),
+        )
+
+    collector.run_once()
+
+    assert len(notifier.messages) == 2
 
 
 def test_media_preflight_logs_batch_progress(

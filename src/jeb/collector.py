@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import copy
+import fnmatch
 import hashlib
+import json
 import logging
 import os
 import re
@@ -232,6 +234,7 @@ class SourceConfig:
     upload_prefix: str
     stable_seconds: int
     include_extensions: frozenset[str]
+    unmatched_policy: Literal["include", "hold"] = "include"
 
 
 @dataclass(frozen=True)
@@ -269,6 +272,19 @@ class EligibleFile:
     bytes: int
     mtime: float
     mtime_ns: int
+
+
+@dataclass(frozen=True)
+class CaptureSignature:
+    id: str
+    data: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class HeldFile:
+    item: EligibleFile
+    signature: CaptureSignature
+    reason: str
 
 
 class Notifier(Protocol):
@@ -408,6 +424,32 @@ class Collector:
                 "CREATE INDEX IF NOT EXISTS idx_jeb_batches_collection_state "
                 "ON batches(collection_id, state)"
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS held_signatures (
+                    source_id TEXT NOT NULL,
+                    signature_id TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    signature_json TEXT NOT NULL,
+                    example_paths_json TEXT NOT NULL,
+                    file_count INTEGER NOT NULL,
+                    total_bytes INTEGER NOT NULL,
+                    oldest_mtime_ns INTEGER NOT NULL,
+                    newest_mtime_ns INTEGER NOT NULL,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    notified_error_fingerprint TEXT,
+                    notified_error_at TEXT,
+                    PRIMARY KEY (source_id, signature_id)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_jeb_held_signatures_state "
+                "ON held_signatures(state, updated_at)"
+            )
 
     def run_forever(self) -> None:
         self.init_db()
@@ -419,6 +461,7 @@ class Collector:
         self.init_db()
         for batch_id in self.active_batch_ids():
             self.process_batch(batch_id)
+        self.notify_held_signatures()
         active_collections = {
             str(row["collection_id"])
             for row in self.active_batches()
@@ -511,7 +554,13 @@ class Collector:
         before = period if collection.schedule == "weekly" else None
         for source in sources:
             if source.enabled:
-                files.extend(self.eligible_files(source, before=before))
+                source_files = self.eligible_files(source, before=before)
+                if source.unmatched_policy == "hold":
+                    accepted, held = self.filter_accepted_files(source, source_files)
+                    self.record_held_files(source, held)
+                    files.extend(accepted)
+                else:
+                    files.extend(source_files)
         if not files:
             return
         target_paths = [item.target_path for item in files]
@@ -667,6 +716,227 @@ class Collector:
                 )
             )
         return out
+
+    def filter_accepted_files(
+        self,
+        source: SourceConfig,
+        files: Sequence[EligibleFile],
+    ) -> tuple[list[EligibleFile], list[HeldFile]]:
+        accepted: list[EligibleFile] = []
+        held: list[HeldFile] = []
+        for item in files:
+            try:
+                matches = matching_profile_routes(
+                    self.config.munchy_job_defaults,
+                    item,
+                )
+            except SignatureProbeError as exc:
+                held.append(
+                    HeldFile(
+                        item=item,
+                        signature=capture_signature_for_file(item.path, probe_error=str(exc)),
+                        reason="probe_failed",
+                    )
+                )
+                continue
+            if len(matches) == 1:
+                group = str(matches[0].get("group") or "")
+                if group in self.config.profile_groups:
+                    accepted.append(item)
+                    continue
+                held.append(
+                    HeldFile(
+                        item=item,
+                        signature=safe_capture_signature_for_file(item.path),
+                        reason=f"unknown_profile_group:{group or 'blank'}",
+                    )
+                )
+                continue
+            reason = "no_matching_route" if not matches else "multiple_matching_routes"
+            held.append(
+                HeldFile(
+                    item=item,
+                    signature=safe_capture_signature_for_file(item.path),
+                    reason=reason,
+                )
+            )
+        return accepted, held
+
+    def record_held_files(self, source: SourceConfig, held: Sequence[HeldFile]) -> None:
+        by_signature: dict[str, list[HeldFile]] = {}
+        for item in held:
+            by_signature.setdefault(item.signature.id, []).append(item)
+        now_text = iso()
+        with self.connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT signature_id FROM held_signatures
+                WHERE source_id = ? AND state = 'held'
+                """,
+                (source.id,),
+            ).fetchall()
+            active_ids = set(by_signature)
+            resolved = [
+                (now_text, source.id, str(row["signature_id"]))
+                for row in existing
+                if str(row["signature_id"]) not in active_ids
+            ]
+            conn.executemany(
+                """
+                UPDATE held_signatures
+                SET state = 'resolved', updated_at = ?
+                WHERE source_id = ? AND signature_id = ?
+                """,
+                resolved,
+            )
+            for signature_id, rows in by_signature.items():
+                first = rows[0]
+                file_count = len(rows)
+                total_bytes = sum(row.item.bytes for row in rows)
+                oldest_mtime_ns = min(row.item.mtime_ns for row in rows)
+                newest_mtime_ns = max(row.item.mtime_ns for row in rows)
+                examples = [row.item.target_path for row in rows[:5]]
+                existing_row = conn.execute(
+                    """
+                    SELECT first_seen_at, notified_error_fingerprint, notified_error_at
+                    FROM held_signatures
+                    WHERE source_id = ? AND signature_id = ?
+                    """,
+                    (source.id, signature_id),
+                ).fetchone()
+                first_seen_at = (
+                    str(existing_row["first_seen_at"]) if existing_row is not None else now_text
+                )
+                conn.execute(
+                    """
+                    INSERT INTO held_signatures(
+                        source_id, signature_id, state, reason, signature_json,
+                        example_paths_json, file_count, total_bytes, oldest_mtime_ns,
+                        newest_mtime_ns, first_seen_at, last_seen_at, updated_at,
+                        notified_error_fingerprint, notified_error_at
+                    )
+                    VALUES(?, ?, 'held', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(source_id, signature_id) DO UPDATE SET
+                        state = 'held',
+                        reason = excluded.reason,
+                        signature_json = excluded.signature_json,
+                        example_paths_json = excluded.example_paths_json,
+                        file_count = excluded.file_count,
+                        total_bytes = excluded.total_bytes,
+                        oldest_mtime_ns = excluded.oldest_mtime_ns,
+                        newest_mtime_ns = excluded.newest_mtime_ns,
+                        last_seen_at = excluded.last_seen_at,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        source.id,
+                        signature_id,
+                        first.reason,
+                        stable_json(first.signature.data),
+                        stable_json(examples),
+                        file_count,
+                        total_bytes,
+                        oldest_mtime_ns,
+                        newest_mtime_ns,
+                        first_seen_at,
+                        now_text,
+                        now_text,
+                        str(existing_row["notified_error_fingerprint"])
+                        if existing_row is not None
+                        and existing_row["notified_error_fingerprint"] is not None
+                        else None,
+                        (
+                            str(existing_row["notified_error_at"])
+                            if existing_row is not None
+                            and existing_row["notified_error_at"] is not None
+                            else None
+                        ),
+                    ),
+                )
+        self.notify_held_signatures(source.id)
+
+    def held_signatures(
+        self,
+        *,
+        source_id: str | None = None,
+        state: Literal["held", "resolved", "all"] = "held",
+    ) -> list[sqlite3.Row]:
+        clauses: list[str] = []
+        values: list[object] = []
+        if source_id:
+            clauses.append("source_id = ?")
+            values.append(source_id)
+        if state != "all":
+            clauses.append("state = ?")
+            values.append(state)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with self.connect() as conn:
+            return conn.execute(
+                f"""
+                SELECT * FROM held_signatures
+                {where}
+                ORDER BY state, source_id, updated_at DESC, signature_id
+                """,
+                values,
+            ).fetchall()
+
+    def held_signature(self, signature_id: str, *, source_id: str | None = None) -> sqlite3.Row:
+        rows = [
+            row
+            for row in self.held_signatures(source_id=source_id, state="all")
+            if str(row["signature_id"]) == signature_id
+        ]
+        if not rows:
+            raise KeyError(signature_id)
+        if len(rows) > 1 and source_id is None:
+            raise ValueError(f"signature {signature_id} exists for multiple sources; pass --source")
+        return rows[0]
+
+    def notify_held_signatures(self, source_id: str | None = None) -> None:
+        for row in self.held_signatures(source_id=source_id, state="held"):
+            self.notify_held_signature(row)
+
+    def notify_held_signature(self, row: Mapping[str, Any] | sqlite3.Row) -> bool:
+        payload = dict(row)
+        source_id = str(payload["source_id"])
+        signature_id = str(payload["signature_id"])
+        reason = str(payload["reason"])
+        message = (
+            f"Jeb is holding {payload['file_count']} file(s) from {source_id} "
+            f"with unmatched capture signature {signature_id}; no Munchy upload started"
+        )
+        fingerprint = hashlib.sha256(
+            f"held-signature:{source_id}:{signature_id}:{reason}".encode()
+        ).hexdigest()[:24]
+        if payload.get("notified_error_fingerprint") == fingerprint and not (
+            self.notification_reminder_due(payload)
+        ):
+            return True
+        batch = {
+            "id": f"held-signature__{source_id}__{signature_id}",
+            "source_id": source_id,
+            "target_name": "munchy",
+            "target_type": "munchy",
+            "collection_slug": "jeb-held-signatures",
+            "collection_timestamp": str(payload["updated_at"]),
+            "state": "held",
+        }
+        if not self.notifier.critical_batch_issue(
+            batch=batch,
+            message=message,
+            component="enrollment",
+        ):
+            return False
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE held_signatures
+                SET notified_error_fingerprint = ?, notified_error_at = ?, updated_at = ?
+                WHERE source_id = ? AND signature_id = ?
+                """,
+                (fingerprint, iso(), iso(), source_id, signature_id),
+            )
+        return True
 
     def create_batch(
         self,
@@ -1375,6 +1645,300 @@ def is_transient_error(exc: BaseException) -> bool:
     return False
 
 
+class SignatureProbeError(JebError):
+    """Raised when a capture signature probe cannot inspect media metadata."""
+
+
+def stable_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def lower_mapping(value: object) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        str(key).strip().lower(): str(item).strip().lower()
+        for key, item in value.items()
+        if str(key).strip() and str(item).strip()
+    }
+
+
+def parse_rate(value: object) -> float | None:
+    if value in (None, "", "0/0"):
+        return None
+    text = str(value)
+    if "/" in text:
+        numerator, denominator = text.split("/", 1)
+        try:
+            denom = float(denominator)
+            if denom == 0:
+                return None
+            return float(numerator) / denom
+        except ValueError:
+            return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def fps_bucket(value: float | None) -> str | None:
+    if value is None or value <= 0:
+        return None
+    for bucket in (24.0, 25.0, 30.0, 50.0, 60.0, 120.0, 240.0):
+        if abs(value - bucket) <= 1.0:
+            return f"{bucket:g}"
+    return f"{round(value):g}"
+
+
+def ffprobe_for_signature(path: Path) -> dict[str, Any]:
+    proc = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            str(path),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "ffprobe failed")[-1000:]
+        raise SignatureProbeError(detail.strip())
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise SignatureProbeError("ffprobe returned invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise SignatureProbeError("ffprobe returned non-object JSON")
+    return payload
+
+
+def selected_signature_tags(value: object) -> dict[str, str]:
+    tags = lower_mapping(value)
+    wanted = {
+        "make",
+        "model",
+        "software",
+        "encoder",
+        "handler_name",
+        "com.apple.quicktime.make",
+        "com.apple.quicktime.model",
+        "com.apple.quicktime.software",
+    }
+    return {key: tags[key][:120] for key in sorted(wanted & set(tags))}
+
+
+def stream_signature(stream: Mapping[str, Any]) -> dict[str, object]:
+    rate = parse_rate(stream.get("avg_frame_rate")) or parse_rate(stream.get("r_frame_rate"))
+    out: dict[str, object] = {
+        "type": str(stream.get("codec_type") or "unknown").lower(),
+        "codec": str(stream.get("codec_name") or "unknown").lower(),
+    }
+    width = int(stream.get("width") or 0)
+    height = int(stream.get("height") or 0)
+    if width and height:
+        out["width"] = width
+        out["height"] = height
+    pix_fmt = str(stream.get("pix_fmt") or "").lower()
+    if pix_fmt and pix_fmt != "none":
+        out["pix_fmt"] = pix_fmt
+    bucket = fps_bucket(rate)
+    if bucket is not None:
+        out["fps_bucket"] = bucket
+    tags = selected_signature_tags(stream.get("tags"))
+    if tags:
+        out["tags"] = tags
+    return out
+
+
+def capture_signature_from_probe(path: Path, payload: Mapping[str, Any]) -> CaptureSignature:
+    format_info = payload.get("format") if isinstance(payload.get("format"), Mapping) else {}
+    raw_streams = payload.get("streams")
+    streams: Sequence[object] = raw_streams if isinstance(raw_streams, list) else ()
+    stream_data = [
+        stream_signature(cast(Mapping[str, Any], stream))
+        for stream in streams
+        if isinstance(stream, Mapping)
+    ]
+    stream_data.sort(key=stable_json)
+    data: dict[str, object] = {
+        "suffix": (path.suffix or "").lower(),
+        "format_name": str(cast(Mapping[str, Any], format_info).get("format_name") or "").lower(),
+        "streams": stream_data,
+    }
+    tags = selected_signature_tags(cast(Mapping[str, Any], format_info).get("tags"))
+    if tags:
+        data["format_tags"] = tags
+    signature_id = hashlib.sha256(stable_json(data).encode("utf-8")).hexdigest()[:16]
+    return CaptureSignature(id=signature_id, data=data)
+
+
+def capture_signature_for_file(path: Path, *, probe_error: str | None = None) -> CaptureSignature:
+    if probe_error is not None:
+        data: dict[str, object] = {
+            "suffix": (path.suffix or "").lower(),
+            "probe": "failed",
+        }
+        signature_id = hashlib.sha256(stable_json(data).encode("utf-8")).hexdigest()[:16]
+        return CaptureSignature(id=signature_id, data=data)
+    return capture_signature_from_probe(path, ffprobe_for_signature(path))
+
+
+def safe_capture_signature_for_file(path: Path) -> CaptureSignature:
+    try:
+        return capture_signature_for_file(path)
+    except SignatureProbeError as exc:
+        return capture_signature_for_file(path, probe_error=str(exc))
+
+
+def routing_probe_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
+    raw_streams = payload.get("streams")
+    streams: Sequence[object] = raw_streams if isinstance(raw_streams, list) else ()
+    video_stream = next(
+        (
+            stream
+            for stream in streams
+            if isinstance(stream, Mapping) and stream.get("codec_type") == "video"
+        ),
+        {},
+    )
+    format_info = payload.get("format") if isinstance(payload.get("format"), Mapping) else {}
+    return {
+        "format_name": str(cast(Mapping[str, Any], format_info).get("format_name") or ""),
+        "format_tags": lower_mapping(cast(Mapping[str, Any], format_info).get("tags")),
+        "stream_tags": lower_mapping(cast(Mapping[str, Any], video_stream).get("tags")),
+        "codec_name": str(cast(Mapping[str, Any], video_stream).get("codec_name") or "").lower(),
+        "width": int(cast(Mapping[str, Any], video_stream).get("width") or 0),
+        "height": int(cast(Mapping[str, Any], video_stream).get("height") or 0),
+        "fps": parse_rate(cast(Mapping[str, Any], video_stream).get("avg_frame_rate"))
+        or parse_rate(cast(Mapping[str, Any], video_stream).get("r_frame_rate"))
+        or 0.0,
+    }
+
+
+def route_requires_probe(route: Mapping[str, Any]) -> bool:
+    probe_keys = {
+        "format_name_contains",
+        "codec_names",
+        "width",
+        "height",
+        "min_width",
+        "max_width",
+        "min_height",
+        "max_height",
+        "fps",
+        "min_fps",
+        "max_fps",
+        "format_tags",
+        "stream_tags",
+    }
+    return any(route.get(key) for key in probe_keys)
+
+
+def route_matches_path(route: Mapping[str, Any], rel_path: str) -> bool:
+    filename = rel_path.rsplit("/", 1)[-1]
+    prefix = route.get("path_prefix")
+    if isinstance(prefix, str) and prefix:
+        normalized = prefix.rstrip("/")
+        if rel_path != normalized and not rel_path.startswith(f"{normalized}/"):
+            return False
+    path_glob = route.get("path_glob")
+    if isinstance(path_glob, str) and path_glob and not fnmatch.fnmatchcase(rel_path, path_glob):
+        return False
+    filename_glob = route.get("filename_glob")
+    if (
+        isinstance(filename_glob, str)
+        and filename_glob
+        and not fnmatch.fnmatchcase(filename, filename_glob)
+    ):
+        return False
+    suffixes = [str(item).lower() for item in route.get("suffixes") or []]
+    if suffixes and not any(filename.lower().endswith(suffix) for suffix in suffixes):
+        return False
+    return True
+
+
+def route_matches_probe(route: Mapping[str, Any], summary: Mapping[str, Any]) -> bool:
+    format_needles = [str(item).lower() for item in route.get("format_name_contains") or []]
+    format_name = str(summary.get("format_name") or "").lower()
+    if format_needles and not all(needle in format_name for needle in format_needles):
+        return False
+    codec_names = [str(item).lower() for item in route.get("codec_names") or []]
+    if codec_names and str(summary.get("codec_name") or "").lower() not in codec_names:
+        return False
+    width = int(summary.get("width") or 0)
+    height = int(summary.get("height") or 0)
+    fps = float(summary.get("fps") or 0.0)
+    for key, actual_dimension in (("width", width), ("height", height)):
+        expected = route.get(key)
+        if expected is not None and actual_dimension != int(cast(int, expected)):
+            return False
+    numeric_limits: tuple[tuple[str, float, Literal["min", "max"]], ...] = (
+        ("min_width", float(width), "min"),
+        ("max_width", float(width), "max"),
+        ("min_height", float(height), "min"),
+        ("max_height", float(height), "max"),
+        ("min_fps", fps, "min"),
+        ("max_fps", fps, "max"),
+    )
+    for key, actual_limit, op in numeric_limits:
+        expected = route.get(key)
+        if expected is None:
+            continue
+        if op == "min" and actual_limit < float(cast(float, expected)):
+            return False
+        if op == "max" and actual_limit > float(cast(float, expected)):
+            return False
+    expected_fps = route.get("fps")
+    if expected_fps is not None and abs(fps - float(cast(float, expected_fps))) > 0.01:
+        return False
+
+    for tag_scope in ("format_tags", "stream_tags"):
+        expected_tags = route.get(tag_scope) or {}
+        if not isinstance(expected_tags, Mapping) or not expected_tags:
+            continue
+        actual_tags = summary.get(tag_scope) if isinstance(summary.get(tag_scope), Mapping) else {}
+        lower_actual = lower_mapping(actual_tags)
+        for key, expected in expected_tags.items():
+            actual_value = str(lower_actual.get(str(key).lower()) or "")
+            if str(expected).lower() not in actual_value:
+                return False
+    return True
+
+
+def profile_routes(defaults: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    routing = mapping(defaults.get("profile_routing"))
+    routes = routing.get("routes")
+    if not isinstance(routes, list):
+        return []
+    return [route for route in routes if isinstance(route, Mapping)]
+
+
+def matching_profile_routes(
+    defaults: Mapping[str, Any],
+    item: EligibleFile,
+) -> list[Mapping[str, Any]]:
+    matches: list[Mapping[str, Any]] = []
+    probe_summary: dict[str, Any] | None = None
+    for route in profile_routes(defaults):
+        if not route_matches_path(route, item.target_path):
+            continue
+        if route_requires_probe(route):
+            if probe_summary is None:
+                probe_summary = routing_probe_summary(ffprobe_for_signature(item.path))
+            if not route_matches_probe(route, probe_summary):
+                continue
+        matches.append(route)
+    return matches
+
+
 def load_config(path: Path) -> JebConfig:
     with path.open("rb") as handle:
         raw = tomllib.load(handle)
@@ -1488,6 +2052,9 @@ def load_source(raw_any: Any) -> SourceConfig:
     if not SAFE_NAME.fullmatch(source_id):
         raise ValueError(f"invalid source id {source_id!r}")
     upload_prefix = normalize_posix(optional_str(raw.get("upload_prefix")) or source_id)
+    unmatched_policy = str(raw.get("unmatched_policy") or "include")
+    if unmatched_policy not in {"include", "hold"}:
+        raise ValueError(f"source {source_id} has invalid unmatched_policy {unmatched_policy!r}")
     return SourceConfig(
         id=source_id,
         enabled=bool(raw.get("enabled", True)),
@@ -1497,6 +2064,7 @@ def load_source(raw_any: Any) -> SourceConfig:
         include_extensions=frozenset(
             str(item).lower() for item in sequence(raw.get("include_extensions"))
         ),
+        unmatched_policy=cast(Literal["include", "hold"], unmatched_policy),
     )
 
 
