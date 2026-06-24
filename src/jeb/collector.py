@@ -28,7 +28,6 @@ from munchy.preflight import (
     run_media_preflight,
 )
 from munchy.profile_routing import (
-    match_profile_route,
     profile_routes,
     routing_probe_summary,
 )
@@ -36,6 +35,7 @@ from munchy.runner_client import (
     MunchyRunnerClient,
     RunnerInputFile,
     RunnerJobTerminalDuringUpload,
+    RunnerProfileRoutingPreflightFile,
     RunnerUploadRequest,
     job_finished_cleanly,
 )
@@ -57,7 +57,7 @@ TRANSIENT_RETRY_INITIAL_SECONDS = 1.0
 TRANSIENT_RETRY_MAX_SECONDS = 300.0
 DEFAULT_GPU_TASKS = ("archive_video", "qcut_video")
 PREFLIGHT_MEDIA_EXTENSIONS = frozenset(MP4_LIKE_EXTENSIONS | {".mkv", ".webm"})
-HELD_SIGNATURE_NOTIFICATION_BODY_LIMIT = 120
+ROUTING_PREFLIGHT_NOTIFICATION_BODY_LIMIT = 180
 
 
 def format_progress_bytes(value: int) -> str:
@@ -71,20 +71,20 @@ def format_progress_bytes(value: int) -> str:
     return f"{amount:.2f} TiB"
 
 
-def held_signature_notification_message(
+def routing_preflight_notification_message(
     *,
     source_id: str,
-    signature_count: int,
     file_count: int,
+    unmatched_count: int,
 ) -> str:
     base = (
-        f"{signature_count} {plural(signature_count, 'signature')} and "
-        f"{file_count} {plural(file_count, 'file')} held; no Munchy upload."
+        f"Munchy routing preflight failed: {unmatched_count}/"
+        f"{file_count} {plural(file_count, 'file')} unmatched."
     )
-    message = f"{base} Next: run `jeb signatures list --source {source_id}`."
-    if len(message) <= HELD_SIGNATURE_NOTIFICATION_BODY_LIMIT:
+    message = f"{base} Next: fix routes, then run `jeb archive-now --source {source_id}`."
+    if len(message) <= ROUTING_PREFLIGHT_NOTIFICATION_BODY_LIMIT:
         return message
-    return f"{base} Next: inspect held Jeb signatures."
+    return f"{base} Next: fix routes, then retry Jeb archive."
 
 
 def plural(count: int, singular: str, plural_form: str | None = None) -> str:
@@ -261,7 +261,6 @@ class SourceConfig:
     upload_prefix: str
     stable_seconds: int
     include_extensions: frozenset[str]
-    unmatched_policy: Literal["include", "hold"] = "include"
 
 
 @dataclass(frozen=True)
@@ -299,19 +298,6 @@ class EligibleFile:
     bytes: int
     mtime: float
     mtime_ns: int
-
-
-@dataclass(frozen=True)
-class CaptureSignature:
-    id: str
-    data: Mapping[str, Any]
-
-
-@dataclass(frozen=True)
-class HeldFile:
-    item: EligibleFile
-    signature: CaptureSignature
-    reason: str
 
 
 class Notifier(Protocol):
@@ -500,31 +486,34 @@ class Collector:
                 "CREATE INDEX IF NOT EXISTS idx_jeb_batches_collection_state "
                 "ON batches(collection_id, state)"
             )
+            conn.execute("DROP TABLE IF EXISTS held_signatures")
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS held_signatures (
-                    source_id TEXT NOT NULL,
-                    signature_id TEXT NOT NULL,
+                CREATE TABLE IF NOT EXISTS routing_preflight_failures (
+                    source_id TEXT PRIMARY KEY,
                     state TEXT NOT NULL,
-                    reason TEXT NOT NULL,
-                    signature_json TEXT NOT NULL,
-                    example_paths_json TEXT NOT NULL,
+                    collection_id TEXT NOT NULL,
+                    collection_slug TEXT NOT NULL,
+                    target_name TEXT NOT NULL,
+                    source_paths_json TEXT NOT NULL,
+                    failure_json TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    message TEXT NOT NULL,
                     file_count INTEGER NOT NULL,
                     total_bytes INTEGER NOT NULL,
-                    oldest_mtime_ns INTEGER NOT NULL,
-                    newest_mtime_ns INTEGER NOT NULL,
+                    unmatched_count INTEGER NOT NULL,
                     first_seen_at TEXT NOT NULL,
                     last_seen_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
+                    resolved_at TEXT,
                     notified_error_fingerprint TEXT,
-                    notified_error_at TEXT,
-                    PRIMARY KEY (source_id, signature_id)
+                    notified_error_at TEXT
                 )
                 """
             )
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_jeb_held_signatures_state "
-                "ON held_signatures(state, updated_at)"
+                "CREATE INDEX IF NOT EXISTS idx_jeb_routing_preflight_failures_state "
+                "ON routing_preflight_failures(state, updated_at)"
             )
 
     def run_forever(self) -> None:
@@ -545,7 +534,7 @@ class Collector:
         for collection in self.config.collections:
             if collection.enabled and collection.id not in active_collections:
                 self.discover_collection(collection)
-        self.notify_held_signatures()
+        self.notify_routing_preflight_failures()
 
     def active_batches(self) -> list[sqlite3.Row]:
         terminal = tuple(sorted(TERMINAL_STATES))
@@ -623,22 +612,51 @@ class Collector:
                 values,
             )
 
-    def discover_collection(self, collection: CollectionConfig) -> None:
-        period = self.collection_period(collection)
-        sources = [self.source_by_id(source_id) for source_id in collection.source_ids]
+    def discover_collection(
+        self,
+        collection: CollectionConfig,
+        *,
+        only_source_ids: Sequence[str] | None = None,
+        force: bool = False,
+        allow_preflight_retry: bool = False,
+    ) -> str | None:
+        period = now() if force else self.collection_period(collection)
+        if only_source_ids is None:
+            source_ids = collection.source_ids
+        else:
+            requested = set(only_source_ids)
+            missing = sorted(requested - set(collection.source_ids))
+            if missing:
+                raise UnrecoverableJebError(
+                    f"collection {collection.id} does not include source(s): "
+                    + ", ".join(missing)
+                )
+            source_ids = tuple(
+                source_id for source_id in collection.source_ids if source_id in requested
+            )
+        sources = [self.source_by_id(source_id) for source_id in source_ids]
         files: list[EligibleFile] = []
-        before = period if collection.schedule == "weekly" else None
+        before = None if force else period if collection.schedule == "weekly" else None
         for source in sources:
             if source.enabled:
+                if (
+                    not allow_preflight_retry
+                    and self.routing_preflight_failure_active(source.id)
+                ):
+                    LOG.info(
+                        "source %s has an active routing preflight failure; "
+                        "skipping until operator retry",
+                        source.id,
+                    )
+                    continue
                 source_files = self.eligible_files(source, before=before)
-                if source.unmatched_policy == "hold":
-                    accepted, held = self.filter_accepted_files(source, source_files)
-                    self.record_held_files(source, held)
-                    files.extend(accepted)
-                else:
-                    files.extend(source_files)
+                if not source_files:
+                    continue
+                if not self.preflight_source_routes(collection, source, source_files):
+                    continue
+                files.extend(source_files)
         if not files:
-            return
+            return None
         target_paths = [item.target_path for item in files]
         if len(target_paths) != len(set(target_paths)):
             duplicates = sorted(path for path in set(target_paths) if target_paths.count(path) > 1)
@@ -653,14 +671,14 @@ class Collector:
                 collection.id,
                 total / 1_000_000_000,
             )
-            return
+            return None
         base_batch_id, base_digest = self.batch_identity(collection, files, period=period)
-        if collection.schedule == "weekly" and self.batch_exists_for_period(
+        if not force and collection.schedule == "weekly" and self.batch_exists_for_period(
             collection.id,
             period,
             candidate_batch_id=base_batch_id,
         ):
-            return
+            return None
         batch_id, digest = self.available_batch_identity(base_batch_id, base_digest)
         self.supersede_failed_batches_for_period(
             collection.id,
@@ -668,6 +686,7 @@ class Collector:
             excluding_batch_id=batch_id,
         )
         self.create_batch(collection, files, period=period, batch_id=batch_id, digest=digest)
+        return batch_id
 
     def collection_period(self, collection: CollectionConfig) -> datetime:
         if collection.schedule == "always":
@@ -793,150 +812,210 @@ class Collector:
             )
         return out
 
-    def filter_accepted_files(
+    def preflight_source_routes(
         self,
+        collection: CollectionConfig,
         source: SourceConfig,
         files: Sequence[EligibleFile],
-    ) -> tuple[list[EligibleFile], list[HeldFile]]:
-        accepted: list[EligibleFile] = []
-        held: list[HeldFile] = []
+    ) -> bool:
+        if not files:
+            return True
+        target = self.target_by_name(collection.target)
+        groups = munchy_groups_payload(self.config)
         profile_routing = mapping(self.config.munchy_job_defaults.get("profile_routing"))
-        for item in files:
-            def load_probe_summary(path: Path = item.path) -> Mapping[str, Any]:
-                return routing_probe_summary(ffprobe_for_signature(path))
-
-            try:
-                match = match_profile_route(
-                    profile_routing,
-                    item.target_path,
-                    probe_summary_loader=load_probe_summary,
-                )
-            except SignatureProbeError as exc:
-                held.append(
-                    HeldFile(
-                        item=item,
-                        signature=capture_signature_for_file(item.path, probe_error=str(exc)),
-                        reason="probe_failed",
-                    )
-                )
-                continue
-            if match is None:
-                held.append(
-                    HeldFile(
-                        item=item,
-                        signature=safe_capture_signature_for_file(item.path),
-                        reason="no_matching_route",
-                    )
-                )
-                continue
-            if match.group in self.config.profile_groups:
-                accepted.append(item)
-                continue
-            held.append(
-                HeldFile(
-                    item=item,
-                    signature=safe_capture_signature_for_file(item.path),
-                    reason=f"unknown_profile_group:{match.group or 'blank'}",
-                )
+        preflight_files = tuple(self.routing_preflight_file(item) for item in files)
+        try:
+            result = MunchyRunnerClient(target.url).profile_routing_preflight(
+                files=preflight_files,
+                groups=groups,
+                profile_routing=dict(profile_routing),
             )
-        return accepted, held
+        except Exception as exc:
+            if is_transient_error(exc):
+                LOG.warning(
+                    "source %s routing preflight hit transient Munchy issue; "
+                    "will retry later: %s",
+                    source.id,
+                    exc,
+                )
+                return False
+            result = {
+                "ok": False,
+                "files_total": len(files),
+                "matched_files": 0,
+                "unmatched_files": len(files),
+                "unmatched": [
+                    {
+                        "path": files[0].target_path,
+                        "reason": "munchy_preflight_error",
+                        "error": str(exc),
+                    }
+                ],
+                "error": str(exc),
+            }
+        if result.get("ok"):
+            self.clear_routing_preflight_failure(source.id)
+            return True
+        self.record_routing_preflight_failure(
+            collection=collection,
+            source=source,
+            files=files,
+            result=result,
+        )
+        self.notify_routing_preflight_failures(source_id=source.id)
+        return False
 
-    def record_held_files(self, source: SourceConfig, held: Sequence[HeldFile]) -> None:
-        by_signature: dict[str, list[HeldFile]] = {}
-        for item in held:
-            by_signature.setdefault(item.signature.id, []).append(item)
+    def routing_preflight_file(self, item: EligibleFile) -> RunnerProfileRoutingPreflightFile:
+        try:
+            probe_summary = routing_probe_summary(ffprobe_for_routing_preflight(item.path))
+            probe_error = None
+        except RoutingProbeError as exc:
+            probe_summary = None
+            probe_error = str(exc)[:1000]
+        return RunnerProfileRoutingPreflightFile(
+            rel_path=item.target_path,
+            bytes=item.bytes,
+            probe_summary=probe_summary,
+            probe_error=probe_error,
+        )
+
+    def record_routing_preflight_failure(
+        self,
+        *,
+        collection: CollectionConfig,
+        source: SourceConfig,
+        files: Sequence[EligibleFile],
+        result: Mapping[str, Any],
+    ) -> None:
         now_text = iso()
+        unmatched = [
+            dict(item)
+            for item in sequence(result.get("unmatched"))
+            if isinstance(item, Mapping)
+        ]
+        unmatched_count = int(result.get("unmatched_files") or len(unmatched) or 0)
+        file_count = int(result.get("files_total") or len(files))
+        total_bytes = sum(item.bytes for item in files)
+        failure_payload = {
+            "ok": False,
+            "matched_files": int(result.get("matched_files") or 0),
+            "unmatched_files": unmatched_count,
+            "unmatched": unmatched[:20],
+            "error": optional_str(result.get("error")),
+        }
+        fingerprint_payload = {
+            "source_id": source.id,
+            "unmatched": [
+                {
+                    "path": str(item.get("path") or ""),
+                    "reason": str(item.get("reason") or ""),
+                    "error": str(item.get("error") or item.get("probe_error") or "")[:240],
+                }
+                for item in unmatched
+            ],
+            "error": optional_str(result.get("error")),
+        }
+        fingerprint = hashlib.sha256(stable_json(fingerprint_payload).encode()).hexdigest()[:24]
+        message = routing_preflight_notification_message(
+            source_id=source.id,
+            file_count=file_count,
+            unmatched_count=unmatched_count,
+        )
+        source_paths = [item.target_path for item in files[:20]]
         with self.connect() as conn:
             existing = conn.execute(
                 """
-                SELECT signature_id FROM held_signatures
-                WHERE source_id = ? AND state = 'held'
+                SELECT first_seen_at, notified_error_fingerprint, notified_error_at
+                FROM routing_preflight_failures
+                WHERE source_id = ?
                 """,
                 (source.id,),
-            ).fetchall()
-            active_ids = set(by_signature)
-            resolved = [
-                (now_text, source.id, str(row["signature_id"]))
-                for row in existing
-                if str(row["signature_id"]) not in active_ids
-            ]
-            conn.executemany(
-                """
-                UPDATE held_signatures
-                SET state = 'resolved', updated_at = ?
-                WHERE source_id = ? AND signature_id = ?
-                """,
-                resolved,
+            ).fetchone()
+            first_seen_at = (
+                str(existing["first_seen_at"]) if existing is not None else now_text
             )
-            for signature_id, rows in by_signature.items():
-                first = rows[0]
-                file_count = len(rows)
-                total_bytes = sum(row.item.bytes for row in rows)
-                oldest_mtime_ns = min(row.item.mtime_ns for row in rows)
-                newest_mtime_ns = max(row.item.mtime_ns for row in rows)
-                examples = [row.item.target_path for row in rows[:5]]
-                existing_row = conn.execute(
-                    """
-                    SELECT first_seen_at, notified_error_fingerprint, notified_error_at
-                    FROM held_signatures
-                    WHERE source_id = ? AND signature_id = ?
-                    """,
-                    (source.id, signature_id),
-                ).fetchone()
-                first_seen_at = (
-                    str(existing_row["first_seen_at"]) if existing_row is not None else now_text
+            conn.execute(
+                """
+                INSERT INTO routing_preflight_failures(
+                    source_id, state, collection_id, collection_slug, target_name,
+                    source_paths_json, failure_json, fingerprint, message,
+                    file_count, total_bytes, unmatched_count, first_seen_at,
+                    last_seen_at, updated_at, resolved_at,
+                    notified_error_fingerprint, notified_error_at
                 )
-                conn.execute(
-                    """
-                    INSERT INTO held_signatures(
-                        source_id, signature_id, state, reason, signature_json,
-                        example_paths_json, file_count, total_bytes, oldest_mtime_ns,
-                        newest_mtime_ns, first_seen_at, last_seen_at, updated_at,
-                        notified_error_fingerprint, notified_error_at
-                    )
-                    VALUES(?, ?, 'held', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(source_id, signature_id) DO UPDATE SET
-                        state = 'held',
-                        reason = excluded.reason,
-                        signature_json = excluded.signature_json,
-                        example_paths_json = excluded.example_paths_json,
-                        file_count = excluded.file_count,
-                        total_bytes = excluded.total_bytes,
-                        oldest_mtime_ns = excluded.oldest_mtime_ns,
-                        newest_mtime_ns = excluded.newest_mtime_ns,
-                        last_seen_at = excluded.last_seen_at,
-                        updated_at = excluded.updated_at
-                    """,
+                VALUES(?, 'failed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                ON CONFLICT(source_id) DO UPDATE SET
+                    state = 'failed',
+                    collection_id = excluded.collection_id,
+                    collection_slug = excluded.collection_slug,
+                    target_name = excluded.target_name,
+                    source_paths_json = excluded.source_paths_json,
+                    failure_json = excluded.failure_json,
+                    fingerprint = excluded.fingerprint,
+                    message = excluded.message,
+                    file_count = excluded.file_count,
+                    total_bytes = excluded.total_bytes,
+                    unmatched_count = excluded.unmatched_count,
+                    last_seen_at = excluded.last_seen_at,
+                    updated_at = excluded.updated_at,
+                    resolved_at = NULL
+                """,
+                (
+                    source.id,
+                    collection.id,
+                    collection.collection_slug,
+                    collection.target,
+                    stable_json(source_paths),
+                    stable_json(failure_payload),
+                    fingerprint,
+                    message,
+                    file_count,
+                    total_bytes,
+                    unmatched_count,
+                    first_seen_at,
+                    now_text,
+                    now_text,
                     (
-                        source.id,
-                        signature_id,
-                        first.reason,
-                        stable_json(first.signature.data),
-                        stable_json(examples),
-                        file_count,
-                        total_bytes,
-                        oldest_mtime_ns,
-                        newest_mtime_ns,
-                        first_seen_at,
-                        now_text,
-                        now_text,
-                        str(existing_row["notified_error_fingerprint"])
-                        if existing_row is not None
-                        and existing_row["notified_error_fingerprint"] is not None
-                        else None,
-                        (
-                            str(existing_row["notified_error_at"])
-                            if existing_row is not None
-                            and existing_row["notified_error_at"] is not None
-                            else None
-                        ),
+                        str(existing["notified_error_fingerprint"])
+                        if existing is not None
+                        and existing["notified_error_fingerprint"] is not None
+                        else None
                     ),
-                )
-    def held_signatures(
+                    (
+                        str(existing["notified_error_at"])
+                        if existing is not None and existing["notified_error_at"] is not None
+                        else None
+                    ),
+                ),
+            )
+
+    def clear_routing_preflight_failure(self, source_id: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE routing_preflight_failures
+                SET state = 'resolved', resolved_at = ?, updated_at = ?
+                WHERE source_id = ? AND state = 'failed'
+                """,
+                (iso(), iso(), source_id),
+            )
+
+    def routing_preflight_failure_active(self, source_id: str) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM routing_preflight_failures
+                WHERE source_id = ? AND state = 'failed'
+                """,
+                (source_id,),
+            ).fetchone()
+        return row is not None
+
+    def routing_preflight_failures(
         self,
         *,
         source_id: str | None = None,
-        state: Literal["held", "resolved", "all"] = "held",
+        state: Literal["failed", "resolved", "all"] = "failed",
     ) -> list[sqlite3.Row]:
         clauses: list[str] = []
         values: list[object] = []
@@ -950,95 +1029,86 @@ class Collector:
         with self.connect() as conn:
             return conn.execute(
                 f"""
-                SELECT * FROM held_signatures
+                SELECT * FROM routing_preflight_failures
                 {where}
-                ORDER BY state, source_id, updated_at DESC, signature_id
+                ORDER BY state, source_id, updated_at DESC
                 """,
                 values,
             ).fetchall()
 
-    def held_signature(self, signature_id: str, *, source_id: str | None = None) -> sqlite3.Row:
-        rows = [
-            row
-            for row in self.held_signatures(source_id=source_id, state="all")
-            if str(row["signature_id"]) == signature_id
-        ]
-        if not rows:
-            raise KeyError(signature_id)
-        if len(rows) > 1 and source_id is None:
-            raise ValueError(f"signature {signature_id} exists for multiple sources; pass --source")
-        return rows[0]
+    def notify_routing_preflight_failures(self, source_id: str | None = None) -> None:
+        for row in self.routing_preflight_failures(source_id=source_id, state="failed"):
+            self.notify_routing_preflight_failure(row)
 
-    def notify_held_signatures(self, source_id: str | None = None) -> None:
-        rows = self.held_signatures(source_id=source_id, state="held")
-        if not rows:
-            return
-        by_source: dict[str, list[sqlite3.Row]] = {}
-        for row in rows:
-            by_source.setdefault(str(row["source_id"]), []).append(row)
-        for held_source_id, source_rows in by_source.items():
-            self.notify_held_signature_source(held_source_id, source_rows)
-
-    def notify_held_signature_source(
-        self,
-        source_id: str,
-        rows: Sequence[sqlite3.Row],
-    ) -> bool:
-        if not rows:
-            return True
-        sorted_rows = sorted(rows, key=lambda row: str(row["signature_id"]))
-        total_files = sum(int(row["file_count"]) for row in sorted_rows)
-        fingerprint_payload = [
-            {
-                "signature_id": str(row["signature_id"]),
-                "reason": str(row["reason"]),
-                "file_count": int(row["file_count"]),
-                "total_bytes": int(row["total_bytes"]),
-            }
-            for row in sorted_rows
-        ]
-        fingerprint = hashlib.sha256(
-            f"held-signatures:{source_id}:{stable_json(fingerprint_payload)}".encode()
-        ).hexdigest()[:24]
-        if any(
-            row["notified_error_at"] is not None and not self.notification_reminder_due(dict(row))
-            for row in sorted_rows
+    def notify_routing_preflight_failure(self, row: sqlite3.Row) -> bool:
+        row_payload = dict(row)
+        fingerprint = str(row_payload["fingerprint"])
+        if (
+            row_payload.get("notified_error_fingerprint") == fingerprint
+            and not self.notification_reminder_due(row_payload)
         ):
             return True
-        message = held_signature_notification_message(
-            source_id=source_id,
-            signature_count=len(sorted_rows),
-            file_count=total_files,
-        )
+        source_id = str(row_payload["source_id"])
         batch = {
-            "id": f"held-signatures__{source_id}",
+            "id": f"routing-preflight__{source_id}",
             "source_id": source_id,
-            "target_name": "munchy",
+            "target_name": str(row_payload["target_name"]),
             "target_type": "munchy",
-            "collection_slug": "jeb-held-signatures",
+            "collection_slug": str(row_payload["collection_slug"]),
             "collection_timestamp": iso(),
-            "state": "held",
+            "state": "failed",
         }
-        if not self.notifier.enrollment_issue(
+        if not self.notifier.critical_batch_issue(
             batch=batch,
-            message=message,
-            component="enrollment",
+            message=str(row_payload["message"]),
+            component="profile_routing",
         ):
             return False
         now_text = iso()
         with self.connect() as conn:
-            conn.executemany(
+            conn.execute(
                 """
-                UPDATE held_signatures
+                UPDATE routing_preflight_failures
                 SET notified_error_fingerprint = ?, notified_error_at = ?, updated_at = ?
-                WHERE source_id = ? AND signature_id = ?
+                WHERE source_id = ?
                 """,
-                [
-                    (fingerprint, now_text, now_text, source_id, str(row["signature_id"]))
-                    for row in sorted_rows
-                ],
+                (fingerprint, now_text, now_text, source_id),
             )
         return True
+
+    def archive_now(
+        self,
+        *,
+        source_id: str,
+        collection_id: str | None = None,
+        process: bool = True,
+    ) -> str | None:
+        source = self.source_by_id(source_id)
+        if not source.enabled:
+            raise UnrecoverableJebError(f"source {source_id!r} is disabled")
+        collections = [
+            collection
+            for collection in self.config.collections
+            if collection.enabled
+            and source_id in collection.source_ids
+            and (collection_id is None or collection.id == collection_id)
+        ]
+        if not collections:
+            raise UnrecoverableJebError(f"no enabled collection includes source {source_id!r}")
+        if len(collections) > 1:
+            ids = ", ".join(collection.id for collection in collections)
+            raise UnrecoverableJebError(
+                f"source {source_id!r} is in multiple collections; pass --collection: {ids}"
+            )
+        batch_id = self.discover_collection(
+            collections[0],
+            only_source_ids=(source_id,),
+            force=True,
+            allow_preflight_retry=True,
+        )
+        if batch_id is not None and process:
+            self.process_batch(batch_id)
+        return batch_id
 
     def create_batch(
         self,
@@ -1747,157 +1817,46 @@ def is_transient_error(exc: BaseException) -> bool:
     return False
 
 
-class SignatureProbeError(JebError):
-    """Raised when a capture signature probe cannot inspect media metadata."""
+class RoutingProbeError(JebError):
+    """Raised when Jeb cannot inspect media metadata for Munchy routing."""
 
 
 def stable_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
-def lower_mapping(value: object) -> dict[str, str]:
-    if not isinstance(value, Mapping):
-        return {}
-    return {
-        str(key).strip().lower(): str(item).strip().lower()
-        for key, item in value.items()
-        if str(key).strip() and str(item).strip()
-    }
-
-
-def parse_rate(value: object) -> float | None:
-    if value in (None, "", "0/0"):
-        return None
-    text = str(value)
-    if "/" in text:
-        numerator, denominator = text.split("/", 1)
-        try:
-            denom = float(denominator)
-            if denom == 0:
-                return None
-            return float(numerator) / denom
-        except ValueError:
-            return None
+def ffprobe_for_routing_preflight(path: Path) -> dict[str, Any]:
     try:
-        return float(text)
-    except ValueError:
-        return None
-
-
-def fps_bucket(value: float | None) -> str | None:
-    if value is None or value <= 0:
-        return None
-    for bucket in (24.0, 25.0, 30.0, 50.0, 60.0, 120.0, 240.0):
-        if abs(value - bucket) <= 1.0:
-            return f"{bucket:g}"
-    return f"{round(value):g}"
-
-
-def ffprobe_for_signature(path: Path) -> dict[str, Any]:
-    proc = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-print_format",
-            "json",
-            "-show_format",
-            "-show_streams",
-            str(path),
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=120,
-    )
+        proc = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-show_format",
+                "-show_streams",
+                str(path),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+    except FileNotFoundError as exc:
+        raise RoutingProbeError("ffprobe was not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RoutingProbeError("ffprobe timed out") from exc
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "ffprobe failed")[-1000:]
-        raise SignatureProbeError(detail.strip())
+        raise RoutingProbeError(detail.strip())
     try:
         payload = json.loads(proc.stdout or "{}")
     except json.JSONDecodeError as exc:
-        raise SignatureProbeError("ffprobe returned invalid JSON") from exc
+        raise RoutingProbeError("ffprobe returned invalid JSON") from exc
     if not isinstance(payload, dict):
-        raise SignatureProbeError("ffprobe returned non-object JSON")
+        raise RoutingProbeError("ffprobe returned non-object JSON")
     return payload
-
-
-def selected_signature_tags(value: object) -> dict[str, str]:
-    tags = lower_mapping(value)
-    wanted = {
-        "make",
-        "model",
-        "software",
-        "encoder",
-        "handler_name",
-        "com.apple.quicktime.make",
-        "com.apple.quicktime.model",
-        "com.apple.quicktime.software",
-    }
-    return {key: tags[key][:120] for key in sorted(wanted & set(tags))}
-
-
-def stream_signature(stream: Mapping[str, Any]) -> dict[str, object]:
-    rate = parse_rate(stream.get("avg_frame_rate")) or parse_rate(stream.get("r_frame_rate"))
-    out: dict[str, object] = {
-        "type": str(stream.get("codec_type") or "unknown").lower(),
-        "codec": str(stream.get("codec_name") or "unknown").lower(),
-    }
-    width = int(stream.get("width") or 0)
-    height = int(stream.get("height") or 0)
-    if width and height:
-        out["width"] = width
-        out["height"] = height
-    pix_fmt = str(stream.get("pix_fmt") or "").lower()
-    if pix_fmt and pix_fmt != "none":
-        out["pix_fmt"] = pix_fmt
-    bucket = fps_bucket(rate)
-    if bucket is not None:
-        out["fps_bucket"] = bucket
-    tags = selected_signature_tags(stream.get("tags"))
-    if tags:
-        out["tags"] = tags
-    return out
-
-
-def capture_signature_from_probe(path: Path, payload: Mapping[str, Any]) -> CaptureSignature:
-    format_info = payload.get("format") if isinstance(payload.get("format"), Mapping) else {}
-    raw_streams = payload.get("streams")
-    streams: Sequence[object] = raw_streams if isinstance(raw_streams, list) else ()
-    stream_data = [
-        stream_signature(cast(Mapping[str, Any], stream))
-        for stream in streams
-        if isinstance(stream, Mapping)
-    ]
-    stream_data.sort(key=stable_json)
-    data: dict[str, object] = {
-        "suffix": (path.suffix or "").lower(),
-        "format_name": str(cast(Mapping[str, Any], format_info).get("format_name") or "").lower(),
-        "streams": stream_data,
-    }
-    tags = selected_signature_tags(cast(Mapping[str, Any], format_info).get("tags"))
-    if tags:
-        data["format_tags"] = tags
-    signature_id = hashlib.sha256(stable_json(data).encode("utf-8")).hexdigest()[:16]
-    return CaptureSignature(id=signature_id, data=data)
-
-
-def capture_signature_for_file(path: Path, *, probe_error: str | None = None) -> CaptureSignature:
-    if probe_error is not None:
-        data: dict[str, object] = {
-            "suffix": (path.suffix or "").lower(),
-            "probe": "failed",
-        }
-        signature_id = hashlib.sha256(stable_json(data).encode("utf-8")).hexdigest()[:16]
-        return CaptureSignature(id=signature_id, data=data)
-    return capture_signature_from_probe(path, ffprobe_for_signature(path))
-
-
-def safe_capture_signature_for_file(path: Path) -> CaptureSignature:
-    try:
-        return capture_signature_for_file(path)
-    except SignatureProbeError as exc:
-        return capture_signature_for_file(path, probe_error=str(exc))
 
 
 def load_config(path: Path) -> JebConfig:
@@ -2013,9 +1972,6 @@ def load_source(raw_any: Any) -> SourceConfig:
     if not SAFE_NAME.fullmatch(source_id):
         raise ValueError(f"invalid source id {source_id!r}")
     upload_prefix = normalize_posix(optional_str(raw.get("upload_prefix")) or source_id)
-    unmatched_policy = str(raw.get("unmatched_policy") or "include")
-    if unmatched_policy not in {"include", "hold"}:
-        raise ValueError(f"source {source_id} has invalid unmatched_policy {unmatched_policy!r}")
     return SourceConfig(
         id=source_id,
         enabled=bool(raw.get("enabled", True)),
@@ -2025,7 +1981,6 @@ def load_source(raw_any: Any) -> SourceConfig:
         include_extensions=frozenset(
             str(item).lower() for item in sequence(raw.get("include_extensions"))
         ),
-        unmatched_policy=cast(Literal["include", "hold"], unmatched_policy),
     )
 
 

@@ -55,6 +55,15 @@ class RunnerInputFile:
 
 
 @dataclass(frozen=True)
+class RunnerProfileRoutingPreflightFile:
+    rel_path: str
+    bytes: int
+    sha256: str | None = None
+    probe_summary: dict[str, Any] | None = None
+    probe_error: str | None = None
+
+
+@dataclass(frozen=True)
 class RunnerUploadRequest:
     upload_id: str
     job_id: str
@@ -1398,6 +1407,35 @@ class MunchyRunnerClient:
                 file=sys.stderr,
             )
             return None
+
+    def profile_routing_preflight(
+        self,
+        *,
+        files: tuple[RunnerProfileRoutingPreflightFile, ...],
+        groups: dict[str, Any],
+        profile_routing: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload_files = [
+            {
+                "path": item.rel_path,
+                "bytes": item.bytes,
+                "sha256": item.sha256,
+                "probe_summary": item.probe_summary,
+                "probe_error": item.probe_error,
+            }
+            for item in files
+        ]
+        return self._json_with_transient_retries(
+            "POST",
+            "/v1/profile-routing/preflight",
+            payload={
+                "files": payload_files,
+                "groups": groups,
+                "profile_routing": profile_routing,
+            },
+            label="profile routing preflight",
+            timeout=300.0,
+        )
 
     def create_or_get_input_upload(self, request: RunnerUploadRequest) -> dict[str, Any]:
         files = [

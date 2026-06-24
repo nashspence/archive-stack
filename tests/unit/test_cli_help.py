@@ -125,5 +125,6 @@ def test_jeb_help_has_command_summaries(capsys: pytest.CaptureFixture[str]) -> N
     assert "Weekly collector and automated uploader." in stdout
     assert "run           run continuously and process eligible batches" in stdout
     assert "once          discover and process one scheduler pass" in stdout
+    assert "archive-now   retry one source immediately after route repair" in stdout
     assert "check-config  validate configuration and initialize state" in stdout
-    assert "signatures    inspect held capture signatures" in stdout
+    assert "signatures" not in stdout

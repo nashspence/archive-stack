@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import subprocess
@@ -30,6 +29,7 @@ from munchy.preflight import (
     MediaPreflightReport,
     MediaPreflightResult,
 )
+from munchy.profile_routing import match_profile_route
 
 
 def _base_config(
@@ -229,6 +229,62 @@ def _accept_media_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("jeb.collector.run_media_preflight", fake_run_media_preflight)
 
 
+@pytest.fixture(autouse=True)
+def _route_with_shared_matcher(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_profile_routing_preflight(self, *, files, groups, profile_routing):  # type: ignore[no-untyped-def]
+        matches = []
+        unmatched = []
+        for item in files:
+            loader = (
+                (lambda summary=item.probe_summary: summary)
+                if item.probe_summary is not None
+                else None
+            )
+            match = match_profile_route(
+                profile_routing,
+                item.rel_path,
+                probe_summary_loader=loader,
+            )
+            if match is None:
+                unmatched.append(
+                    {
+                        "path": item.rel_path,
+                        "reason": "probe_failed" if item.probe_error else "no_matching_route",
+                        "probe_error": item.probe_error,
+                    }
+                )
+                continue
+            if match.group not in groups:
+                unmatched.append(
+                    {
+                        "path": item.rel_path,
+                        "reason": f"unknown_group:{match.group}",
+                    }
+                )
+                continue
+            matches.append(
+                {
+                    "path": item.rel_path,
+                    "route_id": match.route_id,
+                    "route_index": match.index,
+                    "group": match.group,
+                }
+            )
+        return {
+            "ok": not unmatched,
+            "files_total": len(files),
+            "matched_files": len(matches),
+            "unmatched_files": len(unmatched),
+            "matches": matches,
+            "unmatched": unmatched,
+        }
+
+    monkeypatch.setattr(
+        "jeb.collector.MunchyRunnerClient.profile_routing_preflight",
+        fake_profile_routing_preflight,
+    )
+
+
 def _single_batch_id(collector: Collector) -> str:
     batches = collector.active_batch_ids()
     assert len(batches) == 1
@@ -308,7 +364,7 @@ def test_transient_target_errors_retry_without_notification(tmp_path: Path) -> N
     assert notifier.messages == []
 
 
-def test_hold_policy_excludes_unmatched_signatures_from_munchy_batch(
+def test_routing_preflight_failure_blocks_source_and_notifies(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -317,7 +373,6 @@ def test_hold_policy_excludes_unmatched_signatures_from_munchy_batch(
         source_ids=["phone"],
         source_overrides={
             "phone": {
-                "unmatched_policy": "hold",
                 "include_extensions": [".mp4", ".heic"],
             }
         },
@@ -326,7 +381,8 @@ def test_hold_policy_excludes_unmatched_signatures_from_munchy_batch(
     _write_stable_file(tmp_path / "landing" / "phone" / "IMG_0001.HEIC")
 
     def fake_ffprobe(path: Path) -> dict[str, object]:
-        assert path.suffix.lower() == ".heic"
+        if path.suffix.lower() != ".heic":
+            return {}
         return {
             "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2", "tags": {"make": "Apple"}},
             "streams": [
@@ -340,38 +396,34 @@ def test_hold_policy_excludes_unmatched_signatures_from_munchy_batch(
             ],
         }
 
-    monkeypatch.setattr("jeb.collector.ffprobe_for_signature", fake_ffprobe)
+    monkeypatch.setattr("jeb.collector.ffprobe_for_routing_preflight", fake_ffprobe)
     notifier = RecordingNotifier([])
     collector = Collector(config, target_runners={"munchy": CompleteRunner()}, notifier=notifier)
 
     collector.run_once()
 
-    batch_id = _single_batch_id(collector)
-    assert [row["target_path"] for row in collector.batch_files(batch_id)] == [
-        "phone/accepted.mp4"
-    ]
-    held = collector.held_signatures()
-    assert len(held) == 1
-    assert held[0]["source_id"] == "phone"
-    assert held[0]["reason"] == "no_matching_route"
-    assert held[0]["file_count"] == 1
-    assert json.loads(held[0]["example_paths_json"]) == ["phone/IMG_0001.HEIC"]
+    assert collector.active_batch_ids() == []
+    failures = collector.routing_preflight_failures()
+    assert len(failures) == 1
+    assert failures[0]["source_id"] == "phone"
+    assert failures[0]["state"] == "failed"
+    assert failures[0]["file_count"] == 2
+    assert failures[0]["unmatched_count"] == 1
     assert notifier.messages == [
         (
-            "held-signatures__phone:enrollment:"
-            "1 signature and 1 file held; no Munchy upload. "
-            "Next: run `jeb signatures list --source phone`."
+            "routing-preflight__phone:profile_routing:"
+            "Munchy routing preflight failed: 1/2 files unmatched. "
+            "Next: fix routes, then run `jeb archive-now --source phone`."
         )
     ]
 
 
-def test_hold_policy_allows_ordered_munchy_catchall_route(tmp_path: Path) -> None:
+def test_routing_preflight_allows_ordered_broad_matcher(tmp_path: Path) -> None:
     config = _base_config(
         tmp_path,
         source_ids=["phone"],
         source_overrides={
             "phone": {
-                "unmatched_policy": "hold",
                 "include_extensions": [".mov", ".heic", ".mp4"],
             }
         },
@@ -379,7 +431,7 @@ def test_hold_policy_allows_ordered_munchy_catchall_route(tmp_path: Path) -> Non
     routes = config.munchy_job_defaults["profile_routing"]["routes"]
     routes.append(
         {
-            "id": "phone-library-catchall",
+            "id": "phone-library-review",
             "group": "passthrough",
             "path_prefix": "phone",
         }
@@ -398,11 +450,11 @@ def test_hold_policy_allows_ordered_munchy_catchall_route(tmp_path: Path) -> Non
         "phone/IMG_0001.MOV",
         "phone/imported/clip.mp4",
     ]
-    assert collector.held_signatures() == []
+    assert collector.routing_preflight_failures() == []
     assert notifier.messages == []
 
 
-def test_held_signatures_send_daily_reminders(
+def test_routing_preflight_failure_sends_daily_reminders_without_scheduled_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -411,14 +463,13 @@ def test_held_signatures_send_daily_reminders(
         source_ids=["phone"],
         source_overrides={
             "phone": {
-                "unmatched_policy": "hold",
                 "include_extensions": [".heic"],
             }
         },
     )
     _write_stable_file(tmp_path / "landing" / "phone" / "IMG_0001.HEIC")
     monkeypatch.setattr(
-        "jeb.collector.ffprobe_for_signature",
+        "jeb.collector.ffprobe_for_routing_preflight",
         lambda path: {
             "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2"},
             "streams": [{"codec_type": "video", "codec_name": "hevc"}],
@@ -428,7 +479,7 @@ def test_held_signatures_send_daily_reminders(
     collector = Collector(config, target_runners={"munchy": CompleteRunner()}, notifier=notifier)
 
     collector.run_once()
-    held = collector.held_signatures()
+    failures = collector.routing_preflight_failures()
     assert len(notifier.messages) == 1
 
     collector.run_once()
@@ -437,71 +488,7 @@ def test_held_signatures_send_daily_reminders(
     with collector.connect() as conn:
         conn.execute(
             """
-            UPDATE held_signatures
-            SET notified_error_at = ?
-            WHERE source_id = ? AND signature_id = ?
-            """,
-            ("2026-01-01T00:00:00Z", "phone", held[0]["signature_id"]),
-        )
-
-    collector.run_once()
-
-    assert len(notifier.messages) == 2
-
-
-def test_held_signature_notifications_aggregate_new_signatures_per_source_daily(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config = _base_config(
-        tmp_path,
-        source_ids=["phone"],
-        source_overrides={
-            "phone": {
-                "unmatched_policy": "hold",
-                "include_extensions": [".heic", ".dng"],
-            }
-        },
-    )
-
-    def fake_ffprobe(path: Path) -> dict[str, object]:
-        suffix = path.suffix.lower()
-        if suffix == ".dng":
-            return {
-                "format": {"format_name": "tiff"},
-                "streams": [{"codec_type": "video", "codec_name": "rawvideo"}],
-            }
-        return {
-            "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2"},
-            "streams": [{"codec_type": "video", "codec_name": "hevc"}],
-        }
-
-    monkeypatch.setattr("jeb.collector.ffprobe_for_signature", fake_ffprobe)
-    notifier = RecordingNotifier([])
-    collector = Collector(config, target_runners={"munchy": CompleteRunner()}, notifier=notifier)
-
-    _write_stable_file(tmp_path / "landing" / "phone" / "IMG_0001.HEIC")
-    collector.run_once()
-
-    assert notifier.messages == [
-        (
-            "held-signatures__phone:enrollment:"
-            "1 signature and 1 file held; no Munchy upload. "
-            "Next: run `jeb signatures list --source phone`."
-        )
-    ]
-
-    _write_stable_file(tmp_path / "landing" / "phone" / "IMG_0002.DNG")
-    collector.run_once()
-
-    held = collector.held_signatures()
-    assert len(held) == 2
-    assert len(notifier.messages) == 1
-
-    with collector.connect() as conn:
-        conn.execute(
-            """
-            UPDATE held_signatures
+            UPDATE routing_preflight_failures
             SET notified_error_at = ?
             WHERE source_id = ?
             """,
@@ -510,12 +497,56 @@ def test_held_signature_notifications_aggregate_new_signatures_per_source_daily(
 
     collector.run_once()
 
-    assert notifier.messages[-1] == (
-        "held-signatures__phone:enrollment:"
-        "2 signatures and 2 files held; no Munchy upload. "
-        "Next: run `jeb signatures list --source phone`."
-    )
     assert len(notifier.messages) == 2
+    assert collector.routing_preflight_failures()[0]["fingerprint"] == failures[0]["fingerprint"]
+    assert collector.active_batch_ids() == []
+
+
+def test_archive_now_clears_routing_preflight_failure_after_routes_are_fixed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _base_config(
+        tmp_path,
+        source_ids=["phone"],
+        source_overrides={
+            "phone": {
+                "include_extensions": [".heic"],
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "jeb.collector.ffprobe_for_routing_preflight",
+        lambda path: {
+            "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2"},
+            "streams": [{"codec_type": "video", "codec_name": "hevc"}],
+        },
+    )
+    notifier = RecordingNotifier([])
+    collector = Collector(config, target_runners={"munchy": CompleteRunner()}, notifier=notifier)
+
+    _write_stable_file(tmp_path / "landing" / "phone" / "IMG_0001.HEIC")
+    collector.run_once()
+
+    assert len(collector.routing_preflight_failures()) == 1
+    config.munchy_job_defaults["profile_routing"]["routes"].append(
+        {
+            "id": "phone-heic",
+            "group": "passthrough",
+            "path_prefix": "phone",
+            "suffixes": [".heic"],
+        }
+    )
+
+    batch_id = collector.archive_now(source_id="phone", process=False)
+
+    assert batch_id is not None
+    assert collector.routing_preflight_failures(state="failed") == []
+    [resolved] = collector.routing_preflight_failures(source_id="phone", state="resolved")
+    assert resolved["resolved_at"] is not None
+    assert [row["target_path"] for row in collector.batch_files(batch_id)] == [
+        "phone/IMG_0001.HEIC"
+    ]
 
 
 def test_media_preflight_logs_batch_progress(

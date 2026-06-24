@@ -79,7 +79,7 @@ group = "passthrough"
 suffixes = [".xml", ".json", ".txt", ".srt", ".vtt", ".nfo"]
 
 [[munchy_job_defaults.profile_routing.routes]]
-id = "example-phone-library-catchall"
+id = "example-phone-library-review"
 group = "passthrough"
 path_prefix = "example-phone"
 
@@ -98,7 +98,6 @@ path = "/landing/example-phone"
 upload_prefix = "example-phone"
 stable_age = "10m"
 include_extensions = []
-unmatched_policy = "hold"
 
 [[collections]]
 id = "weekly-device-artifacts"

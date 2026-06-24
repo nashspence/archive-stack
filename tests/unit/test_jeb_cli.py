@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import json
+import os
 import textwrap
+import time
 from pathlib import Path
 
 from jeb.cli import main as jeb_main
-from jeb.collector import CaptureSignature, Collector, load_config, stable_json
+from jeb.collector import Collector, load_config
 
 
 def write_jeb_config(tmp_path: Path) -> Path:
@@ -40,7 +41,6 @@ def write_jeb_config(tmp_path: Path) -> Path:
             upload_prefix = "phone"
             stable_age = "0s"
             include_extensions = []
-            unmatched_policy = "hold"
 
             [[collections]]
             id = "weekly"
@@ -59,68 +59,73 @@ def write_jeb_config(tmp_path: Path) -> Path:
     return config_path
 
 
-def test_jeb_signatures_list_and_show_json(tmp_path: Path, capsys) -> None:
-    config_path = write_jeb_config(tmp_path)
-    collector = Collector(load_config(config_path))
-    collector.init_db()
-    with collector.connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO held_signatures(
-                source_id, signature_id, state, reason, signature_json,
-                example_paths_json, file_count, total_bytes, oldest_mtime_ns,
-                newest_mtime_ns, first_seen_at, last_seen_at, updated_at
-            )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "phone",
-                "abc123",
-                "held",
-                "no_matching_route",
-                stable_json({"suffix": ".heic"}),
-                stable_json(["phone/IMG_0001.HEIC"]),
-                1,
-                42,
-                1_000_000_000,
-                2_000_000_000,
-                "2026-06-24T00:00:00Z",
-                "2026-06-24T00:00:00Z",
-                "2026-06-24T00:00:00Z",
-            ),
-        )
-
-    assert jeb_main(["--config", str(config_path), "signatures", "list", "--json"]) == 0
-    listed = json.loads(capsys.readouterr().out)
-    assert listed[0]["signature_id"] == "abc123"
-    assert listed[0]["signature"] == {"suffix": ".heic"}
-    assert listed[0]["example_paths"] == ["phone/IMG_0001.HEIC"]
-
-    assert jeb_main(["signatures", "show", "abc123", "--config", str(config_path), "--json"]) == 0
-    shown = json.loads(capsys.readouterr().out)
-    assert shown["source_id"] == "phone"
-    assert shown["reason"] == "no_matching_route"
+def write_stable_file(path: Path, content: bytes = b"notes") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    old = time.time() - 14 * 86_400
+    os.utime(path, (old, old))
 
 
-def test_jeb_signatures_probe_json(
+def test_jeb_archive_now_starts_batch_without_processing(
     tmp_path: Path,
     capsys,
     monkeypatch,
 ) -> None:
-    sample = tmp_path / "IMG_0001.HEIC"
-    sample.write_bytes(b"not media")
+    config_path = write_jeb_config(tmp_path)
+    write_stable_file(tmp_path / "landing" / "phone" / "note.txt")
+
     monkeypatch.setattr(
-        "jeb.cli.safe_capture_signature_for_file",
-        lambda path: CaptureSignature(id="sig1", data={"suffix": path.suffix.lower()}),
+        "jeb.collector.MunchyRunnerClient.profile_routing_preflight",
+        lambda self, **kwargs: {
+            "ok": True,
+            "files_total": 1,
+            "matched_files": 1,
+            "unmatched_files": 0,
+            "matches": [{"path": "phone/note.txt", "route_id": "passthrough-text"}],
+            "unmatched": [],
+        },
     )
 
-    assert jeb_main(["signatures", "probe", str(sample), "--json"]) == 0
+    assert (
+        jeb_main(["--config", str(config_path), "archive-now", "--source", "phone", "--no-process"])
+        == 0
+    )
 
-    rows = json.loads(capsys.readouterr().out)
-    assert rows == [
-        {
-            "path": str(sample),
-            "signature_id": "sig1",
-            "signature": {"suffix": ".heic"},
-        }
-    ]
+    assert "archive attempt started for source phone" in capsys.readouterr().out
+    collector = Collector(load_config(config_path))
+    collector.init_db()
+    [batch_id] = collector.active_batch_ids()
+    assert [row["target_path"] for row in collector.batch_files(batch_id)] == ["phone/note.txt"]
+
+
+def test_jeb_archive_now_reports_failed_preflight(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    config_path = write_jeb_config(tmp_path)
+    write_stable_file(tmp_path / "landing" / "phone" / "IMG_0001.HEIC")
+
+    monkeypatch.setattr(
+        "jeb.collector.MunchyRunnerClient.profile_routing_preflight",
+        lambda self, **kwargs: {
+            "ok": False,
+            "files_total": 1,
+            "matched_files": 0,
+            "unmatched_files": 1,
+            "matches": [],
+            "unmatched": [{"path": "phone/IMG_0001.HEIC", "reason": "no_matching_route"}],
+        },
+    )
+
+    assert (
+        jeb_main(["--config", str(config_path), "archive-now", "--source", "phone", "--no-process"])
+        == 1
+    )
+
+    assert "routing preflight still failed" in capsys.readouterr().out
+    collector = Collector(load_config(config_path))
+    collector.init_db()
+    assert collector.active_batch_ids() == []
+    [failure] = collector.routing_preflight_failures(source_id="phone")
+    assert failure["unmatched_count"] == 1

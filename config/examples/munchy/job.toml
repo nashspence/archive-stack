@@ -57,5 +57,5 @@ group = "passthrough"
 suffixes = [".xml", ".json", ".txt", ".srt", ".vtt", ".nfo"]
 
 [[job.profile_routing.routes]]
-id = "catchall-originals"
+id = "all-originals-review"
 group = "passthrough"

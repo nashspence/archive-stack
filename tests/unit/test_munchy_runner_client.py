@@ -17,6 +17,7 @@ from munchy.runner_client import (
     RunnerHttpError,
     RunnerInputFile,
     RunnerJobTerminalDuringUpload,
+    RunnerProfileRoutingPreflightFile,
     RunnerUploadRequest,
     UploadProgress,
     UploadRetryReporter,
@@ -63,6 +64,65 @@ def test_runner_client_injects_bearer_token() -> None:
     assert [req.get_header("Authorization") for req in seen] == [
         "Bearer runner-token",
         "Bearer runner-token",
+    ]
+
+
+def test_profile_routing_preflight_posts_manifest() -> None:
+    client = MunchyRunnerClient("http://runner", token="runner-token")
+    seen: list[dict[str, object]] = []
+
+    class FakeResponse:
+        status = 200
+        headers: dict[str, str] = {}
+
+        def read(self) -> bytes:
+            return b'{"ok": true, "matches": [], "unmatched": []}'
+
+    def fake_urlopen(req: urllib.request.Request, *, timeout: float) -> FakeResponse:
+        assert timeout == 300.0
+        seen.append(
+            {
+                "url": req.full_url,
+                "method": req.get_method(),
+                "auth": req.get_header("Authorization"),
+                "payload": json.loads(req.data.decode("utf-8")),
+            }
+        )
+        return FakeResponse()
+
+    with patch("munchy.runner_client.urllib.request.urlopen", side_effect=fake_urlopen):
+        result = client.profile_routing_preflight(
+            files=(
+                RunnerProfileRoutingPreflightFile(
+                    rel_path="phone/IMG_0001.MOV",
+                    bytes=123,
+                    probe_summary={"video_codec_name": "hevc"},
+                ),
+            ),
+            groups={"video": {"archive_mode": "av1_nvenc", "gpu_tasks": []}},
+            profile_routing={"routes": [{"id": "phone-video", "group": "video"}]},
+        )
+
+    assert result["ok"] is True
+    assert seen == [
+        {
+            "url": "http://runner/v1/profile-routing/preflight",
+            "method": "POST",
+            "auth": "Bearer runner-token",
+            "payload": {
+                "files": [
+                    {
+                        "path": "phone/IMG_0001.MOV",
+                        "bytes": 123,
+                        "sha256": None,
+                        "probe_summary": {"video_codec_name": "hevc"},
+                        "probe_error": None,
+                    }
+                ],
+                "groups": {"video": {"archive_mode": "av1_nvenc", "gpu_tasks": []}},
+                "profile_routing": {"routes": [{"id": "phone-video", "group": "video"}]},
+            },
+        }
     ]
 
 

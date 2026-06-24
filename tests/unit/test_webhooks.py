@@ -479,48 +479,48 @@ def test_build_jeb_issue_payload_uses_robot_actor_and_concise_error() -> None:
     assert payload["operator_action"] == "inspect Jeb batch details immediately"
     assert payload["recipient"] == "operator"
     assert payload["notification"] == {
-        "title": "🤖 camera-archive",
+        "title": "🤖 camera",
         "body": "permission denied",
     }
 
 
-def test_build_jeb_enrollment_issue_payload_is_time_sensitive_and_device_titled() -> None:
+def test_build_jeb_profile_routing_issue_payload_is_device_titled_and_actionable() -> None:
     payload = build_jeb_event_payload(
         event="jeb.issue",
         batch={
-            "id": "held-signatures__nash-iphone-se2",
+            "id": "routing-preflight__nash-iphone-se2",
             "source_id": "nash-iphone-se2",
             "target_name": "munchy",
             "target_type": "munchy",
-            "collection_slug": "jeb-held-signatures",
+            "collection_slug": "weekly-device-artifacts",
             "collection_timestamp": "20260624T000000Z",
-            "state": "held",
+            "state": "failed",
         },
         message=(
-            "12 signatures and 64 files held; no Munchy upload. "
-            "Next: run `jeb signatures list --source nash-iphone-se2`."
+            "Munchy routing preflight failed: 2/64 files unmatched. "
+            "Next: run archive-now."
         ),
-        severity="warning",
+        severity="critical",
         delivered_at=datetime(2026, 6, 24, 12, 0, tzinfo=UTC),
         recipient="operator",
         details={
-            "component": "enrollment",
+            "component": "profile_routing",
             "error": (
-                "12 signatures and 64 files held; no Munchy upload. "
-                "Next: run `jeb signatures list --source nash-iphone-se2`."
+                "Munchy routing preflight failed: 2/64 files unmatched. "
+                "Next: run archive-now."
             ),
         },
     )
 
-    assert payload["operator_urgency"] == "time_sensitive"
-    assert payload["operator_action"] == "review held Jeb capture signatures"
-    assert payload["severity"] == "warning"
+    assert payload["operator_urgency"] == "critical"
+    assert (
+        payload["operator_action"]
+        == "fix Munchy profile routing, then run Jeb archive-now for the source"
+    )
+    assert payload["severity"] == "critical"
     assert payload["notification"] == {
         "title": "🤖 nash-iphone-se2",
-        "body": (
-            "12 signatures and 64 files held; no Munchy upload. "
-            "Next: run `jeb signatures list --source nash-iphone-se2`."
-        ),
+        "body": "Munchy routing preflight failed: 2/64 files unmatched. Next: run archive-now.",
     }
 
 

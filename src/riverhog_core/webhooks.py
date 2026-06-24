@@ -785,13 +785,11 @@ def _munchy_job_subject(job: Mapping[str, object]) -> str:
 
 def _jeb_batch_subject(batch: Mapping[str, object]) -> str:
     source_id = str(batch.get("source_id") or "")
-    if str(batch.get("collection_slug") or "") == "jeb-held-signatures" and source_id:
+    if source_id:
         return source_id
     collection_slug = str(batch.get("collection_slug") or "")
     if collection_slug:
         return _collection_subject(collection_slug)
-    if source_id:
-        return source_id
     batch_id = str(batch.get("id") or "")
     if batch_id:
         return _target_subject(batch_id)
@@ -822,11 +820,13 @@ def _jeb_operator_urgency(*, event: str, severity: str) -> str:
     return _operator_event_field(event=event, field="operator_urgency", default="passive")
 
 
-def _jeb_operator_action(*, event: str, severity: str) -> str:
+def _jeb_operator_action(*, event: str, severity: str, component: str = "") -> str:
+    if event == "jeb.issue" and component == "profile_routing":
+        return "fix Munchy profile routing, then run Jeb archive-now for the source"
     if event == "jeb.issue" and severity == "critical":
         return "inspect Jeb batch details immediately"
     if event == "jeb.issue" and severity in {"error", "warning"}:
-        return "review held Jeb capture signatures"
+        return "inspect Jeb issue details"
     return _operator_event_field(event=event, field="operator_action")
 
 
@@ -996,7 +996,11 @@ def build_jeb_event_payload(
         "actor": "jeb",
         "delivered_at": isoformat_z(delivered_at),
         "operator_urgency": _jeb_operator_urgency(event=event, severity=severity),
-        "operator_action": _jeb_operator_action(event=event, severity=severity),
+        "operator_action": _jeb_operator_action(
+            event=event,
+            severity=severity,
+            component=str(detail_values.get("component") or ""),
+        ),
         "severity": severity,
         "message": message,
         "batch_id": str(batch.get("id") or ""),

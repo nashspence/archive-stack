@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import errno
 import faulthandler
-import fnmatch
 import gzip
 import hashlib
 import json
@@ -22,7 +21,6 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager, closing
 from datetime import UTC, datetime, timedelta
-from fractions import Fraction
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urljoin, urlsplit, urlunsplit
@@ -34,6 +32,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from munchy.filesystem_metadata import write_filesystem_metadata_map
+from munchy.profile_routing import (
+    match_profile_route,
+    route_requires_probe,
+    routing_probe_summary,
+)
 from munchy.profiles import (
     MUNCHY_PROFILE_TARGET,
     ArchiveContainer,
@@ -641,19 +644,50 @@ class ProfileRoute(BaseModel):
     path_glob: str | None = Field(default=None, min_length=1, max_length=2048)
     filename_glob: str | None = Field(default=None, min_length=1, max_length=512)
     suffixes: list[str] = Field(default_factory=list)
+    format_names: list[str] = Field(default_factory=list)
     format_name_contains: list[str] = Field(default_factory=list)
     codec_names: list[str] = Field(default_factory=list)
+    video_codec_names: list[str] = Field(default_factory=list)
+    audio_codec_names: list[str] = Field(default_factory=list)
+    video_profiles: list[str] = Field(default_factory=list)
+    pix_fmts: list[str] = Field(default_factory=list)
+    color_ranges: list[str] = Field(default_factory=list)
+    color_spaces: list[str] = Field(default_factory=list)
+    color_transfers: list[str] = Field(default_factory=list)
+    color_primaries: list[str] = Field(default_factory=list)
+    has_video: bool | None = None
+    has_audio: bool | None = None
+    video_stream_count: int | None = Field(default=None, ge=0)
+    audio_stream_count: int | None = Field(default=None, ge=0)
+    min_video_stream_count: int | None = Field(default=None, ge=0)
+    max_video_stream_count: int | None = Field(default=None, ge=0)
+    min_audio_stream_count: int | None = Field(default=None, ge=0)
+    max_audio_stream_count: int | None = Field(default=None, ge=0)
     width: int | None = Field(default=None, ge=1)
     height: int | None = Field(default=None, ge=1)
     min_width: int | None = Field(default=None, ge=1)
     max_width: int | None = Field(default=None, ge=1)
     min_height: int | None = Field(default=None, ge=1)
     max_height: int | None = Field(default=None, ge=1)
+    duration: float | None = Field(default=None, gt=0)
+    min_duration: float | None = Field(default=None, gt=0)
+    max_duration: float | None = Field(default=None, gt=0)
+    bit_rate: int | None = Field(default=None, ge=1)
+    min_bit_rate: int | None = Field(default=None, ge=1)
+    max_bit_rate: int | None = Field(default=None, ge=1)
     fps: float | None = Field(default=None, gt=0)
     min_fps: float | None = Field(default=None, gt=0)
     max_fps: float | None = Field(default=None, gt=0)
+    audio_sample_rate: int | None = Field(default=None, ge=1)
+    min_audio_sample_rate: int | None = Field(default=None, ge=1)
+    max_audio_sample_rate: int | None = Field(default=None, ge=1)
+    audio_channels: int | None = Field(default=None, ge=1)
+    min_audio_channels: int | None = Field(default=None, ge=1)
+    max_audio_channels: int | None = Field(default=None, ge=1)
     format_tags: dict[str, str] = Field(default_factory=dict)
     stream_tags: dict[str, str] = Field(default_factory=dict)
+    video_tags: dict[str, str] = Field(default_factory=dict)
+    audio_tags: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("group")
     @classmethod
@@ -691,12 +725,24 @@ class ProfileRoute(BaseModel):
                 suffixes.append(suffix)
         return suffixes
 
-    @field_validator("format_name_contains", "codec_names")
+    @field_validator(
+        "format_names",
+        "format_name_contains",
+        "codec_names",
+        "video_codec_names",
+        "audio_codec_names",
+        "video_profiles",
+        "pix_fmts",
+        "color_ranges",
+        "color_spaces",
+        "color_transfers",
+        "color_primaries",
+    )
     @classmethod
     def normalize_string_list(cls, value: list[str]) -> list[str]:
         return list(dict.fromkeys(str(item).strip().lower() for item in value if str(item).strip()))
 
-    @field_validator("format_tags", "stream_tags")
+    @field_validator("format_tags", "stream_tags", "video_tags", "audio_tags")
     @classmethod
     def normalize_tag_matches(cls, value: dict[str, str]) -> dict[str, str]:
         return {
@@ -708,9 +754,15 @@ class ProfileRoute(BaseModel):
     @model_validator(mode="after")
     def validate_ranges(self) -> ProfileRoute:
         for low, high, label in (
+            (self.min_video_stream_count, self.max_video_stream_count, "video stream count"),
+            (self.min_audio_stream_count, self.max_audio_stream_count, "audio stream count"),
             (self.min_width, self.max_width, "width"),
             (self.min_height, self.max_height, "height"),
+            (self.min_duration, self.max_duration, "duration"),
+            (self.min_bit_rate, self.max_bit_rate, "bit rate"),
             (self.min_fps, self.max_fps, "fps"),
+            (self.min_audio_sample_rate, self.max_audio_sample_rate, "audio sample rate"),
+            (self.min_audio_channels, self.max_audio_channels, "audio channels"),
         ):
             if low is not None and high is not None and low > high:
                 raise ValueError(f"route {label} range has min greater than max")
@@ -731,6 +783,61 @@ class ProfileRoutingConfig(BaseModel):
         if len(ids) != len(set(ids)):
             raise ValueError("profile_routing route ids must be unique")
         return value
+
+
+class ProfileRoutingPreflightFile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=4096)
+    bytes: int = Field(ge=0)
+    sha256: str | None = Field(default=None, min_length=64, max_length=64)
+    probe_summary: dict[str, Any] | None = None
+    probe_error: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("path")
+    @classmethod
+    def normalize_path(cls, value: str) -> str:
+        return normalize_posix(value)
+
+
+class ProfileRoutingPreflightRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    files: list[ProfileRoutingPreflightFile]
+    groups: dict[str, ProfileGroupConfig]
+    profile_routing: ProfileRoutingConfig
+
+    @field_validator("files")
+    @classmethod
+    def require_files(
+        cls,
+        value: list[ProfileRoutingPreflightFile],
+    ) -> list[ProfileRoutingPreflightFile]:
+        if not value:
+            raise ValueError("at least one file is required")
+        paths = [item.path for item in value]
+        if len(paths) != len(set(paths)):
+            raise ValueError("file paths must be unique")
+        return value
+
+    @field_validator("groups")
+    @classmethod
+    def normalize_groups(
+        cls,
+        value: dict[str, ProfileGroupConfig],
+    ) -> dict[str, ProfileGroupConfig]:
+        if not value:
+            raise ValueError("profile routing preflight requires explicit groups")
+        return {validate_profile_group_name(name): group for name, group in value.items()}
+
+    @model_validator(mode="after")
+    def validate_route_groups(self) -> ProfileRoutingPreflightRequest:
+        group_names = set(self.groups)
+        route_groups = {route.group for route in self.profile_routing.routes}
+        missing = sorted(route_groups - group_names)
+        if missing:
+            raise ValueError("profile_routing references unknown group(s): " + ", ".join(missing))
+        return self
 
 
 class CreateInputUploadRequest(BaseModel):
@@ -2958,25 +3065,6 @@ def resolve_job_groups(
     return {name: dict(default_group) for name in input_groups}
 
 
-def parse_rate(value: Any) -> float | None:
-    text = str(value or "").strip()
-    if not text or text in {"0/0", "N/A"}:
-        return None
-    try:
-        return float(Fraction(text))
-    except (ValueError, ZeroDivisionError):
-        try:
-            return float(text)
-        except ValueError:
-            return None
-
-
-def lower_mapping(value: Any) -> dict[str, str]:
-    if not isinstance(value, dict):
-        return {}
-    return {str(key).lower(): str(item).lower() for key, item in value.items()}
-
-
 def ffprobe_for_routing(path: Path) -> dict[str, Any]:
     proc = subprocess.run(
         [
@@ -3006,119 +3094,6 @@ def ffprobe_for_routing(path: Path) -> dict[str, Any]:
     return payload
 
 
-def routing_probe_summary(payload: dict[str, Any]) -> dict[str, Any]:
-    streams = payload.get("streams") if isinstance(payload.get("streams"), list) else []
-    video_stream = next(
-        (
-            stream
-            for stream in streams
-            if isinstance(stream, dict) and stream.get("codec_type") == "video"
-        ),
-        {},
-    )
-    format_info = payload.get("format") if isinstance(payload.get("format"), dict) else {}
-    return {
-        "format_name": str(format_info.get("format_name") or ""),
-        "format_tags": lower_mapping(format_info.get("tags")),
-        "stream_tags": lower_mapping(video_stream.get("tags")),
-        "codec_name": str(video_stream.get("codec_name") or "").lower(),
-        "width": int(video_stream.get("width") or 0),
-        "height": int(video_stream.get("height") or 0),
-        "fps": parse_rate(video_stream.get("avg_frame_rate"))
-        or parse_rate(video_stream.get("r_frame_rate"))
-        or 0.0,
-    }
-
-
-def route_requires_probe(route: dict[str, Any]) -> bool:
-    probe_keys = {
-        "format_name_contains",
-        "codec_names",
-        "width",
-        "height",
-        "min_width",
-        "max_width",
-        "min_height",
-        "max_height",
-        "fps",
-        "min_fps",
-        "max_fps",
-        "format_tags",
-        "stream_tags",
-    }
-    return any(route.get(key) for key in probe_keys)
-
-
-def route_matches_path(route: dict[str, Any], rel_path: str) -> bool:
-    filename = rel_path.rsplit("/", 1)[-1]
-    prefix = route.get("path_prefix")
-    if isinstance(prefix, str) and prefix:
-        normalized = prefix.rstrip("/")
-        if rel_path != normalized and not rel_path.startswith(f"{normalized}/"):
-            return False
-    path_glob = route.get("path_glob")
-    if isinstance(path_glob, str) and path_glob and not fnmatch.fnmatchcase(rel_path, path_glob):
-        return False
-    filename_glob = route.get("filename_glob")
-    if (
-        isinstance(filename_glob, str)
-        and filename_glob
-        and not fnmatch.fnmatchcase(filename, filename_glob)
-    ):
-        return False
-    suffixes = [str(item).lower() for item in route.get("suffixes") or []]
-    if suffixes and not any(filename.lower().endswith(suffix) for suffix in suffixes):
-        return False
-    return True
-
-
-def route_matches_probe(route: dict[str, Any], summary: dict[str, Any]) -> bool:
-    format_needles = [str(item).lower() for item in route.get("format_name_contains") or []]
-    format_name = str(summary.get("format_name") or "").lower()
-    if format_needles and not all(needle in format_name for needle in format_needles):
-        return False
-    codec_names = [str(item).lower() for item in route.get("codec_names") or []]
-    if codec_names and str(summary.get("codec_name") or "").lower() not in codec_names:
-        return False
-    width = int(summary.get("width") or 0)
-    height = int(summary.get("height") or 0)
-    fps = float(summary.get("fps") or 0.0)
-    for key, actual in (("width", width), ("height", height)):
-        expected = route.get(key)
-        if expected is not None and actual != int(expected):
-            return False
-    for key, actual, op in (
-        ("min_width", width, "min"),
-        ("max_width", width, "max"),
-        ("min_height", height, "min"),
-        ("max_height", height, "max"),
-        ("min_fps", fps, "min"),
-        ("max_fps", fps, "max"),
-    ):
-        expected = route.get(key)
-        if expected is None:
-            continue
-        if op == "min" and actual < float(expected):
-            return False
-        if op == "max" and actual > float(expected):
-            return False
-    expected_fps = route.get("fps")
-    if expected_fps is not None and abs(fps - float(expected_fps)) > 0.01:
-        return False
-
-    for tag_scope in ("format_tags", "stream_tags"):
-        expected_tags = route.get(tag_scope) or {}
-        if not expected_tags:
-            continue
-        actual_tags = summary.get(tag_scope) if isinstance(summary.get(tag_scope), dict) else {}
-        lower_actual = lower_mapping(actual_tags)
-        for key, expected in expected_tags.items():
-            actual_value = str(lower_actual.get(str(key).lower()) or "")
-            if str(expected).lower() not in actual_value:
-                return False
-    return True
-
-
 def upload_file_data_path(file_state: dict[str, Any]) -> Path:
     tusd_source = tusd_data_path(str(file_state["upload_id"]))
     if tusd_source.exists():
@@ -3139,36 +3114,30 @@ def route_completed_file(
     routing = job.get("profile_routing")
     if not isinstance(routing, dict):
         return False
-    routes = routing.get("routes")
-    if not isinstance(routes, list) or not routes:
-        raise RoutingFailed("profile routing is missing routes")
     rel_path = str(file_state["path"])
-    matches: list[dict[str, Any]] = []
     probe_summary: dict[str, Any] | None = None
-    for route in routes:
-        if not isinstance(route, dict):
-            continue
-        if not route_matches_path(route, rel_path):
-            continue
-        if route_requires_probe(route):
-            if probe_summary is None:
-                probe_summary = routing_probe_summary(
-                    ffprobe_for_routing(upload_file_data_path(file_state))
-                )
-            if not route_matches_probe(route, probe_summary):
-                continue
-        matches.append(route)
-    if len(matches) != 1:
-        route_ids = [str(route.get("id") or "") for route in matches]
-        reason = "no matching route" if not matches else f"multiple matching routes: {route_ids}"
-        raise RoutingFailed(f"profile routing failed for {rel_path}: {reason}")
-    route = matches[0]
-    group = validate_profile_group_name(str(route.get("group") or ""))
+
+    def load_probe_summary() -> dict[str, Any]:
+        nonlocal probe_summary
+        if probe_summary is None:
+            probe_summary = routing_probe_summary(
+                ffprobe_for_routing(upload_file_data_path(file_state))
+            )
+        return probe_summary
+
+    match = match_profile_route(
+        routing,
+        rel_path,
+        probe_summary_loader=load_probe_summary,
+    )
+    if match is None:
+        raise RoutingFailed(f"profile routing failed for {rel_path}: no matching route")
+    group = validate_profile_group_name(match.group)
     if group not in groups:
         raise RoutingFailed(f"profile routing failed for {rel_path}: unknown group {group}")
     file_state["resolved_group"] = group
     file_state["resolved_group_rel"] = rel_path
-    file_state["profile_route_id"] = str(route.get("id") or "")
+    file_state["profile_route_id"] = match.route_id
     file_state["profile_routed_at"] = now_iso()
     return True
 
@@ -6850,6 +6819,60 @@ def notify_preflight_failed(req: ClientPreflightFailedNotificationRequest) -> di
         extra=extra,
     )
     return {"status": "attempted", "deliveries": deliveries}
+
+
+@app.post("/v1/profile-routing/preflight")
+def profile_routing_preflight(req: ProfileRoutingPreflightRequest) -> dict[str, Any]:
+    routing = req.profile_routing.model_dump(exclude_none=True)
+    matches: list[dict[str, Any]] = []
+    unmatched: list[dict[str, Any]] = []
+    probe_route_ids = [
+        str(route.get("id") or f"route-{index + 1}")
+        for index, route in enumerate(routing.get("routes") or [])
+        if isinstance(route, dict) and route_requires_probe(route)
+    ]
+    for item in req.files:
+        probe_summary = item.probe_summary
+        match = match_profile_route(
+            routing,
+            item.path,
+            probe_summary_loader=(lambda summary=probe_summary: summary)
+            if probe_summary is not None
+            else None,
+        )
+        if match is None:
+            reason = "no_matching_route"
+            if item.probe_error:
+                reason = "probe_failed"
+            elif probe_summary is None and probe_route_ids:
+                reason = "probe_summary_required"
+            unmatched.append(
+                {
+                    "path": item.path,
+                    "bytes": item.bytes,
+                    "reason": reason,
+                    "probe_error": item.probe_error,
+                    "probe_sensitive_routes": probe_route_ids[:20],
+                }
+            )
+            continue
+        matches.append(
+            {
+                "path": item.path,
+                "bytes": item.bytes,
+                "route_id": match.route_id,
+                "route_index": match.index,
+                "group": match.group,
+            }
+        )
+    return {
+        "ok": not unmatched,
+        "files_total": len(req.files),
+        "matched_files": len(matches),
+        "unmatched_files": len(unmatched),
+        "matches": matches,
+        "unmatched": unmatched,
+    }
 
 
 @app.get("/v1/admin/scheduler")

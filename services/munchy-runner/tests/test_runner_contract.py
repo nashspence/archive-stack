@@ -343,6 +343,112 @@ def test_completed_structured_file_can_route_by_probe_metadata(
     )
 
 
+def test_profile_routing_preflight_uses_submitted_probe_summary(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    client = TestClient(runner.app)
+
+    response = client.post(
+        "/v1/profile-routing/preflight",
+        json={
+            "files": [
+                {
+                    "path": "phone/IMG_0001.MOV",
+                    "bytes": 123,
+                    "probe_summary": {
+                        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                        "duration": 1.5,
+                        "has_audio": True,
+                        "video_stream_count": 1,
+                        "audio_stream_count": 1,
+                        "codec_name": "hevc",
+                        "video_codec_name": "hevc",
+                        "width": 1440,
+                        "height": 1080,
+                        "fps": 30.0,
+                        "audio_codec_name": "aac",
+                        "format_tags": {"com.apple.quicktime.model": "iphone se"},
+                    },
+                }
+            ],
+            "groups": {
+                "live-photo": {
+                    "archive_mode": "originals",
+                    "gpu_tasks": [],
+                }
+            },
+            "profile_routing": {
+                "routes": [
+                    {
+                        "id": "iphone-live-photo-sidecar",
+                        "group": "live-photo",
+                        "path_prefix": "phone",
+                        "suffixes": [".mov"],
+                        "video_codec_names": ["hevc"],
+                        "audio_codec_names": ["aac"],
+                        "max_duration": 3.0,
+                        "format_tags": {"com.apple.quicktime.model": "iphone se"},
+                    }
+                ]
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["matches"] == [
+        {
+            "path": "phone/IMG_0001.MOV",
+            "bytes": 123,
+            "route_id": "iphone-live-photo-sidecar",
+            "route_index": 0,
+            "group": "live-photo",
+        }
+    ]
+
+
+def test_profile_routing_preflight_reports_fallthrough(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    client = TestClient(runner.app)
+
+    response = client.post(
+        "/v1/profile-routing/preflight",
+        json={
+            "files": [{"path": "phone/IMG_0001.HEIC", "bytes": 123}],
+            "groups": {"video": {"archive_mode": "av1_nvenc", "gpu_tasks": []}},
+            "profile_routing": {
+                "routes": [
+                    {
+                        "id": "phone-video",
+                        "group": "video",
+                        "path_prefix": "phone",
+                        "suffixes": [".mov"],
+                    }
+                ]
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["unmatched"] == [
+        {
+            "path": "phone/IMG_0001.HEIC",
+            "bytes": 123,
+            "reason": "no_matching_route",
+            "probe_error": None,
+            "probe_sensitive_routes": [],
+        }
+    ]
+
+
 def test_completed_structured_file_fails_when_no_route_matches(
     tmp_path: Path,
     monkeypatch,
