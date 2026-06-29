@@ -614,6 +614,21 @@ class ClientPreflightFailedNotificationRequest(BaseModel):
         return validate_profile_group_name(value)
 
 
+class MetadataProjectionDeviceConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    make: str | None = None
+    model: str | None = None
+
+    @field_validator("make", "model")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = value.strip()
+        return text or None
+
+
 class MetadataProjectionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -621,13 +636,21 @@ class MetadataProjectionConfig(BaseModel):
     target: Literal["immich_xmp"] = "immich_xmp"
     allow_missing_capture_date: bool = False
     allow_missing_gps: bool = False
+    allow_missing_device_make: bool = False
+    allow_missing_device_model: bool = False
+    allow_missing_creators: bool = False
     capture_date_sources: list[dict[str, Any]] | None = None
+    device: MetadataProjectionDeviceConfig = Field(
+        default_factory=MetadataProjectionDeviceConfig
+    )
+    creators: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
+    include_context_tags: bool = True
 
-    @field_validator("tags")
+    @field_validator("creators", "tags")
     @classmethod
-    def normalize_tags(cls, value: list[str]) -> list[str]:
-        return list(dict.fromkeys(tag.strip() for tag in value if tag.strip()))
+    def normalize_text_list(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(item.strip() for item in value if item.strip()))
 
     @field_validator("capture_date_sources")
     @classmethod

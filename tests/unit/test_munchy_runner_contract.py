@@ -210,6 +210,44 @@ def test_originals_profile_groups_are_copy_only(
     assert storage_group.tasks == []
 
 
+def test_create_job_request_accepts_full_metadata_projection_config(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+
+    req = runner.CreateJobRequest(
+        collection_slug="phone-preview",
+        workflow_mode="collection_preview",
+        review_upload={"enabled": True},
+        groups={
+            "phone-video": {
+                "archive_mode": "av1_nvenc",
+                "tasks": ["archive_video"],
+                "metadata_projection": {
+                    "creators": ["Nash Spence", "Katie Spence", "Nash Spence"],
+                    "device": {
+                        "make": " Apple ",
+                        "model": " iPhone SE (2nd generation) ",
+                    },
+                    "tags": ["device/nash-iphone-se2", "device/nash-iphone-se2"],
+                    "include_context_tags": False,
+                },
+            }
+        },
+    )
+
+    projection = runner.profile_group_dump(req.groups["phone-video"])["metadata_projection"]
+
+    assert projection["creators"] == ["Nash Spence", "Katie Spence"]
+    assert projection["device"] == {
+        "make": "Apple",
+        "model": "iPhone SE (2nd generation)",
+    }
+    assert projection["tags"] == ["device/nash-iphone-se2"]
+    assert projection["include_context_tags"] is False
+
+
 def test_completed_structured_file_routes_by_path_without_full_upload(
     tmp_path: Path,
     monkeypatch,
