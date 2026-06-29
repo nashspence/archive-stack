@@ -250,6 +250,61 @@
       ]
     },
     {
+      "id": "collection_archive",
+      "label": "collection archive",
+      "term_type": "entity",
+      "audiences": [
+        "operator",
+        "config_author",
+        "api_client"
+      ],
+      "definition": "Archive-ready collection output built by Munchy from routed inputs, metadata sidecars, source artifacts, originals, and encoded derivatives.",
+      "exposed_as": [
+        {
+          "surface": "api:munchy-runner",
+          "spelling": "collection_archive",
+          "context": "workflow_mode"
+        },
+        {
+          "surface": "config:munchy",
+          "spelling": "collection_archive",
+          "context": "domain manager workflow config"
+        }
+      ]
+    },
+    {
+      "id": "collection_archive_destination",
+      "label": "collection archive destination",
+      "term_type": "policy",
+      "audiences": [
+        "config_author",
+        "api_client",
+        "developer"
+      ],
+      "definition": "Munchy delivery decision for a built collection archive: send it to a configured target or hand it directly to Riverhog.",
+      "exposed_as": [
+        {
+          "surface": "api:munchy-runner",
+          "spelling": "collection_archive.destination",
+          "context": "runner job payload"
+        },
+        {
+          "surface": "api:munchy-runner",
+          "spelling": "collection_archive_destination",
+          "context": "input upload storage hint"
+        },
+        {
+          "surface": "config:munchy",
+          "spelling": "collection_archive.destination",
+          "context": "domain manager workflow config"
+        }
+      ],
+      "allowed_values": [
+        "target",
+        "riverhog"
+      ]
+    },
+    {
       "id": "collection_id",
       "label": "collection id",
       "term_type": "identifier",
@@ -269,29 +324,6 @@
           "surface": "cli:riverhog",
           "spelling": "id",
           "context": "collection list/show output"
-        }
-      ]
-    },
-    {
-      "id": "collection_preview",
-      "label": "collection preview",
-      "term_type": "activity",
-      "audiences": [
-        "operator",
-        "config_author",
-        "api_client"
-      ],
-      "definition": "A Munchy workflow that eagerly exercises archive processing and uploads reviewable output without sending it to Riverhog.",
-      "exposed_as": [
-        {
-          "surface": "api:munchy-runner",
-          "spelling": "collection_preview",
-          "context": "workflow_mode"
-        },
-        {
-          "surface": "config:munchy",
-          "spelling": "collection_preview",
-          "context": "domain manager workflow config"
         }
       ]
     },
@@ -1304,7 +1336,7 @@
         "api_client",
         "developer"
       ],
-      "definition": "Munchy runner job intent: archive, review-only tuning, or collection preview.",
+      "definition": "Munchy runner job intent: build a collection archive or run review-only tuning output.",
       "exposed_as": [
         {
           "surface": "api:munchy-runner",
@@ -1318,9 +1350,8 @@
         }
       ],
       "allowed_values": [
-        "archive",
         "review_only",
-        "collection_preview"
+        "collection_archive"
       ]
     },
     {

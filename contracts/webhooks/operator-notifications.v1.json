@@ -130,7 +130,7 @@
       "event": "archive.handoff",
       "category": "munchy_job",
       "source": "services.munchy-runner",
-      "purpose": "Munchy completed archive encodes and is handing them off to archival storage.",
+      "purpose": "Munchy completed a collection archive and is handing it directly to Riverhog archival custody.",
       "operator_urgency": "time_sensitive",
       "operator_action": "none",
       "delivery": {
@@ -141,7 +141,45 @@
       "canonical_notification": {
         "actor": "munchy",
         "title_template": "{emoji} {subject_40}",
-        "body_template": "Munchy archive output is complete and heading to archival storage."
+        "body_template": "Munchy collection archive is complete and heading to Riverhog."
+      },
+      "required_payload_fields": [
+        "event",
+        "type",
+        "source",
+        "actor",
+        "job_id",
+        "delivered_at",
+        "operator_urgency",
+        "operator_action",
+        "state",
+        "phase",
+        "notification"
+      ],
+      "optional_payload_fields": [
+        "collection_slug",
+        "collection_timestamp",
+        "recipient",
+        "message",
+        "severity"
+      ]
+    },
+    {
+      "event": "collection_archive.handoff",
+      "category": "munchy_job",
+      "source": "services.munchy-runner",
+      "purpose": "Munchy completed a collection archive and is handing it to the configured target destination.",
+      "operator_urgency": "time_sensitive",
+      "operator_action": "none",
+      "delivery": {
+        "mode": "best_effort",
+        "retry": false,
+        "reminder": false
+      },
+      "canonical_notification": {
+        "actor": "munchy",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Munchy collection archive is ready and heading to the configured target."
       },
       "required_payload_fields": [
         "event",

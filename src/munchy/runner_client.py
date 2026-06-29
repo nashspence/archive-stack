@@ -1945,7 +1945,7 @@ class MunchyRunnerClient:
         terminal: str = "active",
         state: str | None = None,
         workflow_mode: str | None = None,
-        riverhog_enabled: bool | None = None,
+        collection_archive_destination: str | None = None,
         cancel_requested: bool | None = None,
         storage_wait: bool | None = None,
     ) -> dict[str, Any]:
@@ -1962,8 +1962,8 @@ class MunchyRunnerClient:
             params["state"] = state
         if workflow_mode:
             params["workflow_mode"] = workflow_mode
-        if riverhog_enabled is not None:
-            params["riverhog_enabled"] = "true" if riverhog_enabled else "false"
+        if collection_archive_destination:
+            params["collection_archive_destination"] = collection_archive_destination
         if cancel_requested is not None:
             params["cancel_requested"] = "true" if cancel_requested else "false"
         if storage_wait is not None:

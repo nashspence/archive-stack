@@ -166,7 +166,8 @@ def remove_job(job_id: str) -> None:
 def storage_hint_for(
     rel_path: str,
     *,
-    workflow_mode: str = "archive",
+    workflow_mode: str = "collection_archive",
+    collection_archive_destination: str = "riverhog",
     archive_mode: str = "originals",
     tasks: list[str] | None = None,
 ) -> dict:
@@ -174,6 +175,7 @@ def storage_hint_for(
     tasks = list(tasks or [])
     return {
         "workflow_mode": workflow_mode,
+        "collection_archive_destination": collection_archive_destination,
         "archive_mode": archive_mode,
         "tasks": tasks,
         "groups": {
@@ -190,7 +192,8 @@ def create_upload(
     rel_path: str,
     content: bytes,
     *,
-    workflow_mode: str = "archive",
+    workflow_mode: str = "collection_archive",
+    collection_archive_destination: str = "riverhog",
     archive_mode: str = "originals",
     tasks: list[str] | None = None,
 ) -> dict:
@@ -205,6 +208,7 @@ def create_upload(
             "storage_hint": storage_hint_for(
                 rel_path,
                 workflow_mode=workflow_mode,
+                collection_archive_destination=collection_archive_destination,
                 archive_mode=archive_mode,
                 tasks=tasks,
             ),
@@ -265,9 +269,9 @@ def main() -> int:
     ready = api("GET", "/health/ready")
     capabilities = api("GET", "/v1/capabilities")
     workflow_modes = set(capabilities.get("workflow_modes", []))
-    if "collection_preview" not in workflow_modes:
+    if "collection_archive" not in workflow_modes:
         raise AssertionError(
-            f"runner capabilities did not advertise collection_preview: {capabilities}"
+            f"runner capabilities did not advertise collection_archive: {capabilities}"
         )
     review_methods = set(capabilities.get("review_upload", {}).get("methods", []))
     if "rclone" not in review_methods:
@@ -331,134 +335,30 @@ def main() -> int:
         raise AssertionError(f"input upload abandon did not report deleted: {abandoned}")
     assert_upload_missing(abandon_id)
 
-    preupload_id = f"{prefix}-preupload"
-    preupload_job_id = f"{prefix}-preupload-job"
-    create_upload(preupload_id, rel_path, content)
-    created_preupload_job = api(
-        "POST",
-        "/v1/jobs",
-        expect=202,
-        payload={
-            "job_id": preupload_job_id,
-            "input_upload_id": preupload_id,
-            "collection_slug": "runner-smoke-preupload",
-            "collection_timestamp": stamp,
-            "archive_mode": "originals",
-            "tasks": [],
-            "groups": {
-                group_name: {
-                    "archive_mode": "originals",
-                    "tasks": [],
-                },
-            },
-            "riverhog": {"enabled": False},
-            "review_upload": {"enabled": False},
-            "notify": {"enabled": False},
-        },
-    )
-    if created_preupload_job.get("input_upload_id") != preupload_id:
-        raise AssertionError(f"pre-upload job did not reference upload: {created_preupload_job}")
-    referenced_preupload_delete = request("DELETE", f"{RUNNER_URL}/v1/input-uploads/{preupload_id}")
-    if referenced_preupload_delete.status != 409:
-        raise AssertionError(
-            "active referenced input upload delete should be rejected with 409, "
-            f"got HTTP {referenced_preupload_delete.status}: "
-            f"{referenced_preupload_delete.body.decode('utf-8', 'replace')}"
-        )
-    api("POST", f"/v1/jobs/{preupload_job_id}/cancel", expect=202)
-    cancelled_preupload_job = poll_job_state(preupload_job_id, {"cancelled"})
-    if cancelled_preupload_job.get("state") != "cancelled":
-        raise AssertionError(f"pre-upload job did not cancel: {cancelled_preupload_job}")
-
-    job_id = f"{prefix}-job"
-    api(
-        "POST",
-        "/v1/jobs",
-        expect=202,
-        payload={
-            "job_id": job_id,
-            "input_upload_id": upload_id,
-            "collection_slug": "runner-smoke",
-            "collection_timestamp": stamp,
-            "archive_mode": "originals",
-            "tasks": [],
-            "encode_profile": {
-                "schema_version": 1,
-                "name": "runner-smoke-profile",
-                "archive": {
-                    "quality": 48,
-                    "max_height": 720,
-                    "fps_mode": "halve_60_to_30",
-                    "output_fps": 30,
-                    "scale_flags": "lanczos",
-                    "pix_fmt": "p010le",
-                    "audio": {
-                        "bitrate": "28k",
-                        "sample_rate": 24000,
-                        "channels": 1,
-                        "application": "audio",
-                        "frame_duration": 40,
-                        "cutoff": 12000,
-                        "compression_level": 10,
-                        "vbr": "on",
-                    },
-                },
-            },
-            "groups": {
-                group_name: {
-                    "archive_mode": "originals",
-                    "tasks": [],
-                    "encode_profile": {
-                        "schema_version": 1,
-                        "name": "runner-smoke-profile",
-                    },
-                },
-            },
-            "riverhog": {"enabled": False},
-            "review_upload": {
-                "enabled": False,
-                "method": "rclone",
-                "destination": f"/tmp/{prefix}/{{collection_slug}}",
-                "mode": "copy",
-            },
-            "notify": {
-                "enabled": False,
-                "recipients": ["smoke"],
-            },
-        },
-    )
-    job = poll_job(job_id)
-    if job.get("state") != "succeeded":
-        raise AssertionError(f"originals job failed: {job}")
-    if job.get("encode_profile", {}).get("name") != "runner-smoke-profile":
-        raise AssertionError(f"job did not preserve encode_profile: {job}")
-    if job.get("review_upload", {}).get("method") != "rclone":
-        raise AssertionError(f"job did not preserve review_upload config: {job}")
-    if job.get("notify", {}).get("recipients") != ["smoke"]:
-        raise AssertionError(f"job did not preserve notify config: {job}")
-
-    preview_job_id = ""
-    preview_upload_id = ""
-    if ready.get("review_upload_enabled"):
-        preview_upload_id = f"{prefix}-preview-upload"
+    preupload_id = ""
+    preupload_job_id = ""
+    target_job_id = ""
+    target_upload_id = ""
+    if ready.get("target_upload_enabled"):
+        preupload_id = f"{prefix}-preupload"
+        preupload_job_id = f"{prefix}-preupload-job"
         create_upload(
-            preview_upload_id,
+            preupload_id,
             rel_path,
             content,
-            workflow_mode="collection_preview",
+            workflow_mode="collection_archive",
+            collection_archive_destination="target",
         )
-        complete_upload(preview_upload_id, rel_path, content, partial_first=False)
-        preview_job_id = f"{prefix}-preview"
-        api(
+        created_preupload_job = api(
             "POST",
             "/v1/jobs",
             expect=202,
             payload={
-                "job_id": preview_job_id,
-                "input_upload_id": preview_upload_id,
-                "collection_slug": "runner-smoke-preview",
+                "job_id": preupload_job_id,
+                "input_upload_id": preupload_id,
+                "collection_slug": "runner-smoke-preupload",
                 "collection_timestamp": stamp,
-                "workflow_mode": "collection_preview",
+                "workflow_mode": "collection_archive",
                 "archive_mode": "originals",
                 "tasks": [],
                 "groups": {
@@ -467,26 +367,93 @@ def main() -> int:
                         "tasks": [],
                     },
                 },
-                "riverhog": {"enabled": False},
-                "review_upload": {
-                    "enabled": True,
-                    "method": "rclone",
-                    "destination": f"/tmp/{prefix}/{{collection_slug}}",
-                    "mode": "copy",
+                "collection_archive": {
+                    "destination": "target",
+                    "target": {
+                        "enabled": True,
+                        "method": "rclone",
+                        "destination": f"/tmp/{prefix}/{{collection_slug}}",
+                        "mode": "copy",
+                    },
                 },
                 "notify": {"enabled": False},
             },
         )
-        preview_job = poll_job(preview_job_id)
-        if preview_job.get("state") != "succeeded":
-            raise AssertionError(f"collection preview job failed: {preview_job}")
-        preview_result = preview_job.get("collection_preview_upload_result", {})
-        if preview_result.get("method") != "rclone":
-            raise AssertionError(f"collection preview did not upload with rclone: {preview_job}")
-        if preview_result.get("source_label") != "collection preview":
-            raise AssertionError(f"collection preview did not label upload source: {preview_job}")
-        if preview_job.get("riverhog_upload_result") is not None:
-            raise AssertionError(f"collection preview should not upload to Riverhog: {preview_job}")
+        if created_preupload_job.get("input_upload_id") != preupload_id:
+            raise AssertionError(
+                f"pre-upload job did not reference upload: {created_preupload_job}"
+            )
+        referenced_preupload_delete = request(
+            "DELETE",
+            f"{RUNNER_URL}/v1/input-uploads/{preupload_id}",
+        )
+        if referenced_preupload_delete.status != 409:
+            raise AssertionError(
+                "active referenced input upload delete should be rejected with 409, "
+                f"got HTTP {referenced_preupload_delete.status}: "
+                f"{referenced_preupload_delete.body.decode('utf-8', 'replace')}"
+            )
+        api("POST", f"/v1/jobs/{preupload_job_id}/cancel", expect=202)
+        cancelled_preupload_job = poll_job_state(preupload_job_id, {"cancelled"})
+        if cancelled_preupload_job.get("state") != "cancelled":
+            raise AssertionError(f"pre-upload job did not cancel: {cancelled_preupload_job}")
+
+        target_upload_id = f"{prefix}-target-upload"
+        create_upload(
+            target_upload_id,
+            rel_path,
+            content,
+            workflow_mode="collection_archive",
+            collection_archive_destination="target",
+        )
+        complete_upload(target_upload_id, rel_path, content, partial_first=False)
+        target_job_id = f"{prefix}-target"
+        api(
+            "POST",
+            "/v1/jobs",
+            expect=202,
+            payload={
+                "job_id": target_job_id,
+                "input_upload_id": target_upload_id,
+                "collection_slug": "runner-smoke-target",
+                "collection_timestamp": stamp,
+                "workflow_mode": "collection_archive",
+                "archive_mode": "originals",
+                "tasks": [],
+                "groups": {
+                    group_name: {
+                        "archive_mode": "originals",
+                        "tasks": [],
+                    },
+                },
+                "collection_archive": {
+                    "destination": "target",
+                    "target": {
+                        "enabled": True,
+                        "method": "rclone",
+                        "destination": f"/tmp/{prefix}/{{collection_slug}}",
+                        "mode": "copy",
+                    },
+                },
+                "notify": {"enabled": False},
+            },
+        )
+        target_job = poll_job(target_job_id)
+        if target_job.get("state") != "succeeded":
+            raise AssertionError(f"collection archive target job failed: {target_job}")
+        target_result = target_job.get("collection_archive_target_upload_result", {})
+        if target_result.get("method") != "rclone":
+            raise AssertionError(
+                f"collection archive target did not upload with rclone: {target_job}"
+            )
+        if target_result.get("source_label") != "collection archive":
+            raise AssertionError(
+                f"collection archive target did not label upload source: {target_job}"
+            )
+        if target_job.get("riverhog_upload_result") is not None:
+            raise AssertionError(
+                f"collection archive target should not upload to Riverhog: {target_job}"
+            )
 
     invalid_review = request(
         "POST",
@@ -506,27 +473,39 @@ def main() -> int:
             f"got HTTP {invalid_review.status}: {invalid_review.body.decode('utf-8', 'replace')}"
         )
 
-    invalid_preview = request(
+    invalid_target_upload_id = f"{prefix}-bad-target-upload"
+    create_upload(
+        invalid_target_upload_id,
+        rel_path,
+        content,
+        workflow_mode="collection_archive",
+        collection_archive_destination="target",
+    )
+    invalid_target_archive = request(
         "POST",
         f"{RUNNER_URL}/v1/jobs",
         payload={
-            "job_id": f"{prefix}-bad-preview",
-            "input_upload_id": upload_id,
+            "job_id": f"{prefix}-bad-target-archive",
+            "input_upload_id": invalid_target_upload_id,
             "collection_slug": "runner-smoke",
-            "workflow_mode": "collection_preview",
+            "workflow_mode": "collection_archive",
             "archive_mode": "av1_nvenc",
             "tasks": ["qcut_video"],
-            "review_upload": {
-                "enabled": True,
-                "method": "rclone",
-                "destination": f"/tmp/{prefix}/{{collection_slug}}",
+            "collection_archive": {
+                "destination": "target",
+                "target": {
+                    "enabled": True,
+                    "method": "rclone",
+                    "destination": f"/tmp/{prefix}/{{collection_slug}}",
+                },
             },
         },
     )
-    if invalid_preview.status != 422:
+    if invalid_target_archive.status != 422:
         raise AssertionError(
-            "collection_preview without archive_video should be rejected with 422, "
-            f"got HTTP {invalid_preview.status}: {invalid_preview.body.decode('utf-8', 'replace')}"
+            "collection_archive without archive_video should be rejected with 422, "
+            f"got HTTP {invalid_target_archive.status}: "
+            f"{invalid_target_archive.body.decode('utf-8', 'replace')}"
         )
 
     invalid_notify = request(
@@ -594,20 +573,21 @@ def main() -> int:
                 "status": "ok",
                 "runner_url": RUNNER_URL,
                 "resume_upload": upload_id,
-                "job": job_id,
-                "collection_preview_job": preview_job_id or None,
+                "collection_archive_target_job": target_job_id or None,
                 "cleanup_removed": sorted(expected_removed),
             },
             indent=2,
         )
     )
-    if preview_job_id:
-        remove_job(preview_job_id)
-    if preview_upload_id:
-        remove_upload(preview_upload_id)
-    remove_job(preupload_job_id)
-    remove_upload(preupload_id)
-    remove_job(job_id)
+    if target_job_id:
+        remove_job(target_job_id)
+    if target_upload_id:
+        remove_upload(target_upload_id)
+    if preupload_job_id:
+        remove_job(preupload_job_id)
+    if preupload_id:
+        remove_upload(preupload_id)
+    remove_upload(invalid_target_upload_id)
     remove_upload(upload_id)
     return 0
 

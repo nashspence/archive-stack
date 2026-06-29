@@ -136,7 +136,11 @@ def storage_hint_from_job_payload(payload: dict) -> dict:
         for name, group in dict(payload["groups"]).items()
     }
     return {
-        "workflow_mode": payload.get("workflow_mode", "archive"),
+        "workflow_mode": payload.get("workflow_mode", "collection_archive"),
+        "collection_archive_destination": dict(payload.get("collection_archive") or {}).get(
+            "destination",
+            "riverhog",
+        ),
         "archive_mode": payload["archive_mode"],
         "tasks": payload["tasks"],
         "groups": groups,
@@ -297,8 +301,10 @@ def main() -> int:
     if not SOURCE_PATH.is_file():
         raise SystemExit("set MUNCHY_RUNNER_GPU_SMOKE_SOURCE to a real video file")
     ready = wait_ready()
-    if ready.get("riverhog_upload_enabled") or ready.get("review_upload_enabled"):
-        raise SystemExit("refusing to run while Riverhog or review uploads are enabled")
+    if ready.get("riverhog_upload_enabled"):
+        raise SystemExit("refusing to run while Riverhog uploads are enabled")
+    if not ready.get("target_upload_enabled"):
+        raise SystemExit("GPU restart smoke requires target uploads to be enabled")
     if ready.get("scheduler_paused"):
         raise SystemExit("refusing to run while runner scheduler is paused")
     wait_target_ready()
@@ -324,6 +330,7 @@ def main() -> int:
         "input_upload_id": upload_id,
         "collection_slug": "gpu-restart-smoke",
         "collection_timestamp": stamp,
+        "workflow_mode": "collection_archive",
         "archive_mode": "av1_nvenc",
         "tasks": ["archive_video"],
         "encode_profile": {
@@ -376,8 +383,15 @@ def main() -> int:
                 },
             },
         },
-        "riverhog": {"enabled": False},
-        "review_upload": {"enabled": False},
+        "collection_archive": {
+            "destination": "target",
+            "target": {
+                "enabled": True,
+                "method": "rclone",
+                "destination": f"/tmp/{prefix}/{{collection_slug}}",
+                "mode": "copy",
+            },
+        },
         "notify": {"enabled": False},
     }
 

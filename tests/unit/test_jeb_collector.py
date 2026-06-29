@@ -88,8 +88,8 @@ def _base_config(
                 },
             },
             "munchy_job_defaults": {
-                "workflow_mode": "archive",
-                "riverhog": {"enabled": True},
+                "workflow_mode": "collection_archive",
+                "collection_archive": {"destination": "riverhog"},
                 "notify": {"enabled": True, "recipients": ["operator"]},
                 "profile_routing": {
                     "routes": [
@@ -1095,7 +1095,8 @@ def test_munchy_payload_uses_structured_routing(tmp_path: Path) -> None:
     assert request.files[0].filesystem_metadata["kind"] == "munchy.source-filesystem-metadata"
     assert request.files[0].filesystem_metadata["basename"] == "clip.mp4"
     assert request.storage_hint == {
-        "workflow_mode": "archive",
+        "workflow_mode": "collection_archive",
+        "collection_archive_destination": "riverhog",
         "archive_mode": "av1_nvenc",
         "tasks": [],
         "structured_routing": True,
@@ -1111,6 +1112,7 @@ def test_munchy_payload_uses_structured_routing(tmp_path: Path) -> None:
         },
     }
     assert request.job_payload["archive_mode"] == "av1_nvenc"
+    assert request.job_payload["collection_archive"] == {"destination": "riverhog"}
     assert request.job_payload["tasks"] == []
     assert request.job_payload["groups"]["video"]["encode_profile"]["archive"]["quality"] == 38
     assert request.job_payload["groups"]["originals"]["archive_mode"] == "originals"

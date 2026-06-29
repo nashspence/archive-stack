@@ -169,7 +169,7 @@ def test_structured_input_upload_accepts_source_prefixed_paths(
     req = runner.CreateInputUploadRequest(
         files=[runner.InputFileSpec(path="front-door/telephoto/clip.mp4", bytes=12)],
         storage_hint=runner.InputUploadStorageHint(
-            workflow_mode="archive",
+            workflow_mode="collection_archive",
             structured_routing=True,
             groups={
                 "video": runner.StorageGroupHint(
@@ -217,8 +217,8 @@ def test_create_job_request_accepts_full_metadata_projection_config(
     runner = load_runner(tmp_path, monkeypatch)
 
     req = runner.CreateJobRequest(
-        collection_slug="phone-preview",
-        workflow_mode="collection_preview",
+        collection_slug="phone-collection-archive",
+        workflow_mode="collection_archive",
         review_upload={"enabled": True},
         groups={
             "phone-video": {
@@ -263,7 +263,7 @@ def test_completed_structured_file_routes_by_path_without_full_upload(
             "upload_id": "upload-1",
             "state": "uploading",
             "storage_hint": {
-                "workflow_mode": "archive",
+                "workflow_mode": "collection_archive",
                 "structured_routing": True,
                 "groups": {
                     "video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]},
@@ -332,7 +332,7 @@ def test_profile_routing_manifest_records_actual_route_and_output(
             "upload_id": "upload-1",
             "state": "uploading",
             "storage_hint": {
-                "workflow_mode": "collection_preview",
+                "workflow_mode": "collection_archive",
                 "structured_routing": True,
                 "groups": {
                     "video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]},
@@ -353,7 +353,7 @@ def test_profile_routing_manifest_records_actual_route_and_output(
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
-        "collection_slug": "phone-preview",
+        "collection_slug": "phone-collection-archive",
         "collection_timestamp": "20260628T000000Z",
         "profile_routing": {
             "routes": [
@@ -450,7 +450,7 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
-        "collection_slug": "phone-preview",
+        "collection_slug": "phone-collection-archive",
     }
     runner.save_job(job)
     groups = {
@@ -487,7 +487,7 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
     assert 'geo:lat="37.3317"' in xmp
     assert "<rdf:li>Nash Spence</rdf:li>" in xmp
     assert "<rdf:li>iphone-se2</rdf:li>" in xmp
-    assert "<rdf:li>munchy/collection/phone-preview</rdf:li>" in xmp
+    assert "<rdf:li>munchy/collection/phone-collection-archive</rdf:li>" in xmp
     assert "<rdf:li>munchy/group/video</rdf:li>" in xmp
     assert "<rdf:li>munchy/route/iphone-video</rdf:li>" in xmp
     assert "<rdf:li>munchy/output/iphone/video</rdf:li>" in xmp
@@ -617,7 +617,7 @@ def test_gpu_payload_carries_required_projected_container_metadata(
         tasks=["archive_video"],
     )
     payload = runner.build_eager_gpu_payload(
-        {"job_id": "job-1", "collection_slug": "phone-preview"},
+        {"job_id": "job-1", "collection_slug": "phone-collection-archive"},
         batch_id="batch-1",
         group_name="camera",
         group_config=group_config,
@@ -679,7 +679,7 @@ def test_completed_structured_file_can_route_by_probe_metadata(
             "upload_id": "upload-1",
             "state": "uploading",
             "storage_hint": {
-                "workflow_mode": "archive",
+                "workflow_mode": "collection_archive",
                 "structured_routing": True,
                 "groups": {"phone-video": {"archive_mode": "av1_nvenc", "tasks": []}},
             },
@@ -879,7 +879,7 @@ def test_completed_structured_file_fails_when_no_route_matches(
         {
             "upload_id": "upload-1",
             "state": "uploading",
-            "storage_hint": {"workflow_mode": "archive", "structured_routing": True},
+            "storage_hint": {"workflow_mode": "collection_archive", "structured_routing": True},
             "files": [
                 {
                     "path": "unknown/clip.mp4",
@@ -928,7 +928,7 @@ def test_archive_admission_uses_eager_batch_peak_for_gpu_scratch(
         for index, size in enumerate([100, 90, 80, 70, 60], start=1)
     ]
     hint = runner.InputUploadStorageHint(
-        workflow_mode="archive",
+        workflow_mode="collection_archive",
         groups={
             "camera": runner.StorageGroupHint(
                 archive_mode="av1_nvenc",
@@ -950,7 +950,7 @@ def test_audio_archive_hint_does_not_reserve_gpu_scratch(
     runner = load_runner(tmp_path, monkeypatch)
     files = [runner.InputFileSpec(path="voice/REC_0001.wav", bytes=100)]
     hint = runner.InputUploadStorageHint(
-        workflow_mode="archive",
+        workflow_mode="collection_archive",
         archive_mode="audio",
         groups={"voice": runner.StorageGroupHint(archive_mode="audio")},
     )
@@ -994,7 +994,7 @@ def test_eager_archive_audio_group_encodes_and_consumes_uploaded_files(
     job = {
         "job_id": "job-voice",
         "input_upload_id": upload_id,
-        "collection_slug": "voice-preview",
+        "collection_slug": "voice-collection-archive",
     }
     runner.save_job(job)
     archive_dir = tmp_path / "archive"
@@ -1269,7 +1269,7 @@ def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_cust
     job = {
         "job_id": "job-voice",
         "input_upload_id": upload_id,
-        "collection_slug": "esonic-preview",
+        "collection_slug": "esonic-collection-archive",
     }
     runner.save_job(job)
 
@@ -1290,7 +1290,7 @@ def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_cust
     assert "geo:lat=" not in xmp
     assert "<rdf:li>Nash Spence</rdf:li>" in xmp
     assert "<rdf:li>device/esonic-memoq-sr600-nash</rdf:li>" in xmp
-    assert "<rdf:li>munchy/collection/esonic-preview</rdf:li>" in xmp
+    assert "<rdf:li>munchy/collection/esonic-collection-archive</rdf:li>" in xmp
     assert "<rdf:li>munchy/group/voice</rdf:li>" in xmp
     assert updated["files"][0]["metadata_projection_sidecar"] == (
         "voice/memo/R-00013_2606222246_REC.opus.xmp"
@@ -1408,9 +1408,9 @@ def test_client_preflight_failed_notification_uses_runner_defaults(
         runner.ClientPreflightFailedNotificationRequest(
             message="Local media preflight failed for camera.",
             device_id="camera",
-            workflow_mode="collection_preview",
+            workflow_mode="collection_archive",
             profile_group="camera-video",
-            collection_slug="camera-preview",
+            collection_slug="camera-collection-archive",
             collection_timestamp="20260606T120000Z",
             upload_id="upload-1",
             job_id="job-1",
@@ -1455,7 +1455,7 @@ def test_upload_waiting_reminder_is_time_sensitive_and_paced(
     monkeypatch.setattr(runner, "send_notify_deliveries", fake_send_notify_deliveries)
     job = {
         "job_id": "job-1",
-        "collection_slug": "camera-preview",
+        "collection_slug": "camera-collection-archive",
         "collection_timestamp": "20260606T120000Z",
         "state": "running",
         "phase": "waiting_for_eager_files:1/2",
@@ -1687,7 +1687,7 @@ def test_resume_job_preserves_fully_uploaded_riverhog_session(
             "input_upload_id": "upload-1",
             "collection_slug": "weekly-device-artifacts",
             "collection_timestamp": "20260615T030000Z",
-            "workflow_mode": "archive",
+            "workflow_mode": "collection_archive",
             "riverhog": {"enabled": True, "wait": "finalized"},
             "error": "old error",
             "finished_at": "2026-01-01T00:00:00Z",
@@ -1714,7 +1714,7 @@ def test_review_rclone_upload_excludes_platform_cruft(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("MUNCHY_RUNNER_REVIEW_UPLOAD_ENABLED", "1")
+    monkeypatch.setenv("MUNCHY_RUNNER_TARGET_UPLOAD_ENABLED", "1")
     runner = load_runner(tmp_path, monkeypatch)
     monkeypatch.setattr(
         runner,
@@ -1730,35 +1730,41 @@ def test_review_rclone_upload_excludes_platform_cruft(
     (nested / "._clip.webm").write_bytes(b"appledouble")
     commands: list[list[str]] = []
 
-    def fake_run_review_command(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+    def fake_run_target_command(cmd, **_kwargs):  # type: ignore[no-untyped-def]
         commands.append(list(cmd))
         return {"returncode": 0}
 
-    monkeypatch.setattr(runner, "run_review_command", fake_run_review_command)
+    monkeypatch.setattr(runner, "run_target_command", fake_run_target_command)
 
-    result = runner.upload_review(
+    result = runner.upload_target(
         {
             "job_id": "job-1",
-            "collection_slug": "preview",
+            "collection_slug": "collection-archive",
             "collection_timestamp": "20260629T000000Z",
-            "review_upload": {
-                "enabled": True,
-                "method": "rclone",
-                "mode": "copy",
-                "destination": "remote:{collection_slug}/{collection_timestamp}",
-            },
         },
         source_dir,
-        source_label="collection preview",
+        config={
+            "enabled": True,
+            "method": "rclone",
+            "mode": "copy",
+            "destination": "remote:{collection_slug}/{collection_timestamp}",
+        },
+        source_label="collection archive",
+        result_key="collection_archive_target_upload_result",
+        phase="collection_archive_target_upload",
+        component="collection_archive_target_upload",
+        event="collection_archive.handoff",
     )
 
     assert result["artifact_count"] == 1
-    assert result["destination"] == "remote:preview/20260629T000000Z"
+    assert result["destination"] == "remote:collection-archive/20260629T000000Z"
     command = commands[0]
     assert command[:2] == ["rclone", "copy"]
     assert str(source_dir) in command
-    assert "remote:preview/20260629T000000Z" in command
-    assert command.index(str(source_dir)) < command.index("remote:preview/20260629T000000Z")
+    assert "remote:collection-archive/20260629T000000Z" in command
+    assert command.index(str(source_dir)) < command.index(
+        "remote:collection-archive/20260629T000000Z"
+    )
     assert command.count("--exclude") >= 4
     assert ".DS_Store" in command
     assert "**/._*" in command
@@ -2289,7 +2295,7 @@ def test_compact_terminal_job_state_keeps_summaries_and_drops_heavy_payloads(
         "job_id": "job-1",
         "state": "succeeded",
         "phase": "done",
-        "workflow_mode": "collection_preview",
+        "workflow_mode": "collection_archive",
         "input_upload_id": "upload-1",
         "groups": {
             "camera": {
@@ -2326,7 +2332,7 @@ def test_compact_terminal_job_state_keeps_summaries_and_drops_heavy_payloads(
         "group_results": {"camera": {"large": "result"}},
         "cleanup_removed": [f"/tmp/work-{index}" for index in range(12)],
         "local_work_removed": [f"/tmp/work-{index}" for index in range(12)],
-        "collection_preview_upload_result": {
+        "collection_archive_target_upload_result": {
             "method": "rclone",
             "returncode": 0,
             "stdout": "x" * 5000,
@@ -2359,8 +2365,8 @@ def test_compact_terminal_job_state_keeps_summaries_and_drops_heavy_payloads(
     assert "cleanup_removed" not in job
     assert job["local_work_removed_count"] == 12
     assert "local_work_removed" not in job
-    assert "stdout" not in job["collection_preview_upload_result"]
-    assert len(job["collection_preview_upload_result"]["stdout_tail"]) == 4000
+    assert "stdout" not in job["collection_archive_target_upload_result"]
+    assert len(job["collection_archive_target_upload_result"]["stdout_tail"]) == 4000
     assert job["riverhog_handoff_metrics"]["session_complete_elapsed_seconds"] == 0.25
     assert job["terminal_state_compacted_at"]
     for key in (
@@ -2611,7 +2617,7 @@ def test_structured_unrouted_upload_progress_does_not_require_groups(
     runner.save_input_upload_raw(
         {
             "upload_id": "upload-1",
-            "storage_hint": {"workflow_mode": "archive", "structured_routing": True},
+            "storage_hint": {"workflow_mode": "collection_archive", "structured_routing": True},
             "files": [
                 {
                     "path": "front-door/clip.mp4",
@@ -2750,7 +2756,7 @@ def test_create_file_upload_does_not_sync_entire_shared_tree(
             "state": "uploading",
             "created_at": runner.now_iso(),
             "storage_hint": {
-                "workflow_mode": "archive",
+                "workflow_mode": "collection_archive",
                 "groups": {
                     "camera": {
                         "archive_mode": "av1_nvenc",
@@ -2886,7 +2892,7 @@ def test_sync_shared_input_file_materializes_only_completed_file(
             "state": "uploading",
             "created_at": runner.now_iso(),
             "storage_hint": {
-                "workflow_mode": "archive",
+                "workflow_mode": "collection_archive",
                 "groups": {
                     "camera": {
                         "archive_mode": "av1_nvenc",
@@ -3147,7 +3153,7 @@ def test_run_job_points_gpu_payload_at_shared_input_tree(
         "wait_gpu_job",
         lambda gpu_job_id, *, gpu_payload, job: {"state": "succeeded"},
     )
-    monkeypatch.setattr(runner, "upload_review", lambda *args, **kwargs: {"returncode": 0})
+    monkeypatch.setattr(runner, "upload_target", lambda *args, **kwargs: {"returncode": 0})
     monkeypatch.setattr(runner, "notify_job_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "schedule_pending_jobs", lambda *args, **kwargs: [])
@@ -3211,7 +3217,7 @@ def test_successful_job_keeps_shared_input_upload_for_unfinished_sibling(
         "wait_gpu_job",
         lambda gpu_job_id, *, gpu_payload, job: {"state": "succeeded"},
     )
-    monkeypatch.setattr(runner, "upload_review", lambda *args, **kwargs: {"returncode": 0})
+    monkeypatch.setattr(runner, "upload_target", lambda *args, **kwargs: {"returncode": 0})
     monkeypatch.setattr(runner, "notify_job_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "schedule_pending_jobs", lambda *args, **kwargs: [])
@@ -3241,7 +3247,7 @@ def test_successful_riverhog_handoff_cleans_job_work_and_input_upload(
             "upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "storage_hint": {
-                "workflow_mode": "archive",
+                "workflow_mode": "collection_archive",
                 "archive_mode": "av1_nvenc",
                 "tasks": ["archive_video", "qcut_video"],
                 "groups": {
@@ -3259,7 +3265,7 @@ def test_successful_riverhog_handoff_cleans_job_work_and_input_upload(
             "job_id": "job-1",
             "state": "queued",
             "phase": "queued",
-            "workflow_mode": "archive",
+            "workflow_mode": "collection_archive",
             "input_upload_id": "upload-1",
             "collection_slug": "camera-archive",
             "collection_timestamp": "20260101T000000Z",
@@ -3283,7 +3289,7 @@ def test_successful_riverhog_handoff_cleans_job_work_and_input_upload(
         return {"state": "succeeded"}
 
     monkeypatch.setattr(runner, "wait_gpu_job", wait_gpu_job)
-    monkeypatch.setattr(runner, "upload_review", lambda *args, **kwargs: {"returncode": 0})
+    monkeypatch.setattr(runner, "upload_target", lambda *args, **kwargs: {"returncode": 0})
     monkeypatch.setattr(runner, "upload_to_riverhog", lambda *args, **kwargs: {"returncode": 0})
     monkeypatch.setattr(runner, "notify_job_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
@@ -3322,7 +3328,7 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
         "job_id": "job-1",
         "state": "running",
         "phase": "riverhog_upload",
-        "workflow_mode": "archive",
+        "workflow_mode": "collection_archive",
         "input_upload_id": "upload-1",
         "collection_slug": "camera-archive",
         "collection_timestamp": "20260101T000000Z",
@@ -4684,7 +4690,7 @@ def test_run_job_reuses_stored_shared_review_plan(
         "wait_gpu_job",
         lambda gpu_job_id, *, gpu_payload, job: {"state": "succeeded"},
     )
-    monkeypatch.setattr(runner, "upload_review", lambda *args, **kwargs: {"returncode": 0})
+    monkeypatch.setattr(runner, "upload_target", lambda *args, **kwargs: {"returncode": 0})
     monkeypatch.setattr(runner, "notify_job_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
 
@@ -5049,7 +5055,7 @@ def test_compact_job_response_keeps_operational_fields_only(
         "state": "running",
         "phase": "eager_archive:pipeline=1/3",
         "input_upload_id": "upload-1",
-        "collection_slug": "camera-preview",
+        "collection_slug": "camera-collection-archive",
         "eager_archive": {
             "files": {},
             "batches": {"batch-1": {"state": "running"}},
@@ -5120,7 +5126,8 @@ def test_list_jobs_pages_filters_and_searches_indexed_summaries(
             "phase": "encoding",
             "collection_slug": "front-camera",
             "input_upload_id": "upload-1",
-            "workflow_mode": "archive",
+            "workflow_mode": "collection_archive",
+            "collection_archive": {"destination": "riverhog"},
             "created_at": "2026-01-01T00:00:00Z",
             "updated_at": "2026-01-03T00:00:00Z",
             "riverhog": {"enabled": True},
@@ -5136,7 +5143,6 @@ def test_list_jobs_pages_filters_and_searches_indexed_summaries(
             "workflow_mode": "review_only",
             "created_at": "2026-01-02T00:00:00Z",
             "updated_at": "2026-01-02T00:00:00Z",
-            "riverhog": {"enabled": False},
         }
     )
     runner.save_job(
@@ -5146,7 +5152,8 @@ def test_list_jobs_pages_filters_and_searches_indexed_summaries(
             "phase": "done",
             "collection_slug": "front-camera",
             "input_upload_id": "upload-3",
-            "workflow_mode": "archive",
+            "workflow_mode": "collection_archive",
+            "collection_archive": {"destination": "riverhog"},
             "created_at": "2026-01-03T00:00:00Z",
             "updated_at": "2026-01-01T00:00:00Z",
             "riverhog": {"enabled": True},
@@ -5156,8 +5163,8 @@ def test_list_jobs_pages_filters_and_searches_indexed_summaries(
     page = runner.list_jobs(
         terminal="all",
         q="front",
-        workflow_mode="archive",
-        riverhog_enabled=True,
+        workflow_mode="collection_archive",
+        collection_archive_destination="riverhog",
         sort="created_at",
         order="asc",
         page=1,
@@ -5167,15 +5174,15 @@ def test_list_jobs_pages_filters_and_searches_indexed_summaries(
     assert page["total"] == 2
     assert page["pages"] == 2
     assert page["query"] == "front"
-    assert page["filters"]["workflow_mode"] == "archive"
-    assert page["filters"]["riverhog_enabled"] is True
+    assert page["filters"]["workflow_mode"] == "collection_archive"
+    assert page["filters"]["collection_archive_destination"] == "riverhog"
     assert [job["job_id"] for job in page["jobs"]] == ["job-1"]
 
     second_page = runner.list_jobs(
         terminal="all",
         q="front",
-        workflow_mode="archive",
-        riverhog_enabled=True,
+        workflow_mode="collection_archive",
+        collection_archive_destination="riverhog",
         sort="created_at",
         order="asc",
         page=2,
@@ -5183,6 +5190,87 @@ def test_list_jobs_pages_filters_and_searches_indexed_summaries(
     )
 
     assert [job["job_id"] for job in second_page["jobs"]] == ["job-3"]
+
+
+def test_init_state_store_rebuilds_legacy_job_summary_index(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    conn = runner.state_db()
+    try:
+        conn.execute(
+            """
+            CREATE TABLE states (
+                kind TEXT NOT NULL,
+                id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (kind, id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE job_summaries (
+                job_id TEXT PRIMARY KEY,
+                state TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT NOT NULL,
+                input_upload_id TEXT NOT NULL,
+                collection_slug TEXT NOT NULL,
+                collection_timestamp TEXT NOT NULL,
+                workflow_mode TEXT NOT NULL,
+                archive_mode TEXT NOT NULL,
+                profile TEXT NOT NULL,
+                terminal INTEGER NOT NULL,
+                riverhog_enabled INTEGER NOT NULL,
+                cancel_requested INTEGER NOT NULL,
+                storage_wait INTEGER NOT NULL
+            )
+            """
+        )
+        job = {
+            "job_id": "job-1",
+            "state": "running",
+            "phase": "encoding",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "input_upload_id": "upload-1",
+            "collection_slug": "camera",
+            "collection_timestamp": "20260101T000000Z",
+            "workflow_mode": "collection_archive",
+            "collection_archive": {"destination": "riverhog"},
+            "archive_mode": "av1_nvenc",
+            "profile": "camera",
+        }
+        conn.execute(
+            "INSERT INTO states(kind, id, payload, updated_at) VALUES(?, ?, ?, ?)",
+            ("job", "job-1", json.dumps(job), "2026-01-01T00:00:00Z"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    runner.init_state_store()
+
+    conn = runner.state_db()
+    try:
+        columns = runner.table_columns(conn, "job_summaries")
+        row = conn.execute(
+            "SELECT collection_archive_destination FROM job_summaries WHERE job_id = ?",
+            ("job-1",),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert "riverhog_enabled" not in columns
+    assert "collection_archive_destination" in columns
+    assert row["collection_archive_destination"] == "riverhog"
 
 
 def test_list_jobs_does_not_scan_all_job_states_for_current_page(

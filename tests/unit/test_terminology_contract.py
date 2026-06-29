@@ -48,7 +48,8 @@ def test_terminology_contract_covers_current_top_level_surfaces() -> None:
     required = {
         "archive_mode",
         "collection",
-        "collection_preview",
+        "collection_archive",
+        "collection_archive_destination",
         "collection_restore",
         "disc_rebuild",
         "encode_profile",
@@ -90,6 +91,8 @@ def test_named_systems_are_intentional_software_agents() -> None:
 
 def test_terms_expose_ontology_shape() -> None:
     terms = {term["id"]: term for term in load_contract()["terms"]}
+    assert terms["collection_archive"]["term_type"] == "entity"
+    assert terms["collection_archive_destination"]["term_type"] == "policy"
     assert terms["disc_rebuild"]["term_type"] == "activity"
     assert terms["collection_restore"]["term_type"] == "enum_value"
     assert terms["image_rebuild"]["term_type"] == "enum_value"

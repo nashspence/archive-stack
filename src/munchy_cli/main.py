@@ -74,7 +74,8 @@ app.add_typer(routing_app, name="routing")
 DEFAULT_TASKS = ["archive_video", "qcut_video", "audio_review"]
 DEFAULT_AUDIO_TASKS = ["archive_audio"]
 DEFAULT_GROUP = "video"
-WORKFLOW_MODES = {"archive", "review_only", "collection_preview"}
+WORKFLOW_MODES = {"collection_archive", "review_only"}
+COLLECTION_ARCHIVE_DESTINATIONS = {"target", "riverhog"}
 ARCHIVE_MODES = {"av1_nvenc", "audio", "originals"}
 MUNCHY_CONFIG_ENV = "MUNCHY_JOB_CONFIG"
 HASH_CACHE_ENV = "MUNCHY_HASH_CACHE"
@@ -769,8 +770,7 @@ def _job_request(
     target_prefix: str | None,
     group: str | None,
     workflow_mode: str | None,
-    riverhog_enabled: bool,
-    riverhog_disabled: bool,
+    collection_archive_destination: str | None,
     upload_workers: int,
     upload_chunk_mib: int,
     hash_cache: Path | None,
@@ -804,11 +804,22 @@ def _job_request(
         collection_timestamp or defaults.get("collection_timestamp") or _timestamp()
     ).strip()
     workflow = _normalize_mode(
-        workflow_mode or str(defaults.get("workflow_mode") or "archive"),
-        default="archive",
+        workflow_mode or str(defaults.get("workflow_mode") or "collection_archive"),
+        default="collection_archive",
         allowed=WORKFLOW_MODES,
         label="workflow_mode",
     )
+    raw_collection_archive = deepcopy(
+        _mapping(defaults.get("collection_archive"), label="collection_archive")
+    )
+    destination = _normalize_mode(
+        collection_archive_destination
+        or str(raw_collection_archive.get("destination") or "riverhog"),
+        default="riverhog",
+        allowed=COLLECTION_ARCHIVE_DESTINATIONS,
+        label="collection_archive.destination",
+    )
+    raw_collection_archive["destination"] = destination
     archive_mode = _normalize_mode(
         str(defaults.get("archive_mode") or "av1_nvenc"),
         default="av1_nvenc",
@@ -830,13 +841,6 @@ def _job_request(
     if not final_job_id or not final_upload_id:
         raise typer.BadParameter("job id and upload id must not be blank")
 
-    if riverhog_enabled and riverhog_disabled:
-        raise typer.BadParameter("--riverhog and --no-riverhog cannot be combined")
-    riverhog = deepcopy(_mapping(defaults.get("riverhog"), label="riverhog"))
-    if riverhog_enabled:
-        riverhog["enabled"] = True
-    if riverhog_disabled:
-        riverhog["enabled"] = False
     review_upload = deepcopy(_mapping(defaults.get("review_upload"), label="review_upload"))
     notify = deepcopy(_mapping(defaults.get("notify"), label="notify"))
 
@@ -848,6 +852,7 @@ def _job_request(
     files = tuple(_hash_files(candidates, hash_cache=hash_cache, use_hash_cache=use_hash_cache))
     storage_hint = {
         "workflow_mode": workflow,
+        "collection_archive_destination": destination,
         "archive_mode": archive_mode,
         "tasks": tasks,
         "structured_routing": structured_routing,
@@ -862,7 +867,7 @@ def _job_request(
         "archive_mode": archive_mode,
         "tasks": tasks,
         "groups": groups,
-        "riverhog": riverhog,
+        "collection_archive": raw_collection_archive,
         "review_upload": review_upload,
         "notify": notify,
         "cleanup_local_on_success": bool(defaults.get("cleanup_local_on_success", False)),
@@ -1061,21 +1066,20 @@ def start_job(
     ] = None,
     workflow_mode: Annotated[
         str | None,
-        typer.Option("--workflow", help="archive, review-only, or collection-preview"),
+        typer.Option("--workflow", help="collection-archive or review-only"),
+    ] = None,
+    collection_archive_destination: Annotated[
+        str | None,
+        typer.Option(
+            "--destination",
+            help="Collection archive destination: target or riverhog",
+        ),
     ] = None,
     job_id: Annotated[str | None, typer.Option("--job-id", help="Runner job id")] = None,
     upload_id: Annotated[
         str | None,
         typer.Option("--upload-id", help="Runner input upload id"),
     ] = None,
-    riverhog_enabled: Annotated[
-        bool,
-        typer.Option("--riverhog", help="Enable Riverhog handoff for this job"),
-    ] = False,
-    riverhog_disabled: Annotated[
-        bool,
-        typer.Option("--no-riverhog", help="Disable Riverhog handoff from config"),
-    ] = False,
     upload_workers: Annotated[
         int,
         typer.Option("--upload-workers", min=1, max=128, help="Parallel upload workers"),
@@ -1115,8 +1119,7 @@ def start_job(
             target_prefix=target_prefix,
             group=group,
             workflow_mode=workflow_mode,
-            riverhog_enabled=riverhog_enabled,
-            riverhog_disabled=riverhog_disabled,
+            collection_archive_destination=collection_archive_destination,
             upload_workers=upload_workers,
             upload_chunk_mib=upload_chunk_mib,
             hash_cache=hash_cache,
@@ -1125,7 +1128,7 @@ def start_job(
         client = MunchyRunnerClient(runner_url_setting(runner_url))
         try:
             client.check_ready(
-                str(request.job_payload.get("workflow_mode") or "archive"),
+                str(request.job_payload.get("workflow_mode") or "collection_archive"),
                 requested_containers=_requested_containers(request),
             )
             client.create_or_get_input_upload(request)
@@ -1168,9 +1171,12 @@ def list_jobs(
         str | None,
         typer.Option("--workflow", help="Filter by workflow mode"),
     ] = None,
-    riverhog: Annotated[
+    collection_archive_destination: Annotated[
         str | None,
-        typer.Option("--riverhog", help="Filter Riverhog-enabled jobs: true or false"),
+        typer.Option(
+            "--destination",
+            help="Filter collection archive destination: target or riverhog",
+        ),
     ] = None,
     cancel_requested: Annotated[
         str | None,
@@ -1185,9 +1191,28 @@ def list_jobs(
     """List runner jobs."""
 
     client = MunchyRunnerClient(runner_url_setting(runner_url))
-    riverhog_filter = _optional_bool(riverhog, label="--riverhog")
+    destination_filter = (
+        _normalize_mode(
+            collection_archive_destination,
+            default="riverhog",
+            allowed=COLLECTION_ARCHIVE_DESTINATIONS,
+            label="collection_archive.destination",
+        )
+        if collection_archive_destination
+        else None
+    )
     cancel_requested_filter = _optional_bool(cancel_requested, label="--cancel-requested")
     storage_wait_filter = _optional_bool(storage_wait, label="--storage-wait")
+    normalized_workflow = (
+        _normalize_mode(
+            workflow_mode,
+            default="collection_archive",
+            allowed=WORKFLOW_MODES,
+            label="workflow_mode",
+        )
+        if workflow_mode
+        else None
+    )
     try:
         payload = client.list_jobs(
             page=page,
@@ -1197,8 +1222,8 @@ def list_jobs(
             query=query,
             terminal=terminal,
             state=state,
-            workflow_mode=workflow_mode,
-            riverhog_enabled=riverhog_filter,
+            workflow_mode=normalized_workflow,
+            collection_archive_destination=destination_filter,
             cancel_requested=cancel_requested_filter,
             storage_wait=storage_wait_filter,
         )

@@ -51,13 +51,13 @@ munchy job cancel <job-id> --runner-url http://127.0.0.1:8092 --cleanup
 
 `munchy job list` is paged and indexed by the runner: use `--page`,
 `--per-page`, `--sort`, `--order`, `--query`, and filters such as
-`--terminal`, `--state`, `--workflow`, `--riverhog`, `--cancel-requested`,
+`--terminal`, `--state`, `--workflow`, `--destination`, `--cancel-requested`,
 or `--storage-wait`.
 
 Start a standalone job with either a direct profile group:
 
 ```bash
-munchy job start ./incoming/camera --collection example-camera --group video --riverhog
+munchy job start ./incoming/camera --collection example-camera --group video --destination riverhog
 ```
 
 or with a richer job config:
@@ -100,7 +100,7 @@ Important environment variables:
 - `MUNCHY_RUNNER_GPU_TARGET_URL`
 - `MUNCHY_RUNNER_MIN_FREE_BYTES`
 - `MUNCHY_RUNNER_EAGER_ARCHIVE_PIPELINE_BATCHES`
-- `MUNCHY_RUNNER_REVIEW_UPLOAD_ENABLED`
+- `MUNCHY_RUNNER_TARGET_UPLOAD_ENABLED`
 - `MUNCHY_RUNNER_RIVERHOG_UPLOAD_ENABLED`
 - `MUNCHY_RUNNER_RIVERHOG_WAIT`
 - `MUNCHY_RUNNER_RIVERHOG_UPLOAD_CHUNK_BYTES`
@@ -168,17 +168,18 @@ the runner assigns profile groups from the job's routing rules.
 
 ## Archive Handoff Lifecycle
 
-Archive jobs may enable Riverhog upload with:
+Collection archive jobs select Riverhog custody with:
 
 ```json
-{"riverhog": {"enabled": true, "wait": "finalized"}}
+{"collection_archive": {"destination": "riverhog", "riverhog": {"wait": "finalized"}}}
 ```
 
-When enabled, the runner opens or resumes a Riverhog collection-upload session
-and uploads finished archive artifacts through Riverhog's session file-upload
-API. `wait = "finalized"` is the default and waits for Riverhog to make the
-collection visible as finalized. `wait = "staged"` waits only until all session
-files have been accepted and the session has been completed.
+When the destination is `riverhog`, the runner opens or resumes a Riverhog
+collection-upload session and uploads finished archive artifacts through
+Riverhog's session file-upload API. `wait = "finalized"` is the default and
+waits for Riverhog to make the collection visible as finalized. `wait = "staged"`
+waits only until all session files have been accepted and the session has been
+completed.
 
 Archive-only profile groups are encoded eagerly as uploaded source files become
 complete. This lets the runner overlap source upload, GPU encode work, and

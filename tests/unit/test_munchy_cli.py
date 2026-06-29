@@ -156,7 +156,7 @@ def test_munchy_job_list(monkeypatch) -> None:  # type: ignore[no-untyped-def]
             terminal: str,
             state: str | None,
             workflow_mode: str | None,
-            riverhog_enabled: bool | None,
+            collection_archive_destination: str | None,
             cancel_requested: bool | None,
             storage_wait: bool | None,
         ) -> dict[str, object]:
@@ -167,8 +167,8 @@ def test_munchy_job_list(monkeypatch) -> None:  # type: ignore[no-untyped-def]
             assert query == "camera"
             assert terminal == "all"
             assert state == "running"
-            assert workflow_mode == "archive"
-            assert riverhog_enabled is True
+            assert workflow_mode == "collection_archive"
+            assert collection_archive_destination == "riverhog"
             assert cancel_requested is False
             assert storage_wait is True
             return {
@@ -183,7 +183,7 @@ def test_munchy_job_list(monkeypatch) -> None:  # type: ignore[no-untyped-def]
                 "filters": {
                     "state": state,
                     "workflow_mode": workflow_mode,
-                    "riverhog_enabled": riverhog_enabled,
+                    "collection_archive_destination": collection_archive_destination,
                     "cancel_requested": cancel_requested,
                     "storage_wait": storage_wait,
                 },
@@ -214,9 +214,9 @@ def test_munchy_job_list(monkeypatch) -> None:  # type: ignore[no-untyped-def]
             "--state",
             "running",
             "--workflow",
-            "archive",
-            "--riverhog",
-            "true",
+            "collection-archive",
+            "--destination",
+            "riverhog",
             "--cancel-requested",
             "false",
             "--storage-wait",
@@ -407,7 +407,7 @@ def test_munchy_job_start_builds_direct_group_upload(monkeypatch, tmp_path) -> N
     assert request.files[0].rel_path == "video/clip.mp4"
     assert request.storage_hint["structured_routing"] is False
     assert request.storage_hint["groups"]["video"]["archive_mode"] == "av1_nvenc"
-    assert seen["workflow_mode"] == "archive"
+    assert seen["workflow_mode"] == "collection_archive"
     assert seen["requested_containers"] == []
     assert seen["uploaded"] == "camera-20260621T120000Z"
     assert awake_reasons == ["munchy job start"]
@@ -483,10 +483,10 @@ def test_munchy_job_start_uses_configured_profile_routing(monkeypatch, tmp_path)
     config.write_text(
         """
 [job]
-workflow_mode = "archive"
+workflow_mode = "collection_archive"
 
-[job.riverhog]
-enabled = true
+[job.collection_archive]
+destination = "riverhog"
 
 [profiles.camera]
 schema_version = 1
@@ -574,7 +574,7 @@ when = { path = { suffix = ".mp4" } }
     assert request.storage_hint["structured_routing"] is True
     assert request.storage_hint["groups"]["video"]["tasks"] == ["archive_video"]
     assert request.storage_hint["groups"]["originals"]["tasks"] == []
-    assert request.job_payload["riverhog"]["enabled"] is True
+    assert request.job_payload["collection_archive"]["destination"] == "riverhog"
     assert request.job_payload["profile_routing"]["routes"][0]["group"] == "video"
     assert (
         request.job_payload["groups"]["video"]["encode_profile"]["archive"]["container"] == "webm"
@@ -595,7 +595,7 @@ def test_munchy_job_start_defaults_audio_mode_to_archive_audio(monkeypatch, tmp_
     config.write_text(
         """
 [job]
-workflow_mode = "archive"
+workflow_mode = "collection_archive"
 archive_mode = "audio"
 
 [profiles.voice]
@@ -669,7 +669,7 @@ archive_mode = "audio"
     assert request.storage_hint["tasks"] == ["archive_audio"]
     assert request.storage_hint["groups"]["voice"]["tasks"] == ["archive_audio"]
     assert request.job_payload["groups"]["voice"]["encode_profile"]["target"] == "munchy-audio"
-    assert seen["workflow_mode"] == "archive"
+    assert seen["workflow_mode"] == "collection_archive"
     assert seen["requested_containers"] == ["opus"]
 
 

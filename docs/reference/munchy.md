@@ -164,7 +164,7 @@ derived from source inventory plus `encoding/stream-transforms.json`.
 
 ## Review Uploads
 
-Collection-preview and review uploads can be handed off through rclone. Munchy
+Collection-archive target and review uploads can be handed off through rclone. Munchy
 filters common desktop platform helper files by default before counting or
 uploading review artifacts:
 

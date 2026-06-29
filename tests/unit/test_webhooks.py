@@ -47,6 +47,7 @@ def test_operator_webhook_contract_covers_current_events() -> None:
     assert set(events) == {
         "job.received",
         "review.handoff",
+        "collection_archive.handoff",
         "archive.handoff",
         "job.issue",
         "job.upload_waiting.reminder",
@@ -390,7 +391,7 @@ def test_build_munchy_job_payload_uses_operator_notification_contract() -> None:
         event="job.issue",
         job={
             "job_id": "job-1",
-            "collection_slug": "camera-collection-preview-q49",
+            "collection_slug": "camera-collection-archive-q49",
             "collection_timestamp": "20260606T120000Z",
             "phase": "preflight_failed",
             "state": "failed",
@@ -415,7 +416,7 @@ def test_build_munchy_job_payload_uses_operator_notification_contract() -> None:
     assert payload["operator_action"] == "inspect Munchy job details immediately"
     assert payload["component"] == "preflight"
     assert payload["notification"] == {
-        "title": "🤤 camera-collection-preview-q49",
+        "title": "🤤 camera-collection-archive-q49",
         "body": "atom extends past EOF (bad.mp4)",
     }
 
@@ -425,7 +426,7 @@ def test_build_munchy_upload_waiting_reminder_payload() -> None:
         event="job.upload_waiting.reminder",
         job={
             "job_id": "job-1",
-            "collection_slug": "camera-collection-preview-q49",
+            "collection_slug": "camera-collection-archive-q49",
             "collection_timestamp": "20260606T120000Z",
             "phase": "waiting_for_eager_files:3031/5006",
             "state": "running",
@@ -447,7 +448,7 @@ def test_build_munchy_upload_waiting_reminder_payload() -> None:
     assert payload["severity"] == "warning"
     assert payload["reminder_count"] == 1
     assert payload["notification"] == {
-        "title": "🤤 camera-collection-preview-q49",
+        "title": "🤤 camera-collection-archive-q49",
         "body": "Upload paused: 3031/5006 files. Resume or cancel.",
     }
 

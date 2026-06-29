@@ -7,7 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from munchy.profiles import EncodeProfile
 
-WorkflowMode = Literal["archive", "review_only", "collection_preview"]
+WorkflowMode = Literal["collection_archive", "review_only"]
+CollectionArchiveDestination = Literal["target", "riverhog"]
 
 
 class InputFileSpec(BaseModel):
@@ -54,6 +55,7 @@ class MunchyJobRequest(BaseModel):
     job_id: str = Field(min_length=1)
     upload_id: str = Field(min_length=1)
     workflow_mode: WorkflowMode
+    collection_archive_destination: CollectionArchiveDestination = "riverhog"
     collection_slug: str = Field(min_length=1)
     collection_timestamp: str = Field(min_length=1)
     files: tuple[InputFileSpec, ...] = Field(min_length=1)

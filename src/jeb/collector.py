@@ -1790,11 +1790,17 @@ def munchy_upload_request(
         "input_upload_id": str(batch["input_upload_id"]),
         "collection_slug": str(batch["collection_slug"]),
         "collection_timestamp": str(batch["collection_timestamp"]),
-        "workflow_mode": collector.config.munchy_job_defaults.get("workflow_mode", "archive"),
+        "workflow_mode": collector.config.munchy_job_defaults.get(
+            "workflow_mode",
+            "collection_archive",
+        ),
         "archive_mode": "av1_nvenc",
         "tasks": [],
         "groups": groups,
-        "riverhog": dict(collector.config.munchy_job_defaults.get("riverhog") or {}),
+        "collection_archive": dict(
+            collector.config.munchy_job_defaults.get("collection_archive")
+            or {"destination": "riverhog"}
+        ),
         "review_upload": dict(collector.config.munchy_job_defaults.get("review_upload") or {}),
         "notify": dict(collector.config.munchy_job_defaults.get("notify") or {}),
         "profile_routing": dict(profile_routing),
@@ -1804,6 +1810,9 @@ def munchy_upload_request(
     }
     storage_hint = {
         "workflow_mode": job_payload["workflow_mode"],
+        "collection_archive_destination": str(
+            job_payload["collection_archive"].get("destination") or "riverhog"
+        ),
         "archive_mode": job_payload["archive_mode"],
         "tasks": job_payload["tasks"],
         "structured_routing": bool(job_payload.get("profile_routing")),

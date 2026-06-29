@@ -31,7 +31,7 @@ def test_job_requires_profiles_for_every_uploaded_group() -> None:
         MunchyJobRequest(
             job_id="job-1",
             upload_id="upload-1",
-            workflow_mode="collection_preview",
+            workflow_mode="collection_archive",
             collection_slug="example",
             collection_timestamp="20260605T120000Z",
             files=files,
