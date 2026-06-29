@@ -1,4 +1,5 @@
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
 CONTRACT = (
@@ -16,7 +17,6 @@ def load_contract() -> dict[str, object]:
 def test_terminology_contract_shape() -> None:
     contract = load_contract()
     assert contract["schema_version"] == 1
-    statuses = set(contract["status_values"])
     audiences = set(contract["audience_values"])
     surfaces = set(contract["surface_values"])
     terms = contract["terms"]
@@ -31,7 +31,6 @@ def test_terminology_contract_shape() -> None:
         assert isinstance(term, dict)
         assert term["id"]
         assert term["label"]
-        assert term["status"] in statuses
         assert term["definition"]
         assert set(term["audiences"]) <= audiences
         assert term["audiences"]
@@ -40,8 +39,6 @@ def test_terminology_contract_shape() -> None:
             assert exposure["surface"] in surfaces
             assert exposure["spelling"]
             assert exposure["context"]
-        if term["status"] == "needs_review":
-            assert term.get("issue") == contract["issue"]
 
 
 def test_terminology_contract_covers_current_top_level_surfaces() -> None:
@@ -50,6 +47,7 @@ def test_terminology_contract_covers_current_top_level_surfaces() -> None:
         "archive_mode",
         "collection",
         "collection_preview",
+        "collection_restore",
         "disc_rebuild",
         "encode_profile",
         "fetch",
@@ -80,9 +78,26 @@ def test_terminology_contract_covers_current_top_level_surfaces() -> None:
     assert needed_surfaces <= covered_surfaces
 
 
-def test_review_terms_are_the_known_ontology_cleanup_surface() -> None:
-    terms = {term["id"]: term for term in load_contract()["terms"]}
-    assert terms["recovery_session"]["status"] == "needs_review"
-    assert terms["image_rebuild"]["status"] == "needs_review"
-    assert terms["collection_restore"]["status"] == "needs_review"
-    assert terms["disc_rebuild"]["status"] == "preferred"
+def walk_values(value: object) -> Iterator[object]:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            yield key
+            yield from walk_values(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from walk_values(nested)
+    else:
+        yield value
+
+
+def test_terminology_contract_does_not_reference_work_items() -> None:
+    contract = load_contract()
+    assert "issue" not in contract
+    assert "status_values" not in contract
+    assert all(value != "issue" for value in walk_values(contract))
+    assert all(value != "status" for value in walk_values(contract))
+    assert all(value != "needs_review" for value in walk_values(contract))
+    assert not any(
+        isinstance(value, str) and "github.com/" in value
+        for value in walk_values(contract)
+    )
