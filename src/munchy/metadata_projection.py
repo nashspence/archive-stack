@@ -4,6 +4,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from fractions import Fraction
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -206,7 +207,6 @@ def render_immich_xmp_sidecar(
     }
     if metadata.capture_date:
         attrs["xmp:CreateDate"] = metadata.capture_date
-        attrs["xmp:CreationDate"] = metadata.capture_date
         attrs["xmp:ModifyDate"] = metadata.capture_date
         attrs["exif:DateTimeOriginal"] = metadata.capture_date
         attrs["photoshop:DateCreated"] = metadata.capture_date
@@ -216,7 +216,7 @@ def render_immich_xmp_sidecar(
         attrs["geo:lat"] = decimal_text(metadata.gps.latitude)
         attrs["geo:long"] = decimal_text(metadata.gps.longitude)
         if metadata.gps.altitude is not None:
-            attrs["exif:GPSAltitude"] = decimal_text(abs(metadata.gps.altitude))
+            attrs["exif:GPSAltitude"] = rational_text(abs(metadata.gps.altitude))
             attrs["exif:GPSAltitudeRef"] = "1" if metadata.gps.altitude < 0 else "0"
 
     attr_lines = "\n".join(
@@ -229,8 +229,7 @@ def render_immich_xmp_sidecar(
             (
                 render_rdf_bag("dc:subject", tags),
                 render_rdf_seq("digiKam:TagsList", tags),
-                render_rdf_bag("lr:HierarchicalSubject", hierarchical_tags(tags)),
-                render_rdf_bag("Iptc4xmpCore:Keywords", tags),
+                render_rdf_bag("lr:hierarchicalSubject", hierarchical_tags(tags)),
             )
         )
         tag_blocks = f"\n{tag_blocks}"
@@ -245,7 +244,6 @@ def render_immich_xmp_sidecar(
         '   xmlns:dc="http://purl.org/dc/elements/1.1/"\n'
         '   xmlns:digiKam="http://www.digikam.org/ns/1.0/"\n'
         '   xmlns:lr="http://ns.adobe.com/lightroom/1.0/"\n'
-        '   xmlns:Iptc4xmpCore="http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"\n'
         '   xmlns:geo="http://www.w3.org/2003/01/geo/wgs84_pos#"\n'
         f"{attr_lines}>{tag_blocks}\n"
         "  </rdf:Description>\n"
@@ -510,3 +508,8 @@ def parse_float(value: Any) -> float | None:
 
 def decimal_text(value: float) -> str:
     return f"{value:.8f}".rstrip("0").rstrip(".")
+
+
+def rational_text(value: float) -> str:
+    rational = Fraction(value).limit_denominator(1_000_000)
+    return f"{rational.numerator}/{rational.denominator}"

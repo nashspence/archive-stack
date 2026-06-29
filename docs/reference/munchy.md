@@ -35,21 +35,20 @@ allow_missing_gps = true
 The sidecar includes capture date aliases that common XMP readers consume:
 
 - `xmp:CreateDate`
-- `xmp:CreationDate`
 - `xmp:ModifyDate`
 - `exif:DateTimeOriginal`
 - `photoshop:DateCreated`
 
 GPS is written both as EXIF-style coordinates and WGS84 decimal coordinates.
-West and south coordinates must remain negative in the decimal fields.
+West and south coordinates must remain negative in the decimal fields. Altitude
+is written as an EXIF XMP rational with `exif:GPSAltitudeRef`.
 
 `metadata_projection.tags` is the operator-facing tag concept. Munchy projects
 the same tags into multiple XMP tag/keyword dialects for compatibility:
 
 - `dc:subject`
 - `digiKam:TagsList`
-- `lr:HierarchicalSubject`
-- `Iptc4xmpCore:Keywords`
+- `lr:hierarchicalSubject`
 
 When `include_context_tags` is true, which is the default, Munchy also adds tags
 for context that is already known at sidecar time:

@@ -36,7 +36,7 @@ def test_immich_projection_maps_exif_date_and_dms_gps() -> None:
 
     assert 'exif:DateTimeOriginal="2026-06-28T20:30:40-07:00"' in xmp
     assert 'xmp:CreateDate="2026-06-28T20:30:40-07:00"' in xmp
-    assert 'xmp:CreationDate="2026-06-28T20:30:40-07:00"' in xmp
+    assert "xmp:CreationDate" not in xmp
     assert 'xmp:ModifyDate="2026-06-28T20:30:40-07:00"' in xmp
     assert 'photoshop:DateCreated="2026-06-28T20:30:40-07:00"' in xmp
     assert 'exif:GPSLatitude="37,19.906000N"' in xmp
@@ -45,8 +45,8 @@ def test_immich_projection_maps_exif_date_and_dms_gps() -> None:
     assert 'geo:long="-122.0303"' in xmp
     assert "<dc:subject>" in xmp
     assert "<digiKam:TagsList>" in xmp
-    assert "<lr:HierarchicalSubject>" in xmp
-    assert "<Iptc4xmpCore:Keywords>" in xmp
+    assert "<lr:hierarchicalSubject>" in xmp
+    assert "<Iptc4xmpCore:Keywords>" not in xmp
     assert "<rdf:li>iphone-se2</rdf:li>" in xmp
     ET.fromstring(xmp)
 
@@ -68,6 +68,9 @@ def test_immich_projection_maps_nested_ffprobe_apple_location() -> None:
     assert metadata.gps.latitude == pytest.approx(37.3317)
     assert metadata.gps.longitude == pytest.approx(-122.0301)
     assert metadata.gps.altitude == pytest.approx(15.5)
+    xmp = render_immich_xmp_sidecar(metadata, metadata_date="2026-06-29T00:00:00Z")
+    assert 'exif:GPSAltitude="31/2"' in xmp
+    assert 'exif:GPSAltitudeRef="0"' in xmp
 
 
 def test_immich_projection_honors_full_word_gps_refs() -> None:
@@ -103,6 +106,24 @@ def test_immich_projection_honors_embedded_decimal_hemisphere() -> None:
     assert metadata.gps.longitude == pytest.approx(-122.7406)
 
 
+def test_immich_projection_writes_negative_altitude_ref() -> None:
+    metadata = project_immich_metadata(
+        {
+            "exif.date_time_original": "2026:06:28 20:30:40",
+            "exif.gps_latitude": "37.1",
+            "exif.gps_longitude": "-122.1",
+            "exif.gps_altitude": "19.587",
+            "exif.gps_altitude_ref": "below sea level",
+        }
+    )
+
+    assert metadata.gps is not None
+    assert metadata.gps.altitude == pytest.approx(-19.587)
+    xmp = render_immich_xmp_sidecar(metadata, metadata_date="2026-06-29T00:00:00Z")
+    assert 'exif:GPSAltitude="19587/1000"' in xmp
+    assert 'exif:GPSAltitudeRef="1"' in xmp
+
+
 def test_immich_projection_writes_hierarchical_tag_aliases() -> None:
     metadata = project_immich_metadata(
         {
@@ -115,7 +136,8 @@ def test_immich_projection_writes_hierarchical_tag_aliases() -> None:
 
     xmp = render_immich_xmp_sidecar(metadata, metadata_date="2026-06-29T00:00:00Z")
 
-    assert xmp.count("<rdf:li>device/nash-iphone-se2</rdf:li>") == 3
+    assert xmp.count("<rdf:li>device/nash-iphone-se2</rdf:li>") == 2
+    assert "<lr:hierarchicalSubject>" in xmp
     assert "<rdf:li>device|nash-iphone-se2</rdf:li>" in xmp
     assert "<rdf:li>munchy|route|video</rdf:li>" in xmp
 
@@ -147,7 +169,7 @@ def test_immich_xmp_sidecar_roundtrips_with_exiftool_when_available(tmp_path) ->
     payload = json.loads(proc.stdout)[0]
 
     assert payload["XMP-xmp:CreateDate"] == "2026:06:28 20:30:40-07:00"
-    assert payload["XMP-xmp:CreationDate"] == "2026:06:28 20:30:40-07:00"
+    assert "XMP-xmp:CreationDate" not in payload
     assert payload["XMP-xmp:ModifyDate"] == "2026:06:28 20:30:40-07:00"
     assert payload["XMP-exif:DateTimeOriginal"] == "2026:06:28 20:30:40-07:00"
     assert payload["XMP-photoshop:DateCreated"] == "2026:06:28 20:30:40-07:00"
@@ -155,7 +177,7 @@ def test_immich_xmp_sidecar_roundtrips_with_exiftool_when_available(tmp_path) ->
     assert payload["XMP-geo:Long"] == -122.7406
     assert payload["XMP-digiKam:TagsList"] == "device/nash-iphone-se2"
     assert payload["XMP-lr:HierarchicalSubject"] == "device|nash-iphone-se2"
-    assert payload["XMP-iptcCore:Keywords"] == "device/nash-iphone-se2"
+    assert "XMP-iptcCore:Keywords" not in payload
 
 
 def test_immich_projection_requires_date_and_gps_without_overrides() -> None:
