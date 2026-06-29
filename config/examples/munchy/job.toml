@@ -42,6 +42,14 @@ profile = "example-camera"
 archive_mode = "av1_nvenc"
 tasks = ["archive_video"]
 
+[groups.video.metadata_projection]
+creators = ["Example Operator"]
+tags = ["device/example-camera"]
+
+[groups.video.metadata_projection.device]
+make = "Example"
+model = "Camera"
+
 [groups.originals]
 archive_mode = "originals"
 tasks = []

@@ -44,6 +44,38 @@ class ContainerProfileTests(unittest.TestCase):
         self.assertNotIn("-c:s", cmd)
         self.assertNotIn("-c:t", cmd)
 
+    def test_archive_command_embeds_projected_container_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "clip.mp4"
+            output = root / "clip.webm"
+            source.write_bytes(b"source")
+
+            archive = av1.ArchiveEncodeProfile(container="webm", quality=49)
+            metadata = av1.ProjectionMetadata(
+                capture_date="2026-06-28T20:30:40-07:00",
+                capture_date_source="exif.date_time_original",
+                gps=None,
+                gps_source=None,
+                device_make="Sony",
+                device_model="ILCE-6700",
+                creators=("Alice Example", "Bob Example"),
+            )
+            with (
+                patch.object(av1, "validate_archive_container_source"),
+                patch.object(av1, "archive_decoder_args", return_value=[]),
+                patch.object(av1, "archive_video_filters", return_value=[]),
+            ):
+                cmd = av1.av1_archive_command(source, output, archive, metadata=metadata)
+
+        self.assertIn("-metadata", cmd)
+        self.assertIn("DATE=2026-06-28T20:30:40-07:00", cmd)
+        self.assertIn("creation_time=2026-06-28T20:30:40-07:00", cmd)
+        self.assertIn("ARTIST=Alice Example; Bob Example", cmd)
+        self.assertIn("CREATOR=Alice Example; Bob Example", cmd)
+        self.assertIn("MAKE=Sony", cmd)
+        self.assertIn("MODEL=ILCE-6700", cmd)
+
     def test_mkv_archive_command_keeps_side_stream_maps(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

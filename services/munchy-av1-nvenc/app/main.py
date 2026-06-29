@@ -14,7 +14,7 @@ import subprocess
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from functools import partial
@@ -26,6 +26,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from munchy.filesystem_metadata import load_filesystem_metadata_map
+from munchy.metadata_projection import ProjectionMetadata, ffmpeg_container_metadata_args
 from munchy.profiles import (
     MUNCHY_PROFILE_TARGET,
     ArchiveAudioProfile,
@@ -180,6 +181,8 @@ class JobRequest(BaseModel):
     riverhog: RiverhogConfig = Field(default_factory=RiverhogConfig)
     review_upload: ReviewUploadConfig = Field(default_factory=ReviewUploadConfig)
     review_plans: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    container_metadata: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    container_metadata_required: bool = True
     dry_run: bool = False
 
     @field_validator("tasks")
@@ -1046,7 +1049,13 @@ def archive_audio_encode_args(audio: ArchiveAudioProfile) -> list[str]:
     return args
 
 
-def av1_archive_command(source: Path, dest: Path, archive: ArchiveEncodeProfile) -> list[str]:
+def av1_archive_command(
+    source: Path,
+    dest: Path,
+    archive: ArchiveEncodeProfile,
+    *,
+    metadata: ProjectionMetadata | None = None,
+) -> list[str]:
     dest.parent.mkdir(parents=True, exist_ok=True)
     validate_archive_container_source(source, archive)
     decoder_args = archive_decoder_args(source)
@@ -1081,6 +1090,7 @@ def av1_archive_command(source: Path, dest: Path, archive: ArchiveEncodeProfile)
         "-c:a",
         "libopus",
         *archive_audio_encode_args(archive.audio),
+        *ffmpeg_container_metadata_args(metadata),
         "-f",
         archive_container_muxer(archive),
         str(dest),
@@ -1223,18 +1233,40 @@ def run_encode_item(
     return payload
 
 
+def projection_metadata_for_source(
+    rel_path: str,
+    *,
+    container_metadata: Mapping[str, dict[str, Any]] | None,
+    required: bool,
+) -> ProjectionMetadata | None:
+    if not container_metadata:
+        if required:
+            raise RuntimeError(f"container metadata is required for {rel_path}")
+        return None
+    raw = container_metadata.get(rel_path)
+    if raw is None:
+        if required:
+            raise RuntimeError(f"container metadata is required for {rel_path}")
+        return None
+    if not isinstance(raw, Mapping):
+        raise RuntimeError(f"container metadata for {rel_path} must be an object")
+    return ProjectionMetadata.from_dict(raw)
+
+
 def run_batch(
     *,
     sources: list[Path],
     input_root: Path,
     output_root: Path,
     suffix: str,
-    command_builder: Any,
+    command_builder: Callable[[Path, Path, ProjectionMetadata | None], list[str]],
     label: str,
     dry_run: bool,
     validate_archive: ArchiveEncodeProfile | None = None,
     source_artifacts: bool = False,
     source_artifacts_profile: dict[str, Any] | None = None,
+    container_metadata: Mapping[str, dict[str, Any]] | None = None,
+    container_metadata_required: bool = True,
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     filesystem_metadata = load_filesystem_metadata_map(input_root)
@@ -1255,8 +1287,13 @@ def run_batch(
         futures = {}
         for source in sources:
             dest = output_for(source, input_root, output_root, suffix)
-            cmd = command_builder(source, dest)
             rel_path = source.relative_to(input_root).as_posix()
+            metadata = projection_metadata_for_source(
+                rel_path,
+                container_metadata=container_metadata,
+                required=container_metadata_required,
+            )
+            cmd = command_builder(source, dest, metadata)
             futures[
                 pool.submit(
                     run_encode_item,
@@ -1757,16 +1794,19 @@ def run_job(job_id: str, req: JobRequest) -> None:
                 input_root=req.input_dir,
                 output_root=req.archive_dir,
                 suffix=archive_container_suffix(archive_profile),
-                command_builder=lambda source, dest: av1_archive_command(
+                command_builder=lambda source, dest, metadata: av1_archive_command(
                     source,
                     dest,
                     archive_profile,
+                    metadata=metadata,
                 ),
                 label="archive video encode",
                 dry_run=req.dry_run,
                 validate_archive=archive_profile,
                 source_artifacts=True,
                 source_artifacts_profile=encode_profile_dump,
+                container_metadata=req.container_metadata,
+                container_metadata_required=req.container_metadata_required,
             )
             write_status(job_id, status)
         if "qcut_video" in req.tasks:

@@ -41,7 +41,7 @@ from munchy.filesystem_metadata import (
 from munchy.metadata_projection import (
     MetadataProjectionError,
     ProjectionMetadata,
-    decimal_text,
+    ffmpeg_container_metadata_args,
     immich_xmp_sidecar_path,
     project_immich_metadata,
     render_immich_xmp_sidecar,
@@ -3730,7 +3730,13 @@ def metadata_projection_config(group_config: dict[str, Any]) -> dict[str, Any]:
             "target": "immich_xmp",
             "allow_missing_capture_date": False,
             "allow_missing_gps": False,
+            "allow_missing_device_make": False,
+            "allow_missing_device_model": False,
+            "allow_missing_creators": False,
             "capture_date_sources": None,
+            "device_make": None,
+            "device_model": None,
+            "creators": [],
             "tags": [],
             "include_context_tags": False,
         }
@@ -3753,12 +3759,28 @@ def metadata_projection_config(group_config: dict[str, Any]) -> dict[str, Any]:
                 raise RuntimeError(
                     "metadata_projection.capture_date_sources entries must be tables"
                 )
+    device = raw.get("device") or {}
+    if not isinstance(device, dict):
+        raise RuntimeError("metadata_projection.device must be a table")
+    device_make = str(device.get("make") or "").strip() or None
+    device_model = str(device.get("model") or "").strip() or None
+    if "creator" in raw:
+        raise RuntimeError("metadata_projection.creator is not supported; use creators = [...]")
+    creators = raw.get("creators") or []
+    if not isinstance(creators, list):
+        raise RuntimeError("metadata_projection.creators must be a list")
     return {
         "enabled": bool(raw.get("enabled", True)),
         "target": target,
         "allow_missing_capture_date": bool(raw.get("allow_missing_capture_date", False)),
         "allow_missing_gps": bool(raw.get("allow_missing_gps", False)),
+        "allow_missing_device_make": bool(raw.get("allow_missing_device_make", False)),
+        "allow_missing_device_model": bool(raw.get("allow_missing_device_model", False)),
+        "allow_missing_creators": bool(raw.get("allow_missing_creators", False)),
         "capture_date_sources": copy.deepcopy(capture_date_sources),
+        "device_make": device_make,
+        "device_model": device_model,
+        "creators": [str(creator).strip() for creator in creators if str(creator).strip()],
         "tags": [str(tag).strip() for tag in tags if str(tag).strip()],
         "include_context_tags": bool(raw.get("include_context_tags", True)),
     }
@@ -3809,10 +3831,16 @@ def projection_metadata_from_source(
             ),
             allow_missing_capture_date=bool(config["allow_missing_capture_date"]),
             allow_missing_gps=bool(config["allow_missing_gps"]),
+            allow_missing_device_make=bool(config["allow_missing_device_make"]),
+            allow_missing_device_model=bool(config["allow_missing_device_model"]),
+            allow_missing_creators=bool(config["allow_missing_creators"]),
             capture_date_sources=cast(
                 list[dict[str, Any]] | None,
                 config.get("capture_date_sources"),
             ),
+            device_make=cast(str | None, config.get("device_make")),
+            device_model=cast(str | None, config.get("device_model")),
+            creators=cast(list[str], config.get("creators")),
             tags=tags if tags is not None else cast(list[str], config["tags"]),
         )
     except MetadataProjectionError as exc:
@@ -3833,7 +3861,70 @@ def metadata_projection_with_tags(
         capture_date_source=metadata.capture_date_source,
         gps=metadata.gps,
         gps_source=metadata.gps_source,
+        device_make=metadata.device_make,
+        device_model=metadata.device_model,
+        creators=metadata.creators,
         tags=tuple(tags),
+    )
+
+
+def projection_metadata_satisfies_config(
+    metadata: ProjectionMetadata,
+    config: dict[str, Any],
+) -> bool:
+    if not config["allow_missing_capture_date"] and not metadata.capture_date:
+        return False
+    if not config["allow_missing_gps"] and metadata.gps is None:
+        return False
+    expected_make = cast(str | None, config.get("device_make"))
+    if expected_make and metadata.device_make != expected_make:
+        return False
+    if not expected_make and not config["allow_missing_device_make"] and not metadata.device_make:
+        return False
+    expected_model = cast(str | None, config.get("device_model"))
+    if expected_model and metadata.device_model != expected_model:
+        return False
+    if (
+        not expected_model
+        and not config["allow_missing_device_model"]
+        and not metadata.device_model
+    ):
+        return False
+    expected_creators = tuple(cast(list[str], config.get("creators") or []))
+    if expected_creators and metadata.creators != expected_creators:
+        return False
+    if not expected_creators and not config["allow_missing_creators"] and not metadata.creators:
+        return False
+    return True
+
+
+def container_metadata_for_gpu_payload(
+    file_states: list[dict[str, Any]],
+    *,
+    group_name: str,
+    group_config: dict[str, Any],
+    tasks: Sequence[str],
+) -> tuple[dict[str, dict[str, Any]], bool]:
+    if not gpu_tasks_require_container_metadata(tasks, group_config):
+        return {}, False
+    metadata_by_rel_path: dict[str, dict[str, Any]] = {}
+    changed = False
+    for file_state in file_states:
+        if ensure_file_projection_metadata(file_state, group_config=group_config):
+            changed = True
+        stored = file_state.get("metadata_projection_metadata")
+        if isinstance(stored, dict):
+            rel_path = upload_file_group_rel_for_state(file_state, group_name).as_posix()
+            metadata_by_rel_path[rel_path] = copy.deepcopy(stored)
+    return metadata_by_rel_path, changed
+
+
+def gpu_tasks_require_container_metadata(
+    tasks: Sequence[str],
+    group_config: dict[str, Any],
+) -> bool:
+    return "archive_video" in {str(task) for task in tasks} and metadata_projection_enabled(
+        group_config
     )
 
 
@@ -3844,7 +3935,12 @@ def ensure_file_projection_metadata(
 ) -> bool:
     if not metadata_projection_enabled(group_config):
         return False
-    if isinstance(file_state.get("metadata_projection_metadata"), dict):
+    config = metadata_projection_config(group_config)
+    stored = file_state.get("metadata_projection_metadata")
+    if isinstance(stored, dict) and projection_metadata_satisfies_config(
+        ProjectionMetadata.from_dict(stored),
+        config,
+    ):
         return False
     metadata = projection_metadata_from_source(
         str(file_state["path"]),
@@ -5342,46 +5438,8 @@ def audio_archive_profile(group_config: dict[str, Any]) -> tuple[dict[str, Any],
     return profile, audio
 
 
-def audio_metadata_location_text(metadata: ProjectionMetadata) -> str | None:
-    if metadata.gps is None:
-        return None
-    location = (
-        f"{float(metadata.gps.latitude):+.8f}".rstrip("0").rstrip(".")
-        + f"{float(metadata.gps.longitude):+.8f}".rstrip("0").rstrip(".")
-    )
-    if metadata.gps.altitude is not None:
-        location += f"{float(metadata.gps.altitude):+.3f}".rstrip("0").rstrip(".")
-    return f"{location}/"
-
-
 def audio_container_metadata_args(metadata: ProjectionMetadata | None) -> list[str]:
-    if metadata is None:
-        return []
-    args: list[str] = []
-    if metadata.capture_date:
-        args.extend(
-            [
-                "-metadata",
-                f"DATE={metadata.capture_date}",
-                "-metadata",
-                f"creation_time={metadata.capture_date}",
-            ]
-        )
-    if metadata.gps is not None:
-        location = audio_metadata_location_text(metadata)
-        if location:
-            args.extend(["-metadata", f"LOCATION={location}"])
-        args.extend(
-            [
-                "-metadata",
-                f"GPSLatitude={decimal_text(metadata.gps.latitude)}",
-                "-metadata",
-                f"GPSLongitude={decimal_text(metadata.gps.longitude)}",
-            ]
-        )
-        if metadata.gps.altitude is not None:
-            args.extend(["-metadata", f"GPSAltitude={decimal_text(metadata.gps.altitude)}"])
-    return args
+    return ffmpeg_container_metadata_args(metadata)
 
 
 def audio_archive_metadata_for_source(
@@ -7124,6 +7182,7 @@ def build_eager_gpu_payload(
     group_name: str,
     group_config: dict[str, Any],
     tasks: list[TaskName],
+    container_metadata: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     job_id = str(job["job_id"])
     gpu_job_id = gpu_eager_batch_job_id(job_id, batch_id)
@@ -7138,9 +7197,12 @@ def build_eager_gpu_payload(
         "collection_timestamp": job.get("collection_timestamp"),
         "riverhog": {"enabled": False},
         "review_upload": {"enabled": False},
+        "container_metadata_required": gpu_tasks_require_container_metadata(tasks, group_config),
     }
     if group_config.get("encode_profile") is not None:
         payload["encode_profile"] = group_config["encode_profile"]
+    if container_metadata:
+        payload["container_metadata"] = container_metadata
     return payload
 
 
@@ -7222,11 +7284,14 @@ def start_eager_gpu_batch(
     if not space_checked:
         wait_for_free_space(job, GPU_RUNTIME_DIR, required_gpu_free, label="gpu eager scratch")
 
-    upload_changed = False
-    for file_state in file_states:
-        if ensure_file_projection_metadata(file_state, group_config=group_config):
-            upload_changed = True
-    if upload_changed:
+    tasks: list[TaskName] = ["archive_video"]
+    container_metadata, container_metadata_changed = container_metadata_for_gpu_payload(
+        file_states,
+        group_name=group_name,
+        group_config=group_config,
+        tasks=tasks,
+    )
+    if container_metadata_changed:
         upload = save_input_upload_raw(upload)
 
     batch_root = eager_batch_input_root(job_id, batch_id)
@@ -7236,13 +7301,13 @@ def start_eager_gpu_batch(
     for file_state in file_states:
         materialize_upload_file(file_state, batch_root)
     write_group_filesystem_metadata(batch_root, group_name, file_states)
-    tasks: list[TaskName] = ["archive_video"]
     payload = build_eager_gpu_payload(
         job,
         batch_id=batch_id,
         group_name=group_name,
         group_config=group_config,
         tasks=tasks,
+        container_metadata=container_metadata,
     )
     batch = {
         "batch_id": batch_id,
@@ -7648,6 +7713,17 @@ def run_job(job_id: str) -> None:
             try:
                 for group_name, group_config, tasks in gpu_work:
                     raise_if_job_cancelled(job_id)
+                    group_file_states = mutable_upload_files_for_groups(input_upload, {group_name})
+                    container_metadata, container_metadata_changed = (
+                        container_metadata_for_gpu_payload(
+                            group_file_states,
+                            group_name=group_name,
+                            group_config=group_config,
+                            tasks=tasks,
+                        )
+                    )
+                    if container_metadata_changed:
+                        input_upload = save_input_upload_raw(input_upload)
                     gpu_job_id = gpu_group_job_id(job_id, group_name)
                     job["phase"] = f"gpu:{group_name}"
                     save_job(job)
@@ -7662,9 +7738,15 @@ def run_job(job_id: str) -> None:
                         "collection_timestamp": job.get("collection_timestamp"),
                         "riverhog": {"enabled": False},
                         "review_upload": {"enabled": False},
+                        "container_metadata_required": gpu_tasks_require_container_metadata(
+                            tasks,
+                            group_config,
+                        ),
                     }
                     if group_config.get("encode_profile") is not None:
                         gpu_payload["encode_profile"] = group_config["encode_profile"]
+                    if container_metadata:
+                        gpu_payload["container_metadata"] = container_metadata
                     for task_name in ("qcut_video", "audio_review"):
                         if task_name not in tasks:
                             continue

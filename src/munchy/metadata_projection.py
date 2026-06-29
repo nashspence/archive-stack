@@ -53,6 +53,9 @@ class ProjectionMetadata:
     capture_date_source: str | None
     gps: GpsPosition | None
     gps_source: str | None
+    device_make: str | None = None
+    device_model: str | None = None
+    creators: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
@@ -60,21 +63,33 @@ class ProjectionMetadata:
             "capture_date": self.capture_date,
             "capture_date_source": self.capture_date_source,
             "gps_source": self.gps_source,
+            "creators": list(self.creators),
             "tags": list(self.tags),
         }
         out["gps"] = self.gps.as_dict() if self.gps is not None else None
+        out["device"] = {
+            "make": self.device_make,
+            "model": self.device_model,
+        }
         return out
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> ProjectionMetadata:
         gps_value = value.get("gps")
         gps = GpsPosition.from_dict(gps_value) if isinstance(gps_value, Mapping) else None
+        device = value.get("device")
         tags_value = value.get("tags")
-        tags = tuple(
-            str(item).strip()
-            for item in tags_value
-            if str(item).strip()
-        ) if isinstance(tags_value, Sequence) and not isinstance(tags_value, str) else ()
+        creators_value = value.get("creators")
+        creators = (
+            normalized_text_values(creators_value)
+            if isinstance(creators_value, Sequence) and not isinstance(creators_value, str)
+            else ()
+        )
+        tags = (
+            normalized_tags(tags_value)
+            if isinstance(tags_value, Sequence) and not isinstance(tags_value, str)
+            else ()
+        )
         capture_date = value.get("capture_date")
         capture_date_source = value.get("capture_date_source")
         gps_source = value.get("gps_source")
@@ -83,6 +98,11 @@ class ProjectionMetadata:
             capture_date_source=str(capture_date_source) if capture_date_source else None,
             gps=gps,
             gps_source=str(gps_source) if gps_source else None,
+            device_make=metadata_text(device.get("make")) if isinstance(device, Mapping) else None,
+            device_model=(
+                metadata_text(device.get("model")) if isinstance(device, Mapping) else None
+            ),
+            creators=creators,
             tags=tags,
         )
 
@@ -173,7 +193,13 @@ def project_immich_metadata(
     *,
     allow_missing_capture_date: bool = False,
     allow_missing_gps: bool = False,
+    allow_missing_device_make: bool = False,
+    allow_missing_device_model: bool = False,
+    allow_missing_creators: bool = False,
     capture_date_sources: Sequence[Mapping[str, Any]] | None = None,
+    device_make: str | None = None,
+    device_model: str | None = None,
+    creators: Sequence[str] = (),
     tags: Sequence[str] = (),
 ) -> ProjectionMetadata:
     capture_date, capture_date_source = first_capture_date(
@@ -192,12 +218,33 @@ def project_immich_metadata(
             "metadata projection requires valid GPS coordinates; set "
             "metadata_projection.allow_missing_gps=true to permit this source"
         )
+    device_make = required_configured_metadata_text(
+        "device make",
+        device_make,
+        allow_missing=allow_missing_device_make,
+        override_key="allow_missing_device_make",
+    )
+    device_model = required_configured_metadata_text(
+        "device model",
+        device_model,
+        allow_missing=allow_missing_device_model,
+        override_key="allow_missing_device_model",
+    )
+    creators = required_configured_metadata_list(
+        "creator",
+        creators,
+        allow_missing=allow_missing_creators,
+        override_key="allow_missing_creators",
+    )
 
     return ProjectionMetadata(
         capture_date=capture_date,
         capture_date_source=capture_date_source,
         gps=gps,
         gps_source=gps_source,
+        device_make=device_make,
+        device_model=device_model,
+        creators=creators,
         tags=normalized_tags(tags),
     )
 
@@ -214,6 +261,11 @@ def render_immich_xmp_sidecar(
         attrs["xmp:CreateDate"] = metadata.capture_date
         attrs["exif:DateTimeOriginal"] = metadata.capture_date
         attrs["photoshop:DateCreated"] = metadata.capture_date
+        attrs["xmpDM:shotDate"] = metadata.capture_date
+    if metadata.device_make:
+        attrs["tiff:Make"] = metadata.device_make
+    if metadata.device_model:
+        attrs["tiff:Model"] = metadata.device_model
     if metadata.gps is not None:
         attrs["exif:GPSLatitude"] = xmp_gps_coordinate(metadata.gps.latitude, axis="lat")
         attrs["exif:GPSLongitude"] = xmp_gps_coordinate(metadata.gps.longitude, axis="lon")
@@ -227,15 +279,20 @@ def render_immich_xmp_sidecar(
         f'   {name}="{escape(str(value), quote=True)}"' for name, value in sorted(attrs.items())
     )
     tags = normalized_tags(metadata.tags)
-    tag_blocks = ""
+    blocks: list[str] = []
+    if metadata.creators:
+        blocks.append(render_rdf_seq("dc:creator", metadata.creators))
     if tags:
-        tag_blocks = "\n".join(
-            (
+        blocks.extend(
+            [
                 render_rdf_bag("dc:subject", tags),
                 render_rdf_seq("digiKam:TagsList", tags),
                 render_rdf_bag("lr:hierarchicalSubject", hierarchical_tags(tags)),
-            )
+            ]
         )
+    tag_blocks = ""
+    if blocks:
+        tag_blocks = "\n".join(blocks)
         tag_blocks = f"\n{tag_blocks}"
     return (
         '<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>\n'
@@ -243,7 +300,9 @@ def render_immich_xmp_sidecar(
         ' <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n'
         '  <rdf:Description rdf:about=""\n'
         '   xmlns:xmp="http://ns.adobe.com/xap/1.0/"\n'
+        '   xmlns:xmpDM="http://ns.adobe.com/xmp/1.0/DynamicMedia/"\n'
         '   xmlns:exif="http://ns.adobe.com/exif/1.0/"\n'
+        '   xmlns:tiff="http://ns.adobe.com/tiff/1.0/"\n'
         '   xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"\n'
         '   xmlns:dc="http://purl.org/dc/elements/1.1/"\n'
         '   xmlns:digiKam="http://www.digikam.org/ns/1.0/"\n'
@@ -257,8 +316,49 @@ def render_immich_xmp_sidecar(
     )
 
 
-def normalized_tags(tags: Sequence[str]) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(str(tag).strip() for tag in tags if str(tag).strip()))
+def required_configured_metadata_text(
+    label: str,
+    value: Any,
+    *,
+    allow_missing: bool,
+    override_key: str,
+) -> str | None:
+    normalized = metadata_text(value)
+    if normalized is None and not allow_missing:
+        raise MetadataProjectionError(
+            f"metadata projection requires configured {label}; set "
+            f"metadata_projection.{override_key}=true to permit this source"
+        )
+    return normalized
+
+
+def required_configured_metadata_list(
+    label: str,
+    values: Sequence[str],
+    *,
+    allow_missing: bool,
+    override_key: str,
+) -> tuple[str, ...]:
+    normalized = normalized_text_values(values)
+    if not normalized and not allow_missing:
+        raise MetadataProjectionError(
+            f"metadata projection requires at least one configured {label}; set "
+            f"metadata_projection.{override_key}=true to permit this source"
+        )
+    return normalized
+
+
+def metadata_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def normalized_tags(tags: Sequence[Any]) -> tuple[str, ...]:
+    return normalized_text_values(tags)
+
+
+def normalized_text_values(values: Sequence[Any]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
 
 
 def hierarchical_tags(tags: Sequence[str]) -> tuple[str, ...]:
@@ -714,3 +814,56 @@ def decimal_text(value: float) -> str:
 def rational_text(value: float) -> str:
     rational = Fraction(value).limit_denominator(1_000_000)
     return f"{rational.numerator}/{rational.denominator}"
+
+
+def ffmpeg_metadata_location_text(metadata: ProjectionMetadata) -> str | None:
+    if metadata.gps is None:
+        return None
+    location = (
+        f"{float(metadata.gps.latitude):+.8f}".rstrip("0").rstrip(".")
+        + f"{float(metadata.gps.longitude):+.8f}".rstrip("0").rstrip(".")
+    )
+    if metadata.gps.altitude is not None:
+        location += f"{float(metadata.gps.altitude):+.3f}".rstrip("0").rstrip(".")
+    return f"{location}/"
+
+
+def ffmpeg_container_metadata_args(metadata: ProjectionMetadata | None) -> list[str]:
+    if metadata is None:
+        return []
+    pairs: list[tuple[str, str]] = []
+    if metadata.capture_date:
+        pairs.extend(
+            [
+                ("DATE", metadata.capture_date),
+                ("creation_time", metadata.capture_date),
+            ]
+        )
+    if metadata.creators:
+        creator_text = "; ".join(metadata.creators)
+        pairs.extend(
+            [
+                ("ARTIST", creator_text),
+                ("CREATOR", creator_text),
+            ]
+        )
+    if metadata.device_make:
+        pairs.append(("MAKE", metadata.device_make))
+    if metadata.device_model:
+        pairs.append(("MODEL", metadata.device_model))
+    if metadata.gps is not None:
+        location = ffmpeg_metadata_location_text(metadata)
+        if location:
+            pairs.append(("LOCATION", location))
+        pairs.extend(
+            [
+                ("GPSLatitude", decimal_text(metadata.gps.latitude)),
+                ("GPSLongitude", decimal_text(metadata.gps.longitude)),
+            ]
+        )
+        if metadata.gps.altitude is not None:
+            pairs.append(("GPSAltitude", decimal_text(metadata.gps.altitude)))
+    args: list[str] = []
+    for key, value in pairs:
+        args.extend(["-metadata", f"{key}={value}"])
+    return args

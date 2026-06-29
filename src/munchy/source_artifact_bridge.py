@@ -331,7 +331,6 @@ def build_strict_source_artifacts(
             selected_output_path=archive_mkv,
             encode_output_path=archive_mkv,
             source_filesystem_metadata=source_filesystem_metadata,
-            include_rebuild_plan=source_container.get("supported") is True,
         )
 
         created = source_artifacts._build_source_artifacts_bundle(

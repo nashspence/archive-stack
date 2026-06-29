@@ -53,6 +53,15 @@ profile = "security-camera"
 archive_mode = "av1_nvenc"
 tasks = ["archive_video"]
 
+[profile_groups.video.metadata_projection]
+allow_missing_gps = true
+creators = ["Example Operator"]
+tags = ["device/example-camera"]
+
+[profile_groups.video.metadata_projection.device]
+make = "Example"
+model = "Security Camera"
+
 [profile_groups.originals]
 archive_mode = "originals"
 

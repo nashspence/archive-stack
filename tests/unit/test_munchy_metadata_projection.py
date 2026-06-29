@@ -9,14 +9,26 @@ import pytest
 
 from munchy.metadata_projection import (
     MetadataProjectionError,
+    ffmpeg_container_metadata_args,
     immich_xmp_sidecar_path,
     project_immich_metadata,
     render_immich_xmp_sidecar,
 )
 
+DEFAULT_PROJECTION_CONFIG = {
+    "device_make": "Apple",
+    "device_model": "iPhone SE (2nd generation)",
+    "creators": ["Nash Spence"],
+}
+
+
+def project_test_metadata(facts, **kwargs):  # type: ignore[no-untyped-def]
+    config = {**DEFAULT_PROJECTION_CONFIG, **kwargs}
+    return project_immich_metadata(facts, **config)
+
 
 def test_immich_projection_maps_exif_date_and_dms_gps() -> None:
-    metadata = project_immich_metadata(
+    metadata = project_test_metadata(
         {
             "exif.date_time_original": "2026:06:28 20:30:40-0700",
             "exif.gps_latitude": "37 deg 19' 54.36\" N",
@@ -30,6 +42,9 @@ def test_immich_projection_maps_exif_date_and_dms_gps() -> None:
     assert metadata.gps is not None
     assert metadata.gps.latitude == pytest.approx(37.3317666, abs=0.000001)
     assert metadata.gps.longitude == pytest.approx(-122.0303, abs=0.000001)
+    assert metadata.device_make == "Apple"
+    assert metadata.device_model == "iPhone SE (2nd generation)"
+    assert metadata.creators == ("Nash Spence",)
     assert metadata.tags == ("iphone-se2",)
 
     xmp = render_immich_xmp_sidecar(metadata, metadata_date="2026-06-29T00:00:00Z")
@@ -39,20 +54,25 @@ def test_immich_projection_maps_exif_date_and_dms_gps() -> None:
     assert "xmp:CreationDate" not in xmp
     assert "xmp:ModifyDate" not in xmp
     assert 'photoshop:DateCreated="2026-06-28T20:30:40-07:00"' in xmp
+    assert 'xmpDM:shotDate="2026-06-28T20:30:40-07:00"' in xmp
+    assert 'tiff:Make="Apple"' in xmp
+    assert 'tiff:Model="iPhone SE (2nd generation)"' in xmp
     assert 'exif:GPSLatitude="37,19.906000N"' in xmp
     assert 'exif:GPSLongitude="122,1.818000W"' in xmp
     assert 'geo:lat="37.33176667"' in xmp
     assert 'geo:long="-122.0303"' in xmp
     assert "<dc:subject>" in xmp
+    assert "<dc:creator>" in xmp
     assert "<digiKam:TagsList>" in xmp
     assert "<lr:hierarchicalSubject>" in xmp
     assert "<Iptc4xmpCore:Keywords>" not in xmp
+    assert "<rdf:li>Nash Spence</rdf:li>" in xmp
     assert "<rdf:li>iphone-se2</rdf:li>" in xmp
     ET.fromstring(xmp)
 
 
 def test_immich_projection_maps_nested_ffprobe_apple_location() -> None:
-    metadata = project_immich_metadata(
+    metadata = project_test_metadata(
         {
             "ffprobe": {
                 "format_tags": {
@@ -74,7 +94,7 @@ def test_immich_projection_maps_nested_ffprobe_apple_location() -> None:
 
 
 def test_immich_projection_honors_full_word_gps_refs() -> None:
-    metadata = project_immich_metadata(
+    metadata = project_test_metadata(
         {
             "exif.date_time_original": "2026:06:28 20:30:40",
             "exif.gps_latitude": 48.99951389,
@@ -93,7 +113,7 @@ def test_immich_projection_honors_full_word_gps_refs() -> None:
 
 
 def test_immich_projection_honors_embedded_decimal_hemisphere() -> None:
-    metadata = project_immich_metadata(
+    metadata = project_test_metadata(
         {
             "exif.date_time_original": "2026:06:28 20:30:40",
             "exif.gps_latitude": "48.99950000 N",
@@ -107,7 +127,7 @@ def test_immich_projection_honors_embedded_decimal_hemisphere() -> None:
 
 
 def test_immich_projection_writes_negative_altitude_ref() -> None:
-    metadata = project_immich_metadata(
+    metadata = project_test_metadata(
         {
             "exif.date_time_original": "2026:06:28 20:30:40",
             "exif.gps_latitude": "37.1",
@@ -125,7 +145,7 @@ def test_immich_projection_writes_negative_altitude_ref() -> None:
 
 
 def test_immich_projection_uses_configured_path_regex_capture_date() -> None:
-    metadata = project_immich_metadata(
+    metadata = project_test_metadata(
         {
             "path.rel": "VOICE/REC_20260628_203040.WAV",
             "exif.gps_latitude": "37.1",
@@ -149,7 +169,7 @@ def test_immich_projection_uses_configured_path_regex_capture_date() -> None:
 
 
 def test_immich_projection_uses_filesystem_birthtime_capture_date() -> None:
-    metadata = project_immich_metadata(
+    metadata = project_test_metadata(
         {
             "filesystem": {
                 "stat": {
@@ -170,7 +190,7 @@ def test_immich_projection_uses_filesystem_birthtime_capture_date() -> None:
 
 
 def test_immich_projection_uses_filesystem_birthtime_ns_capture_date() -> None:
-    metadata = project_immich_metadata(
+    metadata = project_test_metadata(
         {
             "filesystem": {"stat": {"birthtime_ns": 1782682240000000000}},
             "exif.gps_latitude": "37.1",
@@ -185,7 +205,7 @@ def test_immich_projection_uses_filesystem_birthtime_ns_capture_date() -> None:
 
 def test_immich_projection_filesystem_birthtime_must_parse() -> None:
     with pytest.raises(MetadataProjectionError, match="invalid capture date"):
-        project_immich_metadata(
+        project_test_metadata(
             {
                 "filesystem": {"stat": {"birthtime": "not a date"}},
                 "exif.gps_latitude": "37.1",
@@ -197,7 +217,7 @@ def test_immich_projection_filesystem_birthtime_must_parse() -> None:
 
 def test_immich_projection_path_regex_match_must_parse() -> None:
     with pytest.raises(MetadataProjectionError, match="matched but did not parse"):
-        project_immich_metadata(
+        project_test_metadata(
             {
                 "path.rel": "VOICE/REC_20261340_203040.WAV",
                 "exif.gps_latitude": "37.1",
@@ -218,7 +238,7 @@ def test_immich_projection_path_regex_match_must_parse() -> None:
 
 def test_immich_projection_path_regex_requires_timezone_without_offset() -> None:
     with pytest.raises(MetadataProjectionError, match="requires timezone"):
-        project_immich_metadata(
+        project_test_metadata(
             {
                 "path.rel": "VOICE/REC_20260628_203040.WAV",
                 "exif.gps_latitude": "37.1",
@@ -237,7 +257,7 @@ def test_immich_projection_path_regex_requires_timezone_without_offset() -> None
 
 
 def test_immich_projection_writes_hierarchical_tag_aliases() -> None:
-    metadata = project_immich_metadata(
+    metadata = project_test_metadata(
         {
             "exif.date_time_original": "2026:06:28 20:30:40",
             "exif.gps_latitude": "37.1",
@@ -258,7 +278,7 @@ def test_immich_xmp_sidecar_roundtrips_with_exiftool_when_available(tmp_path) ->
     exiftool = shutil.which("exiftool")
     if exiftool is None:
         pytest.skip("exiftool is not installed")
-    metadata = project_immich_metadata(
+    metadata = project_test_metadata(
         {
             "exif.date_time_original": "2026:06:28 20:30:40-0700",
             "exif.gps_latitude": "48.99950000 N",
@@ -285,6 +305,10 @@ def test_immich_xmp_sidecar_roundtrips_with_exiftool_when_available(tmp_path) ->
     assert "XMP-xmp:ModifyDate" not in payload
     assert payload["XMP-exif:DateTimeOriginal"] == "2026:06:28 20:30:40-07:00"
     assert payload["XMP-photoshop:DateCreated"] == "2026:06:28 20:30:40-07:00"
+    assert payload["XMP-xmpDM:ShotDate"] == "2026:06:28 20:30:40-07:00"
+    assert payload["XMP-tiff:Make"] == "Apple"
+    assert payload["XMP-tiff:Model"] == "iPhone SE (2nd generation)"
+    assert payload["XMP-dc:Creator"] == "Nash Spence"
     assert payload["XMP-exif:GPSLongitude"] == "122 deg 44' 26.16\" W"
     assert payload["XMP-geo:Long"] == -122.7406
     assert payload["XMP-digiKam:TagsList"] == "device/nash-iphone-se2"
@@ -294,7 +318,7 @@ def test_immich_xmp_sidecar_roundtrips_with_exiftool_when_available(tmp_path) ->
 
 def test_immich_projection_requires_date_and_gps_without_overrides() -> None:
     with pytest.raises(MetadataProjectionError, match="capture date"):
-        project_immich_metadata(
+        project_test_metadata(
             {
                 "exif.gps_latitude": "37.1",
                 "exif.gps_longitude": "-122.1",
@@ -302,14 +326,92 @@ def test_immich_projection_requires_date_and_gps_without_overrides() -> None:
         )
 
     with pytest.raises(MetadataProjectionError, match="GPS"):
-        project_immich_metadata({"exif.date_time_original": "2026:06:28 20:30:40"})
+        project_test_metadata({"exif.date_time_original": "2026:06:28 20:30:40"})
 
-    metadata = project_immich_metadata(
+    metadata = project_test_metadata(
         {"exif.date_time_original": "2026:06:28 20:30:40"},
         allow_missing_gps=True,
     )
     assert metadata.capture_date == "2026-06-28T20:30:40"
     assert metadata.gps is None
+
+
+def test_immich_projection_requires_configured_make_model_and_creators() -> None:
+    facts = {
+        "exif.date_time_original": "2026:06:28 20:30:40",
+        "exif.gps_latitude": "37.1",
+        "exif.gps_longitude": "-122.1",
+    }
+
+    with pytest.raises(MetadataProjectionError, match="device make"):
+        project_immich_metadata(
+            facts,
+            device_model="iPhone SE (2nd generation)",
+            creators=["Nash Spence"],
+        )
+    with pytest.raises(MetadataProjectionError, match="device model"):
+        project_immich_metadata(
+            facts,
+            device_make="Apple",
+            creators=["Nash Spence"],
+        )
+    with pytest.raises(MetadataProjectionError, match="creator"):
+        project_immich_metadata(
+            facts,
+            device_make="Apple",
+            device_model="iPhone SE (2nd generation)",
+        )
+
+    metadata = project_immich_metadata(
+        facts,
+        allow_missing_device_make=True,
+        allow_missing_device_model=True,
+        allow_missing_creators=True,
+    )
+    assert metadata.device_make is None
+    assert metadata.device_model is None
+    assert metadata.creators == ()
+
+
+def test_immich_projection_writes_multiple_creators_and_container_metadata() -> None:
+    metadata = project_test_metadata(
+        {
+            "exif.date_time_original": "2026:06:28 20:30:40-0700",
+            "exif.gps_latitude": "48.99950000 N",
+            "exif.gps_longitude": "122.74060000 W",
+        },
+        device_make="Sony",
+        device_model="ILCE-6700",
+        creators=["Alice Example", "Bob Example", "Alice Example"],
+    )
+    xmp = render_immich_xmp_sidecar(metadata, metadata_date="2026-06-29T00:00:00Z")
+
+    assert "<dc:creator>" in xmp
+    assert "<rdf:li>Alice Example</rdf:li>" in xmp
+    assert "<rdf:li>Bob Example</rdf:li>" in xmp
+    assert xmp.index("<rdf:li>Alice Example</rdf:li>") < xmp.index(
+        "<rdf:li>Bob Example</rdf:li>"
+    )
+    assert ffmpeg_container_metadata_args(metadata) == [
+        "-metadata",
+        "DATE=2026-06-28T20:30:40-07:00",
+        "-metadata",
+        "creation_time=2026-06-28T20:30:40-07:00",
+        "-metadata",
+        "ARTIST=Alice Example; Bob Example",
+        "-metadata",
+        "CREATOR=Alice Example; Bob Example",
+        "-metadata",
+        "MAKE=Sony",
+        "-metadata",
+        "MODEL=ILCE-6700",
+        "-metadata",
+        "LOCATION=+48.9995-122.7406/",
+        "-metadata",
+        "GPSLatitude=48.9995",
+        "-metadata",
+        "GPSLongitude=-122.7406",
+    ]
 
 
 def test_immich_xmp_sidecar_path_appends_xmp_to_output_name(tmp_path) -> None:  # type: ignore[no-untyped-def]

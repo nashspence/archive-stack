@@ -164,11 +164,41 @@ class SourceArtifactsTests(unittest.TestCase):
                     input_root=input_root,
                     output_root=output_root,
                     suffix=".webm",
-                    command_builder=lambda src, dest: ["ffmpeg", "-i", str(src), str(dest)],
+                    command_builder=lambda src, dest, metadata: [
+                        "ffmpeg",
+                        "-i",
+                        str(src),
+                        str(dest),
+                    ],
                     label="archive video encode",
                     dry_run=True,
                     source_artifacts=True,
                     source_artifacts_profile={"name": "test-profile"},
+                )
+
+    def test_archive_batch_requires_projected_container_metadata_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_root = root / "input"
+            output_root = root / "output"
+            input_root.mkdir()
+            source = input_root / "clip.mp4"
+            source.write_bytes(b"source")
+
+            with self.assertRaisesRegex(RuntimeError, "container metadata is required"):
+                av1.run_batch(
+                    sources=[source],
+                    input_root=input_root,
+                    output_root=output_root,
+                    suffix=".webm",
+                    command_builder=lambda src, dest, metadata: [
+                        "ffmpeg",
+                        "-i",
+                        str(src),
+                        str(dest),
+                    ],
+                    label="archive video encode",
+                    dry_run=True,
                 )
 
 

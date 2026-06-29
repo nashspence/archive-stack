@@ -1655,37 +1655,6 @@ def _stream_transforms_payload(
     }
 
 
-def _rebuild_plan_payload(
-    *,
-    src: str,
-    output: str,
-    stream_transforms: Sequence[dict[str, Any]],
-    source_container: dict[str, Any],
-    container_inventory: Sequence[dict[str, Any]],
-) -> dict[str, Any]:
-    return {
-        "schema_version": 1,
-        "kind": "munchy.rebuild-plan",
-        "source": os.path.basename(src),
-        "archive_output": output,
-        "created_at": now_utc_iso(),
-        "contract": (
-            "Rebuild an original-style container using archive media streams "
-            "plus preserved source artifacts; byte-identical output is not "
-            "promised after re-encoding."
-        ),
-        "media_source": "archive_mkv",
-        "source_container": source_container,
-        "stream_transforms": list(stream_transforms),
-        "container_atoms": list(container_inventory),
-        "requires_atom_reinsertion": any(
-            item.get("action") == "preserved_as_source_artifact"
-            and item.get("kind") == "top_level_atom"
-            for item in container_inventory
-        ),
-    }
-
-
 def _guess_mime_type(path: pathlib.Path) -> str:
     mime, _ = mimetypes.guess_type(path.name)
     if mime:
@@ -1806,7 +1775,6 @@ def _assemble_source_artifact_bundle_inputs(
     selected_output_path: pathlib.Path,
     encode_output_path: pathlib.Path,
     source_filesystem_metadata: Mapping[str, Any] | None = None,
-    include_rebuild_plan: bool = True,
 ) -> list[SourceArtifact]:
     inventory_root = work_dir / "inventory"
     encoding_root = work_dir / "encoding"
@@ -1846,19 +1814,6 @@ def _assemble_source_artifact_bundle_inputs(
             stream_transforms=stream_transforms,
         ),
     )
-    rebuild_plan_path = work_dir / "rebuild" / "rebuild-plan.json"
-    if include_rebuild_plan:
-        _write_json_artifact(
-            rebuild_plan_path,
-            _rebuild_plan_payload(
-                src=src,
-                output=output,
-                stream_transforms=stream_transforms,
-                source_container=source_container,
-                container_inventory=container_inventory,
-            ),
-        )
-
     artifacts: list[SourceArtifact] = []
     used_names = {"manifest.json"}
     for artifact in container_artifacts:
@@ -1896,17 +1851,6 @@ def _assemble_source_artifact_bundle_inputs(
             "application/json",
         ),
     ]
-    if include_rebuild_plan:
-        structured_artifacts.append(
-            (
-                rebuild_plan_path,
-                "rebuild/rebuild-plan.json",
-                "rebuild_plan",
-                "Source container rebuild plan",
-                "application/json",
-            )
-        )
-
     for artifact_path, arcname, kind, description, mime_type in structured_artifacts:
         used_names.add(arcname)
         artifacts.append(

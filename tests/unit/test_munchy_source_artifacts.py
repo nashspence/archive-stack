@@ -60,6 +60,7 @@ def test_source_artifact_bundle_uses_munchy_manifest_kind(tmp_path: Path) -> Non
         item["path"] == "inventory/source-filesystem.json" and item["kind"] == "source_filesystem"
         for item in manifest["artifacts"]
     )
+    assert all(not str(item["path"]).startswith("rebuild/") for item in manifest["artifacts"])
 
     audit = source_artifacts._audit_source_artifacts_bundle(bundle_path)
 
@@ -87,7 +88,7 @@ def test_source_artifact_bundle_requires_source_filesystem_metadata(tmp_path: Pa
         )
 
 
-def test_conversion_only_source_artifact_bundle_omits_rebuild_plan(
+def test_source_artifact_bundle_has_no_rebuild_directory(
     tmp_path: Path,
 ) -> None:
     work_dir = tmp_path / "work"
@@ -117,10 +118,9 @@ def test_conversion_only_source_artifact_bundle_omits_rebuild_plan(
             "stat": {"mode_octal": "0o644", "mtime_ns": 123},
             "extended_attributes": {"available": True, "items": []},
         },
-        include_rebuild_plan=False,
     )
 
-    assert all(artifact.arcname != "rebuild/rebuild-plan.json" for artifact in artifacts)
+    assert all(not artifact.arcname.startswith("rebuild/") for artifact in artifacts)
     assert not (work_dir / "rebuild").exists()
 
     created = source_artifacts._build_source_artifacts_bundle(
@@ -133,7 +133,7 @@ def test_conversion_only_source_artifact_bundle_omits_rebuild_plan(
     assert created is True
     with tarfile.open(bundle_path, "r") as tar:
         names = set(tar.getnames())
-    assert "rebuild/rebuild-plan.json" not in names
+    assert all(not name.startswith("rebuild/") for name in names)
 
     audit = source_artifacts._audit_source_artifacts_bundle(bundle_path)
 

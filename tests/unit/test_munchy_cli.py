@@ -504,7 +504,12 @@ archive_mode = "av1_nvenc"
 tasks = ["archive_video"]
 
 [groups.video.metadata_projection]
+creators = ["Example Operator"]
 tags = ["device/camera"]
+
+[groups.video.metadata_projection.device]
+make = "Example"
+model = "Camera"
 
 [groups.originals]
 archive_mode = "originals"
@@ -575,6 +580,8 @@ when = { path = { suffix = ".mp4" } }
         request.job_payload["groups"]["video"]["encode_profile"]["archive"]["container"] == "webm"
     )
     assert request.job_payload["groups"]["video"]["metadata_projection"] == {
+        "creators": ["Example Operator"],
+        "device": {"make": "Example", "model": "Camera"},
         "tags": ["device/camera"]
     }
     assert seen["requested_containers"] == ["webm"]

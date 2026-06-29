@@ -394,6 +394,11 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
                         "capture_date_source": "exif.date_time_original",
                         "gps": {"latitude": 37.3317, "longitude": -122.0301},
                         "gps_source": "exif.gps_latitude+exif.gps_longitude",
+                        "device": {
+                            "make": "Apple",
+                            "model": "iPhone SE (2nd generation)",
+                        },
+                        "creators": ["Nash Spence"],
                         "tags": [],
                     },
                     "profile_route_id": "iphone-video",
@@ -415,7 +420,12 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
             "archive_mode": "av1_nvenc",
             "tasks": ["archive_video"],
             "encode_profile": {"archive": {"container": "webm"}},
-            "metadata_projection": {"enabled": True, "tags": ["iphone-se2"]},
+            "metadata_projection": {
+                "enabled": True,
+                "device": {"make": "Apple", "model": "iPhone SE (2nd generation)"},
+                "creators": ["Nash Spence"],
+                "tags": ["iphone-se2"],
+            },
         }
     }
     archive_dir = tmp_path / "archive"
@@ -434,7 +444,10 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
     assert sidecar.exists()
     xmp = sidecar.read_text(encoding="utf-8")
     assert 'exif:DateTimeOriginal="2026-06-28T20:30:40-07:00"' in xmp
+    assert 'tiff:Make="Apple"' in xmp
+    assert 'tiff:Model="iPhone SE (2nd generation)"' in xmp
     assert 'geo:lat="37.3317"' in xmp
+    assert "<rdf:li>Nash Spence</rdf:li>" in xmp
     assert "<rdf:li>iphone-se2</rdf:li>" in xmp
     assert "<rdf:li>munchy/collection/phone-preview</rdf:li>" in xmp
     assert "<rdf:li>munchy/group/video</rdf:li>" in xmp
@@ -472,6 +485,8 @@ def test_metadata_projection_can_use_uploaded_filesystem_birthtime(
         group_config={
             "metadata_projection": {
                 "allow_missing_gps": True,
+                "device": {"make": "eSonic", "model": "MEMOQ SR-600"},
+                "creators": ["Nash Spence"],
                 "capture_date_sources": [
                     {"type": "embedded"},
                     {"type": "filesystem_birthtime"},
@@ -500,6 +515,9 @@ def test_audio_container_metadata_args_write_capture_date_and_gps(
             "ffprobe.format_tags.creation_time": "2026-06-28T20:30:40-07:00",
             "ffprobe.format_tags.location": "+37.331700-122.030100+19.500/",
         },
+        device_make="Apple",
+        device_model="iPhone SE (2nd generation)",
+        creators=["Nash Spence"],
     )
 
     assert runner.audio_container_metadata_args(metadata) == [
@@ -507,6 +525,14 @@ def test_audio_container_metadata_args_write_capture_date_and_gps(
         "DATE=2026-06-28T20:30:40-07:00",
         "-metadata",
         "creation_time=2026-06-28T20:30:40-07:00",
+        "-metadata",
+        "ARTIST=Nash Spence",
+        "-metadata",
+        "CREATOR=Nash Spence",
+        "-metadata",
+        "MAKE=Apple",
+        "-metadata",
+        "MODEL=iPhone SE (2nd generation)",
         "-metadata",
         "LOCATION=+37.3317-122.0301+19.5/",
         "-metadata",
@@ -516,6 +542,58 @@ def test_audio_container_metadata_args_write_capture_date_and_gps(
         "-metadata",
         "GPSAltitude=19.5",
     ]
+
+
+def test_gpu_payload_carries_required_projected_container_metadata(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    group_config = {
+        "archive_mode": "av1_nvenc",
+        "tasks": ["archive_video"],
+        "metadata_projection": {
+            "device": {"make": "Apple", "model": "iPhone SE (2nd generation)"},
+            "creators": ["Nash Spence"],
+        },
+    }
+    file_state = {
+        "path": "camera/IMG_0001.MOV",
+        "bytes": 5,
+        "upload_id": "upload-a",
+        "metadata_projection_metadata": {
+            "capture_date": "2026-06-28T20:30:40-07:00",
+            "capture_date_source": "exif.date_time_original",
+            "gps": {"latitude": 37.3317, "longitude": -122.0301},
+            "gps_source": "exif.gps_latitude+exif.gps_longitude",
+            "device": {"make": "Apple", "model": "iPhone SE (2nd generation)"},
+            "creators": ["Nash Spence"],
+            "tags": [],
+        },
+    }
+
+    container_metadata, changed = runner.container_metadata_for_gpu_payload(
+        [file_state],
+        group_name="camera",
+        group_config=group_config,
+        tasks=["archive_video"],
+    )
+    payload = runner.build_eager_gpu_payload(
+        {"job_id": "job-1", "collection_slug": "phone-preview"},
+        batch_id="batch-1",
+        group_name="camera",
+        group_config=group_config,
+        tasks=["archive_video"],
+        container_metadata=container_metadata,
+    )
+
+    assert changed is False
+    assert payload["container_metadata_required"] is True
+    assert payload["container_metadata"]["IMG_0001.MOV"]["device"] == {
+        "make": "Apple",
+        "model": "iPhone SE (2nd generation)",
+    }
+    assert payload["container_metadata"]["IMG_0001.MOV"]["creators"] == ["Nash Spence"]
 
 
 def test_routed_structured_file_stays_complete_after_materialized_tusd_cleanup(
@@ -968,6 +1046,8 @@ def test_archive_audio_group_encodes_opus_and_writes_source_artifacts(
         },
         "metadata_projection": {
             "allow_missing_gps": True,
+            "device": {"make": "eSonic", "model": "MEMOQ SR-600"},
+            "creators": ["Nash Spence"],
             "capture_date_sources": [
                 {"type": "embedded"},
                 {"type": "filesystem_birthtime"},
@@ -1037,6 +1117,14 @@ def test_archive_audio_group_encodes_opus_and_writes_source_artifacts(
             "DATE=2026-06-28T20:30:40+00:00",
             "-metadata",
             "creation_time=2026-06-28T20:30:40+00:00",
+            "-metadata",
+            "ARTIST=Nash Spence",
+            "-metadata",
+            "CREATOR=Nash Spence",
+            "-metadata",
+            "MAKE=eSonic",
+            "-metadata",
+            "MODEL=MEMOQ SR-600",
             "-f",
             "opus",
             str(output),
@@ -1082,6 +1170,8 @@ def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_cust
         },
         "metadata_projection": {
             "allow_missing_gps": True,
+            "device": {"make": "eSonic", "model": "MEMOQ SR-600"},
+            "creators": ["Nash Spence"],
             "capture_date_sources": [
                 {"type": "embedded"},
                 {"type": "filesystem_birthtime"},
@@ -1157,7 +1247,10 @@ def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_cust
     sidecar = output.with_name("R-00013_2606222246_REC.opus.xmp")
     xmp = sidecar.read_text(encoding="utf-8")
     assert 'exif:DateTimeOriginal="2026-06-23T05:46:32+00:00"' in xmp
+    assert 'tiff:Make="eSonic"' in xmp
+    assert 'tiff:Model="MEMOQ SR-600"' in xmp
     assert "geo:lat=" not in xmp
+    assert "<rdf:li>Nash Spence</rdf:li>" in xmp
     assert "<rdf:li>device/esonic-memoq-sr600-nash</rdf:li>" in xmp
     assert "<rdf:li>munchy/collection/esonic-preview</rdf:li>" in xmp
     assert "<rdf:li>munchy/group/voice</rdf:li>" in xmp
