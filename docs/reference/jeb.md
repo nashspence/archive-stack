@@ -118,4 +118,5 @@ Only unrecoverable or operator-blocking failures send webhooks. Transient upload
 or target errors retry silently.
 
 See [`config/examples/jeb/jeb.toml`](../../config/examples/jeb/jeb.toml) for the
-generic configuration shape.
+generic configuration shape. See [`munchy.md`](munchy.md) for Munchy metadata
+projection and XMP sidecar behavior.
