@@ -440,7 +440,7 @@ def parse_coordinate(value: Any, *, ref: Any = None, axis: str) -> float | None:
     decimal_value = parse_float(text)
     if decimal_value is None:
         return None
-    if ref_text in {"S", "SOUTH", "W", "WEST"} and decimal_value > 0:
+    if sign < 0 and decimal_value > 0:
         decimal_value = -decimal_value
     return valid_coordinate(decimal_value, axis=axis)
 

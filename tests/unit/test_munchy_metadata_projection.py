@@ -75,6 +75,20 @@ def test_immich_projection_honors_full_word_gps_refs() -> None:
     assert 'geo:long="-122.74040278"' in xmp
 
 
+def test_immich_projection_honors_embedded_decimal_hemisphere() -> None:
+    metadata = project_immich_metadata(
+        {
+            "exif.date_time_original": "2026:06:28 20:30:40",
+            "exif.gps_latitude": "48.99950000 N",
+            "exif.gps_longitude": "122.74060000 W",
+        }
+    )
+
+    assert metadata.gps is not None
+    assert metadata.gps.latitude == pytest.approx(48.9995)
+    assert metadata.gps.longitude == pytest.approx(-122.7406)
+
+
 def test_immich_projection_requires_date_and_gps_without_overrides() -> None:
     with pytest.raises(MetadataProjectionError, match="capture date"):
         project_immich_metadata(
