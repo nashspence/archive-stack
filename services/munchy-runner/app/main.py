@@ -18,7 +18,7 @@ import subprocess
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager, closing
 from datetime import UTC, datetime, timedelta
@@ -341,7 +341,7 @@ class JobCancelled(RuntimeError):
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     global cleanup_thread, riverhog_upload_thread
     ensure_dirs()
     init_state_store()
@@ -1036,7 +1036,14 @@ def read_state(kind: str, item_id: str) -> dict[str, Any] | None:
         ).fetchone()
     if row is None:
         return None
-    return json.loads(str(row["payload"]))
+    payload = json.loads(str(row["payload"]))
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{kind} state is not an object: {item_id}")
+    return cast(dict[str, Any], payload)
+
+
+def dict_or_empty(value: Any) -> dict[str, Any]:
+    return cast(dict[str, Any], value) if isinstance(value, dict) else {}
 
 
 def state_exists(kind: str, item_id: str) -> bool:
@@ -2011,19 +2018,19 @@ def load_input_upload(upload_id: str) -> dict[str, Any]:
 
 
 def item_lifecycle_time(item: dict[str, Any]) -> datetime | None:
-    values = [
-        safe_parse_iso(item.get(key))
-        for key in (
-            "updated_at",
-            "finished_at",
-            "encoded_at",
-            "failed_at",
-            "last_polled_at",
-            "last_submitted_at",
-            "started_at",
-        )
-    ]
-    values = [value for value in values if value is not None]
+    values: list[datetime] = []
+    for key in (
+        "updated_at",
+        "finished_at",
+        "encoded_at",
+        "failed_at",
+        "last_polled_at",
+        "last_submitted_at",
+        "started_at",
+    ):
+        value = safe_parse_iso(item.get(key))
+        if value is not None:
+            values.append(value)
     return max(values) if values else None
 
 
@@ -2052,14 +2059,10 @@ def merge_eager_archive_state(
 ) -> dict[str, Any]:
     merged = dict(payload_eager)
 
-    current_files = (
-        current_eager.get("files") if isinstance(current_eager.get("files"), dict) else {}
-    )
-    payload_files = (
-        payload_eager.get("files") if isinstance(payload_eager.get("files"), dict) else {}
-    )
+    current_files = dict_or_empty(current_eager.get("files"))
+    payload_files = dict_or_empty(payload_eager.get("files"))
     file_state_rank = {"encoding": 1, "encoded": 2, "failed": 2}
-    merged_files = dict(payload_files)
+    merged_files: dict[str, Any] = dict(payload_files)
     for rel_path, current_item in current_files.items():
         if not isinstance(current_item, dict):
             continue
@@ -2074,14 +2077,10 @@ def merge_eager_archive_state(
             merged_files[rel_path] = current_item
     merged["files"] = merged_files
 
-    current_batches = (
-        current_eager.get("batches") if isinstance(current_eager.get("batches"), dict) else {}
-    )
-    payload_batches = (
-        payload_eager.get("batches") if isinstance(payload_eager.get("batches"), dict) else {}
-    )
+    current_batches = dict_or_empty(current_eager.get("batches"))
+    payload_batches = dict_or_empty(payload_eager.get("batches"))
     batch_state_rank = {"running": 1, "succeeded": 2, "failed": 2}
-    merged_batches = dict(payload_batches)
+    merged_batches: dict[str, Any] = dict(payload_batches)
     for batch_id, current_item in current_batches.items():
         if not isinstance(current_item, dict):
             continue
@@ -2096,16 +2095,8 @@ def merge_eager_archive_state(
             merged_batches[batch_id] = current_item
     merged["batches"] = merged_batches
 
-    current_results = (
-        current_eager.get("gpu_results")
-        if isinstance(current_eager.get("gpu_results"), dict)
-        else {}
-    )
-    payload_results = (
-        payload_eager.get("gpu_results")
-        if isinstance(payload_eager.get("gpu_results"), dict)
-        else {}
-    )
+    current_results = dict_or_empty(current_eager.get("gpu_results"))
+    payload_results = dict_or_empty(payload_eager.get("gpu_results"))
     if current_results or payload_results:
         merged["gpu_results"] = {**current_results, **payload_results}
 
@@ -2460,9 +2451,14 @@ def head_tusd_upload(upload_url: str) -> int:
 
 
 def find_upload_file(upload: dict[str, Any], rel_path: str) -> dict[str, Any]:
-    for file_state in upload.get("files", []):
+    files = upload.get("files")
+    if not isinstance(files, list):
+        files = []
+    for file_state in files:
+        if not isinstance(file_state, dict):
+            continue
         if file_state.get("path") == rel_path:
-            return file_state
+            return cast(dict[str, Any], file_state)
     raise HTTPException(status_code=404, detail=f"unknown upload file: {rel_path}")
 
 
@@ -3968,7 +3964,7 @@ def notify_job_event(
     dedupe_key: str | None = None,
     fingerprint: str | None = None,
 ) -> dict[str, Any] | None:
-    config = job.get("notify") if isinstance(job.get("notify"), dict) else {}
+    config = dict_or_empty(job.get("notify"))
     if not NOTIFY_ENABLED or not config.get("enabled"):
         return None
     events = config.get("events") or DEFAULT_NOTIFY_EVENTS
@@ -4121,7 +4117,7 @@ def retry_handoff_until_success(
     phase: str,
     action: str,
     component: str,
-    operation: Any,
+    operation: Callable[[], dict[str, Any]],
 ) -> dict[str, Any]:
     existing = job.get(result_key)
     if isinstance(existing, dict):
@@ -4613,7 +4609,11 @@ def riverhog_file_record(
                 record["sha256"] = digest
                 touch_riverhog_session_state(job)
     with lock:
-        return riverhog_session_state(job)["files"][rel_path]
+        files = dict_or_empty(riverhog_session_state(job).get("files"))
+        record = files.get(rel_path)
+        if isinstance(record, dict):
+            return cast(dict[str, Any], record)
+    raise RuntimeError(f"missing Riverhog file record for {rel_path}")
 
 
 def riverhog_upload_file_complete(record: dict[str, Any]) -> bool:
@@ -4651,7 +4651,10 @@ def confirm_riverhog_artifact_uploaded(
     file_payload: dict[str, object],
 ) -> dict[str, Any]:
     rel_path = str(file_payload["path"])
-    length = int(file_payload["bytes"])
+    length_value = file_payload.get("bytes")
+    if not isinstance(length_value, int):
+        length_value = int(str(length_value))
+    length = length_value
     payload = api.create_or_resume_registered_collection_file_upload(collection_id, file_payload)
     update_riverhog_state_from_payload(job, payload)
     if not riverhog_payload_confirms_file_uploaded(payload, rel_path, length):
@@ -5486,7 +5489,7 @@ def upload_review(
             "30s",
         ]
 
-        def operation() -> dict[str, Any]:
+        def rclone_operation() -> dict[str, Any]:
             result = run_review_command(cmd, action=f"{source_label} rclone upload")
             result["method"] = "rclone"
             result["mode"] = mode
@@ -5502,7 +5505,7 @@ def upload_review(
             phase=phase,
             action=f"{source_label} rclone upload",
             component=component,
-            operation=operation,
+            operation=rclone_operation,
         )
     if method != "command":
         raise RuntimeError(f"unsupported review upload method: {method}")
@@ -5517,7 +5520,7 @@ def upload_review(
     env["MUNCHY_COLLECTION_SLUG"] = str(job["collection_slug"])
     env["MUNCHY_COLLECTION_TIMESTAMP"] = str(job.get("collection_timestamp") or "")
 
-    def operation() -> dict[str, Any]:
+    def command_operation() -> dict[str, Any]:
         result = run_review_command(
             ["/bin/sh", "-lc", REVIEW_UPLOAD_COMMAND],
             action=f"{source_label} command upload",
@@ -5535,7 +5538,7 @@ def upload_review(
         phase=phase,
         action=f"{source_label} command upload",
         component=component,
-        operation=operation,
+        operation=command_operation,
     )
 
 
@@ -5558,7 +5561,11 @@ def ensure_job_groups(job: dict[str, Any], input_upload: dict[str, Any]) -> dict
 
 
 def eager_archive_state(job: dict[str, Any]) -> dict[str, Any]:
-    return job.setdefault("eager_archive", {"files": {}, "batches": {}, "next_batch_number": 1})
+    state = job.setdefault("eager_archive", {"files": {}, "batches": {}, "next_batch_number": 1})
+    if not isinstance(state, dict):
+        state = {"files": {}, "batches": {}, "next_batch_number": 1}
+        job["eager_archive"] = state
+    return cast(dict[str, Any], state)
 
 
 def eager_file_encoded(job: dict[str, Any], rel_path: str) -> bool:
@@ -5864,14 +5871,13 @@ def review_encode_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None
 
 
 def encode_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
-    eager = job.get("eager_archive")
-    if not isinstance(eager, dict):
+    eager_value = job.get("eager_archive")
+    if not isinstance(eager_value, dict):
         return review_encode_progress_for_job(job)
+    eager = cast(dict[str, Any], eager_value)
     groups = job.get("groups")
     eager_groups = eager_archive_group_names(groups) if isinstance(groups, dict) else set()
-    files_state = eager.get("files")
-    if not isinstance(files_state, dict):
-        files_state = {}
+    files_state = dict_or_empty(eager.get("files"))
     if not eager_groups:
         eager_groups = {
             str(item.get("group") or upload_file_group(str(rel_path)))
@@ -5941,7 +5947,7 @@ def encode_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
         elif status == "failed":
             files_failed += 1
 
-    batches = eager.get("batches") if isinstance(eager.get("batches"), dict) else {}
+    batches = dict_or_empty(eager.get("batches"))
     for batch in batches.values():
         if not isinstance(batch, dict):
             continue

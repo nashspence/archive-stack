@@ -87,13 +87,3 @@ markers = [
 [tool.mypy]
 python_version = "3.11"
 strict = true
-packages = [
-  "munchy",
-  "munchy_cli",
-  "jeb",
-  "riverhog_age",
-  "riverhog_api",
-  "riverhog_cli",
-  "riverhog_core",
-  "djdan",
-]

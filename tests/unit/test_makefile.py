@@ -107,12 +107,6 @@ def test_checked_in_compose_uses_supported_tusd_filesystem_storage_flag() -> Non
     ("target", "extra_args", "expected_command"),
     [
         ("ruff", (), "python -m ruff check ."),
-        (
-            "mypy",
-            ("args=--strict",),
-            "python -m mypy src --show-error-codes --hide-error-context "
-            "--no-error-summary --no-color-output --strict",
-        ),
         ("unit", ("args=-k entrypoint",), "python -m pytest -q tests/unit -k entrypoint"),
         (
             "spec",
@@ -138,15 +132,38 @@ def test_atomic_local_targets_run_in_locked_uv_environment(
     assert expected_command in uv_log_lines[0]
 
 
+def test_mypy_target_covers_source_and_service_apps(tmp_path: Path) -> None:
+    completed, docker_log_path, uv_log_path = _run_make(tmp_path, "mypy", "args=--strict")
+
+    assert completed.returncode == 0, completed.stderr
+    assert _read_log_lines(docker_log_path) == []
+    uv_log_lines = _read_log_lines(uv_log_path)
+    assert len(uv_log_lines) == 3
+    assert (
+        "python -m mypy src --show-error-codes --hide-error-context "
+        "--no-error-summary --no-color-output --strict"
+    ) in uv_log_lines[0]
+    assert (
+        "python -m mypy services/munchy-av1-nvenc/app/main.py "
+        "--show-error-codes --hide-error-context --no-error-summary --no-color-output --strict"
+    ) in uv_log_lines[1]
+    assert (
+        "python -m mypy services/munchy-runner/app/main.py "
+        "--show-error-codes --hide-error-context --no-error-summary --no-color-output --strict"
+    ) in uv_log_lines[2]
+
+
 def test_lint_runs_ruff_then_mypy(tmp_path: Path) -> None:
     completed, docker_log_path, uv_log_path = _run_make(tmp_path, "lint")
 
     assert completed.returncode == 0, completed.stderr
     assert _read_log_lines(docker_log_path) == []
     uv_log_lines = _read_log_lines(uv_log_path)
-    assert len(uv_log_lines) == 2
+    assert len(uv_log_lines) == 4
     assert "python -m ruff check ." in uv_log_lines[0]
-    assert "python -m mypy src" in uv_log_lines[1]
+    assert "python -m mypy src --show-error-codes" in uv_log_lines[1]
+    assert "python -m mypy services/munchy-av1-nvenc/app/main.py" in uv_log_lines[2]
+    assert "python -m mypy services/munchy-runner/app/main.py" in uv_log_lines[3]
 
 
 def test_build_targets_are_atomic(tmp_path: Path) -> None:
@@ -199,9 +216,30 @@ def test_dockerfiles_keep_dependency_layers_independent_of_docs_and_tests() -> N
     assert test_dockerfile.index("COPY pyproject.toml ./") < test_dockerfile.index(
         "COPY tests ./tests"
     )
+    assert "COPY services/munchy-av1-nvenc/app ./services/munchy-av1-nvenc/app" in test_dockerfile
+    assert "COPY services/munchy-runner/app ./services/munchy-runner/app" in test_dockerfile
     assert "COPY tests ./tests" in test_dockerfile
     assert "COPY contracts ./contracts" in test_dockerfile
     assert "docs/" in dockerignore
+
+
+def test_unit_lane_owns_service_unit_tests() -> None:
+    assert not list((REPO_ROOT / "services").glob("*/tests/test_*.py"))
+    assert (REPO_ROOT / "tests" / "unit" / "test_munchy_av1_container_profiles.py").is_file()
+    assert (REPO_ROOT / "tests" / "unit" / "test_munchy_av1_qcut_planner.py").is_file()
+    assert (REPO_ROOT / "tests" / "unit" / "test_munchy_av1_source_artifacts.py").is_file()
+    assert (REPO_ROOT / "tests" / "unit" / "test_munchy_runner_contract.py").is_file()
+
+
+def test_repo_wide_lint_targets_cover_source_and_service_apps() -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert "python -m ruff check ." in makefile
+    assert "python -m mypy src" in makefile
+    assert "python -m mypy services/munchy-av1-nvenc/app/main.py" in makefile
+    assert "python -m mypy services/munchy-runner/app/main.py" in makefile
+    assert "strict = true" in pyproject
 
 
 def test_deployed_service_dockerfiles_use_locked_service_dependencies() -> None:
@@ -248,10 +286,12 @@ def test_test_aggregate_runs_lint_then_unit(tmp_path: Path) -> None:
     assert _read_log_lines(docker_log_path) == []
 
     uv_log_lines = _read_log_lines(uv_log_path)
-    assert len(uv_log_lines) == 3
+    assert len(uv_log_lines) == 5
     assert "python -m ruff check ." in uv_log_lines[0]
-    assert "python -m mypy src" in uv_log_lines[1]
-    assert "python -m pytest -q tests/unit" in uv_log_lines[2]
+    assert "python -m mypy src --show-error-codes" in uv_log_lines[1]
+    assert "python -m mypy services/munchy-av1-nvenc/app/main.py" in uv_log_lines[2]
+    assert "python -m mypy services/munchy-runner/app/main.py" in uv_log_lines[3]
+    assert "python -m pytest -q tests/unit" in uv_log_lines[4]
 
 
 def test_down_target_uses_compose_down_with_volumes(tmp_path: Path) -> None:

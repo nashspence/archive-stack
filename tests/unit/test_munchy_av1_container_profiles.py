@@ -7,7 +7,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "app" / "main.py"
+MODULE_PATH = (
+    Path(__file__).resolve().parents[2] / "services" / "munchy-av1-nvenc" / "app" / "main.py"
+)
 SPEC = importlib.util.spec_from_file_location("munchy_av1_main", MODULE_PATH)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError(f"could not load {MODULE_PATH}")

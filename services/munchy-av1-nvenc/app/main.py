@@ -17,8 +17,9 @@ import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException
@@ -162,6 +163,10 @@ class ReviewUploadConfig(BaseModel):
     enabled: bool = False
 
 
+def default_tasks() -> list[TaskName]:
+    return ["archive_video"]
+
+
 class JobRequest(BaseModel):
     job_id: str | None = Field(default=None, min_length=1, max_length=180)
     input_dir: Path
@@ -169,7 +174,7 @@ class JobRequest(BaseModel):
     review_dir: Path | None = None
     profile: str = "av1-nvenc-high"
     encode_profile: EncodeProfile | None = None
-    tasks: list[TaskName] = Field(default_factory=lambda: ["archive_video"])
+    tasks: list[TaskName] = Field(default_factory=default_tasks)
     collection_slug: str | None = None
     collection_timestamp: str | None = None
     riverhog: RiverhogConfig = Field(default_factory=RiverhogConfig)
@@ -217,7 +222,10 @@ def load_status(job_id: str) -> dict[str, Any]:
     path = status_path(job_id)
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"unknown job: {job_id}")
-    return json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"job status is not an object: {path}")
+    return cast(dict[str, Any], payload)
 
 
 def mark_interrupted_jobs_on_startup() -> None:
@@ -695,7 +703,7 @@ def validate_archive_container_source(source: Path, archive: ArchiveEncodeProfil
             continue
         codec_type = str(stream.get("codec_type") or "unknown")
         try:
-            stream_index = int(stream.get("index"))
+            stream_index = int(str(stream.get("index")))
         except (TypeError, ValueError):
             stream_index = -1
         disposition = stream.get("disposition")
@@ -1515,7 +1523,7 @@ def run_qcut_video(
                     output_path=output,
                     action="qcut video clip",
                     dry_run=dry_run,
-                    on_start=lambda output=output: mark_started(output),
+                    on_start=partial(mark_started, output),
                 )
             ] = clip
         for future in as_completed(futures):
@@ -1644,7 +1652,7 @@ def run_audio_review(
     concat_result = concat_opus(clip_outputs, output_path, dry_run=dry_run)
     if not dry_run:
         shutil.rmtree(work_dir.parent, ignore_errors=True)
-    result = {
+    result: dict[str, Any] = {
         "status": "done",
         "output": str(output_path),
         "plan": plan,

@@ -12,8 +12,9 @@ make lint
 make unit
 ```
 
-`make lint` runs `ruff check .` and strict `mypy` in the locked local `uv`
-environment. `make unit` runs the supported unit test lane.
+`make lint` runs repo-wide `ruff check .` and strict `mypy` over `src` and the
+deployed service app entrypoints in the locked local `uv` environment.
+`make unit` runs the supported unit test lane.
 
 Run the fixture-backed executable spec harness separately when you are working
 on acceptance contracts:

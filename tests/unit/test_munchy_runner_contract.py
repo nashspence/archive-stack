@@ -31,7 +31,9 @@ def load_runner(tmp_path: Path, monkeypatch) -> ModuleType:  # type: ignore[no-u
     monkeypatch.setenv("MUNCHY_RUNNER_WORK_DIR", str(tmp_path / "work"))
     monkeypatch.setenv("MUNCHY_RUNNER_TUSD_DIR", str(tmp_path / "tusd"))
     monkeypatch.setenv("MUNCHY_RUNNER_GPU_RUNTIME_DIR", str(tmp_path / "gpu-runtime"))
-    module_path = Path(__file__).resolve().parents[1] / "app" / "main.py"
+    module_path = (
+        Path(__file__).resolve().parents[2] / "services" / "munchy-runner" / "app" / "main.py"
+    )
     module_name = f"munchy_runner_main_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     if spec is None or spec.loader is None:

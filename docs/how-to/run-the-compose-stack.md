@@ -52,8 +52,9 @@ make lint
 make unit
 ```
 
-`make lint` is the canonical pre-test quality gate. It runs `ruff check .` and
-then strict `mypy` in the same locked local environment.
+`make lint` is the canonical pre-test quality gate. It runs repo-wide
+`ruff check .` and then strict `mypy` over `src` and the deployed service app
+entrypoints in the same locked local environment.
 
 Run `make build-app`, `make build-test`, or `make build` when you want fresh
 local container images.
