@@ -175,6 +175,19 @@ class EncodeProfile(BaseModel):
             return {}
         return self.source.artifact_drop_reasons()
 
+    @model_validator(mode="before")
+    @classmethod
+    def infer_target_from_archive_codec(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        data = dict(value)
+        if "target" in data:
+            return data
+        archive = data.get("archive")
+        if isinstance(archive, Mapping) and archive.get("codec") == "opus":
+            data["target"] = MUNCHY_AUDIO_PROFILE_TARGET
+        return data
+
     @model_validator(mode="after")
     def validate_target_archive_codec(self) -> Self:
         if self.target == MUNCHY_PROFILE_TARGET and self.archive.codec != "av1_nvenc":

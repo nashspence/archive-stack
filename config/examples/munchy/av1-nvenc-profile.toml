@@ -1,5 +1,3 @@
-schema_version = 1
-target = "munchy-av1-nvenc"
 name = "example-camera"
 
 [archive]

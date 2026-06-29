@@ -80,6 +80,21 @@ def test_validates_audio_opus_profile() -> None:
     assert profile.archive.audio.sample_rate == 24000
 
 
+def test_infers_audio_target_from_opus_codec() -> None:
+    profile = EncodeProfile.model_validate(
+        {
+            "name": "voice-recorder",
+            "archive": {
+                "codec": "opus",
+                "audio": {"bitrate": "28k", "sample_rate": 24000, "channels": 1},
+            },
+        }
+    )
+
+    assert profile.target == "munchy-audio"
+    assert profile.archive.container == "opus"
+
+
 def test_rejects_audio_profile_with_video_container() -> None:
     with pytest.raises(ValidationError, match="opus audio archive container must be opus"):
         EncodeProfile.model_validate(

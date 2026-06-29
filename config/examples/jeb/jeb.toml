@@ -1,10 +1,6 @@
 [collector]
-interval = "5m"
-state_db = "/state/jeb.sqlite3"
-batch_dir = "/landing/.jeb-batches"
 preflight_repair = "safe_remux"
 preflight_repair_original = "keep_corrupt"
-preflight_repair_corrupt_dir = "/landing/_corrupt"
 
 [notify]
 enabled = false
@@ -12,18 +8,12 @@ url_env = "JEB_WEBHOOK_URL"
 base_url = "https://archive.example.invalid"
 recipients = ["operator"]
 timeout = "10s"
-reminder_interval = "24h"
 
 [targets.munchy]
 type = "munchy"
 url_env = "JEB_MUNCHY_URL"
-upload_workers = 4
-upload_chunk_mib = 64
-wait_for_safe_delete = true
 
 [profiles.security-camera]
-schema_version = 1
-target = "munchy-av1-nvenc"
 name = "security-camera"
 
 [profiles.security-camera.archive]
@@ -51,7 +41,6 @@ vbr = "on"
 [profile_groups.video]
 profile = "security-camera"
 archive_mode = "av1_nvenc"
-tasks = ["archive_video"]
 
 [profile_groups.video.metadata_projection]
 allow_missing_gps = true
@@ -64,10 +53,6 @@ model = "Security Camera"
 
 [profile_groups.originals]
 archive_mode = "originals"
-
-[munchy_job_defaults]
-workflow_mode = "archive"
-cleanup_local_on_success = false
 
 [munchy_job_defaults.riverhog]
 enabled = true
@@ -95,16 +80,12 @@ when = { path = { prefix = "example-phone" } }
 id = "example-camera"
 enabled = false
 path = "/landing/example-camera"
-upload_prefix = "example-camera"
-stable_age = "10m"
 include_extensions = [".mp4", ".mov", ".mkv", ".webm", ".xml", ".json", ".txt"]
 
 [[sources]]
 id = "example-phone"
 enabled = false
 path = "/landing/example-phone"
-upload_prefix = "example-phone"
-stable_age = "10m"
 include_extensions = []
 
 [[collections]]

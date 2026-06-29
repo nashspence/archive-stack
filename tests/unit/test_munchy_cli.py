@@ -600,7 +600,6 @@ archive_mode = "audio"
 
 [profiles.voice]
 schema_version = 1
-target = "munchy-audio"
 name = "voice"
 
 [profiles.voice.archive]
