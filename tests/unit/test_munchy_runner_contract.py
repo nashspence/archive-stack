@@ -365,6 +365,77 @@ def test_profile_routing_manifest_records_actual_route_and_output(
     ]
 
 
+def test_metadata_projection_sidecars_written_for_archive_outputs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    upload = runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "files": [
+                {
+                    "path": "video/IMG_0001.MOV",
+                    "bytes": 5,
+                    "upload_id": "phone-img-1",
+                    "metadata_projection_metadata": {
+                        "capture_date": "2026-06-28T20:30:40-07:00",
+                        "capture_date_source": "exif.date_time_original",
+                        "gps": {"latitude": 37.3317, "longitude": -122.0301},
+                        "gps_source": "exif.gps_latitude+exif.gps_longitude",
+                        "tags": [],
+                    },
+                }
+            ],
+        }
+    )
+    job = {
+        "job_id": "job-1",
+        "input_upload_id": "upload-1",
+        "collection_slug": "phone-preview",
+    }
+    runner.save_job(job)
+    groups = {
+        "video": {
+            "archive_mode": "av1_nvenc",
+            "gpu_tasks": ["archive_video"],
+            "encode_profile": {"archive": {"container": "webm"}},
+            "metadata_projection": {"enabled": True, "tags": ["iphone-se2"]},
+        }
+    }
+    archive_dir = tmp_path / "archive"
+    output = runner.archive_output_for_upload_file(
+        upload["files"][0],
+        group_name="video",
+        group_config=groups["video"],
+        archive_dir=archive_dir,
+    )
+    output.parent.mkdir(parents=True)
+    output.write_bytes(b"webm")
+
+    updated = runner.write_metadata_projection_sidecars(job, upload, groups, archive_dir)
+
+    sidecar = output.with_name("IMG_0001.webm.xmp")
+    assert sidecar.exists()
+    xmp = sidecar.read_text(encoding="utf-8")
+    assert 'exif:DateTimeOriginal="2026-06-28T20:30:40-07:00"' in xmp
+    assert 'geo:lat="37.3317"' in xmp
+    assert "<rdf:li>iphone-se2</rdf:li>" in xmp
+    assert updated["files"][0]["metadata_projection_sidecar"] == "video/IMG_0001.webm.xmp"
+    assert runner.load_job("job-1")["metadata_projection_result"]["sidecars"] == 1
+    assert runner.routing_manifest_output_entry(output, archive_dir=archive_dir)[
+        "metadata_sidecars"
+    ] == [
+        {
+            "target": "immich_xmp",
+            "path": "video/IMG_0001.webm.xmp",
+            "bytes": sidecar.stat().st_size,
+        }
+    ]
+
+
 def test_routed_structured_file_stays_complete_after_materialized_tusd_cleanup(
     tmp_path: Path,
     monkeypatch,
@@ -2591,6 +2662,7 @@ def test_successful_riverhog_handoff_cleans_job_work_and_input_upload(
                     "archive_mode": "av1_nvenc",
                     "gpu_tasks": ["archive_video", "qcut_video"],
                     "profile": "profile",
+                    "metadata_projection": {"enabled": False},
                 }
             },
             "riverhog": {"enabled": True},

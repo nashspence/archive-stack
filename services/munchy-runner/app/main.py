@@ -33,6 +33,13 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from munchy.filesystem_metadata import write_filesystem_metadata_map
+from munchy.metadata_projection import (
+    MetadataProjectionError,
+    ProjectionMetadata,
+    immich_xmp_sidecar_path,
+    project_immich_metadata,
+    render_immich_xmp_sidecar,
+)
 from munchy.profile_routing import (
     PATH_PREDICATE_KEYS,
     PREDICATE_KEYS,
@@ -579,12 +586,30 @@ class ClientPreflightFailedNotificationRequest(BaseModel):
         return validate_profile_group_name(value)
 
 
+class MetadataProjectionConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    target: Literal["immich_xmp"] = "immich_xmp"
+    allow_missing_capture_date: bool = False
+    allow_missing_gps: bool = False
+    tags: list[str] = Field(default_factory=list)
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_tags(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(tag.strip() for tag in value if tag.strip()))
+
+
 class ProfileGroupConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     archive_mode: ArchiveMode = "av1_nvenc"
     gpu_tasks: list[TaskName] = Field(default_factory=default_gpu_tasks)
     encode_profile: EncodeProfile | None = None
+    metadata_projection: MetadataProjectionConfig = Field(
+        default_factory=MetadataProjectionConfig
+    )
 
     @field_validator("gpu_tasks")
     @classmethod
@@ -2545,6 +2570,17 @@ def upload_files_for_groups(
     ]
 
 
+def mutable_upload_files_for_groups(
+    upload: dict[str, Any],
+    group_names: set[str],
+) -> list[dict[str, Any]]:
+    return [
+        file_state
+        for file_state in upload.get("files", [])
+        if isinstance(file_state, dict) and upload_file_resolved_group(file_state) in group_names
+    ]
+
+
 def upload_bytes_for_groups(upload: dict[str, Any], group_names: set[str]) -> int:
     return sum(
         int(file_state["bytes"]) for file_state in upload_files_for_groups(upload, group_names)
@@ -2970,6 +3006,7 @@ def profile_group_dump(group: ProfileGroupConfig) -> dict[str, Any]:
         "gpu_tasks": group.gpu_tasks,
         "profile": profile_name_for(encode_profile),
         "encode_profile": encode_profile,
+        "metadata_projection": group.metadata_projection.model_dump(exclude_none=True),
     }
 
 
@@ -3091,6 +3128,8 @@ def exiftool_for_routing(path: Path) -> dict[str, Any]:
             "-G1",
             "-s",
             "-ee",
+            "-c",
+            "%.8f",
             "-FileName",
             "-FileTypeExtension",
             "-MIMEType",
@@ -3104,8 +3143,23 @@ def exiftool_for_routing(path: Path) -> dict[str, Any]:
             "-ImageHeight",
             "-Orientation",
             "-DateTimeOriginal",
+            "-SubSecDateTimeOriginal",
             "-CreateDate",
+            "-SubSecCreateDate",
             "-CreationDate",
+            "-MediaCreateDate",
+            "-TrackCreateDate",
+            "-ModifyDate",
+            "-GPSLatitude",
+            "-GPSLatitudeRef",
+            "-GPSLongitude",
+            "-GPSLongitudeRef",
+            "-GPSAltitude",
+            "-GPSAltitudeRef",
+            "-GPSPosition",
+            "-GPSCoordinates",
+            "-Location",
+            "-LocationISO6709",
             "-BurstUUID",
             "-ContentIdentifier",
             "-StillImageTime",
@@ -3475,6 +3529,15 @@ def routing_manifest_output_entry(path: Path, *, archive_dir: Path) -> dict[str,
     }
     if path.exists():
         entry["bytes"] = path.stat().st_size
+    xmp_sidecar = immich_xmp_sidecar_path(path)
+    if xmp_sidecar.exists():
+        entry["metadata_sidecars"] = [
+            {
+                "target": "immich_xmp",
+                "path": xmp_sidecar.relative_to(archive_dir).as_posix(),
+                "bytes": xmp_sidecar.stat().st_size,
+            }
+        ]
     return entry
 
 
@@ -3557,6 +3620,199 @@ def write_profile_routing_manifest(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def metadata_projection_config(group_config: dict[str, Any]) -> dict[str, Any]:
+    raw = group_config.get("metadata_projection")
+    if raw is False:
+        return {
+            "enabled": False,
+            "target": "immich_xmp",
+            "allow_missing_capture_date": False,
+            "allow_missing_gps": False,
+            "tags": [],
+        }
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise RuntimeError("metadata_projection must be a table")
+    target = str(raw.get("target") or "immich_xmp")
+    if target != "immich_xmp":
+        raise RuntimeError(f"unsupported metadata projection target: {target}")
+    tags = raw.get("tags") or []
+    if not isinstance(tags, list):
+        raise RuntimeError("metadata_projection.tags must be a list")
+    return {
+        "enabled": bool(raw.get("enabled", True)),
+        "target": target,
+        "allow_missing_capture_date": bool(raw.get("allow_missing_capture_date", False)),
+        "allow_missing_gps": bool(raw.get("allow_missing_gps", False)),
+        "tags": [str(tag).strip() for tag in tags if str(tag).strip()],
+    }
+
+
+def metadata_projection_enabled(group_config: dict[str, Any]) -> bool:
+    return bool(metadata_projection_config(group_config)["enabled"])
+
+
+def metadata_projection_facts_for_path(rel_path: str, path: Path) -> dict[str, Any]:
+    probe_summary: dict[str, Any] | None = None
+    try:
+        probe_summary = routing_probe_summary(ffprobe_for_routing(path))
+    except RoutingFailed as exc:
+        log.debug("ffprobe metadata projection summary skipped for %s: %s", rel_path, exc)
+    exiftool_summary = routing_exiftool_summary(exiftool_for_routing(path))
+    return routing_file_facts(
+        rel_path,
+        probe_summary=probe_summary,
+        exiftool_summary=exiftool_summary,
+    )
+
+
+def projection_metadata_from_source(
+    rel_path: str,
+    source_path: Path,
+    *,
+    group_config: dict[str, Any],
+) -> ProjectionMetadata:
+    config = metadata_projection_config(group_config)
+    try:
+        return project_immich_metadata(
+            metadata_projection_facts_for_path(rel_path, source_path),
+            allow_missing_capture_date=bool(config["allow_missing_capture_date"]),
+            allow_missing_gps=bool(config["allow_missing_gps"]),
+            tags=cast(list[str], config["tags"]),
+        )
+    except MetadataProjectionError as exc:
+        raise RuntimeError(f"metadata projection failed for {rel_path}: {exc}") from exc
+
+
+def metadata_projection_with_current_tags(
+    metadata: ProjectionMetadata,
+    group_config: dict[str, Any],
+) -> ProjectionMetadata:
+    config = metadata_projection_config(group_config)
+    return ProjectionMetadata(
+        capture_date=metadata.capture_date,
+        capture_date_source=metadata.capture_date_source,
+        gps=metadata.gps,
+        gps_source=metadata.gps_source,
+        tags=tuple(cast(list[str], config["tags"])),
+    )
+
+
+def ensure_file_projection_metadata(
+    file_state: dict[str, Any],
+    *,
+    group_config: dict[str, Any],
+) -> bool:
+    if not metadata_projection_enabled(group_config):
+        return False
+    if isinstance(file_state.get("metadata_projection_metadata"), dict):
+        return False
+    metadata = projection_metadata_from_source(
+        str(file_state["path"]),
+        upload_file_data_path(file_state),
+        group_config=group_config,
+    )
+    file_state["metadata_projection_metadata"] = metadata.as_dict()
+    file_state["metadata_projection_captured_at"] = now_iso()
+    return True
+
+
+def projection_metadata_for_file_output(
+    file_state: dict[str, Any],
+    *,
+    group_config: dict[str, Any],
+    output_path: Path,
+) -> ProjectionMetadata:
+    stored = file_state.get("metadata_projection_metadata")
+    if isinstance(stored, dict):
+        return metadata_projection_with_current_tags(
+            ProjectionMetadata.from_dict(stored),
+            group_config,
+        )
+    source_path: Path | None
+    try:
+        source_path = upload_file_data_path(file_state)
+    except RoutingFailed:
+        source_path = output_path if output_path.exists() else None
+    if source_path is None:
+        raise RuntimeError(
+            "metadata projection cannot locate source metadata for "
+            f"{file_state.get('path')}"
+        )
+    return projection_metadata_from_source(
+        str(file_state["path"]),
+        source_path,
+        group_config=group_config,
+    )
+
+
+def write_atomic_text(path: Path, text: str) -> bool:
+    if path.exists() and path.read_text(encoding="utf-8") == text:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+    return True
+
+
+def write_metadata_projection_sidecars(
+    job: dict[str, Any],
+    upload: dict[str, Any],
+    groups: dict[str, dict[str, Any]],
+    archive_dir: Path,
+) -> dict[str, Any]:
+    sidecars_written = 0
+    groups_written: dict[str, int] = {}
+    upload_changed = False
+    for group_name, group_config in sorted(groups.items()):
+        config = metadata_projection_config(group_config)
+        if not config["enabled"]:
+            continue
+        if not group_produces_primary_archive_output(group_config):
+            continue
+        for file_state in mutable_upload_files_for_groups(upload, {group_name}):
+            output = archive_output_path_for_routed_file(
+                file_state,
+                group_name=group_name,
+                group_config=group_config,
+                archive_dir=archive_dir,
+            )
+            if not output.exists():
+                raise RuntimeError(
+                    "metadata projection output is missing for "
+                    f"{file_state.get('path')}: {output}"
+                )
+            if ensure_file_projection_metadata(file_state, group_config=group_config):
+                upload_changed = True
+            metadata = projection_metadata_for_file_output(
+                file_state,
+                group_config=group_config,
+                output_path=output,
+            )
+            sidecar = immich_xmp_sidecar_path(output)
+            rendered = render_immich_xmp_sidecar(metadata, metadata_date=now_iso())
+            if write_atomic_text(sidecar, rendered):
+                sidecars_written += 1
+            groups_written[group_name] = groups_written.get(group_name, 0) + 1
+            sidecar_rel = sidecar.relative_to(archive_dir).as_posix()
+            if file_state.get("metadata_projection_sidecar") != sidecar_rel:
+                file_state["metadata_projection_sidecar"] = sidecar_rel
+                upload_changed = True
+    job["metadata_projection_result"] = {
+        "updated_at": now_iso(),
+        "target": "immich_xmp",
+        "sidecars": sum(groups_written.values()),
+        "sidecars_written": sidecars_written,
+        "groups": groups_written,
+    }
+    if upload_changed:
+        upload = save_input_upload_raw(upload)
+    save_job(job)
+    return upload
 
 
 def expected_riverhog_primary_files_total(
@@ -5716,10 +5972,11 @@ def mark_existing_eager_outputs(
     archive_dir: Path,
 ) -> tuple[dict[str, Any], bool]:
     changed = False
+    upload_changed = False
     consume_paths: set[str] = set()
     for group_name in sorted(eager_groups):
         group_config = groups[group_name]
-        for file_state in upload_files_for_groups(upload, {group_name}):
+        for file_state in mutable_upload_files_for_groups(upload, {group_name}):
             rel_path = str(file_state["path"])
             if eager_file_claimed(job, rel_path):
                 continue
@@ -5731,6 +5988,8 @@ def mark_existing_eager_outputs(
             )
             if not output.exists():
                 continue
+            if ensure_file_projection_metadata(file_state, group_config=group_config):
+                upload_changed = True
             mark_eager_file_encoded(
                 job,
                 file_state,
@@ -5746,9 +6005,11 @@ def mark_existing_eager_outputs(
                 consume_paths.add(rel_path)
     if changed:
         save_job(job)
+    if upload_changed:
+        upload = save_input_upload_raw(upload)
     if consume_paths:
         upload = consume_input_upload_files(str(upload["upload_id"]), consume_paths)
-    return upload, changed or bool(consume_paths)
+    return upload, changed or upload_changed or bool(consume_paths)
 
 
 def claim_running_eager_batch_files(
@@ -6262,7 +6523,7 @@ def ready_eager_files(
     for group_name in sorted(eager_groups):
         group_config = groups[group_name]
         ready: list[dict[str, Any]] = []
-        for file_state in upload_files_for_groups(upload, {group_name}):
+        for file_state in mutable_upload_files_for_groups(upload, {group_name}):
             rel_path = str(file_state["path"])
             if eager_file_claimed(job, rel_path):
                 continue
@@ -6429,6 +6690,13 @@ def start_eager_batch(
     required_gpu_free = gpu_scratch_required_bytes(batch_bytes, storage_hint) + MIN_FREE_BYTES
     if not space_checked:
         wait_for_free_space(job, GPU_RUNTIME_DIR, required_gpu_free, label="gpu eager scratch")
+
+    upload_changed = False
+    for file_state in file_states:
+        if ensure_file_projection_metadata(file_state, group_config=group_config):
+            upload_changed = True
+    if upload_changed:
+        upload = save_input_upload_raw(upload)
 
     batch_root = eager_batch_input_root(job_id, batch_id)
     if batch_root.exists():
@@ -6760,8 +7028,12 @@ def run_job(job_id: str) -> None:
             finally:
                 release_job_gpu(job, token)
         raise_if_job_cancelled(job_id)
+        input_upload = load_input_upload(str(job["input_upload_id"]))
+        job["phase"] = "metadata_projection"
+        save_job(job)
+        input_upload = write_metadata_projection_sidecars(job, input_upload, groups, archive_dir)
+        raise_if_job_cancelled(job_id)
         if isinstance(job.get("profile_routing"), dict):
-            input_upload = load_input_upload(str(job["input_upload_id"]))
             write_profile_routing_manifest(job, input_upload, groups, archive_dir)
 
         workflow_mode = str(job.get("workflow_mode") or "archive")
