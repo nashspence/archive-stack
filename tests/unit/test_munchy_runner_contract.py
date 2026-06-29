@@ -4633,6 +4633,44 @@ def test_ready_eager_files_skips_claimed_encoding_files(
     assert [file_state["path"] for file_state in files] == ["camera/b.mp4"]
 
 
+def test_ready_eager_files_limits_audio_batches_to_worker_count(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    monkeypatch.setattr(runner, "AUDIO_ARCHIVE_MAX_PARALLEL", 2)
+    for upload_id in ("upload-a", "upload-b", "upload-c"):
+        (runner.TUSD_DIR / upload_id).write_bytes(b"x")
+    job = {"job_id": "job-1"}
+    upload = {
+        "upload_id": "upload-1",
+        "files": [
+            {"path": "voice/a.mp3", "bytes": 1, "upload_id": "upload-a"},
+            {"path": "voice/b.mp3", "bytes": 1, "upload_id": "upload-b"},
+            {"path": "voice/c.mp3", "bytes": 1, "upload_id": "upload-c"},
+        ],
+    }
+    groups = {"voice": {"archive_mode": "audio", "tasks": ["archive_audio"]}}
+
+    ready = runner.ready_eager_files(
+        job,
+        upload,
+        groups,
+        {"voice"},
+        tmp_path / "archive",
+    )
+
+    assert ready is not None
+    group_name, files = ready
+    assert group_name == "voice"
+    assert [file_state["path"] for file_state in files] == [
+        "voice/a.mp3",
+        "voice/b.mp3",
+    ]
+
+
 def test_claim_running_eager_batch_files_marks_legacy_running_paths(
     tmp_path: Path,
     monkeypatch,

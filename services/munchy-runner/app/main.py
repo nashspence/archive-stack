@@ -4021,6 +4021,13 @@ def eager_archive_group_names(groups: dict[str, dict[str, Any]]) -> set[str]:
     }
 
 
+def eager_archive_batch_limit(group_config: dict[str, Any]) -> int:
+    executor = eager_archive_executor(group_config)
+    if executor == "local_audio":
+        return AUDIO_ARCHIVE_MAX_PARALLEL
+    return EAGER_ARCHIVE_BATCH_FILES
+
+
 def remove_job_local_work(job: dict[str, Any]) -> list[str]:
     removed: list[str] = []
     for root in gpu_job_work_roots(job):
@@ -7023,10 +7030,11 @@ def ready_eager_files(
     eager_groups: set[str],
     archive_dir: Path,
     *,
-    limit: int,
+    limit: int | None = None,
 ) -> tuple[str, list[dict[str, Any]]] | None:
     for group_name in sorted(eager_groups):
         group_config = groups[group_name]
+        group_limit = limit or eager_archive_batch_limit(group_config)
         ready: list[dict[str, Any]] = []
         for file_state in mutable_upload_files_for_groups(upload, {group_name}):
             rel_path = str(file_state["path"])
@@ -7055,7 +7063,7 @@ def ready_eager_files(
             if status["upload_state"] != "uploaded":
                 continue
             ready.append(file_state)
-            if len(ready) >= limit:
+            if len(ready) >= group_limit:
                 break
         if ready:
             save_job(job)
@@ -7441,7 +7449,6 @@ def run_eager_archive_groups(
                     groups,
                     eager_groups,
                     archive_dir,
-                    limit=EAGER_ARCHIVE_BATCH_FILES,
                 )
                 if ready is None:
                     break
