@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
+import xml.etree.ElementTree as ET
+
 import pytest
 
 from munchy.metadata_projection import (
@@ -30,11 +35,20 @@ def test_immich_projection_maps_exif_date_and_dms_gps() -> None:
     xmp = render_immich_xmp_sidecar(metadata, metadata_date="2026-06-29T00:00:00Z")
 
     assert 'exif:DateTimeOriginal="2026-06-28T20:30:40-07:00"' in xmp
+    assert 'xmp:CreateDate="2026-06-28T20:30:40-07:00"' in xmp
+    assert 'xmp:CreationDate="2026-06-28T20:30:40-07:00"' in xmp
+    assert 'xmp:ModifyDate="2026-06-28T20:30:40-07:00"' in xmp
+    assert 'photoshop:DateCreated="2026-06-28T20:30:40-07:00"' in xmp
     assert 'exif:GPSLatitude="37,19.906000N"' in xmp
     assert 'exif:GPSLongitude="122,1.818000W"' in xmp
     assert 'geo:lat="37.33176667"' in xmp
     assert 'geo:long="-122.0303"' in xmp
+    assert "<dc:subject>" in xmp
+    assert "<digiKam:TagsList>" in xmp
+    assert "<lr:HierarchicalSubject>" in xmp
+    assert "<Iptc4xmpCore:Keywords>" in xmp
     assert "<rdf:li>iphone-se2</rdf:li>" in xmp
+    ET.fromstring(xmp)
 
 
 def test_immich_projection_maps_nested_ffprobe_apple_location() -> None:
@@ -87,6 +101,61 @@ def test_immich_projection_honors_embedded_decimal_hemisphere() -> None:
     assert metadata.gps is not None
     assert metadata.gps.latitude == pytest.approx(48.9995)
     assert metadata.gps.longitude == pytest.approx(-122.7406)
+
+
+def test_immich_projection_writes_hierarchical_tag_aliases() -> None:
+    metadata = project_immich_metadata(
+        {
+            "exif.date_time_original": "2026:06:28 20:30:40",
+            "exif.gps_latitude": "37.1",
+            "exif.gps_longitude": "-122.1",
+        },
+        tags=["device/nash-iphone-se2", "device/nash-iphone-se2", "munchy/route/video"],
+    )
+
+    xmp = render_immich_xmp_sidecar(metadata, metadata_date="2026-06-29T00:00:00Z")
+
+    assert xmp.count("<rdf:li>device/nash-iphone-se2</rdf:li>") == 3
+    assert "<rdf:li>device|nash-iphone-se2</rdf:li>" in xmp
+    assert "<rdf:li>munchy|route|video</rdf:li>" in xmp
+
+
+def test_immich_xmp_sidecar_roundtrips_with_exiftool_when_available(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    exiftool = shutil.which("exiftool")
+    if exiftool is None:
+        pytest.skip("exiftool is not installed")
+    metadata = project_immich_metadata(
+        {
+            "exif.date_time_original": "2026:06:28 20:30:40-0700",
+            "exif.gps_latitude": "48.99950000 N",
+            "exif.gps_longitude": "122.74060000 W",
+        },
+        tags=["device/nash-iphone-se2"],
+    )
+    sidecar = tmp_path / "IMG_0001.HEIC.xmp"
+    sidecar.write_text(
+        render_immich_xmp_sidecar(metadata, metadata_date="2026-06-29T00:00:00Z"),
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        [exiftool, "-j", "-G1", "-s", "-XMP:All", str(sidecar)],
+        text=True,
+        check=True,
+        capture_output=True,
+    )
+    payload = json.loads(proc.stdout)[0]
+
+    assert payload["XMP-xmp:CreateDate"] == "2026:06:28 20:30:40-07:00"
+    assert payload["XMP-xmp:CreationDate"] == "2026:06:28 20:30:40-07:00"
+    assert payload["XMP-xmp:ModifyDate"] == "2026:06:28 20:30:40-07:00"
+    assert payload["XMP-exif:DateTimeOriginal"] == "2026:06:28 20:30:40-07:00"
+    assert payload["XMP-photoshop:DateCreated"] == "2026:06:28 20:30:40-07:00"
+    assert payload["XMP-exif:GPSLongitude"] == "122 deg 44' 26.16\" W"
+    assert payload["XMP-geo:Long"] == -122.7406
+    assert payload["XMP-digiKam:TagsList"] == "device/nash-iphone-se2"
+    assert payload["XMP-lr:HierarchicalSubject"] == "device|nash-iphone-se2"
+    assert payload["XMP-iptcCore:Keywords"] == "device/nash-iphone-se2"
 
 
 def test_immich_projection_requires_date_and_gps_without_overrides() -> None:

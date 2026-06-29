@@ -187,13 +187,12 @@ def project_immich_metadata(
             "metadata_projection.allow_missing_gps=true to permit this source"
         )
 
-    normalized_tags = tuple(dict.fromkeys(str(tag).strip() for tag in tags if str(tag).strip()))
     return ProjectionMetadata(
         capture_date=capture_date,
         capture_date_source=capture_date_source,
         gps=gps,
         gps_source=gps_source,
-        tags=normalized_tags,
+        tags=normalized_tags(tags),
     )
 
 
@@ -207,6 +206,8 @@ def render_immich_xmp_sidecar(
     }
     if metadata.capture_date:
         attrs["xmp:CreateDate"] = metadata.capture_date
+        attrs["xmp:CreationDate"] = metadata.capture_date
+        attrs["xmp:ModifyDate"] = metadata.capture_date
         attrs["exif:DateTimeOriginal"] = metadata.capture_date
         attrs["photoshop:DateCreated"] = metadata.capture_date
     if metadata.gps is not None:
@@ -221,19 +222,18 @@ def render_immich_xmp_sidecar(
     attr_lines = "\n".join(
         f'   {name}="{escape(str(value), quote=True)}"' for name, value in sorted(attrs.items())
     )
-    subject = ""
-    if metadata.tags:
-        tag_lines = "\n".join(
-            f"     <rdf:li>{escape(tag)}</rdf:li>" for tag in metadata.tags
+    tags = normalized_tags(metadata.tags)
+    tag_blocks = ""
+    if tags:
+        tag_blocks = "\n".join(
+            (
+                render_rdf_bag("dc:subject", tags),
+                render_rdf_seq("digiKam:TagsList", tags),
+                render_rdf_bag("lr:HierarchicalSubject", hierarchical_tags(tags)),
+                render_rdf_bag("Iptc4xmpCore:Keywords", tags),
+            )
         )
-        subject = (
-            "\n"
-            "  <dc:subject>\n"
-            "   <rdf:Bag>\n"
-            f"{tag_lines}\n"
-            "   </rdf:Bag>\n"
-            "  </dc:subject>"
-        )
+        tag_blocks = f"\n{tag_blocks}"
     return (
         '<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>\n'
         '<x:xmpmeta xmlns:x="adobe:ns:meta/">\n'
@@ -243,12 +243,42 @@ def render_immich_xmp_sidecar(
         '   xmlns:exif="http://ns.adobe.com/exif/1.0/"\n'
         '   xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"\n'
         '   xmlns:dc="http://purl.org/dc/elements/1.1/"\n'
+        '   xmlns:digiKam="http://www.digikam.org/ns/1.0/"\n'
+        '   xmlns:lr="http://ns.adobe.com/lightroom/1.0/"\n'
+        '   xmlns:Iptc4xmpCore="http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"\n'
         '   xmlns:geo="http://www.w3.org/2003/01/geo/wgs84_pos#"\n'
-        f"{attr_lines}>{subject}\n"
+        f"{attr_lines}>{tag_blocks}\n"
         "  </rdf:Description>\n"
         " </rdf:RDF>\n"
         "</x:xmpmeta>\n"
         '<?xpacket end="w"?>\n'
+    )
+
+
+def normalized_tags(tags: Sequence[str]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(str(tag).strip() for tag in tags if str(tag).strip()))
+
+
+def hierarchical_tags(tags: Sequence[str]) -> tuple[str, ...]:
+    return tuple(tag.replace("/", "|") for tag in normalized_tags(tags))
+
+
+def render_rdf_bag(name: str, values: Sequence[str]) -> str:
+    return render_rdf_list(name, values, container="Bag")
+
+
+def render_rdf_seq(name: str, values: Sequence[str]) -> str:
+    return render_rdf_list(name, values, container="Seq")
+
+
+def render_rdf_list(name: str, values: Sequence[str], *, container: str) -> str:
+    tag_lines = "\n".join(f"     <rdf:li>{escape(value)}</rdf:li>" for value in values)
+    return (
+        f"  <{name}>\n"
+        f"   <rdf:{container}>\n"
+        f"{tag_lines}\n"
+        f"   </rdf:{container}>\n"
+        f"  </{name}>"
     )
 
 

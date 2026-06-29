@@ -451,6 +451,15 @@ def _normalize_group_payload(
         payload["encode_profile"] = deepcopy(profiles[profile_name])
     if isinstance(group.get("encode_profile"), Mapping):
         payload["encode_profile"] = deepcopy(dict(group["encode_profile"]))
+    metadata_projection = group.get("metadata_projection")
+    if metadata_projection is False:
+        payload["metadata_projection"] = False
+    elif isinstance(metadata_projection, Mapping):
+        payload["metadata_projection"] = deepcopy(dict(metadata_projection))
+    elif metadata_projection is not None:
+        raise typer.BadParameter(
+            f"group {name} metadata_projection must be a table or false"
+        )
     return payload
 
 

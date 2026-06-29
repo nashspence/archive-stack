@@ -3631,6 +3631,7 @@ def metadata_projection_config(group_config: dict[str, Any]) -> dict[str, Any]:
             "allow_missing_capture_date": False,
             "allow_missing_gps": False,
             "tags": [],
+            "include_context_tags": False,
         }
     if raw is None:
         raw = {}
@@ -3648,6 +3649,7 @@ def metadata_projection_config(group_config: dict[str, Any]) -> dict[str, Any]:
         "allow_missing_capture_date": bool(raw.get("allow_missing_capture_date", False)),
         "allow_missing_gps": bool(raw.get("allow_missing_gps", False)),
         "tags": [str(tag).strip() for tag in tags if str(tag).strip()],
+        "include_context_tags": bool(raw.get("include_context_tags", True)),
     }
 
 
@@ -3674,6 +3676,7 @@ def projection_metadata_from_source(
     source_path: Path,
     *,
     group_config: dict[str, Any],
+    tags: list[str] | None = None,
 ) -> ProjectionMetadata:
     config = metadata_projection_config(group_config)
     try:
@@ -3681,23 +3684,22 @@ def projection_metadata_from_source(
             metadata_projection_facts_for_path(rel_path, source_path),
             allow_missing_capture_date=bool(config["allow_missing_capture_date"]),
             allow_missing_gps=bool(config["allow_missing_gps"]),
-            tags=cast(list[str], config["tags"]),
+            tags=tags if tags is not None else cast(list[str], config["tags"]),
         )
     except MetadataProjectionError as exc:
         raise RuntimeError(f"metadata projection failed for {rel_path}: {exc}") from exc
 
 
-def metadata_projection_with_current_tags(
+def metadata_projection_with_tags(
     metadata: ProjectionMetadata,
-    group_config: dict[str, Any],
+    tags: list[str],
 ) -> ProjectionMetadata:
-    config = metadata_projection_config(group_config)
     return ProjectionMetadata(
         capture_date=metadata.capture_date,
         capture_date_source=metadata.capture_date_source,
         gps=metadata.gps,
         gps_source=metadata.gps_source,
-        tags=tuple(cast(list[str], config["tags"])),
+        tags=tuple(tags),
     )
 
 
@@ -3723,14 +3725,22 @@ def ensure_file_projection_metadata(
 def projection_metadata_for_file_output(
     file_state: dict[str, Any],
     *,
+    job: dict[str, Any],
+    group_name: str,
     group_config: dict[str, Any],
     output_path: Path,
 ) -> ProjectionMetadata:
+    tags = metadata_projection_tags_for_file(
+        job,
+        file_state,
+        group_name=group_name,
+        group_config=group_config,
+    )
     stored = file_state.get("metadata_projection_metadata")
     if isinstance(stored, dict):
-        return metadata_projection_with_current_tags(
+        return metadata_projection_with_tags(
             ProjectionMetadata.from_dict(stored),
-            group_config,
+            tags,
         )
     source_path: Path | None
     try:
@@ -3746,7 +3756,46 @@ def projection_metadata_for_file_output(
         str(file_state["path"]),
         source_path,
         group_config=group_config,
+        tags=tags,
     )
+
+
+def metadata_projection_tags_for_file(
+    job: dict[str, Any],
+    file_state: dict[str, Any],
+    *,
+    group_name: str,
+    group_config: dict[str, Any],
+) -> list[str]:
+    config = metadata_projection_config(group_config)
+    tags = list(cast(list[str], config["tags"]))
+    if not config["include_context_tags"]:
+        return dedup_metadata_projection_tags(tags)
+
+    collection_slug = str(job.get("collection_slug") or "").strip()
+    if collection_slug:
+        tags.append(f"munchy/collection/{collection_slug}")
+    if group_name:
+        tags.append(f"munchy/group/{group_name}")
+    route_id = str(file_state.get("profile_route_id") or "").strip()
+    if route_id:
+        tags.append(f"munchy/route/{route_id}")
+    group_rel = str(file_state.get("resolved_group_rel") or "").strip()
+    if group_rel:
+        parent = Path(normalize_posix(group_rel)).parent.as_posix()
+        if parent and parent != ".":
+            tags.append(f"munchy/output/{parent}")
+    pair_kind = str(file_state.get("profile_pair_kind") or "").strip()
+    pair_role = str(file_state.get("profile_pair_role") or "").strip()
+    if pair_kind:
+        tags.append(f"munchy/pair/{pair_kind}")
+    if pair_kind and pair_role:
+        tags.append(f"munchy/pair/{pair_kind}/{pair_role}")
+    return dedup_metadata_projection_tags(tags)
+
+
+def dedup_metadata_projection_tags(tags: list[str]) -> list[str]:
+    return list(dict.fromkeys(tag.strip() for tag in tags if tag.strip()))
 
 
 def write_atomic_text(path: Path, text: str) -> bool:
@@ -3790,6 +3839,8 @@ def write_metadata_projection_sidecars(
                 upload_changed = True
             metadata = projection_metadata_for_file_output(
                 file_state,
+                job=job,
+                group_name=group_name,
                 group_config=group_config,
                 output_path=output,
             )

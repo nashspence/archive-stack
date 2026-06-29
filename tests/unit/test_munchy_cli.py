@@ -433,6 +433,9 @@ profile = "camera"
 archive_mode = "av1_nvenc"
 gpu_tasks = ["archive_video"]
 
+[groups.video.metadata_projection]
+tags = ["device/camera"]
+
 [groups.originals]
 archive_mode = "originals"
 gpu_tasks = []
@@ -501,6 +504,9 @@ when = { path = { suffix = ".mp4" } }
     assert (
         request.job_payload["groups"]["video"]["encode_profile"]["archive"]["container"] == "webm"
     )
+    assert request.job_payload["groups"]["video"]["metadata_projection"] == {
+        "tags": ["device/camera"]
+    }
     assert seen["requested_containers"] == ["webm"]
 
 

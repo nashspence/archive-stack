@@ -387,6 +387,10 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
                         "gps_source": "exif.gps_latitude+exif.gps_longitude",
                         "tags": [],
                     },
+                    "profile_route_id": "iphone-video",
+                    "resolved_group_rel": "iphone/video/IMG_0001.MOV",
+                    "profile_pair_kind": "live-photo",
+                    "profile_pair_role": "movie",
                 }
             ],
         }
@@ -423,14 +427,21 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
     assert 'exif:DateTimeOriginal="2026-06-28T20:30:40-07:00"' in xmp
     assert 'geo:lat="37.3317"' in xmp
     assert "<rdf:li>iphone-se2</rdf:li>" in xmp
-    assert updated["files"][0]["metadata_projection_sidecar"] == "video/IMG_0001.webm.xmp"
+    assert "<rdf:li>munchy/collection/phone-preview</rdf:li>" in xmp
+    assert "<rdf:li>munchy/group/video</rdf:li>" in xmp
+    assert "<rdf:li>munchy/route/iphone-video</rdf:li>" in xmp
+    assert "<rdf:li>munchy/output/iphone/video</rdf:li>" in xmp
+    assert "<rdf:li>munchy/pair/live-photo/movie</rdf:li>" in xmp
+    assert updated["files"][0]["metadata_projection_sidecar"] == (
+        "video/iphone/video/IMG_0001.webm.xmp"
+    )
     assert runner.load_job("job-1")["metadata_projection_result"]["sidecars"] == 1
     assert runner.routing_manifest_output_entry(output, archive_dir=archive_dir)[
         "metadata_sidecars"
     ] == [
         {
             "target": "immich_xmp",
-            "path": "video/IMG_0001.webm.xmp",
+            "path": "video/iphone/video/IMG_0001.webm.xmp",
             "bytes": sidecar.stat().st_size,
         }
     ]
