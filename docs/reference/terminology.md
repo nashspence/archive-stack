@@ -9,6 +9,12 @@ configs, and operator docs. It deliberately does not mark review state,
 priority, ownership, or tracker links; work items should reference contract
 terms, not the other way around.
 
+Each term includes a `term_type` that describes the kind of concept being
+exposed: `entity`, `activity`, `state`, `policy`, `identifier`,
+`metadata_property`, `enum_value`, or `software_agent`. `Riverhog`, `Djdan`,
+`Munchy`, and `Jeb` are intentional named system or agent terms and should use
+`software_agent`.
+
 When adding a new operator-visible command, webhook field, config key, or major
 API term, update the terminology contract in the same change. When renaming a
 term, keep behavior and wire compatibility decisions in the owning API or CLI

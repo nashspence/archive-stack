@@ -2,6 +2,16 @@
   "schema_version": 1,
   "title": "Riverhog User-Facing Terminology",
   "purpose": "Inventory important terms currently exposed through Riverhog, Djdan, Munchy, Jeb, API contracts, webhook payloads, and operator configuration. This contract records current vocabulary without embedding work-item state, review priority, ownership, or tracker links.",
+  "term_type_values": {
+    "entity": "A named resource, object, artifact, manifest, namespace, package, or material thing.",
+    "activity": "An operator action, workflow, process, transition, or validation pass.",
+    "state": "A condition, backlog, custody situation, readiness state, or coverage condition.",
+    "policy": "A rule, setting, threshold, matcher, route, profile, or strategy that controls behavior.",
+    "identifier": "A stable id, slug, label, selector, path-like reference, or other reference value.",
+    "metadata_property": "A capture, provenance, creator, device, location, or time metadata field.",
+    "enum_value": "A literal value exposed by configuration, API payloads, or machine contracts.",
+    "software_agent": "An intentionally named Riverhog-family system, service, CLI, or agent."
+  },
   "audience_values": [
     "operator",
     "config_author",
@@ -29,6 +39,7 @@
     {
       "id": "archive",
       "label": "archive",
+      "term_type": "activity",
       "audiences": [
         "operator",
         "config_author",
@@ -51,6 +62,7 @@
     {
       "id": "archive_mode",
       "label": "archive mode",
+      "term_type": "policy",
       "audiences": [
         "config_author",
         "api_client",
@@ -78,6 +90,7 @@
     {
       "id": "audio_archive",
       "label": "audio archive",
+      "term_type": "activity",
       "audiences": [
         "operator",
         "config_author"
@@ -99,6 +112,7 @@
     {
       "id": "batch",
       "label": "batch",
+      "term_type": "entity",
       "audiences": [
         "operator",
         "api_client",
@@ -121,6 +135,7 @@
     {
       "id": "burn_backlog",
       "label": "burn backlog",
+      "term_type": "state",
       "audiences": [
         "operator"
       ],
@@ -141,6 +156,7 @@
     {
       "id": "candidate",
       "label": "candidate",
+      "term_type": "entity",
       "audiences": [
         "operator",
         "api_client",
@@ -163,6 +179,7 @@
     {
       "id": "capture_date",
       "label": "capture date",
+      "term_type": "metadata_property",
       "audiences": [
         "operator",
         "config_author"
@@ -184,6 +201,7 @@
     {
       "id": "cloud_archive",
       "label": "cloud archive",
+      "term_type": "entity",
       "audiences": [
         "operator",
         "api_client"
@@ -205,6 +223,7 @@
     {
       "id": "collection",
       "label": "collection",
+      "term_type": "entity",
       "audiences": [
         "operator",
         "api_client",
@@ -233,6 +252,7 @@
     {
       "id": "collection_id",
       "label": "collection id",
+      "term_type": "identifier",
       "audiences": [
         "operator",
         "api_client",
@@ -255,6 +275,7 @@
     {
       "id": "collection_preview",
       "label": "collection preview",
+      "term_type": "activity",
       "audiences": [
         "operator",
         "config_author",
@@ -277,6 +298,7 @@
     {
       "id": "collection_restore",
       "label": "collection restore",
+      "term_type": "enum_value",
       "audiences": [
         "api_client",
         "webhook_recipient",
@@ -299,6 +321,7 @@
     {
       "id": "collection_slug",
       "label": "collection slug",
+      "term_type": "identifier",
       "audiences": [
         "operator",
         "config_author",
@@ -327,6 +350,7 @@
     {
       "id": "copy",
       "label": "copy",
+      "term_type": "entity",
       "audiences": [
         "operator",
         "api_client"
@@ -348,6 +372,7 @@
     {
       "id": "copy_id",
       "label": "copy id",
+      "term_type": "identifier",
       "audiences": [
         "operator",
         "api_client"
@@ -369,6 +394,7 @@
     {
       "id": "creator",
       "label": "creator",
+      "term_type": "metadata_property",
       "audiences": [
         "operator",
         "config_author"
@@ -390,6 +416,7 @@
     {
       "id": "device_metadata",
       "label": "device metadata",
+      "term_type": "metadata_property",
       "audiences": [
         "config_author",
         "operator"
@@ -411,6 +438,7 @@
     {
       "id": "disc",
       "label": "disc",
+      "term_type": "entity",
       "audiences": [
         "operator",
         "api_client",
@@ -433,6 +461,7 @@
     {
       "id": "disc_rebuild",
       "label": "disc rebuild",
+      "term_type": "activity",
       "audiences": [
         "operator",
         "webhook_recipient"
@@ -454,6 +483,7 @@
     {
       "id": "djdan",
       "label": "Djdan",
+      "term_type": "software_agent",
       "audiences": [
         "operator",
         "developer"
@@ -470,6 +500,7 @@
     {
       "id": "encode_profile",
       "label": "encode profile",
+      "term_type": "policy",
       "audiences": [
         "config_author",
         "operator",
@@ -497,6 +528,7 @@
     {
       "id": "fetch",
       "label": "fetch",
+      "term_type": "entity",
       "audiences": [
         "operator",
         "api_client",
@@ -524,6 +556,7 @@
     {
       "id": "file",
       "label": "file",
+      "term_type": "entity",
       "audiences": [
         "operator",
         "api_client",
@@ -546,6 +579,7 @@
     {
       "id": "finalization",
       "label": "finalization",
+      "term_type": "activity",
       "audiences": [
         "operator",
         "api_client",
@@ -568,6 +602,7 @@
     {
       "id": "gps",
       "label": "GPS",
+      "term_type": "metadata_property",
       "audiences": [
         "operator",
         "config_author"
@@ -589,6 +624,7 @@
     {
       "id": "held_unmatched",
       "label": "held unmatched files",
+      "term_type": "state",
       "audiences": [
         "operator",
         "config_author",
@@ -611,6 +647,7 @@
     {
       "id": "hot_eviction",
       "label": "hot eviction",
+      "term_type": "activity",
       "audiences": [
         "operator",
         "api_client"
@@ -632,6 +669,7 @@
     {
       "id": "hot_storage",
       "label": "hot storage",
+      "term_type": "state",
       "audiences": [
         "operator",
         "api_client"
@@ -653,6 +691,7 @@
     {
       "id": "image",
       "label": "image",
+      "term_type": "entity",
       "audiences": [
         "operator",
         "api_client"
@@ -674,6 +713,7 @@
     {
       "id": "image_rebuild",
       "label": "image_rebuild",
+      "term_type": "enum_value",
       "audiences": [
         "api_client",
         "webhook_recipient",
@@ -701,6 +741,7 @@
     {
       "id": "input_upload",
       "label": "input upload",
+      "term_type": "entity",
       "audiences": [
         "api_client",
         "developer"
@@ -722,6 +763,7 @@
     {
       "id": "jeb",
       "label": "Jeb",
+      "term_type": "software_agent",
       "audiences": [
         "operator",
         "developer"
@@ -743,6 +785,7 @@
     {
       "id": "jeb_source",
       "label": "Jeb source",
+      "term_type": "entity",
       "audiences": [
         "operator",
         "config_author",
@@ -765,6 +808,7 @@
     {
       "id": "job",
       "label": "job",
+      "term_type": "entity",
       "audiences": [
         "operator",
         "api_client",
@@ -792,6 +836,7 @@
     {
       "id": "media_preflight",
       "label": "media preflight",
+      "term_type": "activity",
       "audiences": [
         "operator",
         "config_author",
@@ -814,6 +859,7 @@
     {
       "id": "metadata_projection",
       "label": "metadata projection",
+      "term_type": "activity",
       "audiences": [
         "config_author",
         "operator"
@@ -835,6 +881,7 @@
     {
       "id": "munchy",
       "label": "Munchy",
+      "term_type": "software_agent",
       "audiences": [
         "operator",
         "developer",
@@ -857,6 +904,7 @@
     {
       "id": "originals",
       "label": "originals",
+      "term_type": "enum_value",
       "audiences": [
         "operator",
         "config_author",
@@ -879,6 +927,7 @@
     {
       "id": "physical_coverage",
       "label": "physical coverage",
+      "term_type": "state",
       "audiences": [
         "operator",
         "api_client"
@@ -905,6 +954,7 @@
     {
       "id": "preflight",
       "label": "preflight",
+      "term_type": "activity",
       "audiences": [
         "operator",
         "config_author",
@@ -927,6 +977,7 @@
     {
       "id": "profile_group",
       "label": "profile group",
+      "term_type": "policy",
       "audiences": [
         "config_author",
         "api_client",
@@ -954,6 +1005,7 @@
     {
       "id": "profile_routing",
       "label": "profile routing",
+      "term_type": "policy",
       "audiences": [
         "config_author",
         "operator",
@@ -981,6 +1033,7 @@
     {
       "id": "projected_selector",
       "label": "projected selector",
+      "term_type": "identifier",
       "audiences": [
         "operator",
         "api_client"
@@ -1002,6 +1055,7 @@
     {
       "id": "qcut_review",
       "label": "qcut review",
+      "term_type": "activity",
       "audiences": [
         "operator",
         "config_author",
@@ -1024,6 +1078,7 @@
     {
       "id": "rebuild",
       "label": "rebuild",
+      "term_type": "activity",
       "audiences": [
         "operator",
         "developer"
@@ -1045,6 +1100,7 @@
     {
       "id": "recovery_session",
       "label": "recovery session",
+      "term_type": "entity",
       "audiences": [
         "api_client",
         "webhook_recipient",
@@ -1067,6 +1123,7 @@
     {
       "id": "riverhog",
       "label": "Riverhog",
+      "term_type": "software_agent",
       "audiences": [
         "operator",
         "developer",
@@ -1089,6 +1146,7 @@
     {
       "id": "route",
       "label": "route",
+      "term_type": "policy",
       "audiences": [
         "config_author",
         "operator",
@@ -1111,6 +1169,7 @@
     {
       "id": "routing_pairing",
       "label": "routing pairing",
+      "term_type": "policy",
       "audiences": [
         "config_author",
         "developer"
@@ -1127,6 +1186,7 @@
     {
       "id": "runner_task",
       "label": "runner task",
+      "term_type": "policy",
       "audiences": [
         "config_author",
         "api_client",
@@ -1159,6 +1219,7 @@
     {
       "id": "safe_to_delete",
       "label": "safe to delete",
+      "term_type": "state",
       "audiences": [
         "operator",
         "api_client"
@@ -1180,6 +1241,7 @@
     {
       "id": "source_artifacts",
       "label": "source artifacts",
+      "term_type": "entity",
       "audiences": [
         "config_author",
         "api_client",
@@ -1202,6 +1264,7 @@
     {
       "id": "source_inventory",
       "label": "source inventory",
+      "term_type": "entity",
       "audiences": [
         "api_client",
         "developer"
@@ -1218,6 +1281,7 @@
     {
       "id": "stable_age",
       "label": "stable age",
+      "term_type": "policy",
       "audiences": [
         "config_author",
         "developer"
@@ -1234,6 +1298,7 @@
     {
       "id": "workflow_mode",
       "label": "workflow mode",
+      "term_type": "policy",
       "audiences": [
         "config_author",
         "api_client",
@@ -1261,6 +1326,7 @@
     {
       "id": "xmp_sidecar",
       "label": "XMP sidecar",
+      "term_type": "entity",
       "audiences": [
         "operator",
         "config_author",

@@ -17,6 +17,7 @@ def load_contract() -> dict[str, object]:
 def test_terminology_contract_shape() -> None:
     contract = load_contract()
     assert contract["schema_version"] == 1
+    term_types = set(contract["term_type_values"])
     audiences = set(contract["audience_values"])
     surfaces = set(contract["surface_values"])
     terms = contract["terms"]
@@ -31,6 +32,7 @@ def test_terminology_contract_shape() -> None:
         assert isinstance(term, dict)
         assert term["id"]
         assert term["label"]
+        assert term["term_type"] in term_types
         assert term["definition"]
         assert set(term["audiences"]) <= audiences
         assert term["audiences"]
@@ -76,6 +78,25 @@ def test_terminology_contract_covers_current_top_level_surfaces() -> None:
         for exposure in term["exposed_as"]
     }
     assert needed_surfaces <= covered_surfaces
+
+
+def test_named_systems_are_intentional_software_agents() -> None:
+    terms = {term["id"]: term for term in load_contract()["terms"]}
+    assert terms["riverhog"]["term_type"] == "software_agent"
+    assert terms["djdan"]["term_type"] == "software_agent"
+    assert terms["munchy"]["term_type"] == "software_agent"
+    assert terms["jeb"]["term_type"] == "software_agent"
+
+
+def test_terms_expose_ontology_shape() -> None:
+    terms = {term["id"]: term for term in load_contract()["terms"]}
+    assert terms["disc_rebuild"]["term_type"] == "activity"
+    assert terms["collection_restore"]["term_type"] == "enum_value"
+    assert terms["image_rebuild"]["term_type"] == "enum_value"
+    assert terms["capture_date"]["term_type"] == "metadata_property"
+    assert terms["collection_id"]["term_type"] == "identifier"
+    assert terms["profile_routing"]["term_type"] == "policy"
+    assert terms["held_unmatched"]["term_type"] == "state"
 
 
 def walk_values(value: object) -> Iterator[object]:
