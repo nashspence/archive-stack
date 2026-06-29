@@ -37,7 +37,7 @@ def test_immich_projection_maps_exif_date_and_dms_gps() -> None:
     assert 'exif:DateTimeOriginal="2026-06-28T20:30:40-07:00"' in xmp
     assert 'xmp:CreateDate="2026-06-28T20:30:40-07:00"' in xmp
     assert "xmp:CreationDate" not in xmp
-    assert 'xmp:ModifyDate="2026-06-28T20:30:40-07:00"' in xmp
+    assert "xmp:ModifyDate" not in xmp
     assert 'photoshop:DateCreated="2026-06-28T20:30:40-07:00"' in xmp
     assert 'exif:GPSLatitude="37,19.906000N"' in xmp
     assert 'exif:GPSLongitude="122,1.818000W"' in xmp
@@ -170,7 +170,7 @@ def test_immich_xmp_sidecar_roundtrips_with_exiftool_when_available(tmp_path) ->
 
     assert payload["XMP-xmp:CreateDate"] == "2026:06:28 20:30:40-07:00"
     assert "XMP-xmp:CreationDate" not in payload
-    assert payload["XMP-xmp:ModifyDate"] == "2026:06:28 20:30:40-07:00"
+    assert "XMP-xmp:ModifyDate" not in payload
     assert payload["XMP-exif:DateTimeOriginal"] == "2026:06:28 20:30:40-07:00"
     assert payload["XMP-photoshop:DateCreated"] == "2026:06:28 20:30:40-07:00"
     assert payload["XMP-exif:GPSLongitude"] == "122 deg 44' 26.16\" W"

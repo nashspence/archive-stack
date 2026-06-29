@@ -207,7 +207,6 @@ def render_immich_xmp_sidecar(
     }
     if metadata.capture_date:
         attrs["xmp:CreateDate"] = metadata.capture_date
-        attrs["xmp:ModifyDate"] = metadata.capture_date
         attrs["exif:DateTimeOriginal"] = metadata.capture_date
         attrs["photoshop:DateCreated"] = metadata.capture_date
     if metadata.gps is not None:

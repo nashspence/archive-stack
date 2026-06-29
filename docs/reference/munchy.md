@@ -35,9 +35,12 @@ allow_missing_gps = true
 The sidecar includes capture date aliases that common XMP readers consume:
 
 - `xmp:CreateDate`
-- `xmp:ModifyDate`
 - `exif:DateTimeOriginal`
 - `photoshop:DateCreated`
+
+`xmp:MetadataDate` records when the sidecar metadata was generated or updated.
+Munchy intentionally omits `xmp:ModifyDate` because archived outputs may be
+transcoded derivatives rather than the original captured resource.
 
 GPS is written both as EXIF-style coordinates and WGS84 decimal coordinates.
 West and south coordinates must remain negative in the decimal fields. Altitude
