@@ -40,11 +40,11 @@ vbr = "on"
 [groups.video]
 profile = "example-camera"
 archive_mode = "av1_nvenc"
-gpu_tasks = ["archive_video"]
+tasks = ["archive_video"]
 
 [groups.originals]
 archive_mode = "originals"
-gpu_tasks = []
+tasks = []
 
 [[job.profile_routing.routes]]
 id = "example-camera-video"

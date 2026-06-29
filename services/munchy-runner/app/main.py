@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import errno
 import faulthandler
 import gzip
@@ -18,7 +19,7 @@ import subprocess
 import threading
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager, closing
 from datetime import UTC, datetime, timedelta
@@ -32,7 +33,11 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from munchy.filesystem_metadata import write_filesystem_metadata_map
+from munchy.filesystem_metadata import (
+    SOURCE_FILESYSTEM_METADATA_FILENAME,
+    load_filesystem_metadata_map,
+    write_filesystem_metadata_map,
+)
 from munchy.metadata_projection import (
     MetadataProjectionError,
     ProjectionMetadata,
@@ -55,10 +60,12 @@ from munchy.profile_routing import (
     routing_probe_summary,
 )
 from munchy.profiles import (
+    MUNCHY_AUDIO_PROFILE_TARGET,
     MUNCHY_PROFILE_TARGET,
     ArchiveContainer,
     EncodeProfile,
 )
+from munchy.source_artifact_bridge import build_strict_source_artifacts
 from munchy.uvicorn_logging import uvicorn_log_config_without_health_access_logs
 from riverhog_cli.client import ApiClient
 from riverhog_core.domain.errors import Conflict, HashMismatch, NotFound, ServiceUnavailable
@@ -242,10 +249,14 @@ STORAGE_WAIT_SECONDS = max(
 )
 
 UploadState = Literal["pending", "partial", "uploaded", "consumed"]
-ArchiveMode = Literal["av1_nvenc", "originals"]
+ArchiveMode = Literal["av1_nvenc", "audio", "originals"]
 WorkflowMode = Literal["archive", "review_only", "collection_preview"]
-TaskName = Literal["archive_video", "qcut_video", "audio_review"]
-DEFAULT_GPU_TASKS: tuple[TaskName, ...] = ("archive_video", "qcut_video", "audio_review")
+TaskName = Literal["archive_video", "archive_audio", "qcut_video", "audio_review"]
+DEFAULT_TASKS: tuple[TaskName, ...] = ("archive_video", "qcut_video", "audio_review")
+DEFAULT_AUDIO_TASKS: tuple[TaskName, ...] = ("archive_audio",)
+GPU_TARGET_TASKS = frozenset({"archive_video", "qcut_video", "audio_review"})
+AUDIO_ARCHIVE_MAX_PARALLEL = max(1, int(os.getenv("MUNCHY_RUNNER_AUDIO_ARCHIVE_WORKERS", "2")))
+ARCHIVE_AUDIO_BITRATE = os.getenv("MUNCHY_AUDIO_BITRATE", "128k")
 NotifyEvent = Literal[
     "job.received",
     "review.handoff",
@@ -264,8 +275,12 @@ DEFAULT_NOTIFY_EVENTS: list[NotifyEvent] = [
 ]
 
 
-def default_gpu_tasks() -> list[TaskName]:
-    return list(DEFAULT_GPU_TASKS)
+def default_tasks() -> list[TaskName]:
+    return list(DEFAULT_TASKS)
+
+
+def tasks_require_gpu(tasks: Sequence[Any]) -> bool:
+    return any(str(task) in GPU_TARGET_TASKS for task in tasks)
 SAFE_GROUP_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 TERMINAL_JOB_STATES = {"succeeded", "failed", "cancelled"}
 JOB_LIST_SORT_COLUMNS = {
@@ -593,6 +608,7 @@ class MetadataProjectionConfig(BaseModel):
     target: Literal["immich_xmp"] = "immich_xmp"
     allow_missing_capture_date: bool = False
     allow_missing_gps: bool = False
+    capture_date_sources: list[dict[str, Any]] | None = None
     tags: list[str] = Field(default_factory=list)
 
     @field_validator("tags")
@@ -600,18 +616,39 @@ class MetadataProjectionConfig(BaseModel):
     def normalize_tags(cls, value: list[str]) -> list[str]:
         return list(dict.fromkeys(tag.strip() for tag in value if tag.strip()))
 
+    @field_validator("capture_date_sources")
+    @classmethod
+    def validate_capture_date_sources(
+        cls,
+        value: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]] | None:
+        if value is None:
+            return None
+        normalized: list[dict[str, Any]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                raise ValueError("metadata_projection.capture_date_sources entries must be tables")
+            source_type = str(item.get("type") or "embedded").strip()
+            if source_type not in {"embedded", "path_regex", "filesystem_birthtime"}:
+                raise ValueError(
+                    "metadata_projection.capture_date_sources type must be embedded, "
+                    "path_regex, or filesystem_birthtime"
+                )
+            normalized.append(dict(item))
+        return normalized
+
 
 class ProfileGroupConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     archive_mode: ArchiveMode = "av1_nvenc"
-    gpu_tasks: list[TaskName] = Field(default_factory=default_gpu_tasks)
+    tasks: list[TaskName] = Field(default_factory=default_tasks)
     encode_profile: EncodeProfile | None = None
     metadata_projection: MetadataProjectionConfig = Field(
         default_factory=MetadataProjectionConfig
     )
 
-    @field_validator("gpu_tasks")
+    @field_validator("tasks")
     @classmethod
     def normalize_tasks(cls, value: list[TaskName]) -> list[TaskName]:
         return list(dict.fromkeys(value))
@@ -619,7 +656,15 @@ class ProfileGroupConfig(BaseModel):
     @model_validator(mode="after")
     def normalize_originals(self) -> ProfileGroupConfig:
         if self.archive_mode == "originals":
-            self.gpu_tasks = []
+            self.tasks = []
+        elif self.archive_mode == "audio" and "tasks" not in self.model_fields_set:
+            self.tasks = list(DEFAULT_AUDIO_TASKS)
+        if self.archive_mode == "av1_nvenc" and "archive_audio" in self.tasks:
+            raise ValueError("av1_nvenc groups cannot run archive_audio")
+        if self.archive_mode == "audio" and any(
+            task in self.tasks for task in ("archive_video", "qcut_video")
+        ):
+            raise ValueError("audio groups cannot run archive_video or qcut_video")
         return self
 
 
@@ -627,9 +672,9 @@ class StorageGroupHint(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     archive_mode: ArchiveMode = "av1_nvenc"
-    gpu_tasks: list[TaskName] = Field(default_factory=list)
+    tasks: list[TaskName] = Field(default_factory=list)
 
-    @field_validator("gpu_tasks")
+    @field_validator("tasks")
     @classmethod
     def normalize_tasks(cls, value: list[TaskName]) -> list[TaskName]:
         return list(dict.fromkeys(value))
@@ -637,7 +682,15 @@ class StorageGroupHint(BaseModel):
     @model_validator(mode="after")
     def normalize_originals(self) -> StorageGroupHint:
         if self.archive_mode == "originals":
-            self.gpu_tasks = []
+            self.tasks = []
+        elif self.archive_mode == "audio" and "tasks" not in self.model_fields_set:
+            self.tasks = list(DEFAULT_AUDIO_TASKS)
+        if self.archive_mode == "av1_nvenc" and "archive_audio" in self.tasks:
+            raise ValueError("av1_nvenc storage groups cannot run archive_audio")
+        if self.archive_mode == "audio" and any(
+            task in self.tasks for task in ("archive_video", "qcut_video")
+        ):
+            raise ValueError("audio storage groups cannot run archive_video or qcut_video")
         return self
 
 
@@ -646,11 +699,11 @@ class InputUploadStorageHint(BaseModel):
 
     workflow_mode: WorkflowMode
     archive_mode: ArchiveMode = "av1_nvenc"
-    gpu_tasks: list[TaskName] = Field(default_factory=list)
+    tasks: list[TaskName] = Field(default_factory=list)
     groups: dict[str, StorageGroupHint] = Field(default_factory=dict)
     structured_routing: bool = False
 
-    @field_validator("gpu_tasks")
+    @field_validator("tasks")
     @classmethod
     def normalize_tasks(cls, value: list[TaskName]) -> list[TaskName]:
         return list(dict.fromkeys(value))
@@ -666,7 +719,15 @@ class InputUploadStorageHint(BaseModel):
     @model_validator(mode="after")
     def normalize_originals(self) -> InputUploadStorageHint:
         if self.archive_mode == "originals":
-            self.gpu_tasks = []
+            self.tasks = []
+        elif self.archive_mode == "audio" and "tasks" not in self.model_fields_set:
+            self.tasks = list(DEFAULT_AUDIO_TASKS)
+        if self.archive_mode == "av1_nvenc" and "archive_audio" in self.tasks:
+            raise ValueError("av1_nvenc input upload hints cannot run archive_audio")
+        if self.archive_mode == "audio" and any(
+            task in self.tasks for task in ("archive_video", "qcut_video")
+        ):
+            raise ValueError("audio input upload hints cannot run archive_video or qcut_video")
         return self
 
 
@@ -873,7 +934,7 @@ class CreateJobRequest(BaseModel):
     collection_timestamp: str | None = Field(default=None, min_length=16, max_length=32)
     workflow_mode: WorkflowMode = "archive"
     archive_mode: ArchiveMode = "av1_nvenc"
-    gpu_tasks: list[TaskName] = Field(default_factory=default_gpu_tasks)
+    tasks: list[TaskName] = Field(default_factory=default_tasks)
     encode_profile: EncodeProfile | None = None
     groups: dict[str, ProfileGroupConfig] = Field(default_factory=dict)
     profile_routing: ProfileRoutingConfig | None = None
@@ -882,7 +943,7 @@ class CreateJobRequest(BaseModel):
     notify: NotifyConfig = Field(default_factory=NotifyConfig)
     cleanup_local_on_success: bool = False
 
-    @field_validator("gpu_tasks")
+    @field_validator("tasks")
     @classmethod
     def normalize_tasks(cls, value: list[TaskName]) -> list[TaskName]:
         return list(dict.fromkeys(value))
@@ -898,7 +959,9 @@ class CreateJobRequest(BaseModel):
     @model_validator(mode="after")
     def validate_workflow_mode(self) -> CreateJobRequest:
         if self.archive_mode == "originals":
-            self.gpu_tasks = []
+            self.tasks = []
+        elif self.archive_mode == "audio" and "tasks" not in self.model_fields_set:
+            self.tasks = list(DEFAULT_AUDIO_TASKS)
         if self.profile_routing is not None:
             if not self.groups:
                 raise ValueError("profile_routing requires explicit groups")
@@ -913,28 +976,43 @@ class CreateJobRequest(BaseModel):
                 raise ValueError(
                     "profile_routing references unknown group(s): " + ", ".join(missing)
                 )
+        task_lists = (
+            [(name, group.archive_mode, group.tasks) for name, group in self.groups.items()]
+            if self.groups
+            else [("default", self.archive_mode, self.tasks)]
+        )
+        for name, archive_mode, tasks in task_lists:
+            if archive_mode == "av1_nvenc" and "archive_audio" in tasks:
+                raise ValueError(f"av1_nvenc group {name!r} cannot run archive_audio")
+            if archive_mode == "audio" and any(
+                task in tasks for task in ("archive_video", "qcut_video")
+            ):
+                raise ValueError(
+                    f"audio group {name!r} cannot run archive_video or qcut_video"
+                )
         if self.workflow_mode == "archive":
             return self
         if self.riverhog.enabled:
             raise ValueError(f"{self.workflow_mode} jobs cannot enable Riverhog upload")
-        task_lists = (
-            [(name, group.archive_mode, group.gpu_tasks) for name, group in self.groups.items()]
-            if self.groups
-            else [("default", self.archive_mode, self.gpu_tasks)]
-        )
         for name, archive_mode, tasks in task_lists:
-            if self.workflow_mode == "review_only" and "archive_video" in tasks:
-                raise ValueError(f"review_only group {name!r} cannot run archive_video")
+            if self.workflow_mode == "review_only" and any(
+                task in tasks for task in ("archive_video", "archive_audio")
+            ):
+                raise ValueError(
+                    f"review_only group {name!r} cannot run archive_video or archive_audio"
+                )
             if self.workflow_mode == "review_only" and not any(
                 task in tasks for task in ("qcut_video", "audio_review")
             ):
                 raise ValueError(f"review_only group {name!r} requires qcut_video or audio_review")
             if (
                 self.workflow_mode == "collection_preview"
-                and archive_mode == "av1_nvenc"
-                and "archive_video" not in tasks
+                and archive_mode in {"av1_nvenc", "audio"}
+                and not any(task in tasks for task in ("archive_video", "archive_audio"))
             ):
-                raise ValueError(f"collection_preview group {name!r} requires archive_video")
+                raise ValueError(
+                    f"collection_preview group {name!r} requires archive_video or archive_audio"
+                )
         if not self.review_upload.enabled:
             raise ValueError(f"{self.workflow_mode} jobs require review_upload.enabled")
         if self.cleanup_local_on_success:
@@ -1672,13 +1750,13 @@ def storage_hint_group_configs(hint: InputUploadStorageHint) -> list[StorageGrou
     return [
         StorageGroupHint(
             archive_mode=hint.archive_mode,
-            gpu_tasks=hint.gpu_tasks,
+            tasks=hint.tasks,
         )
     ]
 
 
 def storage_hint_has_gpu_work(hint: InputUploadStorageHint) -> bool:
-    return any(group.gpu_tasks for group in storage_hint_group_configs(hint))
+    return any(tasks_require_gpu(group.tasks) for group in storage_hint_group_configs(hint))
 
 
 def storage_hint_scratch_extra_multiplier(hint: InputUploadStorageHint) -> float:
@@ -1709,7 +1787,7 @@ def storage_group_hint_for_path(
     if hint.structured_routing:
         return StorageGroupHint(
             archive_mode=hint.archive_mode,
-            gpu_tasks=hint.gpu_tasks,
+            tasks=hint.tasks,
         )
     group_name = input_path_group(path)
     if hint.groups:
@@ -1718,14 +1796,14 @@ def storage_group_hint_for_path(
             return group
     return StorageGroupHint(
         archive_mode=hint.archive_mode,
-        gpu_tasks=hint.gpu_tasks,
+        tasks=hint.tasks,
     )
 
 
 def storage_group_hint_is_eager_archive_only(group: StorageGroupHint) -> bool:
     if normalize_archive_mode(str(group.archive_mode or "av1_nvenc")) != "av1_nvenc":
         return False
-    return set(str(task) for task in group.gpu_tasks) == {"archive_video"}
+    return set(str(task) for task in group.tasks) == {"archive_video"}
 
 
 def eager_archive_admission_bytes(files: list[InputFileSpec]) -> int:
@@ -1752,7 +1830,7 @@ def gpu_scratch_admission_required_bytes(
     non_eager_gpu_bytes = 0
     for item in files:
         group = storage_group_hint_for_path(item.path, hint)
-        if not group.gpu_tasks:
+        if not tasks_require_gpu(group.tasks):
             continue
         if storage_group_hint_is_eager_archive_only(group):
             eager_files.append(item)
@@ -3003,7 +3081,7 @@ def profile_group_dump(group: ProfileGroupConfig) -> dict[str, Any]:
     )
     return {
         "archive_mode": group.archive_mode,
-        "gpu_tasks": group.gpu_tasks,
+        "tasks": group.tasks,
         "profile": profile_name_for(encode_profile),
         "encode_profile": encode_profile,
         "metadata_projection": group.metadata_projection.model_dump(exclude_none=True),
@@ -3013,7 +3091,7 @@ def profile_group_dump(group: ProfileGroupConfig) -> dict[str, Any]:
 def default_profile_group(req: CreateJobRequest) -> ProfileGroupConfig:
     return ProfileGroupConfig(
         archive_mode=req.archive_mode,
-        gpu_tasks=req.gpu_tasks,
+        tasks=req.tasks,
         encode_profile=req.encode_profile,
     )
 
@@ -3022,14 +3100,14 @@ def storage_hint_for_job_request(req: CreateJobRequest) -> InputUploadStorageHin
     groups = {
         name: StorageGroupHint(
             archive_mode=group.archive_mode,
-            gpu_tasks=group.gpu_tasks,
+            tasks=group.tasks,
         )
         for name, group in req.groups.items()
     }
     return InputUploadStorageHint(
         workflow_mode=req.workflow_mode,
         archive_mode=req.archive_mode,
-        gpu_tasks=req.gpu_tasks,
+        tasks=req.tasks,
         groups=groups,
         structured_routing=req.profile_routing is not None,
     )
@@ -3402,7 +3480,7 @@ def route_completed_input_files(
 def grouped_task_union(groups: dict[str, dict[str, Any]]) -> list[TaskName]:
     tasks: list[TaskName] = []
     for group in groups.values():
-        for task in group.get("gpu_tasks") or []:
+        for task in group.get("tasks") or []:
             if task not in tasks:
                 tasks.append(task)
     return tasks
@@ -3467,8 +3545,10 @@ def group_archive_container(group_config: dict[str, Any]) -> ArchiveContainer:
     archive: dict[str, Any] = {}
     if isinstance(profile, dict) and isinstance(profile.get("archive"), dict):
         archive = profile["archive"]
-    container = str(archive.get("container") or "mkv")
-    if container not in {"mkv", "webm"}:
+    archive_mode = normalize_archive_mode(str(group_config.get("archive_mode") or "av1_nvenc"))
+    default_container = "opus" if archive_mode == "audio" else "mkv"
+    container = str(archive.get("container") or default_container)
+    if container not in {"mkv", "webm", "opus"}:
         raise RuntimeError(f"unsupported archive container: {container}")
     return container  # type: ignore[return-value]
 
@@ -3493,15 +3573,15 @@ def archive_output_for_upload_file(
 def group_is_eager_archive_only(group_config: dict[str, Any]) -> bool:
     if normalize_archive_mode(str(group_config.get("archive_mode") or "av1_nvenc")) != "av1_nvenc":
         return False
-    tasks = set(str(task) for task in group_config.get("gpu_tasks") or [])
+    tasks = set(str(task) for task in group_config.get("tasks") or [])
     return tasks == {"archive_video"}
 
 
 def group_produces_primary_archive_output(group_config: dict[str, Any]) -> bool:
     if normalize_archive_mode(str(group_config.get("archive_mode") or "av1_nvenc")) == "originals":
         return True
-    tasks = set(str(task) for task in group_config.get("gpu_tasks") or [])
-    return "archive_video" in tasks
+    tasks = set(str(task) for task in group_config.get("tasks") or [])
+    return bool(tasks & {"archive_video", "archive_audio"})
 
 
 def archive_output_path_for_routed_file(
@@ -3630,6 +3710,7 @@ def metadata_projection_config(group_config: dict[str, Any]) -> dict[str, Any]:
             "target": "immich_xmp",
             "allow_missing_capture_date": False,
             "allow_missing_gps": False,
+            "capture_date_sources": None,
             "tags": [],
             "include_context_tags": False,
         }
@@ -3643,11 +3724,21 @@ def metadata_projection_config(group_config: dict[str, Any]) -> dict[str, Any]:
     tags = raw.get("tags") or []
     if not isinstance(tags, list):
         raise RuntimeError("metadata_projection.tags must be a list")
+    capture_date_sources = raw.get("capture_date_sources")
+    if capture_date_sources is not None and not isinstance(capture_date_sources, list):
+        raise RuntimeError("metadata_projection.capture_date_sources must be a list")
+    if isinstance(capture_date_sources, list):
+        for source in capture_date_sources:
+            if not isinstance(source, dict):
+                raise RuntimeError(
+                    "metadata_projection.capture_date_sources entries must be tables"
+                )
     return {
         "enabled": bool(raw.get("enabled", True)),
         "target": target,
         "allow_missing_capture_date": bool(raw.get("allow_missing_capture_date", False)),
         "allow_missing_gps": bool(raw.get("allow_missing_gps", False)),
+        "capture_date_sources": copy.deepcopy(capture_date_sources),
         "tags": [str(tag).strip() for tag in tags if str(tag).strip()],
         "include_context_tags": bool(raw.get("include_context_tags", True)),
     }
@@ -3657,18 +3748,27 @@ def metadata_projection_enabled(group_config: dict[str, Any]) -> bool:
     return bool(metadata_projection_config(group_config)["enabled"])
 
 
-def metadata_projection_facts_for_path(rel_path: str, path: Path) -> dict[str, Any]:
+def metadata_projection_facts_for_path(
+    rel_path: str,
+    path: Path,
+    *,
+    filesystem_metadata: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     probe_summary: dict[str, Any] | None = None
     try:
         probe_summary = routing_probe_summary(ffprobe_for_routing(path))
     except RoutingFailed as exc:
         log.debug("ffprobe metadata projection summary skipped for %s: %s", rel_path, exc)
     exiftool_summary = routing_exiftool_summary(exiftool_for_routing(path))
-    return routing_file_facts(
+    facts = routing_file_facts(
         rel_path,
         probe_summary=probe_summary,
         exiftool_summary=exiftool_summary,
     )
+    if filesystem_metadata:
+        facts["filesystem"] = dict(filesystem_metadata)
+        facts["source_filesystem_metadata"] = dict(filesystem_metadata)
+    return facts
 
 
 def projection_metadata_from_source(
@@ -3676,18 +3776,32 @@ def projection_metadata_from_source(
     source_path: Path,
     *,
     group_config: dict[str, Any],
+    filesystem_metadata: Mapping[str, Any] | None = None,
     tags: list[str] | None = None,
 ) -> ProjectionMetadata:
     config = metadata_projection_config(group_config)
     try:
         return project_immich_metadata(
-            metadata_projection_facts_for_path(rel_path, source_path),
+            metadata_projection_facts_for_path(
+                rel_path,
+                source_path,
+                filesystem_metadata=filesystem_metadata,
+            ),
             allow_missing_capture_date=bool(config["allow_missing_capture_date"]),
             allow_missing_gps=bool(config["allow_missing_gps"]),
+            capture_date_sources=cast(
+                list[dict[str, Any]] | None,
+                config.get("capture_date_sources"),
+            ),
             tags=tags if tags is not None else cast(list[str], config["tags"]),
         )
     except MetadataProjectionError as exc:
         raise RuntimeError(f"metadata projection failed for {rel_path}: {exc}") from exc
+
+
+def file_state_filesystem_metadata(file_state: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    metadata = file_state.get("filesystem_metadata")
+    return cast(Mapping[str, Any], metadata) if isinstance(metadata, Mapping) else None
 
 
 def metadata_projection_with_tags(
@@ -3716,6 +3830,7 @@ def ensure_file_projection_metadata(
         str(file_state["path"]),
         upload_file_data_path(file_state),
         group_config=group_config,
+        filesystem_metadata=file_state_filesystem_metadata(file_state),
     )
     file_state["metadata_projection_metadata"] = metadata.as_dict()
     file_state["metadata_projection_captured_at"] = now_iso()
@@ -3756,6 +3871,7 @@ def projection_metadata_for_file_output(
         str(file_state["path"]),
         source_path,
         group_config=group_config,
+        filesystem_metadata=file_state_filesystem_metadata(file_state),
         tags=tags,
     )
 
@@ -5140,6 +5256,181 @@ def source_artifact_sidecar_for_archive_output(output: Path) -> Path:
     return Path(f"{output}.source-artifacts.tar.zst")
 
 
+def ffmpeg_number(value: float) -> str:
+    number = float(value)
+    return str(int(number)) if number.is_integer() else f"{number:g}"
+
+
+def archive_audio_encode_args(audio: Mapping[str, Any]) -> list[str]:
+    args: list[str] = []
+    sample_rate = audio.get("sample_rate")
+    args.extend(["-ar", str(sample_rate if sample_rate is not None else 48000)])
+    channels = audio.get("channels")
+    if channels is not None:
+        args.extend(["-ac", str(channels)])
+    args.extend(["-b:a", str(audio.get("bitrate") or ARCHIVE_AUDIO_BITRATE)])
+    vbr = audio.get("vbr")
+    if vbr is not None:
+        if isinstance(vbr, bool):
+            args.extend(["-vbr", "on" if vbr else "off"])
+        else:
+            args.extend(["-vbr", str(vbr)])
+    compression_level = audio.get("compression_level")
+    if compression_level is not None:
+        args.extend(["-compression_level", str(compression_level)])
+    application = audio.get("application")
+    if application is not None:
+        args.extend(["-application", str(application)])
+    frame_duration = audio.get("frame_duration")
+    if frame_duration is not None:
+        args.extend(["-frame_duration", ffmpeg_number(float(frame_duration))])
+    cutoff = audio.get("cutoff")
+    if cutoff is not None:
+        args.extend(["-cutoff", str(cutoff)])
+    return args
+
+
+def audio_archive_profile(group_config: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    profile = group_config.get("encode_profile")
+    if not isinstance(profile, dict):
+        profile = {
+            "target": "munchy-audio",
+            "archive": {"codec": "opus", "container": "opus", "audio": {}},
+        }
+    target = str(profile.get("target") or "")
+    if target != "munchy-audio":
+        raise RuntimeError("archive audio groups require encode_profile.target = 'munchy-audio'")
+    archive = profile.get("archive")
+    if not isinstance(archive, dict):
+        raise RuntimeError("archive audio groups require encode_profile.archive")
+    codec = str(archive.get("codec") or "opus")
+    container = str(archive.get("container") or "opus")
+    if codec != "opus" or container != "opus":
+        raise RuntimeError("archive audio groups currently support only opus in opus container")
+    audio = archive.get("audio")
+    if audio is None:
+        audio = {}
+    if not isinstance(audio, dict):
+        raise RuntimeError("archive audio profile archive.audio must be a table")
+    return profile, audio
+
+
+def archive_audio_command(source: Path, dest: Path, group_config: dict[str, Any]) -> list[str]:
+    _profile, audio = audio_archive_profile(group_config)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    return [
+        "ffmpeg",
+        "-hide_banner",
+        "-y",
+        "-ignore_unknown",
+        "-i",
+        str(source),
+        "-map",
+        "0:a?",
+        "-map_metadata",
+        "0",
+        "-vn",
+        "-c:a",
+        "libopus",
+        *archive_audio_encode_args(audio),
+        "-f",
+        "opus",
+        str(dest),
+    ]
+
+
+def archive_audio_sources(input_root: Path) -> list[Path]:
+    if not input_root.is_dir():
+        raise RuntimeError(f"input profile group is missing: {input_root}")
+    return sorted(
+        path
+        for path in input_root.rglob("*")
+        if path.is_file() and path.name != SOURCE_FILESYSTEM_METADATA_FILENAME
+    )
+
+
+def archive_audio_output_for_source(source: Path, input_root: Path, output_root: Path) -> Path:
+    return (output_root / source.relative_to(input_root)).with_suffix(".opus")
+
+
+def run_archive_audio_item(
+    *,
+    source: Path,
+    dest: Path,
+    input_root: Path,
+    group_config: dict[str, Any],
+    filesystem_metadata: Mapping[str, Any],
+) -> dict[str, Any]:
+    profile, _audio = audio_archive_profile(group_config)
+    rel_path = source.relative_to(input_root).as_posix()
+    metadata = filesystem_metadata.get(rel_path)
+    if not isinstance(metadata, Mapping):
+        raise RuntimeError(
+            f"unresumable: source filesystem metadata sidecar is missing entries for {rel_path}"
+        )
+    sidecar = source_artifact_sidecar_for_archive_output(dest)
+    if dest.is_file() and sidecar.is_file():
+        return {
+            "source": str(source),
+            "output": str(dest),
+            "bytes": dest.stat().st_size,
+            "sha256": file_sha256(dest),
+            "source_artifacts": {"path": str(sidecar), "reused": True},
+            "reused": True,
+        }
+    result = run_command(archive_audio_command(source, dest, group_config), action="archive audio")
+    artifacts = build_strict_source_artifacts(
+        source=source,
+        archive_mkv=dest,
+        encode_command=cast(list[str], result["command"]),
+        encode_profile=profile,
+        source_filesystem_metadata=metadata,
+    )
+    return {
+        "source": str(source),
+        "output": str(dest),
+        "command": result["command"],
+        "duration_s": result["duration_s"],
+        "bytes": dest.stat().st_size if dest.exists() else 0,
+        "sha256": file_sha256(dest) if dest.exists() else "",
+        "source_artifacts": artifacts,
+    }
+
+
+def run_archive_audio_group(
+    *,
+    input_root: Path,
+    output_root: Path,
+    group_config: dict[str, Any],
+) -> dict[str, Any]:
+    sources = archive_audio_sources(input_root)
+    if not sources:
+        return {"status": "skipped", "reason": "no audio sources", "items": []}
+    filesystem_metadata = load_filesystem_metadata_map(input_root)
+    if not filesystem_metadata:
+        raise RuntimeError(
+            "unresumable: source filesystem metadata sidecar is missing for audio archive group"
+        )
+    output_root.mkdir(parents=True, exist_ok=True)
+    items: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=AUDIO_ARCHIVE_MAX_PARALLEL) as pool:
+        futures = {
+            pool.submit(
+                run_archive_audio_item,
+                source=source,
+                dest=archive_audio_output_for_source(source, input_root, output_root),
+                input_root=input_root,
+                group_config=group_config,
+                filesystem_metadata=filesystem_metadata,
+            ): source
+            for source in sources
+        }
+        for future in as_completed(futures):
+            items.append(future.result())
+    items.sort(key=lambda item: str(item.get("source") or ""))
+    return {"status": "succeeded", "items": items, "count": len(items)}
+
+
 def eager_riverhog_artifact_paths(job: dict[str, Any]) -> list[Path]:
     eager = job.get("eager_archive")
     if not isinstance(eager, dict):
@@ -5856,7 +6147,7 @@ def ensure_job_groups(job: dict[str, Any], input_upload: dict[str, Any]) -> dict
     groups = {
         name: {
             "archive_mode": job.get("archive_mode", "av1_nvenc"),
-            "gpu_tasks": list(job.get("gpu_tasks", [])),
+            "tasks": list(job.get("tasks", [])),
             "profile": job.get("profile", "av1-nvenc-high"),
             "encode_profile": job.get("encode_profile"),
         }
@@ -6643,7 +6934,7 @@ def build_eager_gpu_payload(
     batch_id: str,
     group_name: str,
     group_config: dict[str, Any],
-    gpu_tasks: list[TaskName],
+    tasks: list[TaskName],
 ) -> dict[str, Any]:
     job_id = str(job["job_id"])
     gpu_job_id = gpu_eager_batch_job_id(job_id, batch_id)
@@ -6653,7 +6944,7 @@ def build_eager_gpu_payload(
         "archive_dir": f"/data/jobs/{job_id}/archive/{group_name}",
         "review_dir": f"/data/jobs/{job_id}/review/{group_name}",
         "profile": group_config.get("profile", "av1-nvenc-high"),
-        "tasks": gpu_tasks,
+        "tasks": tasks,
         "collection_slug": job["collection_slug"],
         "collection_timestamp": job.get("collection_timestamp"),
         "riverhog": {"enabled": False},
@@ -6756,13 +7047,13 @@ def start_eager_batch(
     for file_state in file_states:
         materialize_upload_file(file_state, batch_root)
     write_group_filesystem_metadata(batch_root, group_name, file_states)
-    gpu_tasks: list[TaskName] = ["archive_video"]
+    tasks: list[TaskName] = ["archive_video"]
     payload = build_eager_gpu_payload(
         job,
         batch_id=batch_id,
         group_name=group_name,
         group_config=group_config,
-        gpu_tasks=gpu_tasks,
+        tasks=tasks,
     )
     batch = {
         "batch_id": batch_id,
@@ -7002,7 +7293,7 @@ def run_job(job_id: str) -> None:
             group_archive_mode = normalize_archive_mode(
                 str(group_config.get("archive_mode") or "av1_nvenc")
             )
-            if group_archive_mode not in {"av1_nvenc", "originals"}:
+            if group_archive_mode not in {"av1_nvenc", "audio", "originals"}:
                 raise RuntimeError(
                     f"unsupported archive_mode for group {group_name}: {group_archive_mode}"
                 )
@@ -7020,16 +7311,33 @@ def run_job(job_id: str) -> None:
                 save_job(job)
                 raise_if_job_cancelled(job_id)
 
-            tasks = list(group_config.get("gpu_tasks") or [])
+            tasks = list(group_config.get("tasks") or [])
             if group_archive_mode == "originals":
-                tasks = [task for task in tasks if task != "archive_video"]
-            if tasks and group_name not in gpu_results:
-                gpu_work.append((str(group_name), group_config, tasks))
+                tasks = [task for task in tasks if task not in {"archive_video", "archive_audio"}]
+            if "archive_audio" in tasks and not group_results.get(group_name, {}).get(
+                "archive_audio"
+            ):
+                job["phase"] = f"archive_audio:{group_name}"
+                save_job(job)
+                group_results[group_name] = {
+                    **group_results.get(group_name, {}),
+                    "archive_audio": run_archive_audio_group(
+                        input_root=input_dir / group_name,
+                        output_root=archive_dir / group_name,
+                        group_config=group_config,
+                    ),
+                    "archive_audio_at": now_iso(),
+                }
+                save_job(job)
+                raise_if_job_cancelled(job_id)
+            gpu_target_tasks = [task for task in tasks if str(task) in GPU_TARGET_TASKS]
+            if gpu_target_tasks and group_name not in gpu_results:
+                gpu_work.append((str(group_name), group_config, gpu_target_tasks))
 
         if gpu_work:
             token = acquire_job_gpu(job)
             try:
-                for group_name, group_config, gpu_tasks in gpu_work:
+                for group_name, group_config, tasks in gpu_work:
                     raise_if_job_cancelled(job_id)
                     gpu_job_id = gpu_group_job_id(job_id, group_name)
                     job["phase"] = f"gpu:{group_name}"
@@ -7040,7 +7348,7 @@ def run_job(job_id: str) -> None:
                         "archive_dir": gpu_runtime_container_path(archive_dir / group_name),
                         "review_dir": gpu_runtime_container_path(review_dir / group_name),
                         "profile": group_config.get("profile", "av1-nvenc-high"),
-                        "tasks": gpu_tasks,
+                        "tasks": tasks,
                         "collection_slug": job["collection_slug"],
                         "collection_timestamp": job.get("collection_timestamp"),
                         "riverhog": {"enabled": False},
@@ -7049,7 +7357,7 @@ def run_job(job_id: str) -> None:
                     if group_config.get("encode_profile") is not None:
                         gpu_payload["encode_profile"] = group_config["encode_profile"]
                     for task_name in ("qcut_video", "audio_review"):
-                        if task_name not in gpu_tasks:
+                        if task_name not in tasks:
                             continue
                         review_plan = load_shared_review_plan(
                             str(job["input_upload_id"]),
@@ -7257,13 +7565,13 @@ def health_ready() -> dict[str, Any]:
 def capabilities() -> dict[str, Any]:
     return {
         "workflow_modes": ["archive", "review_only", "collection_preview"],
-        "archive_modes": ["av1_nvenc", "originals"],
-        "gpu_tasks": ["archive_video", "qcut_video", "audio_review"],
+        "archive_modes": ["av1_nvenc", "audio", "originals"],
+        "tasks": ["archive_video", "archive_audio", "qcut_video", "audio_review"],
         "encode_profile": {
             "schema_versions": [1],
-            "targets": [MUNCHY_PROFILE_TARGET],
-            "archive_codecs": ["av1_nvenc"],
-            "containers": ["mkv", "webm"],
+            "targets": [MUNCHY_PROFILE_TARGET, MUNCHY_AUDIO_PROFILE_TARGET],
+            "archive_codecs": ["av1_nvenc", "opus"],
+            "containers": ["mkv", "webm", "opus"],
             "source_artifact_drops": [
                 "stream:N",
                 "atom:TYPE",
@@ -7695,7 +8003,7 @@ def create_job(req: CreateJobRequest, background_tasks: BackgroundTasks) -> dict
             "collection_timestamp": req.collection_timestamp,
             "workflow_mode": req.workflow_mode,
             "archive_mode": req.archive_mode,
-            "gpu_tasks": grouped_task_union(groups) if req.groups else req.gpu_tasks,
+            "tasks": grouped_task_union(groups) if req.groups else req.tasks,
             "profile": req.encode_profile.name
             if req.encode_profile and req.encode_profile.name
             else "av1-nvenc-high",

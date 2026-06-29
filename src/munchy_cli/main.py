@@ -69,10 +69,11 @@ app.add_typer(profile_app, name="profile")
 app.add_typer(job_app, name="job")
 app.add_typer(routing_app, name="routing")
 
-DEFAULT_GPU_TASKS = ["archive_video", "qcut_video", "audio_review"]
+DEFAULT_TASKS = ["archive_video", "qcut_video", "audio_review"]
+DEFAULT_AUDIO_TASKS = ["archive_audio"]
 DEFAULT_GROUP = "video"
 WORKFLOW_MODES = {"archive", "review_only", "collection_preview"}
-ARCHIVE_MODES = {"av1_nvenc", "originals"}
+ARCHIVE_MODES = {"av1_nvenc", "audio", "originals"}
 MUNCHY_CONFIG_ENV = "MUNCHY_JOB_CONFIG"
 HASH_CACHE_ENV = "MUNCHY_HASH_CACHE"
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -344,6 +345,14 @@ def _normalize_mode(value: str | None, *, default: str, allowed: set[str], label
     return mode
 
 
+def _default_tasks_for_archive_mode(archive_mode: str) -> list[str]:
+    if archive_mode == "originals":
+        return []
+    if archive_mode == "audio":
+        return list(DEFAULT_AUDIO_TASKS)
+    return list(DEFAULT_TASKS)
+
+
 def _optional_bool(value: str | None, *, label: str) -> bool | None:
     if value is None:
         return None
@@ -433,16 +442,16 @@ def _normalize_group_payload(
         allowed=ARCHIVE_MODES,
         label="archive_mode",
     )
-    default_tasks = [] if archive_mode == "originals" else DEFAULT_GPU_TASKS
-    raw_gpu_tasks = group.get("gpu_tasks")
-    gpu_tasks = (
+    default_tasks = _default_tasks_for_archive_mode(archive_mode)
+    raw_tasks = group.get("tasks")
+    tasks = (
         list(default_tasks)
-        if raw_gpu_tasks is None
-        else [str(task) for task in _sequence(raw_gpu_tasks)]
+        if raw_tasks is None
+        else [str(task) for task in _sequence(raw_tasks)]
     )
     payload: dict[str, Any] = {
         "archive_mode": archive_mode,
-        "gpu_tasks": gpu_tasks,
+        "tasks": tasks,
     }
     profile_name = str(group.get("profile") or "").strip()
     if profile_name:
@@ -467,7 +476,7 @@ def _default_group_payload(group_name: str) -> dict[str, dict[str, Any]]:
     return {
         group_name: {
             "archive_mode": "av1_nvenc",
-            "gpu_tasks": list(DEFAULT_GPU_TASKS),
+            "tasks": list(DEFAULT_TASKS),
         }
     }
 
@@ -481,7 +490,7 @@ def _storage_groups(groups: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[s
                 allowed=ARCHIVE_MODES,
                 label="archive_mode",
             ),
-            "gpu_tasks": [str(task) for task in _sequence(group.get("gpu_tasks"))],
+            "tasks": [str(task) for task in _sequence(group.get("tasks"))],
         }
         for name, group in groups.items()
     }
@@ -803,12 +812,12 @@ def _job_request(
         allowed=ARCHIVE_MODES,
         label="archive_mode",
     )
-    default_tasks = [] if archive_mode == "originals" else DEFAULT_GPU_TASKS
-    raw_gpu_tasks = defaults.get("gpu_tasks")
-    gpu_tasks = (
+    default_tasks = _default_tasks_for_archive_mode(archive_mode)
+    raw_tasks = defaults.get("tasks")
+    tasks = (
         list(default_tasks)
-        if raw_gpu_tasks is None
-        else [str(task) for task in _sequence(raw_gpu_tasks)]
+        if raw_tasks is None
+        else [str(task) for task in _sequence(raw_tasks)]
     )
     generated_job_id = _safe_id(f"{collection_slug}-{timestamp}")
     final_job_id = str(job_id or defaults.get("job_id") or generated_job_id).strip()
@@ -837,7 +846,7 @@ def _job_request(
     storage_hint = {
         "workflow_mode": workflow,
         "archive_mode": archive_mode,
-        "gpu_tasks": gpu_tasks,
+        "tasks": tasks,
         "structured_routing": structured_routing,
         "groups": _storage_groups(groups),
     }
@@ -848,7 +857,7 @@ def _job_request(
         "collection_timestamp": timestamp,
         "workflow_mode": workflow,
         "archive_mode": archive_mode,
-        "gpu_tasks": gpu_tasks,
+        "tasks": tasks,
         "groups": groups,
         "riverhog": riverhog,
         "review_upload": review_upload,

@@ -3,11 +3,12 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from fractions import Fraction
 from html import escape
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 class MetadataProjectionError(ValueError):
@@ -172,9 +173,13 @@ def project_immich_metadata(
     *,
     allow_missing_capture_date: bool = False,
     allow_missing_gps: bool = False,
+    capture_date_sources: Sequence[Mapping[str, Any]] | None = None,
     tags: Sequence[str] = (),
 ) -> ProjectionMetadata:
-    capture_date, capture_date_source = first_capture_date(facts)
+    capture_date, capture_date_source = first_capture_date(
+        facts,
+        sources=capture_date_sources,
+    )
     if capture_date is None and not allow_missing_capture_date:
         raise MetadataProjectionError(
             "metadata projection requires a valid capture date; set "
@@ -279,13 +284,210 @@ def render_rdf_list(name: str, values: Sequence[str], *, container: str) -> str:
     )
 
 
-def first_capture_date(facts: Mapping[str, Any]) -> tuple[str | None, str | None]:
+def first_capture_date(
+    facts: Mapping[str, Any],
+    *,
+    sources: Sequence[Mapping[str, Any]] | None = None,
+) -> tuple[str | None, str | None]:
+    configured_sources = list(sources) if sources is not None else [{"type": "embedded"}]
+    if not configured_sources:
+        return None, None
+    for source in configured_sources:
+        source_type = str(source.get("type") or "embedded").strip()
+        if source_type == "embedded":
+            capture_date, capture_date_source = first_embedded_capture_date(facts)
+            if capture_date is not None:
+                return capture_date, capture_date_source
+            continue
+        if source_type == "path_regex":
+            capture_date, capture_date_source = path_regex_capture_date(facts, source)
+            if capture_date is not None:
+                return capture_date, capture_date_source
+            continue
+        if source_type == "filesystem_birthtime":
+            capture_date, capture_date_source = filesystem_birthtime_capture_date(facts, source)
+            if capture_date is not None:
+                return capture_date, capture_date_source
+            continue
+        raise MetadataProjectionError(
+            f"metadata_projection capture date source has unsupported type: {source_type}"
+        )
+    return None, None
+
+
+def first_embedded_capture_date(facts: Mapping[str, Any]) -> tuple[str | None, str | None]:
     for key in CAPTURE_DATE_FACT_KEYS:
         for value in metadata_values(fact_value(facts, key)):
             normalized = normalize_capture_date(value)
             if normalized:
                 return normalized, key
     return None, None
+
+
+def filesystem_birthtime_capture_date(
+    facts: Mapping[str, Any],
+    source: Mapping[str, Any],
+) -> tuple[str | None, str | None]:
+    name = str(source.get("name") or "source_birthtime").strip()
+    if not name:
+        raise MetadataProjectionError(
+            "metadata_projection filesystem_birthtime source requires name"
+        )
+    fact_keys = filesystem_birthtime_fact_keys(source)
+    for key in fact_keys:
+        value = first_metadata_value(fact_value(facts, key))
+        if value in (None, ""):
+            continue
+        normalized = normalize_filesystem_birthtime(value)
+        if normalized is None:
+            raise MetadataProjectionError(
+                f"metadata_projection filesystem_birthtime source {name} found "
+                f"invalid capture date in {key}: {value!r}"
+            )
+        return normalized, f"filesystem_birthtime:{name}"
+    return None, None
+
+
+def filesystem_birthtime_fact_keys(source: Mapping[str, Any]) -> tuple[str, ...]:
+    fact = str(source.get("fact") or "").strip()
+    if fact:
+        return (fact,)
+    facts = source.get("facts")
+    if isinstance(facts, Sequence) and not isinstance(facts, str):
+        configured = tuple(str(item).strip() for item in facts if str(item).strip())
+        if configured:
+            return configured
+    return (
+        "filesystem.stat.birthtime",
+        "source_filesystem_metadata.stat.birthtime",
+        "filesystem_metadata.stat.birthtime",
+        "filesystem.stat.birthtime_ns",
+        "source_filesystem_metadata.stat.birthtime_ns",
+        "filesystem_metadata.stat.birthtime_ns",
+    )
+
+
+def normalize_filesystem_birthtime(value: Any) -> str | None:
+    if isinstance(value, int):
+        return datetime.fromtimestamp(value / 1_000_000_000, UTC).isoformat()
+    if isinstance(value, float):
+        return datetime.fromtimestamp(value, UTC).isoformat()
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if re.fullmatch(r"\d{12,}", text):
+        return datetime.fromtimestamp(int(text) / 1_000_000_000, UTC).isoformat()
+    if re.fullmatch(r"\d+(?:\.\d+)?", text):
+        return datetime.fromtimestamp(float(text), UTC).isoformat()
+    return normalize_capture_date(text)
+
+
+def path_regex_capture_date(
+    facts: Mapping[str, Any],
+    source: Mapping[str, Any],
+) -> tuple[str | None, str | None]:
+    name = str(source.get("name") or "").strip()
+    if not name:
+        raise MetadataProjectionError("metadata_projection path_regex source requires name")
+    pattern = str(source.get("pattern") or "").strip()
+    if not pattern:
+        raise MetadataProjectionError(
+            f"metadata_projection path_regex source {name} requires pattern"
+        )
+    fact_key = str(source.get("fact") or "path.rel").strip()
+    value = first_metadata_value(fact_value(facts, fact_key))
+    text = str(value or "")
+    if not text:
+        return None, None
+    try:
+        match = re.search(pattern, text)
+    except re.error as exc:
+        raise MetadataProjectionError(
+            f"metadata_projection path_regex source {name} has invalid pattern: {exc}"
+        ) from exc
+    if match is None:
+        return None, None
+
+    matched_text = path_regex_capture_text(source, match, name=name)
+    parsed = parse_configured_capture_date(
+        matched_text,
+        source,
+        name=name,
+    )
+    return parsed, f"path_regex:{name}"
+
+
+def path_regex_capture_text(
+    source: Mapping[str, Any],
+    match: re.Match[str],
+    *,
+    name: str,
+) -> str:
+    template = source.get("template")
+    if template is not None:
+        try:
+            return str(template).format(**match.groupdict())
+        except KeyError as exc:
+            raise MetadataProjectionError(
+                f"metadata_projection path_regex source {name} template references "
+                f"unknown group: {exc.args[0]}"
+            ) from exc
+    group_name = str(source.get("datetime_group") or "").strip()
+    if group_name:
+        try:
+            return match.group(group_name)
+        except IndexError as exc:
+            raise MetadataProjectionError(
+                f"metadata_projection path_regex source {name} references "
+                f"unknown datetime_group: {group_name}"
+            ) from exc
+    named = {key: value for key, value in match.groupdict().items() if value is not None}
+    if "datetime" in named:
+        return named["datetime"]
+    if len(named) == 1:
+        return next(iter(named.values()))
+    positional = [item for item in match.groups() if item is not None]
+    if len(positional) == 1:
+        return positional[0]
+    raise MetadataProjectionError(
+        f"metadata_projection path_regex source {name} must define datetime_group "
+        "or template when the regex does not expose exactly one datetime value"
+    )
+
+
+def parse_configured_capture_date(
+    value: str,
+    source: Mapping[str, Any],
+    *,
+    name: str,
+) -> str:
+    fmt = str(source.get("format") or "").strip()
+    if not fmt:
+        raise MetadataProjectionError(
+            f"metadata_projection path_regex source {name} requires format"
+        )
+    try:
+        parsed = datetime.strptime(value, fmt)
+    except ValueError as exc:
+        raise MetadataProjectionError(
+            f"metadata_projection path_regex source {name} matched but did not parse "
+            f"capture date {value!r} with format {fmt!r}: {exc}"
+        ) from exc
+    has_timezone = parsed.tzinfo is not None and parsed.utcoffset() is not None
+    timezone = str(source.get("timezone") or "").strip()
+    if not has_timezone:
+        if not timezone:
+            raise MetadataProjectionError(
+                f"metadata_projection path_regex source {name} requires timezone "
+                "because its format does not include an offset"
+            )
+        try:
+            parsed = parsed.replace(tzinfo=ZoneInfo(timezone))
+        except ZoneInfoNotFoundError as exc:
+            raise MetadataProjectionError(
+                f"metadata_projection path_regex source {name} has unknown timezone: {timezone}"
+            ) from exc
+    return parsed.isoformat()
 
 
 def first_gps_position(facts: Mapping[str, Any]) -> tuple[GpsPosition | None, str | None]:

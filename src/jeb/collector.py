@@ -57,7 +57,8 @@ SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 TERMINAL_STATES = {"target_succeeded", "cleanup_done", "superseded"}
 TRANSIENT_RETRY_INITIAL_SECONDS = 1.0
 TRANSIENT_RETRY_MAX_SECONDS = 300.0
-DEFAULT_GPU_TASKS = ("archive_video", "qcut_video")
+DEFAULT_TASKS = ("archive_video", "qcut_video")
+DEFAULT_AUDIO_TASKS = ("archive_audio",)
 PREFLIGHT_MEDIA_EXTENSIONS = frozenset(MP4_LIKE_EXTENSIONS | {".mkv", ".webm"})
 ROUTING_PREFLIGHT_NOTIFICATION_BODY_LIMIT = 180
 
@@ -189,7 +190,18 @@ def normalize_posix(path: str | PurePosixPath) -> str:
 
 
 def munchy_archive_mode(value: str) -> str:
-    return value
+    mode = str(value or "av1_nvenc").strip()
+    if mode not in {"av1_nvenc", "audio", "originals"}:
+        raise ValueError("archive_mode must be av1_nvenc, audio, or originals")
+    return mode
+
+
+def default_tasks_for_archive_mode(mode: str) -> tuple[str, ...]:
+    if mode == "originals":
+        return ()
+    if mode == "audio":
+        return DEFAULT_AUDIO_TASKS
+    return DEFAULT_TASKS
 
 
 def same_file_inode(left: Path, right: Path) -> bool:
@@ -262,7 +274,7 @@ class TargetConfig:
 class ProfileGroup:
     profile: str | None = None
     archive_mode: str = "av1_nvenc"
-    gpu_tasks: tuple[str, ...] = DEFAULT_GPU_TASKS
+    tasks: tuple[str, ...] = DEFAULT_TASKS
 
 
 @dataclass(frozen=True)
@@ -1780,7 +1792,7 @@ def munchy_upload_request(
         "collection_timestamp": str(batch["collection_timestamp"]),
         "workflow_mode": collector.config.munchy_job_defaults.get("workflow_mode", "archive"),
         "archive_mode": "av1_nvenc",
-        "gpu_tasks": [],
+        "tasks": [],
         "groups": groups,
         "riverhog": dict(collector.config.munchy_job_defaults.get("riverhog") or {}),
         "review_upload": dict(collector.config.munchy_job_defaults.get("review_upload") or {}),
@@ -1793,12 +1805,12 @@ def munchy_upload_request(
     storage_hint = {
         "workflow_mode": job_payload["workflow_mode"],
         "archive_mode": job_payload["archive_mode"],
-        "gpu_tasks": job_payload["gpu_tasks"],
+        "tasks": job_payload["tasks"],
         "structured_routing": bool(job_payload.get("profile_routing")),
         "groups": {
             name: {
                 "archive_mode": munchy_archive_mode(str(group.get("archive_mode") or "av1_nvenc")),
-                "gpu_tasks": list(group.get("gpu_tasks") or []),
+                "tasks": list(group.get("tasks") or []),
             }
             for name, group in groups.items()
         },
@@ -1873,7 +1885,7 @@ def munchy_groups_payload(config: JebConfig) -> dict[str, dict[str, Any]]:
     for name, group in config.profile_groups.items():
         payload: dict[str, Any] = {
             "archive_mode": munchy_archive_mode(group.archive_mode),
-            "gpu_tasks": list(group.gpu_tasks),
+            "tasks": list(group.tasks),
         }
         if group.profile:
             profile = config.profiles.get(group.profile)
@@ -2246,18 +2258,17 @@ def load_profile_groups(raw_groups: Mapping[str, Any]) -> dict[str, ProfileGroup
 
 def load_source_group(raw_any: Any) -> ProfileGroup:
     raw = mapping(raw_any)
-    archive_mode = str(raw.get("archive_mode") or "av1_nvenc")
-    tasks = raw.get("gpu_tasks")
-    if tasks is None and archive_mode == "originals":
-        gpu_tasks: tuple[str, ...] = ()
-    else:
-        gpu_tasks = (
-            tuple(str(item) for item in sequence(tasks)) if tasks is not None else DEFAULT_GPU_TASKS
-        )
+    archive_mode = munchy_archive_mode(str(raw.get("archive_mode") or "av1_nvenc"))
+    tasks = raw.get("tasks")
+    resolved_tasks = (
+        tuple(str(item) for item in sequence(tasks))
+        if tasks is not None
+        else default_tasks_for_archive_mode(archive_mode)
+    )
     return ProfileGroup(
         profile=optional_str(raw.get("profile")),
         archive_mode=archive_mode,
-        gpu_tasks=gpu_tasks,
+        tasks=resolved_tasks,
     )
 
 

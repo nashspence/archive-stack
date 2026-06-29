@@ -9,8 +9,10 @@ from typing import Any, Final, Literal, Self, cast
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 MUNCHY_PROFILE_TARGET: Final[Literal["munchy-av1-nvenc"]] = "munchy-av1-nvenc"
-ArchiveContainer = Literal["mkv", "webm"]
-SUPPORTED_ARCHIVE_CONTAINERS = ("mkv", "webm")
+MUNCHY_AUDIO_PROFILE_TARGET: Final[Literal["munchy-audio"]] = "munchy-audio"
+ArchiveContainer = Literal["mkv", "webm", "opus"]
+ArchiveCodec = Literal["av1_nvenc", "opus"]
+SUPPORTED_ARCHIVE_CONTAINERS = ("mkv", "webm", "opus")
 _ATOM_NAME_RE = r"[0-9a-z_]{1,16}"
 _ATOM_OFFSET_RE = r"(?:0x[0-9a-f]+|[0-9]+)"
 
@@ -112,7 +114,7 @@ class ArchiveAudioProfile(BaseModel):
 class ArchiveEncodeProfile(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    codec: Literal["av1_nvenc"] = "av1_nvenc"
+    codec: ArchiveCodec = "av1_nvenc"
     container: ArchiveContainer = "mkv"
     quality: int | None = Field(default=None, ge=0, le=63)
     max_height: int | None = Field(default=None, ge=2, le=4320)
@@ -140,12 +142,26 @@ class ArchiveEncodeProfile(BaseModel):
             raise ValueError("preset must be p1 through p7")
         return lowered
 
+    @model_validator(mode="after")
+    def validate_codec_container(self) -> Self:
+        if self.codec == "av1_nvenc":
+            if self.container not in {"mkv", "webm"}:
+                raise ValueError("av1_nvenc archive container must be mkv or webm")
+            return self
+        if self.codec == "opus":
+            if self.container == "mkv" and "container" not in self.model_fields_set:
+                object.__setattr__(self, "container", "opus")
+            if self.container != "opus":
+                raise ValueError("opus audio archive container must be opus")
+            return self
+        return self
+
 
 class EncodeProfile(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_version: Literal[1] = 1
-    target: Literal["munchy-av1-nvenc"] = MUNCHY_PROFILE_TARGET
+    target: Literal["munchy-av1-nvenc", "munchy-audio"] = MUNCHY_PROFILE_TARGET
     name: str | None = Field(default=None, min_length=1, max_length=120)
     source: SourcePreservationProfile | None = None
     archive: ArchiveEncodeProfile = Field(default_factory=ArchiveEncodeProfile)
@@ -157,6 +173,14 @@ class EncodeProfile(BaseModel):
         if self.source is None:
             return {}
         return self.source.artifact_drop_reasons()
+
+    @model_validator(mode="after")
+    def validate_target_archive_codec(self) -> Self:
+        if self.target == MUNCHY_PROFILE_TARGET and self.archive.codec != "av1_nvenc":
+            raise ValueError("munchy-av1-nvenc profiles require archive.codec = av1_nvenc")
+        if self.target == MUNCHY_AUDIO_PROFILE_TARGET and self.archive.codec != "opus":
+            raise ValueError("munchy-audio profiles require archive.codec = opus")
+        return self
 
 
 def _profile_name(path: Path, profile: EncodeProfile) -> str:

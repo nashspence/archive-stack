@@ -168,18 +168,18 @@ def storage_hint_for(
     *,
     workflow_mode: str = "archive",
     archive_mode: str = "originals",
-    gpu_tasks: list[str] | None = None,
+    tasks: list[str] | None = None,
 ) -> dict:
     group_name = rel_path.split("/", 1)[0]
-    tasks = list(gpu_tasks or [])
+    tasks = list(tasks or [])
     return {
         "workflow_mode": workflow_mode,
         "archive_mode": archive_mode,
-        "gpu_tasks": tasks,
+        "tasks": tasks,
         "groups": {
             group_name: {
                 "archive_mode": archive_mode,
-                "gpu_tasks": tasks,
+                "tasks": tasks,
             },
         },
     }
@@ -192,7 +192,7 @@ def create_upload(
     *,
     workflow_mode: str = "archive",
     archive_mode: str = "originals",
-    gpu_tasks: list[str] | None = None,
+    tasks: list[str] | None = None,
 ) -> dict:
     digest = hashlib.sha256(content).hexdigest()
     return api(
@@ -206,7 +206,7 @@ def create_upload(
                 rel_path,
                 workflow_mode=workflow_mode,
                 archive_mode=archive_mode,
-                gpu_tasks=gpu_tasks,
+                tasks=tasks,
             ),
         },
     )
@@ -344,11 +344,11 @@ def main() -> int:
             "collection_slug": "runner-smoke-preupload",
             "collection_timestamp": stamp,
             "archive_mode": "originals",
-            "gpu_tasks": [],
+            "tasks": [],
             "groups": {
                 group_name: {
                     "archive_mode": "originals",
-                    "gpu_tasks": [],
+                    "tasks": [],
                 },
             },
             "riverhog": {"enabled": False},
@@ -381,7 +381,7 @@ def main() -> int:
             "collection_slug": "runner-smoke",
             "collection_timestamp": stamp,
             "archive_mode": "originals",
-            "gpu_tasks": [],
+            "tasks": [],
             "encode_profile": {
                 "schema_version": 1,
                 "name": "runner-smoke-profile",
@@ -407,7 +407,7 @@ def main() -> int:
             "groups": {
                 group_name: {
                     "archive_mode": "originals",
-                    "gpu_tasks": [],
+                    "tasks": [],
                     "encode_profile": {
                         "schema_version": 1,
                         "name": "runner-smoke-profile",
@@ -460,11 +460,11 @@ def main() -> int:
                 "collection_timestamp": stamp,
                 "workflow_mode": "collection_preview",
                 "archive_mode": "originals",
-                "gpu_tasks": [],
+                "tasks": [],
                 "groups": {
                     group_name: {
                         "archive_mode": "originals",
-                        "gpu_tasks": [],
+                        "tasks": [],
                     },
                 },
                 "riverhog": {"enabled": False},
@@ -496,7 +496,7 @@ def main() -> int:
             "input_upload_id": upload_id,
             "collection_slug": "runner-smoke",
             "archive_mode": "originals",
-            "gpu_tasks": [],
+            "tasks": [],
             "review_upload": {"enabled": True, "method": "rclone"},
         },
     )
@@ -515,7 +515,7 @@ def main() -> int:
             "collection_slug": "runner-smoke",
             "workflow_mode": "collection_preview",
             "archive_mode": "av1_nvenc",
-            "gpu_tasks": ["qcut_video"],
+            "tasks": ["qcut_video"],
             "review_upload": {
                 "enabled": True,
                 "method": "rclone",
@@ -537,7 +537,7 @@ def main() -> int:
             "input_upload_id": upload_id,
             "collection_slug": "runner-smoke",
             "archive_mode": "originals",
-            "gpu_tasks": [],
+            "tasks": [],
             "notify": {"enabled": True, "recipients": []},
         },
     )

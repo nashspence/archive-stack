@@ -81,7 +81,7 @@ def _base_config(
                 "video": {
                     "profile": "security",
                     "archive_mode": "av1_nvenc",
-                    "gpu_tasks": ["archive_video"],
+                    "tasks": ["archive_video"],
                 },
                 "originals": {
                     "archive_mode": "originals",
@@ -147,6 +147,47 @@ def _base_config(
             ],
         }
     )
+
+
+def test_audio_profile_group_defaults_to_archive_audio(tmp_path: Path) -> None:
+    landing = tmp_path / "landing"
+    landing.mkdir()
+    config = config_from_mapping(
+        {
+            "targets": {"runner": {"type": "munchy", "url": "http://runner.test"}},
+            "sources": [
+                {
+                    "id": "voice",
+                    "path": str(landing / "voice"),
+                    "include_extensions": [".wav"],
+                    "stable_age": "0s",
+                }
+            ],
+            "collections": [
+                {
+                    "id": "voice",
+                    "collection_slug": "voice",
+                    "target": "runner",
+                    "sources": ["voice"],
+                }
+            ],
+            "profile_groups": {"voice": {"archive_mode": "audio"}},
+            "munchy_job_defaults": {
+                "profile_routing": {
+                    "routes": [
+                        {
+                            "id": "voice-audio",
+                            "group": "voice",
+                            "when": {"path": {"suffix": ".wav"}},
+                        }
+                    ]
+                }
+            },
+        }
+    )
+
+    assert config.profile_groups["voice"].archive_mode == "audio"
+    assert config.profile_groups["voice"].tasks == ("archive_audio",)
 
 
 class CompleteRunner:
@@ -1056,21 +1097,21 @@ def test_munchy_payload_uses_structured_routing(tmp_path: Path) -> None:
     assert request.storage_hint == {
         "workflow_mode": "archive",
         "archive_mode": "av1_nvenc",
-        "gpu_tasks": [],
+        "tasks": [],
         "structured_routing": True,
         "groups": {
             "video": {
                 "archive_mode": "av1_nvenc",
-                "gpu_tasks": ["archive_video"],
+                "tasks": ["archive_video"],
             },
             "originals": {
                 "archive_mode": "originals",
-                "gpu_tasks": [],
+                "tasks": [],
             },
         },
     }
     assert request.job_payload["archive_mode"] == "av1_nvenc"
-    assert request.job_payload["gpu_tasks"] == []
+    assert request.job_payload["tasks"] == []
     assert request.job_payload["groups"]["video"]["encode_profile"]["archive"]["quality"] == 38
     assert request.job_payload["groups"]["originals"]["archive_mode"] == "originals"
     assert request.job_payload["profile_routing"]["routes"][0]["group"] == "video"

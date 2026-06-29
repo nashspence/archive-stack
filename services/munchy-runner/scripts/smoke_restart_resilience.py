@@ -174,14 +174,14 @@ def storage_hint_from_job_payload(payload: dict) -> dict:
     groups = {
         name: {
             "archive_mode": group.get("archive_mode", payload["archive_mode"]),
-            "gpu_tasks": list(group.get("gpu_tasks") or []),
+            "tasks": list(group.get("tasks") or []),
         }
         for name, group in dict(payload["groups"]).items()
     }
     return {
         "workflow_mode": payload.get("workflow_mode", "archive"),
         "archive_mode": payload["archive_mode"],
-        "gpu_tasks": payload["gpu_tasks"],
+        "tasks": payload["tasks"],
         "groups": groups,
     }
 
@@ -267,11 +267,11 @@ def main() -> int:
         "collection_slug": "runner-restart-smoke",
         "collection_timestamp": stamp,
         "archive_mode": "originals",
-        "gpu_tasks": [],
+        "tasks": [],
         "groups": {
             group_name: {
                 "archive_mode": "originals",
-                "gpu_tasks": [],
+                "tasks": [],
             },
         },
         "riverhog": {"enabled": True, "wait": "staged"},

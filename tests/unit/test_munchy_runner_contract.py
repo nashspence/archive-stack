@@ -92,7 +92,16 @@ def test_capabilities_advertise_munchy_profile_target(tmp_path: Path, monkeypatc
 
     capabilities = runner.capabilities()
 
-    assert capabilities["encode_profile"]["targets"] == ["munchy-av1-nvenc"]
+    assert capabilities["archive_modes"] == ["av1_nvenc", "audio", "originals"]
+    assert capabilities["tasks"] == [
+        "archive_video",
+        "archive_audio",
+        "qcut_video",
+        "audio_review",
+    ]
+    assert capabilities["encode_profile"]["targets"] == ["munchy-av1-nvenc", "munchy-audio"]
+    assert capabilities["encode_profile"]["archive_codecs"] == ["av1_nvenc", "opus"]
+    assert capabilities["encode_profile"]["containers"] == ["mkv", "webm", "opus"]
     assert capabilities["profile_groups"]["input_path_shape"] == "<profile-group>/<file>"
     assert capabilities["profile_groups"]["structured_routing"] is True
     assert capabilities["storage"]["eager_archive_only_encoding"] is True
@@ -165,7 +174,7 @@ def test_structured_input_upload_accepts_source_prefixed_paths(
             groups={
                 "video": runner.StorageGroupHint(
                     archive_mode="av1_nvenc",
-                    gpu_tasks=["archive_video"],
+                    tasks=["archive_video"],
                 )
             },
         ),
@@ -188,17 +197,17 @@ def test_originals_profile_groups_are_copy_only(
 
     group = runner.ProfileGroupConfig(
         archive_mode="originals",
-        gpu_tasks=["archive_video"],
+        tasks=["archive_video"],
     )
     storage_group = runner.StorageGroupHint(
         archive_mode="originals",
-        gpu_tasks=["archive_video"],
+        tasks=["archive_video"],
     )
 
     assert group.archive_mode == "originals"
-    assert group.gpu_tasks == []
+    assert group.tasks == []
     assert storage_group.archive_mode == "originals"
-    assert storage_group.gpu_tasks == []
+    assert storage_group.tasks == []
 
 
 def test_completed_structured_file_routes_by_path_without_full_upload(
@@ -219,8 +228,8 @@ def test_completed_structured_file_routes_by_path_without_full_upload(
                 "workflow_mode": "archive",
                 "structured_routing": True,
                 "groups": {
-                    "video": {"archive_mode": "av1_nvenc", "gpu_tasks": ["archive_video"]},
-                    "originals": {"archive_mode": "originals", "gpu_tasks": []},
+                    "video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]},
+                    "originals": {"archive_mode": "originals", "tasks": []},
                 },
             },
             "files": [
@@ -255,8 +264,8 @@ def test_completed_structured_file_routes_by_path_without_full_upload(
         },
     }
     groups = {
-        "video": {"archive_mode": "av1_nvenc", "gpu_tasks": ["archive_video"]},
-        "originals": {"archive_mode": "originals", "gpu_tasks": []},
+        "video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]},
+        "originals": {"archive_mode": "originals", "tasks": []},
     }
 
     routed = runner.route_completed_input_files(job, upload, groups)
@@ -288,7 +297,7 @@ def test_profile_routing_manifest_records_actual_route_and_output(
                 "workflow_mode": "collection_preview",
                 "structured_routing": True,
                 "groups": {
-                    "video": {"archive_mode": "av1_nvenc", "gpu_tasks": ["archive_video"]},
+                    "video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]},
                 },
             },
             "files": [
@@ -322,7 +331,7 @@ def test_profile_routing_manifest_records_actual_route_and_output(
     groups = {
         "video": {
             "archive_mode": "av1_nvenc",
-            "gpu_tasks": ["archive_video"],
+            "tasks": ["archive_video"],
             "encode_profile": {"archive": {"container": "webm"}},
         }
     }
@@ -404,7 +413,7 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
     groups = {
         "video": {
             "archive_mode": "av1_nvenc",
-            "gpu_tasks": ["archive_video"],
+            "tasks": ["archive_video"],
             "encode_profile": {"archive": {"container": "webm"}},
             "metadata_projection": {"enabled": True, "tags": ["iphone-se2"]},
         }
@@ -445,6 +454,40 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
             "bytes": sidecar.stat().st_size,
         }
     ]
+
+
+def test_metadata_projection_can_use_uploaded_filesystem_birthtime(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    source = tmp_path / "REC_20260628_203040.WAV"
+    source.write_bytes(b"wav")
+    monkeypatch.setattr(runner, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []})
+    monkeypatch.setattr(runner, "exiftool_for_routing", lambda _path: {})
+
+    metadata = runner.projection_metadata_from_source(
+        "voice/REC_20260628_203040.WAV",
+        source,
+        group_config={
+            "metadata_projection": {
+                "allow_missing_gps": True,
+                "capture_date_sources": [
+                    {"type": "embedded"},
+                    {"type": "filesystem_birthtime"},
+                ],
+            }
+        },
+        filesystem_metadata={
+            "stat": {
+                "birthtime": "2026-06-28T20:30:40+00:00",
+                "size": 3,
+            }
+        },
+    )
+
+    assert metadata.capture_date == "2026-06-28T20:30:40+00:00"
+    assert metadata.capture_date_source == "filesystem_birthtime:source_birthtime"
 
 
 def test_routed_structured_file_stays_complete_after_materialized_tusd_cleanup(
@@ -494,7 +537,7 @@ def test_completed_structured_file_can_route_by_probe_metadata(
             "storage_hint": {
                 "workflow_mode": "archive",
                 "structured_routing": True,
-                "groups": {"phone-video": {"archive_mode": "av1_nvenc", "gpu_tasks": []}},
+                "groups": {"phone-video": {"archive_mode": "av1_nvenc", "tasks": []}},
             },
             "files": [
                 {
@@ -544,7 +587,7 @@ def test_completed_structured_file_can_route_by_probe_metadata(
             ]
         },
     }
-    groups = {"phone-video": {"archive_mode": "av1_nvenc", "gpu_tasks": []}}
+    groups = {"phone-video": {"archive_mode": "av1_nvenc", "tasks": []}}
 
     routed = runner.route_completed_input_files(job, upload, groups)
 
@@ -587,7 +630,7 @@ def test_profile_routing_preflight_uses_submitted_probe_summary(
             "groups": {
                 "live-photo": {
                     "archive_mode": "originals",
-                    "gpu_tasks": [],
+                    "tasks": [],
                 }
             },
             "profile_routing": {
@@ -651,7 +694,7 @@ def test_profile_routing_preflight_reports_fallthrough(
         "/v1/profile-routing/preflight",
         json={
             "files": [{"path": "phone/IMG_0001.HEIC", "bytes": 123}],
-            "groups": {"video": {"archive_mode": "av1_nvenc", "gpu_tasks": []}},
+            "groups": {"video": {"archive_mode": "av1_nvenc", "tasks": []}},
             "profile_routing": {
                 "routes": [
                     {
@@ -722,7 +765,7 @@ def test_completed_structured_file_fails_when_no_route_matches(
         runner.route_completed_input_files(
             job,
             upload,
-            {"video": {"archive_mode": "av1_nvenc", "gpu_tasks": []}},
+            {"video": {"archive_mode": "av1_nvenc", "tasks": []}},
         )
 
 
@@ -745,7 +788,7 @@ def test_archive_admission_uses_eager_batch_peak_for_gpu_scratch(
         groups={
             "camera": runner.StorageGroupHint(
                 archive_mode="av1_nvenc",
-                gpu_tasks=["archive_video"],
+                tasks=["archive_video"],
             )
         },
     )
@@ -754,6 +797,122 @@ def test_archive_admission_uses_eager_batch_peak_for_gpu_scratch(
 
     assert required == int((100 + 90 + 80 + 70) * 0.5)
     assert required < runner.gpu_scratch_required_bytes(sum(item.bytes for item in files), hint)
+
+
+def test_audio_archive_hint_does_not_reserve_gpu_scratch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    files = [runner.InputFileSpec(path="voice/REC_0001.wav", bytes=100)]
+    hint = runner.InputUploadStorageHint(
+        workflow_mode="archive",
+        archive_mode="audio",
+        groups={"voice": runner.StorageGroupHint(archive_mode="audio")},
+    )
+
+    assert hint.groups["voice"].tasks == ["archive_audio"]
+    assert runner.storage_hint_has_gpu_work(hint) is False
+    assert runner.gpu_scratch_required_bytes(100, hint) == 0
+    assert runner.gpu_scratch_admission_required_bytes(files, hint) == 0
+
+
+def test_archive_audio_group_encodes_opus_and_writes_source_artifacts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    input_root = tmp_path / "input" / "voice"
+    output_root = tmp_path / "archive" / "voice"
+    source = input_root / "REC_20260628_203040.WAV"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"wav")
+    runner.write_filesystem_metadata_map(
+        input_root,
+        {
+            source.name: {
+                "stat": {
+                    "birthtime": "2026-06-28T20:30:40+00:00",
+                    "size": 3,
+                }
+            }
+        },
+        created_at="2026-06-29T00:00:00Z",
+    )
+    group_config = {
+        "archive_mode": "audio",
+        "tasks": ["archive_audio"],
+        "encode_profile": {
+            "target": "munchy-audio",
+            "archive": {
+                "codec": "opus",
+                "container": "opus",
+                "audio": {
+                    "bitrate": "64k",
+                    "sample_rate": 24000,
+                    "channels": 1,
+                    "application": "audio",
+                    "compression_level": 10,
+                },
+            },
+        },
+    }
+    commands: list[list[str]] = []
+
+    def fake_run_command(cmd: list[str], **_kwargs: object) -> dict[str, object]:
+        commands.append(cmd)
+        Path(cmd[-1]).write_bytes(b"opus")
+        return {"command": cmd, "duration_s": 0.1}
+
+    def fake_build_strict_source_artifacts(**kwargs: object) -> dict[str, object]:
+        metadata = kwargs["source_filesystem_metadata"]
+        assert isinstance(metadata, dict)
+        assert metadata["stat"]["birthtime"] == "2026-06-28T20:30:40+00:00"
+        return {"path": str(kwargs["archive_mkv"]) + ".source-artifacts.tar.zst"}
+
+    monkeypatch.setattr(runner, "run_command", fake_run_command)
+    monkeypatch.setattr(runner, "build_strict_source_artifacts", fake_build_strict_source_artifacts)
+
+    result = runner.run_archive_audio_group(
+        input_root=input_root,
+        output_root=output_root,
+        group_config=group_config,
+    )
+
+    output = output_root / "REC_20260628_203040.opus"
+    assert result["status"] == "succeeded"
+    assert result["count"] == 1
+    assert output.read_bytes() == b"opus"
+    assert commands == [
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-y",
+            "-ignore_unknown",
+            "-i",
+            str(source),
+            "-map",
+            "0:a?",
+            "-map_metadata",
+            "0",
+            "-vn",
+            "-c:a",
+            "libopus",
+            "-ar",
+            "24000",
+            "-ac",
+            "1",
+            "-b:a",
+            "64k",
+            "-compression_level",
+            "10",
+            "-application",
+            "audio",
+            "-f",
+            "opus",
+            str(output),
+        ]
+    ]
 
 
 def test_scheduler_reserves_running_job_slots_and_leaves_extra_jobs_queued(
@@ -1079,7 +1238,7 @@ def test_resume_job_clears_failed_runtime_state(
             "input_upload_id": "upload-1",
             "error": "old error",
             "finished_at": "2026-01-01T00:00:00Z",
-            "groups": {"camera": {"archive_mode": "av1_nvenc", "gpu_tasks": ["archive_video"]}},
+            "groups": {"camera": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]}},
             "profile_routing_result": {"files": 1},
             "eager_archive": {"files": {"camera/a.mp4": {"state": "failed"}}},
             "riverhog_session_upload": {"collection_id": "collection-1", "files": {}},
@@ -1100,7 +1259,7 @@ def test_resume_job_clears_failed_runtime_state(
     assert "profile_routing_result" not in stored
     assert "debug_bundle_dir" not in stored
     assert stored["groups"] == {
-        "camera": {"archive_mode": "av1_nvenc", "gpu_tasks": ["archive_video"]}
+        "camera": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]}
     }
 
 
@@ -1544,7 +1703,7 @@ def test_cancel_cleanup_snapshots_partial_encode_totals_before_input_deletion(
             "groups": {
                 "camera": {
                     "archive_mode": "av1_nvenc",
-                    "gpu_tasks": ["archive_video"],
+                    "tasks": ["archive_video"],
                 }
             },
             "eager_archive": {
@@ -1699,7 +1858,7 @@ def test_compact_terminal_job_state_keeps_summaries_and_drops_heavy_payloads(
         "groups": {
             "camera": {
                 "archive_mode": "av1_nvenc",
-                "gpu_tasks": ["archive_video"],
+                "tasks": ["archive_video"],
             }
         },
         "eager_archive": {
@@ -1994,7 +2153,7 @@ def test_eager_archive_upload_progress_does_not_report_shared_input_tree(
             "groups": {
                 "camera": {
                     "archive_mode": "av1_nvenc",
-                    "gpu_tasks": ["archive_video"],
+                    "tasks": ["archive_video"],
                 }
             },
         }
@@ -2037,9 +2196,9 @@ def test_structured_unrouted_upload_progress_does_not_require_groups(
             "groups": {
                 "video": {
                     "archive_mode": "av1_nvenc",
-                    "gpu_tasks": ["archive_video"],
+                    "tasks": ["archive_video"],
                 },
-                "originals": {"archive_mode": "originals", "gpu_tasks": []},
+                "originals": {"archive_mode": "originals", "tasks": []},
             },
         }
     )
@@ -2088,7 +2247,7 @@ def test_wait_for_upload_groups_skips_configured_group_with_no_files(
         job,
         "upload-1",
         {"originals"},
-        {"originals": {"archive_mode": "originals", "gpu_tasks": []}},
+        {"originals": {"archive_mode": "originals", "tasks": []}},
     )
 
     assert upload["upload_id"] == "upload-1"
@@ -2126,7 +2285,7 @@ def test_non_eager_upload_progress_still_reports_shared_input_tree(
             "groups": {
                 "camera": {
                     "archive_mode": "av1_nvenc",
-                    "gpu_tasks": ["qcut_video"],
+                    "tasks": ["qcut_video"],
                 }
             },
         }
@@ -2159,7 +2318,7 @@ def test_create_file_upload_does_not_sync_entire_shared_tree(
                 "groups": {
                     "camera": {
                         "archive_mode": "av1_nvenc",
-                        "gpu_tasks": ["archive_video"],
+                        "tasks": ["archive_video"],
                     }
                 },
             },
@@ -2295,7 +2454,7 @@ def test_sync_shared_input_file_materializes_only_completed_file(
                 "groups": {
                     "camera": {
                         "archive_mode": "av1_nvenc",
-                        "gpu_tasks": ["archive_video"],
+                        "tasks": ["archive_video"],
                     }
                 },
             },
@@ -2520,8 +2679,8 @@ def test_run_job_points_gpu_payload_at_shared_input_tree(
             "storage_hint": {
                 "workflow_mode": "review_only",
                 "archive_mode": "av1_nvenc",
-                "gpu_tasks": ["qcut_video"],
-                "groups": {"camera": {"archive_mode": "av1_nvenc", "gpu_tasks": ["qcut_video"]}},
+                "tasks": ["qcut_video"],
+                "groups": {"camera": {"archive_mode": "av1_nvenc", "tasks": ["qcut_video"]}},
             },
             "files": [{"path": "camera/a.mp4", "bytes": 5, "upload_id": "upload-a"}],
         }
@@ -2537,7 +2696,7 @@ def test_run_job_points_gpu_payload_at_shared_input_tree(
             "groups": {
                 "camera": {
                     "archive_mode": "av1_nvenc",
-                    "gpu_tasks": ["qcut_video"],
+                    "tasks": ["qcut_video"],
                     "profile": "profile",
                 }
             },
@@ -2587,8 +2746,8 @@ def test_successful_job_keeps_shared_input_upload_for_unfinished_sibling(
             "storage_hint": {
                 "workflow_mode": "review_only",
                 "archive_mode": "av1_nvenc",
-                "gpu_tasks": ["qcut_video"],
-                "groups": {"camera": {"archive_mode": "av1_nvenc", "gpu_tasks": ["qcut_video"]}},
+                "tasks": ["qcut_video"],
+                "groups": {"camera": {"archive_mode": "av1_nvenc", "tasks": ["qcut_video"]}},
             },
             "files": [{"path": "camera/a.mp4", "bytes": 5, "upload_id": "upload-a"}],
         }
@@ -2601,7 +2760,7 @@ def test_successful_job_keeps_shared_input_upload_for_unfinished_sibling(
         "groups": {
             "camera": {
                 "archive_mode": "av1_nvenc",
-                "gpu_tasks": ["qcut_video"],
+                "tasks": ["qcut_video"],
                 "profile": "profile",
             }
         },
@@ -2648,11 +2807,11 @@ def test_successful_riverhog_handoff_cleans_job_work_and_input_upload(
             "storage_hint": {
                 "workflow_mode": "archive",
                 "archive_mode": "av1_nvenc",
-                "gpu_tasks": ["archive_video", "qcut_video"],
+                "tasks": ["archive_video", "qcut_video"],
                 "groups": {
                     "camera": {
                         "archive_mode": "av1_nvenc",
-                        "gpu_tasks": ["archive_video", "qcut_video"],
+                        "tasks": ["archive_video", "qcut_video"],
                     }
                 },
             },
@@ -2671,7 +2830,7 @@ def test_successful_riverhog_handoff_cleans_job_work_and_input_upload(
             "groups": {
                 "camera": {
                     "archive_mode": "av1_nvenc",
-                    "gpu_tasks": ["archive_video", "qcut_video"],
+                    "tasks": ["archive_video", "qcut_video"],
                     "profile": "profile",
                     "metadata_projection": {"enabled": False},
                 }
@@ -2887,8 +3046,8 @@ def test_expected_riverhog_primary_files_total_counts_archive_outputs(
         ],
     }
     groups = {
-        "video": {"gpu_tasks": ["archive_video"]},
-        "review": {"gpu_tasks": ["qcut_video"]},
+        "video": {"tasks": ["archive_video"]},
+        "review": {"tasks": ["qcut_video"]},
     }
 
     assert runner.expected_riverhog_primary_files_total(upload, groups) == 2
@@ -3984,8 +4143,8 @@ def test_encoding_failure_cleans_job_work_and_input_upload(
             "storage_hint": {
                 "workflow_mode": "review_only",
                 "archive_mode": "av1_nvenc",
-                "gpu_tasks": ["qcut_video"],
-                "groups": {"camera": {"archive_mode": "av1_nvenc", "gpu_tasks": ["qcut_video"]}},
+                "tasks": ["qcut_video"],
+                "groups": {"camera": {"archive_mode": "av1_nvenc", "tasks": ["qcut_video"]}},
             },
             "files": [{"path": "camera/a.mp4", "bytes": 5, "upload_id": "upload-a"}],
         }
@@ -4001,7 +4160,7 @@ def test_encoding_failure_cleans_job_work_and_input_upload(
             "groups": {
                 "camera": {
                     "archive_mode": "av1_nvenc",
-                    "gpu_tasks": ["qcut_video"],
+                    "tasks": ["qcut_video"],
                     "profile": "profile",
                 }
             },
@@ -4057,8 +4216,8 @@ def test_run_job_reuses_stored_shared_review_plan(
             "storage_hint": {
                 "workflow_mode": "review_only",
                 "archive_mode": "av1_nvenc",
-                "gpu_tasks": ["qcut_video"],
-                "groups": {"camera": {"archive_mode": "av1_nvenc", "gpu_tasks": ["qcut_video"]}},
+                "tasks": ["qcut_video"],
+                "groups": {"camera": {"archive_mode": "av1_nvenc", "tasks": ["qcut_video"]}},
             },
             "files": [{"path": "camera/a.mp4", "bytes": 5, "upload_id": "upload-a"}],
         }
@@ -4074,7 +4233,7 @@ def test_run_job_reuses_stored_shared_review_plan(
             "groups": {
                 "camera": {
                     "archive_mode": "av1_nvenc",
-                    "gpu_tasks": ["qcut_video"],
+                    "tasks": ["qcut_video"],
                     "profile": "profile",
                 }
             },
@@ -4289,7 +4448,7 @@ def test_job_response_includes_eager_encode_progress(
         "groups": {
             "camera": {
                 "archive_mode": "av1_nvenc",
-                "gpu_tasks": ["archive_video"],
+                "tasks": ["archive_video"],
             }
         },
         "eager_archive": {

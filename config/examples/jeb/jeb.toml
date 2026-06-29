@@ -51,7 +51,7 @@ vbr = "on"
 [profile_groups.video]
 profile = "security-camera"
 archive_mode = "av1_nvenc"
-gpu_tasks = ["archive_video"]
+tasks = ["archive_video"]
 
 [profile_groups.originals]
 archive_mode = "originals"

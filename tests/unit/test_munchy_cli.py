@@ -431,14 +431,14 @@ quality = 38
 [groups.video]
 profile = "camera"
 archive_mode = "av1_nvenc"
-gpu_tasks = ["archive_video"]
+tasks = ["archive_video"]
 
 [groups.video.metadata_projection]
 tags = ["device/camera"]
 
 [groups.originals]
 archive_mode = "originals"
-gpu_tasks = []
+tasks = []
 
 [[job.profile_routing.routes]]
 id = "camera-video"
@@ -497,8 +497,8 @@ when = { path = { suffix = ".mp4" } }
     request = seen["request"]
     assert request.files[0].rel_path == "clip.mp4"
     assert request.storage_hint["structured_routing"] is True
-    assert request.storage_hint["groups"]["video"]["gpu_tasks"] == ["archive_video"]
-    assert request.storage_hint["groups"]["originals"]["gpu_tasks"] == []
+    assert request.storage_hint["groups"]["video"]["tasks"] == ["archive_video"]
+    assert request.storage_hint["groups"]["originals"]["tasks"] == []
     assert request.job_payload["riverhog"]["enabled"] is True
     assert request.job_payload["profile_routing"]["routes"][0]["group"] == "video"
     assert (
@@ -508,6 +508,93 @@ when = { path = { suffix = ".mp4" } }
         "tags": ["device/camera"]
     }
     assert seen["requested_containers"] == ["webm"]
+
+
+def test_munchy_job_start_defaults_audio_mode_to_archive_audio(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    source_dir = tmp_path / "voice"
+    source_dir.mkdir()
+    (source_dir / "REC_20260628_203040.WAV").write_bytes(b"audio")
+    config = tmp_path / "munchy-audio.toml"
+    config.write_text(
+        """
+[job]
+workflow_mode = "archive"
+archive_mode = "audio"
+
+[profiles.voice]
+schema_version = 1
+target = "munchy-audio"
+name = "voice"
+
+[profiles.voice.archive]
+codec = "opus"
+
+[profiles.voice.archive.audio]
+bitrate = "64k"
+sample_rate = 24000
+channels = 1
+
+[groups.voice]
+profile = "voice"
+archive_mode = "audio"
+""".strip(),
+        encoding="utf-8",
+    )
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, base_url: str) -> None:
+            self.base_url = base_url
+
+        def check_ready(
+            self,
+            workflow_mode: str | None = None,
+            *,
+            requested_containers: list[str] | None = None,
+        ) -> None:
+            seen["workflow_mode"] = workflow_mode
+            seen["requested_containers"] = requested_containers
+
+        def create_or_get_input_upload(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
+            seen["request"] = request
+            return {"upload_id": request.upload_id}
+
+        def create_job(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
+            return {"job_id": request.job_id, "state": "queued"}
+
+        def upload_files(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
+            return {"upload_id": request.upload_id, "state": "uploaded"}
+
+    monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
+
+    result = runner.invoke(
+        app,
+        [
+            "job",
+            "start",
+            str(source_dir),
+            "--runner-url",
+            "http://runner",
+            "--config",
+            str(config),
+            "--collection",
+            "voice",
+            "--timestamp",
+            "20260621T120000Z",
+            "--no-hash-cache",
+            "--no-wait",
+        ],
+    )
+
+    assert result.exit_code == 0
+    request = seen["request"]
+    assert request.files[0].rel_path == "voice/REC_20260628_203040.WAV"
+    assert request.storage_hint["archive_mode"] == "audio"
+    assert request.storage_hint["tasks"] == ["archive_audio"]
+    assert request.storage_hint["groups"]["voice"]["tasks"] == ["archive_audio"]
+    assert request.job_payload["groups"]["voice"]["encode_profile"]["target"] == "munchy-audio"
+    assert seen["workflow_mode"] == "archive"
+    assert seen["requested_containers"] == ["opus"]
 
 
 def test_munchy_routing_explain_reports_matches(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -522,7 +609,7 @@ upload_prefix = "phone"
 
 [groups.video]
 archive_mode = "av1_nvenc"
-gpu_tasks = ["archive_video"]
+tasks = ["archive_video"]
 
 [[job.profile_routing.routes]]
 id = "phone-video"

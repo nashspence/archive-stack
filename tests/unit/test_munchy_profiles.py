@@ -52,6 +52,46 @@ def test_validates_av1_nvenc_profile_and_drop_reasons() -> None:
     assert artifact_drop_reason_map(profile) == {"stream:4": "gyro data intentionally discarded"}
 
 
+def test_validates_audio_opus_profile() -> None:
+    profile = EncodeProfile.model_validate(
+        {
+            "schema_version": 1,
+            "target": "munchy-audio",
+            "name": "voice-recorder",
+            "archive": {
+                "codec": "opus",
+                "audio": {
+                    "bitrate": "64k",
+                    "sample_rate": 24000,
+                    "channels": 1,
+                    "application": "audio",
+                },
+            },
+        }
+    )
+
+    assert profile.target == "munchy-audio"
+    assert profile.archive.codec == "opus"
+    assert profile.archive.container == "opus"
+    assert profile.archive.audio.bitrate == "64k"
+    assert profile.archive.audio.sample_rate == 24000
+
+
+def test_rejects_audio_profile_with_video_container() -> None:
+    with pytest.raises(ValidationError, match="opus audio archive container must be opus"):
+        EncodeProfile.model_validate(
+            {
+                "target": "munchy-audio",
+                "archive": {"codec": "opus", "container": "webm"},
+            }
+        )
+
+
+def test_rejects_audio_target_without_audio_codec() -> None:
+    with pytest.raises(ValidationError, match="munchy-audio profiles require"):
+        EncodeProfile.model_validate({"target": "munchy-audio"})
+
+
 def test_rejects_duplicate_artifact_drops() -> None:
     with pytest.raises(ValidationError, match="duplicate source artifact drop selector"):
         EncodeProfile.model_validate(

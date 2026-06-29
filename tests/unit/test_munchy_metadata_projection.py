@@ -124,6 +124,118 @@ def test_immich_projection_writes_negative_altitude_ref() -> None:
     assert 'exif:GPSAltitudeRef="1"' in xmp
 
 
+def test_immich_projection_uses_configured_path_regex_capture_date() -> None:
+    metadata = project_immich_metadata(
+        {
+            "path.rel": "VOICE/REC_20260628_203040.WAV",
+            "exif.gps_latitude": "37.1",
+            "exif.gps_longitude": "-122.1",
+        },
+        capture_date_sources=[
+            {"type": "embedded"},
+            {
+                "type": "path_regex",
+                "name": "voice_filename",
+                "pattern": r"REC_(?P<stamp>\d{8}_\d{6})\.WAV$",
+                "datetime_group": "stamp",
+                "format": "%Y%m%d_%H%M%S",
+                "timezone": "America/Los_Angeles",
+            },
+        ],
+    )
+
+    assert metadata.capture_date == "2026-06-28T20:30:40-07:00"
+    assert metadata.capture_date_source == "path_regex:voice_filename"
+
+
+def test_immich_projection_uses_filesystem_birthtime_capture_date() -> None:
+    metadata = project_immich_metadata(
+        {
+            "filesystem": {
+                "stat": {
+                    "birthtime": "2026-06-28T20:30:40+00:00",
+                }
+            },
+            "exif.gps_latitude": "37.1",
+            "exif.gps_longitude": "-122.1",
+        },
+        capture_date_sources=[
+            {"type": "embedded"},
+            {"type": "filesystem_birthtime", "name": "source_birthtime"},
+        ],
+    )
+
+    assert metadata.capture_date == "2026-06-28T20:30:40+00:00"
+    assert metadata.capture_date_source == "filesystem_birthtime:source_birthtime"
+
+
+def test_immich_projection_uses_filesystem_birthtime_ns_capture_date() -> None:
+    metadata = project_immich_metadata(
+        {
+            "filesystem": {"stat": {"birthtime_ns": 1782682240000000000}},
+            "exif.gps_latitude": "37.1",
+            "exif.gps_longitude": "-122.1",
+        },
+        capture_date_sources=[{"type": "filesystem_birthtime"}],
+    )
+
+    assert metadata.capture_date == "2026-06-28T21:30:40+00:00"
+    assert metadata.capture_date_source == "filesystem_birthtime:source_birthtime"
+
+
+def test_immich_projection_filesystem_birthtime_must_parse() -> None:
+    with pytest.raises(MetadataProjectionError, match="invalid capture date"):
+        project_immich_metadata(
+            {
+                "filesystem": {"stat": {"birthtime": "not a date"}},
+                "exif.gps_latitude": "37.1",
+                "exif.gps_longitude": "-122.1",
+            },
+            capture_date_sources=[{"type": "filesystem_birthtime"}],
+        )
+
+
+def test_immich_projection_path_regex_match_must_parse() -> None:
+    with pytest.raises(MetadataProjectionError, match="matched but did not parse"):
+        project_immich_metadata(
+            {
+                "path.rel": "VOICE/REC_20261340_203040.WAV",
+                "exif.gps_latitude": "37.1",
+                "exif.gps_longitude": "-122.1",
+            },
+            capture_date_sources=[
+                {
+                    "type": "path_regex",
+                    "name": "voice_filename",
+                    "pattern": r"REC_(?P<stamp>\d{8}_\d{6})\.WAV$",
+                    "datetime_group": "stamp",
+                    "format": "%Y%m%d_%H%M%S",
+                    "timezone": "America/Los_Angeles",
+                }
+            ],
+        )
+
+
+def test_immich_projection_path_regex_requires_timezone_without_offset() -> None:
+    with pytest.raises(MetadataProjectionError, match="requires timezone"):
+        project_immich_metadata(
+            {
+                "path.rel": "VOICE/REC_20260628_203040.WAV",
+                "exif.gps_latitude": "37.1",
+                "exif.gps_longitude": "-122.1",
+            },
+            capture_date_sources=[
+                {
+                    "type": "path_regex",
+                    "name": "voice_filename",
+                    "pattern": r"REC_(?P<stamp>\d{8}_\d{6})\.WAV$",
+                    "datetime_group": "stamp",
+                    "format": "%Y%m%d_%H%M%S",
+                }
+            ],
+        )
+
+
 def test_immich_projection_writes_hierarchical_tag_aliases() -> None:
     metadata = project_immich_metadata(
         {

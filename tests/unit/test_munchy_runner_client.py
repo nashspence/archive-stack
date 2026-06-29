@@ -100,7 +100,7 @@ def test_profile_routing_preflight_posts_manifest() -> None:
                     routing_facts={"path.suffix": ".mov", "video.codec": "hevc"},
                 ),
             ),
-            groups={"video": {"archive_mode": "av1_nvenc", "gpu_tasks": []}},
+            groups={"video": {"archive_mode": "av1_nvenc", "tasks": []}},
             profile_routing={
                 "routes": [
                     {
@@ -130,7 +130,7 @@ def test_profile_routing_preflight_posts_manifest() -> None:
                         "facts_error": None,
                     }
                 ],
-                "groups": {"video": {"archive_mode": "av1_nvenc", "gpu_tasks": []}},
+                "groups": {"video": {"archive_mode": "av1_nvenc", "tasks": []}},
                 "profile_routing": {
                     "routes": [
                         {
