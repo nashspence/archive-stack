@@ -1104,33 +1104,6 @@ def state_db() -> sqlite3.Connection:
     return conn
 
 
-def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-
-
-def table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table,),
-    ).fetchone()
-    return row is not None
-
-
-def job_summary_schema_needs_rebuild(conn: sqlite3.Connection) -> bool:
-    if not table_exists(conn, "job_summaries"):
-        return False
-    columns = table_columns(conn, "job_summaries")
-    return "collection_archive_destination" not in columns or "riverhog_enabled" in columns
-
-
-def rebuild_job_summaries(conn: sqlite3.Connection) -> None:
-    rows = conn.execute("SELECT payload FROM states WHERE kind = 'job'").fetchall()
-    for row in rows:
-        payload = json.loads(str(row["payload"]))
-        if isinstance(payload, dict):
-            upsert_job_summary(conn, payload)
-
-
 def init_state_store() -> None:
     with closing(state_db()) as conn:
         conn.execute(
@@ -1147,10 +1120,6 @@ def init_state_store() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS states_kind_updated_at ON states(kind, updated_at)"
         )
-        rebuild_summaries = job_summary_schema_needs_rebuild(conn)
-        if rebuild_summaries:
-            conn.execute("DROP TABLE IF EXISTS job_summaries")
-            conn.execute("DROP TABLE IF EXISTS job_summaries_fts")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS job_summaries (
@@ -1198,8 +1167,6 @@ def init_state_store() -> None:
             "CREATE VIRTUAL TABLE IF NOT EXISTS job_summaries_fts "
             "USING fts5(job_id UNINDEXED, search_text)"
         )
-        if rebuild_summaries:
-            rebuild_job_summaries(conn)
         conn.commit()
 
 
