@@ -1065,7 +1065,8 @@ def normalize_suffix(value: object) -> str:
 
 def normalize_tag_key(value: str) -> str:
     text = re.sub(r"[^A-Za-z0-9]+", "_", value).strip("_")
-    text = re.sub(r"(?<=[a-z0-9])([A-Z])", r"_\1", text)
+    text = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", text)
+    text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", text)
     return text.lower()
 
 

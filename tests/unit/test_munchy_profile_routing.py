@@ -282,6 +282,8 @@ def test_routing_exiftool_summary_normalizes_apple_tags() -> None:
                 "Composite:LensModel": "iPhone SE (2nd generation) back camera 3.99mm f/1.8",
                 "QuickTime:ContentIdentifier": "asset-id",
                 "Keys:FullFrameRatePlaybackIntent": 0,
+                "Composite:GPSLatitude": "48.99951389 N",
+                "Composite:GPSLongitude": "122.74040278 W",
             }
         ),
     )
@@ -292,3 +294,5 @@ def test_routing_exiftool_summary_normalizes_apple_tags() -> None:
     assert facts["exif.camera_direction"] == "rear"
     assert facts["exif.content_identifier"] == "asset-id"
     assert facts["exif.full_frame_rate_playback_intent"] == "0"
+    assert facts["exif.gps_latitude"] == "48.99951389 N"
+    assert facts["exif.gps_longitude"] == "122.74040278 W"
