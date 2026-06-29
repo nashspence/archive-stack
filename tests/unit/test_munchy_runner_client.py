@@ -812,6 +812,32 @@ def test_cancel_job_cleanup_uses_long_timeout() -> None:
     }
 
 
+def test_resume_job_posts_runner_resume_endpoint() -> None:
+    client = MunchyRunnerClient("http://runner")
+    seen: dict[str, object] = {}
+
+    def fake_json(
+        method: str,
+        path: str,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        seen["method"] = method
+        seen["path"] = path
+        seen["expect"] = kwargs.get("expect")
+        return {"job_id": "job-1", "state": "queued"}
+
+    client.json = fake_json  # type: ignore[method-assign]
+
+    resumed = client.resume_job("job-1")
+
+    assert resumed == {"job_id": "job-1", "state": "queued"}
+    assert seen == {
+        "method": "POST",
+        "path": "/v1/jobs/job-1/resume",
+        "expect": {202},
+    }
+
+
 def test_runner_http_error_formats_insufficient_storage_concisely() -> None:
     error = RunnerHttpError(
         "POST",

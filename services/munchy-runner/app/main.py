@@ -41,9 +41,15 @@ from munchy.filesystem_metadata import (
 from munchy.metadata_projection import (
     MetadataProjectionError,
     ProjectionMetadata,
+    decimal_text,
     immich_xmp_sidecar_path,
     project_immich_metadata,
     render_immich_xmp_sidecar,
+)
+from munchy.platform_files import (
+    DEFAULT_PLATFORM_CRUFT_EXCLUDES,
+    normalize_exclude_patterns,
+    path_matches_exclude_patterns,
 )
 from munchy.profile_routing import (
     PATH_PREDICATE_KEYS,
@@ -206,6 +212,7 @@ REVIEW_UPLOAD_ENABLED = os.getenv("MUNCHY_RUNNER_REVIEW_UPLOAD_ENABLED", "0").lo
 }
 REVIEW_UPLOAD_COMMAND = os.getenv("MUNCHY_RUNNER_REVIEW_UPLOAD_COMMAND", "").strip()
 REVIEW_RCLONE_COMMAND = os.getenv("MUNCHY_RUNNER_REVIEW_RCLONE_COMMAND", "rclone")
+DEFAULT_REVIEW_UPLOAD_EXCLUDES = DEFAULT_PLATFORM_CRUFT_EXCLUDES
 NOTIFY_ENABLED = env_flag("MUNCHY_RUNNER_NOTIFY_ENABLED")
 NOTIFY_ISSUE_REPEAT_SECONDS = int(os.getenv("MUNCHY_RUNNER_NOTIFY_ISSUE_REPEAT_SECONDS", "86400"))
 NOTIFY_UPLOAD_WAITING_REMINDER_SECONDS = int(
@@ -505,6 +512,7 @@ class ReviewUploadConfig(BaseModel):
     method: Literal["command", "rclone"] = "command"
     destination: str | None = Field(default=None, min_length=1, max_length=4096)
     mode: Literal["copy", "sync"] = "copy"
+    exclude: list[str] = Field(default_factory=list)
 
     @field_validator("destination")
     @classmethod
@@ -515,6 +523,11 @@ class ReviewUploadConfig(BaseModel):
         if not normalized:
             raise ValueError("destination must not be blank")
         return normalized
+
+    @field_validator("exclude")
+    @classmethod
+    def normalize_exclude(cls, value: list[str]) -> list[str]:
+        return normalize_exclude_patterns(value, label="review_upload.exclude")
 
     @model_validator(mode="after")
     def require_rclone_destination(self) -> ReviewUploadConfig:
@@ -5315,7 +5328,72 @@ def audio_archive_profile(group_config: dict[str, Any]) -> tuple[dict[str, Any],
     return profile, audio
 
 
-def archive_audio_command(source: Path, dest: Path, group_config: dict[str, Any]) -> list[str]:
+def audio_metadata_location_text(metadata: ProjectionMetadata) -> str | None:
+    if metadata.gps is None:
+        return None
+    location = (
+        f"{float(metadata.gps.latitude):+.8f}".rstrip("0").rstrip(".")
+        + f"{float(metadata.gps.longitude):+.8f}".rstrip("0").rstrip(".")
+    )
+    if metadata.gps.altitude is not None:
+        location += f"{float(metadata.gps.altitude):+.3f}".rstrip("0").rstrip(".")
+    return f"{location}/"
+
+
+def audio_container_metadata_args(metadata: ProjectionMetadata | None) -> list[str]:
+    if metadata is None:
+        return []
+    args: list[str] = []
+    if metadata.capture_date:
+        args.extend(
+            [
+                "-metadata",
+                f"DATE={metadata.capture_date}",
+                "-metadata",
+                f"creation_time={metadata.capture_date}",
+            ]
+        )
+    if metadata.gps is not None:
+        location = audio_metadata_location_text(metadata)
+        if location:
+            args.extend(["-metadata", f"LOCATION={location}"])
+        args.extend(
+            [
+                "-metadata",
+                f"GPSLatitude={decimal_text(metadata.gps.latitude)}",
+                "-metadata",
+                f"GPSLongitude={decimal_text(metadata.gps.longitude)}",
+            ]
+        )
+        if metadata.gps.altitude is not None:
+            args.extend(["-metadata", f"GPSAltitude={decimal_text(metadata.gps.altitude)}"])
+    return args
+
+
+def audio_archive_metadata_for_source(
+    source: Path,
+    *,
+    rel_path: str,
+    group_config: dict[str, Any],
+    filesystem_metadata: Mapping[str, Any],
+) -> ProjectionMetadata | None:
+    if not metadata_projection_enabled(group_config):
+        return None
+    return projection_metadata_from_source(
+        rel_path,
+        source,
+        group_config=group_config,
+        filesystem_metadata=filesystem_metadata,
+    )
+
+
+def archive_audio_command(
+    source: Path,
+    dest: Path,
+    group_config: dict[str, Any],
+    *,
+    metadata: ProjectionMetadata | None = None,
+) -> list[str]:
     _profile, audio = audio_archive_profile(group_config)
     dest.parent.mkdir(parents=True, exist_ok=True)
     return [
@@ -5333,6 +5411,7 @@ def archive_audio_command(source: Path, dest: Path, group_config: dict[str, Any]
         "-c:a",
         "libopus",
         *archive_audio_encode_args(audio),
+        *audio_container_metadata_args(metadata),
         "-f",
         "opus",
         str(dest),
@@ -5368,6 +5447,12 @@ def run_archive_audio_item(
         raise RuntimeError(
             f"unresumable: source filesystem metadata sidecar is missing entries for {rel_path}"
         )
+    audio_metadata = audio_archive_metadata_for_source(
+        source,
+        rel_path=rel_path,
+        group_config=group_config,
+        filesystem_metadata=metadata,
+    )
     sidecar = source_artifact_sidecar_for_archive_output(dest)
     if dest.is_file() and sidecar.is_file():
         return {
@@ -5376,9 +5461,13 @@ def run_archive_audio_item(
             "bytes": dest.stat().st_size,
             "sha256": file_sha256(dest),
             "source_artifacts": {"path": str(sidecar), "reused": True},
+            "container_metadata": audio_metadata.as_dict() if audio_metadata else None,
             "reused": True,
         }
-    result = run_command(archive_audio_command(source, dest, group_config), action="archive audio")
+    result = run_command(
+        archive_audio_command(source, dest, group_config, metadata=audio_metadata),
+        action="archive audio",
+    )
     artifacts = build_strict_source_artifacts(
         source=source,
         archive_mkv=dest,
@@ -5394,6 +5483,7 @@ def run_archive_audio_item(
         "bytes": dest.stat().st_size if dest.exists() else 0,
         "sha256": file_sha256(dest) if dest.exists() else "",
         "source_artifacts": artifacts,
+        "container_metadata": audio_metadata.as_dict() if audio_metadata else None,
     }
 
 
@@ -6015,10 +6105,42 @@ def render_job_template(value: str, job: dict[str, Any]) -> str:
         raise RuntimeError(f"unknown review upload template field: {exc.args[0]}") from exc
 
 
-def review_artifact_count(review_dir: Path) -> int:
+def review_upload_excludes(config: Mapping[str, Any]) -> list[str]:
+    excludes = list(DEFAULT_REVIEW_UPLOAD_EXCLUDES)
+    raw_excludes = config.get("exclude") or []
+    if not isinstance(raw_excludes, Sequence) or isinstance(raw_excludes, (str, bytes)):
+        raise RuntimeError("review_upload.exclude must be a list")
+    raw_patterns: list[str] = []
+    for item in raw_excludes:
+        if not isinstance(item, str):
+            raise RuntimeError("review_upload.exclude entries must be strings")
+        raw_patterns.append(item)
+    try:
+        extra_excludes = normalize_exclude_patterns(
+            raw_patterns,
+            label="review_upload.exclude",
+        )
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    for pattern in extra_excludes:
+        if pattern not in excludes:
+            excludes.append(pattern)
+    return excludes
+
+
+def review_upload_path_excluded(rel_path: str, excludes: Sequence[str]) -> bool:
+    return path_matches_exclude_patterns(rel_path, excludes)
+
+
+def review_artifact_count(review_dir: Path, *, excludes: Sequence[str] = ()) -> int:
     if not review_dir.is_dir():
         return 0
-    return sum(1 for path in review_dir.rglob("*") if path.is_file())
+    return sum(
+        1
+        for path in review_dir.rglob("*")
+        if path.is_file()
+        and not review_upload_path_excluded(path.relative_to(review_dir).as_posix(), excludes)
+    )
 
 
 def run_review_command(
@@ -6045,7 +6167,8 @@ def upload_review(
         return None
     if not REVIEW_UPLOAD_ENABLED:
         raise RuntimeError("review upload requested, but runner review upload is disabled")
-    artifact_count = review_artifact_count(source_dir)
+    excludes = review_upload_excludes(config)
+    artifact_count = review_artifact_count(source_dir, excludes=excludes)
     if artifact_count == 0:
         if not allow_empty:
             raise RuntimeError(f"{source_label} artifacts are empty: {source_dir}")
@@ -6077,6 +6200,7 @@ def upload_review(
         cmd = [
             REVIEW_RCLONE_COMMAND,
             mode,
+            *[arg for pattern in excludes for arg in ("--exclude", pattern)],
             str(source_dir),
             rendered_destination,
             "--retries",

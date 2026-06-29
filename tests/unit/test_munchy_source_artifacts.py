@@ -87,6 +87,64 @@ def test_source_artifact_bundle_requires_source_filesystem_metadata(tmp_path: Pa
         )
 
 
+def test_conversion_only_source_artifact_bundle_omits_rebuild_plan(
+    tmp_path: Path,
+) -> None:
+    work_dir = tmp_path / "work"
+    bundle_path = tmp_path / "voice.opus.source-artifacts.tar"
+    artifacts = source_artifacts._assemble_source_artifact_bundle_inputs(
+        work_dir=work_dir,
+        src="voice.mp3",
+        output="voice.opus",
+        source_metadata={"format": {}, "streams": []},
+        source_container={
+            "supported": False,
+            "mode": "conversion_only",
+            "message": "source container is not currently rebuild-supported",
+            "override": "allow_conversion_only_container",
+        },
+        container_inventory=[],
+        container_artifacts=[],
+        exports=[],
+        stream_transforms=[],
+        dropped_items=[],
+        encode_cmd=["ffmpeg", "-i", "voice.mp3", "voice.opus"],
+        selected_output_path=tmp_path / "voice.opus",
+        encode_output_path=tmp_path / "voice.opus",
+        source_filesystem_metadata={
+            "schema_version": 1,
+            "kind": "munchy.source-filesystem-metadata",
+            "stat": {"mode_octal": "0o644", "mtime_ns": 123},
+            "extended_attributes": {"available": True, "items": []},
+        },
+        include_rebuild_plan=False,
+    )
+
+    assert all(artifact.arcname != "rebuild/rebuild-plan.json" for artifact in artifacts)
+    assert not (work_dir / "rebuild").exists()
+
+    created = source_artifacts._build_source_artifacts_bundle(
+        bundle_path,
+        artifacts,
+        src="voice.mp3",
+        output="voice.opus",
+    )
+
+    assert created is True
+    with tarfile.open(bundle_path, "r") as tar:
+        names = set(tar.getnames())
+    assert "rebuild/rebuild-plan.json" not in names
+
+    audit = source_artifacts._audit_source_artifacts_bundle(bundle_path)
+
+    assert audit["ok"] is True
+    assert audit["rebuild_supported"] is False
+    assert audit["rebuild_blockers"] == ["source_container"]
+    assert audit["rebuild_scope"] == (
+        "conversion-only archive; source-container rebuild is not supported"
+    )
+
+
 def test_source_artifact_audit_rejects_non_munchy_manifest_kind(tmp_path: Path) -> None:
     payload_path = tmp_path / "payload.bin"
     payload_path.write_bytes(b"payload")

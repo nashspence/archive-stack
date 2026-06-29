@@ -119,6 +119,12 @@ Munchy currently supports Opus audio archives in an `.opus` container. Source
 filesystem metadata sidecars are required for audio archive jobs so the archive
 can preserve custody metadata with the encoded output.
 
+When metadata projection is enabled, Munchy resolves the same capture date and
+GPS metadata used for XMP before encoding the `.opus` file. The Opus output gets
+Vorbis-comment style metadata for `DATE` and `creation_time`; when GPS is
+available, it also gets `LOCATION`, `GPSLatitude`, `GPSLongitude`, and optional
+`GPSAltitude`. XMP sidecars remain the richer compatibility target.
+
 Sources such as MP3 cannot be reconstructed from an Opus derivative because the
 encoded audio stream cannot be muxed back into the original MP3 container.
 Profiles for those sources must explicitly set
@@ -126,3 +132,35 @@ Profiles for those sources must explicitly set
 job rather than silently accepting conversion-only custody semantics. Leave the
 option disabled for camera/video sources that require source-container rebuild
 support from the archived output and source artifacts.
+
+Conversion-only source artifact bundles still preserve strict source inventory,
+filesystem metadata, stream transforms, and source metadata, but they do not
+include a `rebuild/` directory or `rebuild/rebuild-plan.json`.
+
+## Review Uploads
+
+Collection-preview and review uploads can be handed off through rclone. Munchy
+filters common desktop platform helper files by default before counting or
+uploading review artifacts:
+
+- `.DS_Store`
+- `._*`
+- `.Spotlight-V100/`
+- `.Trashes/`
+- `.fseventsd/`
+
+Operators may add project-specific rclone exclude patterns:
+
+```toml
+[job.review_upload]
+enabled = true
+method = "rclone"
+destination = "clover:munchy/{collection_slug}/{collection_timestamp}"
+exclude = ["**/.temporary/**"]
+```
+
+If a runner job fails after an operator fixes the cause, resume it explicitly:
+
+```bash
+munchy job resume <job-id> --wait
+```

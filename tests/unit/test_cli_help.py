@@ -5,6 +5,7 @@ from typer.testing import CliRunner
 
 from djdan.main import app as disc_app
 from jeb.cli import main as jeb_main
+from munchy_cli.main import app as munchy_app
 from riverhog_cli.main import app as riverhog_app
 
 runner = CliRunner()
@@ -127,3 +128,10 @@ def test_jeb_help_has_command_summaries(capsys: pytest.CaptureFixture[str]) -> N
     assert "once          discover and process one scheduler pass" in stdout
     assert "archive-now   retry one source immediately after route repair" in stdout
     assert "check-config  validate configuration and initialize state" in stdout
+
+
+def test_munchy_job_help_has_resume_command() -> None:
+    result = runner.invoke(munchy_app, ["job", "--help"])
+
+    assert result.exit_code == 0
+    assert "Resume a failed or cancelled runner job after repair." in result.stdout

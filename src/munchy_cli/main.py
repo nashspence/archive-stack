@@ -16,6 +16,7 @@ import typer
 from pydantic import ValidationError
 
 from munchy.local_files import FileHashCache, LocalFileCandidate, hash_local_file_candidates
+from munchy.platform_files import is_platform_cruft_path
 from munchy.profile_routing import (
     ProfileRoutingFile,
     profile_routing_plan,
@@ -528,6 +529,7 @@ def _discover_candidates(
             (path, path.relative_to(source).as_posix())
             for path in sorted(source.rglob("*"))
             if path.is_file()
+            and not is_platform_cruft_path(path.relative_to(source).as_posix())
         ]
     if not sources:
         raise typer.BadParameter(f"{source} has no files to upload", param_hint="SOURCE")
@@ -1248,6 +1250,35 @@ def watch_job(
         typer.echo(format_job_failure(final, label="munchy job"), err=True)
         raise typer.Exit(1)
     emit(final if json_mode else format_job(final), json_mode=json_mode)
+
+
+@job_app.command("resume")
+def resume_job(
+    job_id: Annotated[str, typer.Argument(help="Runner job id")],
+    runner_url: Annotated[
+        str | None,
+        typer.Option("--runner-url", help="Munchy runner URL; defaults to MUNCHY_RUNNER_URL"),
+    ] = None,
+    wait: Annotated[
+        bool,
+        typer.Option("--wait", help="Wait for the resumed job to finish"),
+    ] = False,
+    interval: Annotated[float, typer.Option("--interval", min=0.5)] = 10.0,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Resume a failed or cancelled runner job after repair."""
+
+    client = MunchyRunnerClient(runner_url_setting(runner_url))
+    try:
+        job = client.resume_job(job_id)
+        if wait:
+            job = client.wait_for_job(job_id, interval=interval)
+            if not job_finished_cleanly(job):
+                typer.echo(format_job_failure(job, label="munchy job"), err=True)
+                raise typer.Exit(1)
+    except Exception as exc:
+        _exit_runner_error(exc)
+    emit(job if json_mode else format_job(job), json_mode=json_mode)
 
 
 @job_app.command("cancel")

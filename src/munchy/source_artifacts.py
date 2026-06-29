@@ -1806,15 +1806,14 @@ def _assemble_source_artifact_bundle_inputs(
     selected_output_path: pathlib.Path,
     encode_output_path: pathlib.Path,
     source_filesystem_metadata: Mapping[str, Any] | None = None,
+    include_rebuild_plan: bool = True,
 ) -> list[SourceArtifact]:
     inventory_root = work_dir / "inventory"
     encoding_root = work_dir / "encoding"
-    rebuild_root = work_dir / "rebuild"
     source_ffprobe_path = inventory_root / "source-ffprobe.json"
     source_filesystem_path = inventory_root / "source-filesystem.json"
     source_inventory_path = inventory_root / "source-inventory.json"
     stream_transforms_path = encoding_root / "stream-transforms.json"
-    rebuild_plan_path = rebuild_root / "rebuild-plan.json"
     if not isinstance(source_filesystem_metadata, Mapping):
         raise RuntimeError(
             "unresumable: source filesystem metadata sidecar is missing for "
@@ -1847,16 +1846,18 @@ def _assemble_source_artifact_bundle_inputs(
             stream_transforms=stream_transforms,
         ),
     )
-    _write_json_artifact(
-        rebuild_plan_path,
-        _rebuild_plan_payload(
-            src=src,
-            output=output,
-            stream_transforms=stream_transforms,
-            source_container=source_container,
-            container_inventory=container_inventory,
-        ),
-    )
+    rebuild_plan_path = work_dir / "rebuild" / "rebuild-plan.json"
+    if include_rebuild_plan:
+        _write_json_artifact(
+            rebuild_plan_path,
+            _rebuild_plan_payload(
+                src=src,
+                output=output,
+                stream_transforms=stream_transforms,
+                source_container=source_container,
+                container_inventory=container_inventory,
+            ),
+        )
 
     artifacts: list[SourceArtifact] = []
     used_names = {"manifest.json"}
@@ -1865,7 +1866,7 @@ def _assemble_source_artifact_bundle_inputs(
         used_names.add(artifact.arcname)
     artifacts.extend(_source_stream_artifact_records(exports, used_names))
 
-    for artifact_path, arcname, kind, description, mime_type in (
+    structured_artifacts = [
         (
             source_ffprobe_path,
             "inventory/source-ffprobe.json",
@@ -1894,14 +1895,19 @@ def _assemble_source_artifact_bundle_inputs(
             "Archive stream transform plan",
             "application/json",
         ),
-        (
-            rebuild_plan_path,
-            "rebuild/rebuild-plan.json",
-            "rebuild_plan",
-            "Source container rebuild plan",
-            "application/json",
-        ),
-    ):
+    ]
+    if include_rebuild_plan:
+        structured_artifacts.append(
+            (
+                rebuild_plan_path,
+                "rebuild/rebuild-plan.json",
+                "rebuild_plan",
+                "Source container rebuild plan",
+                "application/json",
+            )
+        )
+
+    for artifact_path, arcname, kind, description, mime_type in structured_artifacts:
         used_names.add(arcname)
         artifacts.append(
             SourceArtifact(
@@ -2361,6 +2367,7 @@ def _audit_extracted_source_artifacts(
     checks.append(f"artifact sha256 hashes checked: {hashes_checked}")
 
     source_rebuild_mode = ""
+    source_container_rebuild_supported = False
     try:
         inventory_path = _artifact_path_for_kind(
             manifest,
@@ -2380,6 +2387,7 @@ def _audit_extracted_source_artifacts(
         elif container_rebuild.get("supported") is True:
             raw_mode = container_rebuild.get("mode")
             source_rebuild_mode = raw_mode if isinstance(raw_mode, str) else ""
+            source_container_rebuild_supported = True
             checks.append(
                 f"source container rebuild contract: {container_rebuild.get('mode') or 'supported'}"
             )
@@ -2562,6 +2570,8 @@ def _audit_extracted_source_artifacts(
             "archive Matroska media streams plus copied subtitles/attachments "
             "plus Matroska/WebM source identification"
         )
+    elif not source_container_rebuild_supported:
+        rebuild_scope = "conversion-only archive; source-container rebuild is not supported"
     else:
         rebuild_scope = (
             "archive media streams plus rebuild-muxable preserved stream "

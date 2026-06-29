@@ -405,6 +405,67 @@ def test_munchy_job_start_builds_direct_group_upload(monkeypatch, tmp_path) -> N
     assert json.loads(result.stdout)["state"] == "succeeded"
 
 
+def test_munchy_job_start_skips_platform_cruft_before_upload(
+    monkeypatch,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    source_dir = tmp_path / "phone"
+    source_dir.mkdir()
+    (source_dir / "IMG_0001.MOV").write_bytes(b"video")
+    (source_dir / ".DS_Store").write_bytes(b"finder")
+    nested = source_dir / "nested"
+    nested.mkdir()
+    (nested / "._IMG_0001.MOV").write_bytes(b"appledouble")
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, base_url: str) -> None:
+            assert base_url == "http://runner"
+
+        def check_ready(
+            self,
+            workflow_mode: str | None = None,
+            *,
+            requested_containers: list[str] | None = None,
+        ) -> None:
+            pass
+
+        def create_or_get_input_upload(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
+            seen["request"] = request
+            return {"upload_id": request.upload_id}
+
+        def create_job(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
+            return {"job_id": request.job_id, "state": "queued"}
+
+        def upload_files(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
+            return {"upload_id": request.upload_id, "state": "uploaded"}
+
+    monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
+
+    result = runner.invoke(
+        app,
+        [
+            "job",
+            "start",
+            str(source_dir),
+            "--runner-url",
+            "http://runner",
+            "--collection",
+            "phone",
+            "--timestamp",
+            "20260621T120000Z",
+            "--group",
+            "video",
+            "--no-hash-cache",
+            "--no-wait",
+        ],
+    )
+
+    assert result.exit_code == 0
+    request = seen["request"]
+    assert [item.rel_path for item in request.files] == ["video/IMG_0001.MOV"]
+
+
 def test_munchy_job_start_uses_configured_profile_routing(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
     source_dir = tmp_path / "camera"
     source_dir.mkdir()

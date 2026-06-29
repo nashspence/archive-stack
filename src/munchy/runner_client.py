@@ -1916,6 +1916,13 @@ class MunchyRunnerClient:
         timeout = CLEANUP_REQUEST_TIMEOUT_SECONDS if cleanup else 60.0
         return self.json("POST", path, expect={202}, timeout=timeout)
 
+    def resume_job(self, job_id: str) -> dict[str, Any]:
+        return self.json(
+            "POST",
+            f"/v1/jobs/{urllib.parse.quote(job_id)}/resume",
+            expect={202},
+        )
+
     def wait_for_job(
         self,
         job_id: str,

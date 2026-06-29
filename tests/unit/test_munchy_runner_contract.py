@@ -490,6 +490,34 @@ def test_metadata_projection_can_use_uploaded_filesystem_birthtime(
     assert metadata.capture_date_source == "filesystem_birthtime:source_birthtime"
 
 
+def test_audio_container_metadata_args_write_capture_date_and_gps(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    metadata = runner.project_immich_metadata(
+        {
+            "ffprobe.format_tags.creation_time": "2026-06-28T20:30:40-07:00",
+            "ffprobe.format_tags.location": "+37.331700-122.030100+19.500/",
+        },
+    )
+
+    assert runner.audio_container_metadata_args(metadata) == [
+        "-metadata",
+        "DATE=2026-06-28T20:30:40-07:00",
+        "-metadata",
+        "creation_time=2026-06-28T20:30:40-07:00",
+        "-metadata",
+        "LOCATION=+37.3317-122.0301+19.5/",
+        "-metadata",
+        "GPSLatitude=37.3317",
+        "-metadata",
+        "GPSLongitude=-122.0301",
+        "-metadata",
+        "GPSAltitude=19.5",
+    ]
+
+
 def test_routed_structured_file_stays_complete_after_materialized_tusd_cleanup(
     tmp_path: Path,
     monkeypatch,
@@ -856,6 +884,13 @@ def test_archive_audio_group_encodes_opus_and_writes_source_artifacts(
                 },
             },
         },
+        "metadata_projection": {
+            "allow_missing_gps": True,
+            "capture_date_sources": [
+                {"type": "embedded"},
+                {"type": "filesystem_birthtime"},
+            ],
+        },
     }
     commands: list[list[str]] = []
 
@@ -872,6 +907,8 @@ def test_archive_audio_group_encodes_opus_and_writes_source_artifacts(
 
     monkeypatch.setattr(runner, "run_command", fake_run_command)
     monkeypatch.setattr(runner, "build_strict_source_artifacts", fake_build_strict_source_artifacts)
+    monkeypatch.setattr(runner, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []})
+    monkeypatch.setattr(runner, "exiftool_for_routing", lambda _path: {})
 
     result = runner.run_archive_audio_group(
         input_root=input_root,
@@ -908,11 +945,137 @@ def test_archive_audio_group_encodes_opus_and_writes_source_artifacts(
             "10",
             "-application",
             "audio",
+            "-metadata",
+            "DATE=2026-06-28T20:30:40+00:00",
+            "-metadata",
+            "creation_time=2026-06-28T20:30:40+00:00",
             "-f",
             "opus",
             str(output),
         ]
     ]
+
+
+def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_custody(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    upload_id = "upload-voice"
+    input_root = runner.shared_input_upload_root(upload_id) / "voice"
+    output_root = tmp_path / "archive" / "voice"
+    source = input_root / "memo" / "R-00013_2606222246_REC.MP3"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"mp3")
+    source_metadata = {
+        "stat": {
+            "birthtime": "2026-06-23T05:46:32+00:00",
+            "size": 3,
+        }
+    }
+    runner.write_filesystem_metadata_map(
+        input_root,
+        {"memo/R-00013_2606222246_REC.MP3": source_metadata},
+        created_at="2026-06-29T00:00:00Z",
+    )
+    group_config = {
+        "archive_mode": "audio",
+        "tasks": ["archive_audio"],
+        "encode_profile": {
+            "target": "munchy-audio",
+            "archive": {
+                "codec": "opus",
+                "container": "opus",
+                "audio": {"bitrate": "64k"},
+            },
+            "source": {"allow_conversion_only_container": True},
+        },
+        "metadata_projection": {
+            "allow_missing_gps": True,
+            "capture_date_sources": [
+                {"type": "embedded"},
+                {"type": "filesystem_birthtime"},
+            ],
+            "tags": ["device/esonic-memoq-sr600-nash"],
+        },
+    }
+
+    def fake_run_command(cmd: list[str], **_kwargs: object) -> dict[str, object]:
+        Path(cmd[-1]).write_bytes(b"opus")
+        return {"command": cmd, "duration_s": 0.1}
+
+    def fake_build_strict_source_artifacts(**kwargs: object) -> dict[str, object]:
+        encode_profile = kwargs["encode_profile"]
+        filesystem_metadata = kwargs["source_filesystem_metadata"]
+        assert isinstance(encode_profile, dict)
+        assert encode_profile["source"]["allow_conversion_only_container"] is True
+        assert filesystem_metadata == source_metadata
+        sidecar = Path(str(kwargs["archive_mkv"]) + ".source-artifacts.tar.zst")
+        sidecar.write_bytes(b"source artifacts")
+        return {
+            "path": str(sidecar),
+            "audit": {
+                "rebuild_supported": False,
+                "rebuild_blockers": ["source_container"],
+                "rebuild_scope": (
+                    "conversion-only archive; source-container rebuild is not supported"
+                ),
+            },
+        }
+
+    monkeypatch.setattr(runner, "run_command", fake_run_command)
+    monkeypatch.setattr(runner, "build_strict_source_artifacts", fake_build_strict_source_artifacts)
+    monkeypatch.setattr(runner, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []})
+    monkeypatch.setattr(runner, "exiftool_for_routing", lambda _path: {})
+
+    result = runner.run_archive_audio_group(
+        input_root=input_root,
+        output_root=output_root,
+        group_config=group_config,
+    )
+    output = output_root / "memo" / "R-00013_2606222246_REC.opus"
+    upload = runner.save_input_upload_raw(
+        {
+            "upload_id": upload_id,
+            "files": [
+                {
+                    "path": "voice/memo/R-00013_2606222246_REC.MP3",
+                    "bytes": 3,
+                    "upload_id": "file-voice",
+                    "input_upload_id": upload_id,
+                    "filesystem_metadata": source_metadata,
+                }
+            ],
+        }
+    )
+    job = {
+        "job_id": "job-voice",
+        "input_upload_id": upload_id,
+        "collection_slug": "esonic-preview",
+    }
+    runner.save_job(job)
+
+    updated = runner.write_metadata_projection_sidecars(
+        job,
+        upload,
+        {"voice": group_config},
+        tmp_path / "archive",
+    )
+
+    assert result["status"] == "succeeded"
+    assert output.read_bytes() == b"opus"
+    sidecar = output.with_name("R-00013_2606222246_REC.opus.xmp")
+    xmp = sidecar.read_text(encoding="utf-8")
+    assert 'exif:DateTimeOriginal="2026-06-23T05:46:32+00:00"' in xmp
+    assert "geo:lat=" not in xmp
+    assert "<rdf:li>device/esonic-memoq-sr600-nash</rdf:li>" in xmp
+    assert "<rdf:li>munchy/collection/esonic-preview</rdf:li>" in xmp
+    assert "<rdf:li>munchy/group/voice</rdf:li>" in xmp
+    assert updated["files"][0]["metadata_projection_sidecar"] == (
+        "voice/memo/R-00013_2606222246_REC.opus.xmp"
+    )
 
 
 def test_scheduler_reserves_running_job_slots_and_leaves_extra_jobs_queued(
@@ -1326,6 +1489,60 @@ def test_resume_job_preserves_fully_uploaded_riverhog_session(
     assert stored["eager_archive"]["files"] == {"camera/a.mp4": {"state": "encoded"}}
     assert stored["riverhog_session_upload"]["files"] == riverhog_session["files"]
     assert stored["riverhog_resume_preserved_at"]
+
+
+def test_review_rclone_upload_excludes_platform_cruft(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("MUNCHY_RUNNER_REVIEW_UPLOAD_ENABLED", "1")
+    runner = load_runner(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        runner,
+        "retry_handoff_until_success",
+        lambda _job, **kwargs: kwargs["operation"](),
+    )
+    source_dir = tmp_path / "review"
+    source_dir.mkdir()
+    (source_dir / ".DS_Store").write_bytes(b"finder")
+    (source_dir / "clip.webm").write_bytes(b"video")
+    nested = source_dir / "nested"
+    nested.mkdir()
+    (nested / "._clip.webm").write_bytes(b"appledouble")
+    commands: list[list[str]] = []
+
+    def fake_run_review_command(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+        commands.append(list(cmd))
+        return {"returncode": 0}
+
+    monkeypatch.setattr(runner, "run_review_command", fake_run_review_command)
+
+    result = runner.upload_review(
+        {
+            "job_id": "job-1",
+            "collection_slug": "preview",
+            "collection_timestamp": "20260629T000000Z",
+            "review_upload": {
+                "enabled": True,
+                "method": "rclone",
+                "mode": "copy",
+                "destination": "remote:{collection_slug}/{collection_timestamp}",
+            },
+        },
+        source_dir,
+        source_label="collection preview",
+    )
+
+    assert result["artifact_count"] == 1
+    assert result["destination"] == "remote:preview/20260629T000000Z"
+    command = commands[0]
+    assert command[:2] == ["rclone", "copy"]
+    assert str(source_dir) in command
+    assert "remote:preview/20260629T000000Z" in command
+    assert command.index(str(source_dir)) < command.index("remote:preview/20260629T000000Z")
+    assert command.count("--exclude") >= 4
+    assert ".DS_Store" in command
+    assert "**/._*" in command
 
 
 def test_cancel_job_with_cleanup_removes_local_work_and_input_upload(
