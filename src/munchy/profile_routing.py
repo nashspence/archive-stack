@@ -24,6 +24,9 @@ class ProfileRouteMatch:
     collection_rel_path: str | None = None
     pair_kind: str | None = None
     pairing_id: str | None = None
+    pair_role: str | None = None
+    pair_with: str | None = None
+    facts: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -97,9 +100,9 @@ def match_profile_route(
 
     for index, route in enumerate(profile_routes(profile_routing)):
         route_facts: Mapping[str, Any] = facts
-        if route_requires_probe(route):
+        if route_requires_probe(route, profile_routing=profile_routing):
             route_facts = ensure_probe_facts()
-        if route_requires_exiftool(route):
+        if route_requires_exiftool(route, profile_routing=profile_routing):
             route_facts = ensure_full_facts()
         if not route_matches(route, route_facts, profile_routing=profile_routing):
             continue
@@ -116,6 +119,9 @@ def match_profile_route(
             collection_rel_path=collection_rel_path,
             pair_kind=optional_fact(route_facts, "pair.kind"),
             pairing_id=optional_fact(route_facts, "pair.id"),
+            pair_role=optional_fact(route_facts, "pair.role"),
+            pair_with=optional_fact(route_facts, "pair.with"),
+            facts=route_facts,
         )
     return None
 
@@ -161,6 +167,13 @@ def profile_routing_plan(
             "action": match.action,
             "pair_kind": match.pair_kind,
             "pairing_id": match.pairing_id,
+            "pair_role": match.pair_role,
+            "pair_with": match.pair_with,
+            "matched_facts": matched_fact_values(
+                match.route,
+                match.facts,
+                profile_routing=profile_routing,
+            ),
         }
         if match.action == "leave":
             left.append(common)
@@ -220,12 +233,28 @@ def profile_routing_requires_exiftool(profile_routing: Mapping[str, Any]) -> boo
     return routing_uses_fact_prefix(profile_routing, EXIFTOOL_FACT_PREFIXES)
 
 
-def route_requires_probe(route: Mapping[str, Any]) -> bool:
-    return predicate_uses_fact_prefix(mapping(route.get("when")), PROBE_FACT_PREFIXES)
+def route_requires_probe(
+    route: Mapping[str, Any],
+    *,
+    profile_routing: Mapping[str, Any] | None = None,
+) -> bool:
+    return predicate_uses_fact_prefix(
+        mapping(route.get("when")),
+        PROBE_FACT_PREFIXES,
+        profile_routing=profile_routing,
+    )
 
 
-def route_requires_exiftool(route: Mapping[str, Any]) -> bool:
-    return predicate_uses_fact_prefix(mapping(route.get("when")), EXIFTOOL_FACT_PREFIXES)
+def route_requires_exiftool(
+    route: Mapping[str, Any],
+    *,
+    profile_routing: Mapping[str, Any] | None = None,
+) -> bool:
+    return predicate_uses_fact_prefix(
+        mapping(route.get("when")),
+        EXIFTOOL_FACT_PREFIXES,
+        profile_routing=profile_routing,
+    )
 
 
 def routing_file_facts(
@@ -544,6 +573,88 @@ def route_matches(
     return predicate_matches(when, facts, profile_routing=profile_routing)
 
 
+def matched_fact_values(
+    route: Mapping[str, Any],
+    facts: Mapping[str, Any],
+    *,
+    profile_routing: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        name: fact_value(facts, name)
+        for name in route_fact_names(route, profile_routing=profile_routing)
+        if fact_value(facts, name) not in (None, "")
+    }
+
+
+def route_fact_names(
+    route: Mapping[str, Any],
+    *,
+    profile_routing: Mapping[str, Any],
+) -> list[str]:
+    return sorted(
+        predicate_fact_names(
+            mapping(route.get("when")),
+            profile_routing=profile_routing,
+            seen_gates=set(),
+        )
+    )
+
+
+def predicate_fact_names(
+    predicate: Mapping[str, Any],
+    *,
+    profile_routing: Mapping[str, Any],
+    seen_gates: set[str],
+) -> set[str]:
+    if not predicate:
+        return set()
+    names: set[str] = set()
+    fact = predicate.get("fact")
+    if isinstance(fact, str) and fact.strip():
+        names.add(fact.strip())
+    if predicate.get("pair") is not None or predicate.get("not_pair") is not None:
+        names.add("pair.kind")
+    if predicate.get("pair_role") is not None:
+        names.add("pair.role")
+    for key in ("all", "any"):
+        items = predicate.get(key)
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, Mapping):
+                    names.update(
+                        predicate_fact_names(
+                            item,
+                            profile_routing=profile_routing,
+                            seen_gates=seen_gates,
+                        )
+                    )
+    not_item = predicate.get("not")
+    if isinstance(not_item, Mapping):
+        names.update(
+            predicate_fact_names(
+                not_item,
+                profile_routing=profile_routing,
+                seen_gates=seen_gates,
+            )
+        )
+    for gate_key in ("gate", "not_gate"):
+        for gate_name in sequence(predicate.get(gate_key)):
+            text = str(gate_name).strip()
+            if not text or text in seen_gates:
+                continue
+            gate = mapping(mapping(profile_routing.get("gates")).get(text))
+            if not gate:
+                continue
+            names.update(
+                predicate_fact_names(
+                    gate,
+                    profile_routing=profile_routing,
+                    seen_gates={*seen_gates, text},
+                )
+            )
+    return names
+
+
 def predicate_matches(
     predicate: Mapping[str, Any],
     facts: Mapping[str, Any],
@@ -792,21 +903,57 @@ def routing_uses_fact_prefix(
     )
 
 
-def predicate_uses_fact_prefix(predicate: Mapping[str, Any], prefixes: tuple[str, ...]) -> bool:
+def predicate_uses_fact_prefix(
+    predicate: Mapping[str, Any],
+    prefixes: tuple[str, ...],
+    *,
+    profile_routing: Mapping[str, Any] | None = None,
+    seen_gates: set[str] | None = None,
+) -> bool:
     if not predicate:
         return False
+    seen = seen_gates or set()
     fact = predicate.get("fact")
     if isinstance(fact, str) and fact.startswith(prefixes):
         return True
     for key in ("all", "any"):
         items = predicate.get(key)
         if isinstance(items, list) and any(
-            isinstance(item, Mapping) and predicate_uses_fact_prefix(item, prefixes)
+            isinstance(item, Mapping)
+            and predicate_uses_fact_prefix(
+                item,
+                prefixes,
+                profile_routing=profile_routing,
+                seen_gates=seen,
+            )
             for item in items
         ):
             return True
     not_item = predicate.get("not")
-    return isinstance(not_item, Mapping) and predicate_uses_fact_prefix(not_item, prefixes)
+    if isinstance(not_item, Mapping) and predicate_uses_fact_prefix(
+        not_item,
+        prefixes,
+        profile_routing=profile_routing,
+        seen_gates=seen,
+    ):
+        return True
+    if profile_routing is None:
+        return False
+    gates = mapping(profile_routing.get("gates"))
+    for key in ("gate", "not_gate"):
+        for gate_name in sequence(predicate.get(key)):
+            text = str(gate_name).strip()
+            if not text or text in seen:
+                continue
+            gate = gates.get(text)
+            if isinstance(gate, Mapping) and predicate_uses_fact_prefix(
+                gate,
+                prefixes,
+                profile_routing=profile_routing,
+                seen_gates={*seen, text},
+            ):
+                return True
+    return False
 
 
 def lower_mapping(value: object) -> dict[str, str]:

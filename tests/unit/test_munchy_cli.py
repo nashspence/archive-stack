@@ -36,6 +36,10 @@ def test_munchy_command_help_has_summaries() -> None:
     ):
         assert summary in job.stdout
 
+    routing = runner.invoke(app, ["routing", "--help"])
+    assert routing.exit_code == 0
+    assert "Explain how profile routing classifies local files." in routing.stdout
+
 
 def test_munchy_profile_validate(tmp_path) -> None:  # type: ignore[no-untyped-def]
     profile_path = tmp_path / "profile.toml"
@@ -498,3 +502,41 @@ when = { path = { suffix = ".mp4" } }
         request.job_payload["groups"]["video"]["encode_profile"]["archive"]["container"] == "webm"
     )
     assert seen["requested_containers"] == ["webm"]
+
+
+def test_munchy_routing_explain_reports_matches(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    source_dir = tmp_path / "phone"
+    source_dir.mkdir()
+    (source_dir / "IMG_0001.MOV").write_bytes(b"video")
+    config = tmp_path / "munchy.toml"
+    config.write_text(
+        """
+[job]
+upload_prefix = "phone"
+
+[groups.video]
+archive_mode = "av1_nvenc"
+gpu_tasks = ["archive_video"]
+
+[[job.profile_routing.routes]]
+id = "phone-video"
+group = "video"
+into = "phone/video"
+when = { path = { prefix = "phone", suffix = ".mov" } }
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        ["routing", "explain", str(source_dir), "--config", str(config), "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["matched_files"] == 1
+    assert payload["matches"][0]["path"] == "phone/IMG_0001.MOV"
+    assert payload["matches"][0]["route_id"] == "phone-video"
+    assert payload["matches"][0]["group"] == "video"
+    assert payload["matches"][0]["collection_rel_path"] == "phone/video/IMG_0001.MOV"

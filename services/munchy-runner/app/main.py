@@ -38,6 +38,7 @@ from munchy.profile_routing import (
     PREDICATE_KEYS,
     ProfileRoutingFile,
     match_profile_route,
+    matched_fact_values,
     profile_routing_plan,
     profile_routing_requires_exiftool,
     profile_routing_requires_probe,
@@ -202,6 +203,7 @@ DEFAULT_NOTIFY_ENABLED = env_flag(
     "MUNCHY_RUNNER_NOTIFY_DEFAULT_ENABLED",
     "1" if NOTIFY_ENABLED and DEFAULT_NOTIFY_RECIPIENTS else "0",
 )
+ROUTING_MANIFEST_FILENAME = ".munchy-routing-manifest.json"
 HANDOFF_RETRY_INITIAL_SECONDS = float(
     os.getenv("MUNCHY_RUNNER_HANDOFF_RETRY_INITIAL_SECONDS", "30")
 )
@@ -3195,6 +3197,12 @@ def apply_profile_routing_decision(
         file_state["profile_pair_kind"] = str(decision["pair_kind"])
     if decision.get("pairing_id"):
         file_state["profile_pairing_id"] = str(decision["pairing_id"])
+    if decision.get("pair_role"):
+        file_state["profile_pair_role"] = str(decision["pair_role"])
+    if decision.get("pair_with"):
+        file_state["profile_pair_with"] = str(decision["pair_with"])
+    if isinstance(decision.get("matched_facts"), dict):
+        file_state["profile_route_matched_facts"] = dict(decision["matched_facts"])
     if action == "leave":
         file_state["profile_routed_at"] = now_iso()
         return True
@@ -3229,7 +3237,19 @@ def route_completed_file(
     if match.action == "leave":
         return apply_profile_routing_decision(
             file_state,
-            {"route_id": match.route_id, "action": "leave"},
+            {
+                "route_id": match.route_id,
+                "action": "leave",
+                "pair_kind": match.pair_kind,
+                "pairing_id": match.pairing_id,
+                "pair_role": match.pair_role,
+                "pair_with": match.pair_with,
+                "matched_facts": matched_fact_values(
+                    match.route,
+                    match.facts,
+                    profile_routing=routing,
+                ),
+            },
         )
     group = validate_profile_group_name(match.group)
     if group not in groups:
@@ -3243,6 +3263,13 @@ def route_completed_file(
             "collection_rel_path": match.collection_rel_path or rel_path,
             "pair_kind": match.pair_kind,
             "pairing_id": match.pairing_id,
+            "pair_role": match.pair_role,
+            "pair_with": match.pair_with,
+            "matched_facts": matched_fact_values(
+                match.route,
+                match.facts,
+                profile_routing=routing,
+            ),
         },
     )
 
@@ -3425,6 +3452,115 @@ def group_produces_primary_archive_output(group_config: dict[str, Any]) -> bool:
         return True
     tasks = set(str(task) for task in group_config.get("gpu_tasks") or [])
     return "archive_video" in tasks
+
+
+def archive_output_path_for_routed_file(
+    file_state: dict[str, Any],
+    *,
+    group_name: str,
+    group_config: dict[str, Any],
+    archive_dir: Path,
+) -> Path:
+    if normalize_archive_mode(str(group_config.get("archive_mode") or "av1_nvenc")) == "originals":
+        return archive_dir / group_name / upload_file_group_rel_for_state(file_state, group_name)
+    return archive_output_for_upload_file(
+        file_state,
+        group_name=group_name,
+        group_config=group_config,
+        archive_dir=archive_dir,
+    )
+
+
+def routing_manifest_output_entry(path: Path, *, archive_dir: Path) -> dict[str, Any]:
+    rel_path = path.relative_to(archive_dir).as_posix()
+    entry: dict[str, Any] = {
+        "path": rel_path,
+        "exists": path.exists(),
+    }
+    if path.exists():
+        entry["bytes"] = path.stat().st_size
+    return entry
+
+
+def routing_manifest_file_entry(
+    file_state: dict[str, Any],
+    *,
+    groups: dict[str, dict[str, Any]],
+    archive_dir: Path,
+) -> dict[str, Any]:
+    action = str(file_state.get("profile_route_action") or "")
+    group_name = upload_file_resolved_group(file_state)
+    entry: dict[str, Any] = {
+        "source": {
+            "path": str(file_state.get("path") or ""),
+            "bytes": int(file_state.get("bytes") or 0),
+        },
+        "route": {
+            "id": str(file_state.get("profile_route_id") or ""),
+            "action": action or ("upload" if group_name else ""),
+        },
+    }
+    if file_state.get("sha256"):
+        entry["source"]["sha256"] = str(file_state["sha256"])
+    pair: dict[str, Any] = {}
+    for source_key, output_key in (
+        ("profile_pair_kind", "kind"),
+        ("profile_pairing_id", "id"),
+        ("profile_pair_role", "role"),
+        ("profile_pair_with", "with"),
+    ):
+        if file_state.get(source_key):
+            pair[output_key] = str(file_state[source_key])
+    if pair:
+        entry["pair"] = pair
+    matched_facts = file_state.get("profile_route_matched_facts")
+    if isinstance(matched_facts, dict) and matched_facts:
+        entry["route"]["matched_facts"] = matched_facts
+    if group_name:
+        group_config = groups[group_name]
+        group_rel = upload_file_group_rel_for_state(file_state, group_name).as_posix()
+        entry["route"]["group"] = group_name
+        entry["route"]["group_rel_path"] = group_rel
+        entry["output"] = routing_manifest_output_entry(
+            archive_output_path_for_routed_file(
+                file_state,
+                group_name=group_name,
+                group_config=group_config,
+                archive_dir=archive_dir,
+            ),
+            archive_dir=archive_dir,
+        )
+    return entry
+
+
+def write_profile_routing_manifest(
+    job: dict[str, Any],
+    upload: dict[str, Any],
+    groups: dict[str, dict[str, Any]],
+    archive_dir: Path,
+) -> None:
+    if not isinstance(job.get("profile_routing"), dict):
+        return
+    files = [
+        routing_manifest_file_entry(file_state, groups=groups, archive_dir=archive_dir)
+        for file_state in upload.get("files", [])
+        if file_state.get("profile_routed_at")
+    ]
+    payload = {
+        "schema": "munchy.profile-routing-manifest",
+        "schema_version": 1,
+        "created_at": now_iso(),
+        "job_id": str(job.get("job_id") or ""),
+        "input_upload_id": str(job.get("input_upload_id") or ""),
+        "collection_slug": str(job.get("collection_slug") or ""),
+        "collection_timestamp": str(job.get("collection_timestamp") or ""),
+        "files": sorted(files, key=lambda item: str(item["source"]["path"])),
+    }
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    (archive_dir / ROUTING_MANIFEST_FILENAME).write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def expected_riverhog_primary_files_total(
@@ -6618,6 +6754,9 @@ def run_job(job_id: str) -> None:
             finally:
                 release_job_gpu(job, token)
         raise_if_job_cancelled(job_id)
+        if isinstance(job.get("profile_routing"), dict):
+            input_upload = load_input_upload(str(job["input_upload_id"]))
+            write_profile_routing_manifest(job, input_upload, groups, archive_dir)
 
         workflow_mode = str(job.get("workflow_mode") or "archive")
         if workflow_mode == "collection_preview":
@@ -6980,7 +7119,7 @@ def profile_routing_preflight(req: ProfileRoutingPreflightRequest) -> dict[str, 
     probe_route_ids = [
         str(route.get("id") or f"route-{index + 1}")
         for index, route in enumerate(routing.get("routes") or [])
-        if isinstance(route, dict) and route_requires_probe(route)
+        if isinstance(route, dict) and route_requires_probe(route, profile_routing=routing)
     ]
     for unmatched in plan.unmatched:
         if unmatched.get("reason") == "no_matching_route":

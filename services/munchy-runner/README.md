@@ -75,6 +75,19 @@ munchy profile validate config/examples/munchy/job.toml
 munchy profile show config/examples/munchy/av1-nvenc-profile.toml
 ```
 
+Explain profile routing before submitting or deploying a job config:
+
+```bash
+munchy routing explain ./incoming/phone --config config/examples/munchy/job.toml
+munchy routing explain ./incoming/phone --config config/examples/munchy/job.toml --json
+```
+
+The report shows each file's matched route, target group, collection-relative
+path, pair role when applicable, route/group counts, and unmatched fallthroughs.
+The command exits nonzero when any file falls through the ordered routes.
+Structured-routing jobs also write `.munchy-routing-manifest.json` into the
+archive/review output tree with the actual route decisions and output paths.
+
 Important environment variables:
 
 - `MUNCHY_RUNNER_STATE_DIR`

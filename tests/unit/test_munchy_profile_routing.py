@@ -117,6 +117,51 @@ def test_profile_routing_uses_ffprobe_facts_before_falling_through() -> None:
     assert match.route_id == "iphone-video-review"
 
 
+def test_profile_route_metadata_need_detection_traverses_gates() -> None:
+    calls = 0
+
+    def load_facts() -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return routing_file_facts(
+            "phone/IMG_0001.HEIC",
+            exiftool_summary={"tags": {"make": "Apple", "model": "iPhone SE (2nd generation)"}},
+        )
+
+    routing = {
+        "gates": {
+            "iphone-native": {
+                "all": [
+                    {"fact": "exif.make", "equals": "apple"},
+                    {"fact": "exif.model", "equals": "iPhone SE (2nd generation)"},
+                ]
+            }
+        },
+        "routes": [
+            {
+                "id": "iphone-photo",
+                "group": "photos",
+                "when": {
+                    "all": [
+                        {"gate": "iphone-native"},
+                        {"path": {"suffix": ".heic"}},
+                    ]
+                },
+            }
+        ],
+    }
+
+    match = match_profile_route(
+        routing,
+        "phone/IMG_0001.HEIC",
+        routing_facts_loader=load_facts,
+    )
+
+    assert calls == 1
+    assert match is not None
+    assert match.route_id == "iphone-photo"
+
+
 def test_profile_routing_pairs_live_photo_before_video_fallback() -> None:
     routing = {
         "pairings": [
@@ -176,6 +221,7 @@ def test_profile_routing_pairs_live_photo_before_video_fallback() -> None:
     assert plan.ok is True
     assert [item["group"] for item in plan.matches] == ["live-photo", "live-photo"]
     assert [item["pair_kind"] for item in plan.matches] == ["live_photo", "live_photo"]
+    assert [item["pair_role"] for item in plan.matches] == ["still", "movie"]
     assert [item["collection_rel_path"] for item in plan.matches] == [
         "live-photo/IMG_0001.HEIC",
         "live-photo/IMG_0001.MOV",
@@ -218,6 +264,9 @@ def test_profile_routing_leave_action_excludes_intentional_leftovers() -> None:
             "action": "leave",
             "pair_kind": None,
             "pairing_id": None,
+            "pair_role": None,
+            "pair_with": None,
+            "matched_facts": {},
         }
     ]
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 import tomllib
 from collections.abc import Mapping, Sequence
@@ -15,6 +16,15 @@ import typer
 from pydantic import ValidationError
 
 from munchy.local_files import FileHashCache, LocalFileCandidate, hash_local_file_candidates
+from munchy.profile_routing import (
+    ProfileRoutingFile,
+    profile_routing_plan,
+    profile_routing_requires_exiftool,
+    profile_routing_requires_probe,
+    routing_exiftool_summary,
+    routing_file_facts,
+    routing_probe_summary,
+)
 from munchy.profiles import EncodeProfile, ProfileError, load_encode_profiles
 from munchy.runner_client import (
     ATTENTION_STYLE,
@@ -54,8 +64,10 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only in stripped env
 app = typer.Typer(help="Munchy media ingest CLI.")
 profile_app = typer.Typer(help="Encode profile operations.")
 job_app = typer.Typer(help="Runner job operations.")
+routing_app = typer.Typer(help="Profile routing authoring tools.")
 app.add_typer(profile_app, name="profile")
 app.add_typer(job_app, name="job")
+app.add_typer(routing_app, name="routing")
 
 DEFAULT_GPU_TASKS = ["archive_video", "qcut_video", "audio_review"]
 DEFAULT_GROUP = "video"
@@ -557,6 +569,174 @@ def _hash_files(
     ]
 
 
+def _ffprobe_for_routing(path: Path) -> dict[str, Any]:
+    proc = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            str(path),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "ffprobe failed")[-1000:]
+        raise RuntimeError(f"ffprobe failed for {path}: {detail}")
+    payload = json.loads(proc.stdout or "{}")
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"ffprobe returned non-object JSON for {path}")
+    return payload
+
+
+def _exiftool_for_routing(path: Path) -> dict[str, Any]:
+    proc = subprocess.run(
+        [
+            "exiftool",
+            "-j",
+            "-a",
+            "-G1",
+            "-s",
+            "-ee",
+            "-FileName",
+            "-FileTypeExtension",
+            "-MIMEType",
+            "-Make",
+            "-Model",
+            "-Software",
+            "-LensModel",
+            "-CameraIdentifier",
+            "-CameraDirection",
+            "-ImageWidth",
+            "-ImageHeight",
+            "-Orientation",
+            "-DateTimeOriginal",
+            "-CreateDate",
+            "-CreationDate",
+            "-BurstUUID",
+            "-ContentIdentifier",
+            "-StillImageTime",
+            "-CaptureMode",
+            "-FullFrameRatePlaybackIntent",
+            "-AuxiliaryImageType",
+            "-DepthMapImage",
+            "-MPImage2",
+            str(path),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "exiftool failed")[-1000:]
+        raise RuntimeError(f"exiftool failed for {path}: {detail}")
+    payload = json.loads(proc.stdout or "[]")
+    if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
+        raise RuntimeError(f"exiftool returned no metadata object for {path}")
+    return dict(payload[0])
+
+
+def _routing_plan_files(
+    candidates: Sequence[LocalFileCandidate],
+    *,
+    profile_routing: Mapping[str, Any],
+) -> list[ProfileRoutingFile]:
+    needs_probe = profile_routing_requires_probe(profile_routing)
+    needs_exiftool = profile_routing_requires_exiftool(profile_routing)
+    files: list[ProfileRoutingFile] = []
+    for item in candidates:
+        probe_summary: dict[str, Any] | None = None
+        probe_error: str | None = None
+        if needs_probe:
+            try:
+                probe_summary = routing_probe_summary(_ffprobe_for_routing(item.source))
+            except Exception as exc:
+                probe_error = str(exc)[:1000]
+        exiftool_summary: dict[str, Any] | None = None
+        facts_error: str | None = None
+        if needs_exiftool:
+            try:
+                exiftool_summary = routing_exiftool_summary(_exiftool_for_routing(item.source))
+            except Exception as exc:
+                facts_error = str(exc)[:1000]
+        files.append(
+            ProfileRoutingFile(
+                path=item.rel_path,
+                bytes=item.bytes,
+                probe_summary=probe_summary,
+                probe_error=probe_error,
+                routing_facts=routing_file_facts(
+                    item.rel_path,
+                    probe_summary=probe_summary,
+                    exiftool_summary=exiftool_summary,
+                ),
+                facts_error=facts_error,
+            )
+        )
+    return files
+
+
+def _routing_report_text(plan: Mapping[str, Any]) -> str:
+    lines = [
+        (
+            "routing: "
+            f"{'ok' if plan.get('ok') else 'failed'} "
+            f"files={plan.get('files_total', 0)} "
+            f"matched={plan.get('matched_files', 0)} "
+            f"left={plan.get('left_files', 0)} "
+            f"unmatched={plan.get('unmatched_files', 0)}"
+        )
+    ]
+    route_counts: dict[str, int] = {}
+    group_counts: dict[str, int] = {}
+    for item in _sequence(plan.get("matches")):
+        if not isinstance(item, Mapping):
+            continue
+        route_id = str(item.get("route_id") or "")
+        group = str(item.get("group") or "")
+        route_counts[route_id] = route_counts.get(route_id, 0) + 1
+        group_counts[group] = group_counts.get(group, 0) + 1
+    if route_counts:
+        lines.append("routes:")
+        for route_id, count in sorted(route_counts.items()):
+            lines.append(f"  {route_id}: {count}")
+    if group_counts:
+        lines.append("groups:")
+        for group, count in sorted(group_counts.items()):
+            lines.append(f"  {group}: {count}")
+    if plan.get("matches"):
+        lines.append("matches:")
+        for item in _sequence(plan.get("matches")):
+            if not isinstance(item, Mapping):
+                continue
+            pair = ""
+            if item.get("pair_kind"):
+                pair = f" pair={item.get('pair_kind')}:{item.get('pair_role') or '-'}"
+            lines.append(
+                "  "
+                f"{item.get('path')} -> {item.get('route_id')} "
+                f"group={item.get('group')} out={item.get('collection_rel_path')}{pair}"
+            )
+    if plan.get("left"):
+        lines.append("left:")
+        for item in _sequence(plan.get("left")):
+            if isinstance(item, Mapping):
+                lines.append(f"  {item.get('path')} -> {item.get('route_id')}")
+    if plan.get("unmatched"):
+        lines.append("unmatched:")
+        for item in _sequence(plan.get("unmatched")):
+            if isinstance(item, Mapping):
+                lines.append(f"  {item.get('path')}: {item.get('reason')}")
+    return "\n".join(lines)
+
+
 def _job_request(
     *,
     source: Path,
@@ -697,6 +877,58 @@ def _requested_containers(request: RunnerUploadRequest) -> list[str]:
         if container and container not in containers:
             containers.append(container)
     return containers
+
+
+@routing_app.command("explain")
+def explain_routing(
+    source: Annotated[Path, typer.Argument(exists=True, readable=True)],
+    config_path: Annotated[
+        Path,
+        typer.Option("--config", "-c", exists=True, dir_okay=False, readable=True),
+    ],
+    target_prefix: Annotated[
+        str | None,
+        typer.Option(
+            "--target-prefix",
+            help="Optional upload-path prefix to apply before routing.",
+        ),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Explain how profile routing classifies local files."""
+
+    config = _load_toml(config_path)
+    defaults = _configured_job_defaults(config)
+    routing = defaults.get("profile_routing")
+    if not isinstance(routing, Mapping):
+        raise typer.BadParameter(
+            "config must define job.profile_routing or munchy_job_defaults.profile_routing",
+            param_hint="--config",
+        )
+    profiles = _configured_profiles(config)
+    configured_groups = _configured_groups(config)
+    if not configured_groups:
+        raise typer.BadParameter(
+            "profile routing explain requires explicit groups/profile_groups",
+            param_hint="--config",
+        )
+    groups = {
+        str(name): _normalize_group_payload(str(name), raw_group, profiles=profiles)
+        for name, raw_group in configured_groups.items()
+    }
+    prefix = target_prefix
+    if prefix is None:
+        raw_prefix = defaults.get("target_prefix") or defaults.get("upload_prefix")
+        prefix = str(raw_prefix) if raw_prefix else None
+    candidates = _discover_candidates(source, target_prefix=prefix, group=None)
+    files = _routing_plan_files(candidates, profile_routing=routing)
+    plan = profile_routing_plan(routing, files, group_names=set(groups)).as_dict()
+    if json_mode:
+        emit(plan, json_mode=True)
+    else:
+        emit(_routing_report_text(plan), json_mode=False)
+    if not plan["ok"]:
+        raise typer.Exit(1)
 
 
 def _start_summary(request: RunnerUploadRequest, job: Mapping[str, Any]) -> Any:

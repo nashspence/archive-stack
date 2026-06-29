@@ -268,6 +268,101 @@ def test_completed_structured_file_routes_by_path_without_full_upload(
     )
 
 
+def test_profile_routing_manifest_records_actual_route_and_output(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    shared_file = runner.shared_input_upload_root("upload-1") / "phone/IMG_0001.MOV"
+    shared_file.parent.mkdir(parents=True, exist_ok=True)
+    shared_file.write_bytes(b"video")
+    upload = runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "state": "uploading",
+            "storage_hint": {
+                "workflow_mode": "collection_preview",
+                "structured_routing": True,
+                "groups": {
+                    "video": {"archive_mode": "av1_nvenc", "gpu_tasks": ["archive_video"]},
+                },
+            },
+            "files": [
+                {
+                    "path": "phone/IMG_0001.MOV",
+                    "bytes": 5,
+                    "sha256": "0" * 64,
+                    "upload_id": "phone-img-1",
+                    "input_upload_id": "upload-1",
+                    "structured_routing": True,
+                }
+            ],
+        }
+    )
+    job = {
+        "job_id": "job-1",
+        "input_upload_id": "upload-1",
+        "collection_slug": "phone-preview",
+        "collection_timestamp": "20260628T000000Z",
+        "profile_routing": {
+            "routes": [
+                {
+                    "id": "iphone-video",
+                    "group": "video",
+                    "into": "iphone/video",
+                    "when": {"path": {"prefix": "phone", "suffix": ".mov"}},
+                }
+            ]
+        },
+    }
+    groups = {
+        "video": {
+            "archive_mode": "av1_nvenc",
+            "gpu_tasks": ["archive_video"],
+            "encode_profile": {"archive": {"container": "webm"}},
+        }
+    }
+
+    routed = runner.route_completed_input_files(job, upload, groups)
+    archive_dir = tmp_path / "archive"
+    output = runner.archive_output_for_upload_file(
+        runner.upload_files_for_groups(routed, {"video"})[0],
+        group_name="video",
+        group_config=groups["video"],
+        archive_dir=archive_dir,
+    )
+    output.parent.mkdir(parents=True)
+    output.write_bytes(b"webm")
+
+    runner.write_profile_routing_manifest(job, routed, groups, archive_dir)
+
+    manifest = json.loads((archive_dir / runner.ROUTING_MANIFEST_FILENAME).read_text())
+    assert manifest["schema"] == "munchy.profile-routing-manifest"
+    assert manifest["job_id"] == "job-1"
+    assert manifest["files"] == [
+        {
+            "output": {
+                "bytes": 4,
+                "exists": True,
+                "path": "video/iphone/video/IMG_0001.webm",
+            },
+            "route": {
+                "action": "upload",
+                "group": "video",
+                "group_rel_path": "iphone/video/IMG_0001.MOV",
+                "id": "iphone-video",
+            },
+            "source": {
+                "bytes": 5,
+                "path": "phone/IMG_0001.MOV",
+                "sha256": "0" * 64,
+            },
+        }
+    ]
+
+
 def test_routed_structured_file_stays_complete_after_materialized_tusd_cleanup(
     tmp_path: Path,
     monkeypatch,
@@ -446,6 +541,14 @@ def test_profile_routing_preflight_uses_submitted_probe_summary(
             "action": "upload",
             "pair_kind": None,
             "pairing_id": None,
+            "pair_role": None,
+            "pair_with": None,
+            "matched_facts": {
+                "audio.codec_name": "aac",
+                "ffprobe.duration": 1.5,
+                "ffprobe.format_tags.com.apple.quicktime.model": "iphone se",
+                "video.codec": "hevc",
+            },
             "group": "live-photo",
             "into": None,
             "collection_rel_path": "phone/IMG_0001.MOV",
