@@ -260,6 +260,17 @@ def test_deployed_service_dockerfiles_use_locked_service_dependencies() -> None:
         assert dockerfile.index("--require-hashes -r") < dockerfile.index("COPY src")
 
 
+def test_munchy_runner_image_includes_source_artifact_runtime_tools() -> None:
+    dockerfile = (REPO_ROOT / "services" / "munchy-runner" / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
+
+    assert "ffmpeg" in dockerfile
+    assert "libimage-exiftool-perl" in dockerfile
+    assert "rclone" in dockerfile
+    assert "zstd" in dockerfile
+
+
 def test_locked_dependency_files_cover_runtime_and_test_db_extras() -> None:
     runtime_requirements = (REPO_ROOT / "requirements-runtime.txt").read_text()
     test_requirements = (REPO_ROOT / "requirements-test.txt").read_text()

@@ -1957,7 +1957,7 @@ def _zstd_command() -> str:
     resolved = shutil.which(command)
     if resolved is None:
         raise RuntimeError(
-            "zstd is required for Munchy source artifact bundles; install it with brew bundle"
+            "zstd is required for Munchy source artifact bundles; install the zstd package"
         )
     return resolved
 
