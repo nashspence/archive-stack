@@ -58,6 +58,7 @@ class SourceArtifactDropProfile(BaseModel):
 class SourcePreservationProfile(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    allow_conversion_only_container: bool = False
     artifact_drops: tuple[SourceArtifactDropProfile, ...] = ()
 
     @model_validator(mode="after")

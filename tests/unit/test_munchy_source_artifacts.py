@@ -8,7 +8,10 @@ from pathlib import Path
 import pytest
 
 from munchy import source_artifacts
-from munchy.source_artifact_bridge import _artifact_drop_reason_map
+from munchy.source_artifact_bridge import (
+    _allow_conversion_only_container,
+    _artifact_drop_reason_map,
+)
 
 
 def test_source_artifact_bundle_uses_munchy_manifest_kind(tmp_path: Path) -> None:
@@ -152,10 +155,17 @@ def test_source_artifact_bridge_accepts_service_encode_profile_shape() -> None:
             },
         },
         "source": {
+            "allow_conversion_only_container": True,
             "artifact_drops": [
                 {"selector": " Stream:7 ", "reason": "not useful after stabilization"}
             ]
         },
     }
 
+    assert _allow_conversion_only_container(profile) is True
     assert _artifact_drop_reason_map(profile) == {"stream:7": "not useful after stabilization"}
+
+
+def test_source_artifact_bridge_rejects_non_boolean_conversion_only_override() -> None:
+    with pytest.raises(ValueError, match="allow_conversion_only_container must be a boolean"):
+        _allow_conversion_only_container({"source": {"allow_conversion_only_container": "yes"}})

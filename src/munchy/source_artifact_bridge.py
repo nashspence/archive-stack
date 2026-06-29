@@ -81,6 +81,18 @@ def _artifact_drop_reason_map(profile: Mapping[str, Any] | None) -> dict[str, st
     return reasons
 
 
+def _allow_conversion_only_container(profile: Mapping[str, Any] | None) -> bool:
+    source = profile.get("source") if profile else None
+    if source is None:
+        return False
+    if not isinstance(source, Mapping):
+        raise ValueError("source profile must be a mapping")
+    value = source.get("allow_conversion_only_container", False)
+    if not isinstance(value, bool):
+        raise ValueError("source allow_conversion_only_container must be a boolean")
+    return value
+
+
 def _export_auxiliary_streams(source: pathlib.Path, exports: Sequence[Mapping[str, Any]]) -> None:
     for export in exports:
         spec = export.get("spec")
@@ -200,6 +212,7 @@ def build_strict_source_artifacts(
         )
     profile = dict(encode_profile or {})
     drop_policy = source_artifacts.SourceArtifactDropPolicy(_artifact_drop_reason_map(profile))
+    allow_conversion_only_container = _allow_conversion_only_container(profile)
     work_dir = archive_mkv.parent / f".{archive_mkv.name}.source-artifacts-work"
     bundle_path = pathlib.Path(source_artifacts._source_artifacts_path(str(archive_mkv)))
     part_path = pathlib.Path(str(bundle_path) + ".part")
@@ -213,7 +226,7 @@ def build_strict_source_artifacts(
             work_dir,
             False,
             drop_policy=drop_policy,
-            allow_conversion_only_container=False,
+            allow_conversion_only_container=allow_conversion_only_container,
             naming_stem=source.stem,
         )
         exports = dumped["exports"]
@@ -335,11 +348,13 @@ def build_strict_source_artifacts(
         if errors:
             raise RuntimeError("source artifact audit failed: " + "; ".join(errors))
         if not audit.get("rebuild_supported"):
-            warnings = cast(list[str], audit.get("warnings") or [])
-            raise RuntimeError(
-                "source artifacts do not support source-container rebuild"
-                + (": " + "; ".join(warnings) if warnings else "")
-            )
+            blockers = set(cast(list[str], audit.get("rebuild_blockers") or []))
+            if not allow_conversion_only_container or blockers != {"source_container"}:
+                warnings = cast(list[str], audit.get("warnings") or [])
+                raise RuntimeError(
+                    "source artifacts do not support source-container rebuild"
+                    + (": " + "; ".join(warnings) if warnings else "")
+                )
 
         os.replace(part_path, bundle_path)
         return {

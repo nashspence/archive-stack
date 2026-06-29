@@ -39,6 +39,7 @@ def test_validates_av1_nvenc_profile_and_drop_reasons() -> None:
                 "audio": {"bitrate": "28k", "frame_duration": 40},
             },
             "source": {
+                "allow_conversion_only_container": True,
                 "artifact_drops": [
                     {"selector": "stream:4", "reason": "gyro data intentionally discarded"}
                 ]
@@ -49,6 +50,8 @@ def test_validates_av1_nvenc_profile_and_drop_reasons() -> None:
     assert profile.archive.container == "webm"
     assert profile.archive.quality == 52
     assert profile.archive.audio.frame_duration == 40
+    assert profile.source is not None
+    assert profile.source.allow_conversion_only_container is True
     assert artifact_drop_reason_map(profile) == {"stream:4": "gyro data intentionally discarded"}
 
 

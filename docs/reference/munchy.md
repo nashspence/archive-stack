@@ -107,6 +107,9 @@ sample_rate = 24000
 channels = 1
 application = "audio"
 
+[profiles.voice.source]
+allow_conversion_only_container = true
+
 [groups.voice]
 profile = "voice"
 archive_mode = "audio"
@@ -115,3 +118,11 @@ archive_mode = "audio"
 Munchy currently supports Opus audio archives in an `.opus` container. Source
 filesystem metadata sidecars are required for audio archive jobs so the archive
 can preserve custody metadata with the encoded output.
+
+Sources such as MP3 cannot be reconstructed from an Opus derivative because the
+encoded audio stream cannot be muxed back into the original MP3 container.
+Profiles for those sources must explicitly set
+`source.allow_conversion_only_container = true`; otherwise Munchy refuses the
+job rather than silently accepting conversion-only custody semantics. Leave the
+option disabled for camera/video sources that require source-container rebuild
+support from the archived output and source artifacts.
