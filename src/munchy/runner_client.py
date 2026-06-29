@@ -5,6 +5,7 @@ import http.client
 import json
 import os
 import socket
+import subprocess
 import sys
 import time
 import urllib.error
@@ -12,6 +13,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event, Lock
@@ -21,6 +23,7 @@ DEFAULT_RUNNER_URL = "http://127.0.0.1:8092"
 RUNNER_URL_ENV = "MUNCHY_RUNNER_URL"
 RUNNER_TOKEN_ENV = "MUNCHY_RUNNER_TOKEN"
 PROGRESS_ENV = "MUNCHY_PROGRESS"
+KEEP_AWAKE_ENV = "MUNCHY_KEEP_AWAKE"
 DEFAULT_UPLOAD_CHUNK_MIB = 64
 DEFAULT_UPLOAD_WORKERS = 12
 UPLOAD_RETRY_INITIAL_DELAY_SECONDS = 1.0
@@ -43,6 +46,9 @@ TRANSIENT_UPLOAD_ERRNOS = {
 FIELD_STYLE = "bold #c0ad6c"
 ENTITY_ID_STYLE = "bold #8ec9cc"
 ATTENTION_STYLE = "bold #ff8933"
+_KEEP_AWAKE_LOCK = Lock()
+_KEEP_AWAKE_DEPTH = 0
+_KEEP_AWAKE_PROCESS: subprocess.Popen[bytes] | None = None
 
 
 @dataclass(frozen=True)
@@ -86,6 +92,63 @@ def runner_url_setting(runner_url: str | None = None) -> str:
 
 def runner_token_setting(token: str | None = None) -> str:
     return (token or os.getenv(RUNNER_TOKEN_ENV) or "").strip()
+
+
+def keep_awake_enabled() -> bool:
+    if sys.platform != "darwin":
+        return False
+    return os.getenv(KEEP_AWAKE_ENV, "1").strip().casefold() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def start_keep_awake(reason: str) -> None:
+    global _KEEP_AWAKE_DEPTH, _KEEP_AWAKE_PROCESS
+    if not keep_awake_enabled():
+        return
+    with _KEEP_AWAKE_LOCK:
+        if _KEEP_AWAKE_DEPTH == 0:
+            try:
+                _KEEP_AWAKE_PROCESS = subprocess.Popen(
+                    ["caffeinate", "-dimsu", "-w", str(os.getpid())],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except OSError as exc:
+                _KEEP_AWAKE_PROCESS = None
+                print(f"warning: could not start caffeinate for {reason}: {exc}", file=sys.stderr)
+        _KEEP_AWAKE_DEPTH += 1
+
+
+def stop_keep_awake() -> None:
+    global _KEEP_AWAKE_DEPTH, _KEEP_AWAKE_PROCESS
+    with _KEEP_AWAKE_LOCK:
+        if _KEEP_AWAKE_DEPTH <= 0:
+            return
+        _KEEP_AWAKE_DEPTH -= 1
+        if _KEEP_AWAKE_DEPTH > 0:
+            return
+        proc = _KEEP_AWAKE_PROCESS
+        _KEEP_AWAKE_PROCESS = None
+    if proc is None or proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
+@contextmanager
+def keep_system_awake(reason: str = "munchy job") -> Any:
+    start_keep_awake(reason)
+    try:
+        yield
+    finally:
+        stop_keep_awake()
 
 
 def format_bytes(value: int | float | None) -> str:
@@ -1578,6 +1641,10 @@ class MunchyRunnerClient:
                 retry_delay = next_upload_retry_delay(retry_delay)
 
     def upload_files(self, request: RunnerUploadRequest) -> dict[str, Any]:
+        with keep_system_awake("munchy upload"):
+            return self._upload_files(request)
+
+    def _upload_files(self, request: RunnerUploadRequest) -> dict[str, Any]:
         total_files = len(request.files)
         total_bytes = sum(item.bytes for item in request.files)
         chunk_mib = request.upload_chunk_mib
@@ -1924,6 +1991,20 @@ class MunchyRunnerClient:
         )
 
     def wait_for_job(
+        self,
+        job_id: str,
+        *,
+        interval: float = 10.0,
+        wait_for_safe_delete: bool = True,
+    ) -> dict[str, Any]:
+        with keep_system_awake("munchy job wait"):
+            return self._wait_for_job(
+                job_id,
+                interval=interval,
+                wait_for_safe_delete=wait_for_safe_delete,
+            )
+
+    def _wait_for_job(
         self,
         job_id: str,
         *,

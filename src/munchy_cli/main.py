@@ -41,6 +41,7 @@ from munchy.runner_client import (
     format_job_status_line,
     format_job_summary_line,
     job_finished_cleanly,
+    keep_system_awake,
     make_progress_renderer,
     runner_url_setting,
 )
@@ -1100,46 +1101,47 @@ def start_job(
 ) -> None:
     """Upload local media and start a runner job."""
 
-    config_path = config or (
-        Path(os.environ[MUNCHY_CONFIG_ENV]) if os.getenv(MUNCHY_CONFIG_ENV) else None
-    )
-    request = _job_request(
-        source=source,
-        config_path=config_path,
-        collection=collection,
-        collection_timestamp=collection_timestamp,
-        job_id=job_id,
-        upload_id=upload_id,
-        target_prefix=target_prefix,
-        group=group,
-        workflow_mode=workflow_mode,
-        riverhog_enabled=riverhog_enabled,
-        riverhog_disabled=riverhog_disabled,
-        upload_workers=upload_workers,
-        upload_chunk_mib=upload_chunk_mib,
-        hash_cache=hash_cache,
-        use_hash_cache=not no_hash_cache,
-    )
-    client = MunchyRunnerClient(runner_url_setting(runner_url))
-    try:
-        client.check_ready(
-            str(request.job_payload.get("workflow_mode") or "archive"),
-            requested_containers=_requested_containers(request),
+    with keep_system_awake("munchy job start"):
+        config_path = config or (
+            Path(os.environ[MUNCHY_CONFIG_ENV]) if os.getenv(MUNCHY_CONFIG_ENV) else None
         )
-        client.create_or_get_input_upload(request)
-        job = client.create_job(request)
-        if not json_mode:
-            emit(_start_summary(request, job), json_mode=False)
-        client.upload_files(request)
-        if wait:
-            job = client.wait_for_job(request.job_id, interval=interval)
-            if not job_finished_cleanly(job):
-                typer.echo(format_job_failure(job, label="munchy job"), err=True)
-                raise typer.Exit(1)
-        elif not json_mode:
-            typer.echo(format_job_status_line(job), err=True)
-    except Exception as exc:
-        _exit_runner_error(exc)
+        request = _job_request(
+            source=source,
+            config_path=config_path,
+            collection=collection,
+            collection_timestamp=collection_timestamp,
+            job_id=job_id,
+            upload_id=upload_id,
+            target_prefix=target_prefix,
+            group=group,
+            workflow_mode=workflow_mode,
+            riverhog_enabled=riverhog_enabled,
+            riverhog_disabled=riverhog_disabled,
+            upload_workers=upload_workers,
+            upload_chunk_mib=upload_chunk_mib,
+            hash_cache=hash_cache,
+            use_hash_cache=not no_hash_cache,
+        )
+        client = MunchyRunnerClient(runner_url_setting(runner_url))
+        try:
+            client.check_ready(
+                str(request.job_payload.get("workflow_mode") or "archive"),
+                requested_containers=_requested_containers(request),
+            )
+            client.create_or_get_input_upload(request)
+            job = client.create_job(request)
+            if not json_mode:
+                emit(_start_summary(request, job), json_mode=False)
+            client.upload_files(request)
+            if wait:
+                job = client.wait_for_job(request.job_id, interval=interval)
+                if not job_finished_cleanly(job):
+                    typer.echo(format_job_failure(job, label="munchy job"), err=True)
+                    raise typer.Exit(1)
+            elif not json_mode:
+                typer.echo(format_job_status_line(job), err=True)
+        except Exception as exc:
+            _exit_runner_error(exc)
     emit(job if json_mode else format_job(job), json_mode=json_mode)
 
 

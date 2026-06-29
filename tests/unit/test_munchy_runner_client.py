@@ -30,6 +30,7 @@ from munchy.runner_client import (
     format_riverhog_promotion_progress,
     format_riverhog_upload_progress,
     job_finished_cleanly,
+    keep_system_awake,
     progress_percent,
     riverhog_archive_progress,
     riverhog_promotion_progress,
@@ -65,6 +66,48 @@ def test_runner_client_injects_bearer_token() -> None:
         "Bearer runner-token",
         "Bearer runner-token",
     ]
+
+
+def test_keep_system_awake_uses_caffeinate_on_macos(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import munchy.runner_client as runner_client
+
+    runner_client._KEEP_AWAKE_DEPTH = 0
+    runner_client._KEEP_AWAKE_PROCESS = None
+    calls: list[list[str]] = []
+
+    class FakeProcess:
+        terminated = False
+        killed = False
+
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def wait(self, timeout: float | None = None) -> int:
+            assert timeout == 2
+            return 0
+
+        def kill(self) -> None:
+            self.killed = True
+
+    fake_process = FakeProcess()
+
+    def fake_popen(cmd: list[str], **_kwargs: object) -> FakeProcess:
+        calls.append(cmd)
+        return fake_process
+
+    monkeypatch.setattr(runner_client.sys, "platform", "darwin")
+    monkeypatch.setattr(runner_client.subprocess, "Popen", fake_popen)
+
+    with keep_system_awake("outer"):
+        with keep_system_awake("inner"):
+            assert runner_client._KEEP_AWAKE_DEPTH == 2
+
+    assert calls == [["caffeinate", "-dimsu", "-w", str(runner_client.os.getpid())]]
+    assert fake_process.terminated is True
+    assert fake_process.killed is False
 
 
 def test_profile_routing_preflight_posts_manifest() -> None:
@@ -151,7 +194,7 @@ def test_format_job_summary_line_includes_upload_and_encode_progress() -> None:
             "job_id": "job-1",
             "collection_slug": "example-q49",
             "state": "running",
-            "phase": "gpu-eager:pipeline=3/3",
+            "phase": "eager_archive:pipeline=3/3",
             "upload_progress": {
                 "files_uploaded": 10,
                 "files_total": 20,
@@ -172,7 +215,7 @@ def test_format_job_summary_line_includes_upload_and_encode_progress() -> None:
         }
     )
 
-    assert line.startswith("job-1 [example-q49] | job: running | gpu-eager:pipeline=3/3")
+    assert line.startswith("job-1 [example-q49] | job: running | eager_archive:pipeline=3/3")
     assert "remote upload 10/20 files" in line
     assert "remote encode 4/20 files" in line
     assert "batches 1/3" in line
@@ -582,7 +625,7 @@ def test_rich_renderer_reserves_riverhog_deep_archive_row_before_archive_starts(
     renderer = RichProgressRenderer(include_job=True, title="Test")
     job = {
         "state": "running",
-        "phase": "gpu-eager:pipeline=3/3",
+        "phase": "eager_archive:pipeline=3/3",
         "riverhog_upload_progress": {
             "collection_id": "2026/camera",
             "primary_files_uploaded": 3,
@@ -1575,7 +1618,7 @@ def test_upload_progress_stops_when_runner_job_fails() -> None:
         job_status_provider=lambda: {
             "job_id": "job-1",
             "state": "failed",
-            "phase": "gpu-eager:pipeline=3/3",
+            "phase": "eager_archive:pipeline=3/3",
             "error": "archive video encode failed",
         },
     )

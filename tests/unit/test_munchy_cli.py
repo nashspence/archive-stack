@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 
 from typer.testing import CliRunner
@@ -334,6 +335,12 @@ def test_munchy_job_start_builds_direct_group_upload(monkeypatch, tmp_path) -> N
     source = tmp_path / "clip.mp4"
     source.write_bytes(b"video")
     seen: dict[str, object] = {}
+    awake_reasons: list[str] = []
+
+    @contextlib.contextmanager
+    def fake_keep_awake(reason: str):  # type: ignore[no-untyped-def]
+        awake_reasons.append(reason)
+        yield
 
     class FakeClient:
         def __init__(self, base_url: str) -> None:
@@ -370,6 +377,7 @@ def test_munchy_job_start_builds_direct_group_upload(monkeypatch, tmp_path) -> N
             }
 
     monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
+    monkeypatch.setattr("munchy_cli.main.keep_system_awake", fake_keep_awake)
 
     result = runner.invoke(
         app,
@@ -402,6 +410,7 @@ def test_munchy_job_start_builds_direct_group_upload(monkeypatch, tmp_path) -> N
     assert seen["workflow_mode"] == "archive"
     assert seen["requested_containers"] == []
     assert seen["uploaded"] == "camera-20260621T120000Z"
+    assert awake_reasons == ["munchy job start"]
     assert json.loads(result.stdout)["state"] == "succeeded"
 
 

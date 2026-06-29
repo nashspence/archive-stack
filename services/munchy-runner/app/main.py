@@ -3583,11 +3583,18 @@ def archive_output_for_upload_file(
     )
 
 
-def group_is_eager_archive_only(group_config: dict[str, Any]) -> bool:
-    if normalize_archive_mode(str(group_config.get("archive_mode") or "av1_nvenc")) != "av1_nvenc":
-        return False
+def eager_archive_executor(group_config: dict[str, Any]) -> str | None:
+    archive_mode = normalize_archive_mode(str(group_config.get("archive_mode") or "av1_nvenc"))
     tasks = set(str(task) for task in group_config.get("tasks") or [])
-    return tasks == {"archive_video"}
+    if archive_mode == "av1_nvenc" and tasks == {"archive_video"}:
+        return "gpu"
+    if archive_mode == "audio" and tasks == {"archive_audio"}:
+        return "local_audio"
+    return None
+
+
+def group_is_eager_archive_only(group_config: dict[str, Any]) -> bool:
+    return eager_archive_executor(group_config) is not None
 
 
 def group_produces_primary_archive_output(group_config: dict[str, Any]) -> bool:
@@ -6404,6 +6411,38 @@ def mark_eager_file_encoded(
     )
 
 
+def mark_eager_file_failed(
+    job: dict[str, Any],
+    file_state: dict[str, Any],
+    *,
+    group_name: str,
+    group_config: dict[str, Any],
+    archive_dir: Path,
+    batch_id: str | None,
+    error: str,
+) -> None:
+    rel_path = str(file_state["path"])
+    output = archive_output_for_upload_file(
+        file_state,
+        group_name=group_name,
+        group_config=group_config,
+        archive_dir=archive_dir,
+    )
+    files = eager_archive_state(job).setdefault("files", {})
+    previous = files.get(rel_path) if isinstance(files.get(rel_path), dict) else {}
+    started = previous.get("started_at") if isinstance(previous, dict) else None
+    files[rel_path] = {
+        "state": "failed",
+        "started_at": started or now_iso(),
+        "failed_at": now_iso(),
+        "batch_id": batch_id,
+        "group": group_name,
+        "input_bytes": int(file_state.get("bytes") or 0),
+        "output": str(output),
+        "error": error,
+    }
+
+
 def consume_input_upload_file(upload: dict[str, Any], file_state: dict[str, Any]) -> bool:
     if file_state.get("consumed_at"):
         return False
@@ -7024,17 +7063,35 @@ def ready_eager_files(
     return None
 
 
-def running_eager_batch(job: dict[str, Any]) -> dict[str, Any] | None:
-    batches = running_eager_batches(job)
+def eager_batch_executor(batch: dict[str, Any]) -> str:
+    executor = str(batch.get("executor") or "")
+    if executor:
+        return executor
+    if batch.get("gpu_job_id"):
+        return "gpu"
+    return "gpu"
+
+
+def running_eager_batch(
+    job: dict[str, Any],
+    *,
+    executor: str | None = None,
+) -> dict[str, Any] | None:
+    batches = running_eager_batches(job, executor=executor)
     return batches[0] if batches else None
 
 
-def running_eager_batches(job: dict[str, Any]) -> list[dict[str, Any]]:
+def running_eager_batches(
+    job: dict[str, Any],
+    *,
+    executor: str | None = None,
+) -> list[dict[str, Any]]:
     batches = eager_archive_state(job).setdefault("batches", {})
     running = [
         batch
         for batch in batches.values()
         if isinstance(batch, dict) and batch.get("state") == "running"
+        and (executor is None or eager_batch_executor(batch) == executor)
     ]
     return sorted(running, key=lambda batch: str(batch.get("started_at") or ""))
 
@@ -7079,7 +7136,7 @@ def build_eager_gpu_payload(
     return payload
 
 
-def finish_eager_batch(
+def finish_eager_gpu_batch(
     job: dict[str, Any],
     upload: dict[str, Any],
     batch: dict[str, Any],
@@ -7138,7 +7195,7 @@ def submit_eager_gpu_job(
     return True
 
 
-def start_eager_batch(
+def start_eager_gpu_batch(
     job: dict[str, Any],
     upload: dict[str, Any],
     *,
@@ -7182,6 +7239,7 @@ def start_eager_batch(
     batch = {
         "batch_id": batch_id,
         "state": "running",
+        "executor": "gpu",
         "group": group_name,
         "paths": paths,
         "gpu_job_id": payload["job_id"],
@@ -7199,7 +7257,7 @@ def start_eager_batch(
             batch_id=batch_id,
         )
     job["phase"] = (
-        f"gpu-eager:{group_name}:pipeline={len(running_eager_batches(job))}/"
+        f"eager_archive:{group_name}:pipeline={len(running_eager_batches(job, executor='gpu'))}/"
         f"{EAGER_ARCHIVE_PIPELINE_BATCHES}"
     )
     save_job(job)
@@ -7211,7 +7269,102 @@ def start_eager_batch(
     return upload
 
 
-def poll_eager_batch(
+def start_eager_audio_batch(
+    job: dict[str, Any],
+    upload: dict[str, Any],
+    *,
+    group_name: str,
+    group_config: dict[str, Any],
+    file_states: list[dict[str, Any]],
+    archive_dir: Path,
+) -> dict[str, Any]:
+    job_id = str(job["job_id"])
+    paths = [str(file_state["path"]) for file_state in file_states]
+    batch_id = next_eager_batch_id(job, group_name, paths)
+
+    upload_changed = False
+    for file_state in file_states:
+        if ensure_file_projection_metadata(file_state, group_config=group_config):
+            upload_changed = True
+    if upload_changed:
+        upload = save_input_upload_raw(upload)
+
+    batch_root = eager_batch_input_root(job_id, batch_id)
+    if batch_root.exists():
+        shutil.rmtree(batch_root, ignore_errors=True)
+    batch_root.mkdir(parents=True, exist_ok=True)
+    for file_state in file_states:
+        materialize_upload_file(file_state, batch_root)
+    write_group_filesystem_metadata(batch_root, group_name, file_states)
+
+    batch: dict[str, Any] = {
+        "batch_id": batch_id,
+        "state": "running",
+        "executor": "local_audio",
+        "group": group_name,
+        "paths": paths,
+        "started_at": now_iso(),
+    }
+    eager_archive_state(job).setdefault("batches", {})[batch_id] = batch
+    for file_state in file_states:
+        mark_eager_file_encoding(
+            job,
+            file_state,
+            group_name=group_name,
+            group_config=group_config,
+            archive_dir=archive_dir,
+            batch_id=batch_id,
+        )
+    job["phase"] = f"eager_archive:{group_name}"
+    save_job(job)
+
+    try:
+        result = run_archive_audio_group(
+            input_root=batch_root / group_name,
+            output_root=archive_dir / group_name,
+            group_config=group_config,
+        )
+    except Exception as exc:
+        error = str(exc)
+        batch["state"] = "failed"
+        batch["failed_at"] = now_iso()
+        batch["error"] = error
+        for file_state in file_states:
+            mark_eager_file_failed(
+                job,
+                file_state,
+                group_name=group_name,
+                group_config=group_config,
+                archive_dir=archive_dir,
+                batch_id=batch_id,
+                error=error,
+            )
+        save_job(job)
+        notify_job_issue(job, component="encoding", error=error, severity="critical")
+        raise EncodingFailed(error) from exc
+
+    batch["state"] = "succeeded"
+    batch["finished_at"] = now_iso()
+    batch["archive_audio_result"] = {
+        "status": result.get("status"),
+        "count": result.get("count"),
+    }
+    for file_state in file_states:
+        mark_eager_file_encoded(
+            job,
+            file_state,
+            group_name=group_name,
+            group_config=group_config,
+            archive_dir=archive_dir,
+            batch_id=batch_id,
+        )
+    shutil.rmtree(batch_root, ignore_errors=True)
+    upload = consume_input_upload_files(str(job["input_upload_id"]), set(paths))
+    save_job(job)
+    return upload
+
+
+def poll_eager_gpu_batch(
     job: dict[str, Any],
     upload: dict[str, Any],
     batch: dict[str, Any],
@@ -7240,7 +7393,7 @@ def poll_eager_batch(
     batch["gpu_state"] = state
     batch["last_polled_at"] = now_iso()
     if state == "succeeded":
-        return finish_eager_batch(job, upload, batch, groups, archive_dir, status)
+        return finish_eager_gpu_batch(job, upload, batch, groups, archive_dir, status)
     if state == "failed":
         if status.get("error_code") == "target_restarted":
             log.warning("gpu target restarted during eager batch %s; re-submitting job", gpu_job_id)
@@ -7270,18 +7423,18 @@ def run_eager_archive_groups(
             cleanup_consumed_shared_input_files(upload, eager_groups)
             upload, _ = mark_existing_eager_outputs(job, upload, groups, eager_groups, archive_dir)
             claim_running_eager_batch_files(job, upload, groups, archive_dir)
-            running = running_eager_batches(job)
-            if running and not token:
+            running_gpu = running_eager_batches(job, executor="gpu")
+            if running_gpu and not token:
                 token = acquire_job_gpu(job)
-            for batch in running:
-                upload = poll_eager_batch(job, upload, batch, groups, archive_dir)
+            for batch in running_gpu:
+                upload = poll_eager_gpu_batch(job, upload, batch, groups, archive_dir)
             if eager_groups_complete(job, upload, eager_groups):
                 eager = eager_archive_state(job)
                 eager["completed_at"] = eager.get("completed_at") or now_iso()
                 save_job(job)
                 return upload
 
-            while len(running_eager_batches(job)) < EAGER_ARCHIVE_PIPELINE_BATCHES:
+            while len(running_eager_batches(job, executor="gpu")) < EAGER_ARCHIVE_PIPELINE_BATCHES:
                 ready = ready_eager_files(
                     job,
                     upload,
@@ -7293,32 +7446,57 @@ def run_eager_archive_groups(
                 if ready is None:
                     break
                 group_name, file_states = ready
+                group_config = groups[group_name]
+                executor = eager_archive_executor(group_config)
+                if executor is None:
+                    raise RuntimeError(f"group {group_name} is not eager-archive eligible")
                 batch_bytes = sum(int(file_state["bytes"]) for file_state in file_states)
-                storage_hint = input_upload_storage_hint(upload)
-                required_gpu_free = (
-                    gpu_scratch_required_bytes(batch_bytes, storage_hint) + MIN_FREE_BYTES
-                )
-                wait_for_free_space(
-                    job,
-                    GPU_RUNTIME_DIR,
-                    required_gpu_free,
-                    label="gpu eager scratch",
-                )
-                if not token:
-                    token = acquire_job_gpu(job)
-                upload = start_eager_batch(
-                    job,
-                    upload,
-                    group_name=group_name,
-                    group_config=groups[group_name],
-                    file_states=file_states,
-                    archive_dir=archive_dir,
-                    space_checked=True,
-                )
+                if executor == "gpu":
+                    storage_hint = input_upload_storage_hint(upload)
+                    required_gpu_free = (
+                        gpu_scratch_required_bytes(batch_bytes, storage_hint) + MIN_FREE_BYTES
+                    )
+                    wait_for_free_space(
+                        job,
+                        GPU_RUNTIME_DIR,
+                        required_gpu_free,
+                        label="gpu eager scratch",
+                    )
+                    if not token:
+                        token = acquire_job_gpu(job)
+                    upload = start_eager_gpu_batch(
+                        job,
+                        upload,
+                        group_name=group_name,
+                        group_config=group_config,
+                        file_states=file_states,
+                        archive_dir=archive_dir,
+                        space_checked=True,
+                    )
+                    continue
+                if executor == "local_audio":
+                    wait_for_free_space(
+                        job,
+                        GPU_RUNTIME_DIR,
+                        batch_bytes + MIN_FREE_BYTES,
+                        label="eager archive scratch",
+                    )
+                    upload = start_eager_audio_batch(
+                        job,
+                        upload,
+                        group_name=group_name,
+                        group_config=group_config,
+                        file_states=file_states,
+                        archive_dir=archive_dir,
+                    )
+                    continue
+                raise RuntimeError(f"unsupported eager archive executor: {executor}")
 
             running = running_eager_batches(job)
             if running:
-                job["phase"] = f"gpu-eager:pipeline={len(running)}/{EAGER_ARCHIVE_PIPELINE_BATCHES}"
+                job["phase"] = (
+                    f"eager_archive:pipeline={len(running)}/{EAGER_ARCHIVE_PIPELINE_BATCHES}"
+                )
                 save_job(job)
                 retry_sleep(EAGER_ARCHIVE_WAIT_SECONDS, job_id=job_id)
                 continue

@@ -845,6 +845,85 @@ def test_audio_archive_hint_does_not_reserve_gpu_scratch(
     assert runner.gpu_scratch_admission_required_bytes(files, hint) == 0
 
 
+def test_eager_archive_audio_group_encodes_and_consumes_uploaded_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    upload_id = "upload-voice"
+    source_data = runner.tusd_data_path("upload-a")
+    source_data.parent.mkdir(parents=True, exist_ok=True)
+    source_data.write_bytes(b"mp3")
+    group_config = {
+        "archive_mode": "audio",
+        "tasks": ["archive_audio"],
+        "metadata_projection": {"enabled": False},
+    }
+    upload = runner.save_input_upload_raw(
+        {
+            "upload_id": upload_id,
+            "files": [
+                {
+                    "path": "voice/R-00001_2606291200_REC.MP3",
+                    "bytes": 3,
+                    "upload_id": "upload-a",
+                    "input_upload_id": upload_id,
+                    "filesystem_metadata": {"stat": {"birthtime": "2026-06-29T12:00:00Z"}},
+                }
+            ],
+        }
+    )
+    job = {
+        "job_id": "job-voice",
+        "input_upload_id": upload_id,
+        "collection_slug": "voice-preview",
+    }
+    runner.save_job(job)
+    archive_dir = tmp_path / "archive"
+    calls: list[tuple[Path, Path]] = []
+
+    def fake_run_archive_audio_group(
+        *,
+        input_root: Path,
+        output_root: Path,
+        group_config: dict[str, object],
+    ) -> dict[str, object]:
+        calls.append((input_root, output_root))
+        assert (input_root / "R-00001_2606291200_REC.MP3").read_bytes() == b"mp3"
+        output_root.mkdir(parents=True, exist_ok=True)
+        (output_root / "R-00001_2606291200_REC.opus").write_bytes(b"opus")
+        return {"status": "succeeded", "count": 1, "items": []}
+
+    monkeypatch.setattr(runner, "run_archive_audio_group", fake_run_archive_audio_group)
+
+    assert runner.eager_archive_group_names({"voice": group_config}) == {"voice"}
+    updated = runner.start_eager_audio_batch(
+        job,
+        upload,
+        group_name="voice",
+        group_config=group_config,
+        file_states=upload["files"],
+        archive_dir=archive_dir,
+    )
+
+    stored_job = runner.load_job("job-voice")
+    stored_upload = runner.load_input_upload(upload_id)
+    progress = runner.encode_progress_for_job(stored_job)
+    assert calls
+    assert (archive_dir / "voice" / "R-00001_2606291200_REC.opus").read_bytes() == b"opus"
+    assert updated["files"][0]["consumed_at"]
+    assert stored_upload["files"][0]["consumed_at"]
+    assert not source_data.exists()
+    assert progress is not None
+    assert progress["mode"] == "eager_archive"
+    assert progress["groups"] == ["voice"]
+    assert progress["files_total"] == 1
+    assert progress["files_encoded"] == 1
+    assert progress["percent_files"] == 100.0
+
+
 def test_archive_audio_group_encodes_opus_and_writes_source_artifacts(
     tmp_path: Path,
     monkeypatch,
@@ -876,11 +955,14 @@ def test_archive_audio_group_encodes_opus_and_writes_source_artifacts(
                 "codec": "opus",
                 "container": "opus",
                 "audio": {
-                    "bitrate": "64k",
+                    "bitrate": "28k",
                     "sample_rate": 24000,
                     "channels": 1,
+                    "vbr": True,
                     "application": "audio",
                     "compression_level": 10,
+                    "frame_duration": 40,
+                    "cutoff": 12000,
                 },
             },
         },
@@ -940,11 +1022,17 @@ def test_archive_audio_group_encodes_opus_and_writes_source_artifacts(
             "-ac",
             "1",
             "-b:a",
-            "64k",
+            "28k",
+            "-vbr",
+            "on",
             "-compression_level",
             "10",
             "-application",
             "audio",
+            "-frame_duration",
+            "40",
+            "-cutoff",
+            "12000",
             "-metadata",
             "DATE=2026-06-28T20:30:40+00:00",
             "-metadata",
@@ -1349,7 +1437,7 @@ def test_eager_gpu_transient_failure_does_not_notify(
         "payload": {"job_id": "gpu-1"},
     }
 
-    result = runner.poll_eager_batch(job, upload, batch, {}, tmp_path / "archive")
+    result = runner.poll_eager_gpu_batch(job, upload, batch, {}, tmp_path / "archive")
 
     assert result is upload
     assert submit_calls == ["gpu-1"]
@@ -1397,7 +1485,7 @@ def test_resume_job_clears_failed_runtime_state(
         {
             "job_id": "job-1",
             "state": "failed",
-            "phase": "gpu-eager:pipeline=1/3",
+            "phase": "eager_archive:pipeline=1/3",
             "input_upload_id": "upload-1",
             "error": "old error",
             "finished_at": "2026-01-01T00:00:00Z",
@@ -3540,7 +3628,7 @@ def test_save_job_preserves_newer_riverhog_upload_state(
         {
             "job_id": "job-1",
             "state": "running",
-            "phase": "gpu-eager",
+            "phase": "eager_archive",
             "riverhog_session_upload": {
                 "state": "open",
                 "updated_at": "2026-01-01T00:00:02Z",
@@ -3553,7 +3641,7 @@ def test_save_job_preserves_newer_riverhog_upload_state(
         {
             "job_id": "job-1",
             "state": "running",
-            "phase": "gpu-eager:pipeline=3/3",
+            "phase": "eager_archive:pipeline=3/3",
             "riverhog_session_upload": {
                 "state": "open",
                 "updated_at": "2026-01-01T00:00:01Z",
@@ -3563,7 +3651,7 @@ def test_save_job_preserves_newer_riverhog_upload_state(
     )
 
     stored = runner.load_job("job-1")
-    assert stored["phase"] == "gpu-eager:pipeline=3/3"
+    assert stored["phase"] == "eager_archive:pipeline=3/3"
     assert stored["riverhog_session_upload"]["files"] == {"camera/a.webm": {"state": "uploaded"}}
 
 
@@ -3649,7 +3737,7 @@ def test_save_job_compacts_gpu_results_before_persisting(
         {
             "job_id": "job-1",
             "state": "running",
-            "phase": "gpu-eager:pipeline=1/3",
+            "phase": "eager_archive:pipeline=1/3",
             "eager_archive": {
                 "files": {},
                 "batches": {
@@ -3710,7 +3798,7 @@ def test_save_job_merges_newer_eager_archive_state(
         {
             "job_id": "job-1",
             "state": "running",
-            "phase": "gpu-eager:pipeline=2/3",
+            "phase": "eager_archive:pipeline=2/3",
             "eager_archive": {
                 "next_batch_number": 7,
                 "files": {
@@ -4041,7 +4129,7 @@ def test_eager_handoff_metrics_survive_newer_persisted_job_state(
         {
             "job_id": "job-1",
             "state": "running",
-            "phase": "gpu-eager:pipeline=3/3",
+            "phase": "eager_archive:pipeline=3/3",
             "riverhog": {"enabled": True},
             "riverhog_session_upload": {
                 "state": "open",
@@ -4053,7 +4141,7 @@ def test_eager_handoff_metrics_survive_newer_persisted_job_state(
     stale_worker_job = {
         "job_id": "job-1",
         "state": "running",
-        "phase": "gpu-eager:pipeline=3/3",
+        "phase": "eager_archive:pipeline=3/3",
         "riverhog": {"enabled": True},
         "riverhog_session_upload": {
             "state": "open",
@@ -4790,7 +4878,7 @@ def test_compact_job_response_keeps_operational_fields_only(
     job = {
         "job_id": "job-1",
         "state": "running",
-        "phase": "gpu-eager:pipeline=1/3",
+        "phase": "eager_archive:pipeline=1/3",
         "input_upload_id": "upload-1",
         "collection_slug": "camera-preview",
         "eager_archive": {
@@ -4805,7 +4893,7 @@ def test_compact_job_response_keeps_operational_fields_only(
 
     assert compact["job_id"] == "job-1"
     assert compact["state"] == "running"
-    assert compact["phase"] == "gpu-eager:pipeline=1/3"
+    assert compact["phase"] == "eager_archive:pipeline=1/3"
     assert compact["upload_progress"]["files_total"] == 1
     assert "eager_archive" not in compact
     assert "gpu_result" not in compact
@@ -4831,7 +4919,7 @@ def test_list_jobs_returns_recent_compact_jobs(
         {
             "job_id": "active",
             "state": "running",
-            "phase": "gpu-eager:pipeline=1/3",
+            "phase": "eager_archive:pipeline=1/3",
             "updated_at": "2026-01-02T00:00:00Z",
         }
     )
