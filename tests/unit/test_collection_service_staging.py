@@ -934,7 +934,7 @@ def test_incremental_collection_upload_session_idle_ttl_expires_to_audit_state(
 
     upload_store = _FakeUploadStore()
     service = SqlAlchemyCollectionService(
-        _config(sqlite_path, upload_session_idle_ttl=timedelta(seconds=1)),
+        _config(sqlite_path, upload_session_idle_ttl=timedelta(hours=1)),
         _FakeHotStore(),
         upload_store,
     )
