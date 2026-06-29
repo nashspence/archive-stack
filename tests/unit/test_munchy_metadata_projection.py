@@ -56,6 +56,25 @@ def test_immich_projection_maps_nested_ffprobe_apple_location() -> None:
     assert metadata.gps.altitude == pytest.approx(15.5)
 
 
+def test_immich_projection_honors_full_word_gps_refs() -> None:
+    metadata = project_immich_metadata(
+        {
+            "exif.date_time_original": "2026:06:28 20:30:40",
+            "exif.gps_latitude": 48.99951389,
+            "exif.gps_latitude_ref": "North",
+            "exif.gps_longitude": 122.74040278,
+            "exif.gps_longitude_ref": "West",
+        }
+    )
+
+    assert metadata.gps is not None
+    assert metadata.gps.latitude == pytest.approx(48.99951389)
+    assert metadata.gps.longitude == pytest.approx(-122.74040278)
+    xmp = render_immich_xmp_sidecar(metadata, metadata_date="2026-06-29T00:00:00Z")
+    assert 'exif:GPSLongitude="122,44.424167W"' in xmp
+    assert 'geo:long="-122.74040278"' in xmp
+
+
 def test_immich_projection_requires_date_and_gps_without_overrides() -> None:
     with pytest.raises(MetadataProjectionError, match="capture date"):
         project_immich_metadata(

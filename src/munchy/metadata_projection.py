@@ -420,8 +420,8 @@ def parse_coordinate(value: Any, *, ref: Any = None, axis: str) -> float | None:
         return None
     ref_text = str(ref or "").strip().upper()
     value_upper = text.upper()
-    sign = -1.0 if text.startswith("-") or ref_text in {"S", "W"} else 1.0
-    if "S" in value_upper or "W" in value_upper:
+    sign = -1.0 if text.startswith("-") or ref_text in {"S", "SOUTH", "W", "WEST"} else 1.0
+    if re.search(r"\b(S|SOUTH|W|WEST)\b", value_upper):
         sign = -1.0
     if re.search(r"\bDEG\b|[\"']", value_upper):
         parsed_numbers: list[float] = []
@@ -440,7 +440,7 @@ def parse_coordinate(value: Any, *, ref: Any = None, axis: str) -> float | None:
     decimal_value = parse_float(text)
     if decimal_value is None:
         return None
-    if ref_text in {"S", "W"} and decimal_value > 0:
+    if ref_text in {"S", "SOUTH", "W", "WEST"} and decimal_value > 0:
         decimal_value = -decimal_value
     return valid_coordinate(decimal_value, axis=axis)
 
