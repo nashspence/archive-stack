@@ -190,7 +190,13 @@ not mutated; they receive XMP sidecars only.
 ## New Device Configs
 
 Create new device configs from original source exports and keep routing proof
-separate from encode-quality proof.
+separate from encode-quality proof. The canonical demo layout is:
+
+```text
+<device>/
+  routing-demos/
+  encode-tuning/
+```
 
 A routing demo set should contain tiny, representative originals that exercise
 every expected capture profile and edge case. Include sidecars, paired captures,
