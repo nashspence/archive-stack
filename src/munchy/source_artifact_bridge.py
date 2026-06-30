@@ -93,6 +93,42 @@ def _allow_conversion_only_container(profile: Mapping[str, Any] | None) -> bool:
     return value
 
 
+def _source_sidecar_artifacts(
+    sidecars: Sequence[Mapping[str, Any]] | None,
+) -> list[source_artifacts.SourceArtifact]:
+    artifacts: list[source_artifacts.SourceArtifact] = []
+    for item in sidecars or ():
+        if not isinstance(item, Mapping):
+            raise ValueError("source sidecar entries must be mappings")
+        path_value = item.get("path")
+        if not isinstance(path_value, (str, os.PathLike)):
+            raise ValueError("source sidecar path must be a string")
+        path = pathlib.Path(path_value)
+        if not path.is_file():
+            raise RuntimeError(f"source sidecar is missing: {path}")
+        sidecar_id = str(item.get("id") or "").strip()
+        sidecar_format = str(item.get("format") or path.suffix.lstrip(".") or "opaque").strip()
+        source_rel_path = str(item.get("source_rel_path") or "").strip()
+        arcname = str(item.get("arcname") or f"sidecars/{path.name}").strip()
+        if not arcname:
+            raise ValueError("source sidecar arcname must not be blank")
+        artifacts.append(
+            source_artifacts.SourceArtifact(
+                path,
+                arcname,
+                "source_sidecar",
+                f"Source sidecar ({sidecar_format})",
+                source_artifacts._guess_mime_type(path),
+                {
+                    "sidecar_id": sidecar_id,
+                    "sidecar_format": sidecar_format,
+                    "source_rel_path": source_rel_path,
+                },
+            )
+        )
+    return artifacts
+
+
 def _export_auxiliary_streams(source: pathlib.Path, exports: Sequence[Mapping[str, Any]]) -> None:
     for export in exports:
         spec = export.get("spec")
@@ -205,6 +241,7 @@ def build_strict_source_artifacts(
     encode_command: Sequence[str],
     encode_profile: Mapping[str, Any] | None,
     source_filesystem_metadata: Mapping[str, Any] | None = None,
+    source_sidecars: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if not isinstance(source_filesystem_metadata, Mapping):
         raise RuntimeError(
@@ -331,6 +368,7 @@ def build_strict_source_artifacts(
             selected_output_path=archive_mkv,
             encode_output_path=archive_mkv,
             source_filesystem_metadata=source_filesystem_metadata,
+            extra_artifacts=_source_sidecar_artifacts(source_sidecars),
         )
 
         created = source_artifacts._build_source_artifacts_bundle(
@@ -363,6 +401,69 @@ def build_strict_source_artifacts(
             "sha256": source_artifacts._sha256_path(bundle_path),
             "audit": audit,
             "matroska_remux": matroska_remux,
+        }
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+        part_path.unlink(missing_ok=True)
+
+
+def build_preserve_source_artifacts(
+    *,
+    source: pathlib.Path,
+    output: pathlib.Path,
+    source_filesystem_metadata: Mapping[str, Any] | None,
+    source_sidecars: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if not isinstance(source_filesystem_metadata, Mapping):
+        raise RuntimeError(
+            f"unresumable: source filesystem metadata sidecar is missing for {source.name}"
+        )
+    work_dir = output.parent / f".{output.name}.source-artifacts-work"
+    bundle_path = pathlib.Path(source_artifacts._source_artifacts_path(str(output)))
+    part_path = pathlib.Path(str(bundle_path) + ".part")
+    shutil.rmtree(work_dir, ignore_errors=True)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    part_path.unlink(missing_ok=True)
+    try:
+        artifacts = source_artifacts._assemble_source_artifact_bundle_inputs(
+            work_dir=work_dir,
+            src=str(source),
+            output=output.name,
+            source_metadata={},
+            source_container={
+                "supported": True,
+                "mode": "preserve_primary_bytes",
+                "message": "primary source bytes are preserved as the archive output",
+            },
+            container_inventory=[],
+            container_artifacts=[],
+            exports=[],
+            stream_transforms=[],
+            dropped_items=[],
+            encode_cmd=[],
+            selected_output_path=output,
+            encode_output_path=output,
+            source_filesystem_metadata=source_filesystem_metadata,
+            extra_artifacts=_source_sidecar_artifacts(source_sidecars),
+        )
+        created = source_artifacts._build_source_artifacts_bundle(
+            part_path,
+            artifacts,
+            src=str(source),
+            output=output.name,
+        )
+        if not created:
+            raise RuntimeError(f"source artifact bundle was not created for {source}")
+        audit = source_artifacts._audit_source_artifacts_bundle(part_path)
+        errors = cast(list[str], audit.get("errors") or [])
+        if errors:
+            raise RuntimeError("source artifact audit failed: " + "; ".join(errors))
+        os.replace(part_path, bundle_path)
+        return {
+            "output": str(bundle_path),
+            "bytes": bundle_path.stat().st_size,
+            "sha256": source_artifacts._sha256_path(bundle_path),
+            "audit": audit,
         }
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)

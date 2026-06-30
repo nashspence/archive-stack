@@ -83,7 +83,7 @@ instead of uploaded in that batch. Use it for known but currently unarchived
 inputs such as a downloads directory. Files that do not match any route are not
 left behind silently; they fail preflight.
 
-Use an `originals` profile group for any recurring weekly artifact that should
+Use an `preserve` profile group for any recurring weekly artifact that should
 be copied into the collection without GPU work.
 
 For incremental source enrollment, keep `include_extensions = []` if every file

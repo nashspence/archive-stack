@@ -183,6 +183,7 @@ class JobRequest(BaseModel):
     review_plans: dict[str, dict[str, Any]] = Field(default_factory=dict)
     container_metadata: dict[str, dict[str, Any]] = Field(default_factory=dict)
     container_metadata_required: bool = True
+    source_artifacts_sidecars: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     dry_run: bool = False
 
     @field_validator("tasks")
@@ -1190,6 +1191,7 @@ def run_encode_item(
     source_artifacts_source: Path | None = None,
     source_artifacts_profile: dict[str, Any] | None = None,
     source_filesystem_metadata: dict[str, Any] | None = None,
+    source_artifacts_sidecars: list[dict[str, Any]] | None = None,
     on_start: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     with encode_semaphore:
@@ -1226,6 +1228,7 @@ def run_encode_item(
             encode_command=result["command"],
             encode_profile=source_artifacts_profile,
             source_filesystem_metadata=source_filesystem_metadata,
+            source_sidecars=source_artifacts_sidecars,
         )
     payload["bytes"] = output_path.stat().st_size if output_path.exists() else 0
     if output_path.exists():
@@ -1265,6 +1268,7 @@ def run_batch(
     validate_archive: ArchiveEncodeProfile | None = None,
     source_artifacts: bool = False,
     source_artifacts_profile: dict[str, Any] | None = None,
+    source_artifacts_sidecars: Mapping[str, list[dict[str, Any]]] | None = None,
     container_metadata: Mapping[str, dict[str, Any]] | None = None,
     container_metadata_required: bool = True,
 ) -> list[dict[str, Any]]:
@@ -1303,6 +1307,11 @@ def run_batch(
                     dry_run=dry_run,
                     source_artifacts_source=source if source_artifacts else None,
                     source_artifacts_profile=source_artifacts_profile,
+                    source_artifacts_sidecars=(
+                        source_artifacts_sidecars.get(rel_path, [])
+                        if source_artifacts_sidecars
+                        else []
+                    ),
                     source_filesystem_metadata=filesystem_metadata.get(rel_path),
                 )
             ] = source
@@ -1805,6 +1814,7 @@ def run_job(job_id: str, req: JobRequest) -> None:
                 validate_archive=archive_profile,
                 source_artifacts=True,
                 source_artifacts_profile=encode_profile_dump,
+                source_artifacts_sidecars=req.source_artifacts_sidecars,
                 container_metadata=req.container_metadata,
                 container_metadata_required=req.container_metadata_required,
             )

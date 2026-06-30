@@ -24,14 +24,14 @@ def write_jeb_config(tmp_path: Path) -> Path:
             type = "munchy"
             url = "http://munchy.invalid"
 
-            [profile_groups.originals]
-            archive_mode = "originals"
+            [profile_groups.preserve]
+            archive_mode = "preserve"
 
             [munchy_job_defaults.profile_routing]
 
             [[munchy_job_defaults.profile_routing.routes]]
-            id = "originals-text"
-            group = "originals"
+            id = "preserve-text"
+            group = "preserve"
             when = {{ path = {{ suffix = ".txt" }} }}
 
             [[sources]]
@@ -81,7 +81,7 @@ def test_jeb_archive_now_starts_batch_without_processing(
             "files_total": 1,
             "matched_files": 1,
             "unmatched_files": 0,
-            "matches": [{"path": "phone/note.txt", "route_id": "originals-text"}],
+            "matches": [{"path": "phone/note.txt", "route_id": "preserve-text"}],
             "unmatched": [],
         },
     )

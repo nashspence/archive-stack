@@ -4,6 +4,44 @@
 upload, applies optional ordered profile routing, writes archive outputs, and can
 project source metadata into XMP sidecars next to those outputs.
 
+## Profile Routing
+
+Profile routing is ordered. Each route is evaluated against files that have not
+already matched an earlier route. A file that falls through all routes is a
+preflight failure unless it was intentionally matched by a `leave` route.
+
+Routes can match against path facts, ffprobe facts, and ExifTool facts. Profiles
+may also declare sidecar evidence rules. A sidecar evidence file is not archived
+as its own primary output; it is attached to its primary file for metadata
+projection and source-artifacts custody.
+
+```toml
+[[job.profile_routing.sidecars]]
+id = "xmp"
+format = "xmp"
+primary = { path = { suffix_in = [".heic", ".jpg", ".mov"] } }
+
+[[job.profile_routing.routes]]
+id = "camera-video"
+group = "video"
+when = { path = { suffix = ".mov" } }
+```
+
+For `format = "xmp"`, Munchy looks for `primary-path.xmp` and
+`primary-stem.xmp` in the same directory unless explicit `path` or `paths`
+templates are configured.
+
+Sidecar evidence inherits the primary file's routing disposition. If the primary
+is archived, the sidecar is recorded in source artifacts. If the primary is
+intentionally left, the sidecar is left too. If the primary is unmatched, the
+sidecar remains a failed preflight condition.
+
+`archive_mode = "preserve"` copies the primary source bytes to the collection
+archive output without mutating them. If an existing XMP sidecar is attached as
+evidence for a preserve output, Munchy writes the visible output XMP by merging
+the normalized projected metadata into that existing XMP. Scalar conflicts fail
+the job instead of overwriting operator or source-provided metadata.
+
 ## Metadata Projection
 
 Metadata projection is enabled by default for groups that produce primary
@@ -112,7 +150,7 @@ device tag such as `device/example-camera`.
 
 For encoded audio and video outputs, Munchy also writes the same projected
 capture date, GPS, device, and creator metadata into ffmpeg container metadata
-where the output container supports scalar tags. Original archive outputs are
+where the output container supports scalar tags. Preserve archive outputs are
 not mutated; they receive XMP sidecars only.
 
 ## Audio Archive

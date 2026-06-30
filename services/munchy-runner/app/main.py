@@ -23,7 +23,7 @@ from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager, closing
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urljoin, urlsplit, urlunsplit
 
@@ -43,6 +43,7 @@ from munchy.metadata_projection import (
     ProjectionMetadata,
     ffmpeg_container_metadata_args,
     immich_xmp_sidecar_path,
+    merge_immich_xmp_sidecar,
     project_immich_metadata,
     render_immich_xmp_sidecar,
 )
@@ -71,7 +72,10 @@ from munchy.profiles import (
     ArchiveContainer,
     EncodeProfile,
 )
-from munchy.source_artifact_bridge import build_strict_source_artifacts
+from munchy.source_artifact_bridge import (
+    build_preserve_source_artifacts,
+    build_strict_source_artifacts,
+)
 from munchy.uvicorn_logging import uvicorn_log_config_without_health_access_logs
 from riverhog_cli.client import ApiClient
 from riverhog_core.domain.errors import Conflict, HashMismatch, NotFound, ServiceUnavailable
@@ -269,7 +273,7 @@ STORAGE_WAIT_SECONDS = max(
 )
 
 UploadState = Literal["pending", "partial", "uploaded", "consumed"]
-ArchiveMode = Literal["av1_nvenc", "audio", "originals"]
+ArchiveMode = Literal["av1_nvenc", "audio", "preserve"]
 WorkflowMode = Literal["collection_archive", "review_only"]
 CollectionArchiveDestination = Literal["target", "riverhog"]
 TaskName = Literal["archive_video", "archive_audio", "qcut_video", "audio_review"]
@@ -679,6 +683,7 @@ class MetadataProjectionConfig(BaseModel):
     allow_missing_device_model: bool = False
     allow_missing_creators: bool = False
     capture_date_sources: list[dict[str, Any]] | None = None
+    gps_sources: list[dict[str, Any]] | None = None
     device: MetadataProjectionDeviceConfig = Field(
         default_factory=MetadataProjectionDeviceConfig
     )
@@ -698,20 +703,42 @@ class MetadataProjectionConfig(BaseModel):
         cls,
         value: list[dict[str, Any]] | None,
     ) -> list[dict[str, Any]] | None:
-        if value is None:
-            return None
-        normalized: list[dict[str, Any]] = []
-        for item in value:
-            if not isinstance(item, dict):
-                raise ValueError("metadata_projection.capture_date_sources entries must be tables")
-            source_type = str(item.get("type") or "embedded").strip()
-            if source_type not in {"embedded", "path_regex", "filesystem_birthtime"}:
-                raise ValueError(
-                    "metadata_projection.capture_date_sources type must be embedded, "
-                    "path_regex, or filesystem_birthtime"
-                )
-            normalized.append(dict(item))
-        return normalized
+        return validate_metadata_sources(
+            value,
+            label="metadata_projection.capture_date_sources",
+            allowed={"embedded", "path_regex", "filesystem_birthtime", "sidecar"},
+        )
+
+    @field_validator("gps_sources")
+    @classmethod
+    def validate_gps_sources(
+        cls,
+        value: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]] | None:
+        return validate_metadata_sources(
+            value,
+            label="metadata_projection.gps_sources",
+            allowed={"embedded", "sidecar"},
+        )
+
+
+def validate_metadata_sources(
+    value: list[dict[str, Any]] | None,
+    *,
+    label: str,
+    allowed: set[str],
+) -> list[dict[str, Any]] | None:
+    if value is None:
+        return None
+    normalized: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError(f"{label} entries must be tables")
+        source_type = str(item.get("type") or "embedded").strip()
+        if source_type not in allowed:
+            raise ValueError(f"{label} type must be one of: {', '.join(sorted(allowed))}")
+        normalized.append(dict(item))
+    return normalized
 
 
 class ProfileGroupConfig(BaseModel):
@@ -730,8 +757,8 @@ class ProfileGroupConfig(BaseModel):
         return list(dict.fromkeys(value))
 
     @model_validator(mode="after")
-    def normalize_originals(self) -> ProfileGroupConfig:
-        if self.archive_mode == "originals":
+    def normalize_preserve(self) -> ProfileGroupConfig:
+        if self.archive_mode == "preserve":
             self.tasks = []
         elif self.archive_mode == "audio" and "tasks" not in self.model_fields_set:
             self.tasks = list(DEFAULT_AUDIO_TASKS)
@@ -756,8 +783,8 @@ class StorageGroupHint(BaseModel):
         return list(dict.fromkeys(value))
 
     @model_validator(mode="after")
-    def normalize_originals(self) -> StorageGroupHint:
-        if self.archive_mode == "originals":
+    def normalize_preserve(self) -> StorageGroupHint:
+        if self.archive_mode == "preserve":
             self.tasks = []
         elif self.archive_mode == "audio" and "tasks" not in self.model_fields_set:
             self.tasks = list(DEFAULT_AUDIO_TASKS)
@@ -794,8 +821,8 @@ class InputUploadStorageHint(BaseModel):
         return {validate_profile_group_name(name): group for name, group in value.items()}
 
     @model_validator(mode="after")
-    def normalize_originals(self) -> InputUploadStorageHint:
-        if self.archive_mode == "originals":
+    def normalize_preserve(self) -> InputUploadStorageHint:
+        if self.archive_mode == "preserve":
             self.tasks = []
         elif self.archive_mode == "audio" and "tasks" not in self.model_fields_set:
             self.tasks = list(DEFAULT_AUDIO_TASKS)
@@ -882,6 +909,7 @@ class ProfileRoutingConfig(BaseModel):
 
     gates: dict[str, dict[str, Any]] = Field(default_factory=dict)
     pairings: list[dict[str, Any]] = Field(default_factory=list)
+    sidecars: list[dict[str, Any]] = Field(default_factory=list)
     routes: list[ProfileRoute] = Field(default_factory=list)
 
     @field_validator("routes")
@@ -915,6 +943,48 @@ class ProfileRoutingConfig(BaseModel):
                 validate_routing_predicate(
                     predicate,
                     label=f"profile_routing.pairings[{index}].{key}",
+                )
+        allowed_sidecar_keys = {
+            "id",
+            "format",
+            "path",
+            "paths",
+            "primary",
+            "sidecar",
+        }
+        for index, sidecar in enumerate(self.sidecars):
+            unknown = sorted(set(sidecar) - allowed_sidecar_keys)
+            if unknown:
+                raise ValueError(
+                    f"profile_routing.sidecars[{index}] has unknown key(s): "
+                    + ", ".join(unknown)
+                )
+            if not str(sidecar.get("id") or "").strip():
+                raise ValueError(f"profile_routing.sidecars[{index}].id is required")
+            if "path" in sidecar and "paths" in sidecar:
+                raise ValueError(
+                    f"profile_routing.sidecars[{index}] must use path or paths, not both"
+                )
+            paths = sidecar.get("paths")
+            if paths is not None and (
+                not isinstance(paths, list)
+                or not all(isinstance(item, str) and item.strip() for item in paths)
+            ):
+                raise ValueError(f"profile_routing.sidecars[{index}].paths must be strings")
+            path = sidecar.get("path")
+            if path is not None and not (isinstance(path, str) and path.strip()):
+                raise ValueError(f"profile_routing.sidecars[{index}].path must be a string")
+            for key in ("primary", "sidecar"):
+                predicate = sidecar.get(key)
+                if predicate is None:
+                    continue
+                if not isinstance(predicate, Mapping):
+                    raise ValueError(
+                        f"profile_routing.sidecars[{index}].{key} must be a predicate"
+                    )
+                validate_routing_predicate(
+                    predicate,
+                    label=f"profile_routing.sidecars[{index}].{key}",
                 )
         return self
 
@@ -1035,7 +1105,7 @@ class CreateJobRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_workflow_mode(self) -> CreateJobRequest:
-        if self.archive_mode == "originals":
+        if self.archive_mode == "preserve":
             self.tasks = []
         elif self.archive_mode == "audio" and "tasks" not in self.model_fields_set:
             self.tasks = list(DEFAULT_AUDIO_TASKS)
@@ -2731,6 +2801,71 @@ def copy_tree_files(source_root: Path, dest_root: Path) -> None:
         link_or_copy(source, dest)
 
 
+def copy_preserve_group_files(
+    upload: dict[str, Any],
+    *,
+    group_name: str,
+    source_root: Path,
+    dest_root: Path,
+) -> None:
+    if not source_root.is_dir():
+        raise RuntimeError(f"input profile group is missing: {source_root}")
+    for file_state in primary_upload_files_for_groups(upload, {group_name}):
+        rel_path = upload_file_group_rel_for_state(file_state, group_name)
+        source = source_root / rel_path
+        dest = dest_root / rel_path
+        if not source.is_file():
+            raise RuntimeError(f"preserve source file is missing: {source}")
+        if dest.exists() and dest.stat().st_size == source.stat().st_size:
+            continue
+        link_or_copy(source, dest)
+
+
+def build_preserve_group_source_artifacts(
+    upload: dict[str, Any],
+    *,
+    group_name: str,
+    source_root: Path,
+    output_root: Path,
+) -> dict[str, Any]:
+    filesystem_metadata = load_filesystem_metadata_map(source_root)
+    if not filesystem_metadata:
+        raise RuntimeError(
+            "unresumable: source filesystem metadata sidecar is missing for preserve group"
+        )
+    items: list[dict[str, Any]] = []
+    for file_state in primary_upload_files_for_groups(upload, {group_name}):
+        rel_path = upload_file_group_rel_for_state(file_state, group_name)
+        source = source_root / rel_path
+        output = output_root / rel_path
+        metadata = filesystem_metadata.get(rel_path.as_posix())
+        if not isinstance(metadata, Mapping):
+            raise RuntimeError(
+                "unresumable: source filesystem metadata sidecar is missing entries for "
+                f"{rel_path.as_posix()}"
+            )
+        artifacts = build_preserve_source_artifacts(
+            source=source,
+            output=output,
+            source_filesystem_metadata=metadata,
+            source_sidecars=source_artifacts_sidecar_entries(
+                upload,
+                [file_state],
+                group_name=group_name,
+                materialized_group_root=source_root,
+            ).get(rel_path.as_posix(), []),
+        )
+        file_state["source_artifacts"] = artifacts
+        items.append(
+            {
+                "source": str(source),
+                "output": str(output),
+                "source_artifacts": artifacts,
+            }
+        )
+    return {"status": "succeeded", "items": items, "count": len(items)}
+
+
 def upload_file_group(rel_path: str) -> str:
     return input_path_group(rel_path)
 
@@ -2766,6 +2901,94 @@ def mutable_upload_files_for_groups(
         for file_state in upload.get("files", [])
         if isinstance(file_state, dict) and upload_file_resolved_group(file_state) in group_names
     ]
+
+
+def upload_file_is_sidecar_evidence(file_state: Mapping[str, Any]) -> bool:
+    return str(file_state.get("profile_route_action") or "") == "evidence"
+
+
+def primary_upload_files_for_groups(
+    upload: dict[str, Any],
+    group_names: set[str],
+) -> list[dict[str, Any]]:
+    return [
+        file_state
+        for file_state in upload_files_for_groups(upload, group_names)
+        if not upload_file_is_sidecar_evidence(file_state)
+    ]
+
+
+def mutable_primary_upload_files_for_groups(
+    upload: dict[str, Any],
+    group_names: set[str],
+) -> list[dict[str, Any]]:
+    return [
+        file_state
+        for file_state in mutable_upload_files_for_groups(upload, group_names)
+        if not upload_file_is_sidecar_evidence(file_state)
+    ]
+
+
+def sidecar_evidence_files_for_primary(
+    upload: dict[str, Any],
+    primary_file_state: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    primary_path = str(primary_file_state.get("path") or "")
+    evidence = [
+        file_state
+        for file_state in upload.get("files", [])
+        if isinstance(file_state, dict)
+        and upload_file_is_sidecar_evidence(file_state)
+        and str(file_state.get("profile_sidecar_for") or "") == primary_path
+    ]
+    return sorted(evidence, key=lambda item: str(item.get("path") or ""))
+
+
+def sidecar_evidence_files_for_primaries(
+    upload: dict[str, Any],
+    primary_file_states: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    by_path: dict[str, dict[str, Any]] = {}
+    for primary in primary_file_states:
+        for evidence in sidecar_evidence_files_for_primary(upload, primary):
+            by_path[str(evidence["path"])] = evidence
+    return [by_path[path] for path in sorted(by_path)]
+
+
+def source_artifacts_sidecar_entries(
+    upload: dict[str, Any],
+    primary_file_states: Sequence[Mapping[str, Any]],
+    *,
+    group_name: str,
+    materialized_group_root: Path,
+    container_group_root: str | Path | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    out: dict[str, list[dict[str, Any]]] = {}
+    root_for_payload = (
+        Path(container_group_root) if container_group_root else materialized_group_root
+    )
+    for primary in primary_file_states:
+        primary_rel = upload_file_group_rel_for_state(cast(dict[str, Any], primary), group_name)
+        entries: list[dict[str, Any]] = []
+        for evidence in sidecar_evidence_files_for_primary(upload, primary):
+            evidence_rel = upload_file_group_rel_for_state(evidence, group_name)
+            evidence_path = materialized_group_root / evidence_rel
+            if not evidence_path.is_file():
+                raise RuntimeError(f"source sidecar evidence is missing: {evidence_path}")
+            entries.append(
+                {
+                    "id": str(evidence.get("profile_sidecar_id") or ""),
+                    "format": str(evidence.get("profile_sidecar_format") or "opaque"),
+                    "path": str(root_for_payload / evidence_rel),
+                    "arcname": normalize_posix(
+                        PurePosixPath("sidecars", evidence_rel.as_posix()).as_posix()
+                    ),
+                    "source_rel_path": str(evidence.get("path") or ""),
+                }
+            )
+        if entries:
+            out[primary_rel.as_posix()] = entries
+    return out
 
 
 def upload_bytes_for_groups(upload: dict[str, Any], group_names: set[str]) -> int:
@@ -3444,6 +3667,17 @@ def apply_profile_routing_decision(
     if action == "leave":
         file_state["profile_routed_at"] = now_iso()
         return True
+    if action == "evidence":
+        group = validate_profile_group_name(str(decision.get("group") or ""))
+        file_state["resolved_group"] = group
+        file_state["resolved_group_rel"] = str(
+            decision.get("collection_rel_path") or file_state["path"]
+        )
+        file_state["profile_sidecar_id"] = str(decision.get("sidecar_id") or "")
+        file_state["profile_sidecar_format"] = str(decision.get("sidecar_format") or "opaque")
+        file_state["profile_sidecar_for"] = str(decision.get("sidecar_for") or "")
+        file_state["profile_routed_at"] = now_iso()
+        return True
     group = validate_profile_group_name(str(decision.get("group") or ""))
     file_state["resolved_group"] = group
     file_state["resolved_group_rel"] = str(
@@ -3534,7 +3768,9 @@ def route_completed_input_files(
     ]
     if not complete_files:
         return upload
-    files_to_route = pending_files if routing.get("pairings") else complete_files
+    files_to_route = (
+        pending_files if routing.get("pairings") or routing.get("sidecars") else complete_files
+    )
     if len(files_to_route) != len(complete_files):
         return upload
     plan = profile_routing_plan(
@@ -3695,7 +3931,7 @@ def group_is_eager_archive_only(group_config: dict[str, Any]) -> bool:
 
 
 def group_produces_primary_archive_output(group_config: dict[str, Any]) -> bool:
-    if normalize_archive_mode(str(group_config.get("archive_mode") or "av1_nvenc")) == "originals":
+    if normalize_archive_mode(str(group_config.get("archive_mode") or "av1_nvenc")) == "preserve":
         return True
     tasks = set(str(task) for task in group_config.get("tasks") or [])
     return bool(tasks & {"archive_video", "archive_audio"})
@@ -3708,7 +3944,7 @@ def archive_output_path_for_routed_file(
     group_config: dict[str, Any],
     archive_dir: Path,
 ) -> Path:
-    if normalize_archive_mode(str(group_config.get("archive_mode") or "av1_nvenc")) == "originals":
+    if normalize_archive_mode(str(group_config.get("archive_mode") or "av1_nvenc")) == "preserve":
         return archive_dir / group_name / upload_file_group_rel_for_state(file_state, group_name)
     return archive_output_for_upload_file(
         file_state,
@@ -3831,6 +4067,7 @@ def metadata_projection_config(group_config: dict[str, Any]) -> dict[str, Any]:
             "allow_missing_device_model": False,
             "allow_missing_creators": False,
             "capture_date_sources": None,
+            "gps_sources": None,
             "configured_gps": None,
             "device_make": None,
             "device_model": None,
@@ -3857,6 +4094,13 @@ def metadata_projection_config(group_config: dict[str, Any]) -> dict[str, Any]:
                 raise RuntimeError(
                     "metadata_projection.capture_date_sources entries must be tables"
                 )
+    gps_sources = raw.get("gps_sources")
+    if gps_sources is not None and not isinstance(gps_sources, list):
+        raise RuntimeError("metadata_projection.gps_sources must be a list")
+    if isinstance(gps_sources, list):
+        for source in gps_sources:
+            if not isinstance(source, dict):
+                raise RuntimeError("metadata_projection.gps_sources entries must be tables")
     device = raw.get("device") or {}
     if not isinstance(device, dict):
         raise RuntimeError("metadata_projection.device must be a table")
@@ -3879,6 +4123,7 @@ def metadata_projection_config(group_config: dict[str, Any]) -> dict[str, Any]:
         "allow_missing_device_model": bool(raw.get("allow_missing_device_model", False)),
         "allow_missing_creators": bool(raw.get("allow_missing_creators", False)),
         "capture_date_sources": copy.deepcopy(capture_date_sources),
+        "gps_sources": copy.deepcopy(gps_sources),
         "configured_gps": copy.deepcopy(configured_gps),
         "device_make": device_make,
         "device_model": device_model,
@@ -3897,6 +4142,7 @@ def metadata_projection_facts_for_path(
     path: Path,
     *,
     filesystem_metadata: Mapping[str, Any] | None = None,
+    sidecar_facts: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     probe_summary: dict[str, Any] | None = None
     try:
@@ -3912,6 +4158,23 @@ def metadata_projection_facts_for_path(
     if filesystem_metadata:
         facts["filesystem"] = dict(filesystem_metadata)
         facts["source_filesystem_metadata"] = dict(filesystem_metadata)
+    if sidecar_facts:
+        ids: list[str] = []
+        for sidecar_id, payload in sorted(sidecar_facts.items()):
+            if not isinstance(payload, Mapping):
+                continue
+            sidecar_key = str(sidecar_id).strip()
+            if not sidecar_key:
+                continue
+            ids.append(sidecar_key)
+            facts[f"sidecars.{sidecar_key}.path"] = str(payload.get("path") or "")
+            facts[f"sidecars.{sidecar_key}.format"] = str(payload.get("format") or "")
+            nested = payload.get("facts")
+            if isinstance(nested, Mapping):
+                for key, value in nested.items():
+                    facts[f"sidecars.{sidecar_key}.facts.{key}"] = value
+        if ids:
+            facts["sidecars.ids"] = ids
     return facts
 
 
@@ -3921,6 +4184,7 @@ def projection_metadata_from_source(
     *,
     group_config: dict[str, Any],
     filesystem_metadata: Mapping[str, Any] | None = None,
+    sidecar_facts: Mapping[str, Mapping[str, Any]] | None = None,
     tags: list[str] | None = None,
 ) -> ProjectionMetadata:
     config = metadata_projection_config(group_config)
@@ -3930,6 +4194,7 @@ def projection_metadata_from_source(
                 rel_path,
                 source_path,
                 filesystem_metadata=filesystem_metadata,
+                sidecar_facts=sidecar_facts,
             ),
             allow_missing_capture_date=bool(config["allow_missing_capture_date"]),
             allow_missing_gps=bool(config["allow_missing_gps"]),
@@ -3939,6 +4204,10 @@ def projection_metadata_from_source(
             capture_date_sources=cast(
                 list[dict[str, Any]] | None,
                 config.get("capture_date_sources"),
+            ),
+            gps_sources=cast(
+                list[dict[str, Any]] | None,
+                config.get("gps_sources"),
             ),
             configured_gps=cast(dict[str, Any] | None, config.get("configured_gps")),
             device_make=cast(str | None, config.get("device_make")),
@@ -3953,6 +4222,41 @@ def projection_metadata_from_source(
 def file_state_filesystem_metadata(file_state: Mapping[str, Any]) -> Mapping[str, Any] | None:
     metadata = file_state.get("filesystem_metadata")
     return cast(Mapping[str, Any], metadata) if isinstance(metadata, Mapping) else None
+
+
+def metadata_projection_sidecar_facts(
+    upload: dict[str, Any],
+    file_state: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    sidecars: dict[str, dict[str, Any]] = {}
+    for evidence in sidecar_evidence_files_for_primary(upload, file_state):
+        sidecar_id = str(evidence.get("profile_sidecar_id") or "").strip()
+        sidecar_format = str(evidence.get("profile_sidecar_format") or "opaque").strip()
+        if not sidecar_id or sidecar_format.casefold() != "xmp":
+            continue
+        rel_path = str(evidence.get("path") or "")
+        source_path = upload_file_data_path(evidence)
+        exiftool_summary = routing_exiftool_summary(exiftool_for_routing(source_path))
+        sidecars[sidecar_id] = {
+            "path": rel_path,
+            "format": sidecar_format,
+            "facts": routing_file_facts(
+                rel_path,
+                exiftool_summary=exiftool_summary,
+            ),
+        }
+    return sidecars
+
+
+def xmp_evidence_sidecar_path(
+    upload: dict[str, Any],
+    file_state: Mapping[str, Any],
+) -> Path | None:
+    for evidence in sidecar_evidence_files_for_primary(upload, file_state):
+        if str(evidence.get("profile_sidecar_format") or "").casefold() != "xmp":
+            continue
+        return upload_file_data_path(evidence)
+    return None
 
 
 def metadata_projection_with_tags(
@@ -4002,6 +4306,7 @@ def projection_metadata_satisfies_config(
 
 
 def container_metadata_for_gpu_payload(
+    upload: dict[str, Any],
     file_states: list[dict[str, Any]],
     *,
     group_name: str,
@@ -4013,7 +4318,7 @@ def container_metadata_for_gpu_payload(
     metadata_by_rel_path: dict[str, dict[str, Any]] = {}
     changed = False
     for file_state in file_states:
-        if ensure_file_projection_metadata(file_state, group_config=group_config):
+        if ensure_file_projection_metadata(upload, file_state, group_config=group_config):
             changed = True
         stored = file_state.get("metadata_projection_metadata")
         if isinstance(stored, dict):
@@ -4032,6 +4337,7 @@ def gpu_tasks_require_container_metadata(
 
 
 def ensure_file_projection_metadata(
+    upload: dict[str, Any],
     file_state: dict[str, Any],
     *,
     group_config: dict[str, Any],
@@ -4050,6 +4356,7 @@ def ensure_file_projection_metadata(
         upload_file_data_path(file_state),
         group_config=group_config,
         filesystem_metadata=file_state_filesystem_metadata(file_state),
+        sidecar_facts=metadata_projection_sidecar_facts(upload, file_state),
     )
     file_state["metadata_projection_metadata"] = metadata.as_dict()
     file_state["metadata_projection_captured_at"] = now_iso()
@@ -4057,6 +4364,7 @@ def ensure_file_projection_metadata(
 
 
 def projection_metadata_for_file_output(
+    upload: dict[str, Any],
     file_state: dict[str, Any],
     *,
     job: dict[str, Any],
@@ -4091,6 +4399,7 @@ def projection_metadata_for_file_output(
         source_path,
         group_config=group_config,
         filesystem_metadata=file_state_filesystem_metadata(file_state),
+        sidecar_facts=metadata_projection_sidecar_facts(upload, file_state),
         tags=tags,
     )
 
@@ -4158,7 +4467,7 @@ def write_metadata_projection_sidecars(
             continue
         if not group_produces_primary_archive_output(group_config):
             continue
-        for file_state in mutable_upload_files_for_groups(upload, {group_name}):
+        for file_state in mutable_primary_upload_files_for_groups(upload, {group_name}):
             output = archive_output_path_for_routed_file(
                 file_state,
                 group_name=group_name,
@@ -4170,9 +4479,10 @@ def write_metadata_projection_sidecars(
                     "metadata projection output is missing for "
                     f"{file_state.get('path')}: {output}"
                 )
-            if ensure_file_projection_metadata(file_state, group_config=group_config):
+            if ensure_file_projection_metadata(upload, file_state, group_config=group_config):
                 upload_changed = True
             metadata = projection_metadata_for_file_output(
+                upload,
                 file_state,
                 job=job,
                 group_name=group_name,
@@ -4180,7 +4490,26 @@ def write_metadata_projection_sidecars(
                 output_path=output,
             )
             sidecar = immich_xmp_sidecar_path(output)
-            rendered = render_immich_xmp_sidecar(metadata, metadata_date=now_iso())
+            metadata_date = now_iso()
+            xmp_evidence = (
+                xmp_evidence_sidecar_path(upload, file_state)
+                if normalize_archive_mode(str(group_config.get("archive_mode") or "av1_nvenc"))
+                == "preserve"
+                else None
+            )
+            if xmp_evidence is not None:
+                try:
+                    rendered = merge_immich_xmp_sidecar(
+                        xmp_evidence.read_text(encoding="utf-8"),
+                        metadata,
+                        metadata_date=metadata_date,
+                    )
+                except MetadataProjectionError as exc:
+                    raise RuntimeError(
+                        f"metadata projection failed for {file_state.get('path')}: {exc}"
+                    ) from exc
+            else:
+                rendered = render_immich_xmp_sidecar(metadata, metadata_date=metadata_date)
             if write_atomic_text(sidecar, rendered):
                 sidecars_written += 1
             groups_written[group_name] = groups_written.get(group_name, 0) + 1
@@ -4206,7 +4535,7 @@ def expected_riverhog_primary_files_total(
     groups: dict[str, dict[str, Any]],
 ) -> int:
     return sum(
-        len(upload_files_for_groups(input_upload, {str(group_name)}))
+        len(primary_upload_files_for_groups(input_upload, {str(group_name)}))
         for group_name, group_config in groups.items()
         if group_produces_primary_archive_output(group_config)
     )
@@ -5615,9 +5944,15 @@ def archive_audio_command(
     ]
 
 
-def archive_audio_sources(input_root: Path) -> list[Path]:
+def archive_audio_sources(
+    input_root: Path,
+    *,
+    rel_paths: set[str] | None = None,
+) -> list[Path]:
     if not input_root.is_dir():
         raise RuntimeError(f"input profile group is missing: {input_root}")
+    if rel_paths is not None:
+        return sorted(input_root / Path(rel_path) for rel_path in rel_paths)
     return sorted(
         path
         for path in input_root.rglob("*")
@@ -5636,6 +5971,7 @@ def run_archive_audio_item(
     input_root: Path,
     group_config: dict[str, Any],
     filesystem_metadata: Mapping[str, Any],
+    source_sidecars: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     profile, _audio = audio_archive_profile(group_config)
     rel_path = source.relative_to(input_root).as_posix()
@@ -5671,6 +6007,7 @@ def run_archive_audio_item(
         encode_command=cast(list[str], result["command"]),
         encode_profile=profile,
         source_filesystem_metadata=metadata,
+        source_sidecars=source_sidecars,
     )
     return {
         "source": str(source),
@@ -5689,8 +6026,10 @@ def run_archive_audio_group(
     input_root: Path,
     output_root: Path,
     group_config: dict[str, Any],
+    source_rel_paths: set[str] | None = None,
+    source_artifacts_sidecars: Mapping[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
-    sources = archive_audio_sources(input_root)
+    sources = archive_audio_sources(input_root, rel_paths=source_rel_paths)
     if not sources:
         return {"status": "skipped", "reason": "no audio sources", "items": []}
     filesystem_metadata = load_filesystem_metadata_map(input_root)
@@ -5709,6 +6048,11 @@ def run_archive_audio_group(
                 input_root=input_root,
                 group_config=group_config,
                 filesystem_metadata=filesystem_metadata,
+                source_sidecars=(
+                    source_artifacts_sidecars.get(source.relative_to(input_root).as_posix(), [])
+                    if source_artifacts_sidecars
+                    else []
+                ),
             ): source
             for source in sources
         }
@@ -6676,7 +7020,7 @@ def mark_existing_eager_outputs(
     consume_paths: set[str] = set()
     for group_name in sorted(eager_groups):
         group_config = groups[group_name]
-        for file_state in mutable_upload_files_for_groups(upload, {group_name}):
+        for file_state in mutable_primary_upload_files_for_groups(upload, {group_name}):
             rel_path = str(file_state["path"])
             if eager_file_claimed(job, rel_path):
                 continue
@@ -6688,7 +7032,13 @@ def mark_existing_eager_outputs(
             )
             if not output.exists():
                 continue
-            if ensure_file_projection_metadata(file_state, group_config=group_config):
+            source_artifacts_sidecar = source_artifact_sidecar_for_archive_output(output)
+            if sidecar_evidence_files_for_primary(
+                upload,
+                file_state,
+            ) and not source_artifacts_sidecar.exists():
+                continue
+            if ensure_file_projection_metadata(upload, file_state, group_config=group_config):
                 upload_changed = True
             mark_eager_file_encoded(
                 job,
@@ -6758,7 +7108,11 @@ def eager_groups_complete(
         and str(upload.get("state") or "") != "uploaded"
     ):
         return False
-    files = upload_files_for_groups(upload, eager_groups)
+    files = [
+        file_state
+        for group_name in eager_groups
+        for file_state in primary_upload_files_for_groups(upload, {group_name})
+    ]
     return bool(files) and all(
         eager_file_encoded(job, str(file_state["path"])) for file_state in files
     )
@@ -7224,7 +7578,7 @@ def ready_eager_files(
         group_config = groups[group_name]
         group_limit = limit or eager_archive_batch_limit(group_config)
         ready: list[dict[str, Any]] = []
-        for file_state in mutable_upload_files_for_groups(upload, {group_name}):
+        for file_state in mutable_primary_upload_files_for_groups(upload, {group_name}):
             rel_path = str(file_state["path"])
             if eager_file_claimed(job, rel_path):
                 continue
@@ -7235,6 +7589,12 @@ def ready_eager_files(
                 archive_dir=archive_dir,
             )
             if output.exists():
+                source_artifacts_sidecar = source_artifact_sidecar_for_archive_output(output)
+                if sidecar_evidence_files_for_primary(
+                    upload,
+                    file_state,
+                ) and not source_artifacts_sidecar.exists():
+                    continue
                 mark_eager_file_encoded(
                     job,
                     file_state,
@@ -7249,6 +7609,9 @@ def ready_eager_files(
             if status["upload_state"] == "consumed":
                 raise RuntimeError(f"eager source was consumed before output existed: {rel_path}")
             if status["upload_state"] != "uploaded":
+                continue
+            evidence = sidecar_evidence_files_for_primary(upload, file_state)
+            if not all(upload_file_status(item)["complete"] for item in evidence):
                 continue
             ready.append(file_state)
             if len(ready) >= group_limit:
@@ -7313,6 +7676,7 @@ def build_eager_gpu_payload(
     group_config: dict[str, Any],
     tasks: list[TaskName],
     container_metadata: dict[str, dict[str, Any]] | None = None,
+    source_artifacts_sidecars: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     job_id = str(job["job_id"])
     gpu_job_id = gpu_eager_batch_job_id(job_id, batch_id)
@@ -7333,6 +7697,8 @@ def build_eager_gpu_payload(
         payload["encode_profile"] = group_config["encode_profile"]
     if container_metadata:
         payload["container_metadata"] = container_metadata
+    if source_artifacts_sidecars:
+        payload["source_artifacts_sidecars"] = source_artifacts_sidecars
     return payload
 
 
@@ -7347,7 +7713,8 @@ def finish_eager_gpu_batch(
     group_name = str(batch["group"])
     group_config = groups[group_name]
     paths = set(str(path) for path in batch.get("paths") or [])
-    for file_state in upload_files_for_groups(upload, {group_name}):
+    evidence_paths = set(str(path) for path in batch.get("evidence_paths") or [])
+    for file_state in primary_upload_files_for_groups(upload, {group_name}):
         rel_path = str(file_state["path"])
         if rel_path not in paths:
             continue
@@ -7367,7 +7734,7 @@ def finish_eager_gpu_batch(
         eager_batch_input_root(str(job["job_id"]), str(batch["batch_id"])),
         ignore_errors=True,
     )
-    upload = consume_input_upload_files(str(job["input_upload_id"]), paths)
+    upload = consume_input_upload_files(str(job["input_upload_id"]), paths | evidence_paths)
     save_job(job)
     return upload
 
@@ -7407,8 +7774,12 @@ def start_eager_gpu_batch(
 ) -> dict[str, Any]:
     job_id = str(job["job_id"])
     paths = [str(file_state["path"]) for file_state in file_states]
+    evidence_file_states = sidecar_evidence_files_for_primaries(upload, file_states)
+    evidence_paths = [str(file_state["path"]) for file_state in evidence_file_states]
     batch_id = next_eager_batch_id(job, group_name, paths)
-    batch_bytes = sum(int(file_state["bytes"]) for file_state in file_states)
+    batch_bytes = sum(
+        int(file_state["bytes"]) for file_state in [*file_states, *evidence_file_states]
+    )
     storage_hint = input_upload_storage_hint(upload)
     required_gpu_free = gpu_scratch_required_bytes(batch_bytes, storage_hint) + MIN_FREE_BYTES
     if not space_checked:
@@ -7416,6 +7787,7 @@ def start_eager_gpu_batch(
 
     tasks: list[TaskName] = ["archive_video"]
     container_metadata, container_metadata_changed = container_metadata_for_gpu_payload(
+        upload,
         file_states,
         group_name=group_name,
         group_config=group_config,
@@ -7428,9 +7800,16 @@ def start_eager_gpu_batch(
     if batch_root.exists():
         shutil.rmtree(batch_root, ignore_errors=True)
     batch_root.mkdir(parents=True, exist_ok=True)
-    for file_state in file_states:
+    for file_state in [*file_states, *evidence_file_states]:
         materialize_upload_file(file_state, batch_root)
-    write_group_filesystem_metadata(batch_root, group_name, file_states)
+    write_group_filesystem_metadata(batch_root, group_name, [*file_states, *evidence_file_states])
+    source_artifacts_sidecars = source_artifacts_sidecar_entries(
+        upload,
+        file_states,
+        group_name=group_name,
+        materialized_group_root=batch_root / group_name,
+        container_group_root=Path(f"/data/jobs/{job_id}/eager-input/{batch_id}/{group_name}"),
+    )
     payload = build_eager_gpu_payload(
         job,
         batch_id=batch_id,
@@ -7438,6 +7817,7 @@ def start_eager_gpu_batch(
         group_config=group_config,
         tasks=tasks,
         container_metadata=container_metadata,
+        source_artifacts_sidecars=source_artifacts_sidecars,
     )
     batch = {
         "batch_id": batch_id,
@@ -7445,6 +7825,7 @@ def start_eager_gpu_batch(
         "executor": "gpu",
         "group": group_name,
         "paths": paths,
+        "evidence_paths": evidence_paths,
         "gpu_job_id": payload["job_id"],
         "payload": payload,
         "started_at": now_iso(),
@@ -7487,7 +7868,7 @@ def start_eager_audio_batch(
 
     upload_changed = False
     for file_state in file_states:
-        if ensure_file_projection_metadata(file_state, group_config=group_config):
+        if ensure_file_projection_metadata(upload, file_state, group_config=group_config):
             upload_changed = True
     if upload_changed:
         upload = save_input_upload_raw(upload)
@@ -7797,38 +8178,66 @@ def run_job(job_id: str) -> None:
             group_archive_mode = normalize_archive_mode(
                 str(group_config.get("archive_mode") or "av1_nvenc")
             )
-            if group_archive_mode not in {"av1_nvenc", "audio", "originals"}:
+            if group_archive_mode not in {"av1_nvenc", "audio", "preserve"}:
                 raise RuntimeError(
                     f"unsupported archive_mode for group {group_name}: {group_archive_mode}"
                 )
-            if group_archive_mode == "originals" and not group_results.get(group_name, {}).get(
-                "originals_copied"
+            if group_archive_mode == "preserve" and not group_results.get(group_name, {}).get(
+                "preserve_copied"
             ):
-                job["phase"] = f"copying_originals:{group_name}"
+                job["phase"] = f"copying_preserve:{group_name}"
                 save_job(job)
-                copy_tree_files(input_dir / group_name, archive_dir / group_name)
+                copy_preserve_group_files(
+                    input_upload,
+                    group_name=group_name,
+                    source_root=input_dir / group_name,
+                    dest_root=archive_dir / group_name,
+                )
+                preserve_source_artifacts = build_preserve_group_source_artifacts(
+                    input_upload,
+                    group_name=group_name,
+                    source_root=input_dir / group_name,
+                    output_root=archive_dir / group_name,
+                )
+                input_upload = save_input_upload_raw(input_upload)
                 group_results[group_name] = {
                     **group_results.get(group_name, {}),
-                    "originals_copied": True,
+                    "preserve_copied": True,
+                    "preserve_source_artifacts": preserve_source_artifacts,
                     "copied_at": now_iso(),
                 }
                 save_job(job)
                 raise_if_job_cancelled(job_id)
 
             tasks = list(group_config.get("tasks") or [])
-            if group_archive_mode == "originals":
+            if group_archive_mode == "preserve":
                 tasks = [task for task in tasks if task not in {"archive_video", "archive_audio"}]
             if "archive_audio" in tasks and not group_results.get(group_name, {}).get(
                 "archive_audio"
             ):
                 job["phase"] = f"archive_audio:{group_name}"
                 save_job(job)
+                audio_file_states = mutable_primary_upload_files_for_groups(
+                    input_upload,
+                    {group_name},
+                )
+                audio_rel_paths = {
+                    upload_file_group_rel_for_state(file_state, group_name).as_posix()
+                    for file_state in audio_file_states
+                }
                 group_results[group_name] = {
                     **group_results.get(group_name, {}),
                     "archive_audio": run_archive_audio_group(
                         input_root=input_dir / group_name,
                         output_root=archive_dir / group_name,
                         group_config=group_config,
+                        source_rel_paths=audio_rel_paths,
+                        source_artifacts_sidecars=source_artifacts_sidecar_entries(
+                            input_upload,
+                            audio_file_states,
+                            group_name=group_name,
+                            materialized_group_root=input_dir / group_name,
+                        ),
                     ),
                     "archive_audio_at": now_iso(),
                 }
@@ -7843,9 +8252,13 @@ def run_job(job_id: str) -> None:
             try:
                 for group_name, group_config, tasks in gpu_work:
                     raise_if_job_cancelled(job_id)
-                    group_file_states = mutable_upload_files_for_groups(input_upload, {group_name})
+                    group_file_states = mutable_primary_upload_files_for_groups(
+                        input_upload,
+                        {group_name},
+                    )
                     container_metadata, container_metadata_changed = (
                         container_metadata_for_gpu_payload(
+                            input_upload,
                             group_file_states,
                             group_name=group_name,
                             group_config=group_config,
@@ -7877,6 +8290,15 @@ def run_job(job_id: str) -> None:
                         gpu_payload["encode_profile"] = group_config["encode_profile"]
                     if container_metadata:
                         gpu_payload["container_metadata"] = container_metadata
+                    source_artifacts_sidecars = source_artifacts_sidecar_entries(
+                        input_upload,
+                        group_file_states,
+                        group_name=group_name,
+                        materialized_group_root=input_dir / group_name,
+                        container_group_root=gpu_runtime_container_path(input_dir / group_name),
+                    )
+                    if source_artifacts_sidecars:
+                        gpu_payload["source_artifacts_sidecars"] = source_artifacts_sidecars
                     for task_name in ("qcut_video", "audio_review"):
                         if task_name not in tasks:
                             continue
@@ -8103,7 +8525,7 @@ def capabilities() -> dict[str, Any]:
                 "template_fields": ["job_id", "collection_slug", "collection_timestamp"],
             },
         },
-        "archive_modes": ["av1_nvenc", "audio", "originals"],
+        "archive_modes": ["av1_nvenc", "audio", "preserve"],
         "tasks": ["archive_video", "archive_audio", "qcut_video", "audio_review"],
         "encode_profile": {
             "schema_versions": [1],

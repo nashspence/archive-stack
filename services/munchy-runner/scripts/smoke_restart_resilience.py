@@ -271,11 +271,11 @@ def main() -> int:
         "collection_slug": "runner-restart-smoke",
         "collection_timestamp": stamp,
         "workflow_mode": "collection_archive",
-        "archive_mode": "originals",
+        "archive_mode": "preserve",
         "tasks": [],
         "groups": {
             group_name: {
-                "archive_mode": "originals",
+                "archive_mode": "preserve",
                 "tasks": [],
             },
         },

@@ -168,7 +168,7 @@ def storage_hint_for(
     *,
     workflow_mode: str = "collection_archive",
     collection_archive_destination: str = "riverhog",
-    archive_mode: str = "originals",
+    archive_mode: str = "preserve",
     tasks: list[str] | None = None,
 ) -> dict:
     group_name = rel_path.split("/", 1)[0]
@@ -194,7 +194,7 @@ def create_upload(
     *,
     workflow_mode: str = "collection_archive",
     collection_archive_destination: str = "riverhog",
-    archive_mode: str = "originals",
+    archive_mode: str = "preserve",
     tasks: list[str] | None = None,
 ) -> dict:
     digest = hashlib.sha256(content).hexdigest()
@@ -359,11 +359,11 @@ def main() -> int:
                 "collection_slug": "runner-smoke-preupload",
                 "collection_timestamp": stamp,
                 "workflow_mode": "collection_archive",
-                "archive_mode": "originals",
+                "archive_mode": "preserve",
                 "tasks": [],
                 "groups": {
                     group_name: {
-                        "archive_mode": "originals",
+                        "archive_mode": "preserve",
                         "tasks": [],
                     },
                 },
@@ -418,11 +418,11 @@ def main() -> int:
                 "collection_slug": "runner-smoke-target",
                 "collection_timestamp": stamp,
                 "workflow_mode": "collection_archive",
-                "archive_mode": "originals",
+                "archive_mode": "preserve",
                 "tasks": [],
                 "groups": {
                     group_name: {
-                        "archive_mode": "originals",
+                        "archive_mode": "preserve",
                         "tasks": [],
                     },
                 },
@@ -462,7 +462,7 @@ def main() -> int:
             "job_id": f"{prefix}-bad-review",
             "input_upload_id": upload_id,
             "collection_slug": "runner-smoke",
-            "archive_mode": "originals",
+            "archive_mode": "preserve",
             "tasks": [],
             "review_upload": {"enabled": True, "method": "rclone"},
         },
@@ -515,7 +515,7 @@ def main() -> int:
             "job_id": f"{prefix}-bad-notify",
             "input_upload_id": upload_id,
             "collection_slug": "runner-smoke",
-            "archive_mode": "originals",
+            "archive_mode": "preserve",
             "tasks": [],
             "notify": {"enabled": True, "recipients": []},
         },

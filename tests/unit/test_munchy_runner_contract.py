@@ -92,7 +92,7 @@ def test_capabilities_advertise_munchy_profile_target(tmp_path: Path, monkeypatc
 
     capabilities = runner.capabilities()
 
-    assert capabilities["archive_modes"] == ["av1_nvenc", "audio", "originals"]
+    assert capabilities["archive_modes"] == ["av1_nvenc", "audio", "preserve"]
     assert capabilities["tasks"] == [
         "archive_video",
         "archive_audio",
@@ -189,24 +189,24 @@ def test_structured_input_upload_accepts_source_prefixed_paths(
     )
 
 
-def test_originals_profile_groups_are_copy_only(
+def test_preserve_profile_groups_are_copy_only(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     runner = load_runner(tmp_path, monkeypatch)
 
     group = runner.ProfileGroupConfig(
-        archive_mode="originals",
+        archive_mode="preserve",
         tasks=["archive_video"],
     )
     storage_group = runner.StorageGroupHint(
-        archive_mode="originals",
+        archive_mode="preserve",
         tasks=["archive_video"],
     )
 
-    assert group.archive_mode == "originals"
+    assert group.archive_mode == "preserve"
     assert group.tasks == []
-    assert storage_group.archive_mode == "originals"
+    assert storage_group.archive_mode == "preserve"
     assert storage_group.tasks == []
 
 
@@ -275,7 +275,7 @@ def test_completed_structured_file_routes_by_path_without_full_upload(
                 "structured_routing": True,
                 "groups": {
                     "video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]},
-                    "originals": {"archive_mode": "originals", "tasks": []},
+                    "preserve": {"archive_mode": "preserve", "tasks": []},
                 },
             },
             "files": [
@@ -311,7 +311,7 @@ def test_completed_structured_file_routes_by_path_without_full_upload(
     }
     groups = {
         "video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]},
-        "originals": {"archive_mode": "originals", "tasks": []},
+        "preserve": {"archive_mode": "preserve", "tasks": []},
     }
 
     routed = runner.route_completed_input_files(job, upload, groups)
@@ -515,6 +515,98 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
     ]
 
 
+def test_metadata_projection_merges_existing_xmp_sidecar_for_preserve_outputs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    runner.tusd_data_path("phone-xmp-1").parent.mkdir(parents=True, exist_ok=True)
+    runner.tusd_data_path("phone-xmp-1").write_text(
+        """<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description xmlns:dc="http://purl.org/dc/elements/1.1/">
+   <dc:subject><rdf:Bag><rdf:li>existing-tag</rdf:li></rdf:Bag></dc:subject>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+""",
+        encoding="utf-8",
+    )
+    upload = runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "files": [
+                {
+                    "path": "phone/IMG_0001.HEIC",
+                    "bytes": 5,
+                    "upload_id": "phone-img-1",
+                    "metadata_projection_metadata": {
+                        "capture_date": "2026-06-28T20:30:40-07:00",
+                        "capture_date_source": "exif.date_time_original",
+                        "gps": {"latitude": 37.3317, "longitude": -122.0301},
+                        "gps_source": "exif.gps_latitude+exif.gps_longitude",
+                        "device": {
+                            "make": "Apple",
+                            "model": "iPhone SE (2nd generation)",
+                        },
+                        "creators": ["Nash Spence"],
+                        "tags": [],
+                    },
+                    "profile_route_id": "iphone-photo",
+                    "resolved_group": "photos",
+                    "resolved_group_rel": "IMG_0001.HEIC",
+                },
+                {
+                    "path": "phone/IMG_0001.HEIC.xmp",
+                    "bytes": 20,
+                    "upload_id": "phone-xmp-1",
+                    "profile_route_action": "evidence",
+                    "profile_sidecar_id": "xmp",
+                    "profile_sidecar_format": "xmp",
+                    "profile_sidecar_for": "phone/IMG_0001.HEIC",
+                    "resolved_group": "photos",
+                    "resolved_group_rel": "IMG_0001.HEIC.xmp",
+                },
+            ],
+        }
+    )
+    job = {
+        "job_id": "job-1",
+        "input_upload_id": "upload-1",
+        "collection_slug": "phone-collection-archive",
+    }
+    runner.save_job(job)
+    groups = {
+        "photos": {
+            "archive_mode": "preserve",
+            "tasks": [],
+            "metadata_projection": {
+                "enabled": True,
+                "device": {"make": "Apple", "model": "iPhone SE (2nd generation)"},
+                "creators": ["Nash Spence"],
+            },
+        }
+    }
+    archive_dir = tmp_path / "archive"
+    output = archive_dir / "photos" / "IMG_0001.HEIC"
+    output.parent.mkdir(parents=True)
+    output.write_bytes(b"heic")
+
+    updated = runner.write_metadata_projection_sidecars(job, upload, groups, archive_dir)
+
+    sidecar = output.with_name("IMG_0001.HEIC.xmp")
+    assert sidecar.exists()
+    xmp = sidecar.read_text(encoding="utf-8")
+    assert "<rdf:li>existing-tag</rdf:li>" in xmp
+    assert 'exif:DateTimeOriginal="2026-06-28T20:30:40-07:00"' in xmp
+    assert 'tiff:Make="Apple"' in xmp
+    assert "<rdf:li>munchy/collection/phone-collection-archive</rdf:li>" in xmp
+    assert updated["files"][0]["metadata_projection_sidecar"] == "photos/IMG_0001.HEIC.xmp"
+    assert "metadata_projection_sidecar" not in updated["files"][1]
+
+
 def test_metadata_projection_can_use_uploaded_filesystem_birthtime(
     tmp_path: Path,
     monkeypatch,
@@ -654,6 +746,7 @@ def test_gpu_payload_carries_required_projected_container_metadata(
     }
 
     container_metadata, changed = runner.container_metadata_for_gpu_payload(
+        {"upload_id": "upload-1", "files": [file_state]},
         [file_state],
         group_name="camera",
         group_config=group_config,
@@ -691,11 +784,11 @@ def test_routed_structured_file_stays_complete_after_materialized_tusd_cleanup(
         "upload_id": "phone-img-0001",
         "input_upload_id": upload_id,
         "structured_routing": True,
-        "resolved_group": "phone-originals",
+        "resolved_group": "phone-preserve",
         "resolved_group_rel": "iphone-se2/photo/rear-heic/IMG_0001.HEIC",
     }
     materialized = runner.shared_input_upload_root(upload_id) / (
-        "phone-originals/iphone-se2/photo/rear-heic/IMG_0001.HEIC"
+        "phone-preserve/iphone-se2/photo/rear-heic/IMG_0001.HEIC"
     )
     materialized.parent.mkdir(parents=True, exist_ok=True)
     materialized.write_bytes(b"image")
@@ -816,7 +909,7 @@ def test_profile_routing_preflight_uses_submitted_probe_summary(
             ],
             "groups": {
                 "live-photo": {
-                    "archive_mode": "originals",
+                    "archive_mode": "preserve",
                     "tasks": [],
                 }
             },
@@ -868,6 +961,48 @@ def test_profile_routing_preflight_uses_submitted_probe_summary(
             "collection_rel_path": "phone/IMG_0001.MOV",
         }
     ]
+
+
+def test_profile_routing_preflight_reports_sidecar_evidence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    client = TestClient(runner.app)
+
+    response = client.post(
+        "/v1/profile-routing/preflight",
+        json={
+            "files": [
+                {"path": "phone/IMG_0001.MOV", "bytes": 100},
+                {"path": "phone/IMG_0001.MOV.xmp", "bytes": 20},
+            ],
+            "groups": {"video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]}},
+            "profile_routing": {
+                "sidecars": [
+                    {
+                        "id": "xmp",
+                        "format": "xmp",
+                        "primary": {"path": {"suffix": ".mov"}},
+                    }
+                ],
+                "routes": [
+                    {
+                        "id": "video",
+                        "group": "video",
+                        "when": {"path": {"suffix": ".mov"}},
+                    }
+                ],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert [item["action"] for item in payload["matches"]] == ["upload", "evidence"]
+    assert payload["matches"][1]["sidecar_id"] == "xmp"
+    assert payload["matches"][1]["sidecar_for"] == "phone/IMG_0001.MOV"
 
 
 def test_profile_routing_preflight_reports_fallthrough(
@@ -1726,7 +1861,7 @@ def test_resume_job_preserves_fully_uploaded_riverhog_session(
         {
             "job_id": "job-1",
             "state": "failed",
-            "phase": "copying_originals:originals",
+            "phase": "copying_preserve:preserve",
             "input_upload_id": "upload-1",
             "collection_slug": "weekly-device-artifacts",
             "collection_timestamp": "20260615T030000Z",
@@ -2683,7 +2818,7 @@ def test_structured_unrouted_upload_progress_does_not_require_groups(
                     "archive_mode": "av1_nvenc",
                     "tasks": ["archive_video"],
                 },
-                "originals": {"archive_mode": "originals", "tasks": []},
+                "preserve": {"archive_mode": "preserve", "tasks": []},
             },
         }
     )
@@ -2731,8 +2866,8 @@ def test_wait_for_upload_groups_skips_configured_group_with_no_files(
     upload = runner.wait_for_upload_groups(
         job,
         "upload-1",
-        {"originals"},
-        {"originals": {"archive_mode": "originals", "tasks": []}},
+        {"preserve"},
+        {"preserve": {"archive_mode": "preserve", "tasks": []}},
     )
 
     assert upload["upload_id"] == "upload-1"

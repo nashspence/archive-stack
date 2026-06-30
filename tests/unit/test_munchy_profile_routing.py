@@ -228,6 +228,127 @@ def test_profile_routing_pairs_live_photo_before_video_fallback() -> None:
     ]
 
 
+def test_profile_routing_attaches_xmp_sidecar_as_evidence() -> None:
+    routing = {
+        "sidecars": [
+            {
+                "id": "xmp",
+                "format": "xmp",
+                "primary": {"path": {"suffix": ".mov"}},
+            }
+        ],
+        "routes": [
+            {
+                "id": "video",
+                "group": "video",
+                "when": {"path": {"suffix": ".mov"}},
+            },
+        ],
+    }
+
+    plan = profile_routing_plan(
+        routing,
+        [
+            ProfileRoutingFile(path="phone/IMG_0001.MOV", bytes=100),
+            ProfileRoutingFile(path="phone/IMG_0001.MOV.xmp", bytes=20),
+        ],
+        group_names={"video"},
+    )
+
+    assert plan.ok is True
+    assert plan.unmatched == []
+    assert [item["action"] for item in plan.matches] == ["upload", "evidence"]
+    assert plan.matches[0]["path"] == "phone/IMG_0001.MOV"
+    assert plan.matches[0]["group"] == "video"
+    assert plan.matches[1]["path"] == "phone/IMG_0001.MOV.xmp"
+    assert plan.matches[1]["route_id"] == "xmp"
+    assert plan.matches[1]["group"] == "video"
+    assert plan.matches[1]["sidecar_id"] == "xmp"
+    assert plan.matches[1]["sidecar_format"] == "xmp"
+    assert plan.matches[1]["sidecar_for"] == "phone/IMG_0001.MOV"
+
+
+def test_profile_routing_leaves_sidecar_evidence_for_left_primary() -> None:
+    routing = {
+        "sidecars": [
+            {
+                "id": "xmp",
+                "format": "xmp",
+                "primary": {"path": {"suffix": ".mov"}},
+            }
+        ],
+        "routes": [
+            {
+                "id": "leave-video",
+                "action": "leave",
+                "when": {"path": {"suffix": ".mov"}},
+            },
+        ],
+    }
+
+    plan = profile_routing_plan(
+        routing,
+        [
+            ProfileRoutingFile(path="phone/IMG_0001.MOV", bytes=100),
+            ProfileRoutingFile(path="phone/IMG_0001.MOV.xmp", bytes=20),
+        ],
+        group_names={"video"},
+    )
+
+    assert plan.ok is True
+    assert plan.left_files == 2
+    assert [item["path"] for item in plan.left] == [
+        "phone/IMG_0001.MOV",
+        "phone/IMG_0001.MOV.xmp",
+    ]
+    assert plan.left[1]["action"] == "evidence"
+    assert plan.left[1]["reason"] == "sidecar_for_left_primary"
+    assert plan.left[1]["sidecar_for"] == "phone/IMG_0001.MOV"
+    assert plan.unmatched == []
+
+
+def test_profile_routing_rejects_sidecar_evidence_for_unmatched_primary() -> None:
+    routing = {
+        "sidecars": [
+            {
+                "id": "xmp",
+                "format": "xmp",
+                "primary": {"path": {"suffix": ".mov"}},
+            }
+        ],
+        "routes": [],
+    }
+
+    plan = profile_routing_plan(
+        routing,
+        [
+            ProfileRoutingFile(path="phone/IMG_0001.MOV", bytes=100),
+            ProfileRoutingFile(path="phone/IMG_0001.MOV.xmp", bytes=20),
+        ],
+        group_names={"video"},
+    )
+
+    assert plan.ok is False
+    assert plan.left_files == 0
+    assert plan.unmatched == [
+        {
+            "path": "phone/IMG_0001.MOV",
+            "bytes": 100,
+            "reason": "no_matching_route",
+            "probe_error": None,
+            "facts_error": None,
+        },
+        {
+            "path": "phone/IMG_0001.MOV.xmp",
+            "bytes": 20,
+            "reason": "orphan_sidecar_evidence",
+            "sidecar_for": "phone/IMG_0001.MOV",
+            "probe_error": None,
+            "facts_error": None,
+        }
+    ]
+
+
 def test_profile_routing_leave_action_excludes_intentional_leftovers() -> None:
     routing = {
         "routes": [

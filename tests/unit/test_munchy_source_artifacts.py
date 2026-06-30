@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 import tarfile
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from munchy import source_artifacts
 from munchy.source_artifact_bridge import (
     _allow_conversion_only_container,
     _artifact_drop_reason_map,
+    build_preserve_source_artifacts,
 )
 
 
@@ -142,6 +144,54 @@ def test_source_artifact_bundle_has_no_rebuild_directory(
     assert audit["rebuild_blockers"] == ["source_container"]
     assert audit["rebuild_scope"] == (
         "conversion-only archive; source-container rebuild is not supported"
+    )
+
+
+def test_preserve_source_artifacts_include_evidence_sidecars(tmp_path: Path) -> None:
+    if shutil.which("zstd") is None:
+        pytest.skip("zstd is not installed")
+    source = tmp_path / "IMG_0001.HEIC"
+    output = tmp_path / "archive" / "IMG_0001.HEIC"
+    sidecar = tmp_path / "IMG_0001.HEIC.xmp"
+    source.write_bytes(b"heic")
+    output.parent.mkdir()
+    output.write_bytes(b"heic")
+    sidecar.write_text("<xmp/>", encoding="utf-8")
+
+    result = build_preserve_source_artifacts(
+        source=source,
+        output=output,
+        source_filesystem_metadata={
+            "schema_version": 1,
+            "kind": "munchy.source-filesystem-metadata",
+            "stat": {"mode_octal": "0o644", "mtime_ns": 123},
+            "extended_attributes": {"available": True, "items": []},
+        },
+        source_sidecars=[
+            {
+                "id": "xmp",
+                "format": "xmp",
+                "path": sidecar,
+                "arcname": "sidecars/IMG_0001.HEIC.xmp",
+                "source_rel_path": "IMG_0001.HEIC.xmp",
+            }
+        ],
+    )
+
+    bundle_path = Path(result["output"])
+    audit = source_artifacts._audit_source_artifacts_bundle(bundle_path)
+
+    assert audit["ok"] is True
+    assert audit["rebuild_supported"] is True
+    assert audit["rebuild_scope"] == "primary source bytes are preserved as the archive output"
+
+    extract_dir = tmp_path / "extracted"
+    source_artifacts._safe_extract_source_artifacts(bundle_path, extract_dir)
+    manifest = json.loads((extract_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert (extract_dir / "sidecars" / "IMG_0001.HEIC.xmp").read_text(encoding="utf-8") == "<xmp/>"
+    assert any(
+        item["kind"] == "source_sidecar" and item["path"] == "sidecars/IMG_0001.HEIC.xmp"
+        for item in manifest["artifacts"]
     )
 
 

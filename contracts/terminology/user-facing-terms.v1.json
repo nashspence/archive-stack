@@ -68,7 +68,7 @@
         "api_client",
         "developer"
       ],
-      "definition": "Munchy routing-group strategy that selects originals, AV1 video conversion, or audio conversion.",
+      "definition": "Munchy routing-group strategy that selects preserve, AV1 video conversion, or audio conversion.",
       "exposed_as": [
         {
           "surface": "config:munchy",
@@ -84,7 +84,7 @@
       "allowed_values": [
         "av1_nvenc",
         "audio",
-        "originals"
+        "preserve"
       ]
     },
     {
@@ -258,7 +258,7 @@
         "config_author",
         "api_client"
       ],
-      "definition": "Archive-ready collection output built by Munchy from routed inputs, metadata sidecars, source artifacts, originals, and encoded derivatives.",
+      "definition": "Archive-ready collection output built by Munchy from routed inputs, metadata sidecars, source artifacts, preserve, and encoded derivatives.",
       "exposed_as": [
         {
           "surface": "api:munchy-runner",
@@ -939,29 +939,6 @@
       ]
     },
     {
-      "id": "originals",
-      "label": "originals",
-      "term_type": "enum_value",
-      "audiences": [
-        "operator",
-        "config_author",
-        "api_client"
-      ],
-      "definition": "Archive mode or group that preserves source files as originals without re-encoding.",
-      "exposed_as": [
-        {
-          "surface": "config:munchy",
-          "spelling": "originals",
-          "context": "archive mode and profile group"
-        },
-        {
-          "surface": "api:munchy-runner",
-          "spelling": "originals",
-          "context": "archive_mode value"
-        }
-      ]
-    },
-    {
       "id": "physical_coverage",
       "label": "physical coverage",
       "term_type": "state",
@@ -1008,6 +985,29 @@
           "surface": "cli:jeb",
           "spelling": "preflight",
           "context": "routing preflight before archive"
+        }
+      ]
+    },
+    {
+      "id": "preserve",
+      "label": "preserve",
+      "term_type": "enum_value",
+      "audiences": [
+        "operator",
+        "config_author",
+        "api_client"
+      ],
+      "definition": "Archive mode or group that preserves primary source bytes as archive output without re-encoding.",
+      "exposed_as": [
+        {
+          "surface": "config:munchy",
+          "spelling": "preserve",
+          "context": "archive mode and profile group"
+        },
+        {
+          "surface": "api:munchy-runner",
+          "spelling": "preserve",
+          "context": "archive_mode value"
         }
       ]
     },
@@ -1276,6 +1276,29 @@
       ]
     },
     {
+      "id": "sidecar_evidence",
+      "label": "sidecar evidence",
+      "term_type": "entity",
+      "audiences": [
+        "config_author",
+        "api_client",
+        "developer"
+      ],
+      "definition": "Input sidecar file attached to a primary routed file as metadata evidence and source-artifacts custody, not archived as its own primary output.",
+      "exposed_as": [
+        {
+          "surface": "config:munchy",
+          "spelling": "sidecars",
+          "context": "profile_routing sidecar rules"
+        },
+        {
+          "surface": "api:munchy-runner",
+          "spelling": "evidence",
+          "context": "profile routing match action"
+        }
+      ]
+    },
+    {
       "id": "source_artifacts",
       "label": "source artifacts",
       "term_type": "entity",
@@ -1284,7 +1307,7 @@
         "api_client",
         "developer"
       ],
-      "definition": "Sidecar preservation package containing source metadata, inventories, and any recoverable source-container material for encoded derivatives.",
+      "definition": "Sidecar preservation package containing source metadata, inventories, source evidence sidecars, and any recoverable source-container material.",
       "exposed_as": [
         {
           "surface": "config:munchy",

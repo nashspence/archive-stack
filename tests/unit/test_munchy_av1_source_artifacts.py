@@ -60,12 +60,14 @@ class SourceArtifactsTests(unittest.TestCase):
                 encode_command: list[str],
                 encode_profile: dict,
                 source_filesystem_metadata: dict,
+                source_sidecars: list[dict] | None = None,
             ) -> dict:
                 self.assertEqual(source.name, "clip.mp4")
                 self.assertEqual(archive_mkv, output)
                 self.assertEqual(encode_command, ["ffmpeg", "-i", "clip.mp4", "clip.mkv"])
                 self.assertEqual(encode_profile["name"], "test-profile")
                 self.assertEqual(source_filesystem_metadata["stat"]["st_birthtime"], 1.25)
+                self.assertIsNone(source_sidecars)
                 archive_mkv.write_bytes(b"after-source-artifacts")
                 return {"output": str(archive_mkv) + ".source-artifacts.tar.zst"}
 

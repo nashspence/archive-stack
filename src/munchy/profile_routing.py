@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any, Literal, cast
 
-RouteAction = Literal["upload", "leave"]
+RouteAction = Literal["upload", "leave", "evidence"]
 
 PROBE_FACT_PREFIXES = ("ffprobe.", "video.", "audio.")
 EXIFTOOL_FACT_PREFIXES = ("exif.", "exiftool.")
@@ -26,6 +26,9 @@ class ProfileRouteMatch:
     pairing_id: str | None = None
     pair_role: str | None = None
     pair_with: str | None = None
+    sidecar_id: str | None = None
+    sidecar_format: str | None = None
+    sidecar_for: str | None = None
     facts: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -140,13 +143,20 @@ def profile_routing_plan(
         )
         for item in files
     }
+    facts_by_path = apply_sidecar_rules(profile_routing, facts_by_path)
     facts_by_path = apply_pairing_rules(profile_routing, facts_by_path)
 
     matches: list[dict[str, Any]] = []
     left: list[dict[str, Any]] = []
     unmatched: list[dict[str, Any]] = []
+    primary_matches: dict[str, dict[str, Any]] = {}
+    primary_left: dict[str, dict[str, Any]] = {}
+    evidence_items: list[ProfileRoutingFile] = []
     for item in files:
         facts = facts_by_path[item.path]
+        if optional_fact(facts, "sidecar.role") == "evidence":
+            evidence_items.append(item)
+            continue
         match = match_profile_route(profile_routing, item.path, routing_facts=facts)
         if match is None:
             unmatched.append(
@@ -177,6 +187,7 @@ def profile_routing_plan(
         }
         if match.action == "leave":
             left.append(common)
+            primary_left[item.path] = left[-1]
             continue
         if not match.group:
             unmatched.append({**common, "reason": "missing_group"})
@@ -196,6 +207,58 @@ def profile_routing_plan(
                 "group": match.group,
                 "into": match.into,
                 "collection_rel_path": match.collection_rel_path or item.path,
+            }
+        )
+        primary_matches[item.path] = matches[-1]
+    for item in evidence_items:
+        facts = facts_by_path[item.path]
+        primary_path = optional_fact(facts, "sidecar.for")
+        primary = primary_matches.get(primary_path or "")
+        left_primary = primary_left.get(primary_path or "")
+        evidence_common = {
+            "path": item.path,
+            "bytes": item.bytes,
+            "route_id": optional_fact(facts, "sidecar.id") or "sidecar-evidence",
+            "route_index": -1,
+            "action": "evidence",
+            "pair_kind": None,
+            "pairing_id": None,
+            "pair_role": None,
+            "pair_with": None,
+            "matched_facts": {
+                "sidecar.for": primary_path,
+                "sidecar.format": optional_fact(facts, "sidecar.format"),
+            },
+            "sidecar_id": optional_fact(facts, "sidecar.id"),
+            "sidecar_format": optional_fact(facts, "sidecar.format"),
+            "sidecar_for": primary_path,
+        }
+        if left_primary is not None:
+            left.append(
+                {
+                    **evidence_common,
+                    "reason": "sidecar_for_left_primary",
+                }
+            )
+            continue
+        if primary is None:
+            unmatched.append(
+                {
+                    "path": item.path,
+                    "bytes": item.bytes,
+                    "reason": "orphan_sidecar_evidence",
+                    "sidecar_for": primary_path,
+                    "probe_error": item.probe_error,
+                    "facts_error": item.facts_error,
+                }
+            )
+            continue
+        matches.append(
+            {
+                **evidence_common,
+                "group": primary["group"],
+                "into": None,
+                "collection_rel_path": item.path,
             }
         )
     return ProfileRoutingPlan(
@@ -223,6 +286,13 @@ def profile_routes(profile_routing: Mapping[str, Any]) -> list[Mapping[str, Any]
     if not isinstance(routes, list):
         return []
     return [route for route in routes if isinstance(route, Mapping)]
+
+
+def profile_sidecar_rules(profile_routing: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    rules = profile_routing.get("sidecars")
+    if not isinstance(rules, list):
+        return []
+    return [rule for rule in rules if isinstance(rule, Mapping)]
 
 
 def profile_routing_requires_probe(profile_routing: Mapping[str, Any]) -> bool:
@@ -275,6 +345,102 @@ def routing_file_facts(
     if routing_facts:
         facts.update(flatten_facts(routing_facts))
     return facts
+
+
+def apply_sidecar_rules(
+    profile_routing: Mapping[str, Any],
+    facts_by_path: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    out = {path: dict(facts) for path, facts in facts_by_path.items()}
+    if not out:
+        return out
+    lower_paths = {path.casefold(): path for path in out}
+    for rule in profile_sidecar_rules(profile_routing):
+        rule_id = str(rule.get("id") or "").strip()
+        if not rule_id:
+            continue
+        sidecar_format = str(rule.get("format") or "opaque").strip().casefold() or "opaque"
+        templates = sidecar_rule_templates(rule, sidecar_format)
+        primary_when = mapping(rule.get("primary"))
+        sidecar_when = mapping(rule.get("sidecar"))
+        for primary_path, primary_facts in list(out.items()):
+            if optional_fact(primary_facts, "sidecar.role"):
+                continue
+            if primary_when and not predicate_matches(
+                primary_when,
+                primary_facts,
+                profile_routing=profile_routing,
+            ):
+                continue
+            for template in templates:
+                expected = render_sidecar_template(
+                    template,
+                    primary_facts,
+                    sidecar_format=sidecar_format,
+                )
+                sidecar_path = lower_paths.get(expected.casefold())
+                if not sidecar_path or sidecar_path == primary_path:
+                    continue
+                sidecar_facts = out[sidecar_path]
+                if sidecar_when and not predicate_matches(
+                    sidecar_when,
+                    sidecar_facts,
+                    profile_routing=profile_routing,
+                ):
+                    continue
+                out[primary_path] = {
+                    **out[primary_path],
+                    f"sidecar.{rule_id}.path": sidecar_path,
+                    f"sidecar.{rule_id}.format": sidecar_format,
+                }
+                out[sidecar_path] = {
+                    **sidecar_facts,
+                    "sidecar.role": "evidence",
+                    "sidecar.id": rule_id,
+                    "sidecar.format": sidecar_format,
+                    "sidecar.for": primary_path,
+                }
+                break
+    return out
+
+
+def sidecar_rule_templates(rule: Mapping[str, Any], sidecar_format: str) -> tuple[str, ...]:
+    raw_templates = rule.get("paths")
+    if isinstance(raw_templates, Sequence) and not isinstance(raw_templates, str):
+        templates = tuple(str(item).strip() for item in raw_templates if str(item).strip())
+    else:
+        raw_template = str(rule.get("path") or "").strip()
+        templates = (raw_template,) if raw_template else ()
+    if templates:
+        return templates
+    if sidecar_format == "xmp":
+        return ("{path}.xmp", "{parent}/{stem}.xmp")
+    return ("{path}.{format}", "{parent}/{stem}.{format}")
+
+
+def render_sidecar_template(
+    template: str,
+    facts: Mapping[str, Any],
+    *,
+    sidecar_format: str,
+) -> str:
+    parent = optional_fact(facts, "path.parent") or ""
+    values = {
+        "path": optional_fact(facts, "path.rel") or optional_fact(facts, "path") or "",
+        "parent": parent,
+        "basename": optional_fact(facts, "path.basename") or "",
+        "filename": optional_fact(facts, "path.filename") or "",
+        "stem": optional_fact(facts, "path.stem") or "",
+        "suffix": optional_fact(facts, "path.suffix") or "",
+        "extension": optional_fact(facts, "path.extension") or "",
+        "format": sidecar_format,
+    }
+    try:
+        rendered = template.format(**values)
+    except KeyError as exc:
+        raise ValueError(f"unknown sidecar path template field: {exc.args[0]}") from exc
+    rendered = rendered.replace("//", "/").strip("/")
+    return normalize_posix_path(rendered)
 
 
 def path_facts(rel_path: str) -> dict[str, Any]:

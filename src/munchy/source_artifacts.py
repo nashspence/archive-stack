@@ -1775,6 +1775,7 @@ def _assemble_source_artifact_bundle_inputs(
     selected_output_path: pathlib.Path,
     encode_output_path: pathlib.Path,
     source_filesystem_metadata: Mapping[str, Any] | None = None,
+    extra_artifacts: Sequence[SourceArtifact] = (),
 ) -> list[SourceArtifact]:
     inventory_root = work_dir / "inventory"
     encoding_root = work_dir / "encoding"
@@ -1861,6 +1862,18 @@ def _assemble_source_artifact_bundle_inputs(
                 description,
                 mime_type,
                 {},
+            )
+        )
+    for artifact in extra_artifacts:
+        arcname = _artifact_arcname(artifact.arcname, used_names)
+        artifacts.append(
+            SourceArtifact(
+                artifact.path,
+                arcname,
+                artifact.kind,
+                artifact.description,
+                artifact.mime_type,
+                artifact.metadata,
             )
         )
 
@@ -2367,7 +2380,9 @@ def _audit_extracted_source_artifacts(
         errors.append(str(exc))
         inventory = {}
 
-    if source_rebuild_mode in {"matroska_rebuild", "webm_rebuild"}:
+    if source_rebuild_mode == "preserve_primary_bytes":
+        rebuild_scope = "primary source bytes are preserved as the archive output"
+    elif source_rebuild_mode in {"matroska_rebuild", "webm_rebuild"}:
         try:
             matroska_identification_path = _artifact_path_for_kind(
                 manifest,
@@ -2509,7 +2524,9 @@ def _audit_extracted_source_artifacts(
                 else:
                     errors.append(message)
 
-    if source_rebuild_mode in {"matroska_rebuild", "webm_rebuild"}:
+    if source_rebuild_mode == "preserve_primary_bytes":
+        rebuild_scope = "primary source bytes are preserved as the archive output"
+    elif source_rebuild_mode in {"matroska_rebuild", "webm_rebuild"}:
         rebuild_scope = (
             "archive Matroska media streams plus copied subtitles/attachments "
             "plus Matroska/WebM source identification"

@@ -511,8 +511,8 @@ tags = ["device/camera"]
 make = "Example"
 model = "Camera"
 
-[groups.originals]
-archive_mode = "originals"
+[groups.preserve]
+archive_mode = "preserve"
 tasks = []
 
 [[job.profile_routing.routes]]
@@ -573,7 +573,7 @@ when = { path = { suffix = ".mp4" } }
     assert request.files[0].rel_path == "clip.mp4"
     assert request.storage_hint["structured_routing"] is True
     assert request.storage_hint["groups"]["video"]["tasks"] == ["archive_video"]
-    assert request.storage_hint["groups"]["originals"]["tasks"] == []
+    assert request.storage_hint["groups"]["preserve"]["tasks"] == []
     assert request.job_payload["collection_archive"]["destination"] == "riverhog"
     assert request.job_payload["profile_routing"]["routes"][0]["group"] == "video"
     assert (

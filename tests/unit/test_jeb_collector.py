@@ -84,8 +84,8 @@ def _base_config(
                     "archive_mode": "av1_nvenc",
                     "tasks": ["archive_video"],
                 },
-                "originals": {
-                    "archive_mode": "originals",
+                "preserve": {
+                    "archive_mode": "preserve",
                 },
             },
             "munchy_job_defaults": {
@@ -115,8 +115,8 @@ def _base_config(
                             },
                         },
                         {
-                            "id": "originals-artifacts",
-                            "group": "originals",
+                            "id": "preserve-artifacts",
+                            "group": "preserve",
                             "when": {"path": {"suffix_in": [".xml", ".json", ".txt"]}},
                         },
                     ]
@@ -371,7 +371,7 @@ def test_jeb_notify_uses_canonical_operator_webhook_env(
                     "sources": ["camera"],
                 }
             ],
-            "profile_groups": {"video": {"archive_mode": "originals"}},
+            "profile_groups": {"video": {"archive_mode": "preserve"}},
             "munchy_job_defaults": {
                 "profile_routing": {
                     "routes": [
@@ -417,7 +417,7 @@ def test_jeb_notify_ignores_toml_webhook_url(
                 "sources": ["camera"],
             }
         ],
-        "profile_groups": {"video": {"archive_mode": "originals"}},
+        "profile_groups": {"video": {"archive_mode": "preserve"}},
         "munchy_job_defaults": {
             "profile_routing": {
                 "routes": [
@@ -649,7 +649,7 @@ def test_routing_preflight_allows_ordered_broad_matcher(tmp_path: Path) -> None:
     routes.append(
         {
             "id": "phone-library-review",
-            "group": "originals",
+            "group": "preserve",
             "when": {"path": {"prefix": "phone"}},
         }
     )
@@ -780,7 +780,7 @@ def test_archive_now_clears_routing_preflight_failure_after_routes_are_fixed(
     config.munchy_job_defaults["profile_routing"]["routes"].append(
         {
             "id": "phone-heic",
-            "group": "originals",
+            "group": "preserve",
             "when": {"path": {"prefix": "phone", "suffix": ".heic"}},
         }
     )
@@ -1218,8 +1218,8 @@ def test_munchy_payload_uses_structured_routing(tmp_path: Path) -> None:
                 "archive_mode": "av1_nvenc",
                 "tasks": ["archive_video"],
             },
-            "originals": {
-                "archive_mode": "originals",
+            "preserve": {
+                "archive_mode": "preserve",
                 "tasks": [],
             },
         },
@@ -1228,7 +1228,7 @@ def test_munchy_payload_uses_structured_routing(tmp_path: Path) -> None:
     assert request.job_payload["collection_archive"] == {"destination": "riverhog"}
     assert request.job_payload["tasks"] == []
     assert request.job_payload["groups"]["video"]["encode_profile"]["archive"]["quality"] == 38
-    assert request.job_payload["groups"]["originals"]["archive_mode"] == "originals"
+    assert request.job_payload["groups"]["preserve"]["archive_mode"] == "preserve"
     assert request.job_payload["profile_routing"]["routes"][0]["group"] == "video"
 
 

@@ -200,13 +200,13 @@ def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
 
 def munchy_archive_mode(value: str) -> str:
     mode = str(value or "av1_nvenc").strip()
-    if mode not in {"av1_nvenc", "audio", "originals"}:
-        raise ValueError("archive_mode must be av1_nvenc, audio, or originals")
+    if mode not in {"av1_nvenc", "audio", "preserve"}:
+        raise ValueError("archive_mode must be av1_nvenc, audio, or preserve")
     return mode
 
 
 def default_tasks_for_archive_mode(mode: str) -> tuple[str, ...]:
-    if mode == "originals":
+    if mode == "preserve":
         return ()
     if mode == "audio":
         return DEFAULT_AUDIO_TASKS

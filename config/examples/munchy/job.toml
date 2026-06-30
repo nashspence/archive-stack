@@ -43,8 +43,9 @@ tags = ["device/example-camera"]
 make = "Example"
 model = "Camera"
 
-[groups.originals]
-archive_mode = "originals"
+[groups.preserve]
+archive_mode = "preserve"
+metadata_projection = false
 
 [[job.profile_routing.routes]]
 id = "example-camera-video"
@@ -52,11 +53,11 @@ group = "video"
 when = { path = { suffix_in = [".mp4", ".mov", ".mkv", ".webm"] } }
 
 [[job.profile_routing.routes]]
-id = "originals-artifacts"
-group = "originals"
+id = "preserve-artifacts"
+group = "preserve"
 when = { path = { suffix_in = [".xml", ".json", ".txt", ".srt", ".vtt", ".nfo"] } }
 
 [[job.profile_routing.routes]]
-id = "all-originals-review"
-group = "originals"
+id = "all-preserve-review"
+group = "preserve"
 when = {}

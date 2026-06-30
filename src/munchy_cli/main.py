@@ -76,7 +76,7 @@ DEFAULT_AUDIO_TASKS = ["archive_audio"]
 DEFAULT_GROUP = "video"
 WORKFLOW_MODES = {"collection_archive", "review_only"}
 COLLECTION_ARCHIVE_DESTINATIONS = {"target", "riverhog"}
-ARCHIVE_MODES = {"av1_nvenc", "audio", "originals"}
+ARCHIVE_MODES = {"av1_nvenc", "audio", "preserve"}
 MUNCHY_CONFIG_ENV = "MUNCHY_JOB_CONFIG"
 HASH_CACHE_ENV = "MUNCHY_HASH_CACHE"
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -349,7 +349,7 @@ def _normalize_mode(value: str | None, *, default: str, allowed: set[str], label
 
 
 def _default_tasks_for_archive_mode(archive_mode: str) -> list[str]:
-    if archive_mode == "originals":
+    if archive_mode == "preserve":
         return []
     if archive_mode == "audio":
         return list(DEFAULT_AUDIO_TASKS)

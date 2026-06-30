@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -9,6 +10,23 @@ from html import escape
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+XMP_NAMESPACES = {
+    "x": "adobe:ns:meta/",
+    "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+    "xmp": "http://ns.adobe.com/xap/1.0/",
+    "xmpDM": "http://ns.adobe.com/xmp/1.0/DynamicMedia/",
+    "exif": "http://ns.adobe.com/exif/1.0/",
+    "tiff": "http://ns.adobe.com/tiff/1.0/",
+    "photoshop": "http://ns.adobe.com/photoshop/1.0/",
+    "dc": "http://purl.org/dc/elements/1.1/",
+    "digiKam": "http://www.digikam.org/ns/1.0/",
+    "lr": "http://ns.adobe.com/lightroom/1.0/",
+    "geo": "http://www.w3.org/2003/01/geo/wgs84_pos#",
+}
+
+for _prefix, _uri in XMP_NAMESPACES.items():
+    ET.register_namespace(_prefix, _uri)
 
 
 class MetadataProjectionError(ValueError):
@@ -197,6 +215,7 @@ def project_immich_metadata(
     allow_missing_device_model: bool = False,
     allow_missing_creators: bool = False,
     capture_date_sources: Sequence[Mapping[str, Any]] | None = None,
+    gps_sources: Sequence[Mapping[str, Any]] | None = None,
     configured_gps: Mapping[str, Any] | None = None,
     device_make: str | None = None,
     device_model: str | None = None,
@@ -215,7 +234,7 @@ def project_immich_metadata(
 
     gps, gps_source = configured_gps_position(configured_gps)
     if gps is None:
-        gps, gps_source = first_gps_position(facts)
+        gps, gps_source = first_gps_position_from_sources(facts, sources=gps_sources)
     if gps is None and not allow_missing_gps:
         raise MetadataProjectionError(
             "metadata projection requires valid GPS coordinates; set "
@@ -257,26 +276,7 @@ def render_immich_xmp_sidecar(
     *,
     metadata_date: str,
 ) -> str:
-    attrs = {
-        "xmp:MetadataDate": metadata_date,
-    }
-    if metadata.capture_date:
-        attrs["xmp:CreateDate"] = metadata.capture_date
-        attrs["exif:DateTimeOriginal"] = metadata.capture_date
-        attrs["photoshop:DateCreated"] = metadata.capture_date
-        attrs["xmpDM:shotDate"] = metadata.capture_date
-    if metadata.device_make:
-        attrs["tiff:Make"] = metadata.device_make
-    if metadata.device_model:
-        attrs["tiff:Model"] = metadata.device_model
-    if metadata.gps is not None:
-        attrs["exif:GPSLatitude"] = xmp_gps_coordinate(metadata.gps.latitude, axis="lat")
-        attrs["exif:GPSLongitude"] = xmp_gps_coordinate(metadata.gps.longitude, axis="lon")
-        attrs["geo:lat"] = decimal_text(metadata.gps.latitude)
-        attrs["geo:long"] = decimal_text(metadata.gps.longitude)
-        if metadata.gps.altitude is not None:
-            attrs["exif:GPSAltitude"] = rational_text(abs(metadata.gps.altitude))
-            attrs["exif:GPSAltitudeRef"] = "1" if metadata.gps.altitude < 0 else "0"
+    attrs = immich_xmp_attributes(metadata, metadata_date=metadata_date)
 
     attr_lines = "\n".join(
         f'   {name}="{escape(str(value), quote=True)}"' for name, value in sorted(attrs.items())
@@ -317,6 +317,141 @@ def render_immich_xmp_sidecar(
         "</x:xmpmeta>\n"
         '<?xpacket end="w"?>\n'
     )
+
+
+def immich_xmp_attributes(
+    metadata: ProjectionMetadata,
+    *,
+    metadata_date: str,
+) -> dict[str, str]:
+    attrs = {
+        "xmp:MetadataDate": metadata_date,
+    }
+    if metadata.capture_date:
+        attrs["xmp:CreateDate"] = metadata.capture_date
+        attrs["exif:DateTimeOriginal"] = metadata.capture_date
+        attrs["photoshop:DateCreated"] = metadata.capture_date
+        attrs["xmpDM:shotDate"] = metadata.capture_date
+    if metadata.device_make:
+        attrs["tiff:Make"] = metadata.device_make
+    if metadata.device_model:
+        attrs["tiff:Model"] = metadata.device_model
+    if metadata.gps is not None:
+        attrs["exif:GPSLatitude"] = xmp_gps_coordinate(metadata.gps.latitude, axis="lat")
+        attrs["exif:GPSLongitude"] = xmp_gps_coordinate(metadata.gps.longitude, axis="lon")
+        attrs["geo:lat"] = decimal_text(metadata.gps.latitude)
+        attrs["geo:long"] = decimal_text(metadata.gps.longitude)
+        if metadata.gps.altitude is not None:
+            attrs["exif:GPSAltitude"] = rational_text(abs(metadata.gps.altitude))
+            attrs["exif:GPSAltitudeRef"] = "1" if metadata.gps.altitude < 0 else "0"
+    return attrs
+
+
+def merge_immich_xmp_sidecar(
+    existing_xmp: str,
+    metadata: ProjectionMetadata,
+    *,
+    metadata_date: str,
+) -> str:
+    try:
+        root = ET.fromstring(existing_xmp)
+    except ET.ParseError as exc:
+        raise MetadataProjectionError(f"existing XMP sidecar is not valid XML: {exc}") from exc
+    description = root.find(f".//{{{XMP_NAMESPACES['rdf']}}}Description")
+    if description is None:
+        raise MetadataProjectionError("existing XMP sidecar has no rdf:Description")
+
+    attrs = immich_xmp_attributes(metadata, metadata_date=metadata_date)
+    for prefixed_name, projected_value in attrs.items():
+        qname = xmp_qname(prefixed_name)
+        existing_value = description.attrib.get(qname)
+        if existing_value is not None and existing_value != "":
+            if prefixed_name != "xmp:MetadataDate" and not xmp_scalar_equivalent(
+                prefixed_name,
+                existing_value,
+                projected_value,
+            ):
+                raise MetadataProjectionError(
+                    f"existing XMP sidecar conflicts with projected {prefixed_name}: "
+                    f"{existing_value!r} != {projected_value!r}"
+                )
+        description.set(qname, str(projected_value))
+
+    if metadata.creators:
+        merge_rdf_array(description, "dc:creator", "Seq", metadata.creators)
+    tags = normalized_tags(metadata.tags)
+    if tags:
+        merge_rdf_array(description, "dc:subject", "Bag", tags)
+        merge_rdf_array(description, "digiKam:TagsList", "Seq", tags)
+        merge_rdf_array(description, "lr:hierarchicalSubject", "Bag", hierarchical_tags(tags))
+
+    body = ET.tostring(root, encoding="unicode")
+    return (
+        '<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>\n'
+        f"{body}\n"
+        '<?xpacket end="w"?>\n'
+    )
+
+
+def xmp_qname(prefixed_name: str) -> str:
+    prefix, _, local = prefixed_name.partition(":")
+    namespace = XMP_NAMESPACES.get(prefix)
+    if not namespace or not local:
+        raise MetadataProjectionError(f"unsupported XMP field: {prefixed_name}")
+    return f"{{{namespace}}}{local}"
+
+
+def xmp_scalar_equivalent(name: str, existing: str, projected: str) -> bool:
+    if name in {
+        "xmp:CreateDate",
+        "exif:DateTimeOriginal",
+        "photoshop:DateCreated",
+        "xmpDM:shotDate",
+    }:
+        return normalize_capture_date(existing) == normalize_capture_date(projected)
+    if name == "geo:lat":
+        return float_equal(parse_float(existing), parse_float(projected))
+    if name == "geo:long":
+        return float_equal(parse_float(existing), parse_float(projected))
+    if name == "exif:GPSLatitude":
+        return float_equal(
+            parse_coordinate(existing, ref=None, axis="lat"),
+            parse_coordinate(projected, ref=None, axis="lat"),
+        )
+    if name == "exif:GPSLongitude":
+        return float_equal(
+            parse_coordinate(existing, ref=None, axis="lon"),
+            parse_coordinate(projected, ref=None, axis="lon"),
+        )
+    return str(existing).strip() == str(projected).strip()
+
+
+def float_equal(left: float | None, right: float | None, *, tolerance: float = 0.000001) -> bool:
+    return left is not None and right is not None and abs(left - right) <= tolerance
+
+
+def merge_rdf_array(
+    description: ET.Element,
+    field: str,
+    container: str,
+    values: Sequence[str],
+) -> None:
+    field_node = description.find(xmp_qname(field))
+    if field_node is None:
+        field_node = ET.SubElement(description, xmp_qname(field))
+    container_node = field_node.find(f"{{{XMP_NAMESPACES['rdf']}}}{container}")
+    if container_node is None:
+        container_node = ET.SubElement(field_node, f"{{{XMP_NAMESPACES['rdf']}}}{container}")
+    existing = {
+        str(item.text or "").strip()
+        for item in container_node.findall(f"{{{XMP_NAMESPACES['rdf']}}}li")
+        if str(item.text or "").strip()
+    }
+    for value in normalized_text_values(values):
+        if value in existing:
+            continue
+        item = ET.SubElement(container_node, f"{{{XMP_NAMESPACES['rdf']}}}li")
+        item.text = value
 
 
 def required_configured_metadata_text(
@@ -412,9 +547,28 @@ def first_capture_date(
             if capture_date is not None:
                 return capture_date, capture_date_source
             continue
+        if source_type == "sidecar":
+            capture_date, capture_date_source = sidecar_capture_date(facts, source)
+            if capture_date is not None:
+                return capture_date, capture_date_source
+            continue
         raise MetadataProjectionError(
             f"metadata_projection capture date source has unsupported type: {source_type}"
         )
+    return None, None
+
+
+def sidecar_capture_date(
+    facts: Mapping[str, Any],
+    source: Mapping[str, Any],
+) -> tuple[str | None, str | None]:
+    name = str(source.get("name") or source.get("id") or "sidecar").strip()
+    if not name:
+        raise MetadataProjectionError("metadata_projection sidecar source requires name")
+    for sidecar_id, sidecar_facts in sidecar_fact_maps(facts, source):
+        capture_date, capture_date_source = first_embedded_capture_date(sidecar_facts)
+        if capture_date is not None:
+            return capture_date, f"sidecar:{sidecar_id}:{capture_date_source}"
     return None, None
 
 
@@ -468,6 +622,39 @@ def filesystem_birthtime_fact_keys(source: Mapping[str, Any]) -> tuple[str, ...]
         "source_filesystem_metadata.stat.birthtime_ns",
         "filesystem_metadata.stat.birthtime_ns",
     )
+
+
+def sidecar_fact_maps(
+    facts: Mapping[str, Any],
+    source: Mapping[str, Any],
+) -> list[tuple[str, dict[str, Any]]]:
+    configured_id = str(source.get("id") or source.get("sidecar") or "").strip()
+    ids = [configured_id] if configured_id else sidecar_ids(facts)
+    out: list[tuple[str, dict[str, Any]]] = []
+    for sidecar_id in ids:
+        prefix = f"sidecars.{sidecar_id}.facts."
+        sidecar_facts = {
+            key[len(prefix) :]: value
+            for key, value in facts.items()
+            if isinstance(key, str) and key.startswith(prefix)
+        }
+        if sidecar_facts:
+            out.append((sidecar_id, sidecar_facts))
+    return out
+
+
+def sidecar_ids(facts: Mapping[str, Any]) -> list[str]:
+    ids = facts.get("sidecars.ids")
+    if isinstance(ids, Sequence) and not isinstance(ids, str):
+        return [str(item) for item in ids if str(item).strip()]
+    found: set[str] = set()
+    for key in facts:
+        if not isinstance(key, str) or not key.startswith("sidecars."):
+            continue
+        parts = key.split(".")
+        if len(parts) >= 3 and parts[2] == "facts" and parts[1]:
+            found.add(parts[1])
+    return sorted(found)
 
 
 def normalize_filesystem_birthtime(value: Any) -> str | None:
@@ -604,6 +791,43 @@ def configured_gps_position(
             "metadata_projection.gps requires valid latitude and longitude"
         )
     return gps, "metadata_projection.gps"
+
+
+def first_gps_position_from_sources(
+    facts: Mapping[str, Any],
+    *,
+    sources: Sequence[Mapping[str, Any]] | None = None,
+) -> tuple[GpsPosition | None, str | None]:
+    configured_sources = list(sources) if sources is not None else [{"type": "embedded"}]
+    if not configured_sources:
+        return None, None
+    for source in configured_sources:
+        source_type = str(source.get("type") or "embedded").strip()
+        if source_type == "embedded":
+            gps, gps_source = first_gps_position(facts)
+            if gps is not None:
+                return gps, gps_source
+            continue
+        if source_type == "sidecar":
+            gps, gps_source = sidecar_gps_position(facts, source)
+            if gps is not None:
+                return gps, gps_source
+            continue
+        raise MetadataProjectionError(
+            f"metadata_projection GPS source has unsupported type: {source_type}"
+        )
+    return None, None
+
+
+def sidecar_gps_position(
+    facts: Mapping[str, Any],
+    source: Mapping[str, Any],
+) -> tuple[GpsPosition | None, str | None]:
+    for sidecar_id, sidecar_facts in sidecar_fact_maps(facts, source):
+        gps, gps_source = first_gps_position(sidecar_facts)
+        if gps is not None:
+            return gps, f"sidecar:{sidecar_id}:{gps_source}"
+    return None, None
 
 
 def first_gps_position(facts: Mapping[str, Any]) -> tuple[GpsPosition | None, str | None]:

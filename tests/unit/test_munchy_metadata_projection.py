@@ -11,6 +11,7 @@ from munchy.metadata_projection import (
     MetadataProjectionError,
     ffmpeg_container_metadata_args,
     immich_xmp_sidecar_path,
+    merge_immich_xmp_sidecar,
     project_immich_metadata,
     render_immich_xmp_sidecar,
 )
@@ -201,6 +202,32 @@ def test_immich_projection_uses_filesystem_birthtime_ns_capture_date() -> None:
 
     assert metadata.capture_date == "2026-06-28T21:30:40+00:00"
     assert metadata.capture_date_source == "filesystem_birthtime:source_birthtime"
+
+
+def test_immich_projection_can_use_xmp_sidecar_evidence() -> None:
+    metadata = project_test_metadata(
+        {
+            "sidecars.ids": ["xmp"],
+            "sidecars.xmp.facts.exif.date_time_original": "2026:06:28 20:30:40-0700",
+            "sidecars.xmp.facts.exif.gps_latitude": "48.99950000 N",
+            "sidecars.xmp.facts.exif.gps_longitude": "122.74060000 W",
+        },
+        capture_date_sources=[
+            {"type": "embedded"},
+            {"type": "sidecar", "id": "xmp"},
+        ],
+        gps_sources=[
+            {"type": "embedded"},
+            {"type": "sidecar", "id": "xmp"},
+        ],
+    )
+
+    assert metadata.capture_date == "2026-06-28T20:30:40-07:00"
+    assert metadata.capture_date_source == "sidecar:xmp:exif.date_time_original"
+    assert metadata.gps is not None
+    assert metadata.gps.latitude == pytest.approx(48.9995)
+    assert metadata.gps.longitude == pytest.approx(-122.7406)
+    assert metadata.gps_source == "sidecar:xmp:exif.gps_latitude+exif.gps_longitude"
 
 
 def test_immich_projection_filesystem_birthtime_must_parse() -> None:
@@ -439,3 +466,66 @@ def test_immich_projection_writes_multiple_creators_and_container_metadata() -> 
 
 def test_immich_xmp_sidecar_path_appends_xmp_to_output_name(tmp_path) -> None:  # type: ignore[no-untyped-def]
     assert immich_xmp_sidecar_path(tmp_path / "clip.webm").name == "clip.webm.xmp"
+
+
+def test_immich_xmp_merge_preserves_existing_fields_and_adds_projection() -> None:
+    metadata = project_test_metadata(
+        {
+            "exif.date_time_original": "2026:06:28 20:30:40-0700",
+            "exif.gps_latitude": "48.99950000 N",
+            "exif.gps_longitude": "122.74060000 W",
+        },
+        tags=["device/nash-iphone-se2"],
+    )
+    existing = """<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+                   xmlns:dc="http://purl.org/dc/elements/1.1/"
+                   xmp:Label="keep-me">
+   <dc:subject>
+    <rdf:Bag>
+     <rdf:li>existing-tag</rdf:li>
+    </rdf:Bag>
+   </dc:subject>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>
+"""
+
+    merged = merge_immich_xmp_sidecar(
+        existing,
+        metadata,
+        metadata_date="2026-06-29T00:00:00Z",
+    )
+
+    assert 'xmp:Label="keep-me"' in merged
+    assert 'exif:DateTimeOriginal="2026-06-28T20:30:40-07:00"' in merged
+    assert 'tiff:Make="Apple"' in merged
+    assert "<rdf:li>existing-tag</rdf:li>" in merged
+    assert "<rdf:li>device/nash-iphone-se2</rdf:li>" in merged
+    ET.fromstring(merged)
+
+
+def test_immich_xmp_merge_rejects_scalar_conflict() -> None:
+    metadata = project_test_metadata(
+        {
+            "exif.date_time_original": "2026:06:28 20:30:40-0700",
+            "exif.gps_latitude": "48.99950000 N",
+            "exif.gps_longitude": "122.74060000 W",
+        }
+    )
+    existing = """<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description xmlns:tiff="http://ns.adobe.com/tiff/1.0/" tiff:Make="Other"/>
+ </rdf:RDF>
+</x:xmpmeta>
+"""
+
+    with pytest.raises(MetadataProjectionError, match="tiff:Make"):
+        merge_immich_xmp_sidecar(
+            existing,
+            metadata,
+            metadata_date="2026-06-29T00:00:00Z",
+        )
