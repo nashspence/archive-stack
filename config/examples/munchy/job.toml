@@ -45,7 +45,6 @@ model = "Camera"
 
 [groups.preserve]
 archive_mode = "preserve"
-metadata_projection = false
 
 [[job.profile_routing.routes]]
 id = "example-camera-video"

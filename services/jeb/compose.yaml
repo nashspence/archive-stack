@@ -7,6 +7,22 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      JEB_HEALTH_HOST: 0.0.0.0
+      JEB_HEALTH_PORT: "8081"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >
+          import json, urllib.request;
+          payload = json.load(urllib.request.urlopen('http://127.0.0.1:8081/health/ready', timeout=5));
+          assert payload['status'] == 'ok'
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
     volumes:
       - type: bind
         source: ${JEB_CONFIG_FILE:-./config.toml}

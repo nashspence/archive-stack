@@ -78,13 +78,14 @@ def _run_make(
     _install_fake_command(tmp_path, "pgrep", "pgrep.log")
     env = os.environ.copy()
     env["PATH"] = (
-        f"{tmp_path / 'bin'}:/usr/bin:/bin"
-        if not with_uv
-        else f"{tmp_path / 'bin'}:{env['PATH']}"
+        f"{tmp_path / 'bin'}:/usr/bin:/bin" if not with_uv else f"{tmp_path / 'bin'}:{env['PATH']}"
     )
     env.pop("args", None)
+    env.pop("FILES", None)
     env.pop("MAKEFLAGS", None)
     env.pop("MFLAGS", None)
+    env.pop("SPEC_TESTS", None)
+    env.pop("TESTS", None)
     env.pop("UV_BIN", None)
     if extra_env:
         env.update(extra_env)
@@ -117,11 +118,23 @@ def test_checked_in_compose_uses_supported_tusd_filesystem_storage_flag() -> Non
     ("target", "extra_args", "expected_command"),
     [
         ("ruff", (), "python -m ruff check ."),
+        ("ruff-fix", ("FILES=src/jeb",), "python -m ruff check --fix src/jeb"),
+        ("format", ("FILES=src/jeb",), "python -m ruff format src/jeb"),
         ("unit", ("args=-k entrypoint",), "python -m pytest -q tests/unit -k entrypoint"),
+        (
+            "unit",
+            ("TESTS=tests/unit/test_jeb_health.py",),
+            "python -m pytest -q tests/unit/test_jeb_health.py",
+        ),
         (
             "spec",
             ("args=-k glacier",),
             "python -m pytest -q tests/harness/test_spec_harness.py -k glacier",
+        ),
+        (
+            "spec",
+            ("SPEC_TESTS=tests/harness/test_spec_harness.py", "args=-k garage"),
+            "python -m pytest -q tests/harness/test_spec_harness.py -k garage",
         ),
     ],
 )
@@ -140,6 +153,21 @@ def test_atomic_local_targets_run_in_locked_uv_environment(
         f"{REPO_ROOT / 'requirements-test.txt'} --with-editable .[db] "
     ) in uv_log_lines[0]
     assert expected_command in uv_log_lines[0]
+
+
+def test_fix_runs_ruff_fix_then_format(tmp_path: Path) -> None:
+    completed, docker_log_path, uv_log_path = _run_make(
+        tmp_path,
+        "fix",
+        "FILES=src/jeb",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert _read_log_lines(docker_log_path) == []
+    uv_log_lines = _read_log_lines(uv_log_path)
+    assert len(uv_log_lines) == 2
+    assert "python -m ruff check --fix src/jeb" in uv_log_lines[0]
+    assert "python -m ruff format src/jeb" in uv_log_lines[1]
 
 
 def test_local_targets_fail_clearly_when_uv_is_missing(tmp_path: Path) -> None:
@@ -260,7 +288,9 @@ def test_repo_wide_lint_targets_cover_source_and_service_apps() -> None:
     makefile = MAKEFILE.read_text(encoding="utf-8")
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
-    assert "python -m ruff check ." in makefile
+    assert "python -m ruff check $(FILES)" in makefile
+    assert "python -m ruff check --fix $(FILES)" in makefile
+    assert "python -m ruff format $(FILES)" in makefile
     assert "python -m mypy src" in makefile
     assert "python -m mypy services/munchy-av1-nvenc/app/main.py" in makefile
     assert "python -m mypy services/munchy-runner/app/main.py" in makefile
@@ -355,9 +385,14 @@ def test_help_describes_make_targets(tmp_path: Path) -> None:
     assert "make bootstrap-garage" in completed.stdout
     assert "make build-app" in completed.stdout
     assert "make build-test" in completed.stdout
+    assert "make fix" in completed.stdout
+    assert "make format" in completed.stdout
+    assert "make ruff-fix" in completed.stdout
     assert "make stop-spec" in completed.stdout
     assert "make test" in completed.stdout
     assert "args='...'" in completed.stdout
+    assert "FILES='...'" in completed.stdout
+    assert "TESTS='...'" in completed.stdout
     assert "fast" not in completed.stdout
     assert _read_log_lines(docker_log_path) == []
     assert _read_log_lines(uv_log_path) == []

@@ -16,5 +16,7 @@ RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements-service.txt
 COPY contracts /riverhog/contracts
 COPY src /riverhog/src
 
+EXPOSE 8081
+
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["python", "-m", "jeb.cli", "run", "--config", "/config/jeb.toml"]

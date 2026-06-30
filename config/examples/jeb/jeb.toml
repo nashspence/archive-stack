@@ -52,7 +52,6 @@ model = "Security Camera"
 
 [profile_groups.preserve]
 archive_mode = "preserve"
-metadata_projection = false
 
 [munchy_job_defaults.riverhog]
 enabled = true

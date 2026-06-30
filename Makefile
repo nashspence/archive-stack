@@ -2,11 +2,14 @@ SHELL := bash
 .DEFAULT_GOAL := help
 
 UV_BIN ?= uv
+FILES ?= .
+TESTS ?= tests/unit
+SPEC_TESTS ?= tests/harness/test_spec_harness.py
 UV_RUN = "$(UV_BIN)" run --python 3.11 --isolated --with-requirements "$(CURDIR)/requirements-test.txt" --with-editable '.[db]'
 MYPY_FLAGS = --show-error-codes --hide-error-context --no-error-summary --no-color-output
 args ?=
 
-.PHONY: help ruff mypy lint unit spec stop-spec build build-app build-test bootstrap-garage down test
+.PHONY: help ruff ruff-fix format fix mypy lint unit spec stop-spec build build-app build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(UV_BIN)" >/dev/null 2>&1; then \
@@ -21,6 +24,9 @@ help:
 	@printf '%s\n' \
 		'Targets:' \
 		'  make ruff              Run repo-wide ruff in the locked local uv environment.' \
+		'  make ruff-fix          Run ruff --fix in the locked local uv environment.' \
+		'  make format            Run ruff format in the locked local uv environment.' \
+		'  make fix               Run ruff-fix, then format.' \
 		'  make mypy              Run repo-wide mypy in the locked local uv environment.' \
 		'  make lint              Run ruff, then mypy.' \
 		'  make unit              Run the unit test lane locally.' \
@@ -35,12 +41,23 @@ help:
 		'' \
 		'Variables:' \
 		"  args='...'             Forward arguments to mypy or pytest lanes." \
+		"  FILES='...'            Narrow ruff, ruff-fix, or format to specific files." \
+		"  TESTS='...'            Narrow the unit test lane to specific tests." \
+		"  SPEC_TESTS='...'       Narrow the spec lane to specific tests." \
 		'  UV_BIN=/abs/path/to/uv Use a specific uv binary instead of uv on PATH.' \
 		'  COMPOSE_ENV_FILE=/abs/path/to/.env.compose' \
 		'  TEST_COMPOSE_PROJECT_NAME=riverhog-shared'
 
 ruff:
-	$(call UV_CMD,python -m ruff check .)
+	$(call UV_CMD,python -m ruff check $(FILES) $(args))
+
+ruff-fix:
+	$(call UV_CMD,python -m ruff check --fix $(FILES) $(args))
+
+format:
+	$(call UV_CMD,python -m ruff format $(FILES) $(args))
+
+fix: ruff-fix format
 
 mypy:
 	$(call UV_CMD,python -m mypy src $(MYPY_FLAGS) $(args))
@@ -50,10 +67,10 @@ mypy:
 lint: ruff mypy
 
 unit:
-	$(call UV_CMD,python -m pytest -q tests/unit $(args))
+	$(call UV_CMD,python -m pytest -q $(TESTS) $(args))
 
 spec:
-	$(call UV_CMD,python -m pytest -q tests/harness/test_spec_harness.py $(args))
+	$(call UV_CMD,python -m pytest -q $(SPEC_TESTS) $(args))
 
 stop-spec:
 	@./scripts/stop_spec.sh

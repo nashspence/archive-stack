@@ -9,8 +9,22 @@ from jeb.collector import (
     Collector,
     load_config,
 )
+from jeb.health import JebHealthState, start_health_server
 
 DEFAULT_CONFIG = os.getenv("JEB_CONFIG", "/config/jeb.toml")
+DEFAULT_HEALTH_HOST = os.getenv("JEB_HEALTH_HOST", "0.0.0.0")
+DEFAULT_HEALTH_PORT = "8081"
+
+
+def health_port() -> int:
+    value = os.getenv("JEB_HEALTH_PORT", DEFAULT_HEALTH_PORT)
+    try:
+        port = int(value)
+    except ValueError as exc:
+        raise ValueError(f"JEB_HEALTH_PORT must be an integer, got {value!r}") from exc
+    if not 0 < port < 65536:
+        raise ValueError(f"JEB_HEALTH_PORT must be between 1 and 65535, got {port}")
+    return port
 
 
 def config_parent() -> argparse.ArgumentParser:
@@ -88,6 +102,12 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(f"archive attempt started for source {args.source}: {batch_id}")
         return 0
+    collector.init_db()
+    start_health_server(
+        DEFAULT_HEALTH_HOST,
+        health_port(),
+        JebHealthState(source_count=len(collector.config.sources)),
+    )
     collector.run_forever()
     return 0
 

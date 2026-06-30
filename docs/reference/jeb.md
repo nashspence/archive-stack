@@ -105,6 +105,14 @@ retries preflight immediately, clears the durable failure only if Munchy accepts
 the full source set, and starts an archive attempt for the source. Use the same
 command after repairing a non-transient Munchy preflight API failure.
 
+## Health
+
+`jeb run` exposes HTTP health endpoints for container orchestration:
+
+- `/health/live` reports that the process is serving health requests.
+- `/health/ready` reports readiness after configuration loads and the state
+  database initializes.
+
 ## Webhooks
 
 `jeb` uses the Riverhog operator webhook contract with:
