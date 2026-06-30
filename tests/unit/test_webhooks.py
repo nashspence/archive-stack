@@ -8,6 +8,7 @@ from riverhog_core.webhooks import (
     ImagesReadyBatch,
     ReadyImage,
     WebhookConfig,
+    _canonical_notification_from_contract,
     build_collection_lifecycle_payload,
     build_copy_label_needed_payload,
     build_fetch_queued_payload,
@@ -29,6 +30,25 @@ _CONTRACT_PATH = (
     / "webhooks"
     / "operator-notifications.v1.json"
 )
+
+_JEB_METADATA_PROJECTION_SUMMARY = (
+    "Missing GPS metadata. Next: fix metadata projection config, then retry Jeb archive."
+)
+
+
+def _representative_notification_values() -> dict[str, str]:
+    long_error = (
+        "runner job did not succeed: remote upload complete but encode failed with a long "
+        "diagnostic containing paths, byte counts, progress counters, and nested service state"
+    )
+    return {
+        "error": long_error,
+        "message": long_error,
+        "notification_summary": (
+            "Concise operator summary. Next: inspect details, fix the issue, then retry."
+        ),
+        "next_retry_at": "2026-06-30T14:00:00-07:00",
+    }
 
 
 def test_operator_webhook_contract_covers_current_events() -> None:
@@ -111,6 +131,31 @@ def test_operator_webhook_contract_covers_current_events() -> None:
     assert events["glacier_recovery.started"]["operator_urgency"] == "time_sensitive"
     assert events["glacier_recovery.failed"]["operator_urgency"] == "time_sensitive"
     assert events["glacier_recovery.paused.reminder"]["delivery"]["reminder"] is True
+
+
+def test_operator_webhook_contract_rendered_notifications_fit_push_limits() -> None:
+    contract = json.loads(_CONTRACT_PATH.read_text(encoding="utf-8"))
+    title_limit = contract["receiver_rendering"]["title_max_chars"]
+    body_limit = contract["receiver_rendering"]["body_max_chars"]
+    values = _representative_notification_values()
+
+    for event in contract["events"]:
+        templates = event.get("canonical_notification_by_type")
+        notification_types = list(templates) if isinstance(templates, dict) else [None]
+        for notification_type in notification_types:
+            notification = _canonical_notification_from_contract(
+                event=event["event"],
+                notification_type=notification_type,
+                subject=(
+                    "very-long-subject-name-that-should-never-overflow-phone-push-title"
+                ),
+                values=values,
+            )
+
+            assert len(notification["title"]) <= title_limit, event["event"]
+            assert len(notification["body"]) <= body_limit, event["event"]
+            assert "{" not in notification["title"], event["event"]
+            assert "{" not in notification["body"], event["event"]
 
 
 def test_build_images_ready_payload_supports_multiple_images() -> None:
@@ -502,6 +547,45 @@ def test_build_jeb_issue_payload_uses_robot_actor_and_concise_error() -> None:
         "title": "🤖 camera",
         "body": "permission denied",
     }
+
+
+def test_build_jeb_target_failure_payload_keeps_push_body_concise() -> None:
+    long_error = (
+        "runner job did not succeed:\n"
+        "- job: jeb-weekly-device-artifacts-20260630t002208z-540b5f0797db-job\n"
+        "- status: job: failed | waiting_for_eager_files:0/0 | remote upload 80/80 "
+        "files, 934.33 MiB / 934.33 MiB, 100.00% | remote encode 0/48 files, "
+        "0.00% files, 0 B / 536.86 MiB input, 0.00% input\n"
+        "- error: metadata projection failed for closet-camera/Closet_00.mp4: "
+        "metadata projection requires valid GPS coordinates; set "
+        "metadata_projection.allow_missing_gps=true to permit this source"
+    )
+
+    payload = build_jeb_event_payload(
+        event="jeb.issue",
+        batch={
+            "id": "20260630T002208Z__weekly-device-artifacts__540b5f0797db",
+            "source_id": "closet-camera",
+            "target_name": "munchy",
+            "target_type": "munchy",
+            "collection_slug": "weekly-device-artifacts",
+            "collection_timestamp": "20260630T002208Z",
+            "state": "failed",
+        },
+        message=long_error,
+        severity="critical",
+        delivered_at=datetime(2026, 6, 30, 0, 24, tzinfo=UTC),
+        details={"component": "target", "error": long_error},
+    )
+
+    assert payload["message"] == _JEB_METADATA_PROJECTION_SUMMARY
+    assert payload["detailed_message"] == long_error
+    assert payload["error"] == long_error
+    assert payload["notification"] == {
+        "title": "🤖 closet-camera",
+        "body": _JEB_METADATA_PROJECTION_SUMMARY,
+    }
+    assert len(str(payload["notification"]["body"])) <= 120
 
 
 def test_build_jeb_profile_routing_issue_payload_is_device_titled_and_actionable() -> None:

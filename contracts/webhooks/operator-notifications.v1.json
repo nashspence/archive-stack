@@ -15,6 +15,7 @@
     "title": "payload.notification.title",
     "message": "payload.notification.body",
     "notes": "Riverhog renders the canonical_notification template for each event into payload.notification. Receivers may use those strings directly, or render their own presentation from the same machine-readable event data.",
+    "title_max_chars": 48,
     "subject_max_chars": 40,
     "body_max_chars": 150,
     "title_template_tokens": [
@@ -359,7 +360,7 @@
       "canonical_notification": {
         "actor": "jeb",
         "title_template": "{emoji} {subject_40}",
-        "body_template": "{error_120}"
+        "body_template": "{notification_summary_120}"
       },
       "required_payload_fields": [
         "event",
@@ -383,7 +384,8 @@
         "collection_timestamp",
         "recipient",
         "component",
-        "error"
+        "error",
+        "detailed_message"
       ]
     },
     {

@@ -230,6 +230,10 @@ def test_create_job_request_accepts_full_metadata_projection_config(
                         "make": " Apple ",
                         "model": " iPhone SE (2nd generation) ",
                     },
+                    "gps": {
+                        "latitude": 48.999527523960296,
+                        "longitude": -122.74040765142755,
+                    },
                     "tags": ["device/nash-iphone-se2", "device/nash-iphone-se2"],
                     "include_context_tags": False,
                 },
@@ -243,6 +247,10 @@ def test_create_job_request_accepts_full_metadata_projection_config(
     assert projection["device"] == {
         "make": "Apple",
         "model": "iPhone SE (2nd generation)",
+    }
+    assert projection["gps"] == {
+        "latitude": 48.999527523960296,
+        "longitude": -122.74040765142755,
     }
     assert projection["tags"] == ["device/nash-iphone-se2"]
     assert projection["include_context_tags"] is False
@@ -541,6 +549,41 @@ def test_metadata_projection_can_use_uploaded_filesystem_birthtime(
 
     assert metadata.capture_date == "2026-06-28T20:30:40+00:00"
     assert metadata.capture_date_source == "filesystem_birthtime:source_birthtime"
+
+
+def test_metadata_projection_can_use_configured_gps(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    source = tmp_path / "RecM0A_20260628_203040_203100_0_main.mp4"
+    source.write_bytes(b"video")
+    monkeypatch.setattr(runner, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []})
+    monkeypatch.setattr(
+        runner,
+        "exiftool_for_routing",
+        lambda _path: {"DateTimeOriginal": "2026:06:28 20:30:40Z"},
+    )
+
+    metadata = runner.projection_metadata_from_source(
+        "camera/RecM0A_20260628_203040_203100_0_main.mp4",
+        source,
+        group_config={
+            "metadata_projection": {
+                "gps": {
+                    "latitude": 48.999527523960296,
+                    "longitude": -122.74040765142755,
+                },
+                "device": {"make": "Reolink", "model": "E1 Pro"},
+                "creators": ["Nash Spence"],
+            }
+        },
+    )
+
+    assert metadata.gps is not None
+    assert metadata.gps.latitude == pytest.approx(48.999527523960296)
+    assert metadata.gps.longitude == pytest.approx(-122.74040765142755)
+    assert metadata.gps_source == "metadata_projection.gps"
 
 
 def test_audio_container_metadata_args_write_capture_date_and_gps(

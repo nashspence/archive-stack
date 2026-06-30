@@ -336,6 +336,29 @@ def test_immich_projection_requires_date_and_gps_without_overrides() -> None:
     assert metadata.gps is None
 
 
+def test_immich_projection_uses_configured_gps() -> None:
+    metadata = project_test_metadata(
+        {"exif.date_time_original": "2026:06:28 20:30:40"},
+        configured_gps={
+            "latitude": 48.999527523960296,
+            "longitude": -122.74040765142755,
+        },
+    )
+
+    assert metadata.gps is not None
+    assert metadata.gps.latitude == pytest.approx(48.999527523960296)
+    assert metadata.gps.longitude == pytest.approx(-122.74040765142755)
+    assert metadata.gps_source == "metadata_projection.gps"
+
+
+def test_immich_projection_rejects_invalid_configured_gps() -> None:
+    with pytest.raises(MetadataProjectionError, match="metadata_projection.gps"):
+        project_test_metadata(
+            {"exif.date_time_original": "2026:06:28 20:30:40"},
+            configured_gps={"latitude": 91.0, "longitude": -122.7404},
+        )
+
+
 def test_immich_projection_requires_configured_make_model_and_creators() -> None:
     facts = {
         "exif.date_time_original": "2026:06:28 20:30:40",

@@ -647,6 +647,11 @@
           "context": "metadata projection override"
         },
         {
+          "surface": "config:munchy",
+          "spelling": "metadata_projection.gps",
+          "context": "fixed-location metadata projection"
+        },
+        {
           "surface": "docs",
           "spelling": "GPS",
           "context": "metadata policy"

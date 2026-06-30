@@ -649,6 +649,7 @@ def _canonical_notification_from_contract(
     template = _notification_template(event=event, notification_type=notification_type)
     actor = str(template.get("actor", _FALLBACK_NOTIFICATION_TEMPLATE["actor"]))
     emoji = _notification_emoji(actor)
+    title_limit = _notification_int("title_max_chars", default=48)
     subject_limit = _notification_int("subject_max_chars", default=40)
     body_limit = _notification_int("body_max_chars", default=150)
     normalized_subject = _normalize_space(subject)
@@ -673,7 +674,7 @@ def _canonical_notification_from_contract(
         render_values,
     )
     return {
-        "title": title or emoji,
+        "title": _truncate(title or emoji, title_limit),
         "body": _truncate(body, body_limit),
     }
 
@@ -836,6 +837,23 @@ def _jeb_operator_action(*, event: str, severity: str, component: str = "") -> s
     return _operator_event_field(event=event, field="operator_action")
 
 
+def _jeb_notification_summary(*, component: str, error: str) -> str:
+    text = _normalize_space(error)
+    if text and "\n" not in error and len(text) <= 100:
+        return text
+    if "metadata projection requires valid GPS coordinates" in text:
+        return "Missing GPS metadata. Next: fix metadata projection config, then retry Jeb archive."
+    if component == "profile_routing":
+        return _truncate(text or "Munchy routing preflight failed. Next: fix routes.", 120)
+    if component == "munchy_preflight":
+        return _truncate(text or "Munchy preflight failed. Next: repair Munchy.", 120)
+    if component == "cleanup":
+        return "Jeb cleanup failed. Next: inspect file permissions and source cleanup state."
+    if component == "target":
+        return "Munchy target failed. Next: inspect job details, fix the issue, then retry archive."
+    return _truncate(text or "Jeb issue needs operator review. Next: inspect Jeb details.", 120)
+
+
 def _munchy_job_notification(
     *,
     event: str,
@@ -950,7 +968,15 @@ def build_munchy_job_payload(
     details: dict[str, object] | None = None,
 ) -> dict[str, object]:
     detail_values = dict(details or {})
-    detail_values.setdefault("message", message)
+    component = str(detail_values.get("component") or "")
+    detail_error = str(detail_values.get("error") or message)
+    notification_summary = _jeb_notification_summary(
+        component=component,
+        error=detail_error,
+    )
+    detail_values.setdefault("message", notification_summary)
+    detail_values.setdefault("detailed_message", message)
+    detail_values.setdefault("notification_summary", notification_summary)
     if "error" not in detail_values and severity in {"warning", "error", "critical"}:
         detail_values["error"] = message
     payload: dict[str, object] = {
@@ -992,7 +1018,15 @@ def build_jeb_event_payload(
     details: dict[str, object] | None = None,
 ) -> dict[str, object]:
     detail_values = dict(details or {})
-    detail_values.setdefault("message", message)
+    component = str(detail_values.get("component") or "")
+    detail_error = str(detail_values.get("error") or message)
+    notification_summary = _jeb_notification_summary(
+        component=component,
+        error=detail_error,
+    )
+    detail_values.setdefault("message", notification_summary)
+    detail_values.setdefault("detailed_message", message)
+    detail_values.setdefault("notification_summary", notification_summary)
     if "error" not in detail_values and severity in {"warning", "error", "critical"}:
         detail_values["error"] = message
     payload: dict[str, object] = {
@@ -1005,10 +1039,11 @@ def build_jeb_event_payload(
         "operator_action": _jeb_operator_action(
             event=event,
             severity=severity,
-            component=str(detail_values.get("component") or ""),
+            component=component,
         ),
         "severity": severity,
-        "message": message,
+        "message": notification_summary,
+        "detailed_message": message,
         "batch_id": str(batch.get("id") or ""),
         "source_id": str(batch.get("source_id") or ""),
         "target_name": str(batch.get("target_name") or ""),
@@ -1026,6 +1061,8 @@ def build_jeb_event_payload(
         payload["recipient"] = recipient
     if details:
         payload.update(details)
+        payload["message"] = notification_summary
+        payload["detailed_message"] = message
     return payload
 
 

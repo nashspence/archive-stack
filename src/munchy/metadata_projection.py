@@ -197,6 +197,7 @@ def project_immich_metadata(
     allow_missing_device_model: bool = False,
     allow_missing_creators: bool = False,
     capture_date_sources: Sequence[Mapping[str, Any]] | None = None,
+    configured_gps: Mapping[str, Any] | None = None,
     device_make: str | None = None,
     device_model: str | None = None,
     creators: Sequence[str] = (),
@@ -212,7 +213,9 @@ def project_immich_metadata(
             "metadata_projection.allow_missing_capture_date=true to permit this source"
         )
 
-    gps, gps_source = first_gps_position(facts)
+    gps, gps_source = configured_gps_position(configured_gps)
+    if gps is None:
+        gps, gps_source = first_gps_position(facts)
     if gps is None and not allow_missing_gps:
         raise MetadataProjectionError(
             "metadata projection requires valid GPS coordinates; set "
@@ -588,6 +591,19 @@ def parse_configured_capture_date(
                 f"metadata_projection path_regex source {name} has unknown timezone: {timezone}"
             ) from exc
     return parsed.isoformat()
+
+
+def configured_gps_position(
+    value: Mapping[str, Any] | None,
+) -> tuple[GpsPosition | None, str | None]:
+    if value is None:
+        return None, None
+    gps = GpsPosition.from_dict(value)
+    if gps is None:
+        raise MetadataProjectionError(
+            "metadata_projection.gps requires valid latitude and longitude"
+        )
+    return gps, "metadata_projection.gps"
 
 
 def first_gps_position(facts: Mapping[str, Any]) -> tuple[GpsPosition | None, str | None]:

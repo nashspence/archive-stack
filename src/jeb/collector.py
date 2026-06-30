@@ -282,6 +282,7 @@ class ProfileGroup:
     profile: str | None = None
     archive_mode: str = "av1_nvenc"
     tasks: tuple[str, ...] = DEFAULT_TASKS
+    metadata_projection: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1913,6 +1914,8 @@ def munchy_groups_payload(config: JebConfig) -> dict[str, dict[str, Any]]:
             if profile is None:
                 raise UnrecoverableJebError(f"unknown Munchy profile {group.profile!r}")
             payload["encode_profile"] = copy.deepcopy(dict(profile))
+        if group.metadata_projection:
+            payload["metadata_projection"] = copy.deepcopy(dict(group.metadata_projection))
         out[name] = payload
     return out
 
@@ -2301,6 +2304,7 @@ def load_source_group(raw_any: Any) -> ProfileGroup:
         profile=optional_str(raw.get("profile")),
         archive_mode=archive_mode,
         tasks=resolved_tasks,
+        metadata_projection=dict(mapping(raw.get("metadata_projection"))),
     )
 
 

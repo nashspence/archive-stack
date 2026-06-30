@@ -23,6 +23,10 @@ tags = ["device/example-camera"]
 [groups.video.metadata_projection.device]
 make = "Example"
 model = "Camera"
+
+[groups.video.metadata_projection.gps]
+latitude = 48.999527523960296
+longitude = -122.74040765142755
 ```
 
 The only supported target is `immich_xmp`. Munchy writes sidecars as
@@ -81,6 +85,8 @@ projection fails rather than guessing.
 GPS is written both as EXIF-style coordinates and WGS84 decimal coordinates.
 West and south coordinates must remain negative in the decimal fields. Altitude
 is written as an EXIF XMP rational with `exif:GPSAltitudeRef`.
+For fixed-location devices, `metadata_projection.gps` can provide the
+authoritative GPS position when files do not embed coordinates.
 
 `metadata_projection.tags` is the operator-facing tag concept. Munchy projects
 the same tags into multiple XMP tag/keyword dialects for compatibility:

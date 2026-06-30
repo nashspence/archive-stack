@@ -652,6 +652,22 @@ class MetadataProjectionDeviceConfig(BaseModel):
         return text or None
 
 
+class MetadataProjectionGpsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    latitude: float
+    longitude: float
+    altitude: float | None = None
+
+    @model_validator(mode="after")
+    def validate_position(self) -> MetadataProjectionGpsConfig:
+        if not (-90.0 <= self.latitude <= 90.0):
+            raise ValueError("metadata_projection.gps.latitude must be between -90 and 90")
+        if not (-180.0 <= self.longitude <= 180.0):
+            raise ValueError("metadata_projection.gps.longitude must be between -180 and 180")
+        return self
+
+
 class MetadataProjectionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -666,6 +682,7 @@ class MetadataProjectionConfig(BaseModel):
     device: MetadataProjectionDeviceConfig = Field(
         default_factory=MetadataProjectionDeviceConfig
     )
+    gps: MetadataProjectionGpsConfig | None = None
     creators: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     include_context_tags: bool = True
@@ -3814,6 +3831,7 @@ def metadata_projection_config(group_config: dict[str, Any]) -> dict[str, Any]:
             "allow_missing_device_model": False,
             "allow_missing_creators": False,
             "capture_date_sources": None,
+            "configured_gps": None,
             "device_make": None,
             "device_model": None,
             "creators": [],
@@ -3844,6 +3862,9 @@ def metadata_projection_config(group_config: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("metadata_projection.device must be a table")
     device_make = str(device.get("make") or "").strip() or None
     device_model = str(device.get("model") or "").strip() or None
+    configured_gps = raw.get("gps")
+    if configured_gps is not None and not isinstance(configured_gps, dict):
+        raise RuntimeError("metadata_projection.gps must be a table")
     if "creator" in raw:
         raise RuntimeError("metadata_projection.creator is not supported; use creators = [...]")
     creators = raw.get("creators") or []
@@ -3858,6 +3879,7 @@ def metadata_projection_config(group_config: dict[str, Any]) -> dict[str, Any]:
         "allow_missing_device_model": bool(raw.get("allow_missing_device_model", False)),
         "allow_missing_creators": bool(raw.get("allow_missing_creators", False)),
         "capture_date_sources": copy.deepcopy(capture_date_sources),
+        "configured_gps": copy.deepcopy(configured_gps),
         "device_make": device_make,
         "device_model": device_model,
         "creators": [str(creator).strip() for creator in creators if str(creator).strip()],
@@ -3918,6 +3940,7 @@ def projection_metadata_from_source(
                 list[dict[str, Any]] | None,
                 config.get("capture_date_sources"),
             ),
+            configured_gps=cast(dict[str, Any] | None, config.get("configured_gps")),
             device_make=cast(str | None, config.get("device_make")),
             device_model=cast(str | None, config.get("device_model")),
             creators=cast(list[str], config.get("creators")),

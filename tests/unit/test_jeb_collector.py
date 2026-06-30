@@ -18,6 +18,7 @@ from jeb.collector import (
     TransientJebError,
     UnrecoverableJebError,
     config_from_mapping,
+    munchy_groups_payload,
     munchy_upload_request,
     parse_duration,
     parse_size,
@@ -188,6 +189,28 @@ def test_audio_profile_group_defaults_to_archive_audio(tmp_path: Path) -> None:
 
     assert config.profile_groups["voice"].archive_mode == "audio"
     assert config.profile_groups["voice"].tasks == ("archive_audio",)
+
+
+def test_profile_group_metadata_projection_is_sent_to_munchy(tmp_path: Path) -> None:
+    config = _base_config(tmp_path)
+    config.profile_groups["video"] = type(config.profile_groups["video"])(
+        profile="security",
+        archive_mode="av1_nvenc",
+        tasks=("archive_video",),
+        metadata_projection={
+            "allow_missing_gps": True,
+            "creators": ["Nash Spence"],
+            "device": {"make": "Reolink", "model": "E1 Pro"},
+        },
+    )
+
+    groups = munchy_groups_payload(config)
+
+    assert groups["video"]["metadata_projection"] == {
+        "allow_missing_gps": True,
+        "creators": ["Nash Spence"],
+        "device": {"make": "Reolink", "model": "E1 Pro"},
+    }
 
 
 class CompleteRunner:
