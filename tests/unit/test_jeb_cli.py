@@ -59,6 +59,19 @@ def write_jeb_config(tmp_path: Path) -> Path:
     return config_path
 
 
+def write_disabled_jeb_config(tmp_path: Path) -> Path:
+    config_path = write_jeb_config(tmp_path)
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "enabled = true\npath =",
+            "enabled = false\npath =",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    return config_path
+
+
 def write_stable_file(path: Path, content: bytes = b"notes") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
@@ -129,3 +142,46 @@ def test_jeb_archive_now_reports_failed_preflight(
     assert collector.active_batch_ids() == []
     [failure] = collector.routing_preflight_failures(source_id="phone")
     assert failure["unmatched_count"] == 1
+
+
+def test_jeb_archive_now_reports_removed_source_without_traceback(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    config_path = write_jeb_config(tmp_path)
+
+    assert (
+        jeb_main(
+            [
+                "--config",
+                str(config_path),
+                "archive-now",
+                "--source",
+                "nash-iphone-se2",
+                "--no-process",
+            ]
+        )
+        == 1
+    )
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "source 'nash-iphone-se2' is not in the active Jeb config" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_jeb_archive_now_reports_disabled_source_without_traceback(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    config_path = write_disabled_jeb_config(tmp_path)
+
+    assert (
+        jeb_main(["--config", str(config_path), "archive-now", "--source", "phone", "--no-process"])
+        == 1
+    )
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "source 'phone' is disabled in the active Jeb config" in captured.err
+    assert "Traceback" not in captured.err

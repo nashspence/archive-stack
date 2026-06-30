@@ -1314,9 +1314,16 @@ class Collector:
         collection_id: str | None = None,
         process: bool = True,
     ) -> str | None:
-        source = self.source_by_id(source_id)
+        try:
+            source = self.source_by_id(source_id)
+        except KeyError as exc:
+            raise UnrecoverableJebError(
+                f"source {source_id!r} is not in the active Jeb config"
+            ) from exc
         if not source.enabled:
-            raise UnrecoverableJebError(f"source {source_id!r} is disabled")
+            raise UnrecoverableJebError(
+                f"source {source_id!r} is disabled in the active Jeb config"
+            )
         collections = [
             collection
             for collection in self.config.collections
@@ -1325,7 +1332,14 @@ class Collector:
             and (collection_id is None or collection.id == collection_id)
         ]
         if not collections:
-            raise UnrecoverableJebError(f"no enabled collection includes source {source_id!r}")
+            if collection_id is not None:
+                raise UnrecoverableJebError(
+                    f"source {source_id!r} is not included in enabled Jeb collection "
+                    f"{collection_id!r}"
+                )
+            raise UnrecoverableJebError(
+                f"source {source_id!r} is not included in any enabled Jeb collection"
+            )
         if len(collections) > 1:
             ids = ", ".join(collection.id for collection in collections)
             raise UnrecoverableJebError(

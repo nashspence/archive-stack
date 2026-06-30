@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import sys
 from pathlib import Path
 
 from jeb.collector import (
     Collector,
+    UnrecoverableJebError,
     load_config,
 )
 from jeb.health import JebHealthState, start_health_server
@@ -92,11 +94,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if command == "archive-now":
         collector.init_db()
-        batch_id = collector.archive_now(
-            source_id=args.source,
-            collection_id=args.collection,
-            process=not args.no_process,
-        )
+        try:
+            batch_id = collector.archive_now(
+                source_id=args.source,
+                collection_id=args.collection,
+                process=not args.no_process,
+            )
+        except UnrecoverableJebError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
         if batch_id is None:
             print(f"routing preflight still failed or no eligible files for source {args.source}")
             return 1
