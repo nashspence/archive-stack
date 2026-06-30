@@ -187,6 +187,39 @@ capture date, GPS, device, and creator metadata into ffmpeg container metadata
 where the output container supports scalar tags. Preserve archive outputs are
 not mutated; they receive XMP sidecars only.
 
+## New Device Configs
+
+Create new device configs from original source exports and keep routing proof
+separate from encode-quality proof.
+
+A routing demo set should contain tiny, representative originals that exercise
+every expected capture profile and edge case. Include sidecars, paired captures,
+sent or downloaded media, screenshots, high-frame-rate modes, audio-only modes,
+or any other source shape the device can produce. Use this set to iterate on
+ordered routes, output group names, sidecar attachment, metadata projection
+sources, and fallthrough behavior. The routing set should stay small enough that
+profile-routing preflight and collection-archive target runs are cheap and
+repeatable.
+
+An encode tuning set should contain fuller realistic examples for routes that
+transcode. Include hard cases such as motion, low light, high detail, long
+duration, noisy audio, or other examples that reveal quality and size tradeoffs.
+Use this set only after routing is correct, then tune profile settings by
+inspecting the generated collection outputs and source artifacts.
+
+The preferred enrollment loop is:
+
+1. Collect a small routing demo set from original exports.
+2. Write the profile groups, routes, sidecar rules, and metadata projection
+   settings.
+3. Run preflight and inspect the readout for route ids, attached sidecars,
+   capture date source, GPS source, device metadata, and unmatched files.
+4. Run a collection archive to a target destination, not Riverhog, and inspect
+   the collection tree, XMP sidecars, source artifacts, and routing manifest.
+5. Collect fuller encode tuning examples for routes that transcode.
+6. Tune encode settings against those examples before using the config for
+   Riverhog archival handoff.
+
 ## Audio Archive
 
 Audio-only archive groups use `archive_mode = "audio"` and the `archive_audio`
