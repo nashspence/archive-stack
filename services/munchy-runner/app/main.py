@@ -56,6 +56,7 @@ from munchy.profile_routing import (
     PATH_PREDICATE_KEYS,
     PREDICATE_KEYS,
     ProfileRoutingFile,
+    apply_sidecar_rules,
     match_profile_route,
     matched_fact_values,
     profile_routing_plan,
@@ -3619,17 +3620,21 @@ def profile_routing_needs_probe(routing: Mapping[str, Any]) -> bool:
 def runner_profile_routing_file(
     routing: Mapping[str, Any],
     file_state: dict[str, Any],
+    *,
+    base_routing_facts: Mapping[str, Any] | None = None,
 ) -> ProfileRoutingFile:
     rel_path = str(file_state["path"])
     path = upload_file_data_path(file_state)
+    base_facts = dict(base_routing_facts or {})
+    is_sidecar_evidence = base_facts.get("sidecar.role") == "evidence"
     probe_summary = (
         routing_probe_summary(ffprobe_for_routing(path))
-        if profile_routing_needs_probe(routing)
+        if profile_routing_needs_probe(routing) and not is_sidecar_evidence
         else None
     )
     exiftool_summary = (
         routing_exiftool_summary(exiftool_for_routing(path))
-        if profile_routing_needs_exiftool(routing)
+        if profile_routing_needs_exiftool(routing) and not is_sidecar_evidence
         else None
     )
     return ProfileRoutingFile(
@@ -3641,8 +3646,22 @@ def runner_profile_routing_file(
             rel_path,
             probe_summary=probe_summary,
             exiftool_summary=exiftool_summary,
+            routing_facts=base_facts,
         ),
     )
+
+
+def profile_routing_path_facts_for_files(
+    routing: Mapping[str, Any],
+    file_states: Sequence[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    facts_by_path = {
+        str(file_state["path"]): routing_file_facts(str(file_state["path"]))
+        for file_state in file_states
+    }
+    if routing.get("sidecars"):
+        return apply_sidecar_rules(routing, facts_by_path)
+    return facts_by_path
 
 
 def apply_profile_routing_decision(
@@ -3773,9 +3792,17 @@ def route_completed_input_files(
     )
     if len(files_to_route) != len(complete_files):
         return upload
+    base_facts_by_path = profile_routing_path_facts_for_files(routing, files_to_route)
     plan = profile_routing_plan(
         routing,
-        [runner_profile_routing_file(routing, file_state) for file_state in files_to_route],
+        [
+            runner_profile_routing_file(
+                routing,
+                file_state,
+                base_routing_facts=base_facts_by_path.get(str(file_state["path"])),
+            )
+            for file_state in files_to_route
+        ],
         group_names=set(groups),
     )
     if not plan.ok:

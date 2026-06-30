@@ -607,6 +607,57 @@ def test_metadata_projection_merges_existing_xmp_sidecar_for_preserve_outputs(
     assert "metadata_projection_sidecar" not in updated["files"][1]
 
 
+def test_source_artifact_entries_include_sidecar_evidence_for_reencodes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    materialized_group_root = tmp_path / "input" / "video"
+    primary = materialized_group_root / "iphone" / "IMG_0001.MOV"
+    sidecar = materialized_group_root / "iphone" / "IMG_0001.MOV.xmp"
+    primary.parent.mkdir(parents=True)
+    primary.write_bytes(b"mov")
+    sidecar.write_text("<xmpmeta />", encoding="utf-8")
+    primary_state = {
+        "path": "phone/IMG_0001.MOV",
+        "resolved_group": "video",
+        "resolved_group_rel": "iphone/IMG_0001.MOV",
+    }
+    upload = {
+        "files": [
+            primary_state,
+            {
+                "path": "phone/IMG_0001.MOV.xmp",
+                "profile_route_action": "evidence",
+                "profile_sidecar_id": "xmp",
+                "profile_sidecar_format": "xmp",
+                "profile_sidecar_for": "phone/IMG_0001.MOV",
+                "resolved_group": "video",
+                "resolved_group_rel": "iphone/IMG_0001.MOV.xmp",
+            },
+        ]
+    }
+
+    entries = runner.source_artifacts_sidecar_entries(
+        upload,
+        [primary_state],
+        group_name="video",
+        materialized_group_root=materialized_group_root,
+    )
+
+    assert entries == {
+        "iphone/IMG_0001.MOV": [
+            {
+                "id": "xmp",
+                "format": "xmp",
+                "path": str(sidecar),
+                "arcname": "sidecars/iphone/IMG_0001.MOV.xmp",
+                "source_rel_path": "phone/IMG_0001.MOV.xmp",
+            }
+        ]
+    }
+
+
 def test_metadata_projection_can_use_uploaded_filesystem_birthtime(
     tmp_path: Path,
     monkeypatch,
@@ -874,6 +925,104 @@ def test_completed_structured_file_can_route_by_probe_metadata(
     assert (
         runner.upload_files_for_groups(routed, {"phone-video"})[0]["profile_route_id"]
         == "iphone-4k"
+    )
+
+
+def test_sidecar_evidence_is_not_probed_during_runner_routing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    video_file = runner.shared_input_upload_root("upload-1") / "phone/IMG_0001.MOV"
+    sidecar_file = runner.shared_input_upload_root("upload-1") / "phone/IMG_0001.MOV.xmp"
+    video_file.parent.mkdir(parents=True, exist_ok=True)
+    video_file.write_bytes(b"video")
+    sidecar_file.write_text("<xmpmeta />", encoding="utf-8")
+    upload = runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "state": "uploading",
+            "storage_hint": {
+                "workflow_mode": "collection_archive",
+                "structured_routing": True,
+                "groups": {"phone-video": {"archive_mode": "av1_nvenc", "tasks": []}},
+            },
+            "files": [
+                {
+                    "path": "phone/IMG_0001.MOV",
+                    "bytes": 5,
+                    "upload_id": "phone-img-1",
+                    "input_upload_id": "upload-1",
+                    "structured_routing": True,
+                },
+                {
+                    "path": "phone/IMG_0001.MOV.xmp",
+                    "bytes": 11,
+                    "upload_id": "phone-xmp-1",
+                    "input_upload_id": "upload-1",
+                    "structured_routing": True,
+                },
+            ],
+        }
+    )
+
+    probed: list[Path] = []
+
+    def fake_ffprobe_for_routing(path: Path) -> dict[str, object]:
+        probed.append(path)
+        assert path == video_file
+        return {
+            "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2"},
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "hevc",
+                    "width": 3840,
+                    "height": 2160,
+                    "avg_frame_rate": "30/1",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(runner, "ffprobe_for_routing", fake_ffprobe_for_routing)
+    job = {
+        "job_id": "job-1",
+        "input_upload_id": "upload-1",
+        "profile_routing": {
+            "sidecars": [
+                {
+                    "id": "xmp",
+                    "format": "xmp",
+                    "primary": {"path": {"suffix": ".mov"}},
+                }
+            ],
+            "routes": [
+                {
+                    "id": "iphone-4k",
+                    "group": "phone-video",
+                    "when": {
+                        "all": [
+                            {"path": {"prefix": "phone", "suffix": ".mov"}},
+                            {"fact": "video.long_edge", "min": 3000},
+                        ]
+                    },
+                }
+            ],
+        },
+    }
+    groups = {"phone-video": {"archive_mode": "av1_nvenc", "tasks": []}}
+
+    routed = runner.route_completed_input_files(job, upload, groups)
+
+    assert probed == [video_file]
+    files_by_path = {item["path"]: item for item in routed["files"]}
+    assert files_by_path["phone/IMG_0001.MOV"]["profile_route_id"] == "iphone-4k"
+    assert files_by_path["phone/IMG_0001.MOV.xmp"]["profile_route_action"] == "evidence"
+    assert files_by_path["phone/IMG_0001.MOV.xmp"]["profile_sidecar_id"] == "xmp"
+    assert files_by_path["phone/IMG_0001.MOV.xmp"]["profile_sidecar_for"] == (
+        "phone/IMG_0001.MOV"
     )
 
 
