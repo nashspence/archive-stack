@@ -66,16 +66,26 @@ def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
 
 
 def _run_make(
-    tmp_path: Path, *args: str, extra_env: dict[str, str] | None = None
+    tmp_path: Path,
+    *args: str,
+    extra_env: dict[str, str] | None = None,
+    with_uv: bool = True,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
     docker_log_path = _install_fake_command(tmp_path, "docker", "docker.log")
-    uv_log_path = _install_fake_command(tmp_path, "uv", "uv.log")
+    uv_log_path = (
+        _install_fake_command(tmp_path, "uv", "uv.log") if with_uv else tmp_path / "uv.log"
+    )
     _install_fake_command(tmp_path, "pgrep", "pgrep.log")
     env = os.environ.copy()
-    env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
+    env["PATH"] = (
+        f"{tmp_path / 'bin'}:/usr/bin:/bin"
+        if not with_uv
+        else f"{tmp_path / 'bin'}:{env['PATH']}"
+    )
     env.pop("args", None)
     env.pop("MAKEFLAGS", None)
     env.pop("MFLAGS", None)
+    env.pop("UV_BIN", None)
     if extra_env:
         env.update(extra_env)
 
@@ -130,6 +140,21 @@ def test_atomic_local_targets_run_in_locked_uv_environment(
         f"{REPO_ROOT / 'requirements-test.txt'} --with-editable .[db] "
     ) in uv_log_lines[0]
     assert expected_command in uv_log_lines[0]
+
+
+def test_local_targets_fail_clearly_when_uv_is_missing(tmp_path: Path) -> None:
+    completed, docker_log_path, uv_log_path = _run_make(
+        tmp_path,
+        "unit",
+        extra_env={"UV_BIN": str(tmp_path / "missing-uv")},
+        with_uv=False,
+    )
+
+    assert completed.returncode != 0
+    assert _read_log_lines(docker_log_path) == []
+    assert _read_log_lines(uv_log_path) == []
+    assert "Riverhog Makefile targets require uv on PATH" in completed.stderr
+    assert "UV_BIN=/abs/path/to/uv" in completed.stderr
 
 
 def test_mypy_target_covers_source_and_service_apps(tmp_path: Path) -> None:

@@ -10,6 +10,13 @@ built from `requirements-test.txt` plus the editable project.
 Runtime container dependencies are locked separately in `requirements-runtime.txt`;
 deployed service images use `requirements-service.txt`.
 
+The Makefile expects `uv` on `PATH`. If a host keeps `uv` somewhere else, pass
+it explicitly:
+
+```bash
+make lint UV_BIN=/abs/path/to/uv
+```
+
 ## Testing
 
 For the fastest supported check, first run `make lint` and `make unit` in
