@@ -36,6 +36,33 @@ is archived, the sidecar is recorded in source artifacts. If the primary is
 intentionally left, the sidecar is left too. If the primary is unmatched, the
 sidecar remains a failed preflight condition.
 
+Evidence sidecars are never primary collection outputs. The routing manifest
+records them with `route.action = "evidence"` and
+`output = { kind = "none", reason = "sidecar_evidence" }`. When the primary is
+archived, the evidence entry also records source-artifacts custody:
+
+```json
+{
+  "route": {
+    "action": "evidence",
+    "sidecar": {
+      "id": "xmp",
+      "format": "xmp",
+      "for": "camera/IMG_0001.MOV"
+    }
+  },
+  "output": {
+    "kind": "none",
+    "reason": "sidecar_evidence"
+  },
+  "custody": {
+    "kind": "source_artifact_sidecar",
+    "primary_source": "camera/IMG_0001.MOV",
+    "source_artifacts_entry": "sidecars/camera/IMG_0001.MOV.xmp"
+  }
+}
+```
+
 `archive_mode = "preserve"` copies the primary source bytes to the collection
 archive output without mutating them. If an existing XMP sidecar is attached as
 evidence for a preserve output, Munchy writes the visible output XMP by merging
@@ -69,6 +96,13 @@ longitude = -122.74040765142755
 
 The only supported target is `immich_xmp`. Munchy writes sidecars as
 `output.ext.xmp` next to the output file.
+
+Profile-routing preflight returns a `readout` block in addition to the routing
+plan. The readout is intended for operator tooling: it lists sidecars attached
+to each primary and summarizes metadata projection resolution, including the
+selected capture date source and GPS source when the submitted facts are enough
+to resolve them. Routing `ok` remains the routing result; readout metadata
+errors are diagnostic unless a caller chooses to enforce them before archive.
 
 By default, projection requires a valid capture date, valid GPS coordinates,
 configured device make, configured device model, and at least one configured

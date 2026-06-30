@@ -4004,6 +4004,7 @@ def routing_manifest_output_entry(path: Path, *, archive_dir: Path) -> dict[str,
 def routing_manifest_file_entry(
     file_state: dict[str, Any],
     *,
+    upload: dict[str, Any],
     groups: dict[str, dict[str, Any]],
     archive_dir: Path,
 ) -> dict[str, Any]:
@@ -4040,6 +4041,25 @@ def routing_manifest_file_entry(
         group_rel = upload_file_group_rel_for_state(file_state, group_name).as_posix()
         entry["route"]["group"] = group_name
         entry["route"]["group_rel_path"] = group_rel
+        if upload_file_is_sidecar_evidence(file_state):
+            entry["route"]["sidecar"] = {
+                "id": str(file_state.get("profile_sidecar_id") or ""),
+                "format": str(file_state.get("profile_sidecar_format") or "opaque"),
+                "for": str(file_state.get("profile_sidecar_for") or ""),
+            }
+            entry["output"] = {
+                "kind": "none",
+                "reason": "sidecar_evidence",
+            }
+            custody = routing_manifest_sidecar_custody_entry(
+                file_state,
+                upload=upload,
+                groups=groups,
+                archive_dir=archive_dir,
+            )
+            if custody:
+                entry["custody"] = custody
+            return entry
         entry["output"] = routing_manifest_output_entry(
             archive_output_path_for_routed_file(
                 file_state,
@@ -4052,6 +4072,57 @@ def routing_manifest_file_entry(
     return entry
 
 
+def routing_manifest_sidecar_custody_entry(
+    evidence_state: Mapping[str, Any],
+    *,
+    upload: dict[str, Any],
+    groups: dict[str, dict[str, Any]],
+    archive_dir: Path,
+) -> dict[str, Any] | None:
+    primary_source = str(evidence_state.get("profile_sidecar_for") or "")
+    evidence_dict = cast(dict[str, Any], evidence_state)
+    group_name = upload_file_resolved_group(evidence_dict)
+    if not primary_source or not group_name:
+        return None
+    primary_state = next(
+        (
+            file_state
+            for file_state in upload.get("files", [])
+            if isinstance(file_state, dict)
+            and str(file_state.get("path") or "") == primary_source
+        ),
+        None,
+    )
+    if primary_state is None:
+        return None
+    primary_group = upload_file_resolved_group(primary_state)
+    if not primary_group or primary_group not in groups:
+        return None
+    primary_group_config = groups[primary_group]
+    if not group_produces_primary_archive_output(primary_group_config):
+        return None
+    primary_output = archive_output_path_for_routed_file(
+        primary_state,
+        group_name=primary_group,
+        group_config=primary_group_config,
+        archive_dir=archive_dir,
+    )
+    evidence_group_rel = upload_file_group_rel_for_state(
+        evidence_dict,
+        group_name,
+    )
+    return {
+        "kind": "source_artifact_sidecar",
+        "primary_source": primary_source,
+        "source_artifacts_path": source_artifact_sidecar_for_archive_output(
+            primary_output
+        ).relative_to(archive_dir).as_posix(),
+        "source_artifacts_entry": normalize_posix(
+            PurePosixPath("sidecars", evidence_group_rel.as_posix()).as_posix()
+        ),
+    }
+
+
 def write_profile_routing_manifest(
     job: dict[str, Any],
     upload: dict[str, Any],
@@ -4061,7 +4132,12 @@ def write_profile_routing_manifest(
     if not isinstance(job.get("profile_routing"), dict):
         return
     files = [
-        routing_manifest_file_entry(file_state, groups=groups, archive_dir=archive_dir)
+        routing_manifest_file_entry(
+            file_state,
+            upload=upload,
+            groups=groups,
+            archive_dir=archive_dir,
+        )
         for file_state in upload.get("files", [])
         if file_state.get("profile_routed_at")
     ]
@@ -4467,6 +4543,187 @@ def metadata_projection_tags_for_file(
 
 def dedup_metadata_projection_tags(tags: list[str]) -> list[str]:
     return list(dict.fromkeys(tag.strip() for tag in tags if tag.strip()))
+
+
+def profile_routing_preflight_readout(
+    req: ProfileRoutingPreflightRequest,
+    routing: Mapping[str, Any],
+    plan: Any,
+) -> dict[str, Any]:
+    facts_by_path = {
+        item.path: routing_file_facts(
+            item.path,
+            probe_summary=item.probe_summary,
+            routing_facts=item.routing_facts,
+        )
+        for item in req.files
+    }
+    facts_by_path = apply_sidecar_rules(routing, facts_by_path)
+    group_configs = {
+        name: group.model_dump(mode="python", exclude_none=True)
+        for name, group in req.groups.items()
+    }
+    evidence_items = [
+        item for item in [*plan.matches, *plan.left] if item.get("action") == "evidence"
+    ]
+    evidence_by_primary: dict[str, list[dict[str, Any]]] = {}
+    for item in evidence_items:
+        primary_path = str(
+            item.get("sidecar_for")
+            or item.get("matched_facts", {}).get("sidecar.for")
+            or ""
+        )
+        if primary_path:
+            evidence_by_primary.setdefault(primary_path, []).append(item)
+
+    files: list[dict[str, Any]] = []
+    for item in [*plan.matches, *plan.left, *plan.unmatched]:
+        path = str(item.get("path") or "")
+        action = str(item.get("action") or "unmatched")
+        file_readout: dict[str, Any] = {
+            "path": path,
+            "action": action,
+        }
+        if item.get("route_id"):
+            file_readout["route_id"] = str(item["route_id"])
+        if item.get("group"):
+            file_readout["group"] = str(item["group"])
+        if action == "evidence":
+            file_readout["sidecar"] = {
+                "id": str(item.get("sidecar_id") or item.get("route_id") or ""),
+                "format": str(item.get("sidecar_format") or "opaque"),
+                "for": str(
+                    item.get("sidecar_for")
+                    or item.get("matched_facts", {}).get("sidecar.for")
+                    or ""
+                ),
+            }
+            file_readout["custody"] = {"kind": "source_artifact_sidecar"}
+        elif action == "upload":
+            sidecars = profile_routing_preflight_sidecar_readout(
+                evidence_by_primary.get(path, [])
+            )
+            if sidecars:
+                file_readout["sidecars"] = sidecars
+            group_name = str(item.get("group") or "")
+            group_config = group_configs.get(group_name)
+            if group_config:
+                file_readout["metadata_projection"] = metadata_projection_preflight_readout(
+                    path,
+                    group_config,
+                    facts_by_path=facts_by_path,
+                    sidecar_matches=evidence_by_primary.get(path, []),
+                )
+        files.append(file_readout)
+    return {"files": files}
+
+
+def profile_routing_preflight_sidecar_readout(
+    sidecar_matches: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for item in sidecar_matches:
+        out.append(
+            {
+                "id": str(item.get("sidecar_id") or item.get("route_id") or ""),
+                "format": str(item.get("sidecar_format") or "opaque"),
+                "path": str(item.get("path") or ""),
+                "custody": "source_artifacts",
+            }
+        )
+    return out
+
+
+def metadata_projection_preflight_readout(
+    rel_path: str,
+    group_config: dict[str, Any],
+    *,
+    facts_by_path: Mapping[str, Mapping[str, Any]],
+    sidecar_matches: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    config = metadata_projection_config(group_config)
+    out: dict[str, Any] = {
+        "enabled": bool(config["enabled"]),
+        "target": str(config["target"]),
+    }
+    if not config["enabled"]:
+        return out
+    if not group_produces_primary_archive_output(group_config):
+        out["ok"] = True
+        out["produces_primary_output"] = False
+        return out
+    facts = metadata_projection_preflight_facts(
+        rel_path,
+        facts_by_path=facts_by_path,
+        sidecar_matches=sidecar_matches,
+    )
+    try:
+        metadata = project_immich_metadata(
+            facts,
+            allow_missing_capture_date=bool(config["allow_missing_capture_date"]),
+            allow_missing_gps=bool(config["allow_missing_gps"]),
+            allow_missing_device_make=bool(config["allow_missing_device_make"]),
+            allow_missing_device_model=bool(config["allow_missing_device_model"]),
+            allow_missing_creators=bool(config["allow_missing_creators"]),
+            capture_date_sources=cast(
+                list[dict[str, Any]] | None,
+                config.get("capture_date_sources"),
+            ),
+            gps_sources=cast(list[dict[str, Any]] | None, config.get("gps_sources")),
+            configured_gps=cast(dict[str, Any] | None, config.get("configured_gps")),
+            device_make=cast(str | None, config.get("device_make")),
+            device_model=cast(str | None, config.get("device_model")),
+            creators=cast(list[str], config.get("creators")),
+            tags=cast(list[str], config.get("tags")),
+        )
+    except MetadataProjectionError as exc:
+        out["ok"] = False
+        out["error"] = str(exc)
+        return out
+    out["ok"] = True
+    out["capture_date"] = {
+        "present": metadata.capture_date is not None,
+        "source": metadata.capture_date_source,
+        "value": metadata.capture_date,
+    }
+    out["gps"] = {
+        "present": metadata.gps is not None,
+        "source": metadata.gps_source,
+    }
+    if metadata.gps is not None:
+        out["gps"]["latitude"] = metadata.gps.latitude
+        out["gps"]["longitude"] = metadata.gps.longitude
+        if metadata.gps.altitude is not None:
+            out["gps"]["altitude"] = metadata.gps.altitude
+    out["device"] = {
+        "make": metadata.device_make,
+        "model": metadata.device_model,
+    }
+    out["creators"] = list(metadata.creators)
+    return out
+
+
+def metadata_projection_preflight_facts(
+    rel_path: str,
+    *,
+    facts_by_path: Mapping[str, Mapping[str, Any]],
+    sidecar_matches: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    facts = dict(facts_by_path.get(rel_path, routing_file_facts(rel_path)))
+    sidecar_ids: list[str] = []
+    for item in sidecar_matches:
+        sidecar_id = str(item.get("sidecar_id") or item.get("route_id") or "").strip()
+        sidecar_path = str(item.get("path") or "").strip()
+        if not sidecar_id or not sidecar_path:
+            continue
+        sidecar_ids.append(sidecar_id)
+        facts[f"sidecars.{sidecar_id}.path"] = sidecar_path
+        facts[f"sidecars.{sidecar_id}.format"] = str(item.get("sidecar_format") or "opaque")
+        for key, value in facts_by_path.get(sidecar_path, {}).items():
+            facts[f"sidecars.{sidecar_id}.facts.{key}"] = value
+    if sidecar_ids:
+        facts["sidecars.ids"] = sidecar_ids
+    return facts
 
 
 def write_atomic_text(path: Path, text: str) -> bool:
@@ -8760,7 +9017,9 @@ def profile_routing_preflight(req: ProfileRoutingPreflightRequest) -> dict[str, 
             if item is not None and item.probe_summary is None and probe_route_ids:
                 unmatched["reason"] = "probe_summary_required"
                 unmatched["probe_sensitive_routes"] = probe_route_ids[:20]
-    return plan.as_dict()
+    payload = plan.as_dict()
+    payload["readout"] = profile_routing_preflight_readout(req, routing, plan)
+    return payload
 
 
 @app.get("/v1/admin/scheduler")

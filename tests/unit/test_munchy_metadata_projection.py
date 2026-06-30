@@ -4,6 +4,7 @@ import json
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import pytest
 
@@ -21,6 +22,7 @@ DEFAULT_PROJECTION_CONFIG = {
     "device_model": "iPhone SE (2nd generation)",
     "creators": ["Nash Spence"],
 }
+FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "munchy"
 
 
 def project_test_metadata(facts, **kwargs):  # type: ignore[no-untyped-def]
@@ -505,6 +507,30 @@ def test_immich_xmp_merge_preserves_existing_fields_and_adds_projection() -> Non
     assert 'tiff:Make="Apple"' in merged
     assert "<rdf:li>existing-tag</rdf:li>" in merged
     assert "<rdf:li>device/nash-iphone-se2</rdf:li>" in merged
+    ET.fromstring(merged)
+
+
+def test_immich_xmp_merge_preserves_checked_in_xmp_evidence_fixture() -> None:
+    metadata = project_test_metadata(
+        {
+            "exif.date_time_original": "2026:06:28 20:30:40-0700",
+            "exif.gps_latitude": "48.99950000 N",
+            "exif.gps_longitude": "122.74060000 W",
+        },
+        tags=["munchy/generated"],
+    )
+    existing = (FIXTURE_DIR / "xmp-evidence-basic.xmp").read_text(encoding="utf-8")
+
+    merged = merge_immich_xmp_sidecar(
+        existing,
+        metadata,
+        metadata_date="2026-06-29T00:00:00Z",
+    )
+
+    assert 'xmp:Label="source-sidecar"' in merged
+    assert 'exif:DateTimeOriginal="2026-06-28T20:30:40-07:00"' in merged
+    assert "<rdf:li>source/xmp-evidence-fixture</rdf:li>" in merged
+    assert "<rdf:li>munchy/generated</rdf:li>" in merged
     ET.fromstring(merged)
 
 

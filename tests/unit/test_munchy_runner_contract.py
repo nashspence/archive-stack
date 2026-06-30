@@ -420,6 +420,112 @@ def test_profile_routing_manifest_records_actual_route_and_output(
     ]
 
 
+def test_profile_routing_manifest_records_sidecar_evidence_without_fake_output(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    shared_root = runner.shared_input_upload_root("upload-1") / "phone"
+    shared_root.mkdir(parents=True, exist_ok=True)
+    (shared_root / "IMG_0001.MOV").write_bytes(b"video")
+    (shared_root / "IMG_0001.MOV.xmp").write_text("<xmpmeta />", encoding="utf-8")
+    upload = runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "state": "uploading",
+            "storage_hint": {
+                "workflow_mode": "collection_archive",
+                "structured_routing": True,
+                "groups": {
+                    "video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]},
+                },
+            },
+            "files": [
+                {
+                    "path": "phone/IMG_0001.MOV",
+                    "bytes": 5,
+                    "sha256": "0" * 64,
+                    "upload_id": "phone-img-1",
+                    "input_upload_id": "upload-1",
+                    "structured_routing": True,
+                },
+                {
+                    "path": "phone/IMG_0001.MOV.xmp",
+                    "bytes": 11,
+                    "sha256": "1" * 64,
+                    "upload_id": "phone-xmp-1",
+                    "input_upload_id": "upload-1",
+                    "structured_routing": True,
+                },
+            ],
+        }
+    )
+    job = {
+        "job_id": "job-1",
+        "input_upload_id": "upload-1",
+        "collection_slug": "phone-collection-archive",
+        "collection_timestamp": "20260628T000000Z",
+        "profile_routing": {
+            "sidecars": [
+                {
+                    "id": "xmp",
+                    "format": "xmp",
+                    "primary": {"path": {"suffix": ".mov"}},
+                }
+            ],
+            "routes": [
+                {
+                    "id": "iphone-video",
+                    "group": "video",
+                    "into": "iphone/video",
+                    "when": {"path": {"prefix": "phone", "suffix": ".mov"}},
+                }
+            ],
+        },
+    }
+    groups = {
+        "video": {
+            "archive_mode": "av1_nvenc",
+            "tasks": ["archive_video"],
+            "encode_profile": {"archive": {"container": "webm"}},
+        }
+    }
+    routed = runner.route_completed_input_files(job, upload, groups)
+    archive_dir = tmp_path / "archive"
+    output = runner.archive_output_for_upload_file(
+        runner.upload_files_for_groups(routed, {"video"})[0],
+        group_name="video",
+        group_config=groups["video"],
+        archive_dir=archive_dir,
+    )
+    output.parent.mkdir(parents=True)
+    output.write_bytes(b"webm")
+
+    runner.write_profile_routing_manifest(job, routed, groups, archive_dir)
+
+    manifest = json.loads((archive_dir / runner.ROUTING_MANIFEST_FILENAME).read_text())
+    files_by_source = {item["source"]["path"]: item for item in manifest["files"]}
+    evidence = files_by_source["phone/IMG_0001.MOV.xmp"]
+    assert evidence["route"]["action"] == "evidence"
+    assert evidence["route"]["sidecar"] == {
+        "id": "xmp",
+        "format": "xmp",
+        "for": "phone/IMG_0001.MOV",
+    }
+    assert evidence["output"] == {
+        "kind": "none",
+        "reason": "sidecar_evidence",
+    }
+    assert evidence["custody"] == {
+        "kind": "source_artifact_sidecar",
+        "primary_source": "phone/IMG_0001.MOV",
+        "source_artifacts_path": "video/iphone/video/IMG_0001.webm.source-artifacts.tar.zst",
+        "source_artifacts_entry": "sidecars/phone/IMG_0001.MOV.xmp",
+    }
+
+
 def test_metadata_projection_sidecars_written_for_archive_outputs(
     tmp_path: Path,
     monkeypatch,
@@ -1124,9 +1230,37 @@ def test_profile_routing_preflight_reports_sidecar_evidence(
         json={
             "files": [
                 {"path": "phone/IMG_0001.MOV", "bytes": 100},
-                {"path": "phone/IMG_0001.MOV.xmp", "bytes": 20},
+                {
+                    "path": "phone/IMG_0001.MOV.xmp",
+                    "bytes": 20,
+                    "routing_facts": {
+                        "exif.date_time_original": "2002:03:04 05:06:07-0700",
+                        "exif.gps_latitude": "3.4567 N",
+                        "exif.gps_longitude": "4.5678 E",
+                    },
+                },
             ],
-            "groups": {"video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]}},
+            "groups": {
+                "video": {
+                    "archive_mode": "av1_nvenc",
+                    "tasks": ["archive_video"],
+                    "metadata_projection": {
+                        "capture_date_sources": [
+                            {"type": "sidecar", "id": "xmp"},
+                            {"type": "embedded"},
+                        ],
+                        "gps_sources": [
+                            {"type": "sidecar", "id": "xmp"},
+                            {"type": "embedded"},
+                        ],
+                        "device": {
+                            "make": "Apple",
+                            "model": "iPhone SE (2nd generation)",
+                        },
+                        "creators": ["Nash Spence"],
+                    },
+                }
+            },
             "profile_routing": {
                 "sidecars": [
                     {
@@ -1152,6 +1286,34 @@ def test_profile_routing_preflight_reports_sidecar_evidence(
     assert [item["action"] for item in payload["matches"]] == ["upload", "evidence"]
     assert payload["matches"][1]["sidecar_id"] == "xmp"
     assert payload["matches"][1]["sidecar_for"] == "phone/IMG_0001.MOV"
+    readout_by_path = {item["path"]: item for item in payload["readout"]["files"]}
+    assert readout_by_path["phone/IMG_0001.MOV"]["sidecars"] == [
+        {
+            "id": "xmp",
+            "format": "xmp",
+            "path": "phone/IMG_0001.MOV.xmp",
+            "custody": "source_artifacts",
+        }
+    ]
+    projection = readout_by_path["phone/IMG_0001.MOV"]["metadata_projection"]
+    assert projection["ok"] is True
+    assert projection["capture_date"] == {
+        "present": True,
+        "source": "sidecar:xmp:exif.date_time_original",
+        "value": "2002-03-04T05:06:07-07:00",
+    }
+    assert projection["gps"]["present"] is True
+    assert projection["gps"]["source"] == "sidecar:xmp:exif.gps_latitude+exif.gps_longitude"
+    assert projection["gps"]["latitude"] == 3.4567
+    assert projection["gps"]["longitude"] == 4.5678
+    assert readout_by_path["phone/IMG_0001.MOV.xmp"]["sidecar"] == {
+        "id": "xmp",
+        "format": "xmp",
+        "for": "phone/IMG_0001.MOV",
+    }
+    assert readout_by_path["phone/IMG_0001.MOV.xmp"]["custody"] == {
+        "kind": "source_artifact_sidecar"
+    }
 
 
 def test_profile_routing_preflight_reports_fallthrough(
