@@ -194,6 +194,30 @@ def normalize_posix(path: str | PurePosixPath) -> str:
     return rel.as_posix()
 
 
+def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def legacy_manifest_digest(batch_id: str) -> str:
+    digest = batch_id.rsplit("__", 1)[-1]
+    return re.sub(r"-r\d+$", "", digest)
+
+
+def legacy_base_batch_id(batch_id: str) -> str:
+    return re.sub(r"-r\d+$", "", batch_id)
+
+
+def latest_attempt_index_with_state(
+    rows: Sequence[sqlite3.Row],
+    states: set[str],
+) -> int | None:
+    latest: int | None = None
+    for index, row in enumerate(rows, start=1):
+        if str(row["state"]) in states:
+            latest = index
+    return latest
+
+
 def munchy_archive_mode(value: str) -> str:
     mode = str(value or "av1_nvenc").strip()
     if mode not in {"av1_nvenc", "audio", "originals"}:
@@ -476,86 +500,260 @@ class Collector:
     def init_db(self) -> None:
         self.config.collector.batch_dir.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
+            self.ensure_batch_schema(conn)
+            self.ensure_routing_preflight_schema(conn)
+
+    def ensure_batch_schema(self, conn: sqlite3.Connection) -> None:
+        columns = table_columns(conn, "batches")
+        if columns and "state" in columns:
+            self.migrate_legacy_batch_schema(conn)
+        self.create_batch_schema(conn)
+
+    def create_batch_schema(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS batches (
+                id TEXT PRIMARY KEY,
+                collection_id TEXT NOT NULL,
+                target_name TEXT NOT NULL,
+                collection_slug TEXT NOT NULL,
+                collection_timestamp TEXT NOT NULL,
+                cleanup TEXT NOT NULL,
+                manifest_digest TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS batch_attempts (
+                id TEXT PRIMARY KEY,
+                batch_id TEXT NOT NULL,
+                attempt_number INTEGER NOT NULL,
+                state TEXT NOT NULL,
+                input_upload_id TEXT,
+                job_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_error TEXT,
+                notified_error_fingerprint TEXT,
+                notified_error_at TEXT,
+                UNIQUE(batch_id, attempt_number),
+                FOREIGN KEY(batch_id) REFERENCES batches(id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS files (
+                batch_id TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                target_path TEXT NOT NULL,
+                bytes INTEGER NOT NULL,
+                mtime_ns INTEGER NOT NULL,
+                sha256 TEXT,
+                PRIMARY KEY (batch_id, target_path),
+                FOREIGN KEY(batch_id) REFERENCES batches(id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attempt_files (
+                attempt_id TEXT NOT NULL,
+                target_path TEXT NOT NULL,
+                staging_path TEXT NOT NULL,
+                staged_at TEXT,
+                PRIMARY KEY (attempt_id, target_path),
+                FOREIGN KEY(attempt_id) REFERENCES batch_attempts(id)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jeb_batches_collection_period "
+            "ON batches(collection_id, collection_timestamp)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jeb_batch_attempts_state "
+            "ON batch_attempts(state, created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jeb_batch_attempts_batch_state "
+            "ON batch_attempts(batch_id, state)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jeb_files_batch ON files(batch_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jeb_attempt_files_attempt "
+            "ON attempt_files(attempt_id)"
+        )
+
+    def migrate_legacy_batch_schema(self, conn: sqlite3.Connection) -> None:
+        LOG.info("migrating legacy Jeb batch state to batch attempts")
+        conn.execute("ALTER TABLE batches RENAME TO legacy_batches")
+        conn.execute("ALTER TABLE files RENAME TO legacy_files")
+        self.create_batch_schema(conn)
+        legacy_batches = conn.execute(
+            "SELECT * FROM legacy_batches ORDER BY collection_id, created_at, id"
+        ).fetchall()
+        groups: dict[tuple[str, str], list[sqlite3.Row]] = {}
+        for row in legacy_batches:
+            digest = legacy_manifest_digest(str(row["id"]))
+            groups.setdefault((str(row["collection_id"]), digest), []).append(row)
+        for (_collection_id, digest), rows in groups.items():
+            ordered = sorted(
+                rows,
+                key=lambda row: (
+                    str(row["collection_timestamp"]),
+                    str(row["created_at"]),
+                    str(row["id"]),
+                ),
+            )
+            first = ordered[0]
+            batch_id = legacy_base_batch_id(str(first["id"]))
+            collection_timestamp = str(first["collection_timestamp"])
+            created_at = min(str(row["created_at"]) for row in ordered)
+            updated_at = max(str(row["updated_at"]) for row in ordered)
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS batches (
-                    id TEXT PRIMARY KEY,
-                    collection_id TEXT NOT NULL,
-                    state TEXT NOT NULL,
-                    target_name TEXT NOT NULL,
-                    collection_slug TEXT NOT NULL,
-                    collection_timestamp TEXT NOT NULL,
-                    input_upload_id TEXT,
-                    job_id TEXT,
-                    cleanup TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    last_error TEXT,
-                    notified_error_fingerprint TEXT,
-                    notified_error_at TEXT
+                INSERT INTO batches(
+                    id, collection_id, target_name, collection_slug,
+                    collection_timestamp, cleanup, manifest_digest, created_at, updated_at
                 )
-                """
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    batch_id,
+                    str(first["collection_id"]),
+                    str(first["target_name"]),
+                    str(first["collection_slug"]),
+                    collection_timestamp,
+                    str(first["cleanup"]),
+                    digest,
+                    created_at,
+                    updated_at,
+                ),
             )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS files (
-                    batch_id TEXT NOT NULL,
-                    source_path TEXT NOT NULL,
-                    staging_path TEXT NOT NULL,
-                    target_path TEXT NOT NULL,
-                    bytes INTEGER NOT NULL,
-                    mtime_ns INTEGER NOT NULL,
-                    sha256 TEXT,
-                    staged_at TEXT,
-                    PRIMARY KEY (batch_id, target_path)
-                )
-                """
+            attempt_rows = sorted(
+                rows, key=lambda item: (str(item["created_at"]), str(item["id"]))
             )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_jeb_batches_state ON batches(state, created_at)"
+            latest_success_index = latest_attempt_index_with_state(
+                attempt_rows, {"target_succeeded", "cleanup_done"}
             )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_jeb_batches_collection_state "
-                "ON batches(collection_id, state)"
+            latest_failed_index = latest_attempt_index_with_state(
+                attempt_rows, {"failed", "failed_notified"}
             )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS routing_preflight_failures (
-                    source_id TEXT PRIMARY KEY,
-                    state TEXT NOT NULL,
-                    failure_kind TEXT NOT NULL DEFAULT 'profile_routing',
-                    collection_id TEXT NOT NULL,
-                    collection_slug TEXT NOT NULL,
-                    target_name TEXT NOT NULL,
-                    source_paths_json TEXT NOT NULL,
-                    failure_json TEXT NOT NULL,
-                    fingerprint TEXT NOT NULL,
-                    message TEXT NOT NULL,
-                    file_count INTEGER NOT NULL,
-                    total_bytes INTEGER NOT NULL,
-                    unmatched_count INTEGER NOT NULL,
-                    first_seen_at TEXT NOT NULL,
-                    last_seen_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    resolved_at TEXT,
-                    notified_error_fingerprint TEXT,
-                    notified_error_at TEXT
-                )
-                """
-            )
-            columns = {
-                str(row["name"])
-                for row in conn.execute("PRAGMA table_info(routing_preflight_failures)")
-            }
-            if "failure_kind" not in columns:
+            for index, row in enumerate(attempt_rows, start=1):
+                state = str(row["state"])
+                if latest_success_index is not None and index < latest_success_index:
+                    if state not in {"target_succeeded", "cleanup_done", "superseded"}:
+                        state = "superseded"
+                elif (
+                    latest_success_index is None
+                    and latest_failed_index is not None
+                    and index != latest_failed_index
+                    and state in {"failed", "failed_notified"}
+                ):
+                    state = "superseded"
                 conn.execute(
-                    "ALTER TABLE routing_preflight_failures "
-                    "ADD COLUMN failure_kind TEXT NOT NULL DEFAULT 'profile_routing'"
+                    """
+                    INSERT INTO batch_attempts(
+                        id, batch_id, attempt_number, state, input_upload_id, job_id,
+                        created_at, updated_at, last_error,
+                        notified_error_fingerprint, notified_error_at
+                    )
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(row["id"]),
+                        batch_id,
+                        index,
+                        state,
+                        row["input_upload_id"],
+                        row["job_id"],
+                        str(row["created_at"]),
+                        str(row["updated_at"]),
+                        row["last_error"],
+                        row["notified_error_fingerprint"],
+                        row["notified_error_at"],
+                    ),
                 )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_jeb_routing_preflight_failures_state "
-                "ON routing_preflight_failures(state, updated_at)"
+                file_rows = conn.execute(
+                    "SELECT * FROM legacy_files WHERE batch_id = ? ORDER BY target_path",
+                    (str(row["id"]),),
+                ).fetchall()
+                for file_row in file_rows:
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO files(
+                            batch_id, source_path, target_path, bytes, mtime_ns, sha256
+                        )
+                        VALUES(?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            batch_id,
+                            str(file_row["source_path"]),
+                            str(file_row["target_path"]),
+                            int(file_row["bytes"]),
+                            int(file_row["mtime_ns"]),
+                            file_row["sha256"],
+                        ),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO attempt_files(
+                            attempt_id, target_path, staging_path, staged_at
+                        )
+                        VALUES(?, ?, ?, ?)
+                        """,
+                        (
+                            str(row["id"]),
+                            str(file_row["target_path"]),
+                            str(file_row["staging_path"]),
+                            file_row["staged_at"],
+                        ),
+                    )
+        conn.execute("DROP TABLE legacy_files")
+        conn.execute("DROP TABLE legacy_batches")
+
+    def ensure_routing_preflight_schema(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS routing_preflight_failures (
+                source_id TEXT PRIMARY KEY,
+                state TEXT NOT NULL,
+                failure_kind TEXT NOT NULL DEFAULT 'profile_routing',
+                collection_id TEXT NOT NULL,
+                collection_slug TEXT NOT NULL,
+                target_name TEXT NOT NULL,
+                source_paths_json TEXT NOT NULL,
+                failure_json TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                message TEXT NOT NULL,
+                file_count INTEGER NOT NULL,
+                total_bytes INTEGER NOT NULL,
+                unmatched_count INTEGER NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                resolved_at TEXT,
+                notified_error_fingerprint TEXT,
+                notified_error_at TEXT
             )
+            """
+        )
+        columns = table_columns(conn, "routing_preflight_failures")
+        if "failure_kind" not in columns:
+            conn.execute(
+                "ALTER TABLE routing_preflight_failures "
+                "ADD COLUMN failure_kind TEXT NOT NULL DEFAULT 'profile_routing'"
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jeb_routing_preflight_failures_state "
+            "ON routing_preflight_failures(state, updated_at)"
+        )
 
     def run_forever(self) -> None:
         self.init_db()
@@ -567,11 +765,7 @@ class Collector:
         self.init_db()
         for batch_id in self.active_batch_ids():
             self.process_batch(batch_id)
-        active_collections = {
-            str(row["collection_id"])
-            for row in self.active_batches()
-            if str(row["state"]) not in {"failed", "failed_notified"}
-        }
+        active_collections = {str(row["collection_id"]) for row in self.active_batches()}
         for collection in self.config.collections:
             if collection.enabled and collection.id not in active_collections:
                 self.discover_collection(collection)
@@ -582,7 +776,30 @@ class Collector:
         placeholders = ", ".join("?" for _ in terminal)
         with self.connect() as conn:
             return conn.execute(
-                f"SELECT * FROM batches WHERE state NOT IN ({placeholders}) ORDER BY created_at",
+                f"""
+                SELECT
+                    a.id,
+                    a.batch_id,
+                    a.attempt_number,
+                    a.state,
+                    b.collection_id,
+                    b.target_name,
+                    b.collection_slug,
+                    b.collection_timestamp,
+                    b.cleanup,
+                    b.manifest_digest,
+                    a.input_upload_id,
+                    a.job_id,
+                    a.created_at,
+                    a.updated_at,
+                    a.last_error,
+                    a.notified_error_fingerprint,
+                    a.notified_error_at
+                FROM batch_attempts a
+                JOIN batches b ON b.id = a.batch_id
+                WHERE a.state NOT IN ({placeholders})
+                ORDER BY a.created_at
+                """,
                 terminal,
             ).fetchall()
 
@@ -609,7 +826,32 @@ class Collector:
 
     def load_batch(self, batch_id: str) -> sqlite3.Row:
         with self.connect() as conn:
-            row = conn.execute("SELECT * FROM batches WHERE id = ?", (batch_id,)).fetchone()
+            row = conn.execute(
+                """
+                SELECT
+                    a.id,
+                    a.batch_id,
+                    a.attempt_number,
+                    a.state,
+                    b.collection_id,
+                    b.target_name,
+                    b.collection_slug,
+                    b.collection_timestamp,
+                    b.cleanup,
+                    b.manifest_digest,
+                    a.input_upload_id,
+                    a.job_id,
+                    a.created_at,
+                    a.updated_at,
+                    a.last_error,
+                    a.notified_error_fingerprint,
+                    a.notified_error_at
+                FROM batch_attempts a
+                JOIN batches b ON b.id = a.batch_id
+                WHERE a.id = ?
+                """,
+                (batch_id,),
+            ).fetchone()
         if row is None:
             raise KeyError(batch_id)
         return cast(sqlite3.Row, row)
@@ -617,14 +859,36 @@ class Collector:
     def batch_files(self, batch_id: str) -> list[sqlite3.Row]:
         with self.connect() as conn:
             return conn.execute(
-                "SELECT * FROM files WHERE batch_id = ? ORDER BY target_path",
+                """
+                SELECT
+                    f.batch_id,
+                    af.attempt_id,
+                    f.source_path,
+                    af.staging_path,
+                    f.target_path,
+                    f.bytes,
+                    f.mtime_ns,
+                    f.sha256,
+                    af.staged_at
+                FROM batch_attempts a
+                JOIN files f ON f.batch_id = a.batch_id
+                JOIN attempt_files af
+                  ON af.attempt_id = a.id
+                 AND af.target_path = f.target_path
+                WHERE a.id = ?
+                ORDER BY f.target_path
+                """,
                 (batch_id,),
             ).fetchall()
 
     def set_batch_state(self, batch_id: str, state: str, error: str | None = None) -> None:
         with self.connect() as conn:
             conn.execute(
-                "UPDATE batches SET state = ?, updated_at = ?, last_error = ? WHERE id = ?",
+                """
+                UPDATE batch_attempts
+                SET state = ?, updated_at = ?, last_error = ?
+                WHERE id = ?
+                """,
                 (state, iso(), error, batch_id),
             )
 
@@ -649,7 +913,7 @@ class Collector:
         values.append(batch_id)
         with self.connect() as conn:
             conn.execute(
-                f"UPDATE batches SET {', '.join(assignments)} WHERE id = ?",
+                f"UPDATE batch_attempts SET {', '.join(assignments)} WHERE id = ?",
                 values,
             )
 
@@ -718,17 +982,15 @@ class Collector:
         if not force and collection.schedule == "weekly" and self.batch_exists_for_period(
             collection.id,
             period,
-            candidate_batch_id=base_batch_id,
         ):
             return None
-        batch_id, digest = self.available_batch_identity(base_batch_id, base_digest)
-        self.supersede_failed_batches_for_period(
-            collection.id,
-            period,
-            excluding_batch_id=batch_id,
+        return self.create_batch(
+            collection,
+            files,
+            period=period,
+            batch_id=base_batch_id,
+            digest=base_digest,
         )
-        self.create_batch(collection, files, period=period, batch_id=batch_id, digest=digest)
-        return batch_id
 
     def collection_period(self, collection: CollectionConfig) -> datetime:
         if collection.schedule == "always":
@@ -749,67 +1011,19 @@ class Collector:
         self,
         collection_id: str,
         period: datetime,
-        *,
-        candidate_batch_id: str,
     ) -> bool:
         timestamp = period.strftime("%Y%m%dT%H%M%SZ")
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, state FROM batches
-                WHERE collection_id = ? AND collection_timestamp = ?
+                SELECT a.id, a.state
+                FROM batches b
+                JOIN batch_attempts a ON a.batch_id = b.id
+                WHERE b.collection_id = ? AND b.collection_timestamp = ?
                 """,
                 (collection_id, timestamp),
             ).fetchall()
-        for row in rows:
-            if str(row["id"]) == candidate_batch_id and str(row["state"]) != "superseded":
-                return True
-            if str(row["state"]) not in {"failed", "failed_notified", "superseded"}:
-                return True
-        return False
-
-    def available_batch_identity(self, batch_id: str, digest: str) -> tuple[str, str]:
-        with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT id, state FROM batches WHERE id = ? OR id GLOB ? ORDER BY id",
-                (batch_id, f"{batch_id}-r*"),
-            ).fetchall()
-        existing = {str(row["id"]): str(row["state"]) for row in rows}
-        if batch_id not in existing:
-            return batch_id, digest
-        if existing[batch_id] != "superseded":
-            return batch_id, digest
-        for attempt in range(2, 10_000):
-            candidate = f"{batch_id}-r{attempt}"
-            if candidate not in existing:
-                return candidate, f"{digest}-r{attempt}"
-        raise UnrecoverableJebError(f"could not choose retry batch id for {batch_id}")
-
-    def supersede_failed_batches_for_period(
-        self,
-        collection_id: str,
-        period: datetime,
-        *,
-        excluding_batch_id: str,
-    ) -> None:
-        timestamp = period.strftime("%Y%m%dT%H%M%SZ")
-        with self.connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT id FROM batches
-                WHERE collection_id = ?
-                  AND collection_timestamp = ?
-                  AND state IN ('failed', 'failed_notified')
-                  AND id != ?
-                """,
-                (collection_id, timestamp, excluding_batch_id),
-            ).fetchall()
-            conn.executemany(
-                "UPDATE batches SET state = 'superseded', updated_at = ? WHERE id = ?",
-                [(iso(), str(row["id"])) for row in rows],
-            )
-        for row in rows:
-            shutil.rmtree(self.config.collector.batch_dir / str(row["id"]), ignore_errors=True)
+        return any(str(row["state"]) != "superseded" for row in rows)
 
     def eligible_files(
         self,
@@ -1231,15 +1445,116 @@ class Collector:
             raise UnrecoverableJebError(
                 f"source {source_id!r} is in multiple collections; pass --collection: {ids}"
             )
-        batch_id = self.discover_collection(
-            collections[0],
-            only_source_ids=(source_id,),
-            force=True,
-            allow_preflight_retry=True,
-        )
+        collection = collections[0]
+        failed_attempt = self.latest_failed_attempt_for_collection(collection.id)
+        batch_id: str | None
+        if failed_attempt is not None:
+            batch_id = self.create_retry_attempt(str(failed_attempt["id"]))
+        else:
+            batch_id = self.discover_collection(
+                collection,
+                only_source_ids=(source_id,),
+                force=True,
+                allow_preflight_retry=True,
+            )
         if batch_id is not None and process:
             self.process_batch(batch_id)
         return batch_id
+
+    def latest_failed_attempt_for_collection(self, collection_id: str) -> sqlite3.Row | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT a.*
+                FROM batch_attempts a
+                JOIN batches b ON b.id = a.batch_id
+                WHERE b.collection_id = ?
+                  AND a.state IN ('failed', 'failed_notified')
+                ORDER BY a.created_at DESC, a.id DESC
+                LIMIT 1
+                """,
+                (collection_id,),
+            ).fetchone()
+        return cast(sqlite3.Row | None, row)
+
+    def create_retry_attempt(self, failed_attempt_id: str) -> str:
+        failed_attempt = self.load_batch(failed_attempt_id)
+        batch_id = str(failed_attempt["batch_id"])
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(attempt_number), 0) + 1 AS attempt_number "
+                "FROM batch_attempts WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()
+            attempt_number = int(row["attempt_number"] if row is not None else 1)
+            attempt_id = batch_id if attempt_number == 1 else f"{batch_id}-r{attempt_number}"
+            if conn.execute(
+                "SELECT 1 FROM batch_attempts WHERE id = ?",
+                (attempt_id,),
+            ).fetchone():
+                raise UnrecoverableJebError(f"retry attempt already exists: {attempt_id}")
+            suffix = "" if attempt_number == 1 else f"-r{attempt_number}"
+            input_upload_id = (
+                f"jeb-{failed_attempt['collection_id']}-"
+                f"{str(failed_attempt['collection_timestamp']).lower()}-"
+                f"{failed_attempt['manifest_digest']}{suffix}"
+            )
+            job_id = f"{input_upload_id}-job"
+            created_at = iso()
+            conn.execute(
+                """
+                INSERT INTO batch_attempts(
+                    id, batch_id, attempt_number, state, input_upload_id, job_id,
+                    created_at, updated_at
+                )
+                VALUES(?, ?, ?, 'batching', ?, ?, ?, ?)
+                """,
+                (
+                    attempt_id,
+                    batch_id,
+                    attempt_number,
+                    input_upload_id,
+                    job_id,
+                    created_at,
+                    created_at,
+                ),
+            )
+            file_rows = conn.execute(
+                "SELECT target_path FROM files WHERE batch_id = ? ORDER BY target_path",
+                (batch_id,),
+            ).fetchall()
+            for file_row in file_rows:
+                target_path = str(file_row["target_path"])
+                staging = self.config.collector.batch_dir / attempt_id / "input" / PurePosixPath(
+                    target_path
+                )
+                conn.execute(
+                    """
+                    INSERT INTO attempt_files(attempt_id, target_path, staging_path, staged_at)
+                    VALUES(?, ?, ?, NULL)
+                    """,
+                    (attempt_id, target_path, str(staging)),
+                )
+            conn.execute(
+                """
+                UPDATE batch_attempts
+                SET state = 'superseded', updated_at = ?
+                WHERE id = ?
+                """,
+                (created_at, failed_attempt_id),
+            )
+            conn.execute(
+                "UPDATE batches SET updated_at = ? WHERE id = ?",
+                (created_at, batch_id),
+            )
+        shutil.rmtree(self.config.collector.batch_dir / failed_attempt_id, ignore_errors=True)
+        LOG.info(
+            "created retry attempt %s for batch %s after failed attempt %s",
+            attempt_id,
+            batch_id,
+            failed_attempt_id,
+        )
+        return attempt_id
 
     def create_batch(
         self,
@@ -1249,7 +1564,7 @@ class Collector:
         period: datetime,
         batch_id: str | None = None,
         digest: str | None = None,
-    ) -> None:
+    ) -> str:
         collection_timestamp = period.strftime("%Y%m%dT%H%M%SZ")
         if batch_id is None or digest is None:
             batch_id, digest = self.batch_identity(collection, files, period=period)
@@ -1261,14 +1576,14 @@ class Collector:
         with self.connect() as conn:
             exists = conn.execute("SELECT 1 FROM batches WHERE id = ?", (batch_id,)).fetchone()
             if exists:
-                return
+                return batch_id
             conn.execute(
                 """
-                    INSERT INTO batches(
-                    id, collection_id, state, target_name, collection_slug,
-                    collection_timestamp, input_upload_id, job_id, cleanup, created_at, updated_at
+                INSERT INTO batches(
+                    id, collection_id, target_name, collection_slug,
+                    collection_timestamp, cleanup, manifest_digest, created_at, updated_at
                 )
-                VALUES(?, ?, 'batching', ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     batch_id,
@@ -1276,9 +1591,25 @@ class Collector:
                     target.name,
                     collection.collection_slug,
                     collection_timestamp,
+                    collection.cleanup,
+                    digest,
+                    created_at,
+                    created_at,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO batch_attempts(
+                    id, batch_id, attempt_number, state, input_upload_id, job_id,
+                    created_at, updated_at
+                )
+                VALUES(?, ?, 1, 'batching', ?, ?, ?, ?)
+                """,
+                (
+                    batch_id,
+                    batch_id,
                     input_upload_id,
                     job_id,
-                    collection.cleanup,
                     created_at,
                     created_at,
                 ),
@@ -1287,19 +1618,23 @@ class Collector:
                 staging = batch_root / PurePosixPath(item.target_path)
                 conn.execute(
                     """
-                    INSERT INTO files(
-                        batch_id, source_path, staging_path, target_path, bytes, mtime_ns, sha256
-                    )
-                    VALUES(?, ?, ?, ?, ?, ?, NULL)
+                    INSERT INTO files(batch_id, source_path, target_path, bytes, mtime_ns, sha256)
+                    VALUES(?, ?, ?, ?, ?, NULL)
                     """,
                     (
                         batch_id,
                         str(item.path),
-                        str(staging),
                         item.target_path,
                         item.bytes,
                         item.mtime_ns,
                     ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO attempt_files(attempt_id, target_path, staging_path, staged_at)
+                    VALUES(?, ?, ?, NULL)
+                    """,
+                    (batch_id, item.target_path, str(staging)),
                 )
         LOG.info(
             "created batch %s for collection %s with %d files",
@@ -1307,6 +1642,7 @@ class Collector:
             collection.id,
             len(files),
         )
+        return batch_id
 
     def batch_identity(
         self,
@@ -1371,7 +1707,11 @@ class Collector:
                 )
             with self.connect() as conn:
                 conn.execute(
-                    "UPDATE files SET staged_at = ? WHERE batch_id = ? AND target_path = ?",
+                    """
+                    UPDATE attempt_files
+                    SET staged_at = ?
+                    WHERE attempt_id = ? AND target_path = ?
+                    """,
                     (iso(), batch_id, row["target_path"]),
                 )
         self.set_batch_state(batch_id, "batched")
@@ -1380,10 +1720,14 @@ class Collector:
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT target_path, staging_path, bytes
-                FROM files
-                WHERE batch_id = ? AND sha256 IS NULL
-                ORDER BY target_path
+                SELECT f.batch_id, f.target_path, af.staging_path, f.bytes
+                FROM batch_attempts a
+                JOIN files f ON f.batch_id = a.batch_id
+                JOIN attempt_files af
+                  ON af.attempt_id = a.id
+                 AND af.target_path = f.target_path
+                WHERE a.id = ? AND f.sha256 IS NULL
+                ORDER BY f.target_path
                 """,
                 (batch_id,),
             ).fetchall()
@@ -1410,7 +1754,7 @@ class Collector:
             with self.connect() as conn:
                 conn.execute(
                     "UPDATE files SET sha256 = ? WHERE batch_id = ? AND target_path = ?",
-                    (digest, batch_id, row["target_path"]),
+                    (digest, row["batch_id"], row["target_path"]),
                 )
             now = time.monotonic()
             is_final = index == total_files
@@ -1613,10 +1957,18 @@ class Collector:
                 conn.execute(
                     """
                     UPDATE files
-                    SET bytes = ?, mtime_ns = ?, sha256 = ?, staged_at = ?
+                    SET bytes = ?, mtime_ns = ?, sha256 = ?
                     WHERE batch_id = ? AND target_path = ?
                     """,
-                    (stat.st_size, stat.st_mtime_ns, digest, iso(), batch_id, target_path),
+                    (stat.st_size, stat.st_mtime_ns, digest, row["batch_id"], target_path),
+                )
+                conn.execute(
+                    """
+                    UPDATE attempt_files
+                    SET staged_at = ?
+                    WHERE attempt_id = ? AND target_path = ?
+                    """,
+                    (iso(), batch_id, target_path),
                 )
             return MediaPreflightResult(
                 file=MediaPreflightFile(
@@ -1648,8 +2000,12 @@ class Collector:
             )
         with self.connect() as conn:
             conn.execute(
-                "DELETE FROM files WHERE batch_id = ? AND target_path = ?",
+                "DELETE FROM attempt_files WHERE attempt_id = ? AND target_path = ?",
                 (batch_id, target_path),
+            )
+            conn.execute(
+                "DELETE FROM files WHERE batch_id = ? AND target_path = ?",
+                (row["batch_id"], target_path),
             )
 
     def finish_target_success(self, batch_id: str) -> None:
