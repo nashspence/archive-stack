@@ -609,6 +609,7 @@ class Collector:
 
     def run_once(self) -> None:
         self.init_db()
+        self.resolve_inactive_routing_preflight_failures()
         for batch_id in self.active_batch_ids():
             self.process_batch(batch_id)
         active_collections = {str(row["collection_id"]) for row in self.active_batches()}
@@ -1199,6 +1200,44 @@ class Collector:
             ).fetchone()
         return row is not None
 
+    def active_routing_preflight_source_ids(self) -> set[str]:
+        enabled_sources = {source.id for source in self.config.sources if source.enabled}
+        source_ids: set[str] = set()
+        for collection in self.config.collections:
+            if collection.enabled:
+                source_ids.update(
+                    source_id for source_id in collection.source_ids if source_id in enabled_sources
+                )
+        return source_ids
+
+    def resolve_inactive_routing_preflight_failures(self) -> int:
+        active_source_ids = sorted(self.active_routing_preflight_source_ids())
+        now_text = iso()
+        with self.connect() as conn:
+            if active_source_ids:
+                placeholders = ", ".join("?" for _ in active_source_ids)
+                cursor = conn.execute(
+                    f"""
+                    UPDATE routing_preflight_failures
+                    SET state = 'resolved', resolved_at = ?, updated_at = ?
+                    WHERE state = 'failed' AND source_id NOT IN ({placeholders})
+                    """,
+                    (now_text, now_text, *active_source_ids),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    UPDATE routing_preflight_failures
+                    SET state = 'resolved', resolved_at = ?, updated_at = ?
+                    WHERE state = 'failed'
+                    """,
+                    (now_text, now_text),
+                )
+        resolved = cursor.rowcount if cursor.rowcount is not None else 0
+        if resolved:
+            LOG.info("resolved %s inactive routing preflight failure(s)", resolved)
+        return resolved
+
     def routing_preflight_failures(
         self,
         *,
@@ -1225,6 +1264,7 @@ class Collector:
             ).fetchall()
 
     def notify_routing_preflight_failures(self, source_id: str | None = None) -> None:
+        self.resolve_inactive_routing_preflight_failures()
         for row in self.routing_preflight_failures(source_id=source_id, state="failed"):
             self.notify_routing_preflight_failure(row)
 

@@ -750,6 +750,67 @@ def test_routing_preflight_failure_sends_daily_reminders_without_scheduled_retry
     assert collector.active_batch_ids() == []
 
 
+@pytest.mark.parametrize(
+    ("replacement_source_ids", "replacement_source_overrides"),
+    [
+        (["camera"], None),
+        (["phone"], {"phone": {"enabled": False}}),
+    ],
+)
+def test_inactive_source_routing_preflight_failure_resolves_without_reminder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement_source_ids: list[str],
+    replacement_source_overrides: dict[str, dict[str, object]] | None,
+) -> None:
+    config = _base_config(
+        tmp_path,
+        source_ids=["phone"],
+        source_overrides={
+            "phone": {
+                "include_extensions": [".heic"],
+            }
+        },
+    )
+    _write_stable_file(tmp_path / "landing" / "phone" / "IMG_0001.HEIC")
+    monkeypatch.setattr(
+        "jeb.collector.ffprobe_for_routing_preflight",
+        lambda path: {
+            "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2"},
+            "streams": [{"codec_type": "video", "codec_name": "hevc"}],
+        },
+    )
+    notifier = RecordingNotifier([])
+    collector = Collector(config, target_runners={"runner": CompleteRunner()}, notifier=notifier)
+
+    collector.run_once()
+
+    assert len(collector.routing_preflight_failures(source_id="phone")) == 1
+    assert len(notifier.messages) == 1
+
+    replacement = _base_config(
+        tmp_path,
+        source_ids=replacement_source_ids,
+        source_overrides=replacement_source_overrides,
+    )
+    replacement_notifier = RecordingNotifier([])
+    replacement_collector = Collector(
+        replacement,
+        target_runners={"runner": CompleteRunner()},
+        notifier=replacement_notifier,
+    )
+
+    replacement_collector.run_once()
+
+    assert replacement_notifier.messages == []
+    assert replacement_collector.routing_preflight_failures(source_id="phone") == []
+    [resolved] = replacement_collector.routing_preflight_failures(
+        source_id="phone",
+        state="resolved",
+    )
+    assert resolved["resolved_at"] is not None
+
+
 def test_archive_now_clears_routing_preflight_failure_after_routes_are_fixed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
