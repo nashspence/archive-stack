@@ -198,26 +198,6 @@ def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
-def legacy_manifest_digest(batch_id: str) -> str:
-    digest = batch_id.rsplit("__", 1)[-1]
-    return re.sub(r"-r\d+$", "", digest)
-
-
-def legacy_base_batch_id(batch_id: str) -> str:
-    return re.sub(r"-r\d+$", "", batch_id)
-
-
-def latest_attempt_index_with_state(
-    rows: Sequence[sqlite3.Row],
-    states: set[str],
-) -> int | None:
-    latest: int | None = None
-    for index, row in enumerate(rows, start=1):
-        if str(row["state"]) in states:
-            latest = index
-    return latest
-
-
 def munchy_archive_mode(value: str) -> str:
     mode = str(value or "av1_nvenc").strip()
     if mode not in {"av1_nvenc", "audio", "originals"}:
@@ -500,14 +480,8 @@ class Collector:
     def init_db(self) -> None:
         self.config.collector.batch_dir.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
-            self.ensure_batch_schema(conn)
+            self.create_batch_schema(conn)
             self.ensure_routing_preflight_schema(conn)
-
-    def ensure_batch_schema(self, conn: sqlite3.Connection) -> None:
-        columns = table_columns(conn, "batches")
-        if columns and "state" in columns:
-            self.migrate_legacy_batch_schema(conn)
-        self.create_batch_schema(conn)
 
     def create_batch_schema(self, conn: sqlite3.Connection) -> None:
         conn.execute(
@@ -589,134 +563,6 @@ class Collector:
             "CREATE INDEX IF NOT EXISTS idx_jeb_attempt_files_attempt "
             "ON attempt_files(attempt_id)"
         )
-
-    def migrate_legacy_batch_schema(self, conn: sqlite3.Connection) -> None:
-        LOG.info("migrating legacy Jeb batch state to batch attempts")
-        conn.execute("ALTER TABLE batches RENAME TO legacy_batches")
-        conn.execute("ALTER TABLE files RENAME TO legacy_files")
-        self.create_batch_schema(conn)
-        legacy_batches = conn.execute(
-            "SELECT * FROM legacy_batches ORDER BY collection_id, created_at, id"
-        ).fetchall()
-        groups: dict[tuple[str, str], list[sqlite3.Row]] = {}
-        for row in legacy_batches:
-            digest = legacy_manifest_digest(str(row["id"]))
-            groups.setdefault((str(row["collection_id"]), digest), []).append(row)
-        for (_collection_id, digest), rows in groups.items():
-            ordered = sorted(
-                rows,
-                key=lambda row: (
-                    str(row["collection_timestamp"]),
-                    str(row["created_at"]),
-                    str(row["id"]),
-                ),
-            )
-            first = ordered[0]
-            batch_id = legacy_base_batch_id(str(first["id"]))
-            collection_timestamp = str(first["collection_timestamp"])
-            created_at = min(str(row["created_at"]) for row in ordered)
-            updated_at = max(str(row["updated_at"]) for row in ordered)
-            conn.execute(
-                """
-                INSERT INTO batches(
-                    id, collection_id, target_name, collection_slug,
-                    collection_timestamp, cleanup, manifest_digest, created_at, updated_at
-                )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    batch_id,
-                    str(first["collection_id"]),
-                    str(first["target_name"]),
-                    str(first["collection_slug"]),
-                    collection_timestamp,
-                    str(first["cleanup"]),
-                    digest,
-                    created_at,
-                    updated_at,
-                ),
-            )
-            attempt_rows = sorted(
-                rows, key=lambda item: (str(item["created_at"]), str(item["id"]))
-            )
-            latest_success_index = latest_attempt_index_with_state(
-                attempt_rows, {"target_succeeded", "cleanup_done"}
-            )
-            latest_failed_index = latest_attempt_index_with_state(
-                attempt_rows, {"failed", "failed_notified"}
-            )
-            for index, row in enumerate(attempt_rows, start=1):
-                state = str(row["state"])
-                if latest_success_index is not None and index < latest_success_index:
-                    if state not in {"target_succeeded", "cleanup_done", "superseded"}:
-                        state = "superseded"
-                elif (
-                    latest_success_index is None
-                    and latest_failed_index is not None
-                    and index != latest_failed_index
-                    and state in {"failed", "failed_notified"}
-                ):
-                    state = "superseded"
-                conn.execute(
-                    """
-                    INSERT INTO batch_attempts(
-                        id, batch_id, attempt_number, state, input_upload_id, job_id,
-                        created_at, updated_at, last_error,
-                        notified_error_fingerprint, notified_error_at
-                    )
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        str(row["id"]),
-                        batch_id,
-                        index,
-                        state,
-                        row["input_upload_id"],
-                        row["job_id"],
-                        str(row["created_at"]),
-                        str(row["updated_at"]),
-                        row["last_error"],
-                        row["notified_error_fingerprint"],
-                        row["notified_error_at"],
-                    ),
-                )
-                file_rows = conn.execute(
-                    "SELECT * FROM legacy_files WHERE batch_id = ? ORDER BY target_path",
-                    (str(row["id"]),),
-                ).fetchall()
-                for file_row in file_rows:
-                    conn.execute(
-                        """
-                        INSERT OR IGNORE INTO files(
-                            batch_id, source_path, target_path, bytes, mtime_ns, sha256
-                        )
-                        VALUES(?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            batch_id,
-                            str(file_row["source_path"]),
-                            str(file_row["target_path"]),
-                            int(file_row["bytes"]),
-                            int(file_row["mtime_ns"]),
-                            file_row["sha256"],
-                        ),
-                    )
-                    conn.execute(
-                        """
-                        INSERT INTO attempt_files(
-                            attempt_id, target_path, staging_path, staged_at
-                        )
-                        VALUES(?, ?, ?, ?)
-                        """,
-                        (
-                            str(row["id"]),
-                            str(file_row["target_path"]),
-                            str(file_row["staging_path"]),
-                            file_row["staged_at"],
-                        ),
-                    )
-        conn.execute("DROP TABLE legacy_files")
-        conn.execute("DROP TABLE legacy_batches")
 
     def ensure_routing_preflight_schema(self, conn: sqlite3.Connection) -> None:
         conn.execute(

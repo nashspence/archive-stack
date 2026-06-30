@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import sqlite3
 import subprocess
 import time
 from collections.abc import Callable
@@ -1135,110 +1134,6 @@ def test_superseded_weekly_batch_does_not_retry_automatically(tmp_path: Path) ->
 
     batch_ids = collector.active_batch_ids()
     assert batch_ids == []
-
-
-def test_legacy_batch_schema_migrates_to_attempts(tmp_path: Path) -> None:
-    config = _base_config(tmp_path)
-    state_db = config.collector.state_db
-    state_db.parent.mkdir(parents=True, exist_ok=True)
-    base_id = "20260629T000000Z__weekly-device-artifacts__abc123def456"
-    retry_id = f"{base_id}-r2"
-    with sqlite3.connect(state_db) as conn:
-        conn.execute(
-            """
-            CREATE TABLE batches (
-                id TEXT PRIMARY KEY,
-                collection_id TEXT NOT NULL,
-                state TEXT NOT NULL,
-                target_name TEXT NOT NULL,
-                collection_slug TEXT NOT NULL,
-                collection_timestamp TEXT NOT NULL,
-                input_upload_id TEXT,
-                job_id TEXT,
-                cleanup TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                last_error TEXT,
-                notified_error_fingerprint TEXT,
-                notified_error_at TEXT
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE files (
-                batch_id TEXT NOT NULL,
-                source_path TEXT NOT NULL,
-                staging_path TEXT NOT NULL,
-                target_path TEXT NOT NULL,
-                bytes INTEGER NOT NULL,
-                mtime_ns INTEGER NOT NULL,
-                sha256 TEXT,
-                staged_at TEXT,
-                PRIMARY KEY (batch_id, target_path)
-            )
-            """
-        )
-        for batch_id, state, created_at in (
-            (base_id, "failed_notified", "2026-06-30T00:00:00Z"),
-            (retry_id, "cleanup_done", "2026-06-30T00:05:00Z"),
-        ):
-            conn.execute(
-                """
-                INSERT INTO batches(
-                    id, collection_id, state, target_name, collection_slug,
-                    collection_timestamp, input_upload_id, job_id, cleanup,
-                    created_at, updated_at, last_error,
-                    notified_error_fingerprint, notified_error_at
-                )
-                VALUES(?, 'weekly-device-artifacts', ?, 'runner',
-                    'weekly-device-artifacts', '20260629T000000Z', ?, ?, 'never',
-                    ?, ?, 'previous failure', NULL, NULL)
-                """,
-                (
-                    batch_id,
-                    state,
-                    f"input-{batch_id}",
-                    f"job-{batch_id}",
-                    created_at,
-                    created_at,
-                ),
-            )
-            conn.execute(
-                """
-                INSERT INTO files(
-                    batch_id, source_path, staging_path, target_path,
-                    bytes, mtime_ns, sha256, staged_at
-                )
-                VALUES(?, ?, ?, 'camera/clip.mp4', 5, 123, ?, ?)
-                """,
-                (
-                    batch_id,
-                    str(tmp_path / "landing" / "camera" / "clip.mp4"),
-                    str(tmp_path / "batches" / batch_id / "input" / "camera" / "clip.mp4"),
-                    hashlib.sha256(batch_id.encode()).hexdigest(),
-                    created_at,
-                ),
-            )
-
-    collector = Collector(config, target_runners={"munchy": CompleteRunner()})
-    collector.init_db()
-
-    with collector.connect() as conn:
-        batch_columns = {row["name"] for row in conn.execute("PRAGMA table_info(batches)")}
-        attempt_rows = conn.execute(
-            "SELECT id, batch_id, attempt_number, state FROM batch_attempts ORDER BY attempt_number"
-        ).fetchall()
-
-    assert "state" not in batch_columns
-    assert [dict(row) for row in attempt_rows] == [
-        {"id": base_id, "batch_id": base_id, "attempt_number": 1, "state": "superseded"},
-        {"id": retry_id, "batch_id": base_id, "attempt_number": 2, "state": "cleanup_done"},
-    ]
-    assert collector.active_batch_ids() == []
-    assert [row["target_path"] for row in collector.batch_files(retry_id)] == [
-        "camera/clip.mp4"
-    ]
 
 
 def test_unrecoverable_errors_send_daily_critical_reminders(tmp_path: Path) -> None:
