@@ -75,6 +75,13 @@ from munchy.source_artifact_bridge import build_strict_source_artifacts
 from munchy.uvicorn_logging import uvicorn_log_config_without_health_access_logs
 from riverhog_cli.client import ApiClient
 from riverhog_core.domain.errors import Conflict, HashMismatch, NotFound, ServiceUnavailable
+from riverhog_core.operator_reminders import (
+    next_operator_reminder_at,
+    normalize_reminder_time,
+    operator_reminder_due,
+    parse_reminder_interval_seconds,
+    reminder_zone,
+)
 from riverhog_core.tus_upload import TusUploadLease, upload_path_to_tus
 from riverhog_core.webhooks import build_munchy_job_payload, utcnow
 
@@ -214,10 +221,16 @@ TARGET_UPLOAD_COMMAND = os.getenv("MUNCHY_RUNNER_TARGET_UPLOAD_COMMAND", "").str
 TARGET_RCLONE_COMMAND = os.getenv("MUNCHY_RUNNER_TARGET_RCLONE_COMMAND", "rclone")
 DEFAULT_TARGET_UPLOAD_EXCLUDES = DEFAULT_PLATFORM_CRUFT_EXCLUDES
 NOTIFY_ENABLED = env_flag("MUNCHY_RUNNER_NOTIFY_ENABLED")
-NOTIFY_ISSUE_REPEAT_SECONDS = int(os.getenv("MUNCHY_RUNNER_NOTIFY_ISSUE_REPEAT_SECONDS", "86400"))
-NOTIFY_UPLOAD_WAITING_REMINDER_SECONDS = int(
-    os.getenv("MUNCHY_RUNNER_NOTIFY_UPLOAD_WAITING_REMINDER_SECONDS", "86400")
+NOTIFY_REMINDER_INTERVAL_SECONDS = parse_reminder_interval_seconds(
+    os.getenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL")
 )
+NOTIFY_REMINDER_TIME = normalize_reminder_time(
+    os.getenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME")
+)
+NOTIFY_REMINDER_TIMEZONE = (
+    os.getenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE", "UTC").strip() or "UTC"
+)
+reminder_zone(NOTIFY_REMINDER_TIMEZONE)
 NOTIFY_TIMEOUT_SECONDS = float(os.getenv("MUNCHY_RUNNER_NOTIFY_TIMEOUT_SECONDS", "5"))
 DEFAULT_NOTIFY_RECIPIENTS = env_list("MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS")
 DEFAULT_NOTIFY_ENABLED = env_flag(
@@ -4603,17 +4616,29 @@ def notify_job_event(
             fingerprint
             and fingerprint == last_fingerprint
             and last_attempt is not None
-            and (now - last_attempt).total_seconds() < NOTIFY_ISSUE_REPEAT_SECONDS
+            and not operator_reminder_due(
+                last_sent_at=last_attempt,
+                current=now,
+                interval=NOTIFY_REMINDER_INTERVAL_SECONDS,
+                reminder_time=NOTIFY_REMINDER_TIME,
+                reminder_timezone=NOTIFY_REMINDER_TIMEZONE,
+            )
         ):
             return {"status": "suppressed", "reason": "issue_repeat_limit"}
         event_state["fingerprint"] = fingerprint or ""
         event_state["last_attempt_at"] = now_text
     elif event == "job.upload_waiting.reminder":
-        interval = max(0, NOTIFY_UPLOAD_WAITING_REMINDER_SECONDS)
+        interval = max(0, NOTIFY_REMINDER_INTERVAL_SECONDS)
         if interval <= 0:
             return {"status": "suppressed", "reason": "reminders_disabled"}
         last_attempt = safe_parse_iso(event_state.get("last_attempt_at"))
-        if last_attempt is not None and (now - last_attempt).total_seconds() < interval:
+        if last_attempt is not None and not operator_reminder_due(
+            last_sent_at=last_attempt,
+            current=now,
+            interval=interval,
+            reminder_time=NOTIFY_REMINDER_TIME,
+            reminder_timezone=NOTIFY_REMINDER_TIMEZONE,
+        ):
             return {"status": "suppressed", "reason": "reminder_repeat_limit"}
         event_state["last_attempt_at"] = now_text
         reminder_count = int(event_state.get("reminder_count") or 0) + 1
@@ -4681,7 +4706,7 @@ def notify_upload_waiting_reminder(
     upload: dict[str, Any],
     progress: dict[str, Any],
 ) -> dict[str, Any] | None:
-    interval = max(0, NOTIFY_UPLOAD_WAITING_REMINDER_SECONDS)
+    interval = max(0, NOTIFY_REMINDER_INTERVAL_SECONDS)
     if interval <= 0:
         return None
     if int(progress.get("files_uploaded") or 0) >= int(progress.get("files_total") or 0):
@@ -4691,6 +4716,14 @@ def notify_upload_waiting_reminder(
     last_activity = input_upload_data_last_activity(upload)
     stalled_seconds = max(0.0, (now - last_activity).total_seconds())
     if stalled_seconds < interval:
+        return None
+    next_due = next_operator_reminder_at(
+        last_activity,
+        interval=interval,
+        reminder_time=NOTIFY_REMINDER_TIME,
+        reminder_timezone=NOTIFY_REMINDER_TIMEZONE,
+    )
+    if next_due is not None and now < next_due:
         return None
 
     files_uploaded = int(progress.get("files_uploaded") or 0)
@@ -8114,14 +8147,18 @@ def capabilities() -> dict[str, Any]:
             "default_enabled": DEFAULT_NOTIFY_ENABLED,
             "default_recipients": list(DEFAULT_NOTIFY_RECIPIENTS),
             "events": DEFAULT_NOTIFY_EVENTS,
-            "upload_waiting_reminder_seconds": NOTIFY_UPLOAD_WAITING_REMINDER_SECONDS,
+            "reminder_time": NOTIFY_REMINDER_TIME,
+            "reminder_timezone": NOTIFY_REMINDER_TIMEZONE,
+            "operator_reminder_interval_seconds": NOTIFY_REMINDER_INTERVAL_SECONDS,
             "client_preflight_failed": True,
             "webhook_config": [
                 "MUNCHY_RUNNER_NOTIFY_WEBHOOKS",
                 "MUNCHY_RUNNER_NOTIFY_WEBHOOK_<RECIPIENT>",
                 "MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS",
                 "MUNCHY_RUNNER_NOTIFY_DEFAULT_ENABLED",
-                "MUNCHY_RUNNER_NOTIFY_UPLOAD_WAITING_REMINDER_SECONDS",
+                "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME",
+                "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE",
+                "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL",
             ],
         },
         "operations": {

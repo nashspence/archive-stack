@@ -45,6 +45,11 @@ from munchy.runner_client import (
     is_transient_upload_error as munchy_is_transient_upload_error,
 )
 from riverhog_core.domain.errors import Conflict, ServiceUnavailable
+from riverhog_core.operator_reminders import (
+    normalize_reminder_time,
+    operator_reminder_due,
+    reminder_zone,
+)
 from riverhog_core.webhooks import (
     WebhookConfig,
     build_jeb_event_payload,
@@ -259,6 +264,8 @@ class NotifySettings:
     recipients: tuple[str, ...] = ()
     timeout_seconds: float = 10.0
     reminder_interval_seconds: int = 86_400
+    reminder_time: str | None = None
+    reminder_timezone: str = "UTC"
 
 
 @dataclass(frozen=True)
@@ -1721,8 +1728,13 @@ class Collector:
             sent_at = datetime.fromisoformat(str(last_sent).replace("Z", "+00:00"))
         except ValueError:
             return True
-        age = max(0.0, (now() - sent_at.astimezone(UTC)).total_seconds())
-        return age >= self.config.notify.reminder_interval_seconds
+        return operator_reminder_due(
+            last_sent_at=sent_at,
+            current=now(),
+            interval=self.config.notify.reminder_interval_seconds,
+            reminder_time=self.config.notify.reminder_time,
+            reminder_timezone=self.config.notify.reminder_timezone,
+        )
 
 
 class MunchyTargetRunner:
@@ -2085,20 +2097,31 @@ def config_from_mapping(raw: Mapping[str, Any]) -> JebConfig:
         preflight_repair_ffmpeg=str(collector_raw.get("preflight_repair_ffmpeg") or "ffmpeg"),
     )
     notify_raw = mapping(raw.get("notify"))
-    notify_url = env_value(
-        optional_str(notify_raw.get("url_env")) or "JEB_WEBHOOK_URL",
-        optional_str(notify_raw.get("url")) or "",
+    notify_url = os.getenv("RIVERHOG_OPERATOR_WEBHOOK_URL", "").strip()
+    reminder_time = normalize_reminder_time(
+        env_value("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME", None)
     )
+    reminder_timezone = (
+        env_value("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE", "UTC") or "UTC"
+    )
+    reminder_zone(reminder_timezone)
     notify = NotifySettings(
         enabled=bool(notify_raw.get("enabled", False)),
         url=notify_url or "",
         base_url=optional_str(notify_raw.get("base_url")) or "",
         recipients=tuple(str(item) for item in sequence(notify_raw.get("recipients"))),
         timeout_seconds=float(parse_duration(notify_raw.get("timeout"), 10)),
-        reminder_interval_seconds=parse_duration(notify_raw.get("reminder_interval"), 86_400),
+        reminder_interval_seconds=parse_duration(
+            env_value("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL", "24h"),
+            86_400,
+        ),
+        reminder_time=reminder_time,
+        reminder_timezone=reminder_timezone,
     )
     if notify.enabled and not notify.url:
-        raise ValueError("notify.url or JEB_WEBHOOK_URL is required when notify.enabled=true")
+        raise ValueError(
+            "RIVERHOG_OPERATOR_WEBHOOK_URL is required when notify.enabled=true"
+        )
 
     profiles = {
         str(name): dict(mapping(profile)) for name, profile in mapping(raw.get("profiles")).items()

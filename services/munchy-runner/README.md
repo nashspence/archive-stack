@@ -109,7 +109,9 @@ Important environment variables:
 - `MUNCHY_RUNNER_NOTIFY_WEBHOOKS`
 - `MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS`
 - `MUNCHY_RUNNER_NOTIFY_DEFAULT_ENABLED`
-- `MUNCHY_RUNNER_NOTIFY_UPLOAD_WAITING_REMINDER_SECONDS`
+- `RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL`
+- `RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME`
+- `RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE`
 - `MUNCHY_RUNNER_MAX_ACTIVE_INPUT_UPLOADS`
 - `MUNCHY_RUNNER_MAX_RUNNING_JOBS`
 - `MUNCHY_RUNNER_STORAGE_WAIT_SECONDS`
@@ -142,8 +144,9 @@ When runner notifications are enabled, `MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS`
 can provide comma-separated recipients for jobs whose request omits an explicit
 `notify` block.
 Incomplete uploads that appear stalled while already-uploaded files have been
-encoded emit `job.upload_waiting.reminder` at most once per
-`MUNCHY_RUNNER_NOTIFY_UPLOAD_WAITING_REMINDER_SECONDS`.
+encoded emit `job.upload_waiting.reminder` according to the shared
+`RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL` and optional
+`RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME` operator reminder policy.
 
 ## Upload Shape
 

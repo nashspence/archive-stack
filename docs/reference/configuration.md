@@ -492,7 +492,7 @@ when the full collection has reached server custody, and
 Glacier, hot-file promotion has finished, and the collection is available
 through Riverhog/WebDAV. Failure/attention events include
 `collections.archive_retrying`, paced by
-`RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL`, and
+`RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL`, and
 `collections.archive_failed` for non-retryable archive validation/data failures,
 and `collections.planner_failed`. Archive retry notifications include the
 retryable error and next retry time while making clear that Riverhog is still
@@ -531,6 +531,9 @@ the fetch id, target, file/byte counts, candidate copy hints, and links to the
 fetch summary and manifest. Glacier recovery payloads include the recovery
 session id, recovery type, affected images and collections, restore timing, and
 precise operator guidance so long bulk restores do not read as data loss.
+Riverhog-family durable issue and reminder notifications default to
+time-sensitive urgency. Critical urgency is reserved for imminent money loss,
+imminent data loss, or irreversible custody failure.
 
 ## `RIVERHOG_OPERATOR_WEBHOOK_TIMEOUT`
 
@@ -559,22 +562,28 @@ With `RIVERHOG_OPERATOR_WEBHOOK_URL` configured, Riverhog rejects startup if
 - type: duration
 - default: `24h`
 
-Interval between repeated ready reminders while a burnable disc-image candidate
-is still unfinalized, a fetch manifest is still waiting for `djdan fetch`,
-restored collection archive data remains available, or image rebuild staging
-data remains available and the recovery session is still incomplete. The
+Interval between repeated durable operator reminders, including Munchy job
+issues, Jeb issues, ready burn candidates, fetches waiting for `djdan fetch`,
+restored collection archive data, and paused or ready recovery sessions. The
 default provides one daily reminder while operator action is still needed; set
-this to `0s` to disable ready reminders entirely.
+this to `0s` to disable reminders entirely.
 
-## `RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL`
+## `RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME`
 
-- type: duration
-- default: `24h`
+- type: local time of day, `HH:MM` or `HH:MM:SS`
+- default: unset
 
-Minimum interval between repeated operator notifications for continuing
-retryable background failures on the same durable unit of work. Collection
-archival finalization uses this for `collections.archive_retrying` notifications
-while continuing to retry on `RIVERHOG_GLACIER_UPLOAD_RETRY_DELAY`.
+Optional delivery slot for daily-or-longer reminders. When set with a daily
+reminder interval, Riverhog schedules the next reminder at the configured local
+time rather than exactly 24 hours after the previous notification. Short
+intervals below 24 hours remain exact for tests and retry-like cadences.
+
+## `RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE`
+
+- type: IANA timezone
+- default: `UTC`
+
+Timezone used with `RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME`.
 
 ## `RIVERHOG_GLACIER_RECOVERY_SWEEP_INTERVAL`
 

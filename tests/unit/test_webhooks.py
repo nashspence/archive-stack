@@ -44,6 +44,13 @@ def test_operator_webhook_contract_covers_current_events() -> None:
         "munchy": "🤤",
         "jeb": "🤖",
     }
+    assert contract["endpoint_config"]["reminder_time_env"] == (
+        "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME"
+    )
+    assert contract["endpoint_config"]["reminder_timezone_env"] == (
+        "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE"
+    )
+    assert "failure_notification_interval_env" not in contract["endpoint_config"]
     assert set(events) == {
         "job.received",
         "review.handoff",
@@ -80,17 +87,29 @@ def test_operator_webhook_contract_covers_current_events() -> None:
             template["title_template"] == "{emoji} {subject_40}" for template in templates.values()
         )
         assert all(len(template["body_template"]) <= 150 for template in templates.values())
-    assert events["collections.planner_failed"]["operator_urgency"] == "critical"
+    assert events["collections.planner_failed"]["operator_urgency"] == "time_sensitive"
     assert events["collections.archive_failed"]["operator_urgency"] == "critical"
     assert events["job.issue"]["canonical_notification"]["actor"] == "munchy"
     assert events["jeb.issue"]["canonical_notification"]["actor"] == "jeb"
-    assert events["jeb.issue"]["operator_urgency"] == "critical"
+    assert events["jeb.issue"]["operator_urgency"] == "time_sensitive"
     assert events["jeb.issue"]["delivery"]["reminder"] is True
+    assert (
+        events["jeb.issue"]["delivery"]["reminder_interval_env"]
+        == "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
+    )
     assert events["job.upload_waiting.reminder"]["operator_urgency"] == "time_sensitive"
     assert events["job.upload_waiting.reminder"]["delivery"]["reminder"] is True
+    assert (
+        events["collections.archive_retrying"]["delivery"]["reminder_interval_env"]
+        == "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
+    )
+    assert (
+        events["glacier_recovery.paused.reminder"]["delivery"]["reminder_time_env"]
+        == "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME"
+    )
     assert events["fetches.queued_djdan"]["delivery"]["mode"] == "durable"
     assert events["glacier_recovery.started"]["operator_urgency"] == "time_sensitive"
-    assert events["glacier_recovery.failed"]["operator_urgency"] == "critical"
+    assert events["glacier_recovery.failed"]["operator_urgency"] == "time_sensitive"
     assert events["glacier_recovery.paused.reminder"]["delivery"]["reminder"] is True
 
 
@@ -267,7 +286,7 @@ def test_build_recovery_retry_failure_cancel_and_pause_payloads() -> None:
     )
     assert "Next retry: 2026-04-20T05:05:00Z" in retrying["notification"]["body"]
     assert failed["event"] == "glacier_recovery.failed"
-    assert failed["operator_urgency"] == "critical"
+    assert failed["operator_urgency"] == "time_sensitive"
     assert "will not retry" in failed["notification"]["body"]
     assert canceled["event"] == "glacier_recovery.canceled"
     assert canceled["operator_urgency"] == "passive"
@@ -412,8 +431,8 @@ def test_build_munchy_job_payload_uses_operator_notification_contract() -> None:
     assert payload["source"] == "munchy"
     assert payload["actor"] == "munchy"
     assert payload["delivered_at"] == "2026-06-06T12:00:00Z"
-    assert payload["operator_urgency"] == "critical"
-    assert payload["operator_action"] == "inspect Munchy job details immediately"
+    assert payload["operator_urgency"] == "time_sensitive"
+    assert payload["operator_action"] == "inspect Munchy job details when convenient"
     assert payload["component"] == "preflight"
     assert payload["notification"] == {
         "title": "🤤 camera-collection-archive-q49",
@@ -476,8 +495,8 @@ def test_build_jeb_issue_payload_uses_robot_actor_and_concise_error() -> None:
     assert payload["type"] == "jeb_batch"
     assert payload["source"] == "jeb"
     assert payload["actor"] == "jeb"
-    assert payload["operator_urgency"] == "critical"
-    assert payload["operator_action"] == "inspect Jeb batch details immediately"
+    assert payload["operator_urgency"] == "time_sensitive"
+    assert payload["operator_action"] == "inspect Jeb issue details"
     assert payload["recipient"] == "operator"
     assert payload["notification"] == {
         "title": "🤖 camera",
@@ -513,7 +532,7 @@ def test_build_jeb_profile_routing_issue_payload_is_device_titled_and_actionable
         },
     )
 
-    assert payload["operator_urgency"] == "critical"
+    assert payload["operator_urgency"] == "time_sensitive"
     assert (
         payload["operator_action"]
         == "fix Munchy profile routing, then run Jeb archive-now for the source"
@@ -553,7 +572,7 @@ def test_build_jeb_munchy_preflight_issue_payload_is_api_actionable() -> None:
         },
     )
 
-    assert payload["operator_urgency"] == "critical"
+    assert payload["operator_urgency"] == "time_sensitive"
     assert (
         payload["operator_action"]
         == "repair Munchy routing preflight, then run Jeb archive-now for the source"

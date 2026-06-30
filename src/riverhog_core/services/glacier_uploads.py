@@ -7,7 +7,7 @@ import logging
 import secrets
 from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 
 from sqlalchemy import case, or_, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -28,6 +28,7 @@ from riverhog_core.collection_archives import (
     build_collection_archive_package_from_prebuilt_artifacts,
     collection_archive_size,
 )
+from riverhog_core.operator_reminders import operator_reminder_due
 from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadedPart,
     ArchiveMultipartUploadState,
@@ -821,7 +822,7 @@ class SqlAlchemyGlacierUploadService:
             if retryable and _operator_failure_notification_due(
                 upload.archive_last_failure_notification_at,
                 current=current,
-                interval=self._config.operator_failure_notification_interval,
+                config=self._config,
             ):
                 upload.archive_last_failure_notification_at = current_text
                 notify_operator = True
@@ -1365,17 +1366,21 @@ def _operator_failure_notification_due(
     last_notified_at: str | None,
     *,
     current: datetime,
-    interval: timedelta,
+    config: RuntimeConfig,
 ) -> bool:
     if last_notified_at is None:
-        return True
-    if interval.total_seconds() <= 0:
         return True
     try:
         previous = datetime.fromisoformat(last_notified_at.replace("Z", "+00:00"))
     except ValueError:
         return True
-    return current.astimezone(UTC) - previous.astimezone(UTC) >= interval
+    return operator_reminder_due(
+        last_sent_at=previous,
+        current=current,
+        interval=config.operator_webhook_reminder_interval,
+        reminder_time=config.operator_webhook_reminder_time,
+        reminder_timezone=config.operator_webhook_reminder_timezone,
+    )
 
 
 def _isoformat_z(value: datetime) -> str:

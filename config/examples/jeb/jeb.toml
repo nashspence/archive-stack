@@ -4,7 +4,6 @@ preflight_repair_original = "keep_corrupt"
 
 [notify]
 enabled = false
-url_env = "JEB_WEBHOOK_URL"
 base_url = "https://archive.example.invalid"
 recipients = ["operator"]
 timeout = "10s"

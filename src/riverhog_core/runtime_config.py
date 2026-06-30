@@ -4,8 +4,14 @@ import os
 import re
 import shlex
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
+
+from riverhog_core.operator_reminders import (
+    next_operator_reminder_at,
+    normalize_reminder_time,
+    reminder_zone,
+)
 
 _DURATION_RE = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
 _BYTES_RE = re.compile(r"^(\d+(?:_\d+)*)([kmgt]i?b?|b)?$", re.IGNORECASE)
@@ -170,9 +176,8 @@ class RuntimeConfig:
     operator_webhook_reminder_interval: timedelta = field(
         default_factory=lambda: timedelta(hours=24)
     )
-    operator_failure_notification_interval: timedelta = field(
-        default_factory=lambda: timedelta(hours=24)
-    )
+    operator_webhook_reminder_time: str | None = None
+    operator_webhook_reminder_timezone: str = "UTC"
     glacier_recovery_sweep_interval: timedelta = field(
         default_factory=lambda: timedelta(seconds=30)
     )
@@ -245,6 +250,12 @@ class RuntimeConfig:
                     "timeout plus RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY when "
                     "RIVERHOG_OPERATOR_WEBHOOK_URL is configured"
                 )
+        object.__setattr__(
+            self,
+            "operator_webhook_reminder_time",
+            normalize_reminder_time(self.operator_webhook_reminder_time),
+        )
+        reminder_zone(self.operator_webhook_reminder_timezone)
         if self.planner_disc_target_bytes < 1:
             raise ValueError("RIVERHOG_PLANNER_DISC_TARGET_BYTES must be >= 1")
         if self.planner_min_fill_bytes < 1:
@@ -270,6 +281,14 @@ class RuntimeConfig:
             self,
             "upload_staging_root",
             self.upload_staging_root.expanduser().resolve(),
+        )
+
+    def operator_webhook_next_reminder_at(self, current: datetime) -> datetime | None:
+        return next_operator_reminder_at(
+            current,
+            interval=self.operator_webhook_reminder_interval,
+            reminder_time=self.operator_webhook_reminder_time,
+            reminder_timezone=self.operator_webhook_reminder_timezone,
         )
 
 
@@ -352,8 +371,11 @@ def load_runtime_config() -> RuntimeConfig:
     operator_webhook_reminder_interval = _parse_duration(
         os.getenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL", "24h")
     )
-    operator_failure_notification_interval = _parse_duration(
-        os.getenv("RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL", "24h")
+    operator_webhook_reminder_time = (
+        os.getenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME", "").strip() or None
+    )
+    operator_webhook_reminder_timezone = (
+        os.getenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE", "UTC").strip() or "UTC"
     )
     glacier_recovery_sweep_interval = _parse_duration(
         os.getenv("RIVERHOG_GLACIER_RECOVERY_SWEEP_INTERVAL", "30s")
@@ -556,7 +578,8 @@ def load_runtime_config() -> RuntimeConfig:
         operator_webhook_timeout=operator_webhook_timeout,
         operator_webhook_retry_delay=operator_webhook_retry_delay,
         operator_webhook_reminder_interval=operator_webhook_reminder_interval,
-        operator_failure_notification_interval=operator_failure_notification_interval,
+        operator_webhook_reminder_time=operator_webhook_reminder_time,
+        operator_webhook_reminder_timezone=operator_webhook_reminder_timezone,
         glacier_recovery_sweep_interval=glacier_recovery_sweep_interval,
         glacier_recovery_restore_latency=glacier_recovery_restore_latency,
         glacier_recovery_ready_ttl=glacier_recovery_ready_ttl,

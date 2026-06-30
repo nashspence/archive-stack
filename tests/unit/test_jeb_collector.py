@@ -321,6 +321,103 @@ def test_parse_helpers_support_human_units() -> None:
     assert parse_duration("24h") == 86_400
 
 
+def test_jeb_notify_uses_canonical_operator_webhook_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    landing = tmp_path / "landing"
+    landing.mkdir()
+    monkeypatch.setenv("RIVERHOG_OPERATOR_WEBHOOK_URL", "http://operator.test/webhook")
+
+    config = config_from_mapping(
+        {
+            "targets": {"runner": {"type": "munchy", "url": "http://runner.test"}},
+            "notify": {"enabled": True, "recipients": ["operator"]},
+            "sources": [
+                {
+                    "id": "camera",
+                    "path": str(landing / "camera"),
+                    "include_extensions": [".mp4"],
+                }
+            ],
+            "collections": [
+                {
+                    "id": "weekly-device-artifacts",
+                    "collection_slug": "weekly-device-artifacts",
+                    "target": "runner",
+                    "sources": ["camera"],
+                }
+            ],
+            "profile_groups": {"video": {"archive_mode": "originals"}},
+            "munchy_job_defaults": {
+                "profile_routing": {
+                    "routes": [
+                        {
+                            "id": "camera-video",
+                            "group": "video",
+                            "when": {"path": {"suffix": ".mp4"}},
+                        }
+                    ]
+                }
+            },
+        }
+    )
+
+    assert config.notify.url == "http://operator.test/webhook"
+
+
+def test_jeb_notify_ignores_toml_webhook_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    landing = tmp_path / "landing"
+    landing.mkdir()
+    raw = {
+        "targets": {"runner": {"type": "munchy", "url": "http://runner.test"}},
+        "notify": {
+            "enabled": True,
+            "url": "http://ignored.example.invalid/webhook",
+            "recipients": ["operator"],
+        },
+        "sources": [
+            {
+                "id": "camera",
+                "path": str(landing / "camera"),
+                "include_extensions": [".mp4"],
+            }
+        ],
+        "collections": [
+            {
+                "id": "weekly-device-artifacts",
+                "collection_slug": "weekly-device-artifacts",
+                "target": "runner",
+                "sources": ["camera"],
+            }
+        ],
+        "profile_groups": {"video": {"archive_mode": "originals"}},
+        "munchy_job_defaults": {
+            "profile_routing": {
+                "routes": [
+                    {
+                        "id": "camera-video",
+                        "group": "video",
+                        "when": {"path": {"suffix": ".mp4"}},
+                    }
+                ]
+            }
+        },
+    }
+
+    monkeypatch.delenv("RIVERHOG_OPERATOR_WEBHOOK_URL", raising=False)
+    with pytest.raises(ValueError, match="RIVERHOG_OPERATOR_WEBHOOK_URL"):
+        config_from_mapping(raw)
+
+    monkeypatch.setenv("RIVERHOG_OPERATOR_WEBHOOK_URL", "http://operator.test/webhook")
+    config = config_from_mapping(raw)
+
+    assert config.notify.url == "http://operator.test/webhook"
+
+
 def test_weekly_collection_batches_multiple_sources_once(tmp_path: Path) -> None:
     config = _base_config(tmp_path, source_ids=["camera", "phone"])
     assert config.collections[0].threshold_bytes == 0

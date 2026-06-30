@@ -12,6 +12,8 @@ from typing import Any, Protocol
 
 import httpx
 
+from riverhog_core.operator_reminders import next_operator_reminder_at
+
 _OPERATOR_CONTRACT_PATH = Path("contracts/webhooks/operator-notifications.v1.json")
 _FALLBACK_NOTIFICATION_TEMPLATE: dict[str, str] = {
     "actor": "riverhog",
@@ -51,6 +53,16 @@ class WebhookConfig:
     timeout_seconds: float = 10.0
     retry_seconds: float = 60.0
     reminder_interval_seconds: float = 3600.0
+    reminder_time: str | None = None
+    reminder_timezone: str = "UTC"
+
+    def next_reminder_at(self, current: datetime) -> datetime | None:
+        return next_operator_reminder_at(
+            current,
+            interval=self.reminder_interval_seconds,
+            reminder_time=self.reminder_time,
+            reminder_timezone=self.reminder_timezone,
+        )
 
 
 def utcnow() -> datetime:
@@ -427,7 +439,7 @@ def build_recovery_failed_payload(
     )
     payload.update(
         {
-            "operator_urgency": "critical",
+            "operator_urgency": "time_sensitive",
             "operator_action": "inspect Riverhog recovery logs and session state",
             "operator_message": (
                 "Glacier recovery stopped on a non-retryable issue. Riverhog will not "
@@ -798,24 +810,18 @@ def _jeb_batch_subject(batch: Mapping[str, object]) -> str:
 
 def _munchy_operator_urgency(*, event: str, severity: str) -> str:
     if event == "job.issue":
-        if severity == "critical":
-            return "critical"
-        if severity in {"error", "warning"}:
+        if severity in {"critical", "error", "warning"}:
             return "time_sensitive"
     return _operator_event_field(event=event, field="operator_urgency", default="passive")
 
 
 def _munchy_operator_action(*, event: str, severity: str) -> str:
-    if event == "job.issue" and severity == "critical":
-        return "inspect Munchy job details immediately"
     return _operator_event_field(event=event, field="operator_action")
 
 
 def _jeb_operator_urgency(*, event: str, severity: str) -> str:
     if event == "jeb.issue":
-        if severity == "critical":
-            return "critical"
-        if severity in {"error", "warning"}:
+        if severity in {"critical", "error", "warning"}:
             return "time_sensitive"
     return _operator_event_field(event=event, field="operator_urgency", default="passive")
 
@@ -825,9 +831,7 @@ def _jeb_operator_action(*, event: str, severity: str, component: str = "") -> s
         return "fix Munchy profile routing, then run Jeb archive-now for the source"
     if event == "jeb.issue" and component == "munchy_preflight":
         return "repair Munchy routing preflight, then run Jeb archive-now for the source"
-    if event == "jeb.issue" and severity == "critical":
-        return "inspect Jeb batch details immediately"
-    if event == "jeb.issue" and severity in {"error", "warning"}:
+    if event == "jeb.issue" and severity in {"critical", "error", "warning"}:
         return "inspect Jeb issue details"
     return _operator_event_field(event=event, field="operator_action")
 
@@ -1083,9 +1087,7 @@ class ImagesReadyReminderService:
                     + timedelta(seconds=max(1.0, self.config.retry_seconds)),
                 )
                 continue
-            next_attempt = None
-            if self.config.reminder_interval_seconds > 0:
-                next_attempt = current + timedelta(seconds=self.config.reminder_interval_seconds)
+            next_attempt = self.config.next_reminder_at(current)
             self.store.mark_delivered(
                 batch.batch_id, delivered_at=current, next_attempt_at=next_attempt
             )

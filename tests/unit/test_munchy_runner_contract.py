@@ -1442,7 +1442,7 @@ def test_upload_waiting_reminder_is_time_sensitive_and_paced(
 ) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("MUNCHY_RUNNER_NOTIFY_ENABLED", "1")
     monkeypatch.setenv("MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS", "operator")
-    monkeypatch.setenv("MUNCHY_RUNNER_NOTIFY_UPLOAD_WAITING_REMINDER_SECONDS", "1")
+    monkeypatch.setenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL", "1")
     runner = load_runner(tmp_path, monkeypatch)
     runner.ensure_dirs()
     runner.init_state_store()

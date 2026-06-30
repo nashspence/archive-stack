@@ -814,7 +814,10 @@ def _notify_fetch_queued(
     fetch_record.fetch_notification_failure = None
     interval = config.operator_webhook_reminder_interval
     if interval.total_seconds() > 0:
-        fetch_record.fetch_notification_next_attempt_at = _isoformat_z(current + interval)
+        next_reminder = config.operator_webhook_next_reminder_at(current)
+        fetch_record.fetch_notification_next_attempt_at = (
+            _isoformat_z(next_reminder) if next_reminder is not None else None
+        )
     else:
         fetch_record.fetch_notification_next_attempt_at = None
     return True
@@ -907,6 +910,8 @@ def _webhook_config(config: RuntimeConfig) -> WebhookConfig:
         timeout_seconds=config.operator_webhook_timeout.total_seconds(),
         retry_seconds=config.operator_webhook_retry_delay.total_seconds(),
         reminder_interval_seconds=config.operator_webhook_reminder_interval.total_seconds(),
+        reminder_time=config.operator_webhook_reminder_time,
+        reminder_timezone=config.operator_webhook_reminder_timezone,
     )
 
 

@@ -7,7 +7,8 @@
     "timeout_env": "RIVERHOG_OPERATOR_WEBHOOK_TIMEOUT",
     "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
     "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL",
-    "failure_notification_interval_env": "RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL",
+    "reminder_time_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME",
+    "reminder_timezone_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE",
     "public_base_url_env": "RIVERHOG_PUBLIC_BASE_URL"
   },
   "receiver_rendering": {
@@ -47,7 +48,12 @@
   "urgency_levels": {
     "passive": "Informational and does not imply immediate operator action.",
     "time_sensitive": "Useful to surface promptly; safe archived data is not implied lost.",
-    "critical": "Unrecoverable or operator-blocking error that should bypass normal quieting."
+    "critical": "Reserved for imminent data loss, imminent money loss, or an irreversible custody failure that should bypass normal quieting."
+  },
+  "operator_notification_policy": {
+    "default_issue_urgency": "time_sensitive",
+    "critical_only_when": "Use critical only for imminent money loss, imminent data loss, or irreversible custody failure. Durable operator issues and reminders should be time_sensitive by default.",
+    "reminder_policy": "All Riverhog-family durable reminders use RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL and may snap to RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME in RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE."
   },
   "events": [
     {
@@ -213,7 +219,9 @@
         "mode": "paced_best_effort",
         "retry": false,
         "reminder": true,
-        "reminder_interval_env": "MUNCHY_RUNNER_NOTIFY_ISSUE_REPEAT_SECONDS"
+        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL",
+        "reminder_time_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME",
+        "reminder_timezone_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE"
       },
       "canonical_notification": {
         "actor": "munchy",
@@ -258,7 +266,9 @@
         "mode": "paced_best_effort",
         "retry": false,
         "reminder": true,
-        "reminder_interval_env": "MUNCHY_RUNNER_NOTIFY_UPLOAD_WAITING_REMINDER_SECONDS"
+        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL",
+        "reminder_time_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME",
+        "reminder_timezone_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE"
       },
       "canonical_notification": {
         "actor": "munchy",
@@ -335,14 +345,16 @@
       "event": "jeb.issue",
       "category": "jeb_batch",
       "source": "services.jeb",
-      "purpose": "Jeb encountered an unrecoverable or operator-blocking batch issue.",
-      "operator_urgency": "critical",
-      "operator_action": "inspect Jeb batch details immediately",
+      "purpose": "Jeb encountered an operator-visible batch, routing, custody, or target issue.",
+      "operator_urgency": "time_sensitive",
+      "operator_action": "inspect Jeb issue details",
       "delivery": {
         "mode": "paced_best_effort",
         "retry": false,
         "reminder": true,
-        "reminder_interval_env": "JEB_NOTIFY_REMINDER_INTERVAL_SECONDS"
+        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL",
+        "reminder_time_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME",
+        "reminder_timezone_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE"
       },
       "canonical_notification": {
         "actor": "jeb",
@@ -457,7 +469,9 @@
         "mode": "paced_best_effort",
         "retry": false,
         "reminder": true,
-        "reminder_interval_env": "RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL"
+        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL",
+        "reminder_time_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME",
+        "reminder_timezone_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE"
       },
       "canonical_notification": {
         "actor": "riverhog",
@@ -487,7 +501,7 @@
       "category": "collection_lifecycle",
       "source": "riverhog_core.services.glacier_uploads",
       "purpose": "The collection finalized, but provisional planner refresh failed.",
-      "operator_urgency": "critical",
+      "operator_urgency": "time_sensitive",
       "operator_action": "inspect Riverhog planner logs and state",
       "delivery": {
         "mode": "best_effort",
@@ -923,7 +937,9 @@
         "mode": "paced_best_effort",
         "retry": false,
         "reminder": true,
-        "reminder_interval_env": "RIVERHOG_OPERATOR_FAILURE_NOTIFICATION_INTERVAL"
+        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL",
+        "reminder_time_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME",
+        "reminder_timezone_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE"
       },
       "canonical_notification_by_type": {
         "image_rebuild": {
@@ -966,7 +982,7 @@
       "category": "glacier_recovery",
       "source": "riverhog_core.services.recovery_sessions",
       "purpose": "Glacier recovery encountered a non-retryable validation, catalog, or data-integrity failure.",
-      "operator_urgency": "critical",
+      "operator_urgency": "time_sensitive",
       "operator_action": "inspect Riverhog recovery logs and session state",
       "delivery": {
         "mode": "best_effort",
@@ -1020,7 +1036,9 @@
         "retry": true,
         "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
         "reminder": true,
-        "reminder_interval": "1 day"
+        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL",
+        "reminder_time_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME",
+        "reminder_timezone_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE"
       },
       "canonical_notification_by_type": {
         "image_rebuild": {

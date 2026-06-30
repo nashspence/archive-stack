@@ -1601,7 +1601,6 @@ def test_archive_failures_retry_indefinitely_with_throttled_operator_notificatio
         sqlite_path,
         glacier_upload_retry_delay=timedelta(seconds=0),
         operator_webhook_url="http://example.invalid/webhook",
-        operator_failure_notification_interval=timedelta(days=1),
     )
     service = SqlAlchemyCollectionService(_config(sqlite_path), hot_store, upload_store)
 

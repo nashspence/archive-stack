@@ -997,6 +997,8 @@ def _deliver_due_ready_candidate_notifications(
                 timeout_seconds=config.operator_webhook_timeout.total_seconds(),
                 retry_seconds=config.operator_webhook_retry_delay.total_seconds(),
                 reminder_interval_seconds=config.operator_webhook_reminder_interval.total_seconds(),
+                reminder_time=config.operator_webhook_reminder_time,
+                reminder_timezone=config.operator_webhook_reminder_timezone,
             )
             post_webhook(
                 config=webhook_config,
@@ -1032,8 +1034,9 @@ def _deliver_due_ready_candidate_notifications(
             candidate.ready_notification_count = int(candidate.ready_notification_count or 0) + 1
             candidate.ready_notification_failure = None
             if config.operator_webhook_reminder_interval.total_seconds() > 0:
-                candidate.ready_notification_next_attempt_at = _isoformat_z(
-                    current + config.operator_webhook_reminder_interval
+                next_reminder = config.operator_webhook_next_reminder_at(current)
+                candidate.ready_notification_next_attempt_at = (
+                    _isoformat_z(next_reminder) if next_reminder is not None else None
                 )
             else:
                 candidate.ready_notification_next_attempt_at = None

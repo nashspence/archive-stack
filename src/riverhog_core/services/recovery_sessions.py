@@ -58,6 +58,7 @@ from riverhog_core.domain.types import CollectionId, ImageId
 from riverhog_core.finalized_image_coverage import build_disc_manifest_from_catalog
 from riverhog_core.fs_paths import normalize_relpath
 from riverhog_core.iso.streaming import build_iso_cmd_from_root
+from riverhog_core.operator_reminders import operator_reminder_due
 from riverhog_core.planner.manifest import (
     MANIFEST_FILENAME,
     README_FILENAME,
@@ -116,7 +117,6 @@ _RECOVERY_SESSION_SORT_FIELDS = {
     "restore_expires_at",
 }
 _RECOVERY_SESSION_TYPES = {"collection_restore", "image_rebuild"}
-_PAUSED_REBUILD_REMINDER_INTERVAL = timedelta(days=1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -445,7 +445,11 @@ class SqlAlchemyRecoverySessionService:
             record = session.get(GlacierRecoverySessionRecord, session_id)
             if record is None:
                 raise NotFound(f"recovery session not found: {session_id}")
-            _pause_recovery_session_record(record=record, current=current)
+            _pause_recovery_session_record(
+                record=record,
+                config=self._config,
+                current=current,
+            )
             return _session_summary(session, record, config=self._config)
 
     def resume(self, session_id: str) -> RecoverySessionSummary:
@@ -650,7 +654,7 @@ class SqlAlchemyRecoverySessionService:
                 if _operator_failure_notification_due(
                     record.last_failure_notification_at,
                     current=current,
-                    interval=self._config.operator_failure_notification_interval,
+                    config=self._config,
                 ):
                     record.last_failure_notification_at = current_text
                     notify_operator = True
@@ -1745,6 +1749,7 @@ def _cancel_recovery_session_record(
 def _pause_recovery_session_record(
     *,
     record: GlacierRecoverySessionRecord,
+    config: RuntimeConfig,
     current: datetime,
 ) -> None:
     if (record.type or "image_rebuild") != "image_rebuild":
@@ -1760,7 +1765,8 @@ def _pause_recovery_session_record(
     record.state = RecoverySessionState.PAUSED.value
     record.paused_at = _isoformat_z(current)
     record.restore_next_poll_at = None
-    record.next_reminder_at = _isoformat_z(current + _PAUSED_REBUILD_REMINDER_INTERVAL)
+    next_reminder = config.operator_webhook_next_reminder_at(current)
+    record.next_reminder_at = _isoformat_z(next_reminder) if next_reminder is not None else None
     record.started_notification_next_attempt_at = None
     record.latest_message = (
         "Image rebuild recovery is paused by the operator; resume it when replacement "
@@ -2657,7 +2663,8 @@ def _notify_recovery_ready(
         record.reminder_count += 1
     interval = config.operator_webhook_reminder_interval
     if interval.total_seconds() > 0:
-        record.next_reminder_at = _isoformat_z(current + interval)
+        next_reminder = config.operator_webhook_next_reminder_at(current)
+        record.next_reminder_at = _isoformat_z(next_reminder) if next_reminder is not None else None
     else:
         record.next_reminder_at = None
 
@@ -2832,7 +2839,7 @@ def _notify_recovery_paused_reminder(
                 collections=_recovery_collection_payload(session, record),
                 delivered_at=current,
                 reminder_count=record.reminder_count,
-                reminder_interval_seconds=_PAUSED_REBUILD_REMINDER_INTERVAL.total_seconds(),
+                reminder_interval_seconds=config.operator_webhook_reminder_interval.total_seconds(),
             ),
         )
     except Exception as exc:
@@ -2844,7 +2851,8 @@ def _notify_recovery_paused_reminder(
         return
     record.last_notified_at = current_text
     record.reminder_count += 1
-    record.next_reminder_at = _isoformat_z(current + _PAUSED_REBUILD_REMINDER_INTERVAL)
+    next_reminder = config.operator_webhook_next_reminder_at(current)
+    record.next_reminder_at = _isoformat_z(next_reminder) if next_reminder is not None else None
 
 
 def _notify_recovery_failure(
@@ -2938,6 +2946,8 @@ def _webhook_config(config: RuntimeConfig) -> WebhookConfig:
         timeout_seconds=config.operator_webhook_timeout.total_seconds(),
         retry_seconds=config.operator_webhook_retry_delay.total_seconds(),
         reminder_interval_seconds=config.operator_webhook_reminder_interval.total_seconds(),
+        reminder_time=config.operator_webhook_reminder_time,
+        reminder_timezone=config.operator_webhook_reminder_timezone,
     )
 
 
@@ -3005,17 +3015,21 @@ def _operator_failure_notification_due(
     last_notified_at: str | None,
     *,
     current: datetime,
-    interval: timedelta,
+    config: RuntimeConfig,
 ) -> bool:
     if last_notified_at is None:
-        return True
-    if interval.total_seconds() <= 0:
         return True
     try:
         previous = datetime.fromisoformat(last_notified_at.replace("Z", "+00:00"))
     except ValueError:
         return True
-    return current - previous >= interval
+    return operator_reminder_due(
+        last_sent_at=previous,
+        current=current,
+        interval=config.operator_webhook_reminder_interval,
+        reminder_time=config.operator_webhook_reminder_time,
+        reminder_timezone=config.operator_webhook_reminder_timezone,
+    )
 
 
 def _isoformat_z(value: datetime) -> str:

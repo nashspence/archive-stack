@@ -137,7 +137,6 @@ _GLACIER_RECOVERY_RESTORE_LATENCY_SECONDS = 0.2
 _GLACIER_RECOVERY_READY_TTL_SECONDS = 4.0
 _OPERATOR_WEBHOOK_RETRY_DELAY_SECONDS = 1.0
 _OPERATOR_WEBHOOK_REMINDER_INTERVAL_SECONDS = 2.0
-_PAUSED_REBUILD_REMINDER_INTERVAL_SECONDS = 86_400.0
 _CLI_SUBPROCESS_TIMEOUT_SECONDS = 30.0
 _CLI_TIMEOUT_OUTPUT_CHARS = 4_000
 _DISC_SORT_FIELDS = {"id", "image_id", "state", "verification_state", "location"}
@@ -2771,7 +2770,7 @@ class AcceptanceRecoverySessionService:
             record.paused_at = _acceptance_isoformat(current)
             record.restore_next_poll_at = None
             record.next_reminder_at = _acceptance_isoformat(
-                current + timedelta(seconds=_PAUSED_REBUILD_REMINDER_INTERVAL_SECONDS)
+                current + timedelta(seconds=_OPERATOR_WEBHOOK_REMINDER_INTERVAL_SECONDS)
             )
             record.latest_message = (
                 "Image rebuild recovery is paused by the operator; resume it when replacement "
@@ -2951,7 +2950,7 @@ class AcceptanceRecoverySessionService:
                                 delivered_at=current,
                                 reminder_count=record.reminder_count,
                                 reminder_interval_seconds=(
-                                    _PAUSED_REBUILD_REMINDER_INTERVAL_SECONDS
+                                    _OPERATOR_WEBHOOK_REMINDER_INTERVAL_SECONDS
                                 ),
                             ),
                             delivered_at=current,
@@ -2970,7 +2969,7 @@ class AcceptanceRecoverySessionService:
                     record.last_notified_at = current_text
                     record.reminder_count += 1
                     record.next_reminder_at = _acceptance_isoformat(
-                        current + timedelta(seconds=_PAUSED_REBUILD_REMINDER_INTERVAL_SECONDS)
+                        current + timedelta(seconds=_OPERATOR_WEBHOOK_REMINDER_INTERVAL_SECONDS)
                     )
                     processed += 1
             return processed
