@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
@@ -16,18 +15,10 @@ from pydantic import ValidationError
 
 from munchy.config_schema import MUNCHY_CONFIG_SCHEMA
 from munchy.local_files import FileHashCache, LocalFileCandidate, hash_local_file_candidates
+from munchy.local_routing import routing_plan_files
 from munchy.platform_files import is_platform_cruft_path
 from munchy.profile_routing import (
-    ProfileRoutingFile,
-    exiftool_routing_facts,
-    profile_routing_exiftool_tags,
-    profile_routing_file_requires_exiftool,
-    profile_routing_file_requires_probe,
     profile_routing_plan,
-    routing_exiftool_summary,
-    routing_file_facts,
-    routing_probe_summary,
-    sidecar_exiftool_tag_requests,
 )
 from munchy.profiles import EncodeProfile, ProfileError, load_encode_profiles
 from munchy.runner_client import (
@@ -597,120 +588,6 @@ def _hash_files(
     ]
 
 
-def _ffprobe_for_routing(path: Path) -> dict[str, Any]:
-    proc = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-print_format",
-            "json",
-            "-show_format",
-            "-show_streams",
-            str(path),
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=120,
-    )
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or "ffprobe failed")[-1000:]
-        raise RuntimeError(f"ffprobe failed for {path}: {detail}")
-    payload = json.loads(proc.stdout or "{}")
-    if not isinstance(payload, dict):
-        raise RuntimeError(f"ffprobe returned non-object JSON for {path}")
-    return payload
-
-
-def _exiftool_for_routing(path: Path, *, tags: Sequence[str]) -> dict[str, Any]:
-    proc = subprocess.run(
-        [
-            "exiftool",
-            "-j",
-            "-a",
-            "-G1",
-            "-s",
-            "-ee",
-            *[f"-{tag}" for tag in tags],
-            str(path),
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=120,
-    )
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or "exiftool failed")[-1000:]
-        raise RuntimeError(f"exiftool failed for {path}: {detail}")
-    payload = json.loads(proc.stdout or "[]")
-    if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
-        raise RuntimeError(f"exiftool returned no metadata object for {path}")
-    return dict(payload[0])
-
-
-def _routing_plan_files(
-    candidates: Sequence[LocalFileCandidate],
-    *,
-    profile_routing: Mapping[str, Any],
-) -> list[ProfileRoutingFile]:
-    exiftool_tags = profile_routing_exiftool_tags(profile_routing)
-    path_facts_by_path = {item.rel_path: routing_file_facts(item.rel_path) for item in candidates}
-    sidecar_tag_requests = sidecar_exiftool_tag_requests(profile_routing, path_facts_by_path)
-    files: list[ProfileRoutingFile] = []
-    for item in candidates:
-        probe_summary: dict[str, Any] | None = None
-        probe_error: str | None = None
-        if profile_routing_file_requires_probe(
-            profile_routing,
-            path_facts_by_path[item.rel_path],
-        ):
-            try:
-                probe_summary = routing_probe_summary(_ffprobe_for_routing(item.source))
-            except Exception as exc:
-                probe_error = str(exc)[:1000]
-        exiftool_summary: dict[str, Any] | None = None
-        facts_error: str | None = None
-        probe_facts = routing_file_facts(
-            item.rel_path,
-            probe_summary=probe_summary,
-        )
-        if profile_routing_file_requires_exiftool(profile_routing, probe_facts):
-            try:
-                exiftool_summary = routing_exiftool_summary(
-                    _exiftool_for_routing(item.source, tags=exiftool_tags)
-                )
-            except Exception as exc:
-                facts_error = str(exc)[:1000]
-        sidecar_facts: dict[str, Any] | None = None
-        sidecar_facts_error: str | None = None
-        sidecar_tags = sidecar_tag_requests.get(item.rel_path)
-        if sidecar_tags:
-            try:
-                sidecar_facts = exiftool_routing_facts(
-                    routing_exiftool_summary(_exiftool_for_routing(item.source, tags=sidecar_tags))
-                )
-            except Exception as exc:
-                sidecar_facts_error = str(exc)[:1000]
-        files.append(
-            ProfileRoutingFile(
-                path=item.rel_path,
-                bytes=item.bytes,
-                probe_summary=probe_summary,
-                probe_error=probe_error,
-                routing_facts=routing_file_facts(
-                    item.rel_path,
-                    probe_summary=probe_summary,
-                    exiftool_summary=exiftool_summary,
-                ),
-                facts_error=facts_error,
-                sidecar_facts=sidecar_facts,
-                sidecar_facts_error=sidecar_facts_error,
-            )
-        )
-    return files
-
-
 def _routing_report_text(plan: Mapping[str, Any]) -> str:
     lines = [
         (
@@ -951,7 +828,7 @@ def explain_routing(
         raw_prefix = defaults.get("target_prefix") or defaults.get("upload_prefix")
         prefix = str(raw_prefix) if raw_prefix else None
     candidates = _discover_candidates(source, target_prefix=prefix, group=None)
-    files = _routing_plan_files(candidates, profile_routing=routing)
+    files = routing_plan_files(candidates, profile_routing=routing)
     plan = profile_routing_plan(routing, files, group_names=set(groups)).as_dict()
     if json_mode:
         emit(plan, json_mode=True)

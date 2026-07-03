@@ -770,7 +770,7 @@ groups:
             "EXIF:Model": "Synthetic Camera",
         }
 
-    monkeypatch.setattr("munchy_cli.main._exiftool_for_routing", fake_exiftool)
+    monkeypatch.setattr("munchy.local_routing.exiftool_for_routing", fake_exiftool)
 
     result = runner.invoke(
         app,
@@ -835,8 +835,8 @@ groups:
     def fail_exiftool(path, *, tags):  # type: ignore[no-untyped-def]
         raise AssertionError(f"unexpected exiftool call for {path} with {tags}")
 
-    monkeypatch.setattr("munchy_cli.main._ffprobe_for_routing", fail_probe)
-    monkeypatch.setattr("munchy_cli.main._exiftool_for_routing", fail_exiftool)
+    monkeypatch.setattr("munchy.local_routing.ffprobe_for_routing", fail_probe)
+    monkeypatch.setattr("munchy.local_routing.exiftool_for_routing", fail_exiftool)
 
     result = runner.invoke(
         app,
