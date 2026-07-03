@@ -5,6 +5,8 @@ from munchy.profile_routing import (
     exiftool_routing_facts,
     match_profile_route,
     profile_routing_exiftool_tags,
+    profile_routing_file_requires_exiftool,
+    profile_routing_file_requires_probe,
     profile_routing_plan,
     routing_exiftool_summary,
     routing_file_facts,
@@ -117,6 +119,84 @@ def test_profile_routing_uses_ffprobe_facts_before_falling_through() -> None:
     assert calls == 1
     assert match is not None
     assert match.route_id == "iphone-video-review"
+
+
+def test_profile_routing_skips_expensive_facts_for_prior_path_only_route() -> None:
+    routing = {
+        "routes": [
+            {
+                "id": "device-state",
+                "group": "evidence",
+                "when": {"path": {"filename_glob": "leinfo.sav"}},
+            },
+            {
+                "id": "camera-video",
+                "group": "video",
+                "when": {
+                    "all": [
+                        {"path": {"suffix": ".mp4"}},
+                        {"fact": "video.codec", "equals": "hevc"},
+                        {"fact": "exif.make", "equals": "example imaging"},
+                    ]
+                },
+            },
+        ]
+    }
+    state_facts = routing_file_facts("camera/leinfo.sav")
+    video_facts = routing_file_facts("camera/GX010001.MP4")
+
+    assert profile_routing_file_requires_probe(routing, state_facts) is False
+    assert profile_routing_file_requires_exiftool(routing, state_facts) is False
+    assert profile_routing_file_requires_probe(routing, video_facts) is True
+    assert (
+        profile_routing_file_requires_exiftool(
+            routing,
+            routing_file_facts(
+                "camera/GX010001.MP4",
+                probe_summary={"codec_name": "hevc", "has_video": True},
+            ),
+        )
+        is True
+    )
+
+
+def test_profile_routing_lazy_match_does_not_probe_path_excluded_route() -> None:
+    calls = 0
+
+    def load_probe() -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {"codec_name": "hevc", "has_video": True}
+
+    routing = {
+        "routes": [
+            {
+                "id": "camera-video",
+                "group": "video",
+                "when": {
+                    "all": [
+                        {"path": {"suffix": ".mp4"}},
+                        {"fact": "video.codec", "equals": "hevc"},
+                    ]
+                },
+            },
+            {
+                "id": "device-state",
+                "group": "evidence",
+                "when": {"path": {"filename_glob": "leinfo.sav"}},
+            },
+        ]
+    }
+
+    match = match_profile_route(
+        routing,
+        "camera/leinfo.sav",
+        probe_summary_loader=load_probe,
+    )
+
+    assert calls == 0
+    assert match is not None
+    assert match.route_id == "device-state"
 
 
 def test_profile_route_metadata_need_detection_traverses_gates() -> None:

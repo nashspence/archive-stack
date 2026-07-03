@@ -14,6 +14,7 @@ import pytest
 
 from jeb.collector import (
     Collector,
+    EligibleFile,
     JebConfig,
     TransientJebError,
     UnrecoverableJebError,
@@ -727,6 +728,61 @@ def test_routing_preflight_allows_ordered_broad_matcher(tmp_path: Path) -> None:
     ]
     assert collector.routing_preflight_failures() == []
     assert notifier.messages == []
+
+
+def test_routing_preflight_file_skips_expensive_tools_for_path_only_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _base_config(tmp_path)
+    collector = Collector(config)
+    source = tmp_path / "landing" / "camera" / "leinfo.sav"
+    _write_stable_file(source, b"state")
+    stat = source.stat()
+    item = EligibleFile(
+        path=source,
+        rel=Path("leinfo.sav"),
+        target_path="camera/leinfo.sav",
+        bytes=stat.st_size,
+        mtime=stat.st_mtime,
+        mtime_ns=stat.st_mtime_ns,
+    )
+    profile_routing = {
+        "routes": [
+            {
+                "id": "device-state",
+                "group": "preserve",
+                "when": {"path": {"filename_glob": "leinfo.sav"}},
+            },
+            {
+                "id": "camera-video",
+                "group": "video",
+                "when": {
+                    "all": [
+                        {"path": {"suffix": ".mp4"}},
+                        {"fact": "video.codec", "equals": "hevc"},
+                        {"fact": "exif.make", "equals": "example imaging"},
+                    ]
+                },
+            },
+        ]
+    }
+
+    def fail_probe(path: Path) -> dict[str, object]:
+        raise AssertionError(f"unexpected ffprobe call for {path}")
+
+    def fail_exiftool(path: Path, *, tags):  # type: ignore[no-untyped-def]
+        raise AssertionError(f"unexpected exiftool call for {path} with {tags}")
+
+    monkeypatch.setattr("jeb.collector.ffprobe_for_routing_preflight", fail_probe)
+    monkeypatch.setattr("jeb.collector.exiftool_for_routing_preflight", fail_exiftool)
+
+    preflight = collector.routing_preflight_file(item, profile_routing=profile_routing)
+
+    assert preflight.rel_path == "camera/leinfo.sav"
+    assert preflight.probe_summary is None
+    assert preflight.probe_error is None
+    assert preflight.facts_error is None
 
 
 def test_routing_preflight_leave_action_excludes_file_from_batch(tmp_path: Path) -> None:

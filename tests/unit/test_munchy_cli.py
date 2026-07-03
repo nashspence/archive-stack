@@ -739,7 +739,10 @@ facts = { source = "exiftool", tags = ["Make", "Model"] }
 [[job.profile_routing.routes]]
 id = "camera-video"
 group = "video"
-when = { all = [{ path = { suffix = ".mp4" } }, { fact = "sidecars.camera_xml.facts.exif.make", equals = "example imaging" }] }
+when = { all = [
+  { path = { suffix = ".mp4" } },
+  { fact = "sidecars.camera_xml.facts.exif.make", equals = "example imaging" },
+] }
 """.strip(),
         encoding="utf-8",
     )
@@ -768,3 +771,61 @@ when = { all = [{ path = { suffix = ".mp4" } }, { fact = "sidecars.camera_xml.fa
         "sidecars.camera_xml.facts.exif.make": "example imaging"
     }
     assert exiftool_calls == [("C0001M01.XML", ("Make", "Model"))]
+
+
+def test_munchy_routing_explain_skips_expensive_tools_for_path_only_route(
+    monkeypatch,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    source_dir = tmp_path / "camera"
+    source_dir.mkdir()
+    (source_dir / "leinfo.sav").write_bytes(b"state")
+    config = tmp_path / "munchy.toml"
+    config.write_text(
+        """
+[job]
+upload_prefix = "camera"
+
+[groups.state]
+archive_mode = "preserve"
+tasks = []
+
+[groups.video]
+archive_mode = "av1_nvenc"
+tasks = ["archive_video"]
+
+[[job.profile_routing.routes]]
+id = "device-state"
+group = "state"
+when = { path = { filename_glob = "leinfo.sav" } }
+
+[[job.profile_routing.routes]]
+id = "camera-video"
+group = "video"
+when = { all = [
+  { path = { suffix = ".mp4" } },
+  { fact = "video.codec", equals = "hevc" },
+  { fact = "exif.make", equals = "example imaging" },
+] }
+""".strip(),
+        encoding="utf-8",
+    )
+
+    def fail_probe(path):  # type: ignore[no-untyped-def]
+        raise AssertionError(f"unexpected ffprobe call for {path}")
+
+    def fail_exiftool(path, *, tags):  # type: ignore[no-untyped-def]
+        raise AssertionError(f"unexpected exiftool call for {path} with {tags}")
+
+    monkeypatch.setattr("munchy_cli.main._ffprobe_for_routing", fail_probe)
+    monkeypatch.setattr("munchy_cli.main._exiftool_for_routing", fail_exiftool)
+
+    result = runner.invoke(
+        app,
+        ["routing", "explain", str(source_dir), "--config", str(config), "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["matches"][0]["route_id"] == "device-state"

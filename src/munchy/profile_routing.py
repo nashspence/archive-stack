@@ -11,6 +11,7 @@ RouteAction = Literal["upload", "leave", "evidence"]
 
 PROBE_FACT_PREFIXES = ("ffprobe.", "video.", "audio.")
 EXIFTOOL_FACT_PREFIXES = ("exif.", "exiftool.")
+ROUTING_TOOL_FACT_PREFIXES = PROBE_FACT_PREFIXES + EXIFTOOL_FACT_PREFIXES
 ROUTING_EXIFTOOL_TAGS = (
     "FileName",
     "FileTypeExtension",
@@ -145,9 +146,25 @@ def match_profile_route(
 
     for index, route in enumerate(profile_routes(profile_routing)):
         route_facts: Mapping[str, Any] = facts
-        if route_requires_probe(route, profile_routing=profile_routing):
+        if route_requires_probe(
+            route,
+            profile_routing=profile_routing,
+        ) and route_may_match_after_collecting_fact_prefixes(
+            route,
+            route_facts,
+            ROUTING_TOOL_FACT_PREFIXES,
+            profile_routing=profile_routing,
+        ):
             route_facts = ensure_probe_facts()
-        if route_requires_exiftool(route, profile_routing=profile_routing):
+        if route_requires_exiftool(
+            route,
+            profile_routing=profile_routing,
+        ) and route_may_match_after_collecting_fact_prefixes(
+            route,
+            route_facts,
+            EXIFTOOL_FACT_PREFIXES,
+            profile_routing=profile_routing,
+        ):
             route_facts = ensure_full_facts()
         if not route_matches(route, route_facts, profile_routing=profile_routing):
             continue
@@ -380,6 +397,120 @@ def profile_routing_requires_exiftool(profile_routing: Mapping[str, Any]) -> boo
     return routing_uses_fact_prefix(profile_routing, EXIFTOOL_FACT_PREFIXES)
 
 
+def profile_routing_file_requires_probe(
+    profile_routing: Mapping[str, Any],
+    facts: Mapping[str, Any],
+) -> bool:
+    return profile_routing_file_requires_fact_prefix(
+        profile_routing,
+        facts,
+        PROBE_FACT_PREFIXES,
+    )
+
+
+def profile_routing_file_requires_exiftool(
+    profile_routing: Mapping[str, Any],
+    facts: Mapping[str, Any],
+) -> bool:
+    return profile_routing_file_requires_fact_prefix(
+        profile_routing,
+        facts,
+        EXIFTOOL_FACT_PREFIXES,
+    )
+
+
+def profile_routing_file_requires_fact_prefix(
+    profile_routing: Mapping[str, Any],
+    facts: Mapping[str, Any],
+    prefixes: tuple[str, ...],
+) -> bool:
+    ignored_prefixes = fact_prefixes_ignored_while_collecting(prefixes)
+    if pairing_rules_require_fact_prefix_for_file(
+        profile_routing,
+        facts,
+        prefixes,
+        ignored_prefixes=ignored_prefixes,
+    ):
+        return True
+    for route in profile_routes(profile_routing):
+        if not route_may_match_after_collecting_fact_prefixes(
+            route,
+            facts,
+            ignored_prefixes,
+            profile_routing=profile_routing,
+        ):
+            continue
+        if route_uses_fact_prefix(route, prefixes, profile_routing=profile_routing):
+            return True
+        if route_matches(route, facts, profile_routing=profile_routing):
+            return False
+    return False
+
+
+def pairing_rules_require_fact_prefix_for_file(
+    profile_routing: Mapping[str, Any],
+    facts: Mapping[str, Any],
+    prefixes: tuple[str, ...],
+    *,
+    ignored_prefixes: tuple[str, ...],
+) -> bool:
+    pairings = profile_routing.get("pairings")
+    if not isinstance(pairings, list):
+        return False
+    for rule in pairings:
+        if not isinstance(rule, Mapping):
+            continue
+        still = mapping(rule.get("still"))
+        movie = mapping(rule.get("movie"))
+        if predicate_uses_fact_prefix(
+            still,
+            prefixes,
+            profile_routing=profile_routing,
+        ) and predicate_may_match_after_collecting_fact_prefixes(
+            still,
+            facts,
+            ignored_prefixes,
+            profile_routing=profile_routing,
+        ):
+            return True
+        if predicate_uses_fact_prefix(
+            movie,
+            prefixes,
+            profile_routing=profile_routing,
+        ) and predicate_may_match_after_collecting_fact_prefixes(
+            movie,
+            facts,
+            ignored_prefixes,
+            profile_routing=profile_routing,
+        ):
+            return True
+        key = str(rule.get("key") or "exif.content_identifier").strip()
+        if key.startswith(prefixes) and (
+            predicate_may_match_after_collecting_fact_prefixes(
+                still,
+                facts,
+                ignored_prefixes,
+                profile_routing=profile_routing,
+            )
+            or predicate_may_match_after_collecting_fact_prefixes(
+                movie,
+                facts,
+                ignored_prefixes,
+                profile_routing=profile_routing,
+            )
+        ):
+            return True
+    return False
+
+
+def fact_prefixes_ignored_while_collecting(
+    prefixes: tuple[str, ...],
+) -> tuple[str, ...]:
+    if any(prefix in PROBE_FACT_PREFIXES for prefix in prefixes):
+        return ROUTING_TOOL_FACT_PREFIXES
+    return prefixes
+
+
 def profile_routing_exiftool_tags(
     profile_routing: Mapping[str, Any] | None = None,
 ) -> tuple[str, ...]:
@@ -517,6 +648,39 @@ def route_requires_exiftool(
     return predicate_uses_fact_prefix(
         mapping(route.get("when")),
         EXIFTOOL_FACT_PREFIXES,
+        profile_routing=profile_routing,
+    )
+
+
+def route_uses_fact_prefix(
+    route: Mapping[str, Any],
+    prefixes: tuple[str, ...],
+    *,
+    profile_routing: Mapping[str, Any] | None = None,
+) -> bool:
+    return predicate_uses_fact_prefix(
+        mapping(route.get("when")),
+        prefixes,
+        profile_routing=profile_routing,
+    )
+
+
+def route_may_match_after_collecting_fact_prefixes(
+    route: Mapping[str, Any],
+    facts: Mapping[str, Any],
+    prefixes: tuple[str, ...],
+    *,
+    profile_routing: Mapping[str, Any],
+) -> bool:
+    if set(route) - ROUTE_KEYS:
+        return False
+    when = route.get("when")
+    if not isinstance(when, Mapping):
+        return True
+    return predicate_may_match_after_collecting_fact_prefixes(
+        when,
+        facts,
+        prefixes,
         profile_routing=profile_routing,
     )
 
@@ -1194,6 +1358,84 @@ def predicate_matches(
     return True
 
 
+def predicate_may_match_after_collecting_fact_prefixes(
+    predicate: Mapping[str, Any],
+    facts: Mapping[str, Any],
+    prefixes: tuple[str, ...],
+    *,
+    profile_routing: Mapping[str, Any],
+    seen_gates: set[str] | None = None,
+) -> bool:
+    if not predicate:
+        return True
+    if set(predicate) - PREDICATE_KEYS:
+        return False
+    all_items = predicate.get("all")
+    if isinstance(all_items, list) and not all(
+        isinstance(item, Mapping)
+        and predicate_may_match_after_collecting_fact_prefixes(
+            item,
+            facts,
+            prefixes,
+            profile_routing=profile_routing,
+            seen_gates=seen_gates,
+        )
+        for item in all_items
+    ):
+        return False
+    any_items = predicate.get("any")
+    if isinstance(any_items, list) and not any(
+        isinstance(item, Mapping)
+        and predicate_may_match_after_collecting_fact_prefixes(
+            item,
+            facts,
+            prefixes,
+            profile_routing=profile_routing,
+            seen_gates=seen_gates,
+        )
+        for item in any_items
+    ):
+        return False
+    not_item = predicate.get("not")
+    if isinstance(not_item, Mapping) and predicate_matches(
+        not_item,
+        facts,
+        profile_routing=profile_routing,
+    ):
+        return False
+    if not gates_may_match_after_collecting_fact_prefixes(
+        predicate.get("gate"),
+        facts,
+        prefixes,
+        profile_routing=profile_routing,
+        seen_gates=seen_gates,
+    ):
+        return False
+    not_gate = predicate.get("not_gate")
+    if not_gate is not None and gates_match(not_gate, facts, profile_routing=profile_routing):
+        return False
+    path_predicate = predicate.get("path")
+    if isinstance(path_predicate, Mapping) and not path_predicate_matches(path_predicate, facts):
+        return False
+    fact = predicate.get("fact")
+    if isinstance(fact, str) and fact.startswith(prefixes):
+        actual = fact_value(facts, fact)
+        if actual not in (None, ""):
+            return single_fact_predicate_matches(predicate, facts)
+    elif "fact" in predicate and not single_fact_predicate_matches(predicate, facts):
+        return False
+    pair = predicate.get("pair")
+    if pair is not None and not value_equals(fact_value(facts, "pair.kind"), pair):
+        return False
+    not_pair = predicate.get("not_pair")
+    if not_pair is not None and value_equals(fact_value(facts, "pair.kind"), not_pair):
+        return False
+    pair_role = predicate.get("pair_role")
+    if pair_role is not None and not value_equals(fact_value(facts, "pair.role"), pair_role):
+        return False
+    return True
+
+
 def path_predicate_matches(predicate: Mapping[str, Any], facts: Mapping[str, Any]) -> bool:
     if set(predicate) - PATH_PREDICATE_KEYS:
         return False
@@ -1329,6 +1571,38 @@ def gates_match(
         if not isinstance(gate, Mapping):
             return False
         if not predicate_matches(gate, facts, profile_routing=profile_routing):
+            return False
+    return True
+
+
+def gates_may_match_after_collecting_fact_prefixes(
+    gate_value: object,
+    facts: Mapping[str, Any],
+    prefixes: tuple[str, ...],
+    *,
+    profile_routing: Mapping[str, Any],
+    seen_gates: set[str] | None = None,
+) -> bool:
+    gates = profile_routing.get("gates")
+    if not isinstance(gates, Mapping):
+        return gate_value in (None, "", [], ())
+    gate_names = [str(item) for item in sequence(gate_value) if str(item).strip()]
+    if not gate_names:
+        return True
+    seen = seen_gates or set()
+    for name in gate_names:
+        if name in seen:
+            continue
+        gate = gates.get(name)
+        if not isinstance(gate, Mapping):
+            return False
+        if not predicate_may_match_after_collecting_fact_prefixes(
+            gate,
+            facts,
+            prefixes,
+            profile_routing=profile_routing,
+            seen_gates={*seen, name},
+        ):
             return False
     return True
 

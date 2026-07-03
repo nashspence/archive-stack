@@ -28,11 +28,11 @@ from munchy.preflight import (
     run_media_preflight,
 )
 from munchy.profile_routing import (
-    profile_routes,
     exiftool_routing_facts,
+    profile_routes,
     profile_routing_exiftool_tags,
-    profile_routing_requires_exiftool,
-    profile_routing_requires_probe,
+    profile_routing_file_requires_exiftool,
+    profile_routing_file_requires_probe,
     routing_exiftool_summary,
     routing_file_facts,
     routing_probe_summary,
@@ -993,16 +993,18 @@ class Collector:
         profile_routing: Mapping[str, Any],
         sidecar_exiftool_tags: Sequence[str] = (),
     ) -> RunnerProfileRoutingPreflightFile:
+        path_facts = routing_file_facts(item.target_path)
         probe_summary: dict[str, Any] | None = None
         probe_error: str | None = None
-        if profile_routing_requires_probe(profile_routing):
+        if profile_routing_file_requires_probe(profile_routing, path_facts):
             try:
                 probe_summary = routing_probe_summary(ffprobe_for_routing_preflight(item.path))
             except RoutingProbeError as exc:
                 probe_error = str(exc)[:1000]
         exiftool_summary: dict[str, Any] | None = None
         facts_error: str | None = None
-        if profile_routing_requires_exiftool(profile_routing):
+        probe_facts = routing_file_facts(item.target_path, probe_summary=probe_summary)
+        if profile_routing_file_requires_exiftool(profile_routing, probe_facts):
             try:
                 exiftool_summary = routing_exiftool_summary(
                     exiftool_for_routing_preflight(

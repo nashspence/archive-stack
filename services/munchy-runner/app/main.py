@@ -61,11 +61,13 @@ from munchy.profile_routing import (
     match_profile_route,
     matched_fact_values,
     normalize_exiftool_tag,
-    profile_sidecar_rules,
     profile_routing_exiftool_tags,
+    profile_routing_file_requires_exiftool,
+    profile_routing_file_requires_probe,
     profile_routing_plan,
     profile_routing_requires_exiftool,
     profile_routing_requires_probe,
+    profile_sidecar_rules,
     route_requires_probe,
     routing_exiftool_summary,
     routing_file_facts,
@@ -3626,18 +3628,23 @@ def runner_profile_routing_file(
     path = upload_file_data_path(file_state)
     base_facts = dict(base_routing_facts or {})
     is_sidecar_evidence = base_facts.get("sidecar.role") == "evidence"
-    probe_summary = (
-        routing_probe_summary(ffprobe_for_routing(path))
-        if profile_routing_needs_probe(routing) and not is_sidecar_evidence
-        else None
+    path_facts = routing_file_facts(rel_path, routing_facts=base_facts)
+    probe_summary = None
+    if not is_sidecar_evidence and profile_routing_file_requires_probe(routing, path_facts):
+        probe_summary = routing_probe_summary(ffprobe_for_routing(path))
+    probe_facts = routing_file_facts(
+        rel_path,
+        probe_summary=probe_summary,
+        routing_facts=base_facts,
     )
-    exiftool_summary = (
-        routing_exiftool_summary(
+    exiftool_summary = None
+    if not is_sidecar_evidence and profile_routing_file_requires_exiftool(
+        routing,
+        probe_facts,
+    ):
+        exiftool_summary = routing_exiftool_summary(
             exiftool_for_routing(path, tags=profile_routing_exiftool_tags(routing))
         )
-        if profile_routing_needs_exiftool(routing) and not is_sidecar_evidence
-        else None
-    )
     sidecar_facts: dict[str, Any] | None = None
     sidecar_facts_error: str | None = None
     if sidecar_exiftool_tags:

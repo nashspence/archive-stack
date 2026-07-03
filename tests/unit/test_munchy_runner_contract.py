@@ -1336,6 +1336,83 @@ def test_sidecar_facts_are_bounded_during_runner_routing(
     assert exiftool_calls == [(sidecar_file, ("Make", "Model"))]
 
 
+def test_profile_routing_skips_expensive_tools_for_path_only_runner_route(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    state_file = runner.shared_input_upload_root("upload-1") / "camera/leinfo.sav"
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_bytes(b"state")
+    upload = runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "state": "uploading",
+            "storage_hint": {
+                "workflow_mode": "collection_archive",
+                "structured_routing": True,
+                "groups": {"state": {"archive_mode": "preserve", "tasks": []}},
+            },
+            "files": [
+                {
+                    "path": "camera/leinfo.sav",
+                    "bytes": 5,
+                    "upload_id": "state-1",
+                    "input_upload_id": "upload-1",
+                    "structured_routing": True,
+                },
+            ],
+        }
+    )
+
+    def fail_ffprobe_for_routing(path: Path) -> dict[str, object]:
+        raise AssertionError(f"unexpected ffprobe call for {path}")
+
+    def fail_exiftool_for_routing(path: Path, *, tags=None):  # type: ignore[no-untyped-def]
+        raise AssertionError(f"unexpected exiftool call for {path} with {tags}")
+
+    monkeypatch.setattr(runner, "ffprobe_for_routing", fail_ffprobe_for_routing)
+    monkeypatch.setattr(runner, "exiftool_for_routing", fail_exiftool_for_routing)
+    job = {
+        "job_id": "job-1",
+        "input_upload_id": "upload-1",
+        "profile_routing": {
+            "routes": [
+                {
+                    "id": "device-state",
+                    "group": "state",
+                    "when": {"path": {"filename_glob": "leinfo.sav"}},
+                },
+                {
+                    "id": "camera-video",
+                    "group": "video",
+                    "when": {
+                        "all": [
+                            {"path": {"suffix": ".mp4"}},
+                            {"fact": "video.codec", "equals": "hevc"},
+                            {"fact": "exif.make", "equals": "example imaging"},
+                        ]
+                    },
+                },
+            ],
+        },
+    }
+
+    routed = runner.route_completed_input_files(
+        job,
+        upload,
+        {
+            "state": {"archive_mode": "preserve", "tasks": []},
+            "video": {"archive_mode": "av1_nvenc", "tasks": []},
+        },
+    )
+
+    assert routed["files"][0]["profile_route_id"] == "device-state"
+    assert routed["files"][0]["resolved_group"] == "state"
+
+
 def test_profile_routing_preflight_uses_submitted_probe_summary(
     tmp_path: Path,
     monkeypatch,

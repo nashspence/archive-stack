@@ -21,9 +21,9 @@ from munchy.profile_routing import (
     ProfileRoutingFile,
     exiftool_routing_facts,
     profile_routing_exiftool_tags,
+    profile_routing_file_requires_exiftool,
+    profile_routing_file_requires_probe,
     profile_routing_plan,
-    profile_routing_requires_exiftool,
-    profile_routing_requires_probe,
     routing_exiftool_summary,
     routing_file_facts,
     routing_probe_summary,
@@ -651,8 +651,6 @@ def _routing_plan_files(
     *,
     profile_routing: Mapping[str, Any],
 ) -> list[ProfileRoutingFile]:
-    needs_probe = profile_routing_requires_probe(profile_routing)
-    needs_exiftool = profile_routing_requires_exiftool(profile_routing)
     exiftool_tags = profile_routing_exiftool_tags(profile_routing)
     path_facts_by_path = {
         item.rel_path: routing_file_facts(item.rel_path) for item in candidates
@@ -662,14 +660,21 @@ def _routing_plan_files(
     for item in candidates:
         probe_summary: dict[str, Any] | None = None
         probe_error: str | None = None
-        if needs_probe:
+        if profile_routing_file_requires_probe(
+            profile_routing,
+            path_facts_by_path[item.rel_path],
+        ):
             try:
                 probe_summary = routing_probe_summary(_ffprobe_for_routing(item.source))
             except Exception as exc:
                 probe_error = str(exc)[:1000]
         exiftool_summary: dict[str, Any] | None = None
         facts_error: str | None = None
-        if needs_exiftool:
+        probe_facts = routing_file_facts(
+            item.rel_path,
+            probe_summary=probe_summary,
+        )
+        if profile_routing_file_requires_exiftool(profile_routing, probe_facts):
             try:
                 exiftool_summary = routing_exiftool_summary(
                     _exiftool_for_routing(item.source, tags=exiftool_tags)
