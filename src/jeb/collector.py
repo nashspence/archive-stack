@@ -29,6 +29,7 @@ from munchy.preflight import (
 )
 from munchy.profile_routing import (
     profile_routes,
+    profile_routing_exiftool_tags,
     routing_exiftool_summary,
     routing_file_facts,
     routing_probe_summary,
@@ -926,7 +927,9 @@ class Collector:
         target = self.target_by_name(collection.target)
         groups = munchy_groups_payload(self.config)
         profile_routing = mapping(self.config.munchy_job_defaults.get("profile_routing"))
-        preflight_files = tuple(self.routing_preflight_file(item) for item in files)
+        preflight_files = tuple(
+            self.routing_preflight_file(item, profile_routing=profile_routing) for item in files
+        )
         try:
             result = MunchyRunnerClient(target.url).profile_routing_preflight(
                 files=preflight_files,
@@ -967,7 +970,12 @@ class Collector:
         self.notify_routing_preflight_failures(source_id=source.id)
         return None
 
-    def routing_preflight_file(self, item: EligibleFile) -> RunnerProfileRoutingPreflightFile:
+    def routing_preflight_file(
+        self,
+        item: EligibleFile,
+        *,
+        profile_routing: Mapping[str, Any],
+    ) -> RunnerProfileRoutingPreflightFile:
         try:
             probe_summary = routing_probe_summary(ffprobe_for_routing_preflight(item.path))
             probe_error = None
@@ -975,7 +983,12 @@ class Collector:
             probe_summary = None
             probe_error = str(exc)[:1000]
         try:
-            exiftool_summary = routing_exiftool_summary(exiftool_for_routing_preflight(item.path))
+            exiftool_summary = routing_exiftool_summary(
+                exiftool_for_routing_preflight(
+                    item.path,
+                    tags=profile_routing_exiftool_tags(profile_routing),
+                )
+            )
             facts_error = None
         except RoutingFactsError as exc:
             exiftool_summary = None
@@ -2266,7 +2279,7 @@ def ffprobe_for_routing_preflight(path: Path) -> dict[str, Any]:
     return payload
 
 
-def exiftool_for_routing_preflight(path: Path) -> dict[str, Any]:
+def exiftool_for_routing_preflight(path: Path, *, tags: Sequence[str]) -> dict[str, Any]:
     try:
         proc = subprocess.run(
             [
@@ -2276,29 +2289,7 @@ def exiftool_for_routing_preflight(path: Path) -> dict[str, Any]:
                 "-G1",
                 "-s",
                 "-ee",
-                "-FileName",
-                "-FileTypeExtension",
-                "-MIMEType",
-                "-Make",
-                "-Model",
-                "-Software",
-                "-LensModel",
-                "-CameraIdentifier",
-                "-CameraDirection",
-                "-ImageWidth",
-                "-ImageHeight",
-                "-Orientation",
-                "-DateTimeOriginal",
-                "-CreateDate",
-                "-CreationDate",
-                "-BurstUUID",
-                "-ContentIdentifier",
-                "-StillImageTime",
-                "-CaptureMode",
-                "-FullFrameRatePlaybackIntent",
-                "-AuxiliaryImageType",
-                "-DepthMapImage",
-                "-MPImage2",
+                *[f"-{tag}" for tag in tags],
                 str(path),
             ],
             text=True,

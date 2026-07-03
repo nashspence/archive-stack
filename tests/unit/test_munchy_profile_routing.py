@@ -3,6 +3,7 @@ from __future__ import annotations
 from munchy.profile_routing import (
     ProfileRoutingFile,
     match_profile_route,
+    profile_routing_exiftool_tags,
     profile_routing_plan,
     routing_exiftool_summary,
     routing_file_facts,
@@ -390,6 +391,31 @@ def test_profile_routing_leave_action_excludes_intentional_leftovers() -> None:
             "matched_facts": {},
         }
     ]
+
+
+def test_profile_routing_exiftool_tags_adds_explicit_vendor_tags_once() -> None:
+    tags = profile_routing_exiftool_tags(
+        {
+            "extra_exiftool_tags": [
+                "AndroidCaptureFPS",
+                "-SpecialTypeID",
+                "AndroidCaptureFPS",
+            ]
+        }
+    )
+
+    assert "FileName" in tags
+    assert tags.count("AndroidCaptureFPS") == 1
+    assert "SpecialTypeID" in tags
+
+
+def test_profile_routing_exiftool_tags_rejects_shell_like_tags() -> None:
+    try:
+        profile_routing_exiftool_tags({"extra_exiftool_tags": ["Make;rm"]})
+    except ValueError as exc:
+        assert "invalid ExifTool routing tag" in str(exc)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("expected invalid ExifTool tag to be rejected")
 
 
 def test_routing_exiftool_summary_normalizes_apple_tags() -> None:

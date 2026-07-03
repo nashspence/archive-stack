@@ -772,7 +772,7 @@ def test_metadata_projection_can_use_uploaded_filesystem_birthtime(
     source = tmp_path / "REC_20260628_203040.WAV"
     source.write_bytes(b"wav")
     monkeypatch.setattr(runner, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []})
-    monkeypatch.setattr(runner, "exiftool_for_routing", lambda _path: {})
+    monkeypatch.setattr(runner, "exiftool_for_routing", lambda _path, **_kwargs: {})
 
     metadata = runner.projection_metadata_from_source(
         "voice/REC_20260628_203040.WAV",
@@ -811,7 +811,7 @@ def test_metadata_projection_can_use_configured_gps(
     monkeypatch.setattr(
         runner,
         "exiftool_for_routing",
-        lambda _path: {"DateTimeOriginal": "2026:06:28 20:30:40Z"},
+        lambda _path, **_kwargs: {"DateTimeOriginal": "2026:06:28 20:30:40Z"},
     )
 
     metadata = runner.projection_metadata_from_source(
@@ -1597,7 +1597,7 @@ def test_archive_audio_group_encodes_opus_and_writes_source_artifacts(
     monkeypatch.setattr(runner, "run_command", fake_run_command)
     monkeypatch.setattr(runner, "build_strict_source_artifacts", fake_build_strict_source_artifacts)
     monkeypatch.setattr(runner, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []})
-    monkeypatch.setattr(runner, "exiftool_for_routing", lambda _path: {})
+    monkeypatch.setattr(runner, "exiftool_for_routing", lambda _path, **_kwargs: {})
 
     result = runner.run_archive_audio_group(
         input_root=input_root,
@@ -1733,7 +1733,7 @@ def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_cust
     monkeypatch.setattr(runner, "run_command", fake_run_command)
     monkeypatch.setattr(runner, "build_strict_source_artifacts", fake_build_strict_source_artifacts)
     monkeypatch.setattr(runner, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []})
-    monkeypatch.setattr(runner, "exiftool_for_routing", lambda _path: {})
+    monkeypatch.setattr(runner, "exiftool_for_routing", lambda _path, **_kwargs: {})
 
     result = runner.run_archive_audio_group(
         input_root=input_root,

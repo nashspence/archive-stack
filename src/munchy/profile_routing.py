@@ -11,6 +11,46 @@ RouteAction = Literal["upload", "leave", "evidence"]
 
 PROBE_FACT_PREFIXES = ("ffprobe.", "video.", "audio.")
 EXIFTOOL_FACT_PREFIXES = ("exif.", "exiftool.")
+ROUTING_EXIFTOOL_TAGS = (
+    "FileName",
+    "FileTypeExtension",
+    "MIMEType",
+    "Make",
+    "Model",
+    "Software",
+    "LensModel",
+    "CameraIdentifier",
+    "CameraDirection",
+    "ImageWidth",
+    "ImageHeight",
+    "Orientation",
+    "DateTimeOriginal",
+    "SubSecDateTimeOriginal",
+    "CreateDate",
+    "SubSecCreateDate",
+    "CreationDate",
+    "MediaCreateDate",
+    "TrackCreateDate",
+    "ModifyDate",
+    "GPSLatitude",
+    "GPSLatitudeRef",
+    "GPSLongitude",
+    "GPSLongitudeRef",
+    "GPSAltitude",
+    "GPSAltitudeRef",
+    "GPSPosition",
+    "GPSCoordinates",
+    "Location",
+    "LocationISO6709",
+    "BurstUUID",
+    "ContentIdentifier",
+    "StillImageTime",
+    "CaptureMode",
+    "FullFrameRatePlaybackIntent",
+    "AuxiliaryImageType",
+    "DepthMapImage",
+    "MPImage2",
+)
 
 
 @dataclass(frozen=True)
@@ -301,6 +341,36 @@ def profile_routing_requires_probe(profile_routing: Mapping[str, Any]) -> bool:
 
 def profile_routing_requires_exiftool(profile_routing: Mapping[str, Any]) -> bool:
     return routing_uses_fact_prefix(profile_routing, EXIFTOOL_FACT_PREFIXES)
+
+
+def profile_routing_exiftool_tags(
+    profile_routing: Mapping[str, Any] | None = None,
+) -> tuple[str, ...]:
+    """Return compact ExifTool tags needed to build route facts for this profile."""
+
+    configured = mapping(profile_routing).get("extra_exiftool_tags")
+    tags: list[str] = list(ROUTING_EXIFTOOL_TAGS)
+    seen = {tag.casefold() for tag in tags}
+    for item in sequence(configured):
+        normalized = normalize_exiftool_tag(item)
+        if normalized is None:
+            continue
+        key = normalized.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        tags.append(normalized)
+    return tuple(tags)
+
+
+def normalize_exiftool_tag(value: object) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    text = text[1:] if text.startswith("-") else text
+    if not re.fullmatch(r"[A-Za-z0-9:_-]+", text):
+        raise ValueError(f"invalid ExifTool routing tag: {value!r}")
+    return text
 
 
 def route_requires_probe(

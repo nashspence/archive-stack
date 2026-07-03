@@ -19,6 +19,7 @@ from munchy.local_files import FileHashCache, LocalFileCandidate, hash_local_fil
 from munchy.platform_files import is_platform_cruft_path
 from munchy.profile_routing import (
     ProfileRoutingFile,
+    profile_routing_exiftool_tags,
     profile_routing_plan,
     profile_routing_requires_exiftool,
     profile_routing_requires_probe,
@@ -617,7 +618,7 @@ def _ffprobe_for_routing(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _exiftool_for_routing(path: Path) -> dict[str, Any]:
+def _exiftool_for_routing(path: Path, *, tags: Sequence[str]) -> dict[str, Any]:
     proc = subprocess.run(
         [
             "exiftool",
@@ -626,29 +627,7 @@ def _exiftool_for_routing(path: Path) -> dict[str, Any]:
             "-G1",
             "-s",
             "-ee",
-            "-FileName",
-            "-FileTypeExtension",
-            "-MIMEType",
-            "-Make",
-            "-Model",
-            "-Software",
-            "-LensModel",
-            "-CameraIdentifier",
-            "-CameraDirection",
-            "-ImageWidth",
-            "-ImageHeight",
-            "-Orientation",
-            "-DateTimeOriginal",
-            "-CreateDate",
-            "-CreationDate",
-            "-BurstUUID",
-            "-ContentIdentifier",
-            "-StillImageTime",
-            "-CaptureMode",
-            "-FullFrameRatePlaybackIntent",
-            "-AuxiliaryImageType",
-            "-DepthMapImage",
-            "-MPImage2",
+            *[f"-{tag}" for tag in tags],
             str(path),
         ],
         text=True,
@@ -672,6 +651,7 @@ def _routing_plan_files(
 ) -> list[ProfileRoutingFile]:
     needs_probe = profile_routing_requires_probe(profile_routing)
     needs_exiftool = profile_routing_requires_exiftool(profile_routing)
+    exiftool_tags = profile_routing_exiftool_tags(profile_routing)
     files: list[ProfileRoutingFile] = []
     for item in candidates:
         probe_summary: dict[str, Any] | None = None
@@ -685,7 +665,9 @@ def _routing_plan_files(
         facts_error: str | None = None
         if needs_exiftool:
             try:
-                exiftool_summary = routing_exiftool_summary(_exiftool_for_routing(item.source))
+                exiftool_summary = routing_exiftool_summary(
+                    _exiftool_for_routing(item.source, tags=exiftool_tags)
+                )
             except Exception as exc:
                 facts_error = str(exc)[:1000]
         files.append(

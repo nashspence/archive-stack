@@ -302,7 +302,7 @@ def _accept_media_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("jeb.collector.run_media_preflight", fake_run_media_preflight)
     monkeypatch.setattr(
         "jeb.collector.exiftool_for_routing_preflight",
-        lambda path: {"File:FileTypeExtension": path.suffix.lstrip(".")},
+        lambda path, *, tags: {"File:FileTypeExtension": path.suffix.lstrip(".")},
     )
 
 

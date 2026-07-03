@@ -59,6 +59,7 @@ from munchy.profile_routing import (
     apply_sidecar_rules,
     match_profile_route,
     matched_fact_values,
+    profile_routing_exiftool_tags,
     profile_routing_plan,
     profile_routing_requires_exiftool,
     profile_routing_requires_probe,
@@ -3531,7 +3532,7 @@ def ffprobe_for_routing(path: Path) -> dict[str, Any]:
     return payload
 
 
-def exiftool_for_routing(path: Path) -> dict[str, Any]:
+def exiftool_for_routing(path: Path, *, tags: Sequence[str] | None = None) -> dict[str, Any]:
     proc = subprocess.run(
         [
             "exiftool",
@@ -3542,44 +3543,7 @@ def exiftool_for_routing(path: Path) -> dict[str, Any]:
             "-ee",
             "-c",
             "%.8f",
-            "-FileName",
-            "-FileTypeExtension",
-            "-MIMEType",
-            "-Make",
-            "-Model",
-            "-Software",
-            "-LensModel",
-            "-CameraIdentifier",
-            "-CameraDirection",
-            "-ImageWidth",
-            "-ImageHeight",
-            "-Orientation",
-            "-DateTimeOriginal",
-            "-SubSecDateTimeOriginal",
-            "-CreateDate",
-            "-SubSecCreateDate",
-            "-CreationDate",
-            "-MediaCreateDate",
-            "-TrackCreateDate",
-            "-ModifyDate",
-            "-GPSLatitude",
-            "-GPSLatitudeRef",
-            "-GPSLongitude",
-            "-GPSLongitudeRef",
-            "-GPSAltitude",
-            "-GPSAltitudeRef",
-            "-GPSPosition",
-            "-GPSCoordinates",
-            "-Location",
-            "-LocationISO6709",
-            "-BurstUUID",
-            "-ContentIdentifier",
-            "-StillImageTime",
-            "-CaptureMode",
-            "-FullFrameRatePlaybackIntent",
-            "-AuxiliaryImageType",
-            "-DepthMapImage",
-            "-MPImage2",
+            *[f"-{tag}" for tag in (tags or profile_routing_exiftool_tags())],
             str(path),
         ],
         text=True,
@@ -3633,7 +3597,9 @@ def runner_profile_routing_file(
         else None
     )
     exiftool_summary = (
-        routing_exiftool_summary(exiftool_for_routing(path))
+        routing_exiftool_summary(
+            exiftool_for_routing(path, tags=profile_routing_exiftool_tags(routing))
+        )
         if profile_routing_needs_exiftool(routing) and not is_sidecar_evidence
         else None
     )
