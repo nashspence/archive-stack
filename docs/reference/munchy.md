@@ -15,16 +15,24 @@ may also declare sidecar evidence rules. A sidecar evidence file is not archived
 as its own primary output; it is attached to its primary file for metadata
 projection and source-artifacts custody.
 
-```toml
-[[job.profile_routing.sidecars]]
-id = "xmp"
-format = "xmp"
-primary = { path = { suffix_in = [".heic", ".jpg", ".mov"] } }
-
-[[job.profile_routing.routes]]
-id = "camera-video"
-group = "video"
-when = { path = { suffix = ".mov" } }
+```yaml
+job:
+  routing:
+    sidecars:
+      xmp:
+        format: xmp
+        primary:
+          path:
+            suffix_in:
+              - .heic
+              - .jpg
+              - .mov
+    routes:
+      - id: camera-video
+        group: video
+        when:
+          path:
+            suffix: .mov
 ```
 
 For `format = "xmp"`, Munchy looks for `primary-path.xmp` and
@@ -37,18 +45,33 @@ must name the bounded ExifTool tag set to read; Munchy then exposes the parsed
 facts on the primary routing context under
 `sidecars.<sidecar-id>.facts.*`:
 
-```toml
-[[job.profile_routing.sidecars]]
-id = "camera_xml"
-format = "xml"
-path = "{parent}/{stem}M01.XML"
-primary = { path = { suffix = ".mp4" } }
-facts = { source = "exiftool", tags = ["Make", "Model", "CaptureFPS"] }
-
-[[job.profile_routing.routes]]
-id = "xml-described-camera-video"
-group = "video"
-when = { all = [{ path = { suffix = ".mp4" } }, { fact = "sidecars.camera_xml.facts.exif.make", equals = "example imaging" }, { fact = "sidecars.camera_xml.facts.exiftool.tags.capture_fps", min = 100 }] }
+```yaml
+job:
+  routing:
+    sidecars:
+      camera_xml:
+        format: xml
+        path: "{parent}/{stem}M01.XML"
+        primary:
+          path:
+            suffix: .mp4
+        facts:
+          source: exiftool
+          tags:
+            - Make
+            - Model
+            - CaptureFPS
+    routes:
+      - id: xml-described-camera-video
+        group: video
+        when:
+          all:
+            - path:
+                suffix: .mp4
+            - fact: sidecars.camera_xml.facts.exif.make
+              equals: example imaging
+            - fact: sidecars.camera_xml.facts.exiftool.tags.capture_fps
+              min: 100
 ```
 
 When a `facts` block is configured for a matched primary, the sidecar and its
@@ -88,7 +111,7 @@ archived, the evidence entry also records source-artifacts custody:
 }
 ```
 
-`archive_mode = "preserve"` copies the primary source bytes to the collection
+`archive_mode: preserve` copies the primary source bytes to the collection
 archive output without mutating them. If an existing XMP sidecar is attached as
 evidence for a preserve output, Munchy writes the visible output XMP by merging
 the normalized projected metadata into that existing XMP. Scalar conflicts fail
@@ -100,23 +123,24 @@ Metadata projection is enabled by default for groups that produce primary
 archive outputs. Disable it per group only when that output must not get a
 sidecar:
 
-```toml
-[groups.video]
-archive_mode = "av1_nvenc"
-tasks = ["archive_video"]
-
-[groups.video.metadata_projection]
-enabled = true
-creators = ["Example Operator"]
-tags = ["device/example-camera"]
-
-[groups.video.metadata_projection.device]
-make = "Example"
-model = "Camera"
-
-[groups.video.metadata_projection.gps]
-latitude = 48.999527523960296
-longitude = -122.74040765142755
+```yaml
+groups:
+  video:
+    archive_mode: av1_nvenc
+    tasks:
+      - archive_video
+    metadata_projection:
+      enabled: true
+      creators:
+        - Example Operator
+      tags:
+        - device/example-camera
+      device:
+        make: Example
+        model: Camera
+      gps:
+        latitude: 48.999527523960296
+        longitude: -122.74040765142755
 ```
 
 The only supported target is `immich_xmp`. Munchy writes sidecars as
@@ -134,13 +158,15 @@ configured device make, configured device model, and at least one configured
 creator. Use explicit overrides for sources that are expected to lack those
 fields:
 
-```toml
-[groups.video.metadata_projection]
-allow_missing_capture_date = false
-allow_missing_gps = true
-allow_missing_device_make = false
-allow_missing_device_model = false
-allow_missing_creators = false
+```yaml
+groups:
+  video:
+    metadata_projection:
+      allow_missing_capture_date: false
+      allow_missing_gps: true
+      allow_missing_device_make: false
+      allow_missing_device_model: false
+      allow_missing_creators: false
 ```
 
 The sidecar includes capture date aliases that common XMP readers consume:
@@ -161,19 +187,25 @@ Capture date sources are ordered. By default Munchy uses embedded metadata.
 Recorder-style workflows may opt into source filesystem birth time, or a parsed
 path regex, as explicit fallbacks:
 
-```toml
-[groups.voice.metadata_projection]
-allow_missing_gps = true
-creators = ["Example Operator"]
-capture_date_sources = [
-  { type = "embedded" },
-  { type = "filesystem_birthtime" },
-  { type = "path_regex", name = "voice_filename", pattern = "REC_(?P<stamp>[0-9]{8}_[0-9]{6})\\.WAV$", datetime_group = "stamp", format = "%Y%m%d_%H%M%S", timezone = "America/Los_Angeles" },
-]
-
-[groups.voice.metadata_projection.device]
-make = "Example"
-model = "Voice Recorder"
+```yaml
+groups:
+  voice:
+    metadata_projection:
+      allow_missing_gps: true
+      creators:
+        - Example Operator
+      capture_date_sources:
+        - type: embedded
+        - type: filesystem_birthtime
+        - type: path_regex
+          name: voice_filename
+          pattern: 'REC_(?P<stamp>[0-9]{8}_[0-9]{6})\.WAV$'
+          datetime_group: stamp
+          format: "%Y%m%d_%H%M%S"
+          timezone: America/Los_Angeles
+      device:
+        make: Example
+        model: Voice Recorder
 ```
 
 If a configured regex or filesystem birth time source is present but invalid,
@@ -183,12 +215,15 @@ Sidecar capture-date sources can use the usual embedded capture-date keys from
 parsed sidecar facts, or can name one or more explicit fact keys when a vendor
 sidecar carries the authoritative timestamp under a nonstandard tag:
 
-```toml
-[groups.video.metadata_projection]
-capture_date_sources = [
-  { type = "sidecar", id = "camera_xml", fact = "exiftool.tags.vendor_capture_date" },
-  { type = "embedded" },
-]
+```yaml
+groups:
+  video:
+    metadata_projection:
+      capture_date_sources:
+        - type: sidecar
+          id: camera_xml
+          fact: exiftool.tags.vendor_capture_date
+        - type: embedded
 ```
 
 The `fact` and `facts` keys are relative to the parsed sidecar fact namespace.
@@ -272,32 +307,31 @@ The preferred enrollment loop is:
 
 ## Audio Archive
 
-Audio-only archive groups use `archive_mode = "audio"` and the `archive_audio`
+Audio-only archive groups use `archive_mode: audio` and the `archive_audio`
 task. If `tasks` is omitted on an audio group, Munchy defaults it to
 `["archive_audio"]`. Audio archive work runs on CPU and does not reserve the GPU
 target.
 
-```toml
-[profiles.voice]
-schema_version = 1
-target = "munchy-audio"
-name = "voice"
+```yaml
+profiles:
+  voice:
+    schema_version: 1
+    target: munchy-audio
+    name: voice
+    archive:
+      codec: opus
+      audio:
+        bitrate: 64k
+        sample_rate: 24000
+        channels: 1
+        application: audio
+    source:
+      allow_conversion_only_container: true
 
-[profiles.voice.archive]
-codec = "opus"
-
-[profiles.voice.archive.audio]
-bitrate = "64k"
-sample_rate = 24000
-channels = 1
-application = "audio"
-
-[profiles.voice.source]
-allow_conversion_only_container = true
-
-[groups.voice]
-profile = "voice"
-archive_mode = "audio"
+groups:
+  voice:
+    profile: voice
+    archive_mode: audio
 ```
 
 Munchy currently supports Opus audio archives in an `.opus` container. Source
@@ -313,7 +347,7 @@ target.
 Sources such as MP3 cannot be reconstructed from an Opus derivative because the
 encoded audio stream cannot be muxed back into the original MP3 container.
 Profiles for those sources must explicitly set
-`source.allow_conversion_only_container = true`; otherwise Munchy refuses the
+`source.allow_conversion_only_container: true`; otherwise Munchy refuses the
 job rather than silently accepting conversion-only custody semantics. Leave the
 option disabled for camera/video sources that require source-container rebuild
 support from the archived output and source artifacts.
@@ -337,12 +371,14 @@ uploading review artifacts:
 
 Operators may add project-specific rclone exclude patterns:
 
-```toml
-[job.review_upload]
-enabled = true
-method = "rclone"
-destination = "clover:munchy/{collection_slug}/{collection_timestamp}"
-exclude = ["**/.temporary/**"]
+```yaml
+job:
+  review_upload:
+    enabled: true
+    method: rclone
+    destination: "clover:munchy/{collection_slug}/{collection_timestamp}"
+    exclude:
+      - "**/.temporary/**"
 ```
 
 If a runner job fails after an operator fixes the cause, resume it explicitly:

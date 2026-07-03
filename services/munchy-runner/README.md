@@ -63,23 +63,23 @@ munchy job start ./incoming/camera --collection example-camera --group video --d
 or with a richer job config:
 
 ```bash
-munchy job start ./incoming/camera --collection example-camera --config config/examples/munchy/job.toml
+munchy job start ./incoming/camera --collection example-camera --config config/examples/munchy/job.yaml
 ```
 
 Munchy encode profiles use the same runner/Jeb contract everywhere. A profile
 config may be either a standalone runner encode profile or a job/Jeb config with
-`[profiles.<name>]` tables:
+a `profiles` map:
 
 ```bash
-munchy profile validate config/examples/munchy/job.toml
-munchy profile show config/examples/munchy/av1-nvenc-profile.toml
+munchy profile validate config/examples/munchy/job.yaml
+munchy profile show config/examples/munchy/av1-nvenc-profile.yaml
 ```
 
 Explain profile routing before submitting or deploying a job config:
 
 ```bash
-munchy routing explain ./incoming/phone --config config/examples/munchy/job.toml
-munchy routing explain ./incoming/phone --config config/examples/munchy/job.toml --json
+munchy routing explain ./incoming/phone --config config/examples/munchy/job.yaml
+munchy routing explain ./incoming/phone --config config/examples/munchy/job.yaml --json
 ```
 
 The report shows each file's matched route, target group, collection-relative

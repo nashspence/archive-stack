@@ -13,7 +13,7 @@ from jeb.collector import (
 )
 from jeb.health import JebHealthState, start_health_server
 
-DEFAULT_CONFIG = os.getenv("JEB_CONFIG", "/config/jeb.toml")
+DEFAULT_CONFIG = os.getenv("JEB_CONFIG", "/config/jeb.yaml")
 DEFAULT_HEALTH_HOST = os.getenv("JEB_HEALTH_HOST", "0.0.0.0")
 DEFAULT_HEALTH_PORT = "8081"
 
@@ -34,7 +34,7 @@ def config_parent() -> argparse.ArgumentParser:
     parent.add_argument(
         "--config",
         default=argparse.SUPPRESS,
-        help="Path to the Jeb TOML configuration.",
+        help="Path to the Jeb YAML configuration.",
     )
     return parent
 

@@ -1,0 +1,72 @@
+job:
+  riverhog:
+    enabled: true
+    wait: finalized
+  notify:
+    enabled: false
+    recipients:
+      - operator
+  routing:
+    routes:
+      - id: example-camera-video
+        group: video
+        when:
+          path:
+            suffix_in:
+              - .mp4
+              - .mov
+              - .mkv
+              - .webm
+      - id: preserve-artifacts
+        group: preserve
+        when:
+          path:
+            suffix_in:
+              - .xml
+              - .json
+              - .txt
+              - .srt
+              - .vtt
+              - .nfo
+      - id: all-preserve-review
+        group: preserve
+        when: {}
+
+profiles:
+  example-camera:
+    name: example-camera
+    archive:
+      codec: av1_nvenc
+      container: webm
+      quality: 38
+      max_height: 720
+      fps_mode: passthrough
+      scale_flags: lanczos
+      pix_fmt: p010le
+      preset: p7
+      tune: uhq
+      audio:
+        codec: opus
+        bitrate: 28k
+        sample_rate: 24000
+        channels: 1
+        application: audio
+        frame_duration: 40
+        cutoff: 12000
+        compression_level: 10
+        vbr: "on"
+
+groups:
+  video:
+    profile: example-camera
+    archive_mode: av1_nvenc
+    metadata_projection:
+      creators:
+        - Example Operator
+      tags:
+        - device/example-camera
+      device:
+        make: Example
+        model: Camera
+  preserve:
+    archive_mode: preserve

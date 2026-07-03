@@ -10,7 +10,6 @@ import shutil
 import sqlite3
 import subprocess
 import time
-import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -19,6 +18,7 @@ from typing import Any, Literal, Protocol, cast
 
 import httpx
 
+from jeb.config_schema import JEB_CONFIG_SCHEMA
 from munchy.filesystem_metadata import collect_filesystem_metadata
 from munchy.preflight import (
     MP4_LIKE_EXTENSIONS,
@@ -48,6 +48,11 @@ from munchy.runner_client import (
 )
 from munchy.runner_client import (
     is_transient_upload_error as munchy_is_transient_upload_error,
+)
+from riverhog_core.config_yaml import (
+    load_yaml_config,
+    normalize_munchy_job_authoring,
+    validate_json_schema,
 )
 from riverhog_core.domain.errors import Conflict, ServiceUnavailable
 from riverhog_core.operator_reminders import (
@@ -561,12 +566,9 @@ class Collector:
             "CREATE INDEX IF NOT EXISTS idx_jeb_batch_attempts_batch_state "
             "ON batch_attempts(batch_id, state)"
         )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_jeb_files_batch ON files(batch_id)")
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_jeb_files_batch ON files(batch_id)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_jeb_attempt_files_attempt "
-            "ON attempt_files(attempt_id)"
+            "CREATE INDEX IF NOT EXISTS idx_jeb_attempt_files_attempt ON attempt_files(attempt_id)"
         )
 
     def ensure_routing_preflight_schema(self, conn: sqlite3.Connection) -> None:
@@ -785,8 +787,7 @@ class Collector:
             missing = sorted(requested - set(collection.source_ids))
             if missing:
                 raise UnrecoverableJebError(
-                    f"collection {collection.id} does not include source(s): "
-                    + ", ".join(missing)
+                    f"collection {collection.id} does not include source(s): " + ", ".join(missing)
                 )
             source_ids = tuple(
                 source_id for source_id in collection.source_ids if source_id in requested
@@ -796,10 +797,7 @@ class Collector:
         before = None if force else period if collection.schedule == "weekly" else None
         for source in sources:
             if source.enabled:
-                if (
-                    not allow_preflight_retry
-                    and self.routing_preflight_failure_active(source.id)
-                ):
+                if not allow_preflight_retry and self.routing_preflight_failure_active(source.id):
                     LOG.info(
                         "source %s has an active routing preflight failure; "
                         "skipping until operator retry",
@@ -831,9 +829,13 @@ class Collector:
             )
             return None
         base_batch_id, base_digest = self.batch_identity(collection, files, period=period)
-        if not force and collection.schedule == "weekly" and self.batch_exists_for_period(
-            collection.id,
-            period,
+        if (
+            not force
+            and collection.schedule == "weekly"
+            and self.batch_exists_for_period(
+                collection.id,
+                period,
+            )
         ):
             return None
         return self.create_batch(
@@ -955,8 +957,7 @@ class Collector:
         except Exception as exc:
             if is_transient_error(exc):
                 LOG.warning(
-                    "source %s routing preflight hit transient Munchy issue; "
-                    "will retry later: %s",
+                    "source %s routing preflight hit transient Munchy issue; will retry later: %s",
                     source.id,
                     exc,
                 )
@@ -1052,9 +1053,7 @@ class Collector:
         result: Mapping[str, Any],
     ) -> None:
         unmatched = [
-            dict(item)
-            for item in sequence(result.get("unmatched"))
-            if isinstance(item, Mapping)
+            dict(item) for item in sequence(result.get("unmatched")) if isinstance(item, Mapping)
         ]
         unmatched_count = int(result.get("unmatched_files") or len(unmatched) or 0)
         file_count = int(result.get("files_total") or len(files))
@@ -1168,9 +1167,7 @@ class Collector:
                 """,
                 (source.id,),
             ).fetchone()
-            first_seen_at = (
-                str(existing["first_seen_at"]) if existing is not None else now_text
-            )
+            first_seen_at = str(existing["first_seen_at"]) if existing is not None else now_text
             conn.execute(
                 """
                 INSERT INTO routing_preflight_failures(
@@ -1321,10 +1318,9 @@ class Collector:
     def notify_routing_preflight_failure(self, row: sqlite3.Row) -> bool:
         row_payload = dict(row)
         fingerprint = str(row_payload["fingerprint"])
-        if (
-            row_payload.get("notified_error_fingerprint") == fingerprint
-            and not self.notification_reminder_due(row_payload)
-        ):
+        if row_payload.get(
+            "notified_error_fingerprint"
+        ) == fingerprint and not self.notification_reminder_due(row_payload):
             return True
         source_id = str(row_payload["source_id"])
         batch = {
@@ -1475,8 +1471,11 @@ class Collector:
             ).fetchall()
             for file_row in file_rows:
                 target_path = str(file_row["target_path"])
-                staging = self.config.collector.batch_dir / attempt_id / "input" / PurePosixPath(
-                    target_path
+                staging = (
+                    self.config.collector.batch_dir
+                    / attempt_id
+                    / "input"
+                    / PurePosixPath(target_path)
                 )
                 conn.execute(
                     """
@@ -2103,7 +2102,7 @@ def munchy_upload_request(
     groups = munchy_groups_payload(collector.config)
     profile_routing = mapping(collector.config.munchy_job_defaults.get("profile_routing"))
     if not profile_routing:
-        raise UnrecoverableJebError("Munchy target requires munchy_job_defaults.profile_routing")
+        raise UnrecoverableJebError("Munchy target requires munchy_job.routing")
     job_payload = {
         "job_id": str(batch["job_id"]),
         "input_upload_id": str(batch["input_upload_id"]),
@@ -2351,8 +2350,8 @@ def exiftool_for_routing_preflight(path: Path, *, tags: Sequence[str]) -> dict[s
 
 
 def load_config(path: Path) -> JebConfig:
-    with path.open("rb") as handle:
-        raw = tomllib.load(handle)
+    raw = load_yaml_config(path)
+    validate_json_schema(raw, JEB_CONFIG_SCHEMA, label=str(path))
     return config_from_mapping(raw)
 
 
@@ -2388,9 +2387,7 @@ def config_from_mapping(raw: Mapping[str, Any]) -> JebConfig:
     reminder_time = normalize_reminder_time(
         env_value("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME", None)
     )
-    reminder_timezone = (
-        env_value("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE", "UTC") or "UTC"
-    )
+    reminder_timezone = env_value("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE", "UTC") or "UTC"
     reminder_zone(reminder_timezone)
     notify = NotifySettings(
         enabled=bool(notify_raw.get("enabled", False)),
@@ -2406,9 +2403,7 @@ def config_from_mapping(raw: Mapping[str, Any]) -> JebConfig:
         reminder_timezone=reminder_timezone,
     )
     if notify.enabled and not notify.url:
-        raise ValueError(
-            "RIVERHOG_OPERATOR_WEBHOOK_URL is required when notify.enabled=true"
-        )
+        raise ValueError("RIVERHOG_OPERATOR_WEBHOOK_URL is required when notify.enabled=true")
 
     profiles = {
         str(name): dict(mapping(profile)) for name, profile in mapping(raw.get("profiles")).items()
@@ -2424,12 +2419,15 @@ def config_from_mapping(raw: Mapping[str, Any]) -> JebConfig:
     )
     if not collections:
         raise ValueError("at least one collection is required")
-    profile_groups = load_profile_groups(mapping(raw.get("profile_groups")))
+    profile_groups = load_profile_groups(mapping(raw.get("groups")))
     if not profile_groups:
-        raise ValueError("collections require profile_groups")
-    munchy_job_defaults = mapping(raw.get("munchy_job_defaults"))
+        raise ValueError("collections require groups")
+    munchy_job_defaults = normalize_munchy_job_authoring(
+        mapping(raw.get("munchy_job")),
+        label="munchy_job",
+    )
     if not profile_routes(mapping(munchy_job_defaults.get("profile_routing"))):
-        raise ValueError("munchy_job_defaults.profile_routing is required")
+        raise ValueError("munchy_job.routing is required")
     return JebConfig(
         collector=collector,
         notify=notify,

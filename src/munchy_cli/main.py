@@ -5,7 +5,6 @@ import os
 import re
 import subprocess
 import sys
-import tomllib
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -15,6 +14,7 @@ from typing import Annotated, Any, NoReturn
 import typer
 from pydantic import ValidationError
 
+from munchy.config_schema import MUNCHY_CONFIG_SCHEMA
 from munchy.local_files import FileHashCache, LocalFileCandidate, hash_local_file_candidates
 from munchy.platform_files import is_platform_cruft_path
 from munchy.profile_routing import (
@@ -47,6 +47,12 @@ from munchy.runner_client import (
     keep_system_awake,
     make_progress_renderer,
     runner_url_setting,
+)
+from riverhog_core.config_yaml import (
+    ConfigError,
+    load_yaml_config,
+    normalize_munchy_job_authoring,
+    validate_json_schema,
 )
 
 RichConsole: Any
@@ -393,32 +399,34 @@ def _join_rel(*parts: str | PurePosixPath | None) -> str:
     return _normalize_posix(out)
 
 
-def _load_toml(path: Path | None) -> dict[str, Any]:
+def _load_config(path: Path | None) -> dict[str, Any]:
     if path is None:
         return {}
     try:
-        with path.open("rb") as handle:
-            raw = tomllib.load(handle)
-    except OSError as exc:
+        raw = load_yaml_config(path)
+        validate_json_schema(raw, MUNCHY_CONFIG_SCHEMA, label=str(path))
+    except ConfigError as exc:
         raise typer.BadParameter(str(exc), param_hint="--config") from exc
-    if not isinstance(raw, dict):
-        raise typer.BadParameter("config must be a TOML table", param_hint="--config")
-    return raw
+    return _normalize_authoring_config(raw)
+
+
+def _normalize_authoring_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = deepcopy(dict(config))
+    job = normalized.get("job")
+    if isinstance(job, Mapping):
+        normalized["job"] = normalize_munchy_job_authoring(job, label="job")
+    return normalized
 
 
 def _configured_job_defaults(config: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(config.get("job"), Mapping):
         return dict(config["job"])
-    if isinstance(config.get("munchy_job_defaults"), Mapping):
-        return dict(config["munchy_job_defaults"])
     return {}
 
 
 def _configured_groups(config: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(config.get("groups"), Mapping):
         return dict(config["groups"])
-    if isinstance(config.get("profile_groups"), Mapping):
-        return dict(config["profile_groups"])
     return {}
 
 
@@ -451,9 +459,7 @@ def _normalize_group_payload(
     default_tasks = _default_tasks_for_archive_mode(archive_mode)
     raw_tasks = group.get("tasks")
     tasks = (
-        list(default_tasks)
-        if raw_tasks is None
-        else [str(task) for task in _sequence(raw_tasks)]
+        list(default_tasks) if raw_tasks is None else [str(task) for task in _sequence(raw_tasks)]
     )
     payload: dict[str, Any] = {
         "archive_mode": archive_mode,
@@ -472,9 +478,7 @@ def _normalize_group_payload(
     elif isinstance(metadata_projection, Mapping):
         payload["metadata_projection"] = deepcopy(dict(metadata_projection))
     elif metadata_projection is not None:
-        raise typer.BadParameter(
-            f"group {name} metadata_projection must be a table or false"
-        )
+        raise typer.BadParameter(f"group {name} metadata_projection must be a table or false")
     return payload
 
 
@@ -533,8 +537,7 @@ def _discover_candidates(
         sources = [
             (path, path.relative_to(source).as_posix())
             for path in sorted(source.rglob("*"))
-            if path.is_file()
-            and not is_platform_cruft_path(path.relative_to(source).as_posix())
+            if path.is_file() and not is_platform_cruft_path(path.relative_to(source).as_posix())
         ]
     if not sources:
         raise typer.BadParameter(f"{source} has no files to upload", param_hint="SOURCE")
@@ -652,9 +655,7 @@ def _routing_plan_files(
     profile_routing: Mapping[str, Any],
 ) -> list[ProfileRoutingFile]:
     exiftool_tags = profile_routing_exiftool_tags(profile_routing)
-    path_facts_by_path = {
-        item.rel_path: routing_file_facts(item.rel_path) for item in candidates
-    }
+    path_facts_by_path = {item.rel_path: routing_file_facts(item.rel_path) for item in candidates}
     sidecar_tag_requests = sidecar_exiftool_tag_requests(profile_routing, path_facts_by_path)
     files: list[ProfileRoutingFile] = []
     for item in candidates:
@@ -687,9 +688,7 @@ def _routing_plan_files(
         if sidecar_tags:
             try:
                 sidecar_facts = exiftool_routing_facts(
-                    routing_exiftool_summary(
-                        _exiftool_for_routing(item.source, tags=sidecar_tags)
-                    )
+                    routing_exiftool_summary(_exiftool_for_routing(item.source, tags=sidecar_tags))
                 )
             except Exception as exc:
                 sidecar_facts_error = str(exc)[:1000]
@@ -783,7 +782,7 @@ def _job_request(
     hash_cache: Path | None,
     use_hash_cache: bool,
 ) -> RunnerUploadRequest:
-    config = _load_toml(config_path)
+    config = _load_config(config_path)
     defaults = _configured_job_defaults(config)
     profiles = _configured_profiles(config)
     configured_groups = _configured_groups(config)
@@ -836,9 +835,7 @@ def _job_request(
     default_tasks = _default_tasks_for_archive_mode(archive_mode)
     raw_tasks = defaults.get("tasks")
     tasks = (
-        list(default_tasks)
-        if raw_tasks is None
-        else [str(task) for task in _sequence(raw_tasks)]
+        list(default_tasks) if raw_tasks is None else [str(task) for task in _sequence(raw_tasks)]
     )
     generated_job_id = _safe_id(f"{collection_slug}-{timestamp}")
     final_job_id = str(job_id or defaults.get("job_id") or generated_job_id).strip()
@@ -930,19 +927,19 @@ def explain_routing(
 ) -> None:
     """Explain how profile routing classifies local files."""
 
-    config = _load_toml(config_path)
+    config = _load_config(config_path)
     defaults = _configured_job_defaults(config)
     routing = defaults.get("profile_routing")
     if not isinstance(routing, Mapping):
         raise typer.BadParameter(
-            "config must define job.profile_routing or munchy_job_defaults.profile_routing",
+            "config must define job.routing",
             param_hint="--config",
         )
     profiles = _configured_profiles(config)
     configured_groups = _configured_groups(config)
     if not configured_groups:
         raise typer.BadParameter(
-            "profile routing explain requires explicit groups/profile_groups",
+            "profile routing explain requires explicit groups",
             param_hint="--config",
         )
     groups = {
@@ -1052,7 +1049,7 @@ def start_job(
             exists=True,
             dir_okay=False,
             readable=True,
-            help=f"Munchy job TOML config; defaults to {MUNCHY_CONFIG_ENV}",
+            help=f"Munchy job YAML config; defaults to {MUNCHY_CONFIG_ENV}",
         ),
     ] = None,
     collection: Annotated[

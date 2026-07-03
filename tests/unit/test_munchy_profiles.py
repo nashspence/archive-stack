@@ -42,7 +42,7 @@ def test_validates_av1_nvenc_profile_and_drop_reasons() -> None:
                 "allow_conversion_only_container": True,
                 "artifact_drops": [
                     {"selector": "stream:4", "reason": "gyro data intentionally discarded"}
-                ]
+                ],
             },
         }
     )
@@ -125,17 +125,16 @@ def test_rejects_duplicate_artifact_drops() -> None:
 
 
 def test_loads_standalone_runner_encode_profile_document(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    profile_path = tmp_path / "profile.toml"
+    profile_path = tmp_path / "profile.yaml"
     profile_path.write_text(
         """
-schema_version = 1
-target = "munchy-av1-nvenc"
-name = "camera-archive"
-
-[archive]
-codec = "av1_nvenc"
-container = "mkv"
-quality = 49
+schema_version: 1
+target: munchy-av1-nvenc
+name: camera-archive
+archive:
+  codec: av1_nvenc
+  container: mkv
+  quality: 49
 """.strip(),
         encoding="utf-8",
     )
@@ -149,23 +148,22 @@ quality = 49
 
 
 def test_loads_profiles_from_runner_job_config(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    config_path = tmp_path / "job.toml"
+    config_path = tmp_path / "job.yaml"
     config_path.write_text(
         """
-[profiles.camera]
-schema_version = 1
-target = "munchy-av1-nvenc"
-name = "camera"
-
-[profiles.camera.archive]
-codec = "av1_nvenc"
-container = "webm"
-quality = 38
-
-[profiles.preserve]
-schema_version = 1
-target = "munchy-av1-nvenc"
-name = "preserve"
+profiles:
+  camera:
+    schema_version: 1
+    target: munchy-av1-nvenc
+    name: camera
+    archive:
+      codec: av1_nvenc
+      container: webm
+      quality: 38
+  preserve:
+    schema_version: 1
+    target: munchy-av1-nvenc
+    name: preserve
 """.strip(),
         encoding="utf-8",
     )

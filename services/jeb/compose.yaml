@@ -25,8 +25,8 @@ services:
       start_period: 15s
     volumes:
       - type: bind
-        source: ${JEB_CONFIG_FILE:-./config.toml}
-        target: /config/jeb.toml
+        source: ${JEB_CONFIG_FILE:-./config.yaml}
+        target: /config/jeb.yaml
         read_only: true
       - type: bind
         source: ${JEB_LANDING_DIR:-./runtime/landing}

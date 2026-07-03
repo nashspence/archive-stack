@@ -12,47 +12,52 @@ from jeb.collector import Collector, load_config
 def write_jeb_config(tmp_path: Path) -> Path:
     landing = tmp_path / "landing"
     landing.mkdir()
-    config_path = tmp_path / "jeb.toml"
+    config_path = tmp_path / "jeb.yaml"
     config_path.write_text(
         textwrap.dedent(
             f"""
-            [collector]
-            state_db = "{tmp_path / 'state' / 'jeb.sqlite3'}"
-            batch_dir = "{tmp_path / 'landing' / '.jeb-batches'}"
+            collector:
+              state_db: "{tmp_path / "state" / "jeb.sqlite3"}"
+              batch_dir: "{tmp_path / "landing" / ".jeb-batches"}"
 
-            [targets.munchy]
-            type = "munchy"
-            url = "http://munchy.invalid"
+            targets:
+              munchy:
+                type: munchy
+                url: http://munchy.invalid
 
-            [profile_groups.preserve]
-            archive_mode = "preserve"
+            groups:
+              preserve:
+                archive_mode: preserve
 
-            [munchy_job_defaults.profile_routing]
+            munchy_job:
+              routing:
+                routes:
+                  - id: preserve-text
+                    group: preserve
+                    when:
+                      path:
+                        suffix: .txt
 
-            [[munchy_job_defaults.profile_routing.routes]]
-            id = "preserve-text"
-            group = "preserve"
-            when = {{ path = {{ suffix = ".txt" }} }}
+            sources:
+              - id: phone
+                enabled: true
+                path: "{landing / "phone"}"
+                upload_prefix: phone
+                stable_age: 0s
+                include_extensions: []
 
-            [[sources]]
-            id = "phone"
-            enabled = true
-            path = "{landing / 'phone'}"
-            upload_prefix = "phone"
-            stable_age = "0s"
-            include_extensions = []
-
-            [[collections]]
-            id = "weekly"
-            enabled = true
-            collection_slug = "weekly"
-            target = "munchy"
-            cleanup = "never"
-            schedule = "weekly"
-            weekday = "monday"
-            hour = 3
-            minute = 0
-            sources = ["phone"]
+            collections:
+              - id: weekly
+                enabled: true
+                collection_slug: weekly
+                target: munchy
+                cleanup: never
+                schedule: weekly
+                weekday: monday
+                hour: 3
+                minute: 0
+                sources:
+                  - phone
             """
         ).strip()
     )
@@ -63,8 +68,8 @@ def write_disabled_jeb_config(tmp_path: Path) -> Path:
     config_path = write_jeb_config(tmp_path)
     config_path.write_text(
         config_path.read_text(encoding="utf-8").replace(
-            "enabled = true\npath =",
-            "enabled = false\npath =",
+            "enabled: true",
+            "enabled: false",
             1,
         ),
         encoding="utf-8",

@@ -38,47 +38,61 @@ URLs, and deployment overlays belong outside this repository.
 
 Jeb does not choose encode profiles. It sends source-prefixed paths and
 normalized routing facts to Munchy preflight, then includes the same configured
-`profile_routing` rules in the Munchy job request.
+`munchy_job.routing` rules in the Munchy job request as the runner's
+`profile_routing` payload.
 
 Route rules are ordered by priority. The first route that matches a file wins,
 and a file that falls through the full route list fails preflight. Broad routes
 are allowed because they are explicit ordered matchers. A broad final route is
-just a route with `when = {}`. Falling through every route remains a preflight
+just a route with `when: {}`. Falling through every route remains a preflight
 failure.
 
 Routes use one predicate shape:
 
-```toml
-[[munchy_job_defaults.profile_routing.routes]]
-id = "example-video"
-group = "video"
-into = "camera/video"
-when = { path = { prefix = "camera", suffix_in = [".mp4", ".mov"] } }
+```yaml
+munchy_job:
+  routing:
+    routes:
+      - id: example-video
+        group: video
+        into: camera/video
+        when:
+          path:
+            prefix: camera
+            suffix_in:
+              - .mp4
+              - .mov
 ```
 
 Predicates support `all`, `any`, `not`, `path`, `fact`, `gate`, and `pair`.
 Useful facts include `path.*`, `video.*`, `audio.*`, `ffprobe.*`, and
 `exif.*`. For example:
 
-```toml
-[[munchy_job_defaults.profile_routing.routes]]
-id = "iphone-se2-4k60-hevc"
-group = "iphone-video"
-into = "iphone-se2/video-4k60"
-when = { all = [
-  { gate = "iphone-se2-native-camera" },
-  { path = { suffix = ".mov" } },
-  { fact = "video.resolution", equals = "4k" },
-  { fact = "video.fps", equals = 60 },
-  { fact = "video.codec", equals = "hevc" },
-] }
+```yaml
+munchy_job:
+  routing:
+    routes:
+      - id: iphone-se2-4k60-hevc
+        group: iphone-video
+        into: iphone-se2/video-4k60
+        when:
+          all:
+            - gate: iphone-se2-native-camera
+            - path:
+                suffix: .mov
+            - fact: video.resolution
+              equals: 4k
+            - fact: video.fps
+              equals: 60
+            - fact: video.codec
+              equals: hevc
 ```
 
 `pairings` run before route matching. Use them for multi-file captures such as
 Live Photos so the paired movie is not accidentally classified as a normal
 video.
 
-`action = "leave"` marks a matched file as intentionally kept in Jeb custody
+`action: leave` marks a matched file as intentionally kept in Jeb custody
 instead of uploaded in that batch. Use it for known but currently unarchived
 inputs such as a downloads directory. Files that do not match any route are not
 left behind silently; they fail preflight.
@@ -86,7 +100,7 @@ left behind silently; they fail preflight.
 Use an `preserve` profile group for any recurring weekly artifact that should
 be copied into the collection without GPU work.
 
-For incremental source enrollment, keep `include_extensions = []` if every file
+For incremental source enrollment, keep `include_extensions: []` if every file
 should be considered. Jeb asks Munchy to preflight the whole pending source set
 before it creates a Munchy batch:
 
@@ -125,6 +139,6 @@ command after repairing a non-transient Munchy preflight API failure.
 Only unrecoverable or operator-blocking failures send webhooks. Transient upload
 or target errors retry silently.
 
-See [`config/examples/jeb/jeb.toml`](../../config/examples/jeb/jeb.toml) for the
+See [`config/examples/jeb/jeb.yaml`](../../config/examples/jeb/jeb.yaml) for the
 generic configuration shape. See [`munchy.md`](munchy.md) for Munchy metadata
 projection and XMP sidecar behavior.

@@ -19,6 +19,7 @@ dependencies = [
   "typer>=0.12,<1.0",
   "uvicorn>=0.30,<1.0",
   "PyYAML>=6.0,<7.0",
+  "jsonschema>=4.25,<5.0",
   "boto3>=1.35,<2.0",
   "opentimestamps-client>=0.7,<1.0",
   "cryptography>=41,<47",
@@ -30,12 +31,12 @@ dev = [
   "pytest>=8.2,<9.0",
   "pytest-bdd>=8.1,<9.0",
   "pytest-cov>=5.0,<6.0",
-  "jsonschema>=4.25,<5.0",
   "ruff>=0.5,<1.0",
   "mypy>=1.10,<2.0",
   "boto3-stubs[s3]>=1.35,<2.0",
   "scipy-stubs>=1.13,<2.0",
   "types-PyYAML>=6.0,<7.0",
+  "types-jsonschema>=4.25,<5.0",
 ]
 
 planner = ["numpy>=2.0,<3.0", "scipy>=1.13,<2.0"]
@@ -66,6 +67,7 @@ packages = [
 [tool.hatch.build.targets.wheel.force-include]
 "contracts/webhooks/operator-notifications.v1.json" = "riverhog_core/contracts/webhooks/operator-notifications.v1.json"
 "contracts/terminology/user-facing-terms.v1.json" = "riverhog_core/contracts/terminology/user-facing-terms.v1.json"
+"src/riverhog_core/py.typed" = "riverhog_core/py.typed"
 
 [tool.ruff]
 line-length = 100

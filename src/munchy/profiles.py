@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import re
-import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Final, Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+
+from riverhog_core.config_yaml import ConfigError, load_yaml_config
 
 MUNCHY_PROFILE_TARGET: Final[Literal["munchy-av1-nvenc"]] = "munchy-av1-nvenc"
 MUNCHY_AUDIO_PROFILE_TARGET: Final[Literal["munchy-audio"]] = "munchy-audio"
@@ -233,8 +234,10 @@ def load_encode_profile(path: Path) -> EncodeProfile:
 
 
 def load_encode_profiles(path: Path) -> dict[str, EncodeProfile]:
-    with path.open("rb") as handle:
-        raw = tomllib.load(handle)
+    try:
+        raw = load_yaml_config(path)
+    except ConfigError as exc:
+        raise ProfileError(str(exc)) from exc
     return profiles_from_document(raw, source_name=str(path))
 
 

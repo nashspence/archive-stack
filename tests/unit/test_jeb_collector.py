@@ -79,7 +79,7 @@ def _base_config(
                     },
                 }
             },
-            "profile_groups": {
+            "groups": {
                 "video": {
                     "profile": "security",
                     "archive_mode": "av1_nvenc",
@@ -89,11 +89,11 @@ def _base_config(
                     "archive_mode": "preserve",
                 },
             },
-            "munchy_job_defaults": {
+            "munchy_job": {
                 "workflow_mode": "collection_archive",
                 "collection_archive": {"destination": "riverhog"},
                 "notify": {"enabled": True, "recipients": ["operator"]},
-                "profile_routing": {
+                "routing": {
                     "routes": [
                         {
                             "id": "camera-video",
@@ -173,9 +173,9 @@ def test_audio_profile_group_defaults_to_archive_audio(tmp_path: Path) -> None:
                     "sources": ["voice"],
                 }
             ],
-            "profile_groups": {"voice": {"archive_mode": "audio"}},
-            "munchy_job_defaults": {
-                "profile_routing": {
+            "groups": {"voice": {"archive_mode": "audio"}},
+            "munchy_job": {
+                "routing": {
                     "routes": [
                         {
                             "id": "voice-audio",
@@ -374,9 +374,9 @@ def test_jeb_notify_uses_canonical_operator_webhook_env(
                     "sources": ["camera"],
                 }
             ],
-            "profile_groups": {"video": {"archive_mode": "preserve"}},
-            "munchy_job_defaults": {
-                "profile_routing": {
+            "groups": {"video": {"archive_mode": "preserve"}},
+            "munchy_job": {
+                "routing": {
                     "routes": [
                         {
                             "id": "camera-video",
@@ -392,7 +392,7 @@ def test_jeb_notify_uses_canonical_operator_webhook_env(
     assert config.notify.url == "http://operator.test/webhook"
 
 
-def test_jeb_notify_ignores_toml_webhook_url(
+def test_jeb_notify_ignores_config_webhook_url(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -420,9 +420,9 @@ def test_jeb_notify_ignores_toml_webhook_url(
                 "sources": ["camera"],
             }
         ],
-        "profile_groups": {"video": {"archive_mode": "preserve"}},
-        "munchy_job_defaults": {
-            "profile_routing": {
+        "groups": {"video": {"archive_mode": "preserve"}},
+        "munchy_job": {
+            "routing": {
                 "routes": [
                     {
                         "id": "camera-video",
@@ -810,9 +810,7 @@ def test_routing_preflight_leave_action_excludes_file_from_batch(tmp_path: Path)
     collector.run_once()
 
     batch_id = _single_batch_id(collector)
-    assert [row["target_path"] for row in collector.batch_files(batch_id)] == [
-        "phone/IMG_0001.MOV"
-    ]
+    assert [row["target_path"] for row in collector.batch_files(batch_id)] == ["phone/IMG_0001.MOV"]
     assert (tmp_path / "landing" / "phone" / "downloads" / "sent.mp4").exists()
 
 
@@ -1435,10 +1433,8 @@ def test_jeb_only_accepts_munchy_targets(tmp_path: Path) -> None:
                         "sources": ["camera"],
                     }
                 ],
-                "profile_groups": {"video": {}},
-                "munchy_job_defaults": {
-                    "profile_routing": {"routes": [{"id": "r", "group": "video"}]}
-                },
+                "groups": {"video": {}},
+                "munchy_job": {"routing": {"routes": [{"id": "r", "group": "video"}]}},
             }
         )
 
@@ -1455,9 +1451,9 @@ def test_config_requires_munchy_profile_routing(tmp_path: Path) -> None:
                 "sources": ["camera"],
             }
         ],
-        "profile_groups": {"video": {}},
-        "munchy_job_defaults": {},
+        "groups": {"video": {}},
+        "munchy_job": {},
     }
 
-    with pytest.raises(ValueError, match="munchy_job_defaults.profile_routing is required"):
+    with pytest.raises(ValueError, match="munchy_job.routing is required"):
         config_from_mapping(raw)

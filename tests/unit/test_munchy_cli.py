@@ -43,16 +43,15 @@ def test_munchy_command_help_has_summaries() -> None:
 
 
 def test_munchy_profile_validate(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    profile_path = tmp_path / "profile.toml"
+    profile_path = tmp_path / "profile.yaml"
     profile_path.write_text(
         """
-target = "munchy-av1-nvenc"
-name = "camera"
-
-[archive]
-codec = "av1_nvenc"
-container = "webm"
-quality = 52
+target: munchy-av1-nvenc
+name: camera
+archive:
+  codec: av1_nvenc
+  container: webm
+  quality: 52
 """.strip(),
         encoding="utf-8",
     )
@@ -64,16 +63,15 @@ quality = 52
 
 
 def test_munchy_profile_validate_json(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    profile_path = tmp_path / "profile.toml"
+    profile_path = tmp_path / "profile.yaml"
     profile_path.write_text(
         """
-target = "munchy-av1-nvenc"
-name = "camera"
-
-[archive]
-codec = "av1_nvenc"
-container = "webm"
-quality = 52
+target: munchy-av1-nvenc
+name: camera
+archive:
+  codec: av1_nvenc
+  container: webm
+  quality: 52
 """.strip(),
         encoding="utf-8",
     )
@@ -98,12 +96,12 @@ quality = 52
 
 
 def test_munchy_profile_show_json(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    profile_path = tmp_path / "profile.toml"
+    profile_path = tmp_path / "profile.yaml"
     profile_path.write_text(
         """
-schema_version = 1
-target = "munchy-av1-nvenc"
-name = "camera"
+schema_version: 1
+target: munchy-av1-nvenc
+name: camera
 """.strip(),
         encoding="utf-8",
     )
@@ -117,18 +115,18 @@ name = "camera"
 
 
 def test_munchy_profile_show_accepts_job_config_profiles(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    config_path = tmp_path / "job.toml"
+    config_path = tmp_path / "job.yaml"
     config_path.write_text(
         """
-[profiles.camera]
-schema_version = 1
-target = "munchy-av1-nvenc"
-name = "camera"
-
-[profiles.camera.archive]
-codec = "av1_nvenc"
-container = "webm"
-quality = 38
+profiles:
+  camera:
+    schema_version: 1
+    target: munchy-av1-nvenc
+    name: camera
+    archive:
+      codec: av1_nvenc
+      container: webm
+      quality: 38
 """.strip(),
         encoding="utf-8",
     )
@@ -479,46 +477,48 @@ def test_munchy_job_start_uses_configured_profile_routing(monkeypatch, tmp_path)
     source_dir = tmp_path / "camera"
     source_dir.mkdir()
     (source_dir / "clip.mp4").write_bytes(b"video")
-    config = tmp_path / "munchy.toml"
+    config = tmp_path / "munchy.yaml"
     config.write_text(
         """
-[job]
-workflow_mode = "collection_archive"
+job:
+  workflow_mode: collection_archive
+  collection_archive:
+    destination: riverhog
+  routing:
+    routes:
+      - id: camera-video
+        group: video
+        when:
+          path:
+            suffix: .mp4
 
-[job.collection_archive]
-destination = "riverhog"
+profiles:
+  camera:
+    schema_version: 1
+    target: munchy-av1-nvenc
+    name: camera
+    archive:
+      codec: av1_nvenc
+      container: webm
+      quality: 38
 
-[profiles.camera]
-schema_version = 1
-target = "munchy-av1-nvenc"
-name = "camera"
-
-[profiles.camera.archive]
-codec = "av1_nvenc"
-container = "webm"
-quality = 38
-
-[groups.video]
-profile = "camera"
-archive_mode = "av1_nvenc"
-tasks = ["archive_video"]
-
-[groups.video.metadata_projection]
-creators = ["Example Operator"]
-tags = ["device/camera"]
-
-[groups.video.metadata_projection.device]
-make = "Example"
-model = "Camera"
-
-[groups.preserve]
-archive_mode = "preserve"
-tasks = []
-
-[[job.profile_routing.routes]]
-id = "camera-video"
-group = "video"
-when = { path = { suffix = ".mp4" } }
+groups:
+  video:
+    profile: camera
+    archive_mode: av1_nvenc
+    tasks:
+      - archive_video
+    metadata_projection:
+      creators:
+        - Example Operator
+      tags:
+        - device/camera
+      device:
+        make: Example
+        model: Camera
+  preserve:
+    archive_mode: preserve
+    tasks: []
 """.strip(),
         encoding="utf-8",
     )
@@ -582,7 +582,7 @@ when = { path = { suffix = ".mp4" } }
     assert request.job_payload["groups"]["video"]["metadata_projection"] == {
         "creators": ["Example Operator"],
         "device": {"make": "Example", "model": "Camera"},
-        "tags": ["device/camera"]
+        "tags": ["device/camera"],
     }
     assert seen["requested_containers"] == ["webm"]
 
@@ -591,28 +591,28 @@ def test_munchy_job_start_defaults_audio_mode_to_archive_audio(monkeypatch, tmp_
     source_dir = tmp_path / "voice"
     source_dir.mkdir()
     (source_dir / "REC_20260628_203040.WAV").write_bytes(b"audio")
-    config = tmp_path / "munchy-audio.toml"
+    config = tmp_path / "munchy-audio.yaml"
     config.write_text(
         """
-[job]
-workflow_mode = "collection_archive"
-archive_mode = "audio"
+job:
+  workflow_mode: collection_archive
+  archive_mode: audio
 
-[profiles.voice]
-schema_version = 1
-name = "voice"
+profiles:
+  voice:
+    schema_version: 1
+    name: voice
+    archive:
+      codec: opus
+      audio:
+        bitrate: 64k
+        sample_rate: 24000
+        channels: 1
 
-[profiles.voice.archive]
-codec = "opus"
-
-[profiles.voice.archive.audio]
-bitrate = "64k"
-sample_rate = 24000
-channels = 1
-
-[groups.voice]
-profile = "voice"
-archive_mode = "audio"
+groups:
+  voice:
+    profile: voice
+    archive_mode: audio
 """.strip(),
         encoding="utf-8",
     )
@@ -677,21 +677,26 @@ def test_munchy_routing_explain_reports_matches(tmp_path) -> None:  # type: igno
     source_dir = tmp_path / "phone"
     source_dir.mkdir()
     (source_dir / "IMG_0001.MOV").write_bytes(b"video")
-    config = tmp_path / "munchy.toml"
+    config = tmp_path / "munchy.yaml"
     config.write_text(
         """
-[job]
-upload_prefix = "phone"
+job:
+  upload_prefix: phone
+  routing:
+    routes:
+      - id: phone-video
+        group: video
+        into: phone/video
+        when:
+          path:
+            prefix: phone
+            suffix: .mov
 
-[groups.video]
-archive_mode = "av1_nvenc"
-tasks = ["archive_video"]
-
-[[job.profile_routing.routes]]
-id = "phone-video"
-group = "video"
-into = "phone/video"
-when = { path = { prefix = "phone", suffix = ".mov" } }
+groups:
+  video:
+    archive_mode: av1_nvenc
+    tasks:
+      - archive_video
 """.strip(),
         encoding="utf-8",
     )
@@ -719,30 +724,39 @@ def test_munchy_routing_explain_uses_configured_sidecar_facts_only(
     source_dir.mkdir()
     (source_dir / "C0001.MP4").write_bytes(b"video")
     (source_dir / "C0001M01.XML").write_text("<metadata />", encoding="utf-8")
-    config = tmp_path / "munchy.toml"
+    config = tmp_path / "munchy.yaml"
     config.write_text(
         """
-[job]
-upload_prefix = "camera"
+job:
+  upload_prefix: camera
+  routing:
+    sidecars:
+      camera_xml:
+        format: xml
+        path: "{parent}/{stem}M01.XML"
+        primary:
+          path:
+            suffix: .mp4
+        facts:
+          source: exiftool
+          tags:
+            - Make
+            - Model
+    routes:
+      - id: camera-video
+        group: video
+        when:
+          all:
+            - path:
+                suffix: .mp4
+            - fact: sidecars.camera_xml.facts.exif.make
+              equals: example imaging
 
-[groups.video]
-archive_mode = "av1_nvenc"
-tasks = ["archive_video"]
-
-[[job.profile_routing.sidecars]]
-id = "camera_xml"
-format = "xml"
-path = "{parent}/{stem}M01.XML"
-primary = { path = { suffix = ".mp4" } }
-facts = { source = "exiftool", tags = ["Make", "Model"] }
-
-[[job.profile_routing.routes]]
-id = "camera-video"
-group = "video"
-when = { all = [
-  { path = { suffix = ".mp4" } },
-  { fact = "sidecars.camera_xml.facts.exif.make", equals = "example imaging" },
-] }
+groups:
+  video:
+    archive_mode: av1_nvenc
+    tasks:
+      - archive_video
 """.strip(),
         encoding="utf-8",
     )
@@ -780,33 +794,37 @@ def test_munchy_routing_explain_skips_expensive_tools_for_path_only_route(
     source_dir = tmp_path / "camera"
     source_dir.mkdir()
     (source_dir / "leinfo.sav").write_bytes(b"state")
-    config = tmp_path / "munchy.toml"
+    config = tmp_path / "munchy.yaml"
     config.write_text(
         """
-[job]
-upload_prefix = "camera"
+job:
+  upload_prefix: camera
+  routing:
+    routes:
+      - id: device-state
+        group: state
+        when:
+          path:
+            filename_glob: leinfo.sav
+      - id: camera-video
+        group: video
+        when:
+          all:
+            - path:
+                suffix: .mp4
+            - fact: video.codec
+              equals: hevc
+            - fact: exif.make
+              equals: example imaging
 
-[groups.state]
-archive_mode = "preserve"
-tasks = []
-
-[groups.video]
-archive_mode = "av1_nvenc"
-tasks = ["archive_video"]
-
-[[job.profile_routing.routes]]
-id = "device-state"
-group = "state"
-when = { path = { filename_glob = "leinfo.sav" } }
-
-[[job.profile_routing.routes]]
-id = "camera-video"
-group = "video"
-when = { all = [
-  { path = { suffix = ".mp4" } },
-  { fact = "video.codec", equals = "hevc" },
-  { fact = "exif.make", equals = "example imaging" },
-] }
+groups:
+  state:
+    archive_mode: preserve
+    tasks: []
+  video:
+    archive_mode: av1_nvenc
+    tasks:
+      - archive_video
 """.strip(),
         encoding="utf-8",
     )

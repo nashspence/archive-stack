@@ -1,0 +1,122 @@
+collector:
+  preflight_repair: safe_remux
+  preflight_repair_original: keep_corrupt
+
+notify:
+  enabled: false
+  base_url: https://archive.example.invalid
+  recipients:
+    - operator
+  timeout: 10s
+
+targets:
+  munchy:
+    type: munchy
+    url_env: JEB_MUNCHY_URL
+
+profiles:
+  security-camera:
+    name: security-camera
+    archive:
+      codec: av1_nvenc
+      container: webm
+      quality: 38
+      max_height: 720
+      fps_mode: passthrough
+      scale_flags: lanczos
+      pix_fmt: p010le
+      preset: p7
+      tune: uhq
+      audio:
+        codec: opus
+        bitrate: 28k
+        sample_rate: 24000
+        channels: 1
+        application: audio
+        frame_duration: 40
+        cutoff: 12000
+        compression_level: 10
+        vbr: "on"
+
+groups:
+  video:
+    profile: security-camera
+    archive_mode: av1_nvenc
+    metadata_projection:
+      allow_missing_gps: true
+      creators:
+        - Example Operator
+      tags:
+        - device/example-camera
+      device:
+        make: Example
+        model: Security Camera
+  preserve:
+    archive_mode: preserve
+
+munchy_job:
+  riverhog:
+    enabled: true
+  notify:
+    enabled: true
+    recipients:
+      - operator
+  routing:
+    routes:
+      - id: example-camera-video
+        group: video
+        when:
+          path:
+            prefix: example-camera
+            suffix_in:
+              - .mp4
+              - .mov
+              - .mkv
+              - .webm
+      - id: preserve-artifacts
+        group: preserve
+        when:
+          path:
+            suffix_in:
+              - .xml
+              - .json
+              - .txt
+              - .srt
+              - .vtt
+              - .nfo
+      - id: example-phone-library-review
+        group: preserve
+        when:
+          path:
+            prefix: example-phone
+
+sources:
+  - id: example-camera
+    enabled: false
+    path: /landing/example-camera
+    include_extensions:
+      - .mp4
+      - .mov
+      - .mkv
+      - .webm
+      - .xml
+      - .json
+      - .txt
+  - id: example-phone
+    enabled: false
+    path: /landing/example-phone
+    include_extensions: []
+
+collections:
+  - id: weekly-device-artifacts
+    enabled: true
+    collection_slug: weekly-device-artifacts
+    target: munchy
+    cleanup: after_target_success
+    schedule: weekly
+    weekday: monday
+    hour: 3
+    minute: 0
+    sources:
+      - example-camera
+      - example-phone
