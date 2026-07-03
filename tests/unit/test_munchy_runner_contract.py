@@ -800,6 +800,111 @@ def test_metadata_projection_can_use_uploaded_filesystem_birthtime(
     assert metadata.capture_date_source == "filesystem_birthtime:source_birthtime"
 
 
+def test_metadata_projection_uses_declared_non_xmp_sidecar_facts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.tusd_data_path("camera-video-1").parent.mkdir(parents=True, exist_ok=True)
+    primary_path = runner.tusd_data_path("camera-video-1")
+    sidecar_path = runner.tusd_data_path("camera-xml-1")
+    primary_path.write_bytes(b"video")
+    sidecar_path.write_text("<metadata />", encoding="utf-8")
+    exiftool_calls: list[tuple[Path, tuple[str, ...]]] = []
+
+    monkeypatch.setattr(
+        runner,
+        "ffprobe_for_routing",
+        lambda _path: {"format": {}, "streams": []},
+    )
+
+    def fake_exiftool(path: Path, *, tags=()):  # type: ignore[no-untyped-def]
+        exiftool_calls.append((path, tuple(tags)))
+        if path == sidecar_path:
+            assert tuple(tags) == ("VendorCaptureDate",)
+            return {"VendorCaptureDate": "2026:06:28 20:30:40-07:00"}
+        return {}
+
+    monkeypatch.setattr(runner, "exiftool_for_routing", fake_exiftool)
+    upload = {
+        "upload_id": "upload-1",
+        "files": [
+            {
+                "path": "camera/C0001.MP4",
+                "bytes": 5,
+                "upload_id": "camera-video-1",
+                "resolved_group": "video",
+                "resolved_group_rel": "camera/C0001.MP4",
+            },
+            {
+                "path": "camera/C0001M01.XML",
+                "bytes": 12,
+                "upload_id": "camera-xml-1",
+                "profile_route_action": "evidence",
+                "profile_sidecar_id": "camera_xml",
+                "profile_sidecar_format": "xml",
+                "profile_sidecar_for": "camera/C0001.MP4",
+                "resolved_group": "video",
+                "resolved_group_rel": "camera/C0001M01.XML",
+            },
+        ],
+    }
+    job = {
+        "job_id": "job-1",
+        "profile_routing": {
+            "sidecars": [
+                {
+                    "id": "camera_xml",
+                    "format": "xml",
+                    "paths": ["{parent}/{stem}M01.XML"],
+                    "primary": {"path": {"suffix": ".mp4"}},
+                    "facts": {
+                        "source": "exiftool",
+                        "tags": ["VendorCaptureDate"],
+                    },
+                }
+            ],
+            "routes": [
+                {
+                    "id": "camera-video",
+                    "group": "video",
+                    "when": {"path": {"suffix": ".mp4"}},
+                }
+            ],
+        },
+    }
+    group_config = {
+        "metadata_projection": {
+            "allow_missing_gps": True,
+            "device": {"make": "Example", "model": "Camera"},
+            "creators": ["Example Operator"],
+            "capture_date_sources": [
+                {
+                    "type": "sidecar",
+                    "id": "camera_xml",
+                    "fact": "exiftool.tags.vendor_capture_date",
+                },
+            ],
+        }
+    }
+
+    changed = runner.ensure_file_projection_metadata(
+        upload,
+        upload["files"][0],
+        job=job,
+        group_config=group_config,
+    )
+
+    assert changed is True
+    metadata = upload["files"][0]["metadata_projection_metadata"]
+    assert metadata["capture_date"] == "2026-06-28T20:30:40-07:00"
+    assert (
+        metadata["capture_date_source"]
+        == "sidecar:camera_xml:exiftool.tags.vendor_capture_date"
+    )
+    assert (sidecar_path, ("VendorCaptureDate",)) in exiftool_calls
+
+
 def test_metadata_projection_can_use_configured_gps(
     tmp_path: Path,
     monkeypatch,
@@ -903,6 +1008,7 @@ def test_gpu_payload_carries_required_projected_container_metadata(
     }
 
     container_metadata, changed = runner.container_metadata_for_gpu_payload(
+        {"job_id": "job-1"},
         {"upload_id": "upload-1", "files": [file_state]},
         [file_state],
         group_name="camera",

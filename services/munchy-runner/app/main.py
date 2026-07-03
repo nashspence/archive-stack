@@ -61,6 +61,7 @@ from munchy.profile_routing import (
     match_profile_route,
     matched_fact_values,
     normalize_exiftool_tag,
+    profile_sidecar_rules,
     profile_routing_exiftool_tags,
     profile_routing_plan,
     profile_routing_requires_exiftool,
@@ -70,6 +71,7 @@ from munchy.profile_routing import (
     routing_file_facts,
     routing_probe_summary,
     sidecar_exiftool_tag_requests,
+    sidecar_rule_exiftool_tags,
 )
 from munchy.profiles import (
     MUNCHY_AUDIO_PROFILE_TARGET,
@@ -4348,16 +4350,23 @@ def file_state_filesystem_metadata(file_state: Mapping[str, Any]) -> Mapping[str
 def metadata_projection_sidecar_facts(
     upload: dict[str, Any],
     file_state: Mapping[str, Any],
+    *,
+    routing: Mapping[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     sidecars: dict[str, dict[str, Any]] = {}
     for evidence in sidecar_evidence_files_for_primary(upload, file_state):
         sidecar_id = str(evidence.get("profile_sidecar_id") or "").strip()
         sidecar_format = str(evidence.get("profile_sidecar_format") or "opaque").strip()
-        if not sidecar_id or sidecar_format.casefold() != "xmp":
+        if not sidecar_id:
+            continue
+        tags = metadata_projection_sidecar_exiftool_tags(routing, sidecar_id=sidecar_id)
+        if not tags:
             continue
         rel_path = str(evidence.get("path") or "")
         source_path = upload_file_data_path(evidence)
-        exiftool_summary = routing_exiftool_summary(exiftool_for_routing(source_path))
+        exiftool_summary = routing_exiftool_summary(
+            exiftool_for_routing(source_path, tags=tags)
+        )
         sidecars[sidecar_id] = {
             "path": rel_path,
             "format": sidecar_format,
@@ -4367,6 +4376,26 @@ def metadata_projection_sidecar_facts(
             ),
         }
     return sidecars
+
+
+def job_profile_routing(job: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    if not isinstance(job, Mapping):
+        return None
+    routing = job.get("profile_routing")
+    return cast(Mapping[str, Any], routing) if isinstance(routing, Mapping) else None
+
+
+def metadata_projection_sidecar_exiftool_tags(
+    routing: Mapping[str, Any] | None,
+    *,
+    sidecar_id: str,
+) -> tuple[str, ...]:
+    if not isinstance(routing, Mapping):
+        return ()
+    for rule in profile_sidecar_rules(routing):
+        if str(rule.get("id") or "").strip() == sidecar_id:
+            return sidecar_rule_exiftool_tags(rule)
+    return ()
 
 
 def xmp_evidence_sidecar_path(
@@ -4427,6 +4456,7 @@ def projection_metadata_satisfies_config(
 
 
 def container_metadata_for_gpu_payload(
+    job: dict[str, Any],
     upload: dict[str, Any],
     file_states: list[dict[str, Any]],
     *,
@@ -4439,7 +4469,12 @@ def container_metadata_for_gpu_payload(
     metadata_by_rel_path: dict[str, dict[str, Any]] = {}
     changed = False
     for file_state in file_states:
-        if ensure_file_projection_metadata(upload, file_state, group_config=group_config):
+        if ensure_file_projection_metadata(
+            upload,
+            file_state,
+            job=job,
+            group_config=group_config,
+        ):
             changed = True
         stored = file_state.get("metadata_projection_metadata")
         if isinstance(stored, dict):
@@ -4461,6 +4496,7 @@ def ensure_file_projection_metadata(
     upload: dict[str, Any],
     file_state: dict[str, Any],
     *,
+    job: Mapping[str, Any] | None = None,
     group_config: dict[str, Any],
 ) -> bool:
     if not metadata_projection_enabled(group_config):
@@ -4477,7 +4513,11 @@ def ensure_file_projection_metadata(
         upload_file_data_path(file_state),
         group_config=group_config,
         filesystem_metadata=file_state_filesystem_metadata(file_state),
-        sidecar_facts=metadata_projection_sidecar_facts(upload, file_state),
+        sidecar_facts=metadata_projection_sidecar_facts(
+            upload,
+            file_state,
+            routing=job_profile_routing(job),
+        ),
     )
     file_state["metadata_projection_metadata"] = metadata.as_dict()
     file_state["metadata_projection_captured_at"] = now_iso()
@@ -4520,7 +4560,11 @@ def projection_metadata_for_file_output(
         source_path,
         group_config=group_config,
         filesystem_metadata=file_state_filesystem_metadata(file_state),
-        sidecar_facts=metadata_projection_sidecar_facts(upload, file_state),
+        sidecar_facts=metadata_projection_sidecar_facts(
+            upload,
+            file_state,
+            routing=job_profile_routing(job),
+        ),
         tags=tags,
     )
 
@@ -4792,7 +4836,12 @@ def write_metadata_projection_sidecars(
                     "metadata projection output is missing for "
                     f"{file_state.get('path')}: {output}"
                 )
-            if ensure_file_projection_metadata(upload, file_state, group_config=group_config):
+            if ensure_file_projection_metadata(
+                upload,
+                file_state,
+                job=job,
+                group_config=group_config,
+            ):
                 upload_changed = True
             metadata = projection_metadata_for_file_output(
                 upload,
@@ -7351,7 +7400,12 @@ def mark_existing_eager_outputs(
                 file_state,
             ) and not source_artifacts_sidecar.exists():
                 continue
-            if ensure_file_projection_metadata(upload, file_state, group_config=group_config):
+            if ensure_file_projection_metadata(
+                upload,
+                file_state,
+                job=job,
+                group_config=group_config,
+            ):
                 upload_changed = True
             mark_eager_file_encoded(
                 job,
@@ -8100,6 +8154,7 @@ def start_eager_gpu_batch(
 
     tasks: list[TaskName] = ["archive_video"]
     container_metadata, container_metadata_changed = container_metadata_for_gpu_payload(
+        job,
         upload,
         file_states,
         group_name=group_name,
@@ -8181,7 +8236,12 @@ def start_eager_audio_batch(
 
     upload_changed = False
     for file_state in file_states:
-        if ensure_file_projection_metadata(upload, file_state, group_config=group_config):
+        if ensure_file_projection_metadata(
+            upload,
+            file_state,
+            job=job,
+            group_config=group_config,
+        ):
             upload_changed = True
     if upload_changed:
         upload = save_input_upload_raw(upload)
@@ -8571,6 +8631,7 @@ def run_job(job_id: str) -> None:
                     )
                     container_metadata, container_metadata_changed = (
                         container_metadata_for_gpu_payload(
+                            job,
                             input_upload,
                             group_file_states,
                             group_name=group_name,

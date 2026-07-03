@@ -179,6 +179,25 @@ model = "Voice Recorder"
 If a configured regex or filesystem birth time source is present but invalid,
 projection fails rather than guessing.
 
+Sidecar capture-date sources can use the usual embedded capture-date keys from
+parsed sidecar facts, or can name one or more explicit fact keys when a vendor
+sidecar carries the authoritative timestamp under a nonstandard tag:
+
+```toml
+[groups.video.metadata_projection]
+capture_date_sources = [
+  { type = "sidecar", id = "camera_xml", fact = "exiftool.tags.vendor_capture_date" },
+  { type = "embedded" },
+]
+```
+
+The `fact` and `facts` keys are relative to the parsed sidecar fact namespace.
+For example, `exiftool.tags.vendor_capture_date` reads
+`sidecars.camera_xml.facts.exiftool.tags.vendor_capture_date` from the primary
+file's routing context. A configured sidecar date fact that is present but does
+not parse as an EXIF-style or ISO-style timestamp fails projection instead of
+silently falling through.
+
 GPS is written both as EXIF-style coordinates and WGS84 decimal coordinates.
 West and south coordinates must remain negative in the decimal fields. Altitude
 is written as an EXIF XMP rational with `exif:GPSAltitudeRef`.

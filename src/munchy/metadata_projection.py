@@ -565,10 +565,49 @@ def sidecar_capture_date(
     name = str(source.get("name") or source.get("id") or "sidecar").strip()
     if not name:
         raise MetadataProjectionError("metadata_projection sidecar source requires name")
+    configured_fact_keys = configured_capture_date_fact_keys(source)
     for sidecar_id, sidecar_facts in sidecar_fact_maps(facts, source):
-        capture_date, capture_date_source = first_embedded_capture_date(sidecar_facts)
+        if configured_fact_keys:
+            capture_date, capture_date_source = first_configured_capture_date(
+                sidecar_facts,
+                configured_fact_keys,
+                source_label=f"sidecar:{sidecar_id}:{name}",
+            )
+        else:
+            capture_date, capture_date_source = first_embedded_capture_date(sidecar_facts)
         if capture_date is not None:
             return capture_date, f"sidecar:{sidecar_id}:{capture_date_source}"
+    return None, None
+
+
+def configured_capture_date_fact_keys(source: Mapping[str, Any]) -> tuple[str, ...]:
+    fact = str(source.get("fact") or "").strip()
+    if fact:
+        return (fact,)
+    facts = source.get("facts")
+    if isinstance(facts, Sequence) and not isinstance(facts, str):
+        return tuple(str(item).strip() for item in facts if str(item).strip())
+    return ()
+
+
+def first_configured_capture_date(
+    facts: Mapping[str, Any],
+    keys: Sequence[str],
+    *,
+    source_label: str,
+) -> tuple[str | None, str | None]:
+    for key in keys:
+        values = metadata_values(fact_value(facts, key))
+        if not values:
+            continue
+        for value in values:
+            normalized = normalize_capture_date(value)
+            if normalized:
+                return normalized, key
+        raise MetadataProjectionError(
+            f"metadata_projection capture date source {source_label} found "
+            f"invalid capture date in {key}: {values[0]!r}"
+        )
     return None, None
 
 

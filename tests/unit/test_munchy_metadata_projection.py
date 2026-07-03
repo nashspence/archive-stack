@@ -232,6 +232,84 @@ def test_immich_projection_can_use_xmp_sidecar_evidence() -> None:
     assert metadata.gps_source == "sidecar:xmp:exif.gps_latitude+exif.gps_longitude"
 
 
+def test_immich_projection_can_use_configured_sidecar_capture_date_fact() -> None:
+    metadata = project_test_metadata(
+        {
+            "sidecars.ids": ["camera_xml"],
+            "sidecars.camera_xml.facts.exiftool.tags.vendor_capture_date": (
+                "2026:06:28 20:30:40-07:00"
+            ),
+            "exif.gps_latitude": "37.1",
+            "exif.gps_longitude": "-122.1",
+        },
+        capture_date_sources=[
+            {
+                "type": "sidecar",
+                "id": "camera_xml",
+                "fact": "exiftool.tags.vendor_capture_date",
+            },
+            {"type": "embedded"},
+        ],
+    )
+
+    assert metadata.capture_date == "2026-06-28T20:30:40-07:00"
+    assert (
+        metadata.capture_date_source
+        == "sidecar:camera_xml:exiftool.tags.vendor_capture_date"
+    )
+
+
+def test_immich_projection_can_use_configured_sidecar_capture_date_fallbacks() -> None:
+    metadata = project_test_metadata(
+        {
+            "sidecars.ids": ["camera_xml"],
+            "sidecars.camera_xml.facts.exiftool.tags.vendor_creation_date": "",
+            "sidecars.camera_xml.facts.exiftool.tags.vendor_capture_date": (
+                "2026-06-28T20:30:40Z"
+            ),
+            "exif.gps_latitude": "37.1",
+            "exif.gps_longitude": "-122.1",
+        },
+        capture_date_sources=[
+            {
+                "type": "sidecar",
+                "id": "camera_xml",
+                "facts": [
+                    "exiftool.tags.vendor_creation_date",
+                    "exiftool.tags.vendor_capture_date",
+                ],
+            },
+        ],
+    )
+
+    assert metadata.capture_date == "2026-06-28T20:30:40Z"
+    assert (
+        metadata.capture_date_source
+        == "sidecar:camera_xml:exiftool.tags.vendor_capture_date"
+    )
+
+
+def test_immich_projection_configured_sidecar_capture_date_must_parse() -> None:
+    with pytest.raises(MetadataProjectionError, match="invalid capture date"):
+        project_test_metadata(
+            {
+                "sidecars.ids": ["camera_xml"],
+                "sidecars.camera_xml.facts.exiftool.tags.vendor_capture_date": (
+                    "not a date"
+                ),
+                "exif.gps_latitude": "37.1",
+                "exif.gps_longitude": "-122.1",
+            },
+            capture_date_sources=[
+                {
+                    "type": "sidecar",
+                    "id": "camera_xml",
+                    "fact": "exiftool.tags.vendor_capture_date",
+                }
+            ],
+        )
+
+
 def test_immich_projection_filesystem_birthtime_must_parse() -> None:
     with pytest.raises(MetadataProjectionError, match="invalid capture date"):
         project_test_metadata(
