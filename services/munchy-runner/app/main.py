@@ -57,8 +57,10 @@ from munchy.profile_routing import (
     PREDICATE_KEYS,
     ProfileRoutingFile,
     apply_sidecar_rules,
+    exiftool_routing_facts,
     match_profile_route,
     matched_fact_values,
+    normalize_exiftool_tag,
     profile_routing_exiftool_tags,
     profile_routing_plan,
     profile_routing_requires_exiftool,
@@ -67,6 +69,7 @@ from munchy.profile_routing import (
     routing_exiftool_summary,
     routing_file_facts,
     routing_probe_summary,
+    sidecar_exiftool_tag_requests,
 )
 from munchy.profiles import (
     MUNCHY_AUDIO_PROFILE_TARGET,
@@ -948,6 +951,7 @@ class ProfileRoutingConfig(BaseModel):
                 )
         allowed_sidecar_keys = {
             "id",
+            "facts",
             "format",
             "path",
             "paths",
@@ -976,6 +980,32 @@ class ProfileRoutingConfig(BaseModel):
             path = sidecar.get("path")
             if path is not None and not (isinstance(path, str) and path.strip()):
                 raise ValueError(f"profile_routing.sidecars[{index}].path must be a string")
+            facts = sidecar.get("facts")
+            if facts is not None:
+                if not isinstance(facts, Mapping):
+                    raise ValueError(f"profile_routing.sidecars[{index}].facts must be a table")
+                unknown_fact_keys = sorted(set(facts) - {"source", "tags"})
+                if unknown_fact_keys:
+                    raise ValueError(
+                        f"profile_routing.sidecars[{index}].facts has unknown key(s): "
+                        + ", ".join(unknown_fact_keys)
+                    )
+                source = str(facts.get("source") or "exiftool").strip().casefold()
+                if source != "exiftool":
+                    raise ValueError(
+                        f"profile_routing.sidecars[{index}].facts.source must be exiftool"
+                    )
+                tags = facts.get("tags")
+                if (
+                    not isinstance(tags, list)
+                    or not tags
+                    or not all(isinstance(item, str) and item.strip() for item in tags)
+                ):
+                    raise ValueError(
+                        f"profile_routing.sidecars[{index}].facts.tags must be non-empty strings"
+                    )
+                for tag in tags:
+                    normalize_exiftool_tag(tag)
             for key in ("primary", "sidecar"):
                 predicate = sidecar.get(key)
                 if predicate is None:
@@ -1001,6 +1031,8 @@ class ProfileRoutingPreflightFile(BaseModel):
     probe_error: str | None = Field(default=None, max_length=1000)
     routing_facts: dict[str, Any] | None = None
     facts_error: str | None = Field(default=None, max_length=1000)
+    sidecar_facts: dict[str, Any] | None = None
+    sidecar_facts_error: str | None = Field(default=None, max_length=1000)
 
     @field_validator("path")
     @classmethod
@@ -3586,6 +3618,7 @@ def runner_profile_routing_file(
     file_state: dict[str, Any],
     *,
     base_routing_facts: Mapping[str, Any] | None = None,
+    sidecar_exiftool_tags: Sequence[str] = (),
 ) -> ProfileRoutingFile:
     rel_path = str(file_state["path"])
     path = upload_file_data_path(file_state)
@@ -3603,6 +3636,17 @@ def runner_profile_routing_file(
         if profile_routing_needs_exiftool(routing) and not is_sidecar_evidence
         else None
     )
+    sidecar_facts: dict[str, Any] | None = None
+    sidecar_facts_error: str | None = None
+    if sidecar_exiftool_tags:
+        try:
+            sidecar_facts = exiftool_routing_facts(
+                routing_exiftool_summary(
+                    exiftool_for_routing(path, tags=sidecar_exiftool_tags)
+                )
+            )
+        except RoutingFailed as exc:
+            sidecar_facts_error = str(exc)[:1000]
     return ProfileRoutingFile(
         path=rel_path,
         bytes=int(file_state.get("bytes") or 0),
@@ -3614,6 +3658,8 @@ def runner_profile_routing_file(
             exiftool_summary=exiftool_summary,
             routing_facts=base_facts,
         ),
+        sidecar_facts=sidecar_facts,
+        sidecar_facts_error=sidecar_facts_error,
     )
 
 
@@ -3758,6 +3804,11 @@ def route_completed_input_files(
     )
     if len(files_to_route) != len(complete_files):
         return upload
+    path_facts_by_path = {
+        str(file_state["path"]): routing_file_facts(str(file_state["path"]))
+        for file_state in files_to_route
+    }
+    sidecar_tag_requests = sidecar_exiftool_tag_requests(routing, path_facts_by_path)
     base_facts_by_path = profile_routing_path_facts_for_files(routing, files_to_route)
     plan = profile_routing_plan(
         routing,
@@ -3766,6 +3817,7 @@ def route_completed_input_files(
                 routing,
                 file_state,
                 base_routing_facts=base_facts_by_path.get(str(file_state["path"])),
+                sidecar_exiftool_tags=sidecar_tag_requests.get(str(file_state["path"]), ()),
             )
             for file_state in files_to_route
         ],
@@ -4516,6 +4568,12 @@ def profile_routing_preflight_readout(
     routing: Mapping[str, Any],
     plan: Any,
 ) -> dict[str, Any]:
+    sidecar_facts_by_path = {
+        item.path: item.sidecar_facts for item in req.files if item.sidecar_facts is not None
+    }
+    sidecar_facts_errors_by_path = {
+        item.path: item.sidecar_facts_error for item in req.files if item.sidecar_facts_error
+    }
     facts_by_path = {
         item.path: routing_file_facts(
             item.path,
@@ -4524,7 +4582,12 @@ def profile_routing_preflight_readout(
         )
         for item in req.files
     }
-    facts_by_path = apply_sidecar_rules(routing, facts_by_path)
+    facts_by_path = apply_sidecar_rules(
+        routing,
+        facts_by_path,
+        sidecar_facts_by_path=sidecar_facts_by_path,
+        sidecar_facts_errors_by_path=sidecar_facts_errors_by_path,
+    )
     group_configs = {
         name: group.model_dump(mode="python", exclude_none=True)
         for name, group in req.groups.items()
@@ -8967,6 +9030,8 @@ def profile_routing_preflight(req: ProfileRoutingPreflightRequest) -> dict[str, 
                 probe_error=item.probe_error,
                 routing_facts=item.routing_facts,
                 facts_error=item.facts_error,
+                sidecar_facts=item.sidecar_facts,
+                sidecar_facts_error=item.sidecar_facts_error,
             )
             for item in req.files
         ],

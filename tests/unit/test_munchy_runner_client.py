@@ -171,6 +171,8 @@ def test_profile_routing_preflight_posts_manifest() -> None:
                         "probe_error": None,
                         "routing_facts": {"path.suffix": ".mov", "video.codec": "hevc"},
                         "facts_error": None,
+                        "sidecar_facts": None,
+                        "sidecar_facts_error": None,
                     }
                 ],
                 "groups": {"video": {"archive_mode": "av1_nvenc", "tasks": []}},

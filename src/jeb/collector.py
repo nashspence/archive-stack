@@ -29,10 +29,14 @@ from munchy.preflight import (
 )
 from munchy.profile_routing import (
     profile_routes,
+    exiftool_routing_facts,
     profile_routing_exiftool_tags,
+    profile_routing_requires_exiftool,
+    profile_routing_requires_probe,
     routing_exiftool_summary,
     routing_file_facts,
     routing_probe_summary,
+    sidecar_exiftool_tag_requests,
 )
 from munchy.runner_client import (
     MunchyRunnerClient,
@@ -927,8 +931,20 @@ class Collector:
         target = self.target_by_name(collection.target)
         groups = munchy_groups_payload(self.config)
         profile_routing = mapping(self.config.munchy_job_defaults.get("profile_routing"))
+        path_facts_by_path = {
+            item.target_path: routing_file_facts(item.target_path) for item in files
+        }
+        sidecar_tag_requests = sidecar_exiftool_tag_requests(
+            profile_routing,
+            path_facts_by_path,
+        )
         preflight_files = tuple(
-            self.routing_preflight_file(item, profile_routing=profile_routing) for item in files
+            self.routing_preflight_file(
+                item,
+                profile_routing=profile_routing,
+                sidecar_exiftool_tags=sidecar_tag_requests.get(item.target_path, ()),
+            )
+            for item in files
         )
         try:
             result = MunchyRunnerClient(target.url).profile_routing_preflight(
@@ -975,24 +991,41 @@ class Collector:
         item: EligibleFile,
         *,
         profile_routing: Mapping[str, Any],
+        sidecar_exiftool_tags: Sequence[str] = (),
     ) -> RunnerProfileRoutingPreflightFile:
-        try:
-            probe_summary = routing_probe_summary(ffprobe_for_routing_preflight(item.path))
-            probe_error = None
-        except RoutingProbeError as exc:
-            probe_summary = None
-            probe_error = str(exc)[:1000]
-        try:
-            exiftool_summary = routing_exiftool_summary(
-                exiftool_for_routing_preflight(
-                    item.path,
-                    tags=profile_routing_exiftool_tags(profile_routing),
+        probe_summary: dict[str, Any] | None = None
+        probe_error: str | None = None
+        if profile_routing_requires_probe(profile_routing):
+            try:
+                probe_summary = routing_probe_summary(ffprobe_for_routing_preflight(item.path))
+            except RoutingProbeError as exc:
+                probe_error = str(exc)[:1000]
+        exiftool_summary: dict[str, Any] | None = None
+        facts_error: str | None = None
+        if profile_routing_requires_exiftool(profile_routing):
+            try:
+                exiftool_summary = routing_exiftool_summary(
+                    exiftool_for_routing_preflight(
+                        item.path,
+                        tags=profile_routing_exiftool_tags(profile_routing),
+                    )
                 )
-            )
-            facts_error = None
-        except RoutingFactsError as exc:
-            exiftool_summary = None
-            facts_error = str(exc)[:1000]
+            except RoutingFactsError as exc:
+                facts_error = str(exc)[:1000]
+        sidecar_facts: dict[str, Any] | None = None
+        sidecar_facts_error: str | None = None
+        if sidecar_exiftool_tags:
+            try:
+                sidecar_facts = exiftool_routing_facts(
+                    routing_exiftool_summary(
+                        exiftool_for_routing_preflight(
+                            item.path,
+                            tags=sidecar_exiftool_tags,
+                        )
+                    )
+                )
+            except RoutingFactsError as exc:
+                sidecar_facts_error = str(exc)[:1000]
         return RunnerProfileRoutingPreflightFile(
             rel_path=item.target_path,
             bytes=item.bytes,
@@ -1004,6 +1037,8 @@ class Collector:
                 exiftool_summary=exiftool_summary,
             ),
             facts_error=facts_error,
+            sidecar_facts=sidecar_facts,
+            sidecar_facts_error=sidecar_facts_error,
         )
 
     def record_routing_preflight_failure(

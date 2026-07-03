@@ -5,7 +5,7 @@ import logging
 import os
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -319,6 +319,8 @@ def _route_with_shared_matcher(monkeypatch: pytest.MonkeyPatch) -> None:
                     probe_error=item.probe_error,
                     routing_facts=item.routing_facts,
                     facts_error=item.facts_error,
+                    sidecar_facts=item.sidecar_facts,
+                    sidecar_facts_error=item.sidecar_facts_error,
                 )
                 for item in files
             ],
@@ -559,6 +561,62 @@ def test_routing_preflight_failure_blocks_source_and_notifies(
             "Next: fix routes, then run `jeb archive-now --source phone`."
         )
     ]
+
+
+def test_routing_preflight_uses_configured_sidecar_facts_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _base_config(
+        tmp_path,
+        source_ids=["camera"],
+        source_overrides={"camera": {"include_extensions": [".mp4", ".xml"]}},
+    )
+    config.munchy_job_defaults["profile_routing"] = {
+        "sidecars": [
+            {
+                "id": "camera_xml",
+                "format": "xml",
+                "path": "{parent}/{stem}M01.XML",
+                "primary": {"path": {"suffix": ".mp4"}},
+                "facts": {"source": "exiftool", "tags": ["Make", "Model"]},
+            }
+        ],
+        "routes": [
+            {
+                "id": "sidecar-camera-video",
+                "group": "video",
+                "when": {
+                    "all": [
+                        {"path": {"suffix": ".mp4"}},
+                        {
+                            "fact": "sidecars.camera_xml.facts.exif.make",
+                            "equals": "example imaging",
+                        },
+                    ]
+                },
+            }
+        ],
+    }
+    _write_stable_file(tmp_path / "landing" / "camera" / "C0001.MP4")
+    _write_stable_file(tmp_path / "landing" / "camera" / "C0001M01.XML", b"<metadata />")
+    exiftool_calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def fake_exiftool(path: Path, *, tags: Sequence[str]) -> dict[str, object]:
+        exiftool_calls.append((path.name, tuple(tags)))
+        assert path.name == "C0001M01.XML"
+        return {
+            "EXIF:Make": "Example Imaging",
+            "EXIF:Model": "Synthetic Camera",
+        }
+
+    monkeypatch.setattr("jeb.collector.exiftool_for_routing_preflight", fake_exiftool)
+    collector = Collector(config, target_runners={"munchy": CompleteRunner()})
+
+    collector.run_once()
+
+    assert collector.routing_preflight_failures() == []
+    assert exiftool_calls == [("C0001M01.XML", ("Make", "Model"))]
 
 
 def test_routing_preflight_transient_http_error_retries_without_notification(

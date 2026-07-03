@@ -31,6 +31,31 @@ For `format = "xmp"`, Munchy looks for `primary-path.xmp` and
 `primary-stem.xmp` in the same directory unless explicit `path` or `paths`
 templates are configured.
 
+Sidecar rules can opt into parsed routing facts from matched evidence sidecars.
+This is generic and is not tied to a specific device format. The sidecar rule
+must name the bounded ExifTool tag set to read; Munchy then exposes the parsed
+facts on the primary routing context under
+`sidecars.<sidecar-id>.facts.*`:
+
+```toml
+[[job.profile_routing.sidecars]]
+id = "camera_xml"
+format = "xml"
+path = "{parent}/{stem}M01.XML"
+primary = { path = { suffix = ".mp4" } }
+facts = { source = "exiftool", tags = ["Make", "Model", "CaptureFPS"] }
+
+[[job.profile_routing.routes]]
+id = "xml-described-camera-video"
+group = "video"
+when = { all = [{ path = { suffix = ".mp4" } }, { fact = "sidecars.camera_xml.facts.exif.make", equals = "example imaging" }, { fact = "sidecars.camera_xml.facts.exiftool.tags.capture_fps", min = 100 }] }
+```
+
+When a `facts` block is configured for a matched primary, the sidecar and its
+parsed facts become a preflight requirement. A missing sidecar, missing parsed
+facts, or failed sidecar parse returns a `sidecar_facts_failed` routing failure
+instead of falling through to a broader route.
+
 Sidecar evidence inherits the primary file's routing disposition. If the primary
 is archived, the sidecar is recorded in source artifacts. If the primary is
 intentionally left, the sidecar is left too. If the primary is unmatched, the

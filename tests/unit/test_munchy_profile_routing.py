@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from munchy.profile_routing import (
     ProfileRoutingFile,
+    exiftool_routing_facts,
     match_profile_route,
     profile_routing_exiftool_tags,
     profile_routing_plan,
@@ -267,6 +268,167 @@ def test_profile_routing_attaches_xmp_sidecar_as_evidence() -> None:
     assert plan.matches[1]["sidecar_id"] == "xmp"
     assert plan.matches[1]["sidecar_format"] == "xmp"
     assert plan.matches[1]["sidecar_for"] == "phone/IMG_0001.MOV"
+
+
+def test_profile_routing_can_match_primary_from_generic_sidecar_facts() -> None:
+    routing = {
+        "sidecars": [
+            {
+                "id": "camera_xml",
+                "format": "xml",
+                "path": "{parent}/{stem}M01.XML",
+                "primary": {"path": {"suffix": ".mp4"}},
+                "facts": {
+                    "source": "exiftool",
+                    "tags": ["Make", "Model", "CaptureFPS", "CodecProfile"],
+                },
+            }
+        ],
+        "routes": [
+            {
+                "id": "sidecar-camera-video",
+                "group": "video",
+                "when": {
+                    "all": [
+                        {"path": {"suffix": ".mp4"}},
+                        {
+                            "fact": "sidecars.camera_xml.facts.exif.make",
+                            "equals": "example imaging",
+                        },
+                        {
+                            "fact": "sidecars.camera_xml.facts.exif.model_lower",
+                            "equals": "synthetic camera",
+                        },
+                        {
+                            "fact": "sidecars.camera_xml.facts.exiftool.tags.capture_fps",
+                            "equals": "119.88",
+                        },
+                    ]
+                },
+            }
+        ],
+    }
+
+    sidecar_facts = exiftool_routing_facts(
+        routing_exiftool_summary(
+            {
+                "EXIF:Make": "Example Imaging",
+                "EXIF:Model": "Synthetic Camera",
+                "XMP:CaptureFPS": "119.88",
+                "XMP:CodecProfile": "Example 4K",
+            }
+        )
+    )
+    plan = profile_routing_plan(
+        routing,
+        [
+            ProfileRoutingFile(path="camera/C0001.MP4", bytes=100),
+            ProfileRoutingFile(
+                path="camera/C0001M01.XML",
+                bytes=20,
+                sidecar_facts=sidecar_facts,
+            ),
+        ],
+        group_names={"video"},
+    )
+
+    assert plan.ok is True
+    assert [item["action"] for item in plan.matches] == ["upload", "evidence"]
+    assert plan.matches[0]["route_id"] == "sidecar-camera-video"
+    assert plan.matches[0]["matched_facts"] == {
+        "sidecars.camera_xml.facts.exif.make": "example imaging",
+        "sidecars.camera_xml.facts.exif.model_lower": "synthetic camera",
+        "sidecars.camera_xml.facts.exiftool.tags.capture_fps": "119.88",
+    }
+    assert plan.matches[1]["sidecar_id"] == "camera_xml"
+    assert plan.matches[1]["sidecar_for"] == "camera/C0001.MP4"
+
+
+def test_profile_routing_fails_when_configured_sidecar_facts_are_missing() -> None:
+    routing = {
+        "sidecars": [
+            {
+                "id": "camera_xml",
+                "format": "xml",
+                "path": "{parent}/{stem}M01.XML",
+                "primary": {"path": {"suffix": ".mp4"}},
+                "facts": {"source": "exiftool", "tags": ["Make"]},
+            }
+        ],
+        "routes": [
+            {
+                "id": "sidecar-camera-video",
+                "group": "video",
+                "when": {
+                    "fact": "sidecars.camera_xml.facts.exif.make",
+                    "equals": "example imaging",
+                },
+            },
+            {
+                "id": "broad-video-fallback",
+                "group": "video",
+                "when": {"path": {"suffix": ".mp4"}},
+            },
+        ],
+    }
+
+    plan = profile_routing_plan(
+        routing,
+        [ProfileRoutingFile(path="camera/C0001.MP4", bytes=100)],
+        group_names={"video"},
+    )
+
+    assert plan.ok is False
+    assert plan.matches == []
+    assert plan.unmatched[0]["path"] == "camera/C0001.MP4"
+    assert plan.unmatched[0]["reason"] == "sidecar_facts_failed"
+    assert "camera_xml: configured sidecar facts source not found" in (
+        plan.unmatched[0]["sidecar_facts_error"]
+    )
+
+
+def test_profile_routing_fails_when_configured_sidecar_facts_are_unparsable() -> None:
+    routing = {
+        "sidecars": [
+            {
+                "id": "camera_xml",
+                "format": "xml",
+                "path": "{parent}/{stem}M01.XML",
+                "primary": {"path": {"suffix": ".mp4"}},
+                "facts": {"source": "exiftool", "tags": ["Make"]},
+            }
+        ],
+        "routes": [
+            {
+                "id": "sidecar-camera-video",
+                "group": "video",
+                "when": {
+                    "fact": "sidecars.camera_xml.facts.exif.make",
+                    "equals": "example imaging",
+                },
+            },
+        ],
+    }
+
+    plan = profile_routing_plan(
+        routing,
+        [
+            ProfileRoutingFile(path="camera/C0001.MP4", bytes=100),
+            ProfileRoutingFile(
+                path="camera/C0001M01.XML",
+                bytes=20,
+                sidecar_facts_error="exiftool returned invalid JSON",
+            ),
+        ],
+        group_names={"video"},
+    )
+
+    assert plan.ok is False
+    assert plan.unmatched[0]["path"] == "camera/C0001.MP4"
+    assert plan.unmatched[0]["reason"] == "sidecar_facts_failed"
+    assert "camera/C0001M01.XML: exiftool returned invalid JSON" in (
+        plan.unmatched[0]["sidecar_facts_error"]
+    )
 
 
 def test_profile_routing_leaves_sidecar_evidence_for_left_primary() -> None:

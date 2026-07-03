@@ -709,3 +709,62 @@ when = { path = { prefix = "phone", suffix = ".mov" } }
     assert payload["matches"][0]["route_id"] == "phone-video"
     assert payload["matches"][0]["group"] == "video"
     assert payload["matches"][0]["collection_rel_path"] == "phone/video/IMG_0001.MOV"
+
+
+def test_munchy_routing_explain_uses_configured_sidecar_facts_only(
+    monkeypatch,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    source_dir = tmp_path / "camera"
+    source_dir.mkdir()
+    (source_dir / "C0001.MP4").write_bytes(b"video")
+    (source_dir / "C0001M01.XML").write_text("<metadata />", encoding="utf-8")
+    config = tmp_path / "munchy.toml"
+    config.write_text(
+        """
+[job]
+upload_prefix = "camera"
+
+[groups.video]
+archive_mode = "av1_nvenc"
+tasks = ["archive_video"]
+
+[[job.profile_routing.sidecars]]
+id = "camera_xml"
+format = "xml"
+path = "{parent}/{stem}M01.XML"
+primary = { path = { suffix = ".mp4" } }
+facts = { source = "exiftool", tags = ["Make", "Model"] }
+
+[[job.profile_routing.routes]]
+id = "camera-video"
+group = "video"
+when = { all = [{ path = { suffix = ".mp4" } }, { fact = "sidecars.camera_xml.facts.exif.make", equals = "example imaging" }] }
+""".strip(),
+        encoding="utf-8",
+    )
+    exiftool_calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def fake_exiftool(path, *, tags):  # type: ignore[no-untyped-def]
+        exiftool_calls.append((path.name, tuple(tags)))
+        assert path.name == "C0001M01.XML"
+        return {
+            "EXIF:Make": "Example Imaging",
+            "EXIF:Model": "Synthetic Camera",
+        }
+
+    monkeypatch.setattr("munchy_cli.main._exiftool_for_routing", fake_exiftool)
+
+    result = runner.invoke(
+        app,
+        ["routing", "explain", str(source_dir), "--config", str(config), "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["matches"][0]["route_id"] == "camera-video"
+    assert payload["matches"][0]["matched_facts"] == {
+        "sidecars.camera_xml.facts.exif.make": "example imaging"
+    }
+    assert exiftool_calls == [("C0001M01.XML", ("Make", "Model"))]

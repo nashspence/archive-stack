@@ -19,6 +19,7 @@ from munchy.local_files import FileHashCache, LocalFileCandidate, hash_local_fil
 from munchy.platform_files import is_platform_cruft_path
 from munchy.profile_routing import (
     ProfileRoutingFile,
+    exiftool_routing_facts,
     profile_routing_exiftool_tags,
     profile_routing_plan,
     profile_routing_requires_exiftool,
@@ -26,6 +27,7 @@ from munchy.profile_routing import (
     routing_exiftool_summary,
     routing_file_facts,
     routing_probe_summary,
+    sidecar_exiftool_tag_requests,
 )
 from munchy.profiles import EncodeProfile, ProfileError, load_encode_profiles
 from munchy.runner_client import (
@@ -652,6 +654,10 @@ def _routing_plan_files(
     needs_probe = profile_routing_requires_probe(profile_routing)
     needs_exiftool = profile_routing_requires_exiftool(profile_routing)
     exiftool_tags = profile_routing_exiftool_tags(profile_routing)
+    path_facts_by_path = {
+        item.rel_path: routing_file_facts(item.rel_path) for item in candidates
+    }
+    sidecar_tag_requests = sidecar_exiftool_tag_requests(profile_routing, path_facts_by_path)
     files: list[ProfileRoutingFile] = []
     for item in candidates:
         probe_summary: dict[str, Any] | None = None
@@ -670,6 +676,18 @@ def _routing_plan_files(
                 )
             except Exception as exc:
                 facts_error = str(exc)[:1000]
+        sidecar_facts: dict[str, Any] | None = None
+        sidecar_facts_error: str | None = None
+        sidecar_tags = sidecar_tag_requests.get(item.rel_path)
+        if sidecar_tags:
+            try:
+                sidecar_facts = exiftool_routing_facts(
+                    routing_exiftool_summary(
+                        _exiftool_for_routing(item.source, tags=sidecar_tags)
+                    )
+                )
+            except Exception as exc:
+                sidecar_facts_error = str(exc)[:1000]
         files.append(
             ProfileRoutingFile(
                 path=item.rel_path,
@@ -682,6 +700,8 @@ def _routing_plan_files(
                     exiftool_summary=exiftool_summary,
                 ),
                 facts_error=facts_error,
+                sidecar_facts=sidecar_facts,
+                sidecar_facts_error=sidecar_facts_error,
             )
         )
     return files

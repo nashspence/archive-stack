@@ -81,6 +81,8 @@ class ProfileRoutingFile:
     probe_error: str | None = None
     routing_facts: Mapping[str, Any] | None = None
     facts_error: str | None = None
+    sidecar_facts: Mapping[str, Any] | None = None
+    sidecar_facts_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -175,6 +177,14 @@ def profile_routing_plan(
     *,
     group_names: set[str] | None = None,
 ) -> ProfileRoutingPlan:
+    sidecar_facts_by_path = {
+        item.path: item.sidecar_facts for item in files if item.sidecar_facts is not None
+    }
+    sidecar_facts_errors_by_path = {
+        item.path: item.sidecar_facts_error
+        for item in files
+        if item.sidecar_facts_error
+    }
     facts_by_path = {
         item.path: routing_file_facts(
             item.path,
@@ -183,7 +193,13 @@ def profile_routing_plan(
         )
         for item in files
     }
-    facts_by_path = apply_sidecar_rules(profile_routing, facts_by_path)
+    facts_by_path = apply_sidecar_rules(
+        profile_routing,
+        facts_by_path,
+        sidecar_facts_by_path=sidecar_facts_by_path,
+        sidecar_facts_errors_by_path=sidecar_facts_errors_by_path,
+        require_configured_facts=True,
+    )
     facts_by_path = apply_pairing_rules(profile_routing, facts_by_path)
 
     matches: list[dict[str, Any]] = []
@@ -197,17 +213,31 @@ def profile_routing_plan(
         if optional_fact(facts, "sidecar.role") == "evidence":
             evidence_items.append(item)
             continue
+        sidecar_facts_error = optional_fact(facts, "sidecar_facts_error")
+        if sidecar_facts_error:
+            unmatched_item = {
+                "path": item.path,
+                "bytes": item.bytes,
+                "reason": unmatched_reason(item, profile_routing, facts=facts),
+                "probe_error": item.probe_error,
+                "facts_error": item.facts_error,
+                "sidecar_facts_error": sidecar_facts_error,
+            }
+            unmatched.append(unmatched_item)
+            continue
         match = match_profile_route(profile_routing, item.path, routing_facts=facts)
         if match is None:
-            unmatched.append(
-                {
-                    "path": item.path,
-                    "bytes": item.bytes,
-                    "reason": unmatched_reason(item, profile_routing),
-                    "probe_error": item.probe_error,
-                    "facts_error": item.facts_error,
-                }
-            )
+            unmatched_item = {
+                "path": item.path,
+                "bytes": item.bytes,
+                "reason": unmatched_reason(item, profile_routing, facts=facts),
+                "probe_error": item.probe_error,
+                "facts_error": item.facts_error,
+            }
+            sidecar_facts_error = optional_fact(facts, "sidecar_facts_error")
+            if sidecar_facts_error:
+                unmatched_item["sidecar_facts_error"] = sidecar_facts_error
+            unmatched.append(unmatched_item)
             continue
         common = {
             "path": item.path,
@@ -313,7 +343,14 @@ def profile_routing_plan(
     )
 
 
-def unmatched_reason(item: ProfileRoutingFile, profile_routing: Mapping[str, Any]) -> str:
+def unmatched_reason(
+    item: ProfileRoutingFile,
+    profile_routing: Mapping[str, Any],
+    *,
+    facts: Mapping[str, Any] | None = None,
+) -> str:
+    if facts and optional_fact(facts, "sidecar_facts_error"):
+        return "sidecar_facts_failed"
     if item.facts_error and profile_routing_requires_exiftool(profile_routing):
         return "facts_failed"
     if item.probe_error and profile_routing_requires_probe(profile_routing):
@@ -363,6 +400,93 @@ def profile_routing_exiftool_tags(
     return tuple(tags)
 
 
+def sidecar_rule_exiftool_tags(rule: Mapping[str, Any]) -> tuple[str, ...]:
+    facts = mapping(rule.get("facts"))
+    if not facts:
+        return ()
+    unknown = sorted(set(facts) - {"source", "tags"})
+    if unknown:
+        raise ValueError("sidecar facts has unknown key(s): " + ", ".join(unknown))
+    source = str(facts.get("source") or "exiftool").strip().casefold()
+    if source != "exiftool":
+        raise ValueError(f"unsupported sidecar facts source: {source or '<blank>'}")
+    tags: list[str] = []
+    seen: set[str] = set()
+    for item in sequence(facts.get("tags")):
+        normalized = normalize_exiftool_tag(item)
+        if normalized is None:
+            continue
+        key = normalized.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        tags.append(normalized)
+    if not tags:
+        raise ValueError("sidecar facts tags must contain at least one ExifTool tag")
+    return tuple(tags)
+
+
+def sidecar_rule_requests_facts(rule: Mapping[str, Any]) -> bool:
+    return bool(sidecar_rule_exiftool_tags(rule))
+
+
+def sidecar_exiftool_tag_requests(
+    profile_routing: Mapping[str, Any],
+    facts_by_path: Mapping[str, Mapping[str, Any]],
+) -> dict[str, tuple[str, ...]]:
+    if not facts_by_path:
+        return {}
+    out: dict[str, list[str]] = {}
+    seen_by_path: dict[str, set[str]] = {}
+    lower_paths = {path.casefold(): path for path in facts_by_path}
+    for rule in profile_sidecar_rules(profile_routing):
+        tags = sidecar_rule_exiftool_tags(rule)
+        if not tags:
+            continue
+        rule_id = str(rule.get("id") or "").strip()
+        if not rule_id:
+            continue
+        sidecar_format = str(rule.get("format") or "opaque").strip().casefold() or "opaque"
+        templates = sidecar_rule_templates(rule, sidecar_format)
+        primary_when = mapping(rule.get("primary"))
+        sidecar_when = mapping(rule.get("sidecar"))
+        for primary_path, primary_facts in facts_by_path.items():
+            if optional_fact(primary_facts, "sidecar.role"):
+                continue
+            if primary_when and not predicate_matches(
+                primary_when,
+                primary_facts,
+                profile_routing=profile_routing,
+            ):
+                continue
+            for template in templates:
+                expected = render_sidecar_template(
+                    template,
+                    primary_facts,
+                    sidecar_format=sidecar_format,
+                )
+                sidecar_path = lower_paths.get(expected.casefold())
+                if not sidecar_path or sidecar_path == primary_path:
+                    continue
+                sidecar_facts = facts_by_path[sidecar_path]
+                if sidecar_when and not predicate_matches(
+                    sidecar_when,
+                    sidecar_facts,
+                    profile_routing=profile_routing,
+                ):
+                    continue
+                path_tags = out.setdefault(sidecar_path, [])
+                seen = seen_by_path.setdefault(sidecar_path, set())
+                for tag in tags:
+                    key = tag.casefold()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    path_tags.append(tag)
+                break
+    return {path: tuple(tags) for path, tags in out.items()}
+
+
 def normalize_exiftool_tag(value: object) -> str | None:
     text = str(value or "").strip()
     if not text:
@@ -410,20 +534,32 @@ def routing_file_facts(
         facts["ffprobe"] = dict(probe_summary)
         facts.update(probe_facts(probe_summary))
     if exiftool_summary:
-        facts["exiftool"] = dict(exiftool_summary)
-        facts.update(exiftool_facts(exiftool_summary))
+        facts.update(exiftool_routing_facts(exiftool_summary))
     if routing_facts:
         facts.update(flatten_facts(routing_facts))
     return facts
 
 
+def exiftool_routing_facts(exiftool_summary: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "exiftool": dict(exiftool_summary),
+        **exiftool_facts(exiftool_summary),
+    }
+
+
 def apply_sidecar_rules(
     profile_routing: Mapping[str, Any],
     facts_by_path: Mapping[str, Mapping[str, Any]],
+    *,
+    sidecar_facts_by_path: Mapping[str, Mapping[str, Any] | None] | None = None,
+    sidecar_facts_errors_by_path: Mapping[str, str | None] | None = None,
+    require_configured_facts: bool = False,
 ) -> dict[str, dict[str, Any]]:
     out = {path: dict(facts) for path, facts in facts_by_path.items()}
     if not out:
         return out
+    sidecar_facts_payloads = mapping(sidecar_facts_by_path)
+    sidecar_facts_errors = mapping(sidecar_facts_errors_by_path)
     lower_paths = {path.casefold(): path for path in out}
     for rule in profile_sidecar_rules(profile_routing):
         rule_id = str(rule.get("id") or "").strip()
@@ -431,6 +567,7 @@ def apply_sidecar_rules(
             continue
         sidecar_format = str(rule.get("format") or "opaque").strip().casefold() or "opaque"
         templates = sidecar_rule_templates(rule, sidecar_format)
+        requests_facts = sidecar_rule_requests_facts(rule)
         primary_when = mapping(rule.get("primary"))
         sidecar_when = mapping(rule.get("sidecar"))
         for primary_path, primary_facts in list(out.items()):
@@ -442,12 +579,15 @@ def apply_sidecar_rules(
                 profile_routing=profile_routing,
             ):
                 continue
+            matched_sidecar = False
+            expected_paths: list[str] = []
             for template in templates:
                 expected = render_sidecar_template(
                     template,
                     primary_facts,
                     sidecar_format=sidecar_format,
                 )
+                expected_paths.append(expected)
                 sidecar_path = lower_paths.get(expected.casefold())
                 if not sidecar_path or sidecar_path == primary_path:
                     continue
@@ -458,11 +598,42 @@ def apply_sidecar_rules(
                     profile_routing=profile_routing,
                 ):
                     continue
-                out[primary_path] = {
+                matched_sidecar = True
+                primary_update = {
                     **out[primary_path],
                     f"sidecar.{rule_id}.path": sidecar_path,
                     f"sidecar.{rule_id}.format": sidecar_format,
                 }
+                if requests_facts:
+                    facts_error = optional_error(sidecar_facts_errors.get(sidecar_path))
+                    parsed_facts = mapping(sidecar_facts_payloads.get(sidecar_path))
+                    if facts_error:
+                        add_sidecar_facts_error(
+                            primary_update,
+                            rule_id,
+                            f"{sidecar_path}: {facts_error}",
+                            path=sidecar_path,
+                            sidecar_format=sidecar_format,
+                        )
+                    elif parsed_facts:
+                        add_sidecar_namespace(
+                            primary_update,
+                            rule_id,
+                            {
+                                "path": sidecar_path,
+                                "format": sidecar_format,
+                                "facts": dict(parsed_facts),
+                            },
+                        )
+                    elif require_configured_facts:
+                        add_sidecar_facts_error(
+                            primary_update,
+                            rule_id,
+                            f"configured sidecar facts were not submitted for {sidecar_path}",
+                            path=sidecar_path,
+                            sidecar_format=sidecar_format,
+                        )
+                out[primary_path] = primary_update
                 out[sidecar_path] = {
                     **sidecar_facts,
                     "sidecar.role": "evidence",
@@ -471,7 +642,56 @@ def apply_sidecar_rules(
                     "sidecar.for": primary_path,
                 }
                 break
+            if requests_facts and require_configured_facts and not matched_sidecar:
+                primary_update = dict(out[primary_path])
+                expected = " or ".join(expected_paths) if expected_paths else "configured sidecar"
+                add_sidecar_facts_error(
+                    primary_update,
+                    rule_id,
+                    f"configured sidecar facts source not found: expected {expected}",
+                    sidecar_format=sidecar_format,
+                )
+                out[primary_path] = primary_update
     return out
+
+
+def add_sidecar_namespace(facts: dict[str, Any], rule_id: str, payload: Mapping[str, Any]) -> None:
+    sidecars: dict[str, Any] = {
+        str(key): dict(value)
+        for key, value in mapping(facts.get("sidecars")).items()
+        if isinstance(value, Mapping)
+    }
+    sidecars[rule_id] = {
+        **mapping(sidecars.get(rule_id)),
+        **dict(payload),
+    }
+    facts["sidecars"] = sidecars
+    facts.update(flatten_facts({"sidecars": {rule_id: sidecars[rule_id]}}))
+
+
+def add_sidecar_facts_error(
+    facts: dict[str, Any],
+    rule_id: str,
+    message: str,
+    *,
+    path: str | None = None,
+    sidecar_format: str | None = None,
+) -> None:
+    payload: dict[str, Any] = {"facts_error": message}
+    if path:
+        payload["path"] = path
+    if sidecar_format:
+        payload["format"] = sidecar_format
+    add_sidecar_namespace(facts, rule_id, payload)
+    error = f"{rule_id}: {message}"
+    existing = optional_fact(facts, "sidecar_facts_error")
+    facts["sidecar_facts_error"] = f"{existing}; {error}" if existing else error
+
+
+def optional_error(value: object) -> str | None:
+    if value in (None, ""):
+        return None
+    return str(value)
 
 
 def sidecar_rule_templates(rule: Mapping[str, Any], sidecar_format: str) -> tuple[str, ...]:

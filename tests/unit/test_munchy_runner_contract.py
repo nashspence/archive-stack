@@ -1132,6 +1132,104 @@ def test_sidecar_evidence_is_not_probed_during_runner_routing(
     )
 
 
+def test_sidecar_facts_are_bounded_during_runner_routing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    video_file = runner.shared_input_upload_root("upload-1") / "camera/C0001.MP4"
+    sidecar_file = runner.shared_input_upload_root("upload-1") / "camera/C0001M01.XML"
+    video_file.parent.mkdir(parents=True, exist_ok=True)
+    video_file.write_bytes(b"video")
+    sidecar_file.write_text("<metadata />", encoding="utf-8")
+    upload = runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "state": "uploading",
+            "storage_hint": {
+                "workflow_mode": "collection_archive",
+                "structured_routing": True,
+                "groups": {"video": {"archive_mode": "av1_nvenc", "tasks": []}},
+            },
+            "files": [
+                {
+                    "path": "camera/C0001.MP4",
+                    "bytes": 5,
+                    "upload_id": "camera-video-1",
+                    "input_upload_id": "upload-1",
+                    "structured_routing": True,
+                },
+                {
+                    "path": "camera/C0001M01.XML",
+                    "bytes": 12,
+                    "upload_id": "camera-xml-1",
+                    "input_upload_id": "upload-1",
+                    "structured_routing": True,
+                },
+            ],
+        }
+    )
+    exiftool_calls: list[tuple[Path, tuple[str, ...]]] = []
+
+    def fail_ffprobe_for_routing(path: Path) -> dict[str, object]:
+        raise AssertionError(f"ffprobe should not run for sidecar-facts-only routing: {path}")
+
+    def fake_exiftool_for_routing(path: Path, *, tags=None):  # type: ignore[no-untyped-def]
+        exiftool_calls.append((path, tuple(tags or ())))
+        assert path == sidecar_file
+        return {
+            "EXIF:Make": "Example Imaging",
+            "EXIF:Model": "Synthetic Camera",
+        }
+
+    monkeypatch.setattr(runner, "ffprobe_for_routing", fail_ffprobe_for_routing)
+    monkeypatch.setattr(runner, "exiftool_for_routing", fake_exiftool_for_routing)
+    job = {
+        "job_id": "job-1",
+        "input_upload_id": "upload-1",
+        "profile_routing": {
+            "sidecars": [
+                {
+                    "id": "camera_xml",
+                    "format": "xml",
+                    "path": "{parent}/{stem}M01.XML",
+                    "primary": {"path": {"suffix": ".mp4"}},
+                    "facts": {"source": "exiftool", "tags": ["Make", "Model"]},
+                }
+            ],
+            "routes": [
+                {
+                    "id": "sidecar-camera-video",
+                    "group": "video",
+                    "when": {
+                        "all": [
+                            {"path": {"suffix": ".mp4"}},
+                            {
+                                "fact": "sidecars.camera_xml.facts.exif.make",
+                                "equals": "example imaging",
+                            },
+                        ]
+                    },
+                }
+            ],
+        },
+    }
+
+    routed = runner.route_completed_input_files(
+        job,
+        upload,
+        {"video": {"archive_mode": "av1_nvenc", "tasks": []}},
+    )
+
+    files_by_path = {item["path"]: item for item in routed["files"]}
+    assert files_by_path["camera/C0001.MP4"]["profile_route_id"] == "sidecar-camera-video"
+    assert files_by_path["camera/C0001M01.XML"]["profile_route_action"] == "evidence"
+    assert files_by_path["camera/C0001M01.XML"]["profile_sidecar_id"] == "camera_xml"
+    assert exiftool_calls == [(sidecar_file, ("Make", "Model"))]
+
+
 def test_profile_routing_preflight_uses_submitted_probe_summary(
     tmp_path: Path,
     monkeypatch,
@@ -1216,6 +1314,120 @@ def test_profile_routing_preflight_uses_submitted_probe_summary(
             "collection_rel_path": "phone/IMG_0001.MOV",
         }
     ]
+
+
+def test_profile_routing_preflight_uses_submitted_sidecar_facts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    client = TestClient(runner.app)
+
+    response = client.post(
+        "/v1/profile-routing/preflight",
+        json={
+            "files": [
+                {"path": "camera/C0001.MP4", "bytes": 100},
+                {
+                    "path": "camera/C0001M01.XML",
+                    "bytes": 20,
+                    "sidecar_facts": {
+                        "exif.make": "example imaging",
+                        "exiftool": {"tags": {"model": "Synthetic Camera"}},
+                    },
+                },
+            ],
+            "groups": {"video": {"archive_mode": "av1_nvenc", "tasks": []}},
+            "profile_routing": {
+                "sidecars": [
+                    {
+                        "id": "camera_xml",
+                        "format": "xml",
+                        "path": "{parent}/{stem}M01.XML",
+                        "primary": {"path": {"suffix": ".mp4"}},
+                        "facts": {"source": "exiftool", "tags": ["Make", "Model"]},
+                    }
+                ],
+                "routes": [
+                    {
+                        "id": "sidecar-camera-video",
+                        "group": "video",
+                        "when": {
+                            "all": [
+                                {"path": {"suffix": ".mp4"}},
+                                {
+                                    "fact": "sidecars.camera_xml.facts.exif.make",
+                                    "equals": "example imaging",
+                                },
+                                {
+                                    "fact": "sidecars.camera_xml.facts.exiftool.tags.model",
+                                    "equals": "Synthetic Camera",
+                                },
+                            ]
+                        },
+                    }
+                ],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert [item["action"] for item in payload["matches"]] == ["upload", "evidence"]
+    assert payload["matches"][0]["matched_facts"] == {
+        "sidecars.camera_xml.facts.exif.make": "example imaging",
+        "sidecars.camera_xml.facts.exiftool.tags.model": "Synthetic Camera",
+    }
+
+
+def test_profile_routing_preflight_reports_missing_sidecar_facts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    client = TestClient(runner.app)
+
+    response = client.post(
+        "/v1/profile-routing/preflight",
+        json={
+            "files": [
+                {"path": "camera/C0001.MP4", "bytes": 100},
+                {"path": "camera/C0001M01.XML", "bytes": 20},
+            ],
+            "groups": {"video": {"archive_mode": "av1_nvenc", "tasks": []}},
+            "profile_routing": {
+                "sidecars": [
+                    {
+                        "id": "camera_xml",
+                        "format": "xml",
+                        "path": "{parent}/{stem}M01.XML",
+                        "primary": {"path": {"suffix": ".mp4"}},
+                        "facts": {"source": "exiftool", "tags": ["Make"]},
+                    }
+                ],
+                "routes": [
+                    {
+                        "id": "sidecar-camera-video",
+                        "group": "video",
+                        "when": {
+                            "fact": "sidecars.camera_xml.facts.exif.make",
+                            "equals": "example imaging",
+                        },
+                    }
+                ],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["unmatched"][0]["path"] == "camera/C0001.MP4"
+    assert payload["unmatched"][0]["reason"] == "sidecar_facts_failed"
+    assert "configured sidecar facts were not submitted" in (
+        payload["unmatched"][0]["sidecar_facts_error"]
+    )
 
 
 def test_profile_routing_preflight_reports_sidecar_evidence(
