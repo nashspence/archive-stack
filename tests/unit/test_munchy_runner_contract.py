@@ -5274,6 +5274,83 @@ def test_eager_handoff_metrics_survive_newer_persisted_job_state(
     assert state["updated_at"] == "2026-01-01T00:00:04Z"
 
 
+def test_eager_handoff_skips_jobs_that_still_need_metadata_projection(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    monkeypatch.setattr(runner, "RIVERHOG_UPLOAD_ENABLED", True)
+
+    blocked_output = tmp_path / "blocked" / "archive" / "video" / "camera" / "a.webm"
+    blocked_output.parent.mkdir(parents=True)
+    blocked_output.write_bytes(b"blocked")
+    allowed_output = tmp_path / "allowed" / "archive" / "video" / "camera" / "b.webm"
+    allowed_output.parent.mkdir(parents=True)
+    allowed_output.write_bytes(b"allowed")
+
+    common = {
+        "state": "running",
+        "phase": "eager_archive:pipeline=1/3",
+        "workflow_mode": "collection_archive",
+        "collection_archive": {"destination": "riverhog"},
+        "riverhog": {"enabled": True},
+        "riverhog_session_upload": {"state": "open", "files": {}},
+    }
+    runner.save_job(
+        {
+            **common,
+            "job_id": "needs-projection",
+            "created_at": "2026-01-01T00:00:00Z",
+            "groups": {
+                "video": {
+                    "archive_mode": "av1_nvenc",
+                    "tasks": ["archive_video"],
+                    "metadata_projection": {
+                        "device": {"make": "Reolink", "model": "E1 Pro"},
+                        "creators": ["Nash Spence"],
+                    },
+                }
+            },
+            "eager_archive": {
+                "files": {
+                    "camera/a.mp4": {
+                        "state": "encoded",
+                        "output": str(blocked_output),
+                    }
+                }
+            },
+        }
+    )
+    runner.save_job(
+        {
+            **common,
+            "job_id": "no-projection",
+            "created_at": "2026-01-01T00:00:01Z",
+            "groups": {
+                "video": {
+                    "archive_mode": "av1_nvenc",
+                    "tasks": ["archive_video"],
+                    "metadata_projection": False,
+                }
+            },
+            "eager_archive": {
+                "files": {
+                    "camera/b.mp4": {
+                        "state": "encoded",
+                        "output": str(allowed_output),
+                    }
+                }
+            },
+        }
+    )
+
+    candidates = runner.riverhog_eager_upload_candidate_jobs()
+
+    assert [job["job_id"] for job in candidates] == ["no-projection"]
+
+
 def test_stale_eager_handoff_metrics_do_not_replace_newer_persisted_metrics(
     tmp_path: Path,
     monkeypatch,

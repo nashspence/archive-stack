@@ -6763,6 +6763,8 @@ def _upload_riverhog_artifacts_unlocked(
 def maybe_upload_riverhog_artifacts(job: dict[str, Any], archive_dir: Path) -> None:
     if not riverhog_config_enabled(job) or not RIVERHOG_UPLOAD_ENABLED:
         return
+    if job_requires_metadata_projection_before_handoff(job):
+        return
     try:
         result = upload_riverhog_artifacts(
             job,
@@ -7006,6 +7008,8 @@ def riverhog_eager_upload_candidate_jobs() -> list[dict[str, Any]]:
             continue
         if not riverhog_config_enabled(job):
             continue
+        if job_requires_metadata_projection_before_handoff(job):
+            continue
         if str(job.get("phase") or "") == "riverhog_upload":
             continue
         state = job.get("riverhog_session_upload")
@@ -7015,6 +7019,21 @@ def riverhog_eager_upload_candidate_jobs() -> list[dict[str, Any]]:
             candidates.append(job)
     candidates.sort(key=lambda item: str(item.get("created_at") or ""))
     return candidates
+
+
+def job_requires_metadata_projection_before_handoff(job: Mapping[str, Any]) -> bool:
+    groups = job.get("groups")
+    if not isinstance(groups, Mapping):
+        return False
+    for group in groups.values():
+        if not isinstance(group, Mapping):
+            continue
+        group_config = dict(group)
+        if metadata_projection_enabled(group_config) and group_produces_primary_archive_output(
+            group_config
+        ):
+            return True
+    return False
 
 
 def riverhog_upload_loop() -> None:
