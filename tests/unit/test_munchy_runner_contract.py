@@ -621,6 +621,138 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
     ]
 
 
+def test_metadata_projection_sidecar_can_follow_eager_handoff_cleanup(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    upload = runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "files": [
+                {
+                    "path": "video/IMG_0001.MOV",
+                    "bytes": 5,
+                    "upload_id": "phone-img-1",
+                    "metadata_projection_metadata": {
+                        "capture_date": "2026-06-28T20:30:40-07:00",
+                        "capture_date_source": "exif.date_time_original",
+                        "gps": {"latitude": 37.3317, "longitude": -122.0301},
+                        "gps_source": "exif.gps_latitude+exif.gps_longitude",
+                        "device": {
+                            "make": "Apple",
+                            "model": "iPhone SE (2nd generation)",
+                        },
+                        "creators": ["Nash Spence"],
+                        "tags": [],
+                    },
+                    "profile_route_id": "iphone-video",
+                    "resolved_group_rel": "iphone/video/IMG_0001.MOV",
+                }
+            ],
+        }
+    )
+    groups = {
+        "video": {
+            "archive_mode": "av1_nvenc",
+            "tasks": ["archive_video"],
+            "encode_profile": {"archive": {"container": "webm"}},
+            "metadata_projection": {
+                "enabled": True,
+                "device": {"make": "Apple", "model": "iPhone SE (2nd generation)"},
+                "creators": ["Nash Spence"],
+            },
+        }
+    }
+    archive_dir = tmp_path / "archive"
+    output = runner.archive_output_for_upload_file(
+        upload["files"][0],
+        group_name="video",
+        group_config=groups["video"],
+        archive_dir=archive_dir,
+    )
+    output_rel = output.relative_to(archive_dir).as_posix()
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "input_upload_id": "upload-1",
+            "collection_slug": "phone-collection-archive",
+            "riverhog": {"enabled": True},
+            "riverhog_session_upload": {
+                "state": "open",
+                "files": {
+                    output_rel: {
+                        "path": output_rel,
+                        "bytes": 4,
+                        "uploaded_bytes": 4,
+                        "state": "deleted",
+                    }
+                },
+            },
+        }
+    )
+    stale_job = {
+        "job_id": "job-1",
+        "input_upload_id": "upload-1",
+        "collection_slug": "phone-collection-archive",
+        "riverhog": {"enabled": True},
+    }
+
+    updated = runner.write_metadata_projection_sidecars(stale_job, upload, groups, archive_dir)
+
+    sidecar = output.with_name("IMG_0001.webm.xmp")
+    assert not output.exists()
+    assert sidecar.exists()
+    assert stale_job["riverhog_session_upload"]["files"][output_rel]["state"] == "deleted"
+    assert updated["files"][0]["metadata_projection_sidecar"] == (
+        "video/iphone/video/IMG_0001.webm.xmp"
+    )
+    assert runner.load_job("job-1")["metadata_projection_result"]["sidecars"] == 1
+
+
+def test_metadata_projection_still_fails_for_missing_unhanded_output(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    upload = runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "files": [
+                {
+                    "path": "video/IMG_0001.MOV",
+                    "bytes": 5,
+                    "metadata_projection_metadata": {
+                        "capture_date": "2026-06-28T20:30:40-07:00",
+                        "capture_date_source": "exif.date_time_original",
+                        "gps": {"latitude": 37.3317, "longitude": -122.0301},
+                        "gps_source": "exif.gps_latitude+exif.gps_longitude",
+                        "device": {"make": "Apple", "model": "iPhone"},
+                        "creators": ["Nash Spence"],
+                    },
+                    "resolved_group_rel": "iphone/video/IMG_0001.MOV",
+                }
+            ],
+        }
+    )
+    job = {"job_id": "job-1", "input_upload_id": "upload-1"}
+    groups = {
+        "video": {
+            "archive_mode": "av1_nvenc",
+            "tasks": ["archive_video"],
+            "encode_profile": {"archive": {"container": "webm"}},
+            "metadata_projection": {"enabled": True},
+        }
+    }
+
+    with pytest.raises(RuntimeError, match="metadata projection output is missing"):
+        runner.write_metadata_projection_sidecars(job, upload, groups, tmp_path / "archive")
+
+
 def test_metadata_projection_merges_existing_xmp_sidecar_for_preserve_outputs(
     tmp_path: Path,
     monkeypatch,
@@ -5272,83 +5404,6 @@ def test_eager_handoff_metrics_survive_newer_persisted_job_state(
     assert state["last_eager_upload_bytes"] == 2048
     assert state["last_eager_upload_elapsed_seconds"] == 2.0
     assert state["updated_at"] == "2026-01-01T00:00:04Z"
-
-
-def test_eager_handoff_skips_jobs_that_still_need_metadata_projection(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    runner = load_runner(tmp_path, monkeypatch)
-    runner.ensure_dirs()
-    runner.init_state_store()
-    monkeypatch.setattr(runner, "RIVERHOG_UPLOAD_ENABLED", True)
-
-    blocked_output = tmp_path / "blocked" / "archive" / "video" / "camera" / "a.webm"
-    blocked_output.parent.mkdir(parents=True)
-    blocked_output.write_bytes(b"blocked")
-    allowed_output = tmp_path / "allowed" / "archive" / "video" / "camera" / "b.webm"
-    allowed_output.parent.mkdir(parents=True)
-    allowed_output.write_bytes(b"allowed")
-
-    common = {
-        "state": "running",
-        "phase": "eager_archive:pipeline=1/3",
-        "workflow_mode": "collection_archive",
-        "collection_archive": {"destination": "riverhog"},
-        "riverhog": {"enabled": True},
-        "riverhog_session_upload": {"state": "open", "files": {}},
-    }
-    runner.save_job(
-        {
-            **common,
-            "job_id": "needs-projection",
-            "created_at": "2026-01-01T00:00:00Z",
-            "groups": {
-                "video": {
-                    "archive_mode": "av1_nvenc",
-                    "tasks": ["archive_video"],
-                    "metadata_projection": {
-                        "device": {"make": "Reolink", "model": "E1 Pro"},
-                        "creators": ["Nash Spence"],
-                    },
-                }
-            },
-            "eager_archive": {
-                "files": {
-                    "camera/a.mp4": {
-                        "state": "encoded",
-                        "output": str(blocked_output),
-                    }
-                }
-            },
-        }
-    )
-    runner.save_job(
-        {
-            **common,
-            "job_id": "no-projection",
-            "created_at": "2026-01-01T00:00:01Z",
-            "groups": {
-                "video": {
-                    "archive_mode": "av1_nvenc",
-                    "tasks": ["archive_video"],
-                    "metadata_projection": False,
-                }
-            },
-            "eager_archive": {
-                "files": {
-                    "camera/b.mp4": {
-                        "state": "encoded",
-                        "output": str(allowed_output),
-                    }
-                }
-            },
-        }
-    )
-
-    candidates = runner.riverhog_eager_upload_candidate_jobs()
-
-    assert [job["job_id"] for job in candidates] == ["no-projection"]
 
 
 def test_stale_eager_handoff_metrics_do_not_replace_newer_persisted_metrics(

@@ -4898,6 +4898,27 @@ def write_atomic_text(path: Path, text: str) -> bool:
     return True
 
 
+def metadata_projection_handed_off_paths(job: dict[str, Any]) -> set[str]:
+    paths = uploaded_riverhog_paths(job)
+    job_id = str(job.get("job_id") or "")
+    if not job_id:
+        return paths
+    current = read_state("job", job_id)
+    if not isinstance(current, dict):
+        return paths
+    paths.update(uploaded_riverhog_paths(current))
+    current_riverhog = current.get("riverhog_session_upload")
+    payload_riverhog = job.get("riverhog_session_upload")
+    if isinstance(current_riverhog, dict) and isinstance(payload_riverhog, dict):
+        job["riverhog_session_upload"] = merge_riverhog_session_upload_state(
+            current_riverhog,
+            payload_riverhog,
+        )
+    elif isinstance(current_riverhog, dict):
+        job["riverhog_session_upload"] = current_riverhog
+    return paths
+
+
 def write_metadata_projection_sidecars(
     job: dict[str, Any],
     upload: dict[str, Any],
@@ -4907,6 +4928,7 @@ def write_metadata_projection_sidecars(
     sidecars_written = 0
     groups_written: dict[str, int] = {}
     upload_changed = False
+    handed_off_paths: set[str] | None = None
     for group_name, group_config in sorted(groups.items()):
         config = metadata_projection_config(group_config)
         if not config["enabled"]:
@@ -4921,10 +4943,14 @@ def write_metadata_projection_sidecars(
                 archive_dir=archive_dir,
             )
             if not output.exists():
-                raise RuntimeError(
-                    "metadata projection output is missing for "
-                    f"{file_state.get('path')}: {output}"
-                )
+                if handed_off_paths is None:
+                    handed_off_paths = metadata_projection_handed_off_paths(job)
+                output_rel = path_relative_to_archive(output, archive_dir)
+                if output_rel not in handed_off_paths:
+                    raise RuntimeError(
+                        "metadata projection output is missing for "
+                        f"{file_state.get('path')}: {output}"
+                    )
             if ensure_file_projection_metadata(
                 upload,
                 file_state,
@@ -6763,8 +6789,6 @@ def _upload_riverhog_artifacts_unlocked(
 def maybe_upload_riverhog_artifacts(job: dict[str, Any], archive_dir: Path) -> None:
     if not riverhog_config_enabled(job) or not RIVERHOG_UPLOAD_ENABLED:
         return
-    if job_requires_metadata_projection_before_handoff(job):
-        return
     try:
         result = upload_riverhog_artifacts(
             job,
@@ -7008,8 +7032,6 @@ def riverhog_eager_upload_candidate_jobs() -> list[dict[str, Any]]:
             continue
         if not riverhog_config_enabled(job):
             continue
-        if job_requires_metadata_projection_before_handoff(job):
-            continue
         if str(job.get("phase") or "") == "riverhog_upload":
             continue
         state = job.get("riverhog_session_upload")
@@ -7019,21 +7041,6 @@ def riverhog_eager_upload_candidate_jobs() -> list[dict[str, Any]]:
             candidates.append(job)
     candidates.sort(key=lambda item: str(item.get("created_at") or ""))
     return candidates
-
-
-def job_requires_metadata_projection_before_handoff(job: Mapping[str, Any]) -> bool:
-    groups = job.get("groups")
-    if not isinstance(groups, Mapping):
-        return False
-    for group in groups.values():
-        if not isinstance(group, Mapping):
-            continue
-        group_config = dict(group)
-        if metadata_projection_enabled(group_config) and group_produces_primary_archive_output(
-            group_config
-        ):
-            return True
-    return False
 
 
 def riverhog_upload_loop() -> None:
