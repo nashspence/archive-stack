@@ -190,6 +190,46 @@ def test_profile_routing_preflight_posts_manifest() -> None:
     ]
 
 
+def test_profile_routing_preflight_posts_metadata_projection_enforcement() -> None:
+    client = MunchyRunnerClient("http://runner", token="runner-token")
+    seen: list[dict[str, object]] = []
+
+    class FakeResponse:
+        status = 200
+        headers: dict[str, str] = {}
+
+        def read(self) -> bytes:
+            return b'{"ok": false, "matches": [], "unmatched": []}'
+
+    def fake_urlopen(req: urllib.request.Request, *, timeout: float) -> FakeResponse:
+        seen.append(json.loads(req.data.decode("utf-8")))
+        return FakeResponse()
+
+    with patch("munchy.runner_client.urllib.request.urlopen", side_effect=fake_urlopen):
+        result = client.profile_routing_preflight(
+            files=(
+                RunnerProfileRoutingPreflightFile(
+                    rel_path="camera/C0001.MP4",
+                    bytes=123,
+                ),
+            ),
+            groups={"video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]}},
+            profile_routing={
+                "routes": [
+                    {
+                        "id": "camera-video",
+                        "group": "video",
+                        "when": {"path": {"suffix": ".mp4"}},
+                    }
+                ]
+            },
+            enforce_metadata_projection=True,
+        )
+
+    assert result["ok"] is False
+    assert seen[0]["enforce_metadata_projection"] is True
+
+
 def test_format_job_summary_line_includes_upload_and_encode_progress() -> None:
     line = format_job_summary_line(
         {

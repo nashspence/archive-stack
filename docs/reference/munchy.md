@@ -151,7 +151,11 @@ plan. The readout is intended for operator tooling: it lists sidecars attached
 to each primary and summarizes metadata projection resolution, including the
 selected capture date source and GPS source when the submitted facts are enough
 to resolve them. Routing `ok` remains the routing result; readout metadata
-errors are diagnostic unless a caller chooses to enforce them before archive.
+errors are diagnostic unless a caller submits
+`enforce_metadata_projection: true`. In enforced mode, a routed upload whose
+metadata projection cannot satisfy the configured requirements is returned as an
+unmatched file with `reason: metadata_projection_failed` while the readout still
+shows the full projection diagnostic.
 
 By default, projection requires a valid capture date, valid GPS coordinates,
 configured device make, configured device model, and at least one configured

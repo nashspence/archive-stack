@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import subprocess
@@ -309,7 +310,14 @@ def _accept_media_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _route_with_shared_matcher(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_profile_routing_preflight(self, *, files, groups, profile_routing):  # type: ignore[no-untyped-def]
+    def fake_profile_routing_preflight(  # type: ignore[no-untyped-def]
+        self,
+        *,
+        files,
+        groups,
+        profile_routing,
+        enforce_metadata_projection=False,
+    ):
         return profile_routing_plan(
             profile_routing,
             [
@@ -564,6 +572,64 @@ def test_routing_preflight_failure_blocks_source_and_notifies(
     ]
 
 
+def test_routing_preflight_enforces_metadata_projection_before_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _base_config(
+        tmp_path,
+        source_ids=["camera"],
+        source_overrides={"camera": {"include_extensions": [".mp4"]}},
+    )
+    _write_stable_file(tmp_path / "landing" / "camera" / "C0001.MP4")
+    seen_enforcement: list[bool] = []
+
+    def fake_profile_routing_preflight(  # type: ignore[no-untyped-def]
+        self,
+        *,
+        files,
+        groups,
+        profile_routing,
+        enforce_metadata_projection=False,
+    ):
+        seen_enforcement.append(enforce_metadata_projection)
+        return {
+            "ok": False,
+            "files_total": 1,
+            "matched_files": 0,
+            "unmatched_files": 1,
+            "matches": [],
+            "unmatched": [
+                {
+                    "path": "camera/C0001.MP4",
+                    "reason": "metadata_projection_failed",
+                    "metadata_projection_error": (
+                        "metadata projection requires a valid capture date"
+                    ),
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "jeb.collector.MunchyRunnerClient.profile_routing_preflight",
+        fake_profile_routing_preflight,
+    )
+    notifier = RecordingNotifier([])
+    collector = Collector(config, target_runners={"munchy": CompleteRunner()}, notifier=notifier)
+
+    collector.run_once()
+
+    assert seen_enforcement == [True]
+    assert collector.active_batch_ids() == []
+    [failure] = collector.routing_preflight_failures()
+    assert failure["unmatched_count"] == 1
+    payload = json.loads(failure["failure_json"])
+    assert payload["unmatched"][0]["reason"] == "metadata_projection_failed"
+    assert "requires a valid capture date" in payload["unmatched"][0][
+        "metadata_projection_error"
+    ]
+
+
 def test_routing_preflight_uses_configured_sidecar_facts_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -631,7 +697,14 @@ def test_routing_preflight_transient_http_error_retries_without_notification(
     )
     _write_stable_file(tmp_path / "landing" / "phone" / "accepted.mp4")
 
-    def unavailable_preflight(self, *, files, groups, profile_routing):  # type: ignore[no-untyped-def]
+    def unavailable_preflight(  # type: ignore[no-untyped-def]
+        self,
+        *,
+        files,
+        groups,
+        profile_routing,
+        enforce_metadata_projection=False,
+    ):
         raise RunnerHttpError(
             "POST",
             "http://runner.test/v1/profile-routing/preflight",
@@ -664,7 +737,14 @@ def test_routing_preflight_non_transient_http_error_records_munchy_issue(
     )
     _write_stable_file(tmp_path / "landing" / "phone" / "accepted.mp4")
 
-    def missing_endpoint_preflight(self, *, files, groups, profile_routing):  # type: ignore[no-untyped-def]
+    def missing_endpoint_preflight(  # type: ignore[no-untyped-def]
+        self,
+        *,
+        files,
+        groups,
+        profile_routing,
+        enforce_metadata_projection=False,
+    ):
         raise RunnerHttpError(
             "POST",
             "http://runner.test/v1/profile-routing/preflight",

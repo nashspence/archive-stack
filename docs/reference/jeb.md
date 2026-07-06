@@ -25,6 +25,9 @@ URLs, and deployment overlays belong outside this repository.
   preflight.
 - If any source file falls through the ordered Munchy routes, the whole source
   is skipped and Jeb records a durable profile-routing failure.
+- Jeb asks Munchy to enforce metadata projection during that preflight, so a
+  matched upload that lacks required projection metadata fails before any
+  Munchy batch is created.
 - Transient Munchy preflight transport or server failures are logged and retried
   later. Non-transient Munchy API or contract failures are recorded as durable
   `munchy_preflight` failures, not as unmatched media.
@@ -109,6 +112,8 @@ before it creates a Munchy batch:
   it from the batch
 - any file falls through the route list: record a durable profile-routing
   failure and skip the source
+- any matched upload cannot satisfy its metadata-projection requirements:
+  record a durable profile-routing failure and skip the source
 - transient Munchy preflight transport or server failure: log and try again on a
   later scheduled run
 - non-transient Munchy API or contract failure: record a durable

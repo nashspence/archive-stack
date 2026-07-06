@@ -1481,6 +1481,7 @@ class MunchyRunnerClient:
         files: tuple[RunnerProfileRoutingPreflightFile, ...],
         groups: dict[str, Any],
         profile_routing: dict[str, Any],
+        enforce_metadata_projection: bool = False,
     ) -> dict[str, Any]:
         payload_files = [
             {
@@ -1496,14 +1497,17 @@ class MunchyRunnerClient:
             }
             for item in files
         ]
+        payload: dict[str, Any] = {
+            "files": payload_files,
+            "groups": groups,
+            "profile_routing": profile_routing,
+        }
+        if enforce_metadata_projection:
+            payload["enforce_metadata_projection"] = True
         return self._json_with_transient_retries(
             "POST",
             "/v1/profile-routing/preflight",
-            payload={
-                "files": payload_files,
-                "groups": groups,
-                "profile_routing": profile_routing,
-            },
+            payload=payload,
             label="profile routing preflight",
             timeout=300.0,
         )

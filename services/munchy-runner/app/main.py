@@ -1050,6 +1050,7 @@ class ProfileRoutingPreflightRequest(BaseModel):
     files: list[ProfileRoutingPreflightFile]
     groups: dict[str, ProfileGroupConfig]
     profile_routing: ProfileRoutingConfig
+    enforce_metadata_projection: bool = False
 
     @field_validator("files")
     @classmethod
@@ -4696,6 +4697,87 @@ def profile_routing_preflight_readout(
                 )
         files.append(file_readout)
     return {"files": files}
+
+
+def metadata_projection_preflight_failures(
+    readout: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    files = readout.get("files")
+    if not isinstance(files, list):
+        return {}
+    failures: dict[str, dict[str, Any]] = {}
+    for item in files:
+        if not isinstance(item, Mapping):
+            continue
+        if item.get("action") != "upload":
+            continue
+        path = str(item.get("path") or "").strip()
+        projection = item.get("metadata_projection")
+        if not path or not isinstance(projection, Mapping):
+            continue
+        if not projection.get("enabled", False) or projection.get("ok") is not False:
+            continue
+        error = str(projection.get("error") or "metadata projection failed")
+        failures[path] = {
+            "reason": "metadata_projection_failed",
+            "metadata_projection_error": error,
+            "metadata_projection": copy.deepcopy(dict(projection)),
+        }
+    return failures
+
+
+def enforce_metadata_projection_preflight(
+    payload: dict[str, Any],
+    readout: Mapping[str, Any],
+) -> dict[str, Any]:
+    failures = metadata_projection_preflight_failures(readout)
+    if not failures:
+        return payload
+
+    payload = copy.deepcopy(payload)
+    unmatched: list[dict[str, Any]] = [
+        dict(item) for item in payload.get("unmatched", []) if isinstance(item, Mapping)
+    ]
+    retained_matches: list[dict[str, Any]] = []
+    failed_primary_paths: set[str] = set()
+    for item in payload.get("matches", []):
+        if not isinstance(item, Mapping):
+            continue
+        match = dict(item)
+        path = str(match.get("path") or "")
+        failure = failures.get(path)
+        if match.get("action") == "upload" and failure is not None:
+            failed_primary_paths.add(path)
+            unmatched.append({**match, **failure})
+            continue
+        retained_matches.append(match)
+
+    matches: list[dict[str, Any]] = []
+    for item in retained_matches:
+        if item.get("action") == "evidence":
+            matched_facts = item.get("matched_facts")
+            if not isinstance(matched_facts, Mapping):
+                matched_facts = {}
+            sidecar_for = str(item.get("sidecar_for") or matched_facts.get("sidecar.for") or "")
+            if sidecar_for in failed_primary_paths:
+                unmatched.append(
+                    {
+                        **item,
+                        "reason": "sidecar_for_metadata_projection_failed",
+                        "sidecar_for": sidecar_for,
+                    }
+                )
+                continue
+        matches.append(item)
+
+    left = payload.get("left", [])
+    payload["ok"] = False
+    payload["matches"] = matches
+    payload["unmatched"] = unmatched
+    payload["matched_files"] = len(matches)
+    payload["left_files"] = len(left) if isinstance(left, list) else 0
+    payload["unmatched_files"] = len(unmatched)
+    return payload
 
 
 def profile_routing_preflight_sidecar_readout(
@@ -9116,8 +9198,11 @@ def profile_routing_preflight(req: ProfileRoutingPreflightRequest) -> dict[str, 
             if item is not None and item.probe_summary is None and probe_route_ids:
                 unmatched["reason"] = "probe_summary_required"
                 unmatched["probe_sensitive_routes"] = probe_route_ids[:20]
+    readout = profile_routing_preflight_readout(req, routing, plan)
     payload = plan.as_dict()
-    payload["readout"] = profile_routing_preflight_readout(req, routing, plan)
+    if req.enforce_metadata_projection:
+        payload = enforce_metadata_projection_preflight(payload, readout)
+    payload["readout"] = readout
     return payload
 
 

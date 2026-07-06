@@ -953,6 +953,7 @@ class Collector:
                 files=preflight_files,
                 groups=groups,
                 profile_routing=dict(profile_routing),
+                enforce_metadata_projection=True,
             )
         except Exception as exc:
             if is_transient_error(exc):
@@ -1074,6 +1075,7 @@ class Collector:
                     "reason": str(item.get("reason") or ""),
                     "error": str(
                         item.get("error")
+                        or item.get("metadata_projection_error")
                         or item.get("facts_error")
                         or item.get("probe_error")
                         or ""

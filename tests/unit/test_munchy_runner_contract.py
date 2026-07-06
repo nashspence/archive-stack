@@ -1711,6 +1711,98 @@ def test_profile_routing_preflight_reports_sidecar_evidence(
     }
 
 
+def test_profile_routing_preflight_keeps_metadata_projection_diagnostic_by_default(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    client = TestClient(runner.app)
+
+    response = client.post(
+        "/v1/profile-routing/preflight",
+        json={
+            "files": [{"path": "camera/C0001.MP4", "bytes": 100}],
+            "groups": {
+                "video": {
+                    "archive_mode": "av1_nvenc",
+                    "tasks": ["archive_video"],
+                    "metadata_projection": {
+                        "gps": {"latitude": 48.9995, "longitude": -122.7404},
+                        "device": {"make": "Reolink", "model": "E1 Pro"},
+                        "creators": ["Nash Spence"],
+                    },
+                }
+            },
+            "profile_routing": {
+                "routes": [
+                    {
+                        "id": "camera-video",
+                        "group": "video",
+                        "when": {"path": {"suffix": ".mp4"}},
+                    }
+                ],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["unmatched"] == []
+    readout_by_path = {item["path"]: item for item in payload["readout"]["files"]}
+    projection = readout_by_path["camera/C0001.MP4"]["metadata_projection"]
+    assert projection["ok"] is False
+    assert "requires a valid capture date" in projection["error"]
+
+
+def test_profile_routing_preflight_can_enforce_metadata_projection(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    client = TestClient(runner.app)
+
+    response = client.post(
+        "/v1/profile-routing/preflight",
+        json={
+            "enforce_metadata_projection": True,
+            "files": [{"path": "camera/C0001.MP4", "bytes": 100}],
+            "groups": {
+                "video": {
+                    "archive_mode": "av1_nvenc",
+                    "tasks": ["archive_video"],
+                    "metadata_projection": {
+                        "gps": {"latitude": 48.9995, "longitude": -122.7404},
+                        "device": {"make": "Reolink", "model": "E1 Pro"},
+                        "creators": ["Nash Spence"],
+                    },
+                }
+            },
+            "profile_routing": {
+                "routes": [
+                    {
+                        "id": "camera-video",
+                        "group": "video",
+                        "when": {"path": {"suffix": ".mp4"}},
+                    }
+                ],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["matches"] == []
+    assert payload["unmatched_files"] == 1
+    [unmatched] = payload["unmatched"]
+    assert unmatched["path"] == "camera/C0001.MP4"
+    assert unmatched["reason"] == "metadata_projection_failed"
+    assert "requires a valid capture date" in unmatched["metadata_projection_error"]
+    readout_by_path = {item["path"]: item for item in payload["readout"]["files"]}
+    assert readout_by_path["camera/C0001.MP4"]["metadata_projection"]["ok"] is False
+
+
 def test_profile_routing_preflight_reports_fallthrough(
     tmp_path: Path,
     monkeypatch,
