@@ -4360,6 +4360,7 @@ def metadata_projection_sidecar_facts(
     file_state: Mapping[str, Any],
     *,
     routing: Mapping[str, Any] | None = None,
+    source_paths_by_path: Mapping[str, Path] | None = None,
 ) -> dict[str, dict[str, Any]]:
     sidecars: dict[str, dict[str, Any]] = {}
     for evidence in sidecar_evidence_files_for_primary(upload, file_state):
@@ -4371,7 +4372,11 @@ def metadata_projection_sidecar_facts(
         if not tags:
             continue
         rel_path = str(evidence.get("path") or "")
-        source_path = upload_file_data_path(evidence)
+        source_path = (
+            source_paths_by_path.get(rel_path) if source_paths_by_path is not None else None
+        )
+        if source_path is None:
+            source_path = upload_file_data_path(evidence)
         exiftool_summary = routing_exiftool_summary(
             exiftool_for_routing(source_path, tags=tags)
         )
@@ -4471,6 +4476,7 @@ def container_metadata_for_gpu_payload(
     group_name: str,
     group_config: dict[str, Any],
     tasks: Sequence[str],
+    source_paths_by_path: Mapping[str, Path] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], bool]:
     if not gpu_tasks_require_container_metadata(tasks, group_config):
         return {}, False
@@ -4482,6 +4488,10 @@ def container_metadata_for_gpu_payload(
             file_state,
             job=job,
             group_config=group_config,
+            source_path=source_paths_by_path.get(str(file_state["path"]))
+            if source_paths_by_path is not None
+            else None,
+            sidecar_source_paths_by_path=source_paths_by_path,
         ):
             changed = True
         stored = file_state.get("metadata_projection_metadata")
@@ -4506,6 +4516,8 @@ def ensure_file_projection_metadata(
     *,
     job: Mapping[str, Any] | None = None,
     group_config: dict[str, Any],
+    source_path: Path | None = None,
+    sidecar_source_paths_by_path: Mapping[str, Path] | None = None,
 ) -> bool:
     if not metadata_projection_enabled(group_config):
         return False
@@ -4518,13 +4530,14 @@ def ensure_file_projection_metadata(
         return False
     metadata = projection_metadata_from_source(
         str(file_state["path"]),
-        upload_file_data_path(file_state),
+        source_path if source_path is not None else upload_file_data_path(file_state),
         group_config=group_config,
         filesystem_metadata=file_state_filesystem_metadata(file_state),
         sidecar_facts=metadata_projection_sidecar_facts(
             upload,
             file_state,
             routing=job_profile_routing(job),
+            source_paths_by_path=sidecar_source_paths_by_path,
         ),
     )
     file_state["metadata_projection_metadata"] = metadata.as_dict()
@@ -8267,6 +8280,16 @@ def start_eager_gpu_batch(
     if not space_checked:
         wait_for_free_space(job, GPU_RUNTIME_DIR, required_gpu_free, label="gpu eager scratch")
 
+    batch_root = eager_batch_input_root(job_id, batch_id)
+    if batch_root.exists():
+        shutil.rmtree(batch_root, ignore_errors=True)
+    batch_root.mkdir(parents=True, exist_ok=True)
+    for file_state in [*file_states, *evidence_file_states]:
+        materialize_upload_file(file_state, batch_root)
+    source_paths_by_path = {
+        str(file_state["path"]): batch_root / materialized_input_rel_path(file_state)
+        for file_state in [*file_states, *evidence_file_states]
+    }
     tasks: list[TaskName] = ["archive_video"]
     container_metadata, container_metadata_changed = container_metadata_for_gpu_payload(
         job,
@@ -8275,16 +8298,10 @@ def start_eager_gpu_batch(
         group_name=group_name,
         group_config=group_config,
         tasks=tasks,
+        source_paths_by_path=source_paths_by_path,
     )
     if container_metadata_changed:
         upload = save_input_upload_raw(upload)
-
-    batch_root = eager_batch_input_root(job_id, batch_id)
-    if batch_root.exists():
-        shutil.rmtree(batch_root, ignore_errors=True)
-    batch_root.mkdir(parents=True, exist_ok=True)
-    for file_state in [*file_states, *evidence_file_states]:
-        materialize_upload_file(file_state, batch_root)
     write_group_filesystem_metadata(batch_root, group_name, [*file_states, *evidence_file_states])
     source_artifacts_sidecars = source_artifacts_sidecar_entries(
         upload,

@@ -1165,6 +1165,88 @@ def test_gpu_payload_carries_required_projected_container_metadata(
     assert payload["container_metadata"]["IMG_0001.MOV"]["creators"] == ["Nash Spence"]
 
 
+def test_eager_gpu_projection_reads_materialized_original_name(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    tusd_source = runner.tusd_data_path("upload-a")
+    tusd_source.parent.mkdir(parents=True, exist_ok=True)
+    tusd_source.write_bytes(b"video")
+    upload = runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "storage_hint": {
+                "workflow_mode": "collection_archive",
+                "archive_mode": "av1_nvenc",
+                "tasks": ["archive_video"],
+                "groups": {
+                    "camera": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]}
+                },
+            },
+            "files": [
+                {
+                    "path": "camera/Back Yard_00_20260630123456.mp4",
+                    "bytes": 5,
+                    "upload_id": "upload-a",
+                }
+            ],
+        }
+    )
+    job = {
+        "job_id": "job-1",
+        "input_upload_id": "upload-1",
+        "collection_slug": "camera-archive",
+        "collection_timestamp": "20260101T000000Z",
+    }
+    runner.save_job(job)
+    group_config = {
+        "archive_mode": "av1_nvenc",
+        "tasks": ["archive_video"],
+        "metadata_projection": {
+            "gps": {"latitude": 48.9995, "longitude": -122.7404},
+            "device": {"make": "Reolink", "model": "Duo 3V PoE"},
+            "creators": ["Nash Spence"],
+        },
+    }
+    payloads: list[dict[str, object]] = []
+    exiftool_paths: list[Path] = []
+
+    monkeypatch.setattr(runner, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []})
+
+    def fake_exiftool(path: Path, **_kwargs: object) -> dict[str, object]:
+        exiftool_paths.append(path)
+        if path == tusd_source:
+            raise runner.RoutingFailed("extensionless tusd backing file was inspected")
+        return {"DateTimeOriginal": "2026:06:30 12:34:56-0700"}
+
+    monkeypatch.setattr(runner, "exiftool_for_routing", fake_exiftool)
+    monkeypatch.setattr(runner, "start_gpu_job", lambda payload: payloads.append(payload))
+
+    updated = runner.start_eager_gpu_batch(
+        job,
+        upload,
+        group_name="camera",
+        group_config=group_config,
+        file_states=[upload["files"][0]],
+        archive_dir=tmp_path / "archive",
+        space_checked=True,
+    )
+
+    assert len(exiftool_paths) == 1
+    assert exiftool_paths[0] != tusd_source
+    assert exiftool_paths[0].name == "Back Yard_00_20260630123456.mp4"
+    assert "eager-input" in exiftool_paths[0].parts
+    assert payloads[0]["container_metadata"]["Back Yard_00_20260630123456.mp4"][
+        "capture_date"
+    ] == "2026-06-30T12:34:56-07:00"
+    assert updated["files"][0]["metadata_projection_metadata"]["capture_date"] == (
+        "2026-06-30T12:34:56-07:00"
+    )
+
+
 def test_routed_structured_file_stays_complete_after_materialized_tusd_cleanup(
     tmp_path: Path,
     monkeypatch,
