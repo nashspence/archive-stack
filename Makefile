@@ -1,20 +1,20 @@
 SHELL := bash
 .DEFAULT_GOAL := help
 
-UV_BIN ?= uv
+MISE_BIN ?= mise
 FILES ?= .
 TESTS ?= tests/unit
 SPEC_TESTS ?= tests/harness/test_spec_harness.py
-UV_RUN = "$(UV_BIN)" run --python 3.11 --isolated --with-requirements "$(CURDIR)/requirements-test.txt" --with-editable '.[db]'
+UV_RUN = "$(MISE_BIN)" x -- uv run --python 3.11 --isolated --with-requirements "$(CURDIR)/requirements-test.txt" --with-editable '.[db]'
 MYPY_FLAGS = --show-error-codes --hide-error-context --no-error-summary --no-color-output
 args ?=
 
 .PHONY: help ruff ruff-fix format fix mypy lint unit spec stop-spec build build-app build-test bootstrap-garage down test
 
 define UV_CMD
-	@if ! command -v "$(UV_BIN)" >/dev/null 2>&1; then \
-		printf '%s\n' 'Riverhog Makefile targets require uv on PATH, or UV_BIN=/abs/path/to/uv.' >&2; \
-		printf '%s\n' 'Install uv or pass UV_BIN explicitly, then rerun make.' >&2; \
+	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
+		printf '%s\n' 'Riverhog Makefile targets require mise on PATH, or MISE_BIN=/abs/path/to/mise.' >&2; \
+		printf '%s\n' 'Install mise or pass MISE_BIN explicitly, then rerun make.' >&2; \
 		exit 127; \
 	fi; \
 	$(if $(2),$(2) )$(UV_RUN) $(1)
@@ -44,7 +44,7 @@ help:
 		"  FILES='...'            Narrow ruff, ruff-fix, or format to specific files." \
 		"  TESTS='...'            Narrow the unit test lane to specific tests." \
 		"  SPEC_TESTS='...'       Narrow the spec lane to specific tests." \
-		'  UV_BIN=/abs/path/to/uv Use a specific uv binary instead of uv on PATH.' \
+		'  MISE_BIN=/abs/path/to/mise Use a specific mise binary instead of mise on PATH.' \
 		'  COMPOSE_ENV_FILE=/abs/path/to/.env.compose' \
 		'  TEST_COMPOSE_PROJECT_NAME=riverhog-shared'
 

@@ -69,16 +69,16 @@ def _run_make(
     tmp_path: Path,
     *args: str,
     extra_env: dict[str, str] | None = None,
-    with_uv: bool = True,
+    with_mise: bool = True,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
     docker_log_path = _install_fake_command(tmp_path, "docker", "docker.log")
     uv_log_path = (
-        _install_fake_command(tmp_path, "uv", "uv.log") if with_uv else tmp_path / "uv.log"
+        _install_fake_command(tmp_path, "mise", "uv.log") if with_mise else tmp_path / "uv.log"
     )
     _install_fake_command(tmp_path, "pgrep", "pgrep.log")
     env = os.environ.copy()
     env["PATH"] = (
-        f"{tmp_path / 'bin'}:/usr/bin:/bin" if not with_uv else f"{tmp_path / 'bin'}:{env['PATH']}"
+        f"{tmp_path / 'bin'}:/usr/bin:/bin" if not with_mise else f"{tmp_path / 'bin'}:{env['PATH']}"
     )
     env.pop("args", None)
     env.pop("FILES", None)
@@ -86,7 +86,7 @@ def _run_make(
     env.pop("MFLAGS", None)
     env.pop("SPEC_TESTS", None)
     env.pop("TESTS", None)
-    env.pop("UV_BIN", None)
+    env.pop("MISE_BIN", None)
     if extra_env:
         env.update(extra_env)
 
@@ -170,19 +170,19 @@ def test_fix_runs_ruff_fix_then_format(tmp_path: Path) -> None:
     assert "python -m ruff format src/jeb" in uv_log_lines[1]
 
 
-def test_local_targets_fail_clearly_when_uv_is_missing(tmp_path: Path) -> None:
+def test_local_targets_fail_clearly_when_mise_is_missing(tmp_path: Path) -> None:
     completed, docker_log_path, uv_log_path = _run_make(
         tmp_path,
         "unit",
-        extra_env={"UV_BIN": str(tmp_path / "missing-uv")},
-        with_uv=False,
+        extra_env={"MISE_BIN": str(tmp_path / "missing-mise")},
+        with_mise=False,
     )
 
     assert completed.returncode != 0
     assert _read_log_lines(docker_log_path) == []
     assert _read_log_lines(uv_log_path) == []
-    assert "Riverhog Makefile targets require uv on PATH" in completed.stderr
-    assert "UV_BIN=/abs/path/to/uv" in completed.stderr
+    assert "Riverhog Makefile targets require mise on PATH" in completed.stderr
+    assert "MISE_BIN=/abs/path/to/mise" in completed.stderr
 
 
 def test_mypy_target_covers_source_and_service_apps(tmp_path: Path) -> None:

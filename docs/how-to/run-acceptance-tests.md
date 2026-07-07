@@ -8,15 +8,16 @@ The executable acceptance contract lives in the Gherkin feature files under
 Run the normal local verification flow:
 
 ```bash
+mise install
 make lint
 make unit
 ```
 
 `make lint` runs repo-wide `ruff check .` and strict `mypy` over `src` and the
-deployed service app entrypoints in the locked local `uv` environment.
-`make unit` runs the supported unit test lane.
-The Makefile expects `uv` on `PATH`; pass `UV_BIN=/abs/path/to/uv` when a host
-keeps the binary outside the shell path.
+deployed service app entrypoints in the locked local `uv` environment selected
+through mise. `make unit` runs the supported unit test lane. The Makefile
+expects `mise` on `PATH`; pass `MISE_BIN=/abs/path/to/mise` when a host keeps
+the binary outside the shell path.
 
 Run the fixture-backed executable spec harness separately when you are working
 on acceptance contracts:

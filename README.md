@@ -2,22 +2,22 @@
 
 ## Linting
 
-Run the canonical lint flow with `make lint`.
+Run the canonical lint flow with `mise install` and `make lint`.
 
 That lane runs repo-wide `ruff check .` and then runs strict `mypy` over `src`
-and the deployed service app entrypoints through `uv`. The project toolchain is
-declared in `mise.toml`; Python project dependencies are declared in
+and the deployed service app entrypoints through `mise x -- uv`. The project
+toolchain is declared in `mise.toml`; Python project dependencies are declared in
 `pyproject.toml` and resolved in `uv.lock`.
 
 The hashed `requirements-runtime.txt`, `requirements-test.txt`, and
 `requirements-service.txt` files are generated deployment exports for local
 lanes and Docker images.
 
-The Makefile expects `uv` on `PATH`. If a host keeps `uv` somewhere else, pass
-it explicitly:
+The Makefile expects `mise` on `PATH` and runs uv through the repo-selected
+toolchain. If a host keeps `mise` somewhere else, pass it explicitly:
 
 ```bash
-make lint UV_BIN=/abs/path/to/uv
+make lint MISE_BIN=/abs/path/to/mise
 ```
 
 ## Testing
