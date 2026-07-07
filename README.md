@@ -5,10 +5,13 @@
 Run the canonical lint flow with `make lint`.
 
 That lane runs repo-wide `ruff check .` and then runs strict `mypy` over `src`
-and the deployed service app entrypoints in a local locked `uv` environment
-built from `requirements-test.txt` plus the editable project.
-Runtime container dependencies are locked separately in `requirements-runtime.txt`;
-deployed service images use `requirements-service.txt`.
+and the deployed service app entrypoints through `uv`. The project toolchain is
+declared in `mise.toml`; Python project dependencies are declared in
+`pyproject.toml` and resolved in `uv.lock`.
+
+The hashed `requirements-runtime.txt`, `requirements-test.txt`, and
+`requirements-service.txt` files are generated deployment exports for local
+lanes and Docker images.
 
 The Makefile expects `uv` on `PATH`. If a host keeps `uv` somewhere else, pass
 it explicitly:
