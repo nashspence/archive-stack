@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -516,6 +517,35 @@ def test_transient_target_errors_retry_without_notification(tmp_path: Path) -> N
     assert runner.calls == 2
     assert collector.load_batch(batch_id)["state"] == "target_succeeded"
     assert notifier.messages == []
+
+
+def test_batch_process_lock_refuses_concurrent_process(tmp_path: Path) -> None:
+    config = _base_config(tmp_path)
+    collector = Collector(config, target_runners={"munchy": CompleteRunner()})
+    batch_id = "batch-1"
+    lock_path = collector.batch_process_lock_path(batch_id)
+    script = (
+        "import fcntl, pathlib, sys, time\n"
+        "path = pathlib.Path(sys.argv[1])\n"
+        "path.parent.mkdir(parents=True, exist_ok=True)\n"
+        "with path.open('a+') as lock_file:\n"
+        "    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "    print('locked', flush=True)\n"
+        "    time.sleep(30)\n"
+    )
+    process = subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", script, str(lock_path)],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert process.stdout is not None
+        assert process.stdout.readline().strip() == "locked"
+        with collector.batch_process_lock(batch_id) as acquired:
+            assert acquired is False
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
 
 
 def test_routing_preflight_failure_blocks_source_and_notifies(

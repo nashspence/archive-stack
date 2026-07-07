@@ -4046,6 +4046,105 @@ def test_create_file_upload_does_not_sync_entire_shared_tree(
     assert stored["files"][0]["upload_url"] == response["upload_url"]
 
 
+def test_concurrent_file_upload_setup_creates_one_tusd_upload(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    upload_id = "upload-1"
+    rel_path = "camera/a.mp4"
+    target_path = runner.target_path_for(upload_id, rel_path)
+    runner.write_state(
+        "input-upload",
+        upload_id,
+        {
+            "upload_id": upload_id,
+            "state": "uploading",
+            "created_at": runner.now_iso(),
+            "storage_hint": {
+                "workflow_mode": "collection_archive",
+                "groups": {
+                    "camera": {
+                        "archive_mode": "av1_nvenc",
+                        "tasks": ["archive_video"],
+                    }
+                },
+            },
+            "files": [
+                {
+                    "path": rel_path,
+                    "bytes": 10,
+                    "sha256": None,
+                    "filesystem_metadata": {},
+                    "target_path": target_path,
+                    "input_upload_id": upload_id,
+                    "upload_id": runner.tusd_upload_id_for_target_path(target_path),
+                    "upload_url": None,
+                }
+            ],
+            "tusd_creation_url": runner.TUSD_PUBLIC_BASE_URL,
+        },
+    )
+
+    created_targets: list[str] = []
+    responses: list[dict[str, object]] = []
+    errors: list[BaseException] = []
+    create_started = threading.Event()
+    finish_create = threading.Event()
+    caller_started = [threading.Event(), threading.Event()]
+    created_targets_lock = threading.Lock()
+    setup_lock = runner.input_file_upload_setup_lock(upload_id, rel_path)
+
+    def fake_create_tusd_upload(target_path: str, _length: int) -> str:
+        with created_targets_lock:
+            created_targets.append(target_path)
+        create_started.set()
+        assert finish_create.wait(timeout=5)
+        return f"{runner.TUSD_PUBLIC_BASE_URL}/{target_path}"
+
+    def fake_head_tusd_upload(_upload_url: str) -> int:
+        return 0
+
+    def call_upload(index: int) -> None:
+        caller_started[index].set()
+        try:
+            responses.append(runner.create_or_resume_input_file_upload(upload_id, rel_path))
+        except BaseException as exc:  # pragma: no cover - re-raised by the parent thread
+            errors.append(exc)
+
+    monkeypatch.setattr(runner, "create_tusd_upload", fake_create_tusd_upload)
+    monkeypatch.setattr(runner, "head_tusd_upload", fake_head_tusd_upload)
+
+    setup_lock.acquire()
+    holding_setup_lock = True
+    threads = [threading.Thread(target=call_upload, args=(index,)) for index in range(2)]
+    try:
+        for thread in threads:
+            thread.start()
+        assert caller_started[0].wait(timeout=5)
+        assert caller_started[1].wait(timeout=5)
+        assert not create_started.wait(timeout=0.25)
+        setup_lock.release()
+        holding_setup_lock = False
+        assert create_started.wait(timeout=5)
+        finish_create.set()
+    finally:
+        if holding_setup_lock:
+            setup_lock.release()
+        finish_create.set()
+        for thread in threads:
+            thread.join(timeout=5)
+
+    assert errors == []
+    assert len(responses) == 2
+    assert created_targets == [target_path]
+    stored = runner.read_state("input-upload", upload_id)
+    assert stored is not None
+    assert stored["files"][0]["upload_url"] == f"{runner.TUSD_PUBLIC_BASE_URL}/{target_path}"
+
+
 def test_resume_file_upload_heads_tusd_outside_state_lock(
     tmp_path: Path,
     monkeypatch,

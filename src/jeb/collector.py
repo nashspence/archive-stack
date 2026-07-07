@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import fcntl
 import hashlib
 import json
 import logging
@@ -10,7 +11,8 @@ import shutil
 import sqlite3
 import subprocess
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -1607,7 +1609,37 @@ class Collector:
         digest = hashlib.sha256(manifest.encode("utf-8")).hexdigest()[:12]
         return f"{collection_timestamp}__{collection.id}__{digest}", digest
 
+    def batch_process_lock_path(self, batch_id: str) -> Path:
+        digest = hashlib.sha256(batch_id.encode("utf-8")).hexdigest()[:16]
+        return self.config.collector.state_db.parent / "locks" / f"batch-process-{digest}.lock"
+
+    @contextmanager
+    def batch_process_lock(self, batch_id: str) -> Iterator[bool]:
+        lock_path = self.batch_process_lock_path(batch_id)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+") as lock_file:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                LOG.info("batch %s is already being processed; skipping concurrent run", batch_id)
+                yield False
+                return
+            try:
+                lock_file.seek(0)
+                lock_file.truncate()
+                lock_file.write(f"pid={os.getpid()}\nbatch_id={batch_id}\nacquired_at={iso()}\n")
+                lock_file.flush()
+                yield True
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
     def process_batch(self, batch_id: str) -> None:
+        with self.batch_process_lock(batch_id) as acquired:
+            if not acquired:
+                return
+            self._process_batch_locked(batch_id)
+
+    def _process_batch_locked(self, batch_id: str) -> None:
         try:
             batch = self.load_batch(batch_id)
             state = str(batch["state"])

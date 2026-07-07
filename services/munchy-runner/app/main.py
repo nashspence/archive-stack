@@ -439,6 +439,8 @@ riverhog_upload_locks: dict[str, threading.RLock] = {}
 riverhog_upload_locks_guard = threading.Lock()
 riverhog_upload_call_locks: dict[str, threading.Lock] = {}
 riverhog_upload_call_locks_guard = threading.Lock()
+input_file_upload_setup_locks: dict[tuple[str, str], threading.Lock] = {}
+input_file_upload_setup_locks_guard = threading.Lock()
 
 
 def authorized_api_bearer(request: Request) -> bool:
@@ -484,6 +486,16 @@ def riverhog_upload_call_lock(job_id: str) -> threading.Lock:
         if lock is None:
             lock = threading.Lock()
             riverhog_upload_call_locks[job_id] = lock
+        return lock
+
+
+def input_file_upload_setup_lock(upload_id: str, rel_path: str) -> threading.Lock:
+    key = (upload_id, rel_path)
+    with input_file_upload_setup_locks_guard:
+        lock = input_file_upload_setup_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            input_file_upload_setup_locks[key] = lock
         return lock
 
 
@@ -9396,6 +9408,11 @@ def input_file_upload_response(
 
 @app.post("/v1/input-uploads/{upload_id}/files/{rel_path:path}/upload", status_code=201)
 def create_or_resume_input_file_upload(upload_id: str, rel_path: str) -> dict[str, Any]:
+    with input_file_upload_setup_lock(upload_id, rel_path):
+        return _create_or_resume_input_file_upload(upload_id, rel_path)
+
+
+def _create_or_resume_input_file_upload(upload_id: str, rel_path: str) -> dict[str, Any]:
     with state_lock:
         upload = load_input_upload_raw(upload_id)
         file_state = find_upload_file(upload, rel_path)
