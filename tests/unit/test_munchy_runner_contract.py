@@ -1072,6 +1072,50 @@ def test_metadata_projection_can_use_configured_gps(
     assert metadata.gps_source == "metadata_projection.gps"
 
 
+def test_metadata_projection_path_regex_fallback_survives_exiftool_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    source = tmp_path / "Back Yard_00_20260630150631.mp4"
+    source.write_bytes(b"video")
+    monkeypatch.setattr(runner, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []})
+
+    def fail_exiftool(path: Path, **_kwargs: object) -> dict[str, object]:
+        raise runner.RoutingFailed(f"exiftool failed for {path.name}")
+
+    monkeypatch.setattr(runner, "exiftool_for_routing", fail_exiftool)
+
+    metadata = runner.projection_metadata_from_source(
+        "back-yard-camera/Back Yard_00_20260630150631.mp4",
+        source,
+        group_config={
+            "metadata_projection": {
+                "capture_date_sources": [
+                    {"type": "embedded"},
+                    {
+                        "type": "path_regex",
+                        "name": "reolink_camera_filename",
+                        "pattern": r"(?:^|/)[^/]+_[0-9]+_(?P<stamp>[0-9]{14})\.mp4$",
+                        "datetime_group": "stamp",
+                        "format": "%Y%m%d%H%M%S",
+                        "timezone": "America/Los_Angeles",
+                    },
+                ],
+                "gps": {
+                    "latitude": 48.999527523960296,
+                    "longitude": -122.74040765142755,
+                },
+                "device": {"make": "Reolink", "model": "Duo 3V PoE"},
+                "creators": ["Nash Spence"],
+            }
+        },
+    )
+
+    assert metadata.capture_date == "2026-06-30T15:06:31-07:00"
+    assert metadata.capture_date_source == "path_regex:reolink_camera_filename"
+
+
 def test_audio_container_metadata_args_write_capture_date_and_gps(
     tmp_path: Path,
     monkeypatch,

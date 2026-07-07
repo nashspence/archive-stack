@@ -4280,7 +4280,11 @@ def metadata_projection_facts_for_path(
         probe_summary = routing_probe_summary(ffprobe_for_routing(path))
     except RoutingFailed as exc:
         log.debug("ffprobe metadata projection summary skipped for %s: %s", rel_path, exc)
-    exiftool_summary = routing_exiftool_summary(exiftool_for_routing(path))
+    exiftool_summary: dict[str, Any] | None = None
+    try:
+        exiftool_summary = routing_exiftool_summary(exiftool_for_routing(path))
+    except RoutingFailed as exc:
+        log.debug("exiftool metadata projection summary skipped for %s: %s", rel_path, exc)
     facts = routing_file_facts(
         rel_path,
         probe_summary=probe_summary,
