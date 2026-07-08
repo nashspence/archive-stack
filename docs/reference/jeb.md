@@ -1,128 +1,92 @@
 # Jeb
 
-`jeb` is a watched-drop collector for weekly device batches. It watches one or
-more landing directories, creates one durable collection batch when the schedule
-and threshold allow it, and submits that structured upload to Munchy.
+`jeb` is an env-configured account scheduler for watched-drop archive uploads.
+It watches one landing directory per account, starts one Munchy
+`collection_archive` job per account when files are eligible, and tells Munchy
+to upload the finished archive to Riverhog.
 
-Jeb is generic public code. Real source names, credentials, hostnames, webhook
+Jeb is generic public code. Real account names, credentials, hostnames, webhook
 URLs, and deployment overlays belong outside this repository.
+
+## Account Model
+
+One account slug is the identity everywhere:
+
+```text
+account name == landing directory == Munchy profile group == Riverhog collection slug
+```
+
+For account `example-camera`, Jeb watches:
+
+```text
+/landing/example-camera/
+```
+
+and uploads files to Munchy under:
+
+```text
+example-camera/<relative-file>
+```
+
+The Munchy runner infers the profile group from that first path segment. Jeb
+does not carry device metadata, route tables, or encode profiles.
+
+To add an account, provision the matching drop account/directory, add the slug
+to `JEB_ACCOUNTS`, and make sure Munchy has the expected profile behavior for
+that group.
 
 ## Behavior
 
-- Each collection has at most one active batch.
+- Each account has at most one active scheduled batch.
 - Files must be stable before they are eligible.
-- Weekly collections include files older than the current scheduled boundary.
-- Source `upload_prefix` values are preserved in the Munchy upload paths.
+- Weekly schedules include files older than the current scheduled boundary.
 - Batch state is stored in SQLite with WAL enabled.
 - Service restarts resume from the current batch state.
-- Transient target and network errors retry forever without operator webhook noise.
+- Transient target and network errors retry without operator webhook noise.
 - Unrecoverable errors move the batch to `failed_notified` and send a critical
-  operator webhook.
-- `failed_notified` batches remain active and send a paced critical reminder,
-  defaulting to once per day, until the operator resolves them.
-- Before batching a source, Jeb sends the source-prefixed file tree plus
-  path, ffprobe, and ExifTool routing facts to Munchy profile-routing
-  preflight.
-- If any source file falls through the ordered Munchy routes, the whole source
-  is skipped and Jeb records a durable profile-routing failure.
-- Jeb asks Munchy to enforce metadata projection during that preflight, so a
-  matched upload that lacks required projection metadata fails before any
-  Munchy batch is created.
-- Transient Munchy preflight transport or server failures are logged and retried
-  later. Non-transient Munchy API or contract failures are recorded as durable
-  `munchy_preflight` failures, not as unmatched media.
-- Routing-preflight failures send critical operator webhooks with paced daily
-  reminders. Scheduled runs do not retry that source until the operator runs
-  `jeb archive-now --source <source-id>` and the Munchy preflight passes.
+  operator webhook when notifications are enabled.
 - Source files are deleted only after Munchy reports the job is safe to delete
-  and the collection uses `cleanup = "after_target_success"`.
+  and `JEB_CLEANUP=after_target_success`.
 
-## Munchy Routing
+## Environment
 
-Jeb does not choose encode profiles. It sends source-prefixed paths and
-normalized routing facts to Munchy preflight, then includes the same configured
-`munchy_job.routing` rules in the Munchy job request as the runner's
-`profile_routing` payload.
+Required:
 
-Route rules are ordered by priority. The first route that matches a file wins,
-and a file that falls through the full route list fails preflight. Broad routes
-are allowed because they are explicit ordered matchers. A broad final route is
-just a route with `when: {}`. Falling through every route remains a preflight
-failure.
-
-Routes use one predicate shape:
-
-```yaml
-munchy_job:
-  routing:
-    routes:
-      - id: example-video
-        group: video
-        into: camera/video
-        when:
-          path:
-            prefix: camera
-            suffix_in:
-              - .mp4
-              - .mov
+```sh
+JEB_ACCOUNTS=example-camera,example-phone
+JEB_MUNCHY_URL=http://munchy-runner:8080
 ```
 
-Predicates support `all`, `any`, `not`, `path`, `fact`, `gate`, and `pair`.
-Useful facts include `path.*`, `video.*`, `audio.*`, `ffprobe.*`, and
-`exif.*`. For example:
+Common settings:
 
-```yaml
-munchy_job:
-  routing:
-    routes:
-      - id: iphone-se2-4k60-hevc
-        group: iphone-video
-        into: iphone-se2/video-4k60
-        when:
-          all:
-            - gate: iphone-se2-native-camera
-            - path:
-                suffix: .mov
-            - fact: video.resolution
-              equals: 4k
-            - fact: video.fps
-              equals: 60
-            - fact: video.codec
-              equals: hevc
+```sh
+JEB_LANDING_DIR=/landing
+JEB_STATE_DIR=/state
+JEB_SCHEDULE=weekly
+JEB_WEEKDAY=monday
+JEB_HOUR=3
+JEB_MINUTE=0
+JEB_STABLE_AGE=10m
+JEB_INCLUDE_EXTENSIONS=.mp4,.mov,.mkv,.webm,.xml,.json,.txt
+JEB_ARCHIVE_TASKS=archive_video
+JEB_CLEANUP=after_target_success
+JEB_RIVERHOG_WAIT=finalized
 ```
 
-`pairings` run before route matching. Use them for multi-file captures such as
-Live Photos so the paired movie is not accidentally classified as a normal
-video.
+See [`config/examples/jeb/jeb.env`](../../config/examples/jeb/jeb.env) for a
+complete generic env example.
 
-`action: leave` marks a matched file as intentionally kept in Jeb custody
-instead of uploaded in that batch. Use it for known but currently unarchived
-inputs such as a downloads directory. Files that do not match any route are not
-left behind silently; they fail preflight.
+## Commands
 
-Use an `preserve` profile group for any recurring weekly artifact that should
-be copied into the collection without GPU work.
+```sh
+jeb check-config
+jeb once
+jeb run
+jeb archive-now --account example-camera
+```
 
-For incremental source enrollment, keep `include_extensions: []` if every file
-should be considered. Jeb asks Munchy to preflight the whole pending source set
-before it creates a Munchy batch:
-
-- every file has a winning upload route and a known group: create the batch
-- a file has a winning `leave` route: keep it in the source directory and omit
-  it from the batch
-- any file falls through the route list: record a durable profile-routing
-  failure and skip the source
-- any matched upload cannot satisfy its metadata-projection requirements:
-  record a durable profile-routing failure and skip the source
-- transient Munchy preflight transport or server failure: log and try again on a
-  later scheduled run
-- non-transient Munchy API or contract failure: record a durable
-  `munchy_preflight` failure and skip the source
-
-After fixing routes, run `jeb archive-now --source <source-id>`. The command
-retries preflight immediately, clears the durable failure only if Munchy accepts
-the full source set, and starts an archive attempt for the source. Use the same
-command after repairing a non-transient Munchy preflight API failure.
+`archive-now` starts an immediate account batch for currently eligible files.
+Use `--no-process` to create the batch without processing it in the same command.
 
 ## Health
 
@@ -138,12 +102,7 @@ command after repairing a non-transient Munchy preflight API failure.
 
 - `source = "jeb"`
 - `actor = "jeb"`
-- emoji `🤖`
 - event `jeb.issue`
 
 Only unrecoverable or operator-blocking failures send webhooks. Transient upload
 or target errors retry silently.
-
-See [`config/examples/jeb/jeb.yaml`](../../config/examples/jeb/jeb.yaml) for the
-generic configuration shape. See [`munchy.md`](munchy.md) for Munchy metadata
-projection and XMP sidecar behavior.

@@ -66,9 +66,9 @@ or with a richer job config:
 munchy job start ./incoming/camera --collection example-camera --config config/examples/munchy/job.yaml
 ```
 
-Munchy encode profiles use the same runner/Jeb contract everywhere. A profile
-config may be either a standalone runner encode profile or a job/Jeb config with
-a `profiles` map:
+Munchy encode profiles use the same runner contract everywhere. A profile
+config may be either a standalone runner encode profile or a Munchy job config
+with a `profiles` map:
 
 ```bash
 munchy profile validate config/examples/munchy/job.yaml

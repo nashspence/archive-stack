@@ -3,7 +3,8 @@
 Generic Pure-FTPd landing service for devices that can push files over FTP.
 
 Each configured FTP user is jailed into a matching directory under `FTP_ROOT`.
-Jeb can watch that user root and submit scheduled batches to Munchy.
+Use the same slug in `JEB_ACCOUNTS` so Jeb watches that account directory and
+submits scheduled batches to Munchy.
 
 ## Configuration
 

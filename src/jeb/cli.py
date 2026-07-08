@@ -4,16 +4,14 @@ import argparse
 import logging
 import os
 import sys
-from pathlib import Path
 
 from jeb.collector import (
     Collector,
     UnrecoverableJebError,
-    load_config,
+    config_from_env,
 )
 from jeb.health import JebHealthState, start_health_server
 
-DEFAULT_CONFIG = os.getenv("JEB_CONFIG", "/config/jeb.yaml")
 DEFAULT_HEALTH_HOST = os.getenv("JEB_HEALTH_HOST", "0.0.0.0")
 DEFAULT_HEALTH_PORT = "8081"
 
@@ -29,16 +27,6 @@ def health_port() -> int:
     return port
 
 
-def config_parent() -> argparse.ArgumentParser:
-    parent = argparse.ArgumentParser(add_help=False)
-    parent.add_argument(
-        "--config",
-        default=argparse.SUPPRESS,
-        help="Path to the Jeb YAML configuration.",
-    )
-    return parent
-
-
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=os.getenv("JEB_LOG_LEVEL", "INFO"),
@@ -51,26 +39,19 @@ def main(argv: list[str] | None = None) -> int:
             "commands:\n"
             "  run           run continuously and process eligible batches\n"
             "  once          discover and process one scheduler pass\n"
-            "  archive-now   retry one source immediately after route repair\n"
-            "  check-config  validate configuration and initialize state"
+            "  archive-now   archive one account immediately\n"
+            "  check-config  validate env configuration and initialize state"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parent = config_parent()
-    parser.add_argument("--config", default=DEFAULT_CONFIG, help=argparse.SUPPRESS)
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("run", parents=[parent], help="run continuously and process eligible batches")
-    sub.add_parser("once", parents=[parent], help="discover and process one scheduler pass")
+    sub.add_parser("run", help="run continuously and process eligible batches")
+    sub.add_parser("once", help="discover and process one scheduler pass")
     archive_now = sub.add_parser(
         "archive-now",
-        parents=[parent],
-        help="retry one source immediately after route repair",
+        help="archive one account immediately",
     )
-    archive_now.add_argument("--source", required=True, help="Source id to retry.")
-    archive_now.add_argument(
-        "--collection",
-        help="Collection id when the source belongs to multiple enabled collections.",
-    )
+    archive_now.add_argument("--account", required=True, help="Account slug to archive.")
     archive_now.add_argument(
         "--no-process",
         action="store_true",
@@ -78,13 +59,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub.add_parser(
         "check-config",
-        parents=[parent],
-        help="validate configuration and initialize state",
+        help="validate env configuration and initialize state",
     )
     args = parser.parse_args(argv)
     command = args.command or "run"
 
-    collector = Collector(load_config(Path(args.config)))
+    collector = Collector(config_from_env())
     if command == "check-config":
         collector.init_db()
         print(f"ok: {len(collector.config.sources)} sources")
@@ -96,17 +76,16 @@ def main(argv: list[str] | None = None) -> int:
         collector.init_db()
         try:
             batch_id = collector.archive_now(
-                source_id=args.source,
-                collection_id=args.collection,
+                source_id=args.account,
                 process=not args.no_process,
             )
         except UnrecoverableJebError as exc:
             print(str(exc), file=sys.stderr)
             return 1
         if batch_id is None:
-            print(f"routing preflight still failed or no eligible files for source {args.source}")
+            print(f"no eligible files for account {args.account}")
             return 1
-        print(f"archive attempt started for source {args.source}: {batch_id}")
+        print(f"archive attempt started for account {args.account}: {batch_id}")
         return 0
     collector.init_db()
     start_health_server(

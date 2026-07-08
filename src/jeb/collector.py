@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import fcntl
 import hashlib
 import json
@@ -20,7 +19,6 @@ from typing import Any, Literal, Protocol, cast
 
 import httpx
 
-from jeb.config_schema import JEB_CONFIG_SCHEMA
 from munchy.filesystem_metadata import collect_filesystem_metadata
 from munchy.preflight import (
     MP4_LIKE_EXTENSIONS,
@@ -31,7 +29,6 @@ from munchy.preflight import (
 )
 from munchy.profile_routing import (
     exiftool_routing_facts,
-    profile_routes,
     profile_routing_exiftool_tags,
     profile_routing_file_requires_exiftool,
     profile_routing_file_requires_probe,
@@ -51,11 +48,6 @@ from munchy.runner_client import (
 from munchy.runner_client import (
     is_transient_upload_error as munchy_is_transient_upload_error,
 )
-from riverhog_core.config_yaml import (
-    load_yaml_config,
-    normalize_munchy_job_authoring,
-    validate_json_schema,
-)
 from riverhog_core.domain.errors import Conflict, ServiceUnavailable
 from riverhog_core.operator_reminders import (
     normalize_reminder_time,
@@ -74,8 +66,6 @@ SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 TERMINAL_STATES = {"target_succeeded", "cleanup_done", "superseded"}
 TRANSIENT_RETRY_INITIAL_SECONDS = 1.0
 TRANSIENT_RETRY_MAX_SECONDS = 300.0
-DEFAULT_TASKS = ("archive_video", "qcut_video")
-DEFAULT_AUDIO_TASKS = ("archive_audio",)
 PREFLIGHT_MEDIA_EXTENSIONS = frozenset(MP4_LIKE_EXTENSIONS | {".mkv", ".webm"})
 ROUTING_PREFLIGHT_NOTIFICATION_BODY_LIMIT = 180
 
@@ -101,7 +91,7 @@ def routing_preflight_notification_message(
         f"Munchy routing preflight failed: {unmatched_count}/"
         f"{file_count} {plural(file_count, 'file')} unmatched."
     )
-    message = f"{base} Next: fix routes, then run `jeb archive-now --source {source_id}`."
+    message = f"{base} Next: fix routes, then run `jeb archive-now --account {source_id}`."
     if len(message) <= ROUTING_PREFLIGHT_NOTIFICATION_BODY_LIMIT:
         return message
     return f"{base} Next: fix routes, then retry Jeb archive."
@@ -111,7 +101,7 @@ def munchy_preflight_notification_message(*, source_id: str, error: BaseExceptio
     status = getattr(error, "status", None)
     reason = f"HTTP {status}" if status is not None else error.__class__.__name__
     base = f"Munchy routing preflight API failed ({reason}); no upload started."
-    message = f"{base} Next: repair Munchy, then run `jeb archive-now --source {source_id}`."
+    message = f"{base} Next: repair Munchy, then run `jeb archive-now --account {source_id}`."
     if len(message) <= ROUTING_PREFLIGHT_NOTIFICATION_BODY_LIMIT:
         return message
     return "Munchy routing preflight API failed. Next: repair Munchy, then retry Jeb archive."
@@ -217,14 +207,6 @@ def munchy_archive_mode(value: str) -> str:
     return mode
 
 
-def default_tasks_for_archive_mode(mode: str) -> tuple[str, ...]:
-    if mode == "preserve":
-        return ()
-    if mode == "audio":
-        return DEFAULT_AUDIO_TASKS
-    return DEFAULT_TASKS
-
-
 def same_file_inode(left: Path, right: Path) -> bool:
     left_stat = left.stat()
     right_stat = right.stat()
@@ -251,14 +233,6 @@ def hardlink_stage_file(source: Path, dest: Path) -> None:
         ) from exc
     finally:
         part.unlink(missing_ok=True)
-
-
-def env_value(env_name: str | None, fallback: str | None) -> str | None:
-    if env_name:
-        value = os.getenv(env_name)
-        if value is not None and value.strip():
-            return value.strip()
-    return fallback
 
 
 @dataclass(frozen=True)
@@ -294,14 +268,6 @@ class TargetConfig:
 
 
 @dataclass(frozen=True)
-class ProfileGroup:
-    profile: str | None = None
-    archive_mode: str = "av1_nvenc"
-    tasks: tuple[str, ...] = DEFAULT_TASKS
-    metadata_projection: Mapping[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
 class SourceConfig:
     id: str
     enabled: bool
@@ -333,8 +299,6 @@ class JebConfig:
     targets: Mapping[str, TargetConfig]
     sources: tuple[SourceConfig, ...]
     collections: tuple[CollectionConfig, ...]
-    profiles: Mapping[str, Mapping[str, Any]]
-    profile_groups: Mapping[str, ProfileGroup]
     munchy_job_defaults: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -932,9 +896,12 @@ class Collector:
     ) -> list[EligibleFile] | None:
         if not files:
             return []
-        target = self.target_by_name(collection.target)
-        groups = munchy_groups_payload(self.config)
         profile_routing = mapping(self.config.munchy_job_defaults.get("profile_routing"))
+        if not profile_routing:
+            self.clear_routing_preflight_failure(source.id)
+            return list(files)
+        target = self.target_by_name(collection.target)
+        groups: dict[str, dict[str, Any]] = {}
         path_facts_by_path = {
             item.target_path: routing_file_facts(item.target_path) for item in files
         }
@@ -1361,39 +1328,30 @@ class Collector:
         self,
         *,
         source_id: str,
-        collection_id: str | None = None,
         process: bool = True,
     ) -> str | None:
         try:
             source = self.source_by_id(source_id)
         except KeyError as exc:
             raise UnrecoverableJebError(
-                f"source {source_id!r} is not in the active Jeb config"
+                f"account {source_id!r} is not in the active Jeb env"
             ) from exc
         if not source.enabled:
             raise UnrecoverableJebError(
-                f"source {source_id!r} is disabled in the active Jeb config"
+                f"account {source_id!r} is disabled in the active Jeb env"
             )
         collections = [
             collection
             for collection in self.config.collections
-            if collection.enabled
-            and source_id in collection.source_ids
-            and (collection_id is None or collection.id == collection_id)
+            if collection.enabled and source_id in collection.source_ids
         ]
         if not collections:
-            if collection_id is not None:
-                raise UnrecoverableJebError(
-                    f"source {source_id!r} is not included in enabled Jeb collection "
-                    f"{collection_id!r}"
-                )
             raise UnrecoverableJebError(
-                f"source {source_id!r} is not included in any enabled Jeb collection"
+                f"account {source_id!r} is not included in the active Jeb schedule"
             )
         if len(collections) > 1:
-            ids = ", ".join(collection.id for collection in collections)
             raise UnrecoverableJebError(
-                f"source {source_id!r} is in multiple collections; pass --collection: {ids}"
+                f"account {source_id!r} is in multiple scheduled collections"
             )
         collection = collections[0]
         failed_attempt = self.latest_failed_attempt_for_collection(collection.id)
@@ -2133,10 +2091,8 @@ def munchy_upload_request(
         )
         for row in rows
     )
-    groups = munchy_groups_payload(collector.config)
+    groups: dict[str, dict[str, Any]] = {}
     profile_routing = mapping(collector.config.munchy_job_defaults.get("profile_routing"))
-    if not profile_routing:
-        raise UnrecoverableJebError("Munchy target requires munchy_job.routing")
     job_payload = {
         "job_id": str(batch["job_id"]),
         "input_upload_id": str(batch["input_upload_id"]),
@@ -2146,8 +2102,8 @@ def munchy_upload_request(
             "workflow_mode",
             "collection_archive",
         ),
-        "archive_mode": "av1_nvenc",
-        "tasks": [],
+        "archive_mode": collector.config.munchy_job_defaults.get("archive_mode", "av1_nvenc"),
+        "tasks": list(collector.config.munchy_job_defaults.get("tasks") or ["archive_video"]),
         "groups": groups,
         "collection_archive": dict(
             collector.config.munchy_job_defaults.get("collection_archive")
@@ -2155,11 +2111,12 @@ def munchy_upload_request(
         ),
         "review_upload": dict(collector.config.munchy_job_defaults.get("review_upload") or {}),
         "notify": dict(collector.config.munchy_job_defaults.get("notify") or {}),
-        "profile_routing": dict(profile_routing),
         "cleanup_local_on_success": bool(
             collector.config.munchy_job_defaults.get("cleanup_local_on_success", False)
         ),
     }
+    if profile_routing:
+        job_payload["profile_routing"] = dict(profile_routing)
     storage_hint = {
         "workflow_mode": job_payload["workflow_mode"],
         "collection_archive_destination": str(
@@ -2239,24 +2196,6 @@ def unique_corrupt_path(path: Path) -> Path:
         if not candidate.exists():
             return candidate
     raise UnrecoverableJebError(f"could not choose unique corrupt path for {path}")
-
-
-def munchy_groups_payload(config: JebConfig) -> dict[str, dict[str, Any]]:
-    out: dict[str, dict[str, Any]] = {}
-    for name, group in config.profile_groups.items():
-        payload: dict[str, Any] = {
-            "archive_mode": munchy_archive_mode(group.archive_mode),
-            "tasks": list(group.tasks),
-        }
-        if group.profile:
-            profile = config.profiles.get(group.profile)
-            if profile is None:
-                raise UnrecoverableJebError(f"unknown Munchy profile {group.profile!r}")
-            payload["encode_profile"] = copy.deepcopy(dict(profile))
-        if group.metadata_projection:
-            payload["metadata_projection"] = copy.deepcopy(dict(group.metadata_projection))
-        out[name] = payload
-    return out
 
 
 def format_media_preflight_error(report: MediaPreflightReport) -> str:
@@ -2383,27 +2322,96 @@ def exiftool_for_routing_preflight(path: Path, *, tags: Sequence[str]) -> dict[s
     return cast(dict[str, Any], payload[0])
 
 
-def load_config(path: Path) -> JebConfig:
-    raw = load_yaml_config(path)
-    validate_json_schema(raw, JEB_CONFIG_SCHEMA, label=str(path))
-    return config_from_mapping(raw)
+DEFAULT_JEB_INCLUDE_EXTENSIONS = (".mp4", ".mov", ".mkv", ".webm", ".xml", ".json", ".txt")
 
 
-def config_from_mapping(raw: Mapping[str, Any]) -> JebConfig:
-    collector_raw = mapping(raw.get("collector"))
-    preflight_repair = str(collector_raw.get("preflight_repair") or "safe_remux")
+def env_bool(env: Mapping[str, str], name: str, default: bool = False) -> bool:
+    value = env.get(name)
+    if value is None or not value.strip():
+        return default
+    text = value.strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be boolean")
+
+
+def env_csv(env: Mapping[str, str], name: str, default: Sequence[str] = ()) -> tuple[str, ...]:
+    value = env.get(name)
+    if value is None or not value.strip():
+        return tuple(default)
+    return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def env_value_from(env: Mapping[str, str], name: str, default: str | None = None) -> str | None:
+    value = env.get(name)
+    if value is not None and value.strip():
+        return value.strip()
+    return default
+
+
+def required_env(env: Mapping[str, str], name: str) -> str:
+    value = env_value_from(env, name)
+    if value is None:
+        raise ValueError(f"{name} is required")
+    return value
+
+
+def env_int(env: Mapping[str, str], name: str, default: int) -> int:
+    value = env_value_from(env, name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+
+
+def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
+    values = os.environ if env is None else env
+    landing_dir = Path(
+        os.path.expandvars(env_value_from(values, "JEB_LANDING_DIR", "/landing") or "/landing")
+    )
+    state_dir = Path(
+        os.path.expandvars(env_value_from(values, "JEB_STATE_DIR", "/state") or "/state")
+    )
+    accounts = env_csv(values, "JEB_ACCOUNTS")
+    if not accounts:
+        raise ValueError("JEB_ACCOUNTS is required")
+    duplicates = sorted({account for account in accounts if accounts.count(account) > 1})
+    if duplicates:
+        raise ValueError("JEB_ACCOUNTS has duplicate account(s): " + ", ".join(duplicates))
+    for account in accounts:
+        if not SAFE_NAME.fullmatch(account):
+            raise ValueError(f"JEB account must be a safe slug: {account!r}")
+
+    preflight_repair = env_value_from(values, "JEB_PREFLIGHT_REPAIR", "safe_remux") or "safe_remux"
     if preflight_repair not in {"off", "safe_remux"}:
-        raise ValueError("collector.preflight_repair must be off or safe_remux")
-    preflight_repair_original = str(
-        collector_raw.get("preflight_repair_original") or "keep_corrupt"
+        raise ValueError("JEB_PREFLIGHT_REPAIR must be off or safe_remux")
+    preflight_repair_original = (
+        env_value_from(values, "JEB_PREFLIGHT_REPAIR_ORIGINAL", "keep_corrupt")
+        or "keep_corrupt"
     )
     if preflight_repair_original not in {"keep_corrupt", "delete"}:
-        raise ValueError("collector.preflight_repair_original must be keep_corrupt or delete")
+        raise ValueError("JEB_PREFLIGHT_REPAIR_ORIGINAL must be keep_corrupt or delete")
     collector = CollectorSettings(
-        interval_seconds=parse_duration(collector_raw.get("interval"), 300),
-        state_db=Path(os.path.expandvars(str(collector_raw.get("state_db", "/state/jeb.sqlite3")))),
+        interval_seconds=parse_duration(env_value_from(values, "JEB_INTERVAL"), 300),
+        state_db=Path(
+            os.path.expandvars(
+                env_value_from(values, "JEB_STATE_DB", str(state_dir / "jeb.sqlite3"))
+                or str(state_dir / "jeb.sqlite3")
+            )
+        ),
         batch_dir=Path(
-            os.path.expandvars(str(collector_raw.get("batch_dir", "/landing/.jeb-batches")))
+            os.path.expandvars(
+                env_value_from(
+                    values,
+                    "JEB_BATCH_DIR",
+                    str(landing_dir / ".jeb-batches"),
+                )
+                or str(landing_dir / ".jeb-batches")
+            )
         ),
         preflight_repair=cast(Literal["off", "safe_remux"], preflight_repair),
         preflight_repair_original=cast(
@@ -2411,160 +2419,124 @@ def config_from_mapping(raw: Mapping[str, Any]) -> JebConfig:
         ),
         preflight_repair_corrupt_dir=Path(
             os.path.expandvars(
-                str(collector_raw.get("preflight_repair_corrupt_dir", "/landing/_corrupt"))
+                env_value_from(
+                    values,
+                    "JEB_PREFLIGHT_REPAIR_CORRUPT_DIR",
+                    str(landing_dir / "_corrupt"),
+                )
+                or str(landing_dir / "_corrupt")
             )
         ),
-        preflight_repair_ffmpeg=str(collector_raw.get("preflight_repair_ffmpeg") or "ffmpeg"),
+        preflight_repair_ffmpeg=env_value_from(values, "JEB_PREFLIGHT_REPAIR_FFMPEG", "ffmpeg")
+        or "ffmpeg",
     )
-    notify_raw = mapping(raw.get("notify"))
-    notify_url = os.getenv("RIVERHOG_OPERATOR_WEBHOOK_URL", "").strip()
+
+    notify_url = values.get("RIVERHOG_OPERATOR_WEBHOOK_URL", "").strip()
     reminder_time = normalize_reminder_time(
-        env_value("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME", None)
+        env_value_from(values, "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME")
     )
-    reminder_timezone = env_value("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE", "UTC") or "UTC"
+    reminder_timezone = (
+        env_value_from(values, "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE", "UTC") or "UTC"
+    )
     reminder_zone(reminder_timezone)
     notify = NotifySettings(
-        enabled=bool(notify_raw.get("enabled", False)),
+        enabled=env_bool(values, "JEB_NOTIFY_ENABLED", False),
         url=notify_url or "",
-        base_url=optional_str(notify_raw.get("base_url")) or "",
-        recipients=tuple(str(item) for item in sequence(notify_raw.get("recipients"))),
-        timeout_seconds=float(parse_duration(notify_raw.get("timeout"), 10)),
+        base_url=env_value_from(values, "JEB_NOTIFY_BASE_URL", "") or "",
+        recipients=env_csv(values, "JEB_NOTIFY_RECIPIENTS"),
+        timeout_seconds=float(parse_duration(env_value_from(values, "JEB_NOTIFY_TIMEOUT"), 10)),
         reminder_interval_seconds=parse_duration(
-            env_value("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL", "24h"),
+            env_value_from(values, "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL", "24h"),
             86_400,
         ),
         reminder_time=reminder_time,
         reminder_timezone=reminder_timezone,
     )
     if notify.enabled and not notify.url:
-        raise ValueError("RIVERHOG_OPERATOR_WEBHOOK_URL is required when notify.enabled=true")
+        raise ValueError("RIVERHOG_OPERATOR_WEBHOOK_URL is required when JEB_NOTIFY_ENABLED=true")
 
-    profiles = {
-        str(name): dict(mapping(profile)) for name, profile in mapping(raw.get("profiles")).items()
+    target = TargetConfig(
+        name="munchy",
+        url=required_env(values, "JEB_MUNCHY_URL").rstrip("/"),
+        upload_workers=max(1, env_int(values, "JEB_MUNCHY_UPLOAD_WORKERS", 4)),
+        upload_chunk_bytes=max(1, env_int(values, "JEB_MUNCHY_UPLOAD_CHUNK_MIB", 64))
+        * 1024
+        * 1024,
+        wait_for_safe_delete=env_bool(values, "JEB_MUNCHY_WAIT_FOR_SAFE_DELETE", True),
+    )
+    if (
+        env_value_from(values, "JEB_CLEANUP", "never") == "after_target_success"
+        and not target.wait_for_safe_delete
+    ):
+        raise ValueError("JEB_CLEANUP=after_target_success requires Munchy safe-delete waiting")
+    include_extensions = frozenset(
+        item.lower()
+        for item in env_csv(values, "JEB_INCLUDE_EXTENSIONS", DEFAULT_JEB_INCLUDE_EXTENSIONS)
+    )
+    stable_seconds = parse_duration(env_value_from(values, "JEB_STABLE_AGE"), 600)
+    sources = tuple(
+        SourceConfig(
+            id=account,
+            enabled=True,
+            path=landing_dir / account,
+            upload_prefix=account,
+            stable_seconds=stable_seconds,
+            include_extensions=include_extensions,
+        )
+        for account in accounts
+    )
+    collections = tuple(collection_from_account(account, values) for account in accounts)
+    tasks = list(env_csv(values, "JEB_ARCHIVE_TASKS", ("archive_video",)))
+    notify_defaults: dict[str, Any] = {"enabled": notify.enabled}
+    if notify.recipients:
+        notify_defaults["recipients"] = list(notify.recipients)
+    munchy_job_defaults = {
+        "workflow_mode": "collection_archive",
+        "archive_mode": env_value_from(values, "JEB_ARCHIVE_MODE", "av1_nvenc") or "av1_nvenc",
+        "tasks": tasks,
+        "collection_archive": {
+            "destination": "riverhog",
+            "riverhog": {
+                "wait": env_value_from(values, "JEB_RIVERHOG_WAIT", "finalized")
+                or "finalized"
+            },
+        },
+        "notify": notify_defaults,
+        "cleanup_local_on_success": env_bool(values, "JEB_CLEANUP_LOCAL_ON_SUCCESS", False),
     }
-    targets = load_targets(mapping(raw.get("targets")))
-    sources = tuple(load_source(source) for source in sequence(raw.get("sources")))
-    if not sources:
-        raise ValueError("at least one source is required")
-    source_ids = {source.id for source in sources}
-    collections = tuple(
-        load_collection(collection, targets, source_ids)
-        for collection in sequence(raw.get("collections"))
-    )
-    if not collections:
-        raise ValueError("at least one collection is required")
-    profile_groups = load_profile_groups(mapping(raw.get("groups")))
-    if not profile_groups:
-        raise ValueError("collections require groups")
-    munchy_job_defaults = normalize_munchy_job_authoring(
-        mapping(raw.get("munchy_job")),
-        label="munchy_job",
-    )
-    if not profile_routes(mapping(munchy_job_defaults.get("profile_routing"))):
-        raise ValueError("munchy_job.routing is required")
     return JebConfig(
         collector=collector,
         notify=notify,
-        targets=targets,
+        targets={"munchy": target},
         sources=sources,
         collections=collections,
-        profiles=profiles,
-        profile_groups=profile_groups,
         munchy_job_defaults=munchy_job_defaults,
     )
 
 
-def load_targets(raw_targets: Mapping[str, Any]) -> dict[str, TargetConfig]:
-    if not raw_targets:
-        raise ValueError("at least one target is required")
-    out: dict[str, TargetConfig] = {}
-    for name, raw_any in raw_targets.items():
-        raw = mapping(raw_any)
-        target_type = str(raw.get("type") or "").strip()
-        if target_type != "munchy":
-            raise ValueError(f"target {name} has unsupported type {target_type!r}")
-        url = env_value(
-            optional_str(raw.get("url_env")) or "JEB_MUNCHY_URL",
-            optional_str(raw.get("url")) or optional_str(raw.get("base_url")),
-        )
-        if not url:
-            raise ValueError(f"target {name} requires url")
-        chunk_mib = int(raw.get("upload_chunk_mib") or 64)
-        out[str(name)] = TargetConfig(
-            name=str(name),
-            url=url.rstrip("/"),
-            upload_workers=max(1, int(raw.get("upload_workers") or 4)),
-            upload_chunk_bytes=max(1, chunk_mib) * 1024 * 1024,
-            wait_for_safe_delete=bool(raw.get("wait_for_safe_delete", True)),
-        )
-    return out
-
-
-def load_source(raw_any: Any) -> SourceConfig:
-    raw = mapping(raw_any)
-    source_id = str(raw["id"])
-    if not SAFE_NAME.fullmatch(source_id):
-        raise ValueError(f"invalid source id {source_id!r}")
-    upload_prefix = normalize_posix(optional_str(raw.get("upload_prefix")) or source_id)
-    return SourceConfig(
-        id=source_id,
-        enabled=bool(raw.get("enabled", True)),
-        path=Path(os.path.expandvars(str(raw["path"]))),
-        upload_prefix=upload_prefix,
-        stable_seconds=parse_duration(raw.get("stable_age"), 600),
-        include_extensions=frozenset(
-            str(item).lower() for item in sequence(raw.get("include_extensions"))
-        ),
-    )
-
-
-def load_collection(
-    raw_any: Any,
-    targets: Mapping[str, TargetConfig],
-    source_ids: set[str],
-) -> CollectionConfig:
-    raw = mapping(raw_any)
-    collection_id = str(raw["id"])
-    if not SAFE_NAME.fullmatch(collection_id):
-        raise ValueError(f"invalid collection id {collection_id!r}")
-    target_name = str(raw["target"])
-    if target_name not in targets:
-        raise ValueError(f"collection {collection_id} references unknown target {target_name!r}")
-    collection_sources = tuple(str(item) for item in sequence(raw.get("sources")))
-    if not collection_sources:
-        raise ValueError(f"collection {collection_id} must list at least one source")
-    missing = sorted(set(collection_sources) - source_ids)
-    if missing:
-        raise ValueError(
-            f"collection {collection_id} references unknown source(s): {', '.join(missing)}"
-        )
-    cleanup = str(raw.get("cleanup", "never"))
+def collection_from_account(account: str, env: Mapping[str, str]) -> CollectionConfig:
+    cleanup = env_value_from(env, "JEB_CLEANUP", "never") or "never"
     if cleanup not in {"never", "after_target_success"}:
-        raise ValueError(f"collection {collection_id} has invalid cleanup mode {cleanup!r}")
-    target = targets[target_name]
-    if cleanup == "after_target_success" and not target.wait_for_safe_delete:
-        raise ValueError(
-            f"collection {collection_id} cannot cleanup until Munchy waits for safe delete"
-        )
-    schedule = str(raw.get("schedule") or "weekly").strip().lower()
+        raise ValueError("JEB_CLEANUP must be never or after_target_success")
+    schedule = env_value_from(env, "JEB_SCHEDULE", "weekly") or "weekly"
     if schedule not in {"always", "weekly"}:
-        raise ValueError(f"collection {collection_id} has invalid schedule {schedule!r}")
-    hour = int(raw.get("hour", 0))
-    minute = int(raw.get("minute", 0))
+        raise ValueError("JEB_SCHEDULE must be always or weekly")
+    hour = env_int(env, "JEB_HOUR", 0)
+    minute = env_int(env, "JEB_MINUTE", 0)
     if not 0 <= hour <= 23:
-        raise ValueError(f"collection {collection_id} hour must be 0..23")
+        raise ValueError("JEB_HOUR must be 0..23")
     if not 0 <= minute <= 59:
-        raise ValueError(f"collection {collection_id} minute must be 0..59")
+        raise ValueError("JEB_MINUTE must be 0..59")
     return CollectionConfig(
-        id=collection_id,
-        enabled=bool(raw.get("enabled", True)),
-        collection_slug=str(raw["collection_slug"]),
-        target=target_name,
-        threshold_bytes=parse_size(raw.get("threshold", "0B")),
+        id=account,
+        enabled=True,
+        collection_slug=account,
+        target="munchy",
+        threshold_bytes=parse_size(env_value_from(env, "JEB_THRESHOLD", "0B")),
         cleanup=cast(Literal["never", "after_target_success"], cleanup),
-        source_ids=collection_sources,
+        source_ids=(account,),
         schedule=cast(Literal["always", "weekly"], schedule),
-        weekday=parse_weekday(raw.get("weekday", 0)),
+        weekday=parse_weekday(env_value_from(env, "JEB_WEEKDAY", "monday")),
         hour=hour,
         minute=minute,
     )
@@ -2595,33 +2567,6 @@ def parse_weekday(value: Any) -> int:
     if text in names:
         return names[text]
     return parse_weekday(int(text))
-
-
-def load_profile_groups(raw_groups: Mapping[str, Any]) -> dict[str, ProfileGroup]:
-    out: dict[str, ProfileGroup] = {}
-    for name, raw in raw_groups.items():
-        group_name = str(name)
-        if not SAFE_NAME.fullmatch(group_name):
-            raise ValueError(f"invalid profile group name {group_name!r}")
-        out[group_name] = load_source_group(raw)
-    return out
-
-
-def load_source_group(raw_any: Any) -> ProfileGroup:
-    raw = mapping(raw_any)
-    archive_mode = munchy_archive_mode(str(raw.get("archive_mode") or "av1_nvenc"))
-    tasks = raw.get("tasks")
-    resolved_tasks = (
-        tuple(str(item) for item in sequence(tasks))
-        if tasks is not None
-        else default_tasks_for_archive_mode(archive_mode)
-    )
-    return ProfileGroup(
-        profile=optional_str(raw.get("profile")),
-        archive_mode=archive_mode,
-        tasks=resolved_tasks,
-        metadata_projection=dict(mapping(raw.get("metadata_projection"))),
-    )
 
 
 def mapping(value: Any) -> Mapping[str, Any]:
