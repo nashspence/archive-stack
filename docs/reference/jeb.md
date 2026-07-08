@@ -39,7 +39,9 @@ that group.
 
 - Each account has at most one active scheduled batch.
 - Files must be stable before they are eligible.
-- Weekly schedules include files older than the current scheduled boundary.
+- Scheduled cadences include files older than the current scheduled boundary.
+- `seasonal` uses Dec 1, Mar 1, Jun 1, and Sep 1 season boundaries and runs on
+  the first configured weekly slot after each boundary.
 - Batch state is stored in SQLite with WAL enabled.
 - Service restarts resume from the current batch state.
 - Transient target and network errors retry without operator webhook noise.
@@ -62,7 +64,7 @@ Common settings:
 ```sh
 JEB_LANDING_DIR=/landing
 JEB_STATE_DIR=/state
-JEB_SCHEDULE=weekly
+JEB_CADENCE=weekly
 JEB_WEEKDAY=monday
 JEB_HOUR=3
 JEB_MINUTE=0
@@ -71,6 +73,21 @@ JEB_INCLUDE_EXTENSIONS=.mp4,.mov,.mkv,.webm,.xml,.json,.txt
 JEB_ARCHIVE_TASKS=archive_video
 JEB_CLEANUP=after_target_success
 JEB_RIVERHOG_WAIT=finalized
+```
+
+Supported cadences are:
+
+- `weekly`: once per configured weekday/time.
+- `monthly`: first configured weekday/time on or after the first day of each
+  month.
+- `seasonal`: first configured weekday/time on or after Dec 1, Mar 1, Jun 1,
+  and Sep 1.
+- `manual`: no scheduled batch; use `jeb archive-now --account <slug>`.
+
+Per-account cadence overrides use the env-safe account slug:
+
+```sh
+JEB_ACCOUNT_EXAMPLE_PHONE_CADENCE=seasonal
 ```
 
 See [`config/examples/jeb/jeb.env`](../../config/examples/jeb/jeb.env) for a

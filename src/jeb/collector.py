@@ -68,6 +68,8 @@ TRANSIENT_RETRY_INITIAL_SECONDS = 1.0
 TRANSIENT_RETRY_MAX_SECONDS = 300.0
 PREFLIGHT_MEDIA_EXTENSIONS = frozenset(MP4_LIKE_EXTENSIONS | {".mkv", ".webm"})
 ROUTING_PREFLIGHT_NOTIFICATION_BODY_LIMIT = 180
+JEB_CADENCES = frozenset({"weekly", "monthly", "seasonal", "manual"})
+Cadence = Literal["weekly", "monthly", "seasonal", "manual"]
 
 
 def format_progress_bytes(value: int) -> str:
@@ -286,7 +288,7 @@ class CollectionConfig:
     threshold_bytes: int
     cleanup: Literal["never", "after_target_success"]
     source_ids: tuple[str, ...]
-    schedule: Literal["always", "weekly"]
+    cadence: Cadence
     weekday: int
     hour: int
     minute: int
@@ -745,6 +747,8 @@ class Collector:
         force: bool = False,
         allow_preflight_retry: bool = False,
     ) -> str | None:
+        if not force and collection.cadence == "manual":
+            return None
         period = now() if force else self.collection_period(collection)
         if only_source_ids is None:
             source_ids = collection.source_ids
@@ -760,7 +764,7 @@ class Collector:
             )
         sources = [self.source_by_id(source_id) for source_id in source_ids]
         files: list[EligibleFile] = []
-        before = None if force else period if collection.schedule == "weekly" else None
+        before = None if force else period
         for source in sources:
             if source.enabled:
                 if not allow_preflight_retry and self.routing_preflight_failure_active(source.id):
@@ -797,7 +801,7 @@ class Collector:
         base_batch_id, base_digest = self.batch_identity(collection, files, period=period)
         if (
             not force
-            and collection.schedule == "weekly"
+            and collection.cadence != "manual"
             and self.batch_exists_for_period(
                 collection.id,
                 period,
@@ -813,9 +817,23 @@ class Collector:
         )
 
     def collection_period(self, collection: CollectionConfig) -> datetime:
-        if collection.schedule == "always":
-            return now()
         current = now()
+        if collection.cadence == "manual":
+            return current
+        if collection.cadence == "weekly":
+            return self.last_weekly_boundary(collection, current)
+        period_start = self.current_period_start(collection.cadence, current)
+        candidate = self.first_weekly_boundary_on_or_after(collection, period_start)
+        if candidate > current:
+            period_start = self.previous_period_start(collection.cadence, period_start)
+            candidate = self.first_weekly_boundary_on_or_after(collection, period_start)
+        return candidate.astimezone(UTC)
+
+    def last_weekly_boundary(
+        self,
+        collection: CollectionConfig,
+        current: datetime,
+    ) -> datetime:
         days_since = (current.weekday() - collection.weekday) % 7
         candidate = current.replace(
             hour=collection.hour,
@@ -826,6 +844,72 @@ class Collector:
         if candidate > current:
             candidate -= timedelta(days=7)
         return candidate.astimezone(UTC)
+
+    def first_weekly_boundary_on_or_after(
+        self,
+        collection: CollectionConfig,
+        period_start: datetime,
+    ) -> datetime:
+        candidate = period_start.replace(
+            hour=collection.hour,
+            minute=collection.minute,
+            second=0,
+            microsecond=0,
+        )
+        days_until = (collection.weekday - candidate.weekday()) % 7
+        candidate += timedelta(days=days_until)
+        if candidate < period_start:
+            candidate += timedelta(days=7)
+        return candidate.astimezone(UTC)
+
+    def current_period_start(self, cadence: Cadence, current: datetime) -> datetime:
+        if cadence == "monthly":
+            return current.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if cadence == "seasonal":
+            month = current.month
+            if month >= 12:
+                start_month = 12
+            elif month >= 9:
+                start_month = 9
+            elif month >= 6:
+                start_month = 6
+            elif month >= 3:
+                start_month = 3
+            else:
+                return current.replace(
+                    year=current.year - 1,
+                    month=12,
+                    day=1,
+                    hour=0,
+                    minute=0,
+                    second=0,
+                    microsecond=0,
+                )
+            return current.replace(
+                month=start_month,
+                day=1,
+                hour=0,
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+        raise ValueError(f"unsupported cadence for period start: {cadence}")
+
+    def previous_period_start(self, cadence: Cadence, period_start: datetime) -> datetime:
+        if cadence == "monthly":
+            if period_start.month == 1:
+                return period_start.replace(year=period_start.year - 1, month=12)
+            return period_start.replace(month=period_start.month - 1)
+        if cadence == "seasonal":
+            if period_start.month == 12:
+                return period_start.replace(month=9)
+            if period_start.month == 9:
+                return period_start.replace(month=6)
+            if period_start.month == 6:
+                return period_start.replace(month=3)
+            if period_start.month == 3:
+                return period_start.replace(year=period_start.year - 1, month=12)
+        raise ValueError(f"unsupported cadence for previous period: {cadence}")
 
     def batch_exists_for_period(
         self,
@@ -2325,6 +2409,10 @@ def exiftool_for_routing_preflight(path: Path, *, tags: Sequence[str]) -> dict[s
 DEFAULT_JEB_INCLUDE_EXTENSIONS = (".mp4", ".mov", ".mkv", ".webm", ".xml", ".json", ".txt")
 
 
+def account_env_name(account: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "_", account.upper())
+
+
 def env_bool(env: Mapping[str, str], name: str, default: bool = False) -> bool:
     value = env.get(name)
     if value is None or not value.strip():
@@ -2366,6 +2454,15 @@ def env_int(env: Mapping[str, str], name: str, default: int) -> int:
         return int(value)
     except ValueError as exc:
         raise ValueError(f"{name} must be an integer") from exc
+
+
+def parse_cadence(value: str | None, *, env_name: str) -> Cadence:
+    cadence = (value or "weekly").strip().lower()
+    if cadence not in JEB_CADENCES:
+        raise ValueError(
+            f"{env_name} must be one of: " + ", ".join(sorted(JEB_CADENCES))
+        )
+    return cast(Cadence, cadence)
 
 
 def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
@@ -2518,9 +2615,15 @@ def collection_from_account(account: str, env: Mapping[str, str]) -> CollectionC
     cleanup = env_value_from(env, "JEB_CLEANUP", "never") or "never"
     if cleanup not in {"never", "after_target_success"}:
         raise ValueError("JEB_CLEANUP must be never or after_target_success")
-    schedule = env_value_from(env, "JEB_SCHEDULE", "weekly") or "weekly"
-    if schedule not in {"always", "weekly"}:
-        raise ValueError("JEB_SCHEDULE must be always or weekly")
+    default_cadence = parse_cadence(
+        env_value_from(env, "JEB_CADENCE", "weekly"),
+        env_name="JEB_CADENCE",
+    )
+    account_cadence_env = f"JEB_ACCOUNT_{account_env_name(account)}_CADENCE"
+    cadence = parse_cadence(
+        env_value_from(env, account_cadence_env, default_cadence),
+        env_name=account_cadence_env,
+    )
     hour = env_int(env, "JEB_HOUR", 0)
     minute = env_int(env, "JEB_MINUTE", 0)
     if not 0 <= hour <= 23:
@@ -2535,7 +2638,7 @@ def collection_from_account(account: str, env: Mapping[str, str]) -> CollectionC
         threshold_bytes=parse_size(env_value_from(env, "JEB_THRESHOLD", "0B")),
         cleanup=cast(Literal["never", "after_target_success"], cleanup),
         source_ids=(account,),
-        schedule=cast(Literal["always", "weekly"], schedule),
+        cadence=cadence,
         weekday=parse_weekday(env_value_from(env, "JEB_WEEKDAY", "monday")),
         hour=hour,
         minute=minute,

@@ -16,7 +16,7 @@ def jeb_env(tmp_path: Path) -> dict[str, str]:
         "JEB_MUNCHY_URL": "http://munchy.invalid",
         "JEB_INCLUDE_EXTENSIONS": ".txt",
         "JEB_STABLE_AGE": "0s",
-        "JEB_SCHEDULE": "always",
+        "JEB_CADENCE": "weekly",
     }
 
 
