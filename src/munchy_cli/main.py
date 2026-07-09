@@ -74,7 +74,7 @@ app.add_typer(routing_app, name="routing")
 DEFAULT_TASKS = ["archive_video", "qcut_video", "audio_review"]
 DEFAULT_AUDIO_TASKS = ["archive_audio"]
 DEFAULT_GROUP = "video"
-WORKFLOW_MODES = {"collection_archive", "review_only"}
+WORKFLOW_MODES = {"collection_archive", "review"}
 COLLECTION_ARCHIVE_DESTINATIONS = {"target", "riverhog"}
 ARCHIVE_MODES = {"av1_nvenc", "audio", "preserve"}
 MUNCHY_CONFIG_ENV = "MUNCHY_JOB_CONFIG"
@@ -680,18 +680,19 @@ def _job_request(
         else _default_group_payload(effective_group or DEFAULT_GROUP)
     )
 
-    collection_slug = str(collection or defaults.get("collection_slug") or "").strip()
-    if not collection_slug:
-        raise typer.BadParameter("--collection is required", param_hint="--collection")
-    timestamp = str(
-        collection_timestamp or defaults.get("collection_timestamp") or _timestamp()
-    ).strip()
     workflow = _normalize_mode(
         workflow_mode or str(defaults.get("workflow_mode") or "collection_archive"),
         default="collection_archive",
         allowed=WORKFLOW_MODES,
         label="workflow_mode",
     )
+    collection_slug = str(collection or defaults.get("collection_slug") or "").strip()
+    if workflow == "collection_archive" and not collection_slug:
+        raise typer.BadParameter("--collection is required", param_hint="--collection")
+    timestamp = str(
+        collection_timestamp or defaults.get("collection_timestamp") or _timestamp()
+    ).strip()
+    run_id = str(defaults.get("run_id") or timestamp).strip()
     raw_collection_archive = deepcopy(
         _mapping(defaults.get("collection_archive"), label="collection_archive")
     )
@@ -714,7 +715,7 @@ def _job_request(
     tasks = (
         list(default_tasks) if raw_tasks is None else [str(task) for task in _sequence(raw_tasks)]
     )
-    generated_job_id = _safe_id(f"{collection_slug}-{timestamp}")
+    generated_job_id = _safe_id(f"{collection_slug or workflow}-{timestamp}")
     final_job_id = str(job_id or defaults.get("job_id") or generated_job_id).strip()
     final_upload_id = str(
         upload_id or defaults.get("upload_id") or defaults.get("input_upload_id") or final_job_id
@@ -722,7 +723,7 @@ def _job_request(
     if not final_job_id or not final_upload_id:
         raise typer.BadParameter("job id and upload id must not be blank")
 
-    review_upload = deepcopy(_mapping(defaults.get("review_upload"), label="review_upload"))
+    review = deepcopy(_mapping(defaults.get("review"), label="review"))
     notify = deepcopy(_mapping(defaults.get("notify"), label="notify"))
 
     candidates = _discover_candidates(
@@ -742,17 +743,20 @@ def _job_request(
     job_payload: dict[str, Any] = {
         "job_id": final_job_id,
         "input_upload_id": final_upload_id,
-        "collection_slug": collection_slug,
-        "collection_timestamp": timestamp,
+        "run_id": run_id,
         "workflow_mode": workflow,
         "archive_mode": archive_mode,
         "tasks": tasks,
         "groups": groups,
-        "collection_archive": raw_collection_archive,
-        "review_upload": review_upload,
         "notify": notify,
         "cleanup_local_on_success": bool(defaults.get("cleanup_local_on_success", False)),
     }
+    if workflow == "review":
+        job_payload["review"] = review
+    else:
+        job_payload["collection_slug"] = collection_slug
+        job_payload["collection_timestamp"] = timestamp
+        job_payload["collection_archive"] = raw_collection_archive
     if profile_routing_payload is not None:
         job_payload["profile_routing"] = deepcopy(dict(profile_routing_payload))
     return RunnerUploadRequest(

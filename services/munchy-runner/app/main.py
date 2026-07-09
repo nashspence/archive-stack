@@ -283,7 +283,7 @@ STORAGE_WAIT_SECONDS = max(
 
 UploadState = Literal["pending", "partial", "uploaded", "consumed"]
 ArchiveMode = Literal["av1_nvenc", "audio", "preserve"]
-WorkflowMode = Literal["collection_archive", "review_only"]
+WorkflowMode = Literal["collection_archive", "review"]
 CollectionArchiveDestination = Literal["target", "riverhog"]
 TaskName = Literal["archive_video", "archive_audio", "qcut_video", "audio_review"]
 DEFAULT_TASKS: tuple[TaskName, ...] = ("archive_video", "qcut_video", "audio_review")
@@ -584,6 +584,15 @@ class CollectionArchiveConfig(BaseModel):
     riverhog: RiverhogConfig = Field(default_factory=RiverhogConfig)
 
 
+class ReviewConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    device_id: str = Field(min_length=1, max_length=180)
+    route_id: str = Field(min_length=1, max_length=180)
+    profile_id: str = Field(min_length=1, max_length=180)
+    target: TargetUploadConfig = Field(default_factory=TargetUploadConfig)
+
+
 class NotifyConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -646,8 +655,11 @@ class ClientPreflightFailedNotificationRequest(BaseModel):
     device_id: str = Field(min_length=1, max_length=180)
     workflow_mode: WorkflowMode
     profile_group: str = Field(min_length=1, max_length=180)
-    collection_slug: str = Field(min_length=1, max_length=180)
+    collection_slug: str | None = Field(default=None, min_length=1, max_length=180)
     collection_timestamp: str | None = Field(default=None, min_length=1, max_length=64)
+    run_id: str | None = Field(default=None, min_length=1, max_length=64)
+    route_id: str | None = Field(default=None, min_length=1, max_length=180)
+    profile_id: str | None = Field(default=None, min_length=1, max_length=180)
     upload_id: str | None = Field(default=None, min_length=1, max_length=180)
     job_id: str | None = Field(default=None, min_length=1, max_length=180)
     files: int = Field(ge=0)
@@ -1128,7 +1140,8 @@ class CreateInputUploadRequest(BaseModel):
 class CreateJobRequest(BaseModel):
     job_id: str | None = Field(default=None, min_length=1, max_length=180)
     input_upload_id: str | None = Field(default=None, min_length=1, max_length=180)
-    collection_slug: str = Field(min_length=1, max_length=180)
+    run_id: str | None = Field(default=None, min_length=1, max_length=64)
+    collection_slug: str | None = Field(default=None, min_length=1, max_length=180)
     collection_timestamp: str | None = Field(default=None, min_length=16, max_length=32)
     workflow_mode: WorkflowMode = "collection_archive"
     archive_mode: ArchiveMode = "av1_nvenc"
@@ -1137,7 +1150,7 @@ class CreateJobRequest(BaseModel):
     groups: dict[str, ProfileGroupConfig] = Field(default_factory=dict)
     profile_routing: ProfileRoutingConfig | None = None
     collection_archive: CollectionArchiveConfig = Field(default_factory=CollectionArchiveConfig)
-    review_upload: TargetUploadConfig = Field(default_factory=TargetUploadConfig)
+    review: ReviewConfig | None = None
     notify: NotifyConfig = Field(default_factory=NotifyConfig)
     cleanup_local_on_success: bool = False
 
@@ -1188,24 +1201,28 @@ class CreateJobRequest(BaseModel):
                 raise ValueError(
                     f"audio group {name!r} cannot run archive_video or qcut_video"
                 )
-        if self.workflow_mode == "review_only":
+        if self.workflow_mode == "review":
             for name, _archive_mode, tasks in task_lists:
                 if any(
                     task in tasks for task in ("archive_video", "archive_audio")
                 ):
                     raise ValueError(
-                        f"review_only group {name!r} cannot run archive_video or archive_audio"
+                        f"review group {name!r} cannot run archive_video or archive_audio"
                     )
                 if not any(task in tasks for task in ("qcut_video", "audio_review")):
                     raise ValueError(
-                        f"review_only group {name!r} requires qcut_video or audio_review"
+                        f"review group {name!r} requires qcut_video or audio_review"
                     )
-            if not self.review_upload.enabled:
-                raise ValueError("review_only jobs require review_upload.enabled")
+            if self.review is None:
+                raise ValueError("review jobs require review config")
+            if not self.review.target.enabled:
+                raise ValueError("review jobs require review.target.enabled")
             if self.cleanup_local_on_success:
-                raise ValueError("review_only jobs cannot cleanup local work on success")
+                raise ValueError("review jobs cannot cleanup local work on success")
             return self
 
+        if not self.collection_slug:
+            raise ValueError("collection_archive jobs require collection_slug")
         for name, archive_mode, tasks in task_lists:
             if (
                 archive_mode in {"av1_nvenc", "audio"}
@@ -1985,7 +2002,7 @@ def storage_hint_has_gpu_work(hint: InputUploadStorageHint) -> bool:
 def storage_hint_scratch_extra_multiplier(hint: InputUploadStorageHint) -> float:
     if not storage_hint_has_gpu_work(hint):
         return 0.0
-    if hint.workflow_mode == "review_only":
+    if hint.workflow_mode == "review":
         return REVIEW_SCRATCH_EXTRA_MULTIPLIER
     if (
         hint.workflow_mode == "collection_archive"
@@ -3636,6 +3653,8 @@ def runner_profile_routing_file(
     *,
     base_routing_facts: Mapping[str, Any] | None = None,
     sidecar_exiftool_tags: Sequence[str] = (),
+    sidecar_facts: Mapping[str, Any] | None = None,
+    sidecar_facts_error: str | None = None,
 ) -> ProfileRoutingFile:
     rel_path = str(file_state["path"])
     path = upload_file_data_path(file_state)
@@ -3658,17 +3677,21 @@ def runner_profile_routing_file(
         exiftool_summary = routing_exiftool_summary(
             exiftool_for_routing(path, tags=profile_routing_exiftool_tags(routing))
         )
-    sidecar_facts: dict[str, Any] | None = None
-    sidecar_facts_error: str | None = None
-    if sidecar_exiftool_tags:
+    collected_sidecar_facts = dict(sidecar_facts) if sidecar_facts is not None else None
+    collected_sidecar_facts_error = sidecar_facts_error
+    if (
+        sidecar_exiftool_tags
+        and collected_sidecar_facts is None
+        and collected_sidecar_facts_error is None
+    ):
         try:
-            sidecar_facts = exiftool_routing_facts(
+            collected_sidecar_facts = exiftool_routing_facts(
                 routing_exiftool_summary(
                     exiftool_for_routing(path, tags=sidecar_exiftool_tags)
                 )
             )
         except RoutingFailed as exc:
-            sidecar_facts_error = str(exc)[:1000]
+            collected_sidecar_facts_error = str(exc)[:1000]
     return ProfileRoutingFile(
         path=rel_path,
         bytes=int(file_state.get("bytes") or 0),
@@ -3680,21 +3703,30 @@ def runner_profile_routing_file(
             exiftool_summary=exiftool_summary,
             routing_facts=base_facts,
         ),
-        sidecar_facts=sidecar_facts,
-        sidecar_facts_error=sidecar_facts_error,
+        sidecar_facts=collected_sidecar_facts,
+        sidecar_facts_error=collected_sidecar_facts_error,
     )
 
 
 def profile_routing_path_facts_for_files(
     routing: Mapping[str, Any],
     file_states: Sequence[dict[str, Any]],
+    *,
+    sidecar_facts_by_path: Mapping[str, Mapping[str, Any] | None] | None = None,
+    sidecar_facts_errors_by_path: Mapping[str, str | None] | None = None,
 ) -> dict[str, dict[str, Any]]:
     facts_by_path = {
         str(file_state["path"]): routing_file_facts(str(file_state["path"]))
         for file_state in file_states
     }
     if routing.get("sidecars"):
-        return apply_sidecar_rules(routing, facts_by_path)
+        return apply_sidecar_rules(
+            routing,
+            facts_by_path,
+            sidecar_facts_by_path=sidecar_facts_by_path,
+            sidecar_facts_errors_by_path=sidecar_facts_errors_by_path,
+            require_configured_facts=False,
+        )
     return facts_by_path
 
 
@@ -3831,7 +3863,30 @@ def route_completed_input_files(
         for file_state in files_to_route
     }
     sidecar_tag_requests = sidecar_exiftool_tag_requests(routing, path_facts_by_path)
-    base_facts_by_path = profile_routing_path_facts_for_files(routing, files_to_route)
+    sidecar_facts_by_path: dict[str, dict[str, Any]] = {}
+    sidecar_facts_errors_by_path: dict[str, str] = {}
+    for file_state in files_to_route:
+        rel_path = str(file_state["path"])
+        sidecar_tags = sidecar_tag_requests.get(rel_path)
+        if not sidecar_tags:
+            continue
+        try:
+            sidecar_facts_by_path[rel_path] = exiftool_routing_facts(
+                routing_exiftool_summary(
+                    exiftool_for_routing(
+                        upload_file_data_path(file_state),
+                        tags=sidecar_tags,
+                    )
+                )
+            )
+        except RoutingFailed as exc:
+            sidecar_facts_errors_by_path[rel_path] = str(exc)[:1000]
+    base_facts_by_path = profile_routing_path_facts_for_files(
+        routing,
+        files_to_route,
+        sidecar_facts_by_path=sidecar_facts_by_path,
+        sidecar_facts_errors_by_path=sidecar_facts_errors_by_path,
+    )
     plan = profile_routing_plan(
         routing,
         [
@@ -3840,6 +3895,8 @@ def route_completed_input_files(
                 file_state,
                 base_routing_facts=base_facts_by_path.get(str(file_state["path"])),
                 sidecar_exiftool_tags=sidecar_tag_requests.get(str(file_state["path"]), ()),
+                sidecar_facts=sidecar_facts_by_path.get(str(file_state["path"])),
+                sidecar_facts_error=sidecar_facts_errors_by_path.get(str(file_state["path"])),
             )
             for file_state in files_to_route
         ],
@@ -5158,7 +5215,7 @@ def compact_terminal_job_state(job: dict[str, Any]) -> bool:
     changed = snapshot_terminal_progress(job)
 
     for result_key in (
-        "review_upload_result",
+        "review_handoff_result",
         "collection_archive_target_upload_result",
         "riverhog_upload_result",
     ):
@@ -5205,7 +5262,7 @@ RESUMABLE_RUNTIME_JOB_KEYS = (
     "group_results",
     "input_upload_progress",
     "profile_routing_result",
-    "review_upload_result",
+    "review_handoff_result",
     "riverhog_handoff_metrics",
     "riverhog_session_upload",
     "riverhog_upload_result",
@@ -5308,7 +5365,7 @@ def finalize_cancelled_job(job: dict[str, Any], *, reason: str) -> dict[str, Any
 
 def should_cleanup_local_work_on_success(job: dict[str, Any]) -> bool:
     workflow_mode = str(job.get("workflow_mode") or "collection_archive")
-    if workflow_mode == "review_only":
+    if workflow_mode == "review":
         return True
     collection_archive = dict_or_empty(job.get("collection_archive"))
     if str(collection_archive.get("destination") or "riverhog") == "target":
@@ -7144,8 +7201,13 @@ def cancel_riverhog_upload_session(job: dict[str, Any], *, reason: str) -> None:
 
 
 def render_job_template(value: str, job: dict[str, Any]) -> str:
+    review = dict_or_empty(job.get("review"))
     mapping = {
         "job_id": str(job.get("job_id") or ""),
+        "run_id": str(job.get("run_id") or job.get("collection_timestamp") or ""),
+        "device_id": str(review.get("device_id") or ""),
+        "route_id": str(review.get("route_id") or ""),
+        "profile_id": str(review.get("profile_id") or ""),
         "collection_slug": str(job.get("collection_slug") or ""),
         "collection_timestamp": str(job.get("collection_timestamp") or ""),
     }
@@ -7208,13 +7270,14 @@ def upload_target(
     *,
     config: Mapping[str, Any] | None = None,
     source_label: str = "review",
-    result_key: str = "review_upload_result",
-    phase: str = "review_upload",
-    component: str = "review_upload",
+    result_key: str = "review_handoff_result",
+    phase: str = "review_handoff",
+    component: str = "review_handoff",
     event: NotifyEvent = "review.handoff",
     allow_empty: bool = True,
 ) -> dict[str, Any] | None:
-    config = config if config is not None else job.get("review_upload", {})
+    if config is None:
+        config = dict_or_empty(dict_or_empty(job.get("review")).get("target"))
     if not config.get("enabled"):
         return None
     if not TARGET_UPLOAD_ENABLED:
@@ -7291,8 +7354,12 @@ def upload_target(
     env["MUNCHY_TARGET_SOURCE"] = str(source_dir)
     env["MUNCHY_TARGET_SOURCE_LABEL"] = source_label
     env["MUNCHY_JOB_ID"] = str(job["job_id"])
-    env["MUNCHY_COLLECTION_SLUG"] = str(job["collection_slug"])
+    env["MUNCHY_COLLECTION_SLUG"] = str(job.get("collection_slug") or "")
     env["MUNCHY_COLLECTION_TIMESTAMP"] = str(job.get("collection_timestamp") or "")
+    review = dict_or_empty(job.get("review"))
+    env["MUNCHY_REVIEW_DEVICE_ID"] = str(review.get("device_id") or "")
+    env["MUNCHY_REVIEW_ROUTE_ID"] = str(review.get("route_id") or "")
+    env["MUNCHY_REVIEW_PROFILE_ID"] = str(review.get("profile_id") or "")
 
     def command_operation() -> dict[str, Any]:
         result = run_target_command(
@@ -8043,16 +8110,18 @@ def compact_job_response(job: dict[str, Any], *, include_queue: bool = True) -> 
         "started_at",
         "finished_at",
         "input_upload_id",
+        "run_id",
         "collection_slug",
         "collection_timestamp",
         "workflow_mode",
+        "review",
         "archive_mode",
         "profile",
         "upload_progress",
         "encode_progress",
         "riverhog_upload_progress",
         "riverhog_handoff_metrics",
-        "review_upload_result",
+        "review_handoff_result",
         "collection_archive_target_upload_result",
         "riverhog_upload_result",
         "queue",
@@ -8198,7 +8267,7 @@ def build_eager_gpu_payload(
         "review_dir": f"/data/jobs/{job_id}/review/{group_name}",
         "profile": group_config.get("profile", "av1-nvenc-high"),
         "tasks": tasks,
-        "collection_slug": job["collection_slug"],
+        "collection_slug": str(job.get("collection_slug") or ""),
         "collection_timestamp": job.get("collection_timestamp"),
         "riverhog": {"enabled": False},
         "review_upload": {"enabled": False},
@@ -8799,7 +8868,7 @@ def run_job(job_id: str) -> None:
                         "review_dir": gpu_runtime_container_path(review_dir / group_name),
                         "profile": group_config.get("profile", "av1-nvenc-high"),
                         "tasks": tasks,
-                        "collection_slug": job["collection_slug"],
+                        "collection_slug": str(job.get("collection_slug") or ""),
                         "collection_timestamp": job.get("collection_timestamp"),
                         "riverhog": {"enabled": False},
                         "review_upload": {"enabled": False},
@@ -8861,10 +8930,15 @@ def run_job(job_id: str) -> None:
             write_profile_routing_manifest(job, input_upload, groups, archive_dir)
 
         workflow_mode = str(job.get("workflow_mode") or "collection_archive")
-        if workflow_mode == "review_only":
-            job["phase"] = "review_upload"
+        if workflow_mode == "review":
+            job["phase"] = "review_handoff"
             save_job(job)
-            job["review_upload_result"] = upload_target(job, review_dir)
+            review_config = dict_or_empty(job.get("review"))
+            job["review_handoff_result"] = upload_target(
+                job,
+                review_dir,
+                config=dict_or_empty(review_config.get("target")),
+            )
             job["collection_archive_target_upload_result"] = None
             job["riverhog_upload_result"] = None
             save_job(job)
@@ -8887,7 +8961,7 @@ def run_job(job_id: str) -> None:
                     event="collection_archive.handoff",
                     allow_empty=False,
                 )
-                job["review_upload_result"] = None
+                job["review_handoff_result"] = None
                 job["riverhog_upload_result"] = None
                 save_job(job)
                 raise_if_job_cancelled(job_id)
@@ -8895,7 +8969,7 @@ def run_job(job_id: str) -> None:
                 job["phase"] = "riverhog_upload"
                 save_job(job)
                 job["collection_archive_target_upload_result"] = None
-                job["review_upload_result"] = None
+                job["review_handoff_result"] = None
                 job["riverhog_upload_result"] = upload_to_riverhog(job, archive_dir)
                 save_job(job)
                 raise_if_job_cancelled(job_id)
@@ -9038,13 +9112,18 @@ def health_ready() -> dict[str, Any]:
 @app.get("/v1/capabilities")
 def capabilities() -> dict[str, Any]:
     return {
-        "workflow_modes": ["collection_archive", "review_only"],
+        "workflow_modes": ["collection_archive", "review"],
         "collection_archive": {
             "destinations": ["target", "riverhog"],
             "target_upload": {
                 "methods": ["rclone", "command"],
                 "modes": ["copy", "sync"],
-                "template_fields": ["job_id", "collection_slug", "collection_timestamp"],
+                "template_fields": [
+                    "job_id",
+                    "collection_slug",
+                    "collection_timestamp",
+                    "run_id",
+                ],
             },
         },
         "archive_modes": ["av1_nvenc", "audio", "preserve"],
@@ -9083,15 +9162,20 @@ def capabilities() -> dict[str, Any]:
             "group_name_chars": "letters, digits, dots, underscores, dashes",
             "job_groups": True,
         },
-        "review_upload": {
+        "review": {
             "methods": ["rclone", "command"],
             "modes": ["copy", "sync"],
-            "template_fields": ["job_id", "collection_slug", "collection_timestamp"],
+            "template_fields": ["job_id", "device_id", "route_id", "profile_id", "run_id"],
         },
         "target_upload": {
             "methods": ["rclone", "command"],
             "modes": ["copy", "sync"],
-            "template_fields": ["job_id", "collection_slug", "collection_timestamp"],
+            "template_fields": [
+                "job_id",
+                "collection_slug",
+                "collection_timestamp",
+                "run_id",
+            ],
         },
         "storage": {
             "input_upload_storage_hint_required": True,
@@ -9104,7 +9188,7 @@ def capabilities() -> dict[str, Any]:
             "eager_archive_pipeline_batches": EAGER_ARCHIVE_PIPELINE_BATCHES,
             "storage_wait_seconds": STORAGE_WAIT_SECONDS,
             "scratch_extra_multipliers": {
-                "review_only": REVIEW_SCRATCH_EXTRA_MULTIPLIER,
+                "review": REVIEW_SCRATCH_EXTRA_MULTIPLIER,
                 "collection_archive.target": COLLECTION_ARCHIVE_TARGET_SCRATCH_EXTRA_MULTIPLIER,
                 "collection_archive.riverhog": GPU_SCRATCH_MULTIPLIER,
             },
@@ -9181,7 +9265,8 @@ def notify_preflight_failed(req: ClientPreflightFailedNotificationRequest) -> di
         return {"status": "suppressed", "reason": "no_recipients"}
     job = {
         "job_id": req.job_id or "",
-        "collection_slug": req.collection_slug,
+        "run_id": req.run_id or req.collection_timestamp or "",
+        "collection_slug": req.collection_slug or "",
         "collection_timestamp": req.collection_timestamp or "",
         "phase": "preflight_failed",
         "state": "failed",
@@ -9200,6 +9285,9 @@ def notify_preflight_failed(req: ClientPreflightFailedNotificationRequest) -> di
         "device_id": req.device_id,
         "workflow_mode": req.workflow_mode,
         "profile_group": req.profile_group,
+        "run_id": req.run_id or "",
+        "route_id": req.route_id or "",
+        "profile_id": req.profile_id or "",
         "upload_id": req.upload_id or "",
         "files": req.files,
         "failed_file_count": req.failed_file_count,
@@ -9508,8 +9596,9 @@ def create_job(req: CreateJobRequest, background_tasks: BackgroundTasks) -> dict
             "phase": "queued",
             "created_at": now_iso(),
             "input_upload_id": req.input_upload_id,
-            "collection_slug": req.collection_slug,
-            "collection_timestamp": req.collection_timestamp,
+            "run_id": req.run_id or req.collection_timestamp or "",
+            "collection_slug": req.collection_slug or "",
+            "collection_timestamp": req.collection_timestamp or "",
             "workflow_mode": req.workflow_mode,
             "archive_mode": req.archive_mode,
             "tasks": grouped_task_union(groups) if req.groups else req.tasks,
@@ -9532,7 +9621,7 @@ def create_job(req: CreateJobRequest, background_tasks: BackgroundTasks) -> dict
             ),
             "collection_archive": collection_archive,
             "riverhog": riverhog,
-            "review_upload": req.review_upload.model_dump(),
+            "review": req.review.model_dump() if req.review is not None else None,
             "notify": req.notify.model_dump(),
             "cleanup_local_on_success": req.cleanup_local_on_success,
         }

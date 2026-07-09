@@ -219,7 +219,6 @@ def test_create_job_request_accepts_full_metadata_projection_config(
     req = runner.CreateJobRequest(
         collection_slug="phone-collection-archive",
         workflow_mode="collection_archive",
-        review_upload={"enabled": True},
         groups={
             "phone-video": {
                 "archive_mode": "av1_nvenc",
@@ -1592,6 +1591,112 @@ def test_sidecar_facts_are_bounded_during_runner_routing(
     assert files_by_path["camera/C0001M01.XML"]["profile_route_action"] == "evidence"
     assert files_by_path["camera/C0001M01.XML"]["profile_sidecar_id"] == "camera_xml"
     assert exiftool_calls == [(sidecar_file, ("Make", "Model"))]
+
+
+def test_sidecar_facts_unlock_primary_exiftool_during_runner_routing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    video_file = runner.shared_input_upload_root("upload-1") / "camera/C0001.MP4"
+    sidecar_file = runner.shared_input_upload_root("upload-1") / "camera/C0001M01.XML"
+    video_file.parent.mkdir(parents=True, exist_ok=True)
+    video_file.write_bytes(b"video")
+    sidecar_file.write_text("<metadata />", encoding="utf-8")
+    upload = runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "state": "uploading",
+            "storage_hint": {
+                "workflow_mode": "collection_archive",
+                "structured_routing": True,
+                "groups": {"video": {"archive_mode": "av1_nvenc", "tasks": []}},
+            },
+            "files": [
+                {
+                    "path": "camera/C0001.MP4",
+                    "bytes": 5,
+                    "upload_id": "camera-video-1",
+                    "input_upload_id": "upload-1",
+                    "structured_routing": True,
+                },
+                {
+                    "path": "camera/C0001M01.XML",
+                    "bytes": 12,
+                    "upload_id": "camera-xml-1",
+                    "input_upload_id": "upload-1",
+                    "structured_routing": True,
+                },
+            ],
+        }
+    )
+    exiftool_calls: list[tuple[Path, tuple[str, ...]]] = []
+
+    def fail_ffprobe_for_routing(path: Path) -> dict[str, object]:
+        raise AssertionError(f"ffprobe should not run for exiftool-only routing: {path}")
+
+    def fake_exiftool_for_routing(path: Path, *, tags=None):  # type: ignore[no-untyped-def]
+        exiftool_calls.append((path, tuple(tags or ())))
+        if path == sidecar_file:
+            return {"EXIF:Make": "Example Imaging"}
+        if path == video_file:
+            assert "VideoAvgBitrate" in tuple(tags or ())
+            return {"QuickTime:VideoAvgBitrate": "200 Mbps"}
+        raise AssertionError(f"unexpected exiftool path: {path}")
+
+    monkeypatch.setattr(runner, "ffprobe_for_routing", fail_ffprobe_for_routing)
+    monkeypatch.setattr(runner, "exiftool_for_routing", fake_exiftool_for_routing)
+    job = {
+        "job_id": "job-1",
+        "input_upload_id": "upload-1",
+        "profile_routing": {
+            "extra_exiftool_tags": ["VideoAvgBitrate"],
+            "sidecars": [
+                {
+                    "id": "camera_xml",
+                    "format": "xml",
+                    "path": "{parent}/{stem}M01.XML",
+                    "primary": {"path": {"suffix": ".mp4"}},
+                    "facts": {"source": "exiftool", "tags": ["Make"]},
+                }
+            ],
+            "routes": [
+                {
+                    "id": "sidecar-and-bitrate-video",
+                    "group": "video",
+                    "when": {
+                        "all": [
+                            {"path": {"suffix": ".mp4"}},
+                            {
+                                "fact": "sidecars.camera_xml.facts.exif.make",
+                                "equals": "example imaging",
+                            },
+                            {
+                                "fact": "exiftool.tags.video_avg_bitrate",
+                                "equals": "200 Mbps",
+                            },
+                        ]
+                    },
+                }
+            ],
+        },
+    }
+
+    routed = runner.route_completed_input_files(
+        job,
+        upload,
+        {"video": {"archive_mode": "av1_nvenc", "tasks": []}},
+    )
+
+    files_by_path = {item["path"]: item for item in routed["files"]}
+    assert files_by_path["camera/C0001.MP4"]["profile_route_id"] == (
+        "sidecar-and-bitrate-video"
+    )
+    assert files_by_path["camera/C0001M01.XML"]["profile_route_action"] == "evidence"
+    assert [path for path, _tags in exiftool_calls] == [sidecar_file, video_file]
+    assert exiftool_calls[0] == (sidecar_file, ("Make",))
 
 
 def test_profile_routing_skips_expensive_tools_for_path_only_runner_route(
@@ -4452,7 +4557,7 @@ def test_run_job_points_gpu_payload_at_shared_input_tree(
             "upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "storage_hint": {
-                "workflow_mode": "review_only",
+                "workflow_mode": "review",
                 "archive_mode": "av1_nvenc",
                 "tasks": ["qcut_video"],
                 "groups": {"camera": {"archive_mode": "av1_nvenc", "tasks": ["qcut_video"]}},
@@ -4465,9 +4570,14 @@ def test_run_job_points_gpu_payload_at_shared_input_tree(
             "job_id": "job-1",
             "state": "queued",
             "phase": "queued",
-            "workflow_mode": "review_only",
+            "workflow_mode": "review",
             "input_upload_id": "upload-1",
-            "collection_slug": "camera-review",
+            "review": {
+                "device_id": "camera",
+                "route_id": "camera",
+                "profile_id": "webm-q42",
+                "target": {"enabled": False},
+            },
             "groups": {
                 "camera": {
                     "archive_mode": "av1_nvenc",
@@ -4519,7 +4629,7 @@ def test_successful_job_keeps_shared_input_upload_for_unfinished_sibling(
             "upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "storage_hint": {
-                "workflow_mode": "review_only",
+                "workflow_mode": "review",
                 "archive_mode": "av1_nvenc",
                 "tasks": ["qcut_video"],
                 "groups": {"camera": {"archive_mode": "av1_nvenc", "tasks": ["qcut_video"]}},
@@ -4530,7 +4640,7 @@ def test_successful_job_keeps_shared_input_upload_for_unfinished_sibling(
     common_job = {
         "state": "queued",
         "phase": "queued",
-        "workflow_mode": "review_only",
+        "workflow_mode": "review",
         "input_upload_id": "upload-1",
         "groups": {
             "camera": {
@@ -4540,8 +4650,30 @@ def test_successful_job_keeps_shared_input_upload_for_unfinished_sibling(
             }
         },
     }
-    runner.save_job({"job_id": "job-1", "collection_slug": "camera-review-q42", **common_job})
-    runner.save_job({"job_id": "job-2", "collection_slug": "camera-review-q44", **common_job})
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "review": {
+                "device_id": "camera",
+                "route_id": "camera",
+                "profile_id": "webm-q42",
+                "target": {"enabled": False},
+            },
+            **common_job,
+        }
+    )
+    runner.save_job(
+        {
+            "job_id": "job-2",
+            "review": {
+                "device_id": "camera",
+                "route_id": "camera",
+                "profile_id": "webm-q44",
+                "target": {"enabled": False},
+            },
+            **common_job,
+        }
+    )
     monkeypatch.setattr(runner, "acquire_job_gpu", lambda job: "token")
     monkeypatch.setattr(runner, "release_job_gpu", lambda job, token: None)
     monkeypatch.setattr(runner, "start_gpu_job", lambda payload: None)
@@ -5916,7 +6048,7 @@ def test_encoding_failure_cleans_job_work_and_input_upload(
             "upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "storage_hint": {
-                "workflow_mode": "review_only",
+                "workflow_mode": "review",
                 "archive_mode": "av1_nvenc",
                 "tasks": ["qcut_video"],
                 "groups": {"camera": {"archive_mode": "av1_nvenc", "tasks": ["qcut_video"]}},
@@ -5929,9 +6061,14 @@ def test_encoding_failure_cleans_job_work_and_input_upload(
             "job_id": "job-1",
             "state": "queued",
             "phase": "queued",
-            "workflow_mode": "review_only",
+            "workflow_mode": "review",
             "input_upload_id": "upload-1",
-            "collection_slug": "camera-review",
+            "review": {
+                "device_id": "camera",
+                "route_id": "camera",
+                "profile_id": "webm-q42",
+                "target": {"enabled": False},
+            },
             "groups": {
                 "camera": {
                     "archive_mode": "av1_nvenc",
@@ -5989,7 +6126,7 @@ def test_run_job_reuses_stored_shared_review_plan(
             "upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "storage_hint": {
-                "workflow_mode": "review_only",
+                "workflow_mode": "review",
                 "archive_mode": "av1_nvenc",
                 "tasks": ["qcut_video"],
                 "groups": {"camera": {"archive_mode": "av1_nvenc", "tasks": ["qcut_video"]}},
@@ -6002,9 +6139,14 @@ def test_run_job_reuses_stored_shared_review_plan(
             "job_id": "job-2",
             "state": "queued",
             "phase": "queued",
-            "workflow_mode": "review_only",
+            "workflow_mode": "review",
             "input_upload_id": "upload-1",
-            "collection_slug": "camera-review-q43",
+            "review": {
+                "device_id": "camera",
+                "route_id": "camera",
+                "profile_id": "webm-q43",
+                "target": {"enabled": False},
+            },
             "groups": {
                 "camera": {
                     "archive_mode": "av1_nvenc",
@@ -6471,9 +6613,14 @@ def test_list_jobs_pages_filters_and_searches_indexed_summaries(
             "job_id": "job-2",
             "state": "queued",
             "phase": "queued",
-            "collection_slug": "back-camera",
             "input_upload_id": "upload-2",
-            "workflow_mode": "review_only",
+            "workflow_mode": "review",
+            "review": {
+                "device_id": "back-camera",
+                "route_id": "back-camera",
+                "profile_id": "webm-q42",
+                "target": {"enabled": False},
+            },
             "created_at": "2026-01-02T00:00:00Z",
             "updated_at": "2026-01-02T00:00:00Z",
         }

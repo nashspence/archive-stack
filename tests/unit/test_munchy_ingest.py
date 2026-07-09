@@ -49,7 +49,7 @@ def test_job_accepts_all_declared_profile_groups() -> None:
     request = MunchyJobRequest(
         job_id="job-1",
         upload_id="upload-1",
-        workflow_mode="review_only",
+        workflow_mode="review",
         collection_slug="example",
         collection_timestamp="20260605T120000Z",
         files=files,

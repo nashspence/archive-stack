@@ -273,10 +273,10 @@ def main() -> int:
         raise AssertionError(
             f"runner capabilities did not advertise collection_archive: {capabilities}"
         )
-    review_methods = set(capabilities.get("review_upload", {}).get("methods", []))
+    review_methods = set(capabilities.get("review", {}).get("methods", []))
     if "rclone" not in review_methods:
         raise AssertionError(
-            f"runner capabilities did not advertise rclone review upload: {capabilities}"
+            f"runner capabilities did not advertise rclone review handoff: {capabilities}"
         )
     notify_events = set(capabilities.get("notify", {}).get("events", []))
     if "job.issue" not in notify_events:
@@ -461,15 +461,27 @@ def main() -> int:
         payload={
             "job_id": f"{prefix}-bad-review",
             "input_upload_id": upload_id,
-            "collection_slug": "runner-smoke",
-            "archive_mode": "preserve",
-            "tasks": [],
-            "review_upload": {"enabled": True, "method": "rclone"},
+            "run_id": stamp,
+            "workflow_mode": "review",
+            "archive_mode": "av1_nvenc",
+            "tasks": ["qcut_video"],
+            "groups": {
+                group_name: {
+                    "archive_mode": "av1_nvenc",
+                    "tasks": ["qcut_video"],
+                }
+            },
+            "review": {
+                "device_id": "runner-smoke",
+                "route_id": group_name,
+                "profile_id": "webm-q42",
+                "target": {"enabled": True, "method": "rclone"},
+            },
         },
     )
     if invalid_review.status != 422:
         raise AssertionError(
-            "rclone review upload without destination should be rejected with 422, "
+            "rclone review handoff without destination should be rejected with 422, "
             f"got HTTP {invalid_review.status}: {invalid_review.body.decode('utf-8', 'replace')}"
         )
 

@@ -28,6 +28,7 @@ from munchy.preflight import (
     run_media_preflight,
 )
 from munchy.profile_routing import (
+    apply_sidecar_rules,
     exiftool_routing_facts,
     profile_routing_exiftool_tags,
     profile_routing_file_requires_exiftool,
@@ -993,11 +994,38 @@ class Collector:
             profile_routing,
             path_facts_by_path,
         )
+        sidecar_facts_by_path: dict[str, dict[str, Any]] = {}
+        sidecar_facts_errors_by_path: dict[str, str] = {}
+        for item in files:
+            sidecar_tags = sidecar_tag_requests.get(item.target_path)
+            if not sidecar_tags:
+                continue
+            try:
+                sidecar_facts_by_path[item.target_path] = exiftool_routing_facts(
+                    routing_exiftool_summary(
+                        exiftool_for_routing_preflight(
+                            item.path,
+                            tags=sidecar_tags,
+                        )
+                    )
+                )
+            except RoutingFactsError as exc:
+                sidecar_facts_errors_by_path[item.target_path] = str(exc)[:1000]
+        base_facts_by_path = apply_sidecar_rules(
+            profile_routing,
+            path_facts_by_path,
+            sidecar_facts_by_path=sidecar_facts_by_path,
+            sidecar_facts_errors_by_path=sidecar_facts_errors_by_path,
+            require_configured_facts=False,
+        )
         preflight_files = tuple(
             self.routing_preflight_file(
                 item,
                 profile_routing=profile_routing,
                 sidecar_exiftool_tags=sidecar_tag_requests.get(item.target_path, ()),
+                base_routing_facts=base_facts_by_path.get(item.target_path),
+                sidecar_facts=sidecar_facts_by_path.get(item.target_path),
+                sidecar_facts_error=sidecar_facts_errors_by_path.get(item.target_path),
             )
             for item in files
         )
@@ -1047,19 +1075,34 @@ class Collector:
         *,
         profile_routing: Mapping[str, Any],
         sidecar_exiftool_tags: Sequence[str] = (),
+        base_routing_facts: Mapping[str, Any] | None = None,
+        sidecar_facts: Mapping[str, Any] | None = None,
+        sidecar_facts_error: str | None = None,
     ) -> RunnerProfileRoutingPreflightFile:
-        path_facts = routing_file_facts(item.target_path)
+        base_facts = dict(base_routing_facts or {})
+        is_sidecar_evidence = base_facts.get("sidecar.role") == "evidence"
+        path_facts = routing_file_facts(item.target_path, routing_facts=base_facts)
         probe_summary: dict[str, Any] | None = None
         probe_error: str | None = None
-        if profile_routing_file_requires_probe(profile_routing, path_facts):
+        if not is_sidecar_evidence and profile_routing_file_requires_probe(
+            profile_routing,
+            path_facts,
+        ):
             try:
                 probe_summary = routing_probe_summary(ffprobe_for_routing_preflight(item.path))
             except RoutingProbeError as exc:
                 probe_error = str(exc)[:1000]
         exiftool_summary: dict[str, Any] | None = None
         facts_error: str | None = None
-        probe_facts = routing_file_facts(item.target_path, probe_summary=probe_summary)
-        if profile_routing_file_requires_exiftool(profile_routing, probe_facts):
+        probe_facts = routing_file_facts(
+            item.target_path,
+            probe_summary=probe_summary,
+            routing_facts=base_facts,
+        )
+        if not is_sidecar_evidence and profile_routing_file_requires_exiftool(
+            profile_routing,
+            probe_facts,
+        ):
             try:
                 exiftool_summary = routing_exiftool_summary(
                     exiftool_for_routing_preflight(
@@ -1069,11 +1112,15 @@ class Collector:
                 )
             except RoutingFactsError as exc:
                 facts_error = str(exc)[:1000]
-        sidecar_facts: dict[str, Any] | None = None
-        sidecar_facts_error: str | None = None
-        if sidecar_exiftool_tags:
+        collected_sidecar_facts = dict(sidecar_facts) if sidecar_facts is not None else None
+        collected_sidecar_facts_error = sidecar_facts_error
+        if (
+            sidecar_exiftool_tags
+            and collected_sidecar_facts is None
+            and collected_sidecar_facts_error is None
+        ):
             try:
-                sidecar_facts = exiftool_routing_facts(
+                collected_sidecar_facts = exiftool_routing_facts(
                     routing_exiftool_summary(
                         exiftool_for_routing_preflight(
                             item.path,
@@ -1082,7 +1129,7 @@ class Collector:
                     )
                 )
             except RoutingFactsError as exc:
-                sidecar_facts_error = str(exc)[:1000]
+                collected_sidecar_facts_error = str(exc)[:1000]
         return RunnerProfileRoutingPreflightFile(
             rel_path=item.target_path,
             bytes=item.bytes,
@@ -1092,10 +1139,11 @@ class Collector:
                 item.target_path,
                 probe_summary=probe_summary,
                 exiftool_summary=exiftool_summary,
+                routing_facts=base_facts,
             ),
             facts_error=facts_error,
-            sidecar_facts=sidecar_facts,
-            sidecar_facts_error=sidecar_facts_error,
+            sidecar_facts=collected_sidecar_facts,
+            sidecar_facts_error=collected_sidecar_facts_error,
         )
 
     def record_routing_preflight_failure(
@@ -2193,7 +2241,6 @@ def munchy_upload_request(
             collector.config.munchy_job_defaults.get("collection_archive")
             or {"destination": "riverhog"}
         ),
-        "review_upload": dict(collector.config.munchy_job_defaults.get("review_upload") or {}),
         "notify": dict(collector.config.munchy_job_defaults.get("notify") or {}),
         "cleanup_local_on_success": bool(
             collector.config.munchy_job_defaults.get("cleanup_local_on_success", False)

@@ -852,7 +852,17 @@ def format_job_status_line(job: dict[str, Any]) -> str:
 def format_job_summary_line(job: dict[str, Any]) -> str:
     job_id = str(job.get("job_id") or job.get("id") or "unknown")
     collection = str(job.get("collection_slug") or "").strip()
-    prefix = job_id if not collection else f"{job_id} [{collection}]"
+    review = job.get("review")
+    review_label = ""
+    if isinstance(review, dict):
+        route_id = str(review.get("route_id") or "").strip()
+        profile_id = str(review.get("profile_id") or "").strip()
+        if route_id and profile_id:
+            review_label = f"{route_id}/{profile_id}"
+        elif route_id:
+            review_label = route_id
+    label = collection or review_label
+    prefix = job_id if not label else f"{job_id} [{label}]"
     return f"{prefix} | {format_job_status_line(job)}"
 
 
@@ -921,6 +931,14 @@ def format_job_failure(job: dict[str, Any], *, label: str = "job") -> str:
     collection = str(job.get("collection_slug") or "").strip()
     if collection:
         lines.append(f"- collection: {collection}")
+    review = job.get("review")
+    if isinstance(review, dict):
+        route_id = str(review.get("route_id") or "").strip()
+        profile_id = str(review.get("profile_id") or "").strip()
+        if route_id:
+            lines.append(f"- route: {route_id}")
+        if profile_id:
+            lines.append(f"- profile: {profile_id}")
     lines.append(f"- status: {format_job_status_line(job)}")
 
     seen: set[str] = set()

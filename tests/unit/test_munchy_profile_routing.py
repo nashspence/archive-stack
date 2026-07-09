@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from munchy.profile_routing import (
     ProfileRoutingFile,
+    apply_sidecar_rules,
     exiftool_routing_facts,
     match_profile_route,
     profile_routing_exiftool_tags,
@@ -422,6 +423,61 @@ def test_profile_routing_can_match_primary_from_generic_sidecar_facts() -> None:
     }
     assert plan.matches[1]["sidecar_id"] == "camera_xml"
     assert plan.matches[1]["sidecar_for"] == "camera/C0001.MP4"
+
+
+def test_sidecar_facts_can_unlock_primary_exiftool_collection() -> None:
+    routing = {
+        "extra_exiftool_tags": ["VideoAvgBitrate"],
+        "sidecars": [
+            {
+                "id": "camera_xml",
+                "format": "xml",
+                "path": "{parent}/{stem}M01.XML",
+                "primary": {"path": {"suffix": ".mp4"}},
+                "facts": {"source": "exiftool", "tags": ["Make"]},
+            }
+        ],
+        "routes": [
+            {
+                "id": "sidecar-and-bitrate-video",
+                "group": "video",
+                "when": {
+                    "all": [
+                        {"path": {"suffix": ".mp4"}},
+                        {
+                            "fact": "sidecars.camera_xml.facts.exif.make",
+                            "equals": "example imaging",
+                        },
+                        {
+                            "fact": "exiftool.tags.video_avg_bitrate",
+                            "equals": "200 Mbps",
+                        },
+                    ]
+                },
+            }
+        ],
+    }
+    path_facts_by_path = {
+        "camera/C0001.MP4": routing_file_facts("camera/C0001.MP4"),
+        "camera/C0001M01.XML": routing_file_facts("camera/C0001M01.XML"),
+    }
+    sidecar_facts = {
+        "camera/C0001M01.XML": exiftool_routing_facts(
+            routing_exiftool_summary({"EXIF:Make": "Example Imaging"})
+        )
+    }
+
+    base_facts_by_path = apply_sidecar_rules(
+        routing,
+        path_facts_by_path,
+        sidecar_facts_by_path=sidecar_facts,
+        require_configured_facts=False,
+    )
+
+    assert profile_routing_file_requires_exiftool(
+        routing,
+        base_facts_by_path["camera/C0001.MP4"],
+    )
 
 
 def test_profile_routing_fails_when_configured_sidecar_facts_are_missing() -> None:

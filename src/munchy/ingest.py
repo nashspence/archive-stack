@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from munchy.profiles import EncodeProfile
 
-WorkflowMode = Literal["collection_archive", "review_only"]
+WorkflowMode = Literal["collection_archive", "review"]
 CollectionArchiveDestination = Literal["target", "riverhog"]
 
 

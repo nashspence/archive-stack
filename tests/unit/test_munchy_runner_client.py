@@ -352,9 +352,9 @@ def test_format_job_summary_line_renders_review_clip_progress() -> None:
     line = format_job_summary_line(
         {
             "job_id": "job-review",
-            "collection_slug": "camera-review-q49",
+            "review": {"route_id": "camera-main-video", "profile_id": "webm-q49"},
             "state": "running",
-            "phase": "review_upload_retrying",
+            "phase": "review_handoff_retrying",
             "encode_progress": {
                 "mode": "qcut_video",
                 "phase": "encoding_clips",
