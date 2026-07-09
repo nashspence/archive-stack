@@ -74,11 +74,51 @@ PAIRING_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+SIDECAR_FACT_EXTRACTOR_REQUIREMENT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "tag": {"type": "string", "minLength": 1},
+        "equals": True,
+        "contains": True,
+    },
+    "required": ["tag"],
+    "oneOf": [{"required": ["equals"]}, {"required": ["contains"]}],
+    "additionalProperties": False,
+}
+
+SIDECAR_NAME_VALUE_FACT_EXTRACTOR_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "type": {"const": "name_value"},
+        "name_tag": {"type": "string", "minLength": 1},
+        "value_tag": {"type": "string", "minLength": 1},
+        "requires": {
+            "type": "array",
+            "items": SIDECAR_FACT_EXTRACTOR_REQUIREMENT_SCHEMA,
+        },
+        "fields": {
+            "type": "object",
+            "additionalProperties": {"type": "string", "minLength": 1},
+            "minProperties": 1,
+        },
+    },
+    "required": ["type", "name_tag", "value_tag", "fields"],
+    "additionalProperties": False,
+}
+
+SIDECAR_FACT_EXTRACTOR_SCHEMA: dict[str, Any] = {
+    "oneOf": [SIDECAR_NAME_VALUE_FACT_EXTRACTOR_SCHEMA],
+}
+
 SIDECAR_FACTS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "source": {"const": "exiftool"},
         "tags": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+        "extractors": {
+            "type": "array",
+            "items": SIDECAR_FACT_EXTRACTOR_SCHEMA,
+        },
     },
     "required": ["tags"],
     "additionalProperties": False,

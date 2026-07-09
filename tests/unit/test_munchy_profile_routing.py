@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from munchy.profile_routing import (
     ProfileRoutingFile,
     apply_sidecar_rules,
@@ -11,6 +13,7 @@ from munchy.profile_routing import (
     profile_routing_plan,
     routing_exiftool_summary,
     routing_file_facts,
+    sidecar_exiftool_fact_requests,
 )
 
 
@@ -480,6 +483,88 @@ def test_sidecar_facts_can_unlock_primary_exiftool_collection() -> None:
     )
 
 
+def test_sidecar_fact_requests_include_configured_extractors() -> None:
+    routing = {
+        "sidecars": [
+            {
+                "id": "camera_xml",
+                "format": "xml",
+                "path": "{parent}/{stem}.xml",
+                "primary": {"path": {"suffix": ".mp4"}},
+                "facts": {
+                    "source": "exiftool",
+                    "tags": ["VendorGroup", "VendorFieldName", "VendorFieldValue"],
+                    "extractors": [
+                        {
+                            "type": "name_value",
+                            "name_tag": "VendorFieldName",
+                            "value_tag": "VendorFieldValue",
+                            "requires": [{"tag": "VendorGroup", "contains": "Gps"}],
+                            "fields": {"Latitude": "exif.gps_latitude"},
+                        }
+                    ],
+                },
+            }
+        ],
+        "routes": [],
+    }
+    facts_by_path = {
+        "camera/C0001.MP4": routing_file_facts("camera/C0001.MP4"),
+        "camera/C0001.xml": routing_file_facts("camera/C0001.xml"),
+    }
+
+    requests = sidecar_exiftool_fact_requests(routing, facts_by_path)
+
+    assert requests["camera/C0001.xml"].tags == (
+        "VendorGroup",
+        "VendorFieldName",
+        "VendorFieldValue",
+    )
+    assert requests["camera/C0001.xml"].fact_extractors == (
+        {
+            "type": "name_value",
+            "name_tag": "vendor_field_name",
+            "value_tag": "vendor_field_value",
+            "requires": ({"tag": "vendor_group", "contains": "Gps"},),
+            "fields": {"latitude": "exif.gps_latitude"},
+        },
+    )
+
+
+def test_sidecar_fact_extractors_must_reference_requested_tags() -> None:
+    routing = {
+        "sidecars": [
+            {
+                "id": "camera_xml",
+                "format": "xml",
+                "path": "{parent}/{stem}.xml",
+                "primary": {"path": {"suffix": ".mp4"}},
+                "facts": {
+                    "source": "exiftool",
+                    "tags": ["VendorFieldName", "VendorFieldValue"],
+                    "extractors": [
+                        {
+                            "type": "name_value",
+                            "name_tag": "VendorFieldName",
+                            "value_tag": "VendorFieldValue",
+                            "requires": [{"tag": "VendorGroup", "contains": "Gps"}],
+                            "fields": {"Latitude": "exif.gps_latitude"},
+                        }
+                    ],
+                },
+            }
+        ],
+        "routes": [],
+    }
+    facts_by_path = {
+        "camera/C0001.MP4": routing_file_facts("camera/C0001.MP4"),
+        "camera/C0001.xml": routing_file_facts("camera/C0001.xml"),
+    }
+
+    with pytest.raises(ValueError, match="vendor_group"):
+        sidecar_exiftool_fact_requests(routing, facts_by_path)
+
+
 def test_profile_routing_fails_when_configured_sidecar_facts_are_missing() -> None:
     routing = {
         "sidecars": [
@@ -743,16 +828,15 @@ def test_routing_exiftool_summary_normalizes_apple_tags() -> None:
     assert facts["exif.gps_longitude"] == "122.74040278 W"
 
 
-def test_routing_exiftool_summary_synthesizes_acquisition_record_gps() -> None:
-    facts = routing_file_facts(
-        "camera/C0001.XML",
-        exiftool_summary=routing_exiftool_summary(
+def test_exiftool_routing_facts_applies_configured_name_value_extractor() -> None:
+    facts = exiftool_routing_facts(
+        routing_exiftool_summary(
             {
-                "VendorMetaAcquisitionRecordGroupName": [
-                    "ExifGPS",
+                "VendorMetaGroupName": [
+                    "GpsGroup",
                     "CameraUnitMetadataSet",
                 ],
-                "VendorMetaAcquisitionRecordGroupItemName": [
+                "VendorMetaItemName": [
                     "VersionID",
                     "LatitudeRef",
                     "Latitude",
@@ -763,7 +847,7 @@ def test_routing_exiftool_summary_synthesizes_acquisition_record_gps() -> None:
                     "Status",
                     "CaptureGammaEquation",
                 ],
-                "VendorMetaAcquisitionRecordGroupItemValue": [
+                "VendorMetaItemValue": [
                     "2.2.0.0",
                     "N",
                     "48;59;58.213",
@@ -776,13 +860,106 @@ def test_routing_exiftool_summary_synthesizes_acquisition_record_gps() -> None:
                 ],
             }
         ),
+        fact_extractors=[
+            {
+                "type": "name_value",
+                "name_tag": "VendorMetaItemName",
+                "value_tag": "VendorMetaItemValue",
+                "requires": [
+                    {"tag": "VendorMetaGroupName", "contains": "GpsGroup"},
+                ],
+                "fields": {
+                    "Latitude": "exif.gps_latitude",
+                    "LatitudeRef": "exif.gps_latitude_ref",
+                    "Longitude": "exif.gps_longitude",
+                    "LongitudeRef": "exif.gps_longitude_ref",
+                },
+            }
+        ],
     )
 
     assert facts["exif.gps_latitude"] == "48;59;58.213"
     assert facts["exif.gps_latitude_ref"] == "N"
     assert facts["exif.gps_longitude"] == "122;44;25.579"
     assert facts["exif.gps_longitude_ref"] == "W"
-    assert (
-        facts["exiftool"]["tags"]["vendor_meta_acquisition_record_group_name"][0]
-        == "ExifGPS"
+    assert facts["exiftool"]["tags"]["vendor_meta_group_name"][0] == "GpsGroup"
+
+
+def test_exiftool_routing_facts_extracts_name_value_copy_groups() -> None:
+    facts = exiftool_routing_facts(
+        routing_exiftool_summary(
+            {
+                "XMP:VendorMetaGroupName": "GpsGroup",
+                "XMP:Copy1:VendorMetaGroupName": "CameraUnitMetadataSet",
+                "XMP:VendorMetaItemName": "VersionID",
+                "XMP:Copy1:VendorMetaItemName": "LatitudeRef",
+                "XMP:Copy2:VendorMetaItemName": "Latitude",
+                "XMP:Copy3:VendorMetaItemName": "LongitudeRef",
+                "XMP:Copy4:VendorMetaItemName": "Longitude",
+                "XMP:Copy5:VendorMetaItemName": "CaptureGammaEquation",
+                "XMP:VendorMetaItemValue": "2.2.0.0",
+                "XMP:Copy1:VendorMetaItemValue": "N",
+                "XMP:Copy2:VendorMetaItemValue": "48;59;58.213",
+                "XMP:Copy3:VendorMetaItemValue": "W",
+                "XMP:Copy4:VendorMetaItemValue": "122;44;25.579",
+                "XMP:Copy5:VendorMetaItemValue": "rec709",
+            }
+        ),
+        fact_extractors=[
+            {
+                "type": "name_value",
+                "name_tag": "VendorMetaItemName",
+                "value_tag": "VendorMetaItemValue",
+                "requires": [
+                    {"tag": "VendorMetaGroupName", "contains": "GpsGroup"},
+                ],
+                "fields": {
+                    "Latitude": "exif.gps_latitude",
+                    "LatitudeRef": "exif.gps_latitude_ref",
+                    "Longitude": "exif.gps_longitude",
+                    "LongitudeRef": "exif.gps_longitude_ref",
+                },
+            }
+        ],
     )
+
+    assert facts["exif.gps_latitude"] == "48;59;58.213"
+    assert facts["exif.gps_latitude_ref"] == "N"
+    assert facts["exif.gps_longitude"] == "122;44;25.579"
+    assert facts["exif.gps_longitude_ref"] == "W"
+    assert facts["exiftool"]["tags"]["vendor_meta_item_name"] == [
+        "VersionID",
+        "LatitudeRef",
+        "Latitude",
+        "LongitudeRef",
+        "Longitude",
+        "CaptureGammaEquation",
+    ]
+
+
+def test_exiftool_routing_facts_keeps_repeated_embedded_gps_scalar() -> None:
+    facts = exiftool_routing_facts(
+        routing_exiftool_summary(
+            {
+                "Composite:GPSLatitude": "48 deg 59' 58.21\"",
+                "Composite:Copy1:GPSLatitude": "48 deg 59' 58.21\" N",
+                "Composite:GPSLatitudeRef": "North",
+                "Composite:GPSLongitude": "122 deg 44' 25.58\"",
+                "Composite:Copy1:GPSLongitude": "122 deg 44' 25.58\" W",
+                "Composite:GPSLongitudeRef": "West",
+                "Composite:GPSPosition": (
+                    "48 deg 59' 58.21\" N, 122 deg 44' 25.58\" W"
+                ),
+            }
+        )
+    )
+
+    assert facts["exif.gps_latitude"] == "48 deg 59' 58.21\""
+    assert facts["exif.gps_latitude_ref"] == "North"
+    assert facts["exif.gps_longitude"] == "122 deg 44' 25.58\""
+    assert facts["exif.gps_longitude_ref"] == "West"
+    assert facts["exif.gps_position"] == "48 deg 59' 58.21\" N, 122 deg 44' 25.58\" W"
+    assert facts["exiftool"]["tags"]["gps_latitude"] == [
+        "48 deg 59' 58.21\"",
+        "48 deg 59' 58.21\" N",
+    ]

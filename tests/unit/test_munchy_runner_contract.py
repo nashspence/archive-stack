@@ -953,18 +953,18 @@ def test_metadata_projection_uses_declared_non_xmp_sidecar_facts(
         exiftool_calls.append((path, tuple(tags)))
         if path == sidecar_path:
             assert tuple(tags) == (
-                "NonRealTimeMetaCreationDateValue",
-                "NonRealTimeMetaAcquisitionRecordGroupName",
-                "NonRealTimeMetaAcquisitionRecordGroupItemName",
-                "NonRealTimeMetaAcquisitionRecordGroupItemValue",
+                "VendorSidecarCreationDate",
+                "VendorSidecarGroupName",
+                "VendorSidecarFieldName",
+                "VendorSidecarFieldValue",
             )
             return {
-                "NonRealTimeMetaCreationDateValue": "2026:07:08 15:46:25-07:00",
-                "NonRealTimeMetaAcquisitionRecordGroupName": [
-                    "ExifGPS",
+                "VendorSidecarCreationDate": "2026:07:08 15:46:25-07:00",
+                "VendorSidecarGroupName": [
+                    "GpsGroup",
                     "CameraUnitMetadataSet",
                 ],
-                "NonRealTimeMetaAcquisitionRecordGroupItemName": [
+                "VendorSidecarFieldName": [
                     "VersionID",
                     "LatitudeRef",
                     "Latitude",
@@ -975,7 +975,7 @@ def test_metadata_projection_uses_declared_non_xmp_sidecar_facts(
                     "Status",
                     "CaptureGammaEquation",
                 ],
-                "NonRealTimeMetaAcquisitionRecordGroupItemValue": [
+                "VendorSidecarFieldValue": [
                     "2.2.0.0",
                     "N",
                     "48;59;58.213",
@@ -1025,10 +1025,29 @@ def test_metadata_projection_uses_declared_non_xmp_sidecar_facts(
                     "facts": {
                         "source": "exiftool",
                         "tags": [
-                            "NonRealTimeMetaCreationDateValue",
-                            "NonRealTimeMetaAcquisitionRecordGroupName",
-                            "NonRealTimeMetaAcquisitionRecordGroupItemName",
-                            "NonRealTimeMetaAcquisitionRecordGroupItemValue",
+                            "VendorSidecarCreationDate",
+                            "VendorSidecarGroupName",
+                            "VendorSidecarFieldName",
+                            "VendorSidecarFieldValue",
+                        ],
+                        "extractors": [
+                            {
+                                "type": "name_value",
+                                "name_tag": "VendorSidecarFieldName",
+                                "value_tag": "VendorSidecarFieldValue",
+                                "requires": [
+                                    {
+                                        "tag": "VendorSidecarGroupName",
+                                        "contains": "GpsGroup",
+                                    }
+                                ],
+                                "fields": {
+                                    "Latitude": "exif.gps_latitude",
+                                    "LatitudeRef": "exif.gps_latitude_ref",
+                                    "Longitude": "exif.gps_longitude",
+                                    "LongitudeRef": "exif.gps_longitude_ref",
+                                },
+                            }
                         ],
                     },
                 }
@@ -1051,7 +1070,7 @@ def test_metadata_projection_uses_declared_non_xmp_sidecar_facts(
                 {
                     "type": "sidecar",
                     "id": "camera_xml",
-                    "fact": "exiftool.tags.non_real_time_meta_creation_date_value",
+                    "fact": "exiftool.tags.vendor_sidecar_creation_date",
                 },
             ],
             "gps_sources": [
@@ -1073,7 +1092,7 @@ def test_metadata_projection_uses_declared_non_xmp_sidecar_facts(
     assert metadata["capture_date"] == "2026-07-08T15:46:25-07:00"
     assert (
         metadata["capture_date_source"]
-        == "sidecar:camera_xml:exiftool.tags.non_real_time_meta_creation_date_value"
+        == "sidecar:camera_xml:exiftool.tags.vendor_sidecar_creation_date"
     )
     assert metadata["gps"]["latitude"] == pytest.approx(48.99950361)
     assert metadata["gps"]["longitude"] == pytest.approx(-122.74043861)
@@ -1084,10 +1103,10 @@ def test_metadata_projection_uses_declared_non_xmp_sidecar_facts(
     assert (
         sidecar_path,
         (
-            "NonRealTimeMetaCreationDateValue",
-            "NonRealTimeMetaAcquisitionRecordGroupName",
-            "NonRealTimeMetaAcquisitionRecordGroupItemName",
-            "NonRealTimeMetaAcquisitionRecordGroupItemValue",
+            "VendorSidecarCreationDate",
+            "VendorSidecarGroupName",
+            "VendorSidecarFieldName",
+            "VendorSidecarFieldValue",
         ),
     ) in exiftool_calls
 

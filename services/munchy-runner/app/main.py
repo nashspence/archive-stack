@@ -72,8 +72,9 @@ from munchy.profile_routing import (
     routing_exiftool_summary,
     routing_file_facts,
     routing_probe_summary,
-    sidecar_exiftool_tag_requests,
+    sidecar_exiftool_fact_requests,
     sidecar_rule_exiftool_tags,
+    sidecar_rule_fact_extractors,
 )
 from munchy.profiles import (
     MUNCHY_AUDIO_PROFILE_TARGET,
@@ -3604,7 +3605,7 @@ def exiftool_for_routing(path: Path, *, tags: Sequence[str] | None = None) -> di
             "exiftool",
             "-j",
             "-a",
-            "-G1",
+            "-G1:4",
             "-s",
             "-ee",
             "-c",
@@ -3653,6 +3654,7 @@ def runner_profile_routing_file(
     *,
     base_routing_facts: Mapping[str, Any] | None = None,
     sidecar_exiftool_tags: Sequence[str] = (),
+    sidecar_fact_extractors: Sequence[Mapping[str, Any]] = (),
     sidecar_facts: Mapping[str, Any] | None = None,
     sidecar_facts_error: str | None = None,
 ) -> ProfileRoutingFile:
@@ -3688,7 +3690,8 @@ def runner_profile_routing_file(
             collected_sidecar_facts = exiftool_routing_facts(
                 routing_exiftool_summary(
                     exiftool_for_routing(path, tags=sidecar_exiftool_tags)
-                )
+                ),
+                fact_extractors=sidecar_fact_extractors,
             )
         except RoutingFailed as exc:
             collected_sidecar_facts_error = str(exc)[:1000]
@@ -3862,22 +3865,23 @@ def route_completed_input_files(
         str(file_state["path"]): routing_file_facts(str(file_state["path"]))
         for file_state in files_to_route
     }
-    sidecar_tag_requests = sidecar_exiftool_tag_requests(routing, path_facts_by_path)
+    sidecar_fact_requests = sidecar_exiftool_fact_requests(routing, path_facts_by_path)
     sidecar_facts_by_path: dict[str, dict[str, Any]] = {}
     sidecar_facts_errors_by_path: dict[str, str] = {}
     for file_state in files_to_route:
         rel_path = str(file_state["path"])
-        sidecar_tags = sidecar_tag_requests.get(rel_path)
-        if not sidecar_tags:
+        sidecar_request = sidecar_fact_requests.get(rel_path)
+        if sidecar_request is None or not sidecar_request.tags:
             continue
         try:
             sidecar_facts_by_path[rel_path] = exiftool_routing_facts(
                 routing_exiftool_summary(
                     exiftool_for_routing(
                         upload_file_data_path(file_state),
-                        tags=sidecar_tags,
+                        tags=sidecar_request.tags,
                     )
-                )
+                ),
+                fact_extractors=sidecar_request.fact_extractors,
             )
         except RoutingFailed as exc:
             sidecar_facts_errors_by_path[rel_path] = str(exc)[:1000]
@@ -3887,21 +3891,24 @@ def route_completed_input_files(
         sidecar_facts_by_path=sidecar_facts_by_path,
         sidecar_facts_errors_by_path=sidecar_facts_errors_by_path,
     )
-    plan = profile_routing_plan(
-        routing,
-        [
+    routing_files: list[ProfileRoutingFile] = []
+    for file_state in files_to_route:
+        rel_path = str(file_state["path"])
+        sidecar_request = sidecar_fact_requests.get(rel_path)
+        routing_files.append(
             runner_profile_routing_file(
                 routing,
                 file_state,
-                base_routing_facts=base_facts_by_path.get(str(file_state["path"])),
-                sidecar_exiftool_tags=sidecar_tag_requests.get(str(file_state["path"]), ()),
-                sidecar_facts=sidecar_facts_by_path.get(str(file_state["path"])),
-                sidecar_facts_error=sidecar_facts_errors_by_path.get(str(file_state["path"])),
+                base_routing_facts=base_facts_by_path.get(rel_path),
+                sidecar_exiftool_tags=sidecar_request.tags if sidecar_request else (),
+                sidecar_fact_extractors=(
+                    sidecar_request.fact_extractors if sidecar_request else ()
+                ),
+                sidecar_facts=sidecar_facts_by_path.get(rel_path),
+                sidecar_facts_error=sidecar_facts_errors_by_path.get(rel_path),
             )
-            for file_state in files_to_route
-        ],
-        group_names=set(groups),
-    )
+        )
+    plan = profile_routing_plan(routing, routing_files, group_names=set(groups))
     if not plan.ok:
         first = plan.unmatched[0] if plan.unmatched else {}
         reason = str(first.get("reason") or "no matching route").replace("_", " ")
@@ -4444,6 +4451,10 @@ def metadata_projection_sidecar_facts(
         tags = metadata_projection_sidecar_exiftool_tags(routing, sidecar_id=sidecar_id)
         if not tags:
             continue
+        fact_extractors = metadata_projection_sidecar_fact_extractors(
+            routing,
+            sidecar_id=sidecar_id,
+        )
         rel_path = str(evidence.get("path") or "")
         source_path = (
             source_paths_by_path.get(rel_path) if source_paths_by_path is not None else None
@@ -4459,6 +4470,7 @@ def metadata_projection_sidecar_facts(
             "facts": routing_file_facts(
                 rel_path,
                 exiftool_summary=exiftool_summary,
+                exiftool_fact_extractors=fact_extractors,
             ),
         }
     return sidecars
@@ -4481,6 +4493,19 @@ def metadata_projection_sidecar_exiftool_tags(
     for rule in profile_sidecar_rules(routing):
         if str(rule.get("id") or "").strip() == sidecar_id:
             return sidecar_rule_exiftool_tags(rule)
+    return ()
+
+
+def metadata_projection_sidecar_fact_extractors(
+    routing: Mapping[str, Any] | None,
+    *,
+    sidecar_id: str,
+) -> tuple[Mapping[str, Any], ...]:
+    if not isinstance(routing, Mapping):
+        return ()
+    for rule in profile_sidecar_rules(routing):
+        if str(rule.get("id") or "").strip() == sidecar_id:
+            return sidecar_rule_fact_extractors(rule)
     return ()
 
 

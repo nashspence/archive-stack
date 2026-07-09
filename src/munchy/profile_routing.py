@@ -110,6 +110,12 @@ class ProfileRoutingPlan:
         }
 
 
+@dataclass(frozen=True)
+class SidecarExifToolFactRequest:
+    tags: tuple[str, ...] = ()
+    fact_extractors: tuple[Mapping[str, Any], ...] = ()
+
+
 def match_profile_route(
     profile_routing: Mapping[str, Any],
     rel_path: str,
@@ -535,7 +541,7 @@ def sidecar_rule_exiftool_tags(rule: Mapping[str, Any]) -> tuple[str, ...]:
     facts = mapping(rule.get("facts"))
     if not facts:
         return ()
-    unknown = sorted(set(facts) - {"source", "tags"})
+    unknown = sorted(set(facts) - {"source", "tags", "extractors"})
     if unknown:
         raise ValueError("sidecar facts has unknown key(s): " + ", ".join(unknown))
     source = str(facts.get("source") or "exiftool").strip().casefold()
@@ -557,23 +563,46 @@ def sidecar_rule_exiftool_tags(rule: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(tags)
 
 
+def sidecar_rule_fact_extractors(rule: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+    facts = mapping(rule.get("facts"))
+    if not facts:
+        return ()
+    tag_keys = {normalize_tag_key(tag) for tag in sidecar_rule_exiftool_tags(rule)}
+    extractors: list[Mapping[str, Any]] = []
+    for raw_extractor in sequence(facts.get("extractors")):
+        if raw_extractor is None:
+            continue
+        extractor = mapping(raw_extractor)
+        if not extractor:
+            raise ValueError("sidecar facts extractor must be a mapping")
+        normalized = normalized_fact_extractor(extractor)
+        missing_tags = sorted(fact_extractor_tag_keys(normalized) - tag_keys)
+        if missing_tags:
+            raise ValueError(
+                "sidecar facts extractor references tag(s) not listed in facts.tags: "
+                + ", ".join(missing_tags)
+            )
+        extractors.append(normalized)
+    return tuple(extractors)
+
+
 def sidecar_rule_requests_facts(rule: Mapping[str, Any]) -> bool:
-    return bool(sidecar_rule_exiftool_tags(rule))
+    return bool(sidecar_rule_exiftool_tags(rule) or sidecar_rule_fact_extractors(rule))
 
 
-def sidecar_exiftool_tag_requests(
+def sidecar_exiftool_fact_requests(
     profile_routing: Mapping[str, Any],
     facts_by_path: Mapping[str, Mapping[str, Any]],
-) -> dict[str, tuple[str, ...]]:
+) -> dict[str, SidecarExifToolFactRequest]:
     if not facts_by_path:
         return {}
-    out: dict[str, list[str]] = {}
-    seen_by_path: dict[str, set[str]] = {}
+    out: dict[str, SidecarExifToolFactRequest] = {}
     lower_paths = {path.casefold(): path for path in facts_by_path}
     for rule in profile_sidecar_rules(profile_routing):
         tags = sidecar_rule_exiftool_tags(rule)
         if not tags:
             continue
+        fact_extractors = sidecar_rule_fact_extractors(rule)
         rule_id = str(rule.get("id") or "").strip()
         if not rule_id:
             continue
@@ -606,16 +635,15 @@ def sidecar_exiftool_tag_requests(
                     profile_routing=profile_routing,
                 ):
                     continue
-                path_tags = out.setdefault(sidecar_path, [])
-                seen = seen_by_path.setdefault(sidecar_path, set())
-                for tag in tags:
-                    key = tag.casefold()
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    path_tags.append(tag)
+                existing = out.get(sidecar_path, SidecarExifToolFactRequest())
+                out[sidecar_path] = SidecarExifToolFactRequest(
+                    tags=dedupe_sequence((*existing.tags, *tags)),
+                    fact_extractors=dedupe_mappings(
+                        (*existing.fact_extractors, *fact_extractors)
+                    ),
+                )
                 break
-    return {path: tuple(tags) for path, tags in out.items()}
+    return out
 
 
 def normalize_exiftool_tag(value: object) -> str | None:
@@ -626,6 +654,79 @@ def normalize_exiftool_tag(value: object) -> str | None:
     if not re.fullmatch(r"[A-Za-z0-9:_-]+", text):
         raise ValueError(f"invalid ExifTool routing tag: {value!r}")
     return text
+
+
+def normalized_fact_extractor(extractor: Mapping[str, Any]) -> Mapping[str, Any]:
+    unknown = sorted(set(extractor) - {"type", "name_tag", "value_tag", "requires", "fields"})
+    if unknown:
+        raise ValueError("sidecar facts extractor has unknown key(s): " + ", ".join(unknown))
+    kind = str(extractor.get("type") or "").strip().casefold()
+    if kind != "name_value":
+        raise ValueError(f"unsupported sidecar facts extractor type: {kind or '<blank>'}")
+    name_tag = normalize_exiftool_tag(extractor.get("name_tag"))
+    value_tag = normalize_exiftool_tag(extractor.get("value_tag"))
+    if name_tag is None or value_tag is None:
+        raise ValueError("name_value sidecar facts extractor requires name_tag and value_tag")
+    fields = mapping(extractor.get("fields"))
+    if not fields:
+        raise ValueError("name_value sidecar facts extractor requires fields")
+    normalized_fields: dict[str, str] = {}
+    for raw_name, raw_target in fields.items():
+        name = name_value_field_key(raw_name)
+        target = str(raw_target or "").strip()
+        if not name or not target:
+            raise ValueError("name_value sidecar facts extractor fields must be non-empty")
+        normalized_fields[name] = target
+    return {
+        "type": "name_value",
+        "name_tag": normalize_tag_key(name_tag),
+        "value_tag": normalize_tag_key(value_tag),
+        "requires": tuple(
+            normalized_fact_extractor_requirement(requirement)
+            for requirement in sequence(extractor.get("requires"))
+            if requirement is not None
+        ),
+        "fields": normalized_fields,
+    }
+
+
+def normalized_fact_extractor_requirement(requirement: object) -> Mapping[str, Any]:
+    item = mapping(requirement)
+    if not item:
+        raise ValueError("sidecar facts extractor requirement must be a mapping")
+    unknown = sorted(set(item) - {"tag", "equals", "contains"})
+    if unknown:
+        raise ValueError(
+            "sidecar facts extractor requirement has unknown key(s): " + ", ".join(unknown)
+        )
+    tag = normalize_exiftool_tag(item.get("tag"))
+    if tag is None:
+        raise ValueError("sidecar facts extractor requirement requires tag")
+    if ("equals" in item) == ("contains" in item):
+        raise ValueError(
+            "sidecar facts extractor requirement must set exactly one of equals or contains"
+        )
+    out: dict[str, Any] = {"tag": normalize_tag_key(tag)}
+    if "equals" in item:
+        out["equals"] = str(item.get("equals") or "").strip()
+    if "contains" in item:
+        out["contains"] = str(item.get("contains") or "").strip()
+    return out
+
+
+def fact_extractor_tag_keys(extractor: Mapping[str, Any]) -> set[str]:
+    tag_keys = {
+        str(extractor.get("name_tag") or ""),
+        str(extractor.get("value_tag") or ""),
+    }
+    for requirement in sequence(extractor.get("requires")):
+        if isinstance(requirement, Mapping):
+            tag_keys.add(str(requirement.get("tag") or ""))
+    return {key for key in tag_keys if key}
+
+
+def name_value_field_key(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().casefold())
 
 
 def route_requires_probe(
@@ -690,6 +791,7 @@ def routing_file_facts(
     *,
     probe_summary: Mapping[str, Any] | None = None,
     exiftool_summary: Mapping[str, Any] | None = None,
+    exiftool_fact_extractors: Sequence[Mapping[str, Any]] = (),
     routing_facts: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     facts: dict[str, Any] = {}
@@ -698,17 +800,33 @@ def routing_file_facts(
         facts["ffprobe"] = dict(probe_summary)
         facts.update(probe_facts(probe_summary))
     if exiftool_summary:
-        facts.update(exiftool_routing_facts(exiftool_summary))
+        facts.update(
+            exiftool_routing_facts(
+                exiftool_summary,
+                fact_extractors=exiftool_fact_extractors,
+            )
+        )
     if routing_facts:
         facts.update(flatten_facts(routing_facts))
     return facts
 
 
-def exiftool_routing_facts(exiftool_summary: Mapping[str, Any]) -> dict[str, Any]:
-    return {
+def exiftool_routing_facts(
+    exiftool_summary: Mapping[str, Any],
+    *,
+    fact_extractors: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    facts = {
         "exiftool": dict(exiftool_summary),
         **exiftool_facts(exiftool_summary),
     }
+    for key, value in exiftool_extracted_facts(
+        exiftool_summary,
+        fact_extractors=fact_extractors,
+    ).items():
+        if not str(facts.get(key) or "").strip():
+            facts[key] = value
+    return facts
 
 
 def apply_sidecar_rules(
@@ -1016,86 +1134,48 @@ def routing_exiftool_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
             continue
         tag_key = normalize_tag_key(str(key).split(":")[-1])
         if tag_key:
-            tags[tag_key] = normalize_metadata_value(value)
+            add_routing_exiftool_summary_tag(tags, tag_key, value)
     return {
         "tags": tags,
         **{key: value for key, value in tags.items() if key in EXIFTOOL_FACT_KEYS},
     }
 
 
-ACQUISITION_RECORD_GPS_FIELDS = {
-    "latituderef": "gps_latitude_ref",
-    "latitude": "gps_latitude",
-    "longituderef": "gps_longitude_ref",
-    "longitude": "gps_longitude",
-}
-ACQUISITION_RECORD_GROUP_SUFFIX = "_acquisition_record_group_name"
-ACQUISITION_RECORD_ITEM_NAME_SUFFIX = "_acquisition_record_group_item_name"
-ACQUISITION_RECORD_ITEM_VALUE_SUFFIX = "_acquisition_record_group_item_value"
-
-
-def acquisition_record_gps_tags(tag_map: Mapping[str, Any]) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for group_key, item_name_key, item_value_key in acquisition_record_tag_triples(
-        tag_map
-    ):
-        group_names = {
-            str(item or "").strip().casefold()
-            for item in sequence(tag_map.get(group_key))
-        }
-        if "exifgps" not in group_names:
-            continue
-        for raw_name, value in zip(
-            sequence(tag_map.get(item_name_key)),
-            sequence(tag_map.get(item_value_key)),
-            strict=False,
-        ):
-            field = re.sub(r"[^a-z0-9]+", "", str(raw_name or "").strip().casefold())
-            tag_name = ACQUISITION_RECORD_GPS_FIELDS.get(field)
-            if tag_name is None or tag_name in out:
-                continue
-            normalized = normalize_metadata_value(value)
-            if str(normalized or "").strip():
-                out[tag_name] = normalized
-    if not out.get("gps_latitude") or not out.get("gps_longitude"):
-        return {}
-    return out
-
-
-def acquisition_record_tag_triples(
-    tag_map: Mapping[str, Any],
-) -> tuple[tuple[str, str, str], ...]:
-    triples: list[tuple[str, str, str]] = []
-    for raw_key in tag_map:
-        key = str(raw_key)
-        if not key.endswith(ACQUISITION_RECORD_GROUP_SUFFIX):
-            continue
-        prefix = key[: -len(ACQUISITION_RECORD_GROUP_SUFFIX)]
-        item_name_key = f"{prefix}{ACQUISITION_RECORD_ITEM_NAME_SUFFIX}"
-        item_value_key = f"{prefix}{ACQUISITION_RECORD_ITEM_VALUE_SUFFIX}"
-        if item_name_key in tag_map and item_value_key in tag_map:
-            triples.append((key, item_name_key, item_value_key))
-    return tuple(triples)
+def add_routing_exiftool_summary_tag(
+    tags: dict[str, Any],
+    tag_key: str,
+    value: Any,
+) -> None:
+    normalized = normalize_metadata_value(value)
+    if tag_key not in tags:
+        tags[tag_key] = normalized
+        return
+    existing = tags[tag_key]
+    if isinstance(existing, list):
+        if isinstance(normalized, list):
+            existing.extend(normalized)
+        else:
+            existing.append(normalized)
+        return
+    tags[tag_key] = (
+        [existing, *normalized]
+        if isinstance(normalized, list)
+        else [existing, normalized]
+    )
 
 
 def exiftool_facts(summary: Mapping[str, Any]) -> dict[str, Any]:
     tags = summary.get("tags") if isinstance(summary.get("tags"), Mapping) else summary
     tag_map = cast(Mapping[str, Any], tags)
-    synthetic_tags = (
-        acquisition_record_gps_tags(tag_map)
-        if "gps_latitude" not in tag_map or "gps_longitude" not in tag_map
-        else {}
-    )
 
     def tag(name: str) -> Any:
         normalized = normalize_tag_key(name)
+        value = None
         if name in tag_map:
-            return tag_map[name]
-        if normalized in tag_map:
-            return tag_map[normalized]
-        if normalized in synthetic_tags:
-            return synthetic_tags[normalized]
-        return None
+            value = tag_map[name]
+        elif normalized in tag_map:
+            value = tag_map[normalized]
+        return first_non_empty_metadata_value(value)
 
     width = parse_int(tag("image_width")) or 0
     height = parse_int(tag("image_height")) or 0
@@ -1152,6 +1232,81 @@ def exiftool_facts(summary: Mapping[str, Any]) -> dict[str, Any]:
         or boolish_value(tag("mp_image2"))
         or bool(tag("auxiliary_image_type")),
     }
+
+
+def exiftool_extracted_facts(
+    summary: Mapping[str, Any],
+    *,
+    fact_extractors: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    tags = summary.get("tags") if isinstance(summary.get("tags"), Mapping) else summary
+    tag_map = cast(Mapping[str, Any], tags)
+    out: dict[str, Any] = {}
+    for extractor in fact_extractors:
+        normalized = normalized_fact_extractor(extractor)
+        if normalized.get("type") == "name_value":
+            out.update(name_value_extracted_facts(tag_map, normalized))
+    return out
+
+
+def first_non_empty_metadata_value(value: Any) -> Any:
+    if isinstance(value, Sequence) and not isinstance(value, str):
+        for item in value:
+            normalized = normalize_metadata_value(item)
+            if str(normalized or "").strip():
+                return normalized
+        return ""
+    return normalize_metadata_value(value)
+
+
+def name_value_extracted_facts(
+    tag_map: Mapping[str, Any],
+    extractor: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not extractor_requirements_match(
+        tag_map,
+        cast(Sequence[Mapping[str, Any]], extractor.get("requires") or ()),
+    ):
+        return {}
+    name_tag = str(extractor.get("name_tag") or "")
+    value_tag = str(extractor.get("value_tag") or "")
+    fields = mapping(extractor.get("fields"))
+    field_map = {
+        name_value_field_key(raw_name): str(target).strip()
+        for raw_name, target in fields.items()
+        if str(target).strip()
+    }
+    out: dict[str, Any] = {}
+    for raw_name, value in zip(
+        sequence(tag_map.get(name_tag)),
+        sequence(tag_map.get(value_tag)),
+        strict=False,
+    ):
+        fact_key = field_map.get(name_value_field_key(raw_name))
+        if not fact_key or fact_key in out:
+            continue
+        normalized = normalize_metadata_value(value)
+        if str(normalized or "").strip():
+            out[fact_key] = normalized
+    return out
+
+
+def extractor_requirements_match(
+    tag_map: Mapping[str, Any],
+    requirements: Sequence[Mapping[str, Any]],
+) -> bool:
+    for requirement in requirements:
+        tag_key = str(requirement.get("tag") or "")
+        values = sequence(tag_map.get(tag_key))
+        if "equals" in requirement:
+            expected = str(requirement.get("equals") or "").strip().casefold()
+            if not any(str(value or "").strip().casefold() == expected for value in values):
+                return False
+        if "contains" in requirement:
+            expected = str(requirement.get("contains") or "").strip().casefold()
+            if not any(expected in str(value or "").strip().casefold() for value in values):
+                return False
+    return True
 
 
 EXIFTOOL_FACT_KEYS = {
@@ -1800,6 +1955,27 @@ def sequence(value: object) -> Sequence[Any]:
     if isinstance(value, Sequence):
         return value
     return (value,)
+
+
+def dedupe_sequence(values: Sequence[str]) -> tuple[str, ...]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        key = str(value).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(value)
+    return tuple(out)
+
+
+def dedupe_mappings(values: Sequence[Mapping[str, Any]]) -> tuple[Mapping[str, Any], ...]:
+    out: list[Mapping[str, Any]] = []
+    for value in values:
+        if any(value == existing for existing in out):
+            continue
+        out.append(value)
+    return tuple(out)
 
 
 def flatten_facts(value: Mapping[str, Any], *, prefix: str = "") -> dict[str, Any]:

@@ -17,7 +17,7 @@ from munchy.profile_routing import (
     routing_exiftool_summary,
     routing_file_facts,
     routing_probe_summary,
-    sidecar_exiftool_tag_requests,
+    sidecar_exiftool_fact_requests,
 )
 
 
@@ -53,7 +53,7 @@ def exiftool_for_routing(path: Path, *, tags: Sequence[str]) -> dict[str, Any]:
             "exiftool",
             "-j",
             "-a",
-            "-G1",
+            "-G1:4",
             "-s",
             "-ee",
             *[f"-{tag}" for tag in tags],
@@ -80,16 +80,19 @@ def routing_plan_files(
 ) -> list[ProfileRoutingFile]:
     exiftool_tags = profile_routing_exiftool_tags(profile_routing)
     path_facts_by_path = {item.rel_path: routing_file_facts(item.rel_path) for item in candidates}
-    sidecar_tag_requests = sidecar_exiftool_tag_requests(profile_routing, path_facts_by_path)
+    sidecar_fact_requests = sidecar_exiftool_fact_requests(profile_routing, path_facts_by_path)
     sidecar_facts_by_path: dict[str, dict[str, Any]] = {}
     sidecar_facts_errors_by_path: dict[str, str] = {}
     for item in candidates:
-        sidecar_tags = sidecar_tag_requests.get(item.rel_path)
-        if not sidecar_tags:
+        sidecar_request = sidecar_fact_requests.get(item.rel_path)
+        if sidecar_request is None or not sidecar_request.tags:
             continue
         try:
             sidecar_facts_by_path[item.rel_path] = exiftool_routing_facts(
-                routing_exiftool_summary(exiftool_for_routing(item.source, tags=sidecar_tags))
+                routing_exiftool_summary(
+                    exiftool_for_routing(item.source, tags=sidecar_request.tags)
+                ),
+                fact_extractors=sidecar_request.fact_extractors,
             )
         except Exception as exc:
             sidecar_facts_errors_by_path[item.rel_path] = str(exc)[:1000]

@@ -36,7 +36,7 @@ from munchy.profile_routing import (
     routing_exiftool_summary,
     routing_file_facts,
     routing_probe_summary,
-    sidecar_exiftool_tag_requests,
+    sidecar_exiftool_fact_requests,
 )
 from munchy.runner_client import (
     MunchyRunnerClient,
@@ -990,24 +990,25 @@ class Collector:
         path_facts_by_path = {
             item.target_path: routing_file_facts(item.target_path) for item in files
         }
-        sidecar_tag_requests = sidecar_exiftool_tag_requests(
+        sidecar_fact_requests = sidecar_exiftool_fact_requests(
             profile_routing,
             path_facts_by_path,
         )
         sidecar_facts_by_path: dict[str, dict[str, Any]] = {}
         sidecar_facts_errors_by_path: dict[str, str] = {}
         for item in files:
-            sidecar_tags = sidecar_tag_requests.get(item.target_path)
-            if not sidecar_tags:
+            sidecar_request = sidecar_fact_requests.get(item.target_path)
+            if sidecar_request is None or not sidecar_request.tags:
                 continue
             try:
                 sidecar_facts_by_path[item.target_path] = exiftool_routing_facts(
                     routing_exiftool_summary(
                         exiftool_for_routing_preflight(
                             item.path,
-                            tags=sidecar_tags,
+                            tags=sidecar_request.tags,
                         )
-                    )
+                    ),
+                    fact_extractors=sidecar_request.fact_extractors,
                 )
             except RoutingFactsError as exc:
                 sidecar_facts_errors_by_path[item.target_path] = str(exc)[:1000]
@@ -1018,17 +1019,23 @@ class Collector:
             sidecar_facts_errors_by_path=sidecar_facts_errors_by_path,
             require_configured_facts=False,
         )
-        preflight_files = tuple(
-            self.routing_preflight_file(
-                item,
-                profile_routing=profile_routing,
-                sidecar_exiftool_tags=sidecar_tag_requests.get(item.target_path, ()),
-                base_routing_facts=base_facts_by_path.get(item.target_path),
-                sidecar_facts=sidecar_facts_by_path.get(item.target_path),
-                sidecar_facts_error=sidecar_facts_errors_by_path.get(item.target_path),
+        preflight_file_list: list[RunnerProfileRoutingPreflightFile] = []
+        for item in files:
+            sidecar_request = sidecar_fact_requests.get(item.target_path)
+            preflight_file_list.append(
+                self.routing_preflight_file(
+                    item,
+                    profile_routing=profile_routing,
+                    sidecar_exiftool_tags=sidecar_request.tags if sidecar_request else (),
+                    sidecar_fact_extractors=(
+                        sidecar_request.fact_extractors if sidecar_request else ()
+                    ),
+                    base_routing_facts=base_facts_by_path.get(item.target_path),
+                    sidecar_facts=sidecar_facts_by_path.get(item.target_path),
+                    sidecar_facts_error=sidecar_facts_errors_by_path.get(item.target_path),
+                )
             )
-            for item in files
-        )
+        preflight_files = tuple(preflight_file_list)
         try:
             result = MunchyRunnerClient(target.url).profile_routing_preflight(
                 files=preflight_files,
@@ -1075,6 +1082,7 @@ class Collector:
         *,
         profile_routing: Mapping[str, Any],
         sidecar_exiftool_tags: Sequence[str] = (),
+        sidecar_fact_extractors: Sequence[Mapping[str, Any]] = (),
         base_routing_facts: Mapping[str, Any] | None = None,
         sidecar_facts: Mapping[str, Any] | None = None,
         sidecar_facts_error: str | None = None,
@@ -1126,7 +1134,8 @@ class Collector:
                             item.path,
                             tags=sidecar_exiftool_tags,
                         )
-                    )
+                    ),
+                    fact_extractors=sidecar_fact_extractors,
                 )
             except RoutingFactsError as exc:
                 collected_sidecar_facts_error = str(exc)[:1000]
@@ -2426,7 +2435,7 @@ def exiftool_for_routing_preflight(path: Path, *, tags: Sequence[str]) -> dict[s
                 "exiftool",
                 "-j",
                 "-a",
-                "-G1",
+                "-G1:4",
                 "-s",
                 "-ee",
                 *[f"-{tag}" for tag in tags],
