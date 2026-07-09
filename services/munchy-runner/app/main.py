@@ -941,10 +941,28 @@ class ProfileRoute(BaseModel):
 class ProfileRoutingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    extra_exiftool_tags: list[str] | None = None
     gates: dict[str, dict[str, Any]] = Field(default_factory=dict)
     pairings: list[dict[str, Any]] = Field(default_factory=list)
     sidecars: list[dict[str, Any]] = Field(default_factory=list)
     routes: list[ProfileRoute] = Field(default_factory=list)
+
+    @field_validator("extra_exiftool_tags")
+    @classmethod
+    def normalize_extra_exiftool_tags(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            tag = normalize_exiftool_tag(item)
+            if tag is None:
+                raise ValueError("profile_routing.extra_exiftool_tags must be non-empty tags")
+            if tag in seen:
+                continue
+            seen.add(tag)
+            normalized.append(tag)
+        return normalized
 
     @field_validator("routes")
     @classmethod

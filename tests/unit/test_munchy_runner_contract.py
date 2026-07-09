@@ -255,6 +255,42 @@ def test_create_job_request_accepts_full_metadata_projection_config(
     assert projection["include_context_tags"] is False
 
 
+def test_create_job_request_accepts_profile_routing_extra_exiftool_tags(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+
+    req = runner.CreateJobRequest(
+        collection_slug="camera-collection-archive",
+        workflow_mode="collection_archive",
+        groups={
+            "video": {
+                "archive_mode": "av1_nvenc",
+                "tasks": ["archive_video"],
+            },
+        },
+        profile_routing={
+            "extra_exiftool_tags": [
+                "AndroidCaptureFPS",
+                "AndroidMake",
+                "AndroidCaptureFPS",
+            ],
+            "routes": [
+                {
+                    "id": "camera-video",
+                    "group": "video",
+                    "when": {"path": {"suffix": ".mp4"}},
+                }
+            ],
+        },
+    )
+
+    routing = req.profile_routing.model_dump(exclude_none=True)
+
+    assert routing["extra_exiftool_tags"] == ["AndroidCaptureFPS", "AndroidMake"]
+
+
 def test_completed_structured_file_routes_by_path_without_full_upload(
     tmp_path: Path,
     monkeypatch,
