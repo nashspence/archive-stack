@@ -1023,48 +1023,66 @@ def routing_exiftool_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-SONY_XML_ACQUISITION_RECORD_GPS_FIELDS = {
+ACQUISITION_RECORD_GPS_FIELDS = {
     "latituderef": "gps_latitude_ref",
     "latitude": "gps_latitude",
     "longituderef": "gps_longitude_ref",
     "longitude": "gps_longitude",
 }
+ACQUISITION_RECORD_GROUP_SUFFIX = "_acquisition_record_group_name"
+ACQUISITION_RECORD_ITEM_NAME_SUFFIX = "_acquisition_record_group_item_name"
+ACQUISITION_RECORD_ITEM_VALUE_SUFFIX = "_acquisition_record_group_item_value"
 
 
-def sony_xml_acquisition_record_gps_tags(tag_map: Mapping[str, Any]) -> dict[str, Any]:
-    group_names = {
-        str(item or "").strip().casefold()
-        for item in sequence(
-            tag_map.get("non_real_time_meta_acquisition_record_group_name")
-        )
-    }
-    if "exifgps" not in group_names:
-        return {}
-    item_names = sequence(
-        tag_map.get("non_real_time_meta_acquisition_record_group_item_name")
-    )
-    item_values = sequence(
-        tag_map.get("non_real_time_meta_acquisition_record_group_item_value")
-    )
+def acquisition_record_gps_tags(tag_map: Mapping[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    for raw_name, value in zip(item_names, item_values, strict=False):
-        field = re.sub(r"[^a-z0-9]+", "", str(raw_name or "").strip().casefold())
-        tag_name = SONY_XML_ACQUISITION_RECORD_GPS_FIELDS.get(field)
-        if tag_name is None or tag_name in out:
+    for group_key, item_name_key, item_value_key in acquisition_record_tag_triples(
+        tag_map
+    ):
+        group_names = {
+            str(item or "").strip().casefold()
+            for item in sequence(tag_map.get(group_key))
+        }
+        if "exifgps" not in group_names:
             continue
-        normalized = normalize_metadata_value(value)
-        if str(normalized or "").strip():
-            out[tag_name] = normalized
+        for raw_name, value in zip(
+            sequence(tag_map.get(item_name_key)),
+            sequence(tag_map.get(item_value_key)),
+            strict=False,
+        ):
+            field = re.sub(r"[^a-z0-9]+", "", str(raw_name or "").strip().casefold())
+            tag_name = ACQUISITION_RECORD_GPS_FIELDS.get(field)
+            if tag_name is None or tag_name in out:
+                continue
+            normalized = normalize_metadata_value(value)
+            if str(normalized or "").strip():
+                out[tag_name] = normalized
     if not out.get("gps_latitude") or not out.get("gps_longitude"):
         return {}
     return out
+
+
+def acquisition_record_tag_triples(
+    tag_map: Mapping[str, Any],
+) -> tuple[tuple[str, str, str], ...]:
+    triples: list[tuple[str, str, str]] = []
+    for raw_key in tag_map:
+        key = str(raw_key)
+        if not key.endswith(ACQUISITION_RECORD_GROUP_SUFFIX):
+            continue
+        prefix = key[: -len(ACQUISITION_RECORD_GROUP_SUFFIX)]
+        item_name_key = f"{prefix}{ACQUISITION_RECORD_ITEM_NAME_SUFFIX}"
+        item_value_key = f"{prefix}{ACQUISITION_RECORD_ITEM_VALUE_SUFFIX}"
+        if item_name_key in tag_map and item_value_key in tag_map:
+            triples.append((key, item_name_key, item_value_key))
+    return tuple(triples)
 
 
 def exiftool_facts(summary: Mapping[str, Any]) -> dict[str, Any]:
     tags = summary.get("tags") if isinstance(summary.get("tags"), Mapping) else summary
     tag_map = cast(Mapping[str, Any], tags)
     synthetic_tags = (
-        sony_xml_acquisition_record_gps_tags(tag_map)
+        acquisition_record_gps_tags(tag_map)
         if "gps_latitude" not in tag_map or "gps_longitude" not in tag_map
         else {}
     )
