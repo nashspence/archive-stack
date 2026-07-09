@@ -952,8 +952,41 @@ def test_metadata_projection_uses_declared_non_xmp_sidecar_facts(
     def fake_exiftool(path: Path, *, tags=()):  # type: ignore[no-untyped-def]
         exiftool_calls.append((path, tuple(tags)))
         if path == sidecar_path:
-            assert tuple(tags) == ("VendorCaptureDate",)
-            return {"VendorCaptureDate": "2026:06:28 20:30:40-07:00"}
+            assert tuple(tags) == (
+                "NonRealTimeMetaCreationDateValue",
+                "NonRealTimeMetaAcquisitionRecordGroupName",
+                "NonRealTimeMetaAcquisitionRecordGroupItemName",
+                "NonRealTimeMetaAcquisitionRecordGroupItemValue",
+            )
+            return {
+                "NonRealTimeMetaCreationDateValue": "2026:07:08 15:46:25-07:00",
+                "NonRealTimeMetaAcquisitionRecordGroupName": [
+                    "ExifGPS",
+                    "CameraUnitMetadataSet",
+                ],
+                "NonRealTimeMetaAcquisitionRecordGroupItemName": [
+                    "VersionID",
+                    "LatitudeRef",
+                    "Latitude",
+                    "LongitudeRef",
+                    "Longitude",
+                    "DateStamp",
+                    "TimeStamp",
+                    "Status",
+                    "CaptureGammaEquation",
+                ],
+                "NonRealTimeMetaAcquisitionRecordGroupItemValue": [
+                    "2.2.0.0",
+                    "N",
+                    "48;59;58.213",
+                    "W",
+                    "122;44;25.579",
+                    "2026:07:08",
+                    "22:46:21.000",
+                    "A",
+                    "rec709",
+                ],
+            }
         return {}
 
     monkeypatch.setattr(runner, "exiftool_for_routing", fake_exiftool)
@@ -991,7 +1024,12 @@ def test_metadata_projection_uses_declared_non_xmp_sidecar_facts(
                     "primary": {"path": {"suffix": ".mp4"}},
                     "facts": {
                         "source": "exiftool",
-                        "tags": ["VendorCaptureDate"],
+                        "tags": [
+                            "NonRealTimeMetaCreationDateValue",
+                            "NonRealTimeMetaAcquisitionRecordGroupName",
+                            "NonRealTimeMetaAcquisitionRecordGroupItemName",
+                            "NonRealTimeMetaAcquisitionRecordGroupItemValue",
+                        ],
                     },
                 }
             ],
@@ -1013,8 +1051,12 @@ def test_metadata_projection_uses_declared_non_xmp_sidecar_facts(
                 {
                     "type": "sidecar",
                     "id": "camera_xml",
-                    "fact": "exiftool.tags.vendor_capture_date",
+                    "fact": "exiftool.tags.non_real_time_meta_creation_date_value",
                 },
+            ],
+            "gps_sources": [
+                {"type": "sidecar", "id": "camera_xml"},
+                {"type": "embedded"},
             ],
         }
     }
@@ -1028,12 +1070,26 @@ def test_metadata_projection_uses_declared_non_xmp_sidecar_facts(
 
     assert changed is True
     metadata = upload["files"][0]["metadata_projection_metadata"]
-    assert metadata["capture_date"] == "2026-06-28T20:30:40-07:00"
+    assert metadata["capture_date"] == "2026-07-08T15:46:25-07:00"
     assert (
         metadata["capture_date_source"]
-        == "sidecar:camera_xml:exiftool.tags.vendor_capture_date"
+        == "sidecar:camera_xml:exiftool.tags.non_real_time_meta_creation_date_value"
     )
-    assert (sidecar_path, ("VendorCaptureDate",)) in exiftool_calls
+    assert metadata["gps"]["latitude"] == pytest.approx(48.99950361)
+    assert metadata["gps"]["longitude"] == pytest.approx(-122.74043861)
+    assert (
+        metadata["gps_source"]
+        == "sidecar:camera_xml:exif.gps_latitude+exif.gps_longitude"
+    )
+    assert (
+        sidecar_path,
+        (
+            "NonRealTimeMetaCreationDateValue",
+            "NonRealTimeMetaAcquisitionRecordGroupName",
+            "NonRealTimeMetaAcquisitionRecordGroupItemName",
+            "NonRealTimeMetaAcquisitionRecordGroupItemValue",
+        ),
+    ) in exiftool_calls
 
 
 def test_metadata_projection_can_use_configured_gps(

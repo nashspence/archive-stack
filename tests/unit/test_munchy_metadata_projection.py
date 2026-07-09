@@ -74,6 +74,22 @@ def test_immich_projection_maps_exif_date_and_dms_gps() -> None:
     ET.fromstring(xmp)
 
 
+def test_immich_projection_maps_semicolon_dms_gps() -> None:
+    metadata = project_test_metadata(
+        {
+            "exif.date_time_original": "2026:07:08 22:46:21Z",
+            "exif.gps_latitude": "48;59;58.213",
+            "exif.gps_latitude_ref": "N",
+            "exif.gps_longitude": "122;44;25.579",
+            "exif.gps_longitude_ref": "W",
+        }
+    )
+
+    assert metadata.gps is not None
+    assert metadata.gps.latitude == pytest.approx(48.99950361)
+    assert metadata.gps.longitude == pytest.approx(-122.74043861)
+
+
 def test_immich_projection_maps_nested_ffprobe_apple_location() -> None:
     metadata = project_test_metadata(
         {

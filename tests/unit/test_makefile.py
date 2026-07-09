@@ -78,7 +78,9 @@ def _run_make(
     _install_fake_command(tmp_path, "pgrep", "pgrep.log")
     env = os.environ.copy()
     env["PATH"] = (
-        f"{tmp_path / 'bin'}:/usr/bin:/bin" if not with_mise else f"{tmp_path / 'bin'}:{env['PATH']}"
+        f"{tmp_path / 'bin'}:/usr/bin:/bin"
+        if not with_mise
+        else f"{tmp_path / 'bin'}:{env['PATH']}"
     )
     env.pop("args", None)
     env.pop("FILES", None)

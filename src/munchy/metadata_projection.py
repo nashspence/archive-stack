@@ -1031,7 +1031,7 @@ def parse_coordinate(value: Any, *, ref: Any = None, axis: str) -> float | None:
     sign = -1.0 if text.startswith("-") or ref_text in {"S", "SOUTH", "W", "WEST"} else 1.0
     if re.search(r"\b(S|SOUTH|W|WEST)\b", value_upper):
         sign = -1.0
-    if re.search(r"\bDEG\b|[\"']", value_upper):
+    if re.search(r"\bDEG\b|[\"';]", value_upper):
         parsed_numbers: list[float] = []
         for number in re.findall(r"\d+(?:\.\d+)?", text):
             parsed = parse_float(number)

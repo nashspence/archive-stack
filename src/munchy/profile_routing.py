@@ -1023,9 +1023,51 @@ def routing_exiftool_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+SONY_XML_ACQUISITION_RECORD_GPS_FIELDS = {
+    "latituderef": "gps_latitude_ref",
+    "latitude": "gps_latitude",
+    "longituderef": "gps_longitude_ref",
+    "longitude": "gps_longitude",
+}
+
+
+def sony_xml_acquisition_record_gps_tags(tag_map: Mapping[str, Any]) -> dict[str, Any]:
+    group_names = {
+        str(item or "").strip().casefold()
+        for item in sequence(
+            tag_map.get("non_real_time_meta_acquisition_record_group_name")
+        )
+    }
+    if "exifgps" not in group_names:
+        return {}
+    item_names = sequence(
+        tag_map.get("non_real_time_meta_acquisition_record_group_item_name")
+    )
+    item_values = sequence(
+        tag_map.get("non_real_time_meta_acquisition_record_group_item_value")
+    )
+    out: dict[str, Any] = {}
+    for raw_name, value in zip(item_names, item_values, strict=False):
+        field = re.sub(r"[^a-z0-9]+", "", str(raw_name or "").strip().casefold())
+        tag_name = SONY_XML_ACQUISITION_RECORD_GPS_FIELDS.get(field)
+        if tag_name is None or tag_name in out:
+            continue
+        normalized = normalize_metadata_value(value)
+        if str(normalized or "").strip():
+            out[tag_name] = normalized
+    if not out.get("gps_latitude") or not out.get("gps_longitude"):
+        return {}
+    return out
+
+
 def exiftool_facts(summary: Mapping[str, Any]) -> dict[str, Any]:
     tags = summary.get("tags") if isinstance(summary.get("tags"), Mapping) else summary
     tag_map = cast(Mapping[str, Any], tags)
+    synthetic_tags = (
+        sony_xml_acquisition_record_gps_tags(tag_map)
+        if "gps_latitude" not in tag_map or "gps_longitude" not in tag_map
+        else {}
+    )
 
     def tag(name: str) -> Any:
         normalized = normalize_tag_key(name)
@@ -1033,6 +1075,8 @@ def exiftool_facts(summary: Mapping[str, Any]) -> dict[str, Any]:
             return tag_map[name]
         if normalized in tag_map:
             return tag_map[normalized]
+        if normalized in synthetic_tags:
+            return synthetic_tags[normalized]
         return None
 
     width = parse_int(tag("image_width")) or 0

@@ -741,3 +741,48 @@ def test_routing_exiftool_summary_normalizes_apple_tags() -> None:
     assert facts["exif.full_frame_rate_playback_intent"] == "0"
     assert facts["exif.gps_latitude"] == "48.99951389 N"
     assert facts["exif.gps_longitude"] == "122.74040278 W"
+
+
+def test_routing_exiftool_summary_synthesizes_sony_xml_gps() -> None:
+    facts = routing_file_facts(
+        "sony-a6700/C1178M01.XML",
+        exiftool_summary=routing_exiftool_summary(
+            {
+                "NonRealTimeMetaAcquisitionRecordGroupName": [
+                    "ExifGPS",
+                    "CameraUnitMetadataSet",
+                ],
+                "NonRealTimeMetaAcquisitionRecordGroupItemName": [
+                    "VersionID",
+                    "LatitudeRef",
+                    "Latitude",
+                    "LongitudeRef",
+                    "Longitude",
+                    "DateStamp",
+                    "TimeStamp",
+                    "Status",
+                    "CaptureGammaEquation",
+                ],
+                "NonRealTimeMetaAcquisitionRecordGroupItemValue": [
+                    "2.2.0.0",
+                    "N",
+                    "48;59;58.213",
+                    "W",
+                    "122;44;25.579",
+                    "2026:07:08",
+                    "22:46:21.000",
+                    "A",
+                    "rec709",
+                ],
+            }
+        ),
+    )
+
+    assert facts["exif.gps_latitude"] == "48;59;58.213"
+    assert facts["exif.gps_latitude_ref"] == "N"
+    assert facts["exif.gps_longitude"] == "122;44;25.579"
+    assert facts["exif.gps_longitude_ref"] == "W"
+    assert (
+        facts["exiftool"]["tags"]["non_real_time_meta_acquisition_record_group_name"][0]
+        == "ExifGPS"
+    )
