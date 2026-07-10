@@ -188,6 +188,17 @@ def test_preserve_source_artifacts_include_evidence_sidecars(tmp_path: Path) -> 
     extract_dir = tmp_path / "extracted"
     source_artifacts._safe_extract_source_artifacts(bundle_path, extract_dir)
     manifest = json.loads((extract_dir / "manifest.json").read_text(encoding="utf-8"))
+    names = {
+        path.relative_to(extract_dir).as_posix()
+        for path in extract_dir.rglob("*")
+        if path.is_file()
+    }
+    assert "inventory/source-filesystem.json" in names
+    assert "sidecars/IMG_0001.HEIC.xmp" in names
+    assert "inventory/source-ffprobe.json" not in names
+    assert "inventory/source-inventory.json" not in names
+    assert "encoding/stream-transforms.json" not in names
+    assert manifest["source_container"]["mode"] == "preserve_primary_bytes"
     assert (extract_dir / "sidecars" / "IMG_0001.HEIC.xmp").read_text(encoding="utf-8") == "<xmp/>"
     assert any(
         item["kind"] == "source_sidecar" and item["path"] == "sidecars/IMG_0001.HEIC.xmp"

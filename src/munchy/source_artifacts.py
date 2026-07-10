@@ -1655,6 +1655,42 @@ def _stream_transforms_payload(
     }
 
 
+def _json_payload_has_signal(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, Mapping):
+        return any(_json_payload_has_signal(item) for item in value.values())
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return any(_json_payload_has_signal(item) for item in value)
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True
+
+
+def _source_inventory_has_signal(
+    *,
+    source_metadata: Mapping[str, Any],
+    source_container: Mapping[str, Any],
+    container_inventory: Sequence[dict[str, Any]],
+    stream_transforms: Sequence[dict[str, Any]],
+    dropped_items: Sequence[dict[str, Any]],
+) -> bool:
+    if source_container.get("mode") != "preserve_primary_bytes":
+        return True
+    chapters = source_metadata.get("chapters")
+    programs = source_metadata.get("programs")
+    return any(
+        (
+            _json_payload_has_signal(source_metadata.get("format")),
+            _json_payload_has_signal(chapters if isinstance(chapters, list) else []),
+            _json_payload_has_signal(programs if isinstance(programs, list) else []),
+            _json_payload_has_signal(container_inventory),
+            _json_payload_has_signal(stream_transforms),
+            _json_payload_has_signal(dropped_items),
+        )
+    )
+
+
 def _guess_mime_type(path: pathlib.Path) -> str:
     mime, _ = mimetypes.guess_type(path.name)
     if mime:
@@ -1790,31 +1826,44 @@ def _assemble_source_artifact_bundle_inputs(
         )
     filesystem_metadata = dict(source_filesystem_metadata)
 
-    _write_json_artifact(source_ffprobe_path, source_metadata)
+    include_source_ffprobe = _json_payload_has_signal(source_metadata)
+    include_source_inventory = _source_inventory_has_signal(
+        source_metadata=source_metadata,
+        source_container=source_container,
+        container_inventory=container_inventory,
+        stream_transforms=stream_transforms,
+        dropped_items=dropped_items,
+    )
+    include_stream_transforms = bool(stream_transforms)
+
+    if include_source_ffprobe:
+        _write_json_artifact(source_ffprobe_path, source_metadata)
     _write_json_artifact(source_filesystem_path, filesystem_metadata)
-    _write_json_artifact(
-        source_inventory_path,
-        _source_inventory_payload(
-            src=src,
-            output=output,
-            metadata=source_metadata,
-            source_container=source_container,
-            container_inventory=container_inventory,
-            stream_transforms=stream_transforms,
-            dropped_items=dropped_items,
-        ),
-    )
-    _write_json_artifact(
-        stream_transforms_path,
-        _stream_transforms_payload(
-            src=src,
-            output=output,
-            encode_cmd=encode_cmd,
-            selected_output_path=selected_output_path,
-            encode_output_path=encode_output_path,
-            stream_transforms=stream_transforms,
-        ),
-    )
+    if include_source_inventory:
+        _write_json_artifact(
+            source_inventory_path,
+            _source_inventory_payload(
+                src=src,
+                output=output,
+                metadata=source_metadata,
+                source_container=source_container,
+                container_inventory=container_inventory,
+                stream_transforms=stream_transforms,
+                dropped_items=dropped_items,
+            ),
+        )
+    if include_stream_transforms:
+        _write_json_artifact(
+            stream_transforms_path,
+            _stream_transforms_payload(
+                src=src,
+                output=output,
+                encode_cmd=encode_cmd,
+                selected_output_path=selected_output_path,
+                encode_output_path=encode_output_path,
+                stream_transforms=stream_transforms,
+            ),
+        )
     artifacts: list[SourceArtifact] = []
     used_names = {"manifest.json"}
     for artifact in container_artifacts:
@@ -1822,36 +1871,46 @@ def _assemble_source_artifact_bundle_inputs(
         used_names.add(artifact.arcname)
     artifacts.extend(_source_stream_artifact_records(exports, used_names))
 
-    structured_artifacts = [
-        (
-            source_ffprobe_path,
-            "inventory/source-ffprobe.json",
-            "source_ffprobe",
-            "Raw ffprobe metadata for original source",
-            "application/json",
-        ),
+    structured_artifacts = []
+    if include_source_ffprobe:
+        structured_artifacts.append(
+            (
+                source_ffprobe_path,
+                "inventory/source-ffprobe.json",
+                "source_ffprobe",
+                "Raw ffprobe metadata for original source",
+                "application/json",
+            )
+        )
+    structured_artifacts.append(
         (
             source_filesystem_path,
             "inventory/source-filesystem.json",
             "source_filesystem",
             "Original source filesystem metadata",
             "application/json",
-        ),
-        (
-            source_inventory_path,
-            "inventory/source-inventory.json",
-            "source_inventory",
-            "Strict source component inventory",
-            "application/json",
-        ),
-        (
-            stream_transforms_path,
-            "encoding/stream-transforms.json",
-            "stream_transforms",
-            "Archive stream transform plan",
-            "application/json",
-        ),
-    ]
+        )
+    )
+    if include_source_inventory:
+        structured_artifacts.append(
+            (
+                source_inventory_path,
+                "inventory/source-inventory.json",
+                "source_inventory",
+                "Strict source component inventory",
+                "application/json",
+            )
+        )
+    if include_stream_transforms:
+        structured_artifacts.append(
+            (
+                stream_transforms_path,
+                "encoding/stream-transforms.json",
+                "stream_transforms",
+                "Archive stream transform plan",
+                "application/json",
+            )
+        )
     for artifact_path, arcname, kind, description, mime_type in structured_artifacts:
         used_names.add(arcname)
         artifacts.append(
@@ -1968,6 +2027,7 @@ def _build_source_artifacts_bundle(
     src: str,
     output: str,
     dropped_items: Sequence[dict[str, Any]] = (),
+    source_container: Mapping[str, Any] | None = None,
 ) -> bool:
     existing = [artifact for artifact in artifacts if artifact.path.exists()]
     if not existing:
@@ -2003,6 +2063,8 @@ def _build_source_artifacts_bundle(
         "artifacts": manifest_entries,
         "dropped": list(dropped_items),
     }
+    if isinstance(source_container, Mapping):
+        manifest["source_container"] = dict(source_container)
     manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n"
 
     try:
@@ -2137,10 +2199,18 @@ def _artifact_path_for_kind(
     kind: str,
     default: str,
 ) -> str:
+    path = _artifact_path_for_kind_or_none(manifest, kind)
+    return path if path is not None else default
+
+
+def _artifact_path_for_kind_or_none(
+    manifest: dict[str, Any],
+    kind: str,
+) -> str | None:
     for entry in _artifact_entries_by_path(manifest).values():
         if entry.get("kind") == kind and isinstance(entry.get("path"), str):
             return cast(str, entry["path"])
-    return default
+    return None
 
 
 def _top_level_atom_entry(
@@ -2159,19 +2229,16 @@ def _top_level_atom_entry(
 
 def _source_artifact_streams(root: pathlib.Path) -> list[dict[str, Any]]:
     manifest = _read_json_artifact(root, "manifest.json")
-    transforms_path = _artifact_path_for_kind(
+    transforms_path = _artifact_path_for_kind_or_none(
         manifest,
         "stream_transforms",
-        "encoding/stream-transforms.json",
     )
-    try:
+    if transforms_path is not None:
         transforms = _read_json_artifact(root, transforms_path)
-    except RuntimeError:
-        inventory_path = _artifact_path_for_kind(
-            manifest,
-            "source_inventory",
-            "inventory/source-inventory.json",
-        )
+    else:
+        inventory_path = _artifact_path_for_kind_or_none(manifest, "source_inventory")
+        if inventory_path is None:
+            raise RuntimeError("source artifacts contain no stream transform records")
         transforms = _read_json_artifact(root, inventory_path)
     streams = transforms.get("streams")
     if not isinstance(streams, list):
@@ -2325,60 +2392,65 @@ def _audit_extracted_source_artifacts(
 
     source_rebuild_mode = ""
     source_container_rebuild_supported = False
-    try:
-        inventory_path = _artifact_path_for_kind(
-            manifest,
-            "source_inventory",
-            "inventory/source-inventory.json",
+    inventory_path = _artifact_path_for_kind_or_none(manifest, "source_inventory")
+    inventory: dict[str, Any] = {}
+    container_format: Any = None
+    if inventory_path is not None:
+        try:
+            inventory = _read_json_artifact(root, inventory_path)
+            if inventory.get("strict_accounting") is not True:
+                errors.append("source inventory does not declare strict_accounting=true")
+            container = inventory.get("container")
+            container_format = container.get("format") if isinstance(container, dict) else None
+            container_rebuild = container.get("rebuild") if isinstance(container, dict) else None
+        except RuntimeError as exc:
+            errors.append(str(exc))
+            container_rebuild = None
+    else:
+        raw_manifest_container = manifest.get("source_container")
+        container_rebuild = (
+            raw_manifest_container if isinstance(raw_manifest_container, dict) else None
         )
-        inventory = _read_json_artifact(root, inventory_path)
-        if inventory.get("strict_accounting") is not True:
-            errors.append("source inventory does not declare strict_accounting=true")
-        container = inventory.get("container")
-        container_format = container.get("format") if isinstance(container, dict) else None
-        container_rebuild = container.get("rebuild") if isinstance(container, dict) else None
-        if not isinstance(container_rebuild, dict):
-            errors.append("source inventory missing source container rebuild contract")
-            rebuild_supported = False
-            rebuild_blockers.append("source_container_contract")
-        elif container_rebuild.get("supported") is True:
-            raw_mode = container_rebuild.get("mode")
-            source_rebuild_mode = raw_mode if isinstance(raw_mode, str) else ""
-            source_container_rebuild_supported = True
-            checks.append(
-                f"source container rebuild contract: {container_rebuild.get('mode') or 'supported'}"
-            )
-        else:
-            warnings.append(
-                "source container is not rebuild-supported: "
-                f"{container_rebuild.get('message') or container_rebuild.get('mode')}"
-            )
-            rebuild_supported = False
-            rebuild_blockers.append("source_container")
-        format_tags = container_format.get("tags") if isinstance(container_format, dict) else None
-        if isinstance(format_tags, dict):
-            metadata_keys = sorted(
-                key
-                for key in format_tags
-                if key
-                not in {
-                    "major_brand",
-                    "minor_version",
-                    "compatible_brands",
-                    "encoder",
-                }
-            )
-            if metadata_keys:
-                if source_rebuild_mode == "iso_bmff_rebuild":
-                    checks.append(
-                        "source format metadata tags available for moov graft: "
-                        f"{len(metadata_keys)}"
-                    )
-                else:
-                    checks.append(f"source format metadata tags recorded: {len(metadata_keys)}")
-    except RuntimeError as exc:
-        errors.append(str(exc))
-        inventory = {}
+
+    if not isinstance(container_rebuild, dict):
+        errors.append("source artifacts missing source container rebuild contract")
+        rebuild_supported = False
+        rebuild_blockers.append("source_container_contract")
+    elif container_rebuild.get("supported") is True:
+        raw_mode = container_rebuild.get("mode")
+        source_rebuild_mode = raw_mode if isinstance(raw_mode, str) else ""
+        source_container_rebuild_supported = True
+        checks.append(
+            f"source container rebuild contract: {container_rebuild.get('mode') or 'supported'}"
+        )
+    else:
+        warnings.append(
+            "source container is not rebuild-supported: "
+            f"{container_rebuild.get('message') or container_rebuild.get('mode')}"
+        )
+        rebuild_supported = False
+        rebuild_blockers.append("source_container")
+    format_tags = container_format.get("tags") if isinstance(container_format, dict) else None
+    if isinstance(format_tags, dict):
+        metadata_keys = sorted(
+            key
+            for key in format_tags
+            if key
+            not in {
+                "major_brand",
+                "minor_version",
+                "compatible_brands",
+                "encoder",
+            }
+        )
+        if metadata_keys:
+            if source_rebuild_mode == "iso_bmff_rebuild":
+                checks.append(
+                    "source format metadata tags available for moov graft: "
+                    f"{len(metadata_keys)}"
+                )
+            else:
+                checks.append(f"source format metadata tags recorded: {len(metadata_keys)}")
 
     if source_rebuild_mode == "preserve_primary_bytes":
         rebuild_scope = "primary source bytes are preserved as the archive output"
@@ -2407,7 +2479,12 @@ def _audit_extracted_source_artifacts(
     try:
         streams = _source_artifact_streams(root)
     except RuntimeError as exc:
-        errors.append(str(exc))
+        if source_rebuild_mode == "preserve_primary_bytes":
+            checks.append(
+                "source stream transform records not applicable for preserved primary bytes"
+            )
+        else:
+            errors.append(str(exc))
         streams = []
 
     dropped = manifest.get("dropped")
@@ -2626,16 +2703,15 @@ def _source_container_mode(
     artifacts_root: pathlib.Path,
     manifest: dict[str, Any],
 ) -> str:
-    inventory_path = _artifact_path_for_kind(
-        manifest,
-        "source_inventory",
-        "inventory/source-inventory.json",
-    )
-    inventory = _read_json_artifact(artifacts_root, inventory_path)
-    container = inventory.get("container")
-    if not isinstance(container, dict):
-        return ""
-    rebuild = container.get("rebuild")
+    inventory_path = _artifact_path_for_kind_or_none(manifest, "source_inventory")
+    if inventory_path is not None:
+        inventory = _read_json_artifact(artifacts_root, inventory_path)
+        container = inventory.get("container")
+        if not isinstance(container, dict):
+            return ""
+        rebuild = container.get("rebuild")
+    else:
+        rebuild = manifest.get("source_container")
     if not isinstance(rebuild, dict):
         return ""
     mode = rebuild.get("mode")

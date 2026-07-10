@@ -1350,11 +1350,15 @@ service = [
 dev = [
     { name = "boto3-stubs", extra = ["s3"] },
     { name = "mypy" },
+    { name = "numpy" },
+    { name = "psycopg", extra = ["binary"] },
     { name = "pytest" },
     { name = "pytest-bdd" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "scipy" },
     { name = "scipy-stubs" },
+    { name = "sqlalchemy" },
     { name = "types-jsonschema" },
     { name = "types-pyyaml" },
 ]
@@ -1385,11 +1389,15 @@ provides-extras = ["planner", "db", "service"]
 dev = [
     { name = "boto3-stubs", extras = ["s3"], specifier = ">=1.35,<2.0" },
     { name = "mypy", specifier = ">=1.10,<2.0" },
+    { name = "numpy", specifier = ">=2.0,<3.0" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4.0" },
     { name = "pytest", specifier = ">=8.2,<9.0" },
     { name = "pytest-bdd", specifier = ">=8.1,<9.0" },
     { name = "pytest-cov", specifier = ">=5.0,<6.0" },
     { name = "ruff", specifier = ">=0.5,<1.0" },
+    { name = "scipy", specifier = ">=1.13,<2.0" },
     { name = "scipy-stubs", specifier = ">=1.13,<2.0" },
+    { name = "sqlalchemy", specifier = ">=2.0,<3.0" },
     { name = "types-jsonschema", specifier = ">=4.25,<5.0" },
     { name = "types-pyyaml", specifier = ">=6.0,<7.0" },
 ]

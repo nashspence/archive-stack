@@ -828,6 +828,24 @@ def test_routing_exiftool_summary_normalizes_apple_tags() -> None:
     assert facts["exif.gps_longitude"] == "122.74040278 W"
 
 
+def test_routing_exiftool_summary_exposes_generic_camera_fields() -> None:
+    facts = routing_file_facts(
+        "phone/PXL_0001.JPG",
+        exiftool_summary=routing_exiftool_summary(
+            {
+                "Composite:LensID": "Pixel 8 front camera 2.74mm f/2.2",
+                "MakerNotes:CameraType": "Selfie",
+                "Composite:Rotation": 180,
+            }
+        ),
+    )
+
+    assert facts["exif.lens_id"] == "pixel 8 front camera 2.74mm f/2.2"
+    assert facts["exif.camera_type"] == "selfie"
+    assert facts["exif.camera_direction"] == "front"
+    assert facts["exif.rotation"] == 180
+
+
 def test_exiftool_routing_facts_applies_configured_name_value_extractor() -> None:
     facts = exiftool_routing_facts(
         routing_exiftool_summary(

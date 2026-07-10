@@ -377,6 +377,7 @@ def build_strict_source_artifacts(
             src=str(source),
             output=output_name,
             dropped_items=dropped_items,
+            source_container=source_container,
         )
         if not created:
             raise RuntimeError(f"source artifact bundle was not created for {source}")
@@ -425,16 +426,17 @@ def build_preserve_source_artifacts(
     work_dir.mkdir(parents=True, exist_ok=True)
     part_path.unlink(missing_ok=True)
     try:
+        source_container = {
+            "supported": True,
+            "mode": "preserve_primary_bytes",
+            "message": "primary source bytes are preserved as the archive output",
+        }
         artifacts = source_artifacts._assemble_source_artifact_bundle_inputs(
             work_dir=work_dir,
             src=str(source),
             output=output.name,
             source_metadata={},
-            source_container={
-                "supported": True,
-                "mode": "preserve_primary_bytes",
-                "message": "primary source bytes are preserved as the archive output",
-            },
+            source_container=source_container,
             container_inventory=[],
             container_artifacts=[],
             exports=[],
@@ -451,6 +453,7 @@ def build_preserve_source_artifacts(
             artifacts,
             src=str(source),
             output=output.name,
+            source_container=source_container,
         )
         if not created:
             raise RuntimeError(f"source artifact bundle was not created for {source}")
