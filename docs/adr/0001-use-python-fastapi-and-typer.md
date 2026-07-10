@@ -2,7 +2,7 @@
 
 ## Decision
 
-Riverhog is a Python 3.11 application with a FastAPI HTTP surface and Typer CLIs.
+Riverhog is a Python 3.12 application with a FastAPI HTTP surface and Typer CLIs.
 
 ## Reason
 

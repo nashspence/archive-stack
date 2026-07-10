@@ -5,7 +5,7 @@ import logging
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TypeVar, cast
+from typing import Any, cast
 
 from sqlalchemy import delete, func, insert, or_, select, update
 from sqlalchemy.orm import Session
@@ -51,7 +51,6 @@ from riverhog_core.webhooks import (
 _REGISTERABLE_STATES = {CopyState.NEEDED, CopyState.BURNING}
 _BATCH_SIZE = 1_000
 _LOG = logging.getLogger(__name__)
-_T = TypeVar("_T")
 
 
 class SqlAlchemyCopyService:
@@ -582,7 +581,7 @@ def _copy_counts_toward_slot_pool(state: str | None) -> bool:
     return normalized in _REGISTERABLE_STATES or copy_counts_toward_protection(normalized.value)
 
 
-def _batches(items: Sequence[_T], size: int) -> Iterable[Sequence[_T]]:
+def _batches[T](items: Sequence[T], size: int) -> Iterable[Sequence[T]]:
     for start in range(0, len(items), size):
         yield items[start : start + size]
 

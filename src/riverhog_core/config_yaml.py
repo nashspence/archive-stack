@@ -32,7 +32,7 @@ def _construct_mapping(
         )
     seen: set[str] = set()
     for key_node, _value_node in node.value:
-        key = loader.construct_object(key_node, deep=deep)  # type: ignore[no-untyped-call]
+        key = loader.construct_object(key_node, deep=deep)
         if not isinstance(key, str):
             raise yaml.constructor.ConstructorError(
                 "while constructing a mapping",

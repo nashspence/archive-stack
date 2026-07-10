@@ -1,4 +1,4 @@
-FROM python:3.11.15-slim-bookworm
+FROM python:3.12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \

@@ -5,7 +5,7 @@ MISE_BIN ?= mise
 FILES ?= .
 TESTS ?= tests/unit
 SPEC_TESTS ?= tests/harness/test_spec_harness.py
-UV_RUN = "$(MISE_BIN)" x -- uv run --python 3.11 --isolated --with-requirements "$(CURDIR)/requirements-test.txt" --with-editable '.[db]'
+UV_RUN = "$(MISE_BIN)" x -- uv run --locked --no-default-groups --group dev --extra db --extra planner
 MYPY_FLAGS = --show-error-codes --hide-error-context --no-error-summary --no-color-output
 args ?=
 

@@ -65,8 +65,8 @@ prepared for a local Compose stack:
 make bootstrap-garage
 ```
 
-The local lanes resolve against `requirements-test.txt` plus the editable
-project.
+The local lanes resolve from `uv.lock` with the `dev` dependency group and the
+runtime extras needed by tests.
 
 ## What Lives Where
 

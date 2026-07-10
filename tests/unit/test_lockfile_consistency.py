@@ -55,28 +55,6 @@ def _parse_lockfile(path: Path) -> dict[str, LockedPackage]:
     return packages
 
 
-def test_runtime_and_test_lockfiles_do_not_drift_for_shared_packages() -> None:
-    runtime = _parse_lockfile(REPO_ROOT / "requirements-runtime.txt")
-    test = _parse_lockfile(REPO_ROOT / "requirements-test.txt")
-
-    missing_from_test = sorted(set(runtime) - set(test))
-    assert not missing_from_test, (
-        "Runtime lock packages are missing from requirements-test.txt: "
-        f"{', '.join(missing_from_test)}. Regenerate both lockfiles together."
-    )
-
-    drift = [
-        f"{name}: runtime={runtime[name].version}, test={test[name].version}"
-        for name in sorted(set(runtime) & set(test))
-        if runtime[name].version != test[name].version
-    ]
-    assert not drift, (
-        "Shared runtime/test lock packages have version drift: "
-        f"{'; '.join(drift)}. Regenerate requirements-runtime.txt and "
-        "requirements-test.txt together when dependency constraints change."
-    )
-
-
 def test_service_lockfile_does_not_drift_from_runtime_for_shared_packages() -> None:
     runtime = _parse_lockfile(REPO_ROOT / "requirements-runtime.txt")
     service = _parse_lockfile(REPO_ROOT / "requirements-service.txt")
@@ -104,19 +82,18 @@ def test_service_lockfile_does_not_drift_from_runtime_for_shared_packages() -> N
     ]
     assert not drift, (
         "Shared runtime/service lock packages have version drift: "
-        f"{'; '.join(drift)}. Regenerate requirements-service.txt with "
-        "requirements-runtime.txt as a constraint."
+        f"{'; '.join(drift)}. Regenerate uv.lock, then export requirements-runtime.txt "
+        "and requirements-service.txt from it."
     )
 
     for package in ("httptools", "uvloop", "watchfiles", "websockets"):
         assert package in service
 
 
-def test_runtime_and_test_lockfiles_use_hashes_for_every_package() -> None:
+def test_runtime_and_service_lockfiles_use_hashes_for_every_package() -> None:
     for lockfile in (
         "requirements-runtime.txt",
         "requirements-service.txt",
-        "requirements-test.txt",
     ):
         packages = _parse_lockfile(REPO_ROOT / lockfile)
         missing_hashes = [package.name for package in packages.values() if not package.hashes]

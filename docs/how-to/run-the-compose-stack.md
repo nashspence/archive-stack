@@ -77,15 +77,14 @@ canonical run and treat its eventual result as valid.
 make stop-spec
 ```
 
-The checked-in Dockerfiles install hashed dependencies from
-`requirements-runtime.txt`, `requirements-service.txt`, and
-`requirements-test.txt` before copying application source. README and
-documentation edits do not invalidate the dependency-install layers. Regenerate
-`requirements-runtime.txt` first when dependency constraints change; regenerate
-`requirements-test.txt` and `requirements-service.txt` with
-`requirements-runtime.txt` as a constraint so local quality lanes and deployed
-service images do not drift from the app runtime. The unit suite checks that
-shared packages do not drift and that all lockfiles keep hash-pinned entries.
+The checked-in runtime and service Dockerfiles install hashed dependencies from
+`requirements-runtime.txt` and `requirements-service.txt` before copying
+application source. The test Dockerfile syncs its environment from `uv.lock`
+before copying source. README and documentation edits do not invalidate those
+dependency-install layers. When dependency constraints change, update `uv.lock`
+first, then regenerate the runtime and service requirements exports from that
+lockfile. The unit suite checks that shared exported packages do not drift and
+that generated requirements keep hash-pinned entries.
 
 If `RIVERHOG_GLACIER_BUCKET` differs from `RIVERHOG_S3_BUCKET`, the Garage
 bootstrap applies and verifies the same lifecycle rule on both buckets.

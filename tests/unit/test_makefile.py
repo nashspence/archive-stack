@@ -151,8 +151,7 @@ def test_atomic_local_targets_run_in_locked_uv_environment(
     uv_log_lines = _read_log_lines(uv_log_path)
     assert len(uv_log_lines) == 1
     assert (
-        "run --python 3.11 --isolated --with-requirements "
-        f"{REPO_ROOT / 'requirements-test.txt'} --with-editable .[db] "
+        "run --locked --no-default-groups --group dev --extra db --extra planner "
     ) in uv_log_lines[0]
     assert expected_command in uv_log_lines[0]
 
@@ -262,13 +261,16 @@ def test_dockerfiles_keep_dependency_layers_independent_of_docs_and_tests() -> N
     assert app_dockerfile.index(
         "pip install --no-cache-dir --require-hashes -r requirements-runtime.txt"
     ) < app_dockerfile.index("COPY src ./src")
-    assert test_dockerfile.index("COPY requirements-test.txt ./") < test_dockerfile.index(
-        "COPY src ./src"
-    )
     assert test_dockerfile.index(
-        "pip install --no-cache-dir --require-hashes -r requirements-test.txt"
+        "COPY pyproject.toml uv.lock ./"
     ) < test_dockerfile.index("COPY src ./src")
-    assert test_dockerfile.index("COPY pyproject.toml ./") < test_dockerfile.index(
+    assert test_dockerfile.index(
+        "uv sync --locked --no-default-groups --group dev --extra db --extra planner "
+        "--no-install-project"
+    ) < test_dockerfile.index("COPY src ./src")
+    assert "COPY --from=ghcr.io/astral-sh/uv:0.11.24" in test_dockerfile
+    assert "ENTRYPOINT [\"/app/.venv/bin/python\", \"-m\", \"pytest\"]" in test_dockerfile
+    assert test_dockerfile.index("COPY pyproject.toml uv.lock ./") < test_dockerfile.index(
         "COPY tests ./tests"
     )
     assert "COPY services/munchy-av1-nvenc/app ./services/munchy-av1-nvenc/app" in test_dockerfile
@@ -328,23 +330,25 @@ def test_munchy_runner_image_includes_source_artifact_runtime_tools() -> None:
     assert "zstd" in dockerfile
 
 
-def test_locked_dependency_files_cover_runtime_and_test_db_extras() -> None:
+def test_locked_dependency_files_cover_runtime_and_service_exports() -> None:
     runtime_requirements = (REPO_ROOT / "requirements-runtime.txt").read_text()
-    test_requirements = (REPO_ROOT / "requirements-test.txt").read_text()
     service_requirements = (REPO_ROOT / "requirements-service.txt").read_text()
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text()
 
+    assert "uv export" in runtime_requirements.splitlines()[1]
+    assert "uv export" in service_requirements.splitlines()[1]
     assert "--extra db" in runtime_requirements.splitlines()[1]
-    assert "--extra db" in test_requirements.splitlines()[1]
     assert "--extra service" in service_requirements.splitlines()[1]
-    assert "-c requirements-runtime.txt" in service_requirements.splitlines()[1]
     for package in ("boto3", "fastapi", "psycopg", "psycopg-binary", "sqlalchemy", "uvicorn"):
         assert f"{package}==" in runtime_requirements
-        assert f"{package}==" in test_requirements
     for package in ("fastapi", "httptools", "uvicorn", "uvloop", "watchfiles", "websockets"):
         assert f"{package}==" in service_requirements
+    for package in ("pytest", "ruff", "mypy"):
+        assert f"{package}==" not in runtime_requirements
+        assert f"{package}==" not in service_requirements
+        assert f'"{package}' in pyproject
     assert "--hash=sha256:" in runtime_requirements
     assert "--hash=sha256:" in service_requirements
-    assert "--hash=sha256:" in test_requirements
 
 
 def test_test_aggregate_runs_lint_then_unit(tmp_path: Path) -> None:

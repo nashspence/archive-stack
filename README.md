@@ -9,9 +9,10 @@ and the deployed service app entrypoints through `mise x -- uv`. The project
 toolchain is declared in `mise.toml`; Python project dependencies are declared in
 `pyproject.toml` and resolved in `uv.lock`.
 
-The hashed `requirements-runtime.txt`, `requirements-test.txt`, and
-`requirements-service.txt` files are generated deployment exports for local
-lanes and Docker images.
+Local lanes resolve from `uv.lock` with the `dev` dependency group plus the
+runtime extras those lanes exercise. The hashed `requirements-runtime.txt` and
+`requirements-service.txt` files are generated deployment exports for Docker
+images that install with pip.
 
 The Makefile expects `mise` on `PATH` and runs uv through the repo-selected
 toolchain. If a host keeps `mise` somewhere else, pass it explicitly:
