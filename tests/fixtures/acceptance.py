@@ -371,6 +371,7 @@ class CollectionUploadRecord:
     collection_id: CollectionId
     ingest_source: str | None
     files: dict[str, CollectionUploadFileRecord]
+    notify: dict[str, object] | None = None
     state: str = "uploading"
     archive_attempt_count: int = 0
     latest_failure: str | None = None
@@ -1104,6 +1105,7 @@ class AcceptanceCollectionService:
         files: list[dict[str, object]],
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
+        notify: dict[str, object] | None = None,
     ) -> dict[str, object]:
         normalized_slug = normalize_upload_slug(upload_slug)
         normalized_upload_timestamp = (
@@ -1161,6 +1163,7 @@ class AcceptanceCollectionService:
                     )
                     for item in normalized_files
                 },
+                notify=notify,
             )
             self.state.collection_uploads[collection_key] = upload
         else:
@@ -1169,6 +1172,8 @@ class AcceptanceCollectionService:
                 requested_collection_id,
             )
             upload.ingest_source = ingest_source
+            if notify is not None:
+                upload.notify = notify
             if upload.state == "failed":
                 upload.state = "archiving"
                 upload.latest_failure = None
@@ -1186,6 +1191,7 @@ class AcceptanceCollectionService:
         upload_slug: str,
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
+        notify: dict[str, object] | None = None,
     ) -> dict[str, object]:
         normalized_slug = normalize_upload_slug(upload_slug)
         normalized_upload_timestamp = (
@@ -1208,11 +1214,15 @@ class AcceptanceCollectionService:
                 if upload.state != "open":
                     raise Conflict(f"collection upload session is {upload.state}: {collection_key}")
                 upload.ingest_source = ingest_source
+                if notify is not None:
+                    upload.notify = notify
                 return self._upload_payload(upload, state="open", collection=None)
         else:
             upload = self._open_upload_session_for_slug(normalized_slug)
             if upload is not None:
                 upload.ingest_source = ingest_source
+                if notify is not None:
+                    upload.notify = notify
                 return self._upload_payload(upload, state="open", collection=None)
 
         normalized_collection_id = requested_collection_id or self._mint_collection_id(
@@ -1227,6 +1237,7 @@ class AcceptanceCollectionService:
             collection_id=collection_key,
             ingest_source=ingest_source,
             files={},
+            notify=notify,
             state="open",
         )
         self.state.collection_uploads[collection_key] = upload
@@ -1868,6 +1879,7 @@ class AcceptanceCollectionService:
             ),
             "upload_state_expires_at": max(upload_expiries) if upload_expiries else None,
             "latest_failure": upload.latest_failure,
+            "notify": upload.notify,
             "files": [
                 {
                     "path": file_record.path,

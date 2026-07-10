@@ -109,12 +109,14 @@ def test_create_or_resume_incremental_upload_session_uses_session_endpoint(
         "Tax 2022",
         ingest_source="/tmp/tax/2022",
         upload_timestamp="20250712T213200Z",
+        notify={"enabled": True, "recipients": ["nash"]},
     )
 
     assert captured[0][0] == "POST"
     assert captured[0][1] == "https://api.test/v1/collection-upload-sessions"
     assert '"slug":"Tax 2022"' in str(captured[0][2])
     assert '"upload_timestamp":"20250712T213200Z"' in str(captured[0][2])
+    assert '"notify":{"enabled":true,"recipients":["nash"]}' in str(captured[0][2])
 
 
 def test_incremental_upload_session_file_and_close_endpoints_quote_collection_id(

@@ -188,6 +188,12 @@ def test_load_runtime_config_parses_planner_runtime_settings(
     monkeypatch.setenv("RIVERHOG_HOT_PROMOTION_CONCURRENCY", "6")
     monkeypatch.setenv("RIVERHOG_HOT_SINGLE_PUT_MAX_BYTES", "32MiB")
     monkeypatch.setenv("RIVERHOG_OPERATOR_WEBHOOK_URL", "http://example.invalid/webhook/riverhog")
+    monkeypatch.setenv(
+        "RIVERHOG_NOTIFY_WEBHOOKS",
+        '{"nash":"http://example.invalid/webhook/nash"}',
+    )
+    monkeypatch.setenv("RIVERHOG_NOTIFY_WEBHOOK_KATIE", "http://example.invalid/webhook/katie")
+    monkeypatch.setenv("RIVERHOG_NOTIFY_DEFAULT_RECIPIENTS", "nash,katie")
     monkeypatch.setenv("RIVERHOG_OPERATOR_WEBHOOK_TIMEOUT", "2s")
     monkeypatch.setenv("RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY", "3s")
     monkeypatch.setenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL", "4s")
@@ -213,6 +219,11 @@ def test_load_runtime_config_parses_planner_runtime_settings(
     assert config.hot_single_put_max_bytes == 32 * 1024**2
     assert config.log_level == "DEBUG"
     assert config.operator_webhook_url == "http://example.invalid/webhook/riverhog"
+    assert config.notify_webhook_urls == {
+        "nash": "http://example.invalid/webhook/nash",
+        "katie": "http://example.invalid/webhook/katie",
+    }
+    assert config.notify_default_recipients == ("nash", "katie")
     assert config.operator_webhook_timeout == timedelta(seconds=2)
     assert config.operator_webhook_retry_delay == timedelta(seconds=3)
     assert config.operator_webhook_reminder_interval == timedelta(seconds=4)

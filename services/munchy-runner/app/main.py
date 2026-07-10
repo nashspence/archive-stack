@@ -6169,10 +6169,12 @@ def ensure_riverhog_session(
         if collection_id:
             return collection_id
 
+        notify = dict_or_empty(job.get("notify"))
         payload = api.create_or_resume_collection_upload_session(
             str(job["collection_slug"]),
             ingest_source=str(archive_dir),
             upload_timestamp=str(timestamp),
+            notify=notify or None,
         )
         update_riverhog_state_from_payload(job, payload)
         state = riverhog_session_state(job)

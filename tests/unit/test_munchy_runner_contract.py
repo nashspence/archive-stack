@@ -4992,6 +4992,7 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
         "collection_slug": "camera-archive",
         "collection_timestamp": "20260101T000000Z",
         "riverhog": {"enabled": True, "wait": "staged"},
+        "notify": {"enabled": True, "recipients": ["nash", "katie"]},
     }
     runner.save_job(job)
 
@@ -5014,10 +5015,12 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
             *,
             ingest_source: str | None = None,
             upload_timestamp: str | None = None,
+            notify: dict[str, object] | None = None,
         ) -> dict[str, object]:
             assert slug == "camera-archive"
             assert ingest_source == str(archive_dir)
             assert upload_timestamp == "20260101T000000Z"
+            assert notify == {"enabled": True, "recipients": ["nash", "katie"]}
             return self.payload(state="open")
 
         def get_collection_upload(self, collection_id: str) -> dict[str, object]:

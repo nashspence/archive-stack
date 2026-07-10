@@ -27,6 +27,10 @@ Request body:
   "slug": "mom iphone photos",
   "upload_timestamp": "20250712T213200Z",
   "ingest_source": "/operator/photos/2024",
+  "notify": {
+    "enabled": true,
+    "recipients": ["operator"]
+  },
   "files": [
     {
       "path": "albums/japan/day-01.txt",
@@ -46,6 +50,9 @@ Required behavior:
   `upload_timestamp` in UTC basic form `YYYYMMDDTHHMMSSZ`
 - `upload_timestamp` is optional and exists for migration of archival sets whose
   original timestamp should be preserved; `slug` remains required
+- optional `notify` targets are persisted with the collection upload and reused
+  for Riverhog-owned collection lifecycle events such as `collections.finalized`
+  and archival failures
 - retries with the same normalized slug and file manifest resume the existing
   upload or return the already-finalized collection
 - persists enough upload-session state to survive service restart and repeated CLI runs
@@ -71,7 +78,11 @@ Request body:
 {
   "slug": "mom iphone photos",
   "upload_timestamp": "20250712T213200Z",
-  "ingest_source": "/operator/photos/2024"
+  "ingest_source": "/operator/photos/2024",
+  "notify": {
+    "enabled": true,
+    "recipients": ["operator"]
+  }
 }
 ```
 
@@ -84,6 +95,9 @@ Required behavior:
   is completed, canceled, or expired
 - if `upload_timestamp` is provided, repeated calls target that exact canonical
   collection id
+- optional `notify` targets are persisted with the collection upload and reused
+  for Riverhog-owned collection lifecycle events such as `collections.finalized`
+  and archival failures
 - the returned session state is `open`
 - open sessions remain mutable until explicitly completed or canceled
 - open sessions expire after `RIVERHOG_UPLOAD_SESSION_IDLE_TTL` without

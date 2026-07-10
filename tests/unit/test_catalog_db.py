@@ -54,12 +54,16 @@ def test_initialize_db_creates_current_baseline_schema(tmp_path: Path) -> None:
     }.issubset(table_names)
     assert "collection_protection_mirrors" not in table_names
 
+    collection_columns = {column["name"] for column in inspector.get_columns("collections")}
+    assert "notify_json" in collection_columns
+
     upload_columns = {column["name"] for column in inspector.get_columns("collection_uploads")}
     assert {
         "archive_encryption_state_json",
         "archive_storage_prefix",
         "collection_manifest_bytes_b64",
         "collection_manifest_proof_bytes_b64",
+        "notify_json",
     }.issubset(upload_columns)
 
     archive_columns = {column["name"] for column in inspector.get_columns("collection_archives")}

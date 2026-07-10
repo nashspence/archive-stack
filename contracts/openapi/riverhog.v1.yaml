@@ -1801,6 +1801,17 @@ components:
         sha256:
           type: string
           description: Logical-file SHA-256 digest for final verification.
+    CollectionUploadNotify:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          description: Whether Riverhog should deliver collection lifecycle notifications for this upload.
+        recipients:
+          type: array
+          items:
+            type: string
+          description: Deployment-owned recipient ids resolved through Riverhog notification config.
     CollectionUploadRequest:
       type: object
       required: [slug, files]
@@ -1818,6 +1829,11 @@ components:
             - type: string
             - type: "null"
           description: Descriptive source hint from the client. Never part of collection identity.
+        notify:
+          oneOf:
+            - $ref: "#/components/schemas/CollectionUploadNotify"
+            - type: "null"
+          description: Optional collection lifecycle notification routing metadata.
         files:
           type: array
           minItems: 1
@@ -1840,6 +1856,11 @@ components:
             - type: string
             - type: "null"
           description: Descriptive source hint from the client. Never part of collection identity.
+        notify:
+          oneOf:
+            - $ref: "#/components/schemas/CollectionUploadNotify"
+            - type: "null"
+          description: Optional collection lifecycle notification routing metadata.
     RegisterCollectionUploadSessionFileRequest:
       allOf:
         - $ref: "#/components/schemas/CollectionUploadFile"
@@ -1963,6 +1984,10 @@ components:
         archive_total_parts:
           oneOf:
             - type: integer
+            - type: "null"
+        notify:
+          oneOf:
+            - $ref: "#/components/schemas/CollectionUploadNotify"
             - type: "null"
         files:
           type: array

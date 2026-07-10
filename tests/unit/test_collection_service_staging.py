@@ -632,6 +632,100 @@ def test_incremental_collection_upload_session_requires_explicit_complete(
     assert completed["files_uploaded"] == 1
 
 
+def test_collection_upload_session_persists_notify_targets(
+    tmp_path: Path,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+
+    service = SqlAlchemyCollectionService(
+        _config(sqlite_path),
+        _FakeHotStore(),
+        _StreamingOnlyUploadStore(),
+    )
+
+    opened = service.create_or_resume_upload_session(
+        upload_slug="Photos 2024",
+        ingest_source="/tmp/source",
+        upload_timestamp="20250712T213200Z",
+        notify={"enabled": True, "recipients": ["nash", "katie", "nash"]},
+    )
+
+    assert opened["notify"] == {"enabled": True, "recipients": ["nash", "katie"]}
+
+    resumed = service.create_or_resume_upload_session(
+        upload_slug="Photos 2024",
+        ingest_source="/tmp/source",
+        upload_timestamp="20250712T213200Z",
+    )
+
+    assert resumed["notify"] == {"enabled": True, "recipients": ["nash", "katie"]}
+
+
+def test_collection_upload_session_notify_targets_fan_out_upload_staged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+
+    deliveries: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        "riverhog_core.services.collections.post_webhook",
+        lambda *, config, payload: deliveries.append((config.url, payload)),
+    )
+
+    service = SqlAlchemyCollectionService(
+        _config(
+            sqlite_path,
+            operator_webhook_url="http://example.invalid/operator",
+            notify_webhook_urls={
+                "nash": "http://example.invalid/nash",
+                "katie": "http://example.invalid/katie",
+            },
+        ),
+        _FakeHotStore(),
+        _StreamingOnlyUploadStore(),
+    )
+
+    content = b"hello notify fanout\n"
+    relpath = "albums/day-01.txt"
+    opened = service.create_or_resume_upload_session(
+        upload_slug="Photos 2024",
+        ingest_source="/tmp/source",
+        upload_timestamp="20250712T213200Z",
+        notify={"enabled": True, "recipients": ["nash", "katie"]},
+    )
+    collection_id = str(opened["collection_id"])
+    file_upload = service.create_or_resume_registered_file_upload(
+        collection_id,
+        {
+            "path": relpath,
+            "bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        },
+    )
+    service.append_upload_chunk(
+        collection_id,
+        relpath,
+        offset=int(file_upload["offset"]),
+        checksum=_chunk_checksum(content),
+        content=content,
+    )
+
+    service.complete_upload_session(collection_id)
+
+    assert [url for url, _payload in deliveries] == [
+        "http://example.invalid/nash",
+        "http://example.invalid/katie",
+    ]
+    assert [payload["recipient"] for _url, payload in deliveries] == ["nash", "katie"]
+    assert [payload["event"] for _url, payload in deliveries] == [
+        "collections.upload_staged",
+        "collections.upload_staged",
+    ]
+
+
 def test_collection_upload_session_can_register_file_and_open_upload_in_one_call(
     tmp_path: Path,
 ) -> None:
@@ -1959,6 +2053,84 @@ def test_successful_archive_emits_only_finalized_operator_webhook(
     assert webhook_payloads[0]["collection_id"] == collection_id
     assert webhook_payloads[0]["archive_object_path"].endswith("/archive.tar.age")
     assert webhook_payloads[0]["files_uploaded"] == 1
+
+
+def test_successful_archive_uses_upload_session_notify_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+
+    deliveries: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        "riverhog_core.services.glacier_uploads.post_webhook",
+        lambda *, config, payload: deliveries.append((config.url, payload)),
+    )
+    monkeypatch.setattr(
+        "riverhog_core.services.collections.post_webhook",
+        lambda *, config, payload: None,
+    )
+
+    hot_store = _FakeHotStore()
+    upload_store = _StreamingOnlyUploadStore()
+    archive_store = _CountingArchiveStore()
+    config = _config(
+        sqlite_path,
+        operator_webhook_url="http://example.invalid/operator",
+        notify_webhook_urls={
+            "nash": "http://example.invalid/nash",
+            "katie": "http://example.invalid/katie",
+        },
+    )
+    service = SqlAlchemyCollectionService(config, hot_store, upload_store)
+
+    content = b"hello riverhog notify\n"
+    relpath = "albums/day-01.txt"
+    opened = service.create_or_resume_upload_session(
+        upload_slug="photos 2024",
+        ingest_source="/tmp/source",
+        upload_timestamp="20250712T213200Z",
+        notify={"enabled": True, "recipients": ["nash", "katie"]},
+    )
+    collection_id = str(opened["collection_id"])
+    file_upload = service.create_or_resume_registered_file_upload(
+        collection_id,
+        {
+            "path": relpath,
+            "bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        },
+    )
+    service.append_upload_chunk(
+        collection_id,
+        relpath,
+        offset=int(file_upload["offset"]),
+        checksum=_chunk_checksum(content),
+        content=content,
+    )
+    service.complete_upload_session(collection_id)
+
+    upload_service = SqlAlchemyGlacierUploadService(
+        config,
+        archive_store,
+        hot_store,
+        upload_store,
+        proof_stamper=FixtureProofStamper(),
+        recovery_payload_codec=FixtureRecoveryPayloadCodec(),
+    )
+
+    assert upload_service.process_due_uploads() == 1
+
+    assert [url for url, _payload in deliveries] == [
+        "http://example.invalid/nash",
+        "http://example.invalid/katie",
+    ]
+    assert [payload["recipient"] for _url, payload in deliveries] == ["nash", "katie"]
+    assert [payload["event"] for _url, payload in deliveries] == [
+        "collections.finalized",
+        "collections.finalized",
+    ]
 
 
 def test_finalized_collection_upload_is_idempotent_for_same_slug_and_manifest(

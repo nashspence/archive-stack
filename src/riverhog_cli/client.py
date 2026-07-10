@@ -178,6 +178,7 @@ class ApiClient:
         *,
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
+        notify: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "slug": slug,
@@ -187,6 +188,8 @@ class ApiClient:
             payload["ingest_source"] = ingest_source
         if upload_timestamp is not None:
             payload["upload_timestamp"] = upload_timestamp
+        if notify is not None:
+            payload["notify"] = dict(notify)
         return self._json("POST", "/v1/collection-uploads", json=payload)
 
     def create_or_resume_collection_upload_session(
@@ -195,12 +198,15 @@ class ApiClient:
         *,
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
+        notify: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"slug": slug}
         if ingest_source is not None:
             payload["ingest_source"] = ingest_source
         if upload_timestamp is not None:
             payload["upload_timestamp"] = upload_timestamp
+        if notify is not None:
+            payload["notify"] = dict(notify)
         return self._json("POST", "/v1/collection-upload-sessions", json=payload)
 
     def register_collection_upload_session_file(

@@ -213,6 +213,12 @@ Riverhog/WebDAV. The CLI can therefore exit at the staged handoff while
 operators still receive phone or automation updates for the important handoffs
 without per-part or per-retry noise.
 
+Collection upload requests may include `notify: {enabled, recipients}`. Riverhog
+persists that routing metadata on the upload and finalized collection records,
+then fans out collection lifecycle notifications through `RIVERHOG_NOTIFY_*`
+recipient webhooks. This is generic upload metadata; Riverhog does not need to
+know which client, device, or workflow produced the collection.
+
 This follows Amazon S3's multipart contract: the upload id is required to upload
 parts, list parts, complete, or abort; completion requires part numbers and
 ETags; and uploading the same part number replaces that part. S3 also bills

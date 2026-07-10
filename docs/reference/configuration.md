@@ -470,11 +470,14 @@ already completed encrypted files and finish the same candidate id.
 - type: URL
 - default: unset
 
-Single optional operator notification endpoint. Riverhog posts quiet,
-operator-facing notifications to this endpoint, including collection ingest
-milestones, ready disc-image candidates, persistent archival failures after
-retries, verified-copy labeling handoffs, fetch-required handoffs, and Glacier
-recovery lifecycle notifications.
+Single optional fallback operator notification endpoint. Riverhog posts quiet,
+operator-facing notifications to this endpoint when an event has no explicit
+recipient routing, including collection ingest milestones, ready disc-image
+candidates, persistent archival failures after retries, verified-copy labeling
+handoffs, fetch-required handoffs, and Glacier recovery lifecycle notifications.
+Collection upload requests may also include a generic `notify` object with
+`enabled` and `recipients`; those recipients are persisted with the collection
+upload and used for collection lifecycle events instead of this fallback URL.
 
 The canonical machine-readable event contract is
 [`contracts/webhooks/operator-notifications.v1.json`](../../contracts/webhooks/operator-notifications.v1.json).
@@ -522,8 +525,10 @@ mobile notifications, while unrecoverable failure events such as
 `collections.planner_failed` should be routed as critical alerts.
 Collection payloads include `collection_id`, links back to the collection when
 `RIVERHOG_PUBLIC_BASE_URL` is configured, and event-specific progress such as
-file counts, staged bytes, archive bytes, object path, or failure details. Ready
-image payloads include affected image ids, filenames, download URLs when
+file counts, staged bytes, archive bytes, object path, or failure details. When
+a recipient-routed collection notification is delivered, the payload includes
+the selected `recipient`. Ready image payloads include affected image ids,
+filenames, download URLs when
 `RIVERHOG_PUBLIC_BASE_URL` is configured, and reminder count. Copy-label
 payloads include `image_id`, `copy_id`, the exact `label_text`, and an image
 link when `RIVERHOG_PUBLIC_BASE_URL` is configured. Fetch-wait payloads include
@@ -534,6 +539,33 @@ precise operator guidance so long bulk restores do not read as data loss.
 Riverhog-family durable issue and reminder notifications default to
 time-sensitive urgency. Critical urgency is reserved for imminent money loss,
 imminent data loss, or irreversible custody failure.
+
+## `RIVERHOG_NOTIFY_WEBHOOKS`
+
+- type: JSON object mapping recipient name to URL
+- default: unset
+
+Generic recipient webhook map used for recipient-routed Riverhog notifications.
+Recipient names are opaque deployment-owned identifiers containing only letters,
+digits, dots, underscores, and dashes. Collection upload `notify.recipients`
+values are matched against this map. Missing recipient URLs are logged and do
+not fall back to `RIVERHOG_OPERATOR_WEBHOOK_URL`, because a present `notify`
+object is treated as explicit routing.
+
+Individual recipients may also be configured with
+`RIVERHOG_NOTIFY_WEBHOOK_<RECIPIENT>`, where non-alphanumeric characters in the
+recipient are represented as underscores. The JSON map is preferred when exact
+recipient spelling matters.
+
+## `RIVERHOG_NOTIFY_DEFAULT_RECIPIENTS`
+
+- type: comma-separated recipient names
+- default: unset
+
+Optional default recipient list for Riverhog notifications that do not carry an
+explicit `notify` object. Leave unset when only collection/device-specific
+notifications should fan out by recipient. When this is unset,
+`RIVERHOG_OPERATOR_WEBHOOK_URL` remains the fallback for untargeted events.
 
 ## `RIVERHOG_OPERATOR_WEBHOOK_TIMEOUT`
 

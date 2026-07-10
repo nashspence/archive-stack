@@ -47,16 +47,15 @@ from riverhog_core.recovery_payloads import (
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collections import _collection_upload_target_path
 from riverhog_core.services.glacier_reporting import record_glacier_usage_snapshot
+from riverhog_core.services.notification_routing import (
+    decode_collection_notify_json,
+    post_collection_operator_webhook,
+)
 from riverhog_core.services.planning import (
     cache_collection_manifest_artifacts,
     refresh_provisional_plan,
 )
-from riverhog_core.webhooks import (
-    WebhookConfig,
-    build_collection_lifecycle_payload,
-    post_webhook,
-    utcnow,
-)
+from riverhog_core.webhooks import post_webhook, utcnow
 
 _LOG = logging.getLogger(__name__)
 
@@ -646,9 +645,15 @@ class SqlAlchemyGlacierUploadService:
                 raise RuntimeError(f"collection has unpromoted files: {unpromoted[0]}")
             collection = session.get(CollectionRecord, collection_id)
             if collection is None:
-                collection = CollectionRecord(id=collection_id, ingest_source=upload.ingest_source)
+                collection = CollectionRecord(
+                    id=collection_id,
+                    ingest_source=upload.ingest_source,
+                    notify_json=upload.notify_json,
+                )
                 session.add(collection)
                 session.flush()
+            elif not collection.notify_json and upload.notify_json:
+                collection.notify_json = upload.notify_json
             existing_paths = {file_record.path for file_record in collection.files}
             for path, _bytes, sha256, _target_path in upload_files:
                 if path in existing_paths:
@@ -772,24 +777,25 @@ class SqlAlchemyGlacierUploadService:
         collection_id: str,
         details: dict[str, object] | None = None,
     ) -> None:
-        if not self._config.operator_webhook_url:
-            return
-        try:
-            webhook_config = WebhookConfig(
-                url=self._config.operator_webhook_url,
-                base_url=self._config.public_base_url or "",
-                timeout_seconds=self._config.operator_webhook_timeout.total_seconds(),
-            )
-            payload = build_collection_lifecycle_payload(
-                config=webhook_config,
-                event=event,
-                collection_id=collection_id,
-                delivered_at=utcnow(),
-                details=details,
-            )
-            post_webhook(config=webhook_config, payload=payload)
-        except Exception:
-            _LOG.warning("failed to deliver %s webhook for %s", event, collection_id, exc_info=True)
+        post_collection_operator_webhook(
+            config=self._config,
+            event=event,
+            collection_id=collection_id,
+            details=details,
+            notify=self._collection_notify_config(collection_id),
+            post=post_webhook,
+            log=_LOG,
+        )
+
+    def _collection_notify_config(self, collection_id: str) -> dict[str, object] | None:
+        with session_scope(self._session_factory) as session:
+            upload = session.get(CollectionUploadRecord, collection_id)
+            if upload is not None:
+                raw = upload.notify_json
+            else:
+                collection = session.get(CollectionRecord, collection_id)
+                raw = collection.notify_json if collection is not None else None
+        return decode_collection_notify_json(raw, log=_LOG)
 
     def _record_collection_failure(
         self,

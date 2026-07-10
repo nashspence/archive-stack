@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -112,6 +113,74 @@ def _parse_choice(value: str, *, name: str, allowed: set[str]) -> str:
     return normalized
 
 
+_RECIPIENT_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
+
+
+def _normalize_notify_recipient(value: str, *, name: str) -> str:
+    recipient = value.strip()
+    if not recipient:
+        raise ValueError(f"{name} must not contain blank recipients")
+    if any(ch not in _RECIPIENT_NAME_CHARS for ch in recipient):
+        raise ValueError(
+            f"{name} recipients may contain only letters, digits, dots, underscores, and dashes"
+        )
+    return recipient
+
+
+def _parse_recipient_list(value: str, *, name: str) -> tuple[str, ...]:
+    recipients: list[str] = []
+    for raw in value.split(","):
+        if not raw.strip():
+            continue
+        recipient = _normalize_notify_recipient(raw, name=name)
+        if recipient not in recipients:
+            recipients.append(recipient)
+    return tuple(recipients)
+
+
+def _env_recipient_suffix(recipient: str) -> str:
+    return "".join(ch.upper() if ch.isalnum() else "_" for ch in recipient)
+
+
+def _parse_notify_webhook_map(values: Mapping[str, str]) -> dict[str, str]:
+    import json
+
+    webhooks: dict[str, str] = {}
+    raw = values.get("RIVERHOG_NOTIFY_WEBHOOKS", "").strip()
+    if raw:
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError("RIVERHOG_NOTIFY_WEBHOOKS must be a JSON object") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("RIVERHOG_NOTIFY_WEBHOOKS must be a JSON object")
+        for raw_recipient, raw_url in payload.items():
+            recipient = _normalize_notify_recipient(
+                str(raw_recipient),
+                name="RIVERHOG_NOTIFY_WEBHOOKS",
+            )
+            if not isinstance(raw_url, str) or not raw_url.strip():
+                raise ValueError("RIVERHOG_NOTIFY_WEBHOOKS values must be non-empty URLs")
+            webhooks[recipient] = raw_url.strip()
+
+    prefix = "RIVERHOG_NOTIFY_WEBHOOK_"
+    for key, raw_url in values.items():
+        if not key.startswith(prefix) or key == "RIVERHOG_NOTIFY_WEBHOOKS":
+            continue
+        suffix = key[len(prefix) :]
+        if not suffix:
+            continue
+        env_recipient = suffix.lower().replace("_", "-")
+        recipient = next(
+            (name for name in webhooks if _env_recipient_suffix(name) == suffix),
+            env_recipient,
+        )
+        recipient = _normalize_notify_recipient(recipient, name=key)
+        if raw_url.strip():
+            webhooks[recipient] = raw_url.strip()
+    return webhooks
+
+
 def _normalize_prefix(value: str) -> str:
     parts = [part for part in value.strip().strip("/").split("/") if part]
     if not parts:
@@ -171,6 +240,8 @@ class RuntimeConfig:
     glacier_upload_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=5))
     glacier_upload_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
     operator_webhook_url: str | None = None
+    notify_webhook_urls: Mapping[str, str] = field(default_factory=dict)
+    notify_default_recipients: tuple[str, ...] = ()
     operator_webhook_timeout: timedelta = field(default_factory=lambda: timedelta(seconds=5))
     operator_webhook_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=1))
     operator_webhook_reminder_interval: timedelta = field(
@@ -241,15 +312,33 @@ class RuntimeConfig:
                 "RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE to be explicitly set to a "
                 "non-development secret"
             )
-        if self.operator_webhook_url:
+        if self.operator_webhook_url or self.notify_webhook_urls:
             minimum_ready_ttl = self.operator_webhook_timeout + self.operator_webhook_retry_delay
             if self.glacier_recovery_ready_ttl < minimum_ready_ttl:
                 raise ValueError(
                     "invalid operator webhook timing: "
                     "RIVERHOG_GLACIER_RECOVERY_READY_TTL must be at least the outbound webhook "
-                    "timeout plus RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY when "
-                    "RIVERHOG_OPERATOR_WEBHOOK_URL is configured"
+                    "timeout plus RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY when operator "
+                    "notifications are configured"
                 )
+        normalized_webhooks: dict[str, str] = {}
+        for recipient, url in self.notify_webhook_urls.items():
+            normalized_recipient = _normalize_notify_recipient(
+                str(recipient),
+                name="RIVERHOG_NOTIFY_WEBHOOKS",
+            )
+            if not str(url).strip():
+                raise ValueError("RIVERHOG_NOTIFY_WEBHOOKS values must be non-empty URLs")
+            normalized_webhooks[normalized_recipient] = str(url).strip()
+        object.__setattr__(self, "notify_webhook_urls", normalized_webhooks)
+        object.__setattr__(
+            self,
+            "notify_default_recipients",
+            _parse_recipient_list(
+                ",".join(self.notify_default_recipients),
+                name="notify_default_recipients",
+            ),
+        )
         object.__setattr__(
             self,
             "operator_webhook_reminder_time",
@@ -364,6 +453,11 @@ def load_runtime_config() -> RuntimeConfig:
         os.getenv("RIVERHOG_GLACIER_UPLOAD_SWEEP_INTERVAL", "30s")
     )
     operator_webhook_url = os.getenv("RIVERHOG_OPERATOR_WEBHOOK_URL", "").strip() or None
+    notify_webhook_urls = _parse_notify_webhook_map(os.environ)
+    notify_default_recipients = _parse_recipient_list(
+        os.getenv("RIVERHOG_NOTIFY_DEFAULT_RECIPIENTS", ""),
+        name="RIVERHOG_NOTIFY_DEFAULT_RECIPIENTS",
+    )
     operator_webhook_timeout = _parse_duration(os.getenv("RIVERHOG_OPERATOR_WEBHOOK_TIMEOUT", "5s"))
     operator_webhook_retry_delay = _parse_duration(
         os.getenv("RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY", "60s")
@@ -575,6 +669,8 @@ def load_runtime_config() -> RuntimeConfig:
         glacier_upload_retry_delay=glacier_retry_delay,
         glacier_upload_sweep_interval=glacier_upload_sweep_interval,
         operator_webhook_url=operator_webhook_url,
+        notify_webhook_urls=notify_webhook_urls,
+        notify_default_recipients=notify_default_recipients,
         operator_webhook_timeout=operator_webhook_timeout,
         operator_webhook_retry_delay=operator_webhook_retry_delay,
         operator_webhook_reminder_interval=operator_webhook_reminder_interval,

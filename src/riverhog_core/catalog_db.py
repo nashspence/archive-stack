@@ -309,6 +309,16 @@ def _ensure_schema_indexes(engine: Engine) -> None:
 def _ensure_schema_columns(engine: Engine) -> None:
     inspector = inspect(engine)
     table_names = set(inspector.get_table_names())
+    if "collections" in table_names:
+        collection_columns = {column["name"] for column in inspector.get_columns("collections")}
+        if "notify_json" not in collection_columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE collections ADD COLUMN notify_json TEXT"))
+    if "collection_uploads" in table_names:
+        upload_columns = {column["name"] for column in inspector.get_columns("collection_uploads")}
+        if "notify_json" not in upload_columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE collection_uploads ADD COLUMN notify_json TEXT"))
     if "glacier_recovery_sessions" not in table_names:
         return
     recovery_columns = {

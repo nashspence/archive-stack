@@ -365,8 +365,9 @@ class _StubCollectionUploads:
         upload_slug: str,
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
+        notify: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        _ = upload_slug, ingest_source, upload_timestamp
+        _ = upload_slug, ingest_source, upload_timestamp, notify
         return _stub_collection_upload_payload(state="open")
 
     def register_upload_session_file(

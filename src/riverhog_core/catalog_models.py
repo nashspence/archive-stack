@@ -11,6 +11,7 @@ class CollectionRecord(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    notify_json: Mapped[str | None] = mapped_column(String, nullable=True)
     files: Mapped[list[CollectionFileRecord]] = relationship(
         back_populates="collection",
         cascade="all, delete-orphan",
@@ -764,6 +765,7 @@ class CollectionUploadRecord(Base):
     collection_id: Mapped[str] = mapped_column(String, primary_key=True)
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
     state: Mapped[str | None] = mapped_column(String, default="uploading", nullable=True)
+    notify_json: Mapped[str | None] = mapped_column(String, nullable=True)
     opened_at: Mapped[str | None] = mapped_column(String, nullable=True)
     last_activity_at: Mapped[str | None] = mapped_column(String, nullable=True)
     closed_at: Mapped[str | None] = mapped_column(String, nullable=True)
