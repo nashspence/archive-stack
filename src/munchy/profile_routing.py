@@ -2069,7 +2069,15 @@ def boolish_value(value: Any) -> bool:
 
 
 def camera_direction(*values: Any) -> str:
-    text = " ".join(str(value or "").lower() for value in values)
+    for value in values:
+        direction = camera_direction_from_text(value)
+        if direction:
+            return direction
+    return ""
+
+
+def camera_direction_from_text(value: Any) -> str:
+    text = str(value or "").lower()
     if "front" in text or "selfie" in text:
         return "front"
     if "back" in text or "rear" in text or "wide" in text or "tele" in text:

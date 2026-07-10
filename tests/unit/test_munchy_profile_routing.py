@@ -846,6 +846,30 @@ def test_routing_exiftool_summary_exposes_generic_camera_fields() -> None:
     assert facts["exif.rotation"] == 180
 
 
+def test_routing_exiftool_camera_direction_prefers_lens_over_camera_type() -> None:
+    rear_facts = routing_file_facts(
+        "phone/IMG_0001.JPG",
+        exiftool_summary=routing_exiftool_summary(
+            {
+                "ExifIFD:LensModel": "iPhone SE back camera 3.99mm f/1.8",
+                "Apple:CameraType": "Front",
+            }
+        ),
+    )
+    front_facts = routing_file_facts(
+        "phone/IMG_0002.JPG",
+        exiftool_summary=routing_exiftool_summary(
+            {
+                "ExifIFD:LensModel": "iPhone SE front camera 2.87mm f/2.2",
+                "Apple:CameraType": "Back Wide Angle",
+            }
+        ),
+    )
+
+    assert rear_facts["exif.camera_direction"] == "rear"
+    assert front_facts["exif.camera_direction"] == "front"
+
+
 def test_exiftool_routing_facts_applies_configured_name_value_extractor() -> None:
     facts = exiftool_routing_facts(
         routing_exiftool_summary(
