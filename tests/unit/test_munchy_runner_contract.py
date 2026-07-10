@@ -311,6 +311,69 @@ def test_create_job_request_accepts_profile_routing_extra_exiftool_tags(
     assert routing["extra_exiftool_tags"] == ["AndroidCaptureFPS", "AndroidMake"]
 
 
+def test_create_job_request_accepts_sidecar_fact_extractors(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+
+    req = runner.CreateJobRequest(
+        collection_slug="camera-collection-archive",
+        workflow_mode="collection_archive",
+        groups={
+            "video": {
+                "archive_mode": "av1_nvenc",
+                "tasks": ["archive_video"],
+            },
+        },
+        profile_routing={
+            "sidecars": [
+                {
+                    "id": "camera_xml",
+                    "format": "xml",
+                    "path": "{parent}/{stem}M01.XML",
+                    "primary": {"path": {"suffix": ".mp4"}},
+                    "facts": {
+                        "source": "exiftool",
+                        "tags": ["VendorGroup", "VendorFieldName", "VendorFieldValue"],
+                        "extractors": [
+                            {
+                                "type": "name_value",
+                                "name_tag": "VendorFieldName",
+                                "value_tag": "VendorFieldValue",
+                                "requires": [{"tag": "VendorGroup", "contains": "Gps"}],
+                                "fields": {"Latitude": "exif.gps_latitude"},
+                            }
+                        ],
+                    },
+                }
+            ],
+            "routes": [
+                {
+                    "id": "sidecar-camera-video",
+                    "group": "video",
+                    "when": {
+                        "fact": "sidecars.camera_xml.facts.exif.gps_latitude",
+                        "exists": True,
+                    },
+                }
+            ],
+        },
+    )
+
+    routing = req.profile_routing.model_dump(exclude_none=True)
+
+    assert routing["sidecars"][0]["facts"]["extractors"] == [
+        {
+            "type": "name_value",
+            "name_tag": "VendorFieldName",
+            "value_tag": "VendorFieldValue",
+            "requires": [{"tag": "VendorGroup", "contains": "Gps"}],
+            "fields": {"Latitude": "exif.gps_latitude"},
+        }
+    ]
+
+
 def test_completed_structured_file_routes_by_path_without_full_upload(
     tmp_path: Path,
     monkeypatch,

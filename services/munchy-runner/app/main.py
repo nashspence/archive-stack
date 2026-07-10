@@ -1032,7 +1032,7 @@ class ProfileRoutingConfig(BaseModel):
             if facts is not None:
                 if not isinstance(facts, Mapping):
                     raise ValueError(f"profile_routing.sidecars[{index}].facts must be a table")
-                unknown_fact_keys = sorted(set(facts) - {"source", "tags"})
+                unknown_fact_keys = sorted(set(facts) - {"source", "tags", "extractors"})
                 if unknown_fact_keys:
                     raise ValueError(
                         f"profile_routing.sidecars[{index}].facts has unknown key(s): "
@@ -1054,6 +1054,13 @@ class ProfileRoutingConfig(BaseModel):
                     )
                 for tag in tags:
                     normalize_exiftool_tag(tag)
+                extractors = facts.get("extractors")
+                if extractors is not None:
+                    if not isinstance(extractors, list):
+                        raise ValueError(
+                            f"profile_routing.sidecars[{index}].facts.extractors must be a list"
+                        )
+                    sidecar_rule_fact_extractors(sidecar)
             for key in ("primary", "sidecar"):
                 predicate = sidecar.get(key)
                 if predicate is None:
