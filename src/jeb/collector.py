@@ -55,6 +55,7 @@ from riverhog_core.operator_reminders import (
     operator_reminder_due,
     reminder_zone,
 )
+from riverhog_core.runtime_config import parse_notify_webhook_map
 from riverhog_core.webhooks import (
     WebhookConfig,
     build_jeb_event_payload,
@@ -254,6 +255,7 @@ class NotifySettings:
     enabled: bool = False
     url: str = ""
     base_url: str = ""
+    webhook_urls: Mapping[str, str] = field(default_factory=dict)
     recipients: tuple[str, ...] = ()
     timeout_seconds: float = 10.0
     reminder_interval_seconds: int = 86_400
@@ -286,6 +288,7 @@ class CollectionConfig:
     enabled: bool
     collection_slug: str
     target: str
+    notify: Mapping[str, Any]
     threshold_bytes: int
     cleanup: Literal["never", "after_target_success"]
     source_ids: tuple[str, ...]
@@ -322,6 +325,7 @@ class Notifier(Protocol):
         batch: Mapping[str, Any],
         message: str,
         component: str,
+        notify: Mapping[str, Any] | None = None,
     ) -> bool: ...
 
     def enrollment_issue(
@@ -330,6 +334,7 @@ class Notifier(Protocol):
         batch: Mapping[str, Any],
         message: str,
         component: str,
+        notify: Mapping[str, Any] | None = None,
     ) -> bool: ...
 
 
@@ -340,7 +345,9 @@ class NullNotifier:
         batch: Mapping[str, Any],
         message: str,
         component: str,
+        notify: Mapping[str, Any] | None = None,
     ) -> bool:
+        _ = notify
         return True
 
     def enrollment_issue(
@@ -349,7 +356,9 @@ class NullNotifier:
         batch: Mapping[str, Any],
         message: str,
         component: str,
+        notify: Mapping[str, Any] | None = None,
     ) -> bool:
+        _ = notify
         return True
 
 
@@ -363,6 +372,7 @@ class WebhookNotifier:
         batch: Mapping[str, Any],
         message: str,
         component: str,
+        notify: Mapping[str, Any] | None = None,
     ) -> bool:
         return self.issue(
             batch=batch,
@@ -370,6 +380,7 @@ class WebhookNotifier:
             component=component,
             severity="critical",
             log_label="critical jeb webhook",
+            notify=notify,
         )
 
     def enrollment_issue(
@@ -378,6 +389,7 @@ class WebhookNotifier:
         batch: Mapping[str, Any],
         message: str,
         component: str,
+        notify: Mapping[str, Any] | None = None,
     ) -> bool:
         return self.issue(
             batch=batch,
@@ -385,6 +397,7 @@ class WebhookNotifier:
             component=component,
             severity="warning",
             log_label="enrollment jeb webhook",
+            notify=notify,
         )
 
     def issue(
@@ -395,18 +408,35 @@ class WebhookNotifier:
         component: str,
         severity: str,
         log_label: str,
+        notify: Mapping[str, Any] | None = None,
     ) -> bool:
-        if not self.settings.enabled:
-            return True
-        config = WebhookConfig(
-            url=self.settings.url,
-            base_url=self.settings.base_url,
-            timeout_seconds=self.settings.timeout_seconds,
-        )
-        recipients: Sequence[str | None] = self.settings.recipients or (None,)
+        if notify is None:
+            if not self.settings.enabled:
+                return True
+            recipients: Sequence[str | None] = self.settings.recipients or (None,)
+        else:
+            if not bool(notify.get("enabled", True)):
+                return True
+            recipients = tuple(str(item) for item in sequence(notify.get("recipients"))) or (
+                None,
+            )
         delivered_at = utcnow()
         ok = True
         for recipient in recipients:
+            url = (
+                self.settings.url
+                if recipient is None
+                else self.settings.webhook_urls.get(recipient)
+            )
+            if not url:
+                LOG.warning("Jeb notification recipient %s has no configured webhook", recipient)
+                ok = False
+                continue
+            config = WebhookConfig(
+                url=url,
+                base_url=self.settings.base_url,
+                timeout_seconds=self.settings.timeout_seconds,
+            )
             payload = build_jeb_event_payload(
                 event="jeb.issue",
                 batch=batch,
@@ -1451,6 +1481,7 @@ class Collector:
             batch=batch,
             message=str(row_payload["message"]),
             component=component,
+            notify=self.collection_by_id(str(row_payload["collection_id"])).notify,
         ):
             return False
         now_text = iso()
@@ -2150,6 +2181,7 @@ class Collector:
             batch=batch_payload,
             message=message,
             component=component,
+            notify=self.collection_by_id(str(batch_payload["collection_id"])).notify,
         ):
             return False
         self.set_batch_fields(
@@ -2221,6 +2253,7 @@ def munchy_upload_request(
     target: TargetConfig,
 ) -> RunnerUploadRequest:
     batch = collector.load_batch(batch_id)
+    collection = collector.collection_by_id(str(batch["collection_id"]))
     rows = collector.batch_files(batch_id)
     files = tuple(
         RunnerInputFile(
@@ -2250,7 +2283,7 @@ def munchy_upload_request(
             collector.config.munchy_job_defaults.get("collection_archive")
             or {"destination": "riverhog"}
         ),
-        "notify": dict(collector.config.munchy_job_defaults.get("notify") or {}),
+        "notify": dict(collection.notify),
         "cleanup_local_on_success": bool(
             collector.config.munchy_job_defaults.get("cleanup_local_on_success", False)
         ),
@@ -2596,6 +2629,7 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
         enabled=env_bool(values, "JEB_NOTIFY_ENABLED", False),
         url=notify_url or "",
         base_url=env_value_from(values, "JEB_NOTIFY_BASE_URL", "") or "",
+        webhook_urls=parse_notify_webhook_map(values),
         recipients=env_csv(values, "JEB_NOTIFY_RECIPIENTS"),
         timeout_seconds=float(parse_duration(env_value_from(values, "JEB_NOTIFY_TIMEOUT"), 10)),
         reminder_interval_seconds=parse_duration(
@@ -2605,8 +2639,11 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
         reminder_time=reminder_time,
         reminder_timezone=reminder_timezone,
     )
-    if notify.enabled and not notify.url:
-        raise ValueError("RIVERHOG_OPERATOR_WEBHOOK_URL is required when JEB_NOTIFY_ENABLED=true")
+    if notify.enabled and not (notify.url or notify.webhook_urls):
+        raise ValueError(
+            "RIVERHOG_OPERATOR_WEBHOOK_URL or RIVERHOG_NOTIFY_WEBHOOKS is required "
+            "when JEB_NOTIFY_ENABLED=true"
+        )
 
     target = TargetConfig(
         name="munchy",
@@ -2676,6 +2713,21 @@ def collection_from_account(account: str, env: Mapping[str, str]) -> CollectionC
         env_name="JEB_CADENCE",
     )
     account_cadence_env = f"JEB_ACCOUNT_{account_env_name(account)}_CADENCE"
+    account_notify_enabled_env = f"JEB_ACCOUNT_{account_env_name(account)}_NOTIFY_ENABLED"
+    account_notify_recipients_env = f"JEB_ACCOUNT_{account_env_name(account)}_NOTIFY_RECIPIENTS"
+    notify_enabled = env_bool(
+        env,
+        account_notify_enabled_env,
+        env_bool(env, "JEB_NOTIFY_ENABLED", False),
+    )
+    notify_recipients = env_csv(
+        env,
+        account_notify_recipients_env,
+        env_csv(env, "JEB_NOTIFY_RECIPIENTS"),
+    )
+    notify: dict[str, Any] = {"enabled": notify_enabled}
+    if notify_recipients:
+        notify["recipients"] = list(notify_recipients)
     cadence = parse_cadence(
         env_value_from(env, account_cadence_env, default_cadence),
         env_name=account_cadence_env,
@@ -2691,6 +2743,7 @@ def collection_from_account(account: str, env: Mapping[str, str]) -> CollectionC
         enabled=True,
         collection_slug=account,
         target="munchy",
+        notify=notify,
         threshold_bytes=parse_size(env_value_from(env, "JEB_THRESHOLD", "0B")),
         cleanup=cast(Literal["never", "after_target_success"], cleanup),
         source_ids=(account,),

@@ -12,6 +12,8 @@ import jeb.collector as collector_module
 from jeb.collector import (
     Collector,
     EligibleFile,
+    NotifySettings,
+    WebhookNotifier,
     config_from_env,
     munchy_upload_request,
     parse_duration,
@@ -50,6 +52,47 @@ class CompleteRunner:
     def advance(self, collector: Collector, batch_id: str) -> None:
         self.calls += 1
         collector.set_batch_state(batch_id, "target_complete")
+
+
+@dataclass
+class RecordingNotifier:
+    calls: list[dict[str, object]]
+
+    def critical_batch_issue(
+        self,
+        *,
+        batch,
+        message,
+        component,
+        notify=None,
+    ) -> bool:
+        self.calls.append(
+            {
+                "batch": dict(batch),
+                "message": message,
+                "component": component,
+                "notify": dict(notify or {}),
+            }
+        )
+        return True
+
+    def enrollment_issue(
+        self,
+        *,
+        batch,
+        message,
+        component,
+        notify=None,
+    ) -> bool:
+        self.calls.append(
+            {
+                "batch": dict(batch),
+                "message": message,
+                "component": component,
+                "notify": dict(notify or {}),
+            }
+        )
+        return True
 
 
 def test_parse_helpers_support_human_units() -> None:
@@ -92,6 +135,41 @@ def test_env_config_supports_per_account_cadence(tmp_path: Path) -> None:
         "seasonal",
         "manual",
     ]
+
+
+def test_env_config_supports_per_account_munchy_notify(tmp_path: Path) -> None:
+    env = {
+        **env_for(tmp_path, accounts="front-door,phone"),
+        "JEB_NOTIFY_ENABLED": "true",
+        "JEB_NOTIFY_RECIPIENTS": "nash",
+        "JEB_ACCOUNT_FRONT_DOOR_NOTIFY_RECIPIENTS": "nash,katie",
+        "JEB_ACCOUNT_PHONE_NOTIFY_ENABLED": "false",
+        "RIVERHOG_OPERATOR_WEBHOOK_URL": "http://webhook.test",
+    }
+
+    config = config_from_env(env)
+
+    assert [collection.notify for collection in config.collections] == [
+        {"enabled": True, "recipients": ["nash", "katie"]},
+        {"enabled": False, "recipients": ["nash"]},
+    ]
+    assert config.notify.webhook_urls == {}
+
+
+def test_env_config_loads_named_notify_webhook_map(tmp_path: Path) -> None:
+    config = config_from_env(
+        {
+            **env_for(tmp_path, accounts="camera"),
+            "JEB_NOTIFY_ENABLED": "true",
+            "JEB_NOTIFY_RECIPIENTS": "nash,katie",
+            "RIVERHOG_NOTIFY_WEBHOOKS": '{"nash":"http://nash.test","katie":"http://katie.test"}',
+        }
+    )
+
+    assert config.notify.webhook_urls == {
+        "nash": "http://nash.test",
+        "katie": "http://katie.test",
+    }
 
 
 def test_env_config_rejects_invalid_cadence(tmp_path: Path) -> None:
@@ -198,7 +276,15 @@ def test_seasonal_cadence_uses_first_scheduled_run_after_custom_season_boundary(
 
 
 def test_munchy_payload_uses_account_group_paths_without_routing(tmp_path: Path) -> None:
-    config = config_from_env(env_for(tmp_path, accounts="camera"))
+    config = config_from_env(
+        {
+            **env_for(tmp_path, accounts="camera"),
+            "JEB_NOTIFY_ENABLED": "true",
+            "JEB_NOTIFY_RECIPIENTS": "nash",
+            "JEB_ACCOUNT_CAMERA_NOTIFY_RECIPIENTS": "nash,katie",
+            "RIVERHOG_OPERATOR_WEBHOOK_URL": "http://webhook.test",
+        }
+    )
     write_stable_file(tmp_path / "landing" / "camera" / "clip.txt")
     collector = Collector(config)
     collector.init_db()
@@ -219,7 +305,150 @@ def test_munchy_payload_uses_account_group_paths_without_routing(tmp_path: Path)
     assert request.job_payload["collection_slug"] == "camera"
     assert request.job_payload["tasks"] == ["archive_video"]
     assert request.job_payload["groups"] == {}
+    assert request.job_payload["notify"] == {"enabled": True, "recipients": ["nash", "katie"]}
     assert "profile_routing" not in request.job_payload
+
+
+def test_jeb_batch_alerts_use_account_notify_recipients(tmp_path: Path) -> None:
+    config = config_from_env(
+        {
+            **env_for(tmp_path, accounts="camera"),
+            "JEB_NOTIFY_ENABLED": "true",
+            "JEB_NOTIFY_RECIPIENTS": "nash",
+            "JEB_ACCOUNT_CAMERA_NOTIFY_RECIPIENTS": "nash,katie",
+            "RIVERHOG_OPERATOR_WEBHOOK_URL": "http://webhook.test",
+        }
+    )
+    write_stable_file(tmp_path / "landing" / "camera" / "clip.txt")
+    notifier = RecordingNotifier(calls=[])
+    collector = Collector(config, notifier=notifier)
+    collector.init_db()
+    batch_id = collector.archive_now(source_id="camera", process=False)
+    assert batch_id is not None
+    collector.set_batch_state(batch_id, "failed", "target failed")
+
+    collector.notify_failed_batch(batch_id)
+
+    assert notifier.calls[0]["notify"] == {"enabled": True, "recipients": ["nash", "katie"]}
+
+
+def test_jeb_routing_preflight_alerts_use_account_notify_recipients(tmp_path: Path) -> None:
+    config = config_from_env(
+        {
+            **env_for(tmp_path, accounts="camera"),
+            "JEB_NOTIFY_ENABLED": "true",
+            "JEB_NOTIFY_RECIPIENTS": "nash",
+            "JEB_ACCOUNT_CAMERA_NOTIFY_RECIPIENTS": "nash,katie",
+            "RIVERHOG_OPERATOR_WEBHOOK_URL": "http://webhook.test",
+        }
+    )
+    notifier = RecordingNotifier(calls=[])
+    collector = Collector(config, notifier=notifier)
+    collector.init_db()
+    source = config.sources[0]
+    collection = config.collections[0]
+    file = EligibleFile(
+        path=source.path / "clip.txt",
+        rel=Path("clip.txt"),
+        target_path="camera/clip.txt",
+        bytes=4,
+        mtime=1.0,
+        mtime_ns=1,
+    )
+    collector.store_routing_preflight_failure(
+        collection=collection,
+        source=source,
+        files=[file],
+        failure_kind="profile_routing",
+        failure_payload={"ok": False},
+        fingerprint_payload={"source_id": "camera", "error": "no route"},
+        message="no route",
+        file_count=1,
+        total_bytes=4,
+        unmatched_count=1,
+    )
+
+    collector.notify_routing_preflight_failures(source_id="camera")
+
+    assert notifier.calls[0]["notify"] == {"enabled": True, "recipients": ["nash", "katie"]}
+
+
+def test_jeb_webhook_notifier_routes_named_recipients_to_webhook_map(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    def fake_post_webhook(*, config, payload):
+        calls.append((config.url, payload.get("recipient")))
+
+    monkeypatch.setattr(collector_module, "post_webhook", fake_post_webhook)
+    notifier = WebhookNotifier(
+        NotifySettings(
+            enabled=True,
+            webhook_urls={
+                "nash": "http://nash.test",
+                "katie": "http://katie.test",
+            },
+        )
+    )
+
+    ok = notifier.critical_batch_issue(
+        batch={
+            "id": "batch-1",
+            "source_id": "camera",
+            "target_name": "munchy",
+            "target_type": "munchy",
+            "collection_slug": "camera",
+            "collection_timestamp": "2026-07-10T00:00:00Z",
+            "state": "failed",
+        },
+        message="target failed",
+        component="target",
+        notify={"enabled": True, "recipients": ["nash", "katie"]},
+    )
+
+    assert ok
+    assert calls == [
+        ("http://nash.test", "nash"),
+        ("http://katie.test", "katie"),
+    ]
+
+
+def test_jeb_webhook_notifier_does_not_fallback_for_missing_named_recipient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_post_webhook(*, config, payload):
+        _ = payload
+        calls.append(config.url)
+
+    monkeypatch.setattr(collector_module, "post_webhook", fake_post_webhook)
+    notifier = WebhookNotifier(
+        NotifySettings(
+            enabled=True,
+            url="http://operator.test",
+            webhook_urls={"nash": "http://nash.test"},
+        )
+    )
+
+    ok = notifier.critical_batch_issue(
+        batch={
+            "id": "batch-1",
+            "source_id": "camera",
+            "target_name": "munchy",
+            "target_type": "munchy",
+            "collection_slug": "camera",
+            "collection_timestamp": "2026-07-10T00:00:00Z",
+            "state": "failed",
+        },
+        message="target failed",
+        component="target",
+        notify={"enabled": True, "recipients": ["katie"]},
+    )
+
+    assert not ok
+    assert calls == []
 
 
 def test_jeb_routing_preflight_collects_primary_facts_after_sidecar_facts(

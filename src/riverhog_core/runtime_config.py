@@ -142,7 +142,7 @@ def _env_recipient_suffix(recipient: str) -> str:
     return "".join(ch.upper() if ch.isalnum() else "_" for ch in recipient)
 
 
-def _parse_notify_webhook_map(values: Mapping[str, str]) -> dict[str, str]:
+def parse_notify_webhook_map(values: Mapping[str, str]) -> dict[str, str]:
     import json
 
     webhooks: dict[str, str] = {}
@@ -453,7 +453,7 @@ def load_runtime_config() -> RuntimeConfig:
         os.getenv("RIVERHOG_GLACIER_UPLOAD_SWEEP_INTERVAL", "30s")
     )
     operator_webhook_url = os.getenv("RIVERHOG_OPERATOR_WEBHOOK_URL", "").strip() or None
-    notify_webhook_urls = _parse_notify_webhook_map(os.environ)
+    notify_webhook_urls = parse_notify_webhook_map(os.environ)
     notify_default_recipients = _parse_recipient_list(
         os.getenv("RIVERHOG_NOTIFY_DEFAULT_RECIPIENTS", ""),
         name="RIVERHOG_NOTIFY_DEFAULT_RECIPIENTS",
