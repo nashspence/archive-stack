@@ -519,6 +519,7 @@ groups:
   preserve:
     archive_mode: preserve
     tasks: []
+    metadata_projection: false
 """.strip(),
         encoding="utf-8",
     )
@@ -584,6 +585,7 @@ groups:
         "device": {"make": "Example", "model": "Camera"},
         "tags": ["device/camera"],
     }
+    assert request.job_payload["groups"]["preserve"]["metadata_projection"] is False
     assert seen["requested_containers"] == ["webm"]
 
 

@@ -255,6 +255,26 @@ def test_create_job_request_accepts_full_metadata_projection_config(
     assert projection["include_context_tags"] is False
 
 
+def test_create_job_request_accepts_disabled_group_metadata_projection(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+
+    req = runner.CreateJobRequest(
+        collection_slug="camera-collection-archive",
+        workflow_mode="collection_archive",
+        groups={
+            "device-state": {
+                "archive_mode": "preserve",
+                "metadata_projection": False,
+            },
+        },
+    )
+
+    assert runner.profile_group_dump(req.groups["device-state"])["metadata_projection"] is False
+
+
 def test_create_job_request_accepts_profile_routing_extra_exiftool_tags(
     tmp_path: Path,
     monkeypatch,

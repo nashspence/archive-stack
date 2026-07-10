@@ -756,6 +756,9 @@ class MetadataProjectionConfig(BaseModel):
         )
 
 
+MetadataProjectionSetting = MetadataProjectionConfig | Literal[False]
+
+
 def validate_metadata_sources(
     value: list[dict[str, Any]] | None,
     *,
@@ -781,9 +784,7 @@ class ProfileGroupConfig(BaseModel):
     archive_mode: ArchiveMode = "av1_nvenc"
     tasks: list[TaskName] = Field(default_factory=default_tasks)
     encode_profile: EncodeProfile | None = None
-    metadata_projection: MetadataProjectionConfig = Field(
-        default_factory=MetadataProjectionConfig
-    )
+    metadata_projection: MetadataProjectionSetting = Field(default_factory=MetadataProjectionConfig)
 
     @field_validator("tasks")
     @classmethod
@@ -3498,12 +3499,17 @@ def profile_group_dump(group: ProfileGroupConfig) -> dict[str, Any]:
     encode_profile = (
         group.encode_profile.runner_payload() if group.encode_profile is not None else None
     )
+    metadata_projection: bool | dict[str, Any]
+    if group.metadata_projection is False:
+        metadata_projection = False
+    else:
+        metadata_projection = group.metadata_projection.model_dump(exclude_none=True)
     return {
         "archive_mode": group.archive_mode,
         "tasks": group.tasks,
         "profile": profile_name_for(encode_profile),
         "encode_profile": encode_profile,
-        "metadata_projection": group.metadata_projection.model_dump(exclude_none=True),
+        "metadata_projection": metadata_projection,
     }
 
 
