@@ -2927,6 +2927,25 @@ def test_notification_defaults_come_from_runner_environment(
     assert capabilities["notify"]["default_recipients"] == ["operator"]
 
 
+def test_riverhog_collection_notify_omits_runner_event_filters(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+
+    notify = runner.riverhog_collection_notify_config(
+        {
+            "notify": {
+                "enabled": True,
+                "recipients": ["nash", "katie"],
+                "events": ["job.succeeded", "job.issue"],
+            }
+        }
+    )
+
+    assert notify == {"enabled": True, "recipients": ["nash", "katie"]}
+
+
 def test_notification_payload_identifies_munchy_with_canonical_emoji(
     tmp_path: Path,
     monkeypatch,
@@ -5030,7 +5049,11 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
         "collection_slug": "camera-archive",
         "collection_timestamp": "20260101T000000Z",
         "riverhog": {"enabled": True, "wait": "staged"},
-        "notify": {"enabled": True, "recipients": ["nash", "katie"]},
+        "notify": {
+            "enabled": True,
+            "recipients": ["nash", "katie"],
+            "events": ["job.succeeded", "job.issue"],
+        },
     }
     runner.save_job(job)
 

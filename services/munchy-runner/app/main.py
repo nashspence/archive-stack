@@ -6167,6 +6167,16 @@ def touch_riverhog_session_state(job: dict[str, Any]) -> None:
         riverhog_session_state(job)["updated_at"] = now_iso()
 
 
+def riverhog_collection_notify_config(job: dict[str, Any]) -> dict[str, Any] | None:
+    notify = dict_or_empty(job.get("notify"))
+    if not notify:
+        return None
+    return {
+        "enabled": bool(notify.get("enabled", DEFAULT_NOTIFY_ENABLED)),
+        "recipients": notify_recipients(notify),
+    }
+
+
 def ensure_riverhog_session(
     job: dict[str, Any],
     api: ApiClient,
@@ -6187,12 +6197,11 @@ def ensure_riverhog_session(
         if collection_id:
             return collection_id
 
-        notify = dict_or_empty(job.get("notify"))
         payload = api.create_or_resume_collection_upload_session(
             str(job["collection_slug"]),
             ingest_source=str(archive_dir),
             upload_timestamp=str(timestamp),
-            notify=notify or None,
+            notify=riverhog_collection_notify_config(job),
         )
         update_riverhog_state_from_payload(job, payload)
         state = riverhog_session_state(job)
