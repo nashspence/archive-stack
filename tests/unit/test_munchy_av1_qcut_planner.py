@@ -137,6 +137,93 @@ class QcutPlannerTests(unittest.TestCase):
 
         self.assertEqual(captured, {"target_sec": 90, "min_sec": 4, "max_sec": 7})
 
+    def test_run_qcut_video_uses_qcut_video_concurrency_cap(self) -> None:
+        captured_workers: list[int] = []
+
+        class ImmediateFuture:
+            def __init__(self, value: dict[str, object]) -> None:
+                self.value = value
+
+            def result(self) -> dict[str, object]:
+                return self.value
+
+        class CapturingExecutor:
+            def __init__(self, *, max_workers: int) -> None:
+                captured_workers.append(max_workers)
+
+            def __enter__(self) -> "CapturingExecutor":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def submit(self, fn: object, clip: dict[str, object]) -> ImmediateFuture:
+                return ImmediateFuture(fn(clip))  # type: ignore[operator]
+
+        original_qcut_video_max_parallel_encodes = av1.QCUT_VIDEO_MAX_PARALLEL_ENCODES
+        original_max_parallel_encodes = av1.MAX_PARALLEL_ENCODES
+        original_thread_pool_executor = av1.ThreadPoolExecutor
+        original_as_completed = av1.as_completed
+        original_iter_files = av1.iter_files
+        original_plan_review_clips = av1.plan_review_clips
+        original_qcut_video_command = av1.qcut_video_command
+        try:
+            av1.QCUT_VIDEO_MAX_PARALLEL_ENCODES = 2
+            av1.MAX_PARALLEL_ENCODES = 9
+            av1.ThreadPoolExecutor = CapturingExecutor
+            av1.as_completed = lambda futures: list(futures)
+            av1.iter_files = lambda input_dir, extensions: [Path(input_dir) / "a.mp4"]
+
+            def fake_plan_review_clips(
+                sources: list[Path],
+                *,
+                target_sec: int,
+                min_sec: int,
+                max_sec: int,
+                seed: str | None = None,
+            ) -> dict[str, object]:
+                source = sources[0]
+                return {
+                    "clips": [
+                        {
+                            "index": 0,
+                            "source": str(source),
+                            "start": 0.0,
+                            "length": 6.0,
+                            "epoch": 1_800_000_000,
+                        }
+                    ],
+                    "files": [
+                        {
+                            "path": str(source),
+                            "duration": 6.0,
+                            "base_epoch": 1_800_000_000,
+                            "quota": 1,
+                        }
+                    ],
+                }
+
+            av1.plan_review_clips = fake_plan_review_clips
+            av1.qcut_video_command = lambda *args, **kwargs: [sys.executable, "-c", ""]
+
+            with tempfile.TemporaryDirectory() as tmp:
+                av1.run_qcut_video(
+                    Path(tmp) / "input",
+                    Path(tmp) / "review",
+                    archive=av1.ArchiveEncodeProfile(),
+                    dry_run=True,
+                )
+        finally:
+            av1.QCUT_VIDEO_MAX_PARALLEL_ENCODES = original_qcut_video_max_parallel_encodes
+            av1.MAX_PARALLEL_ENCODES = original_max_parallel_encodes
+            av1.ThreadPoolExecutor = original_thread_pool_executor
+            av1.as_completed = original_as_completed
+            av1.iter_files = original_iter_files
+            av1.plan_review_clips = original_plan_review_clips
+            av1.qcut_video_command = original_qcut_video_command
+
+        self.assertEqual(captured_workers, [2])
+
     def test_qcut_video_command_uses_cuda_format_filter_without_timestamp_overlay(self) -> None:
         original_video_scale_mode = av1.VIDEO_SCALE_MODE
         original_archive_decoder_args = av1.archive_decoder_args

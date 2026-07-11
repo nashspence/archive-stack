@@ -71,6 +71,15 @@ TaskName = Literal["archive_video", "qcut_video", "audio_review"]
 DATA_DIR = Path(os.getenv("MUNCHY_DATA_DIR", "/data")).resolve()
 SOURCE_ARTIFACTS_SUFFIX = ".source-artifacts.tar.zst"
 MAX_PARALLEL_ENCODES = max(1, int(os.getenv("MUNCHY_MAX_PARALLEL_ENCODES", "4")))
+QCUT_VIDEO_MAX_PARALLEL_ENCODES = max(
+    1,
+    int(
+        os.getenv(
+            "MUNCHY_QCUT_VIDEO_MAX_PARALLEL_ENCODES",
+            str(min(MAX_PARALLEL_ENCODES, 4)),
+        )
+    ),
+)
 FFMPEG_TIMEOUT_SECONDS = float(os.getenv("MUNCHY_FFMPEG_TIMEOUT_SECONDS", "0"))
 VIDEO_DECODE_MODE = os.getenv("MUNCHY_VIDEO_DECODE_MODE", "cuvid").strip().lower()
 VIDEO_SCALE_MODE = os.getenv("MUNCHY_VIDEO_SCALE_MODE", "software").strip().lower()
@@ -1621,7 +1630,7 @@ def run_qcut_video(
         mark_finished(output, item)
         return item
 
-    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_ENCODES) as pool:
+    with ThreadPoolExecutor(max_workers=QCUT_VIDEO_MAX_PARALLEL_ENCODES) as pool:
         futures = {}
         for clip in plan["clips"]:
             output = work_dir / f"clip{int(clip['index']):03d}{archive_container_suffix(archive)}"
@@ -1927,6 +1936,7 @@ def health_ready() -> dict[str, Any]:
         "status": "ok",
         "data_dir": str(DATA_DIR),
         "max_parallel_encodes": MAX_PARALLEL_ENCODES,
+        "qcut_video_max_parallel_encodes": QCUT_VIDEO_MAX_PARALLEL_ENCODES,
         "video_decode_mode": VIDEO_DECODE_MODE,
         "video_scale_mode": VIDEO_SCALE_MODE,
         "scale_cuda": ffmpeg_filter_available("scale_cuda"),
@@ -2022,6 +2032,7 @@ def capabilities() -> dict[str, Any]:
         "qcut": {
             "decode_mode": VIDEO_DECODE_MODE,
             "encode_profile_source": "archive",
+            "video_max_parallel_encodes": QCUT_VIDEO_MAX_PARALLEL_ENCODES,
             "target_seconds": QCUT_TARGET_SECONDS,
             "min_seconds": QCUT_MIN_SECONDS,
             "max_seconds": QCUT_MAX_SECONDS,
