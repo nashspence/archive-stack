@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import random
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -88,6 +89,53 @@ class QcutPlannerTests(unittest.TestCase):
         self.assertEqual(first["seed"], second["seed"])
         self.assertEqual(first["slots"], second["slots"])
         self.assertEqual(first["clips"], second["clips"])
+
+    def test_run_qcut_video_uses_supplied_review_clip_plan(self) -> None:
+        class StopPlanning(RuntimeError):
+            pass
+
+        captured: dict[str, int] = {}
+        original_iter_files = av1.iter_files
+        original_plan_review_clips = av1.plan_review_clips
+        try:
+            av1.iter_files = lambda input_dir, extensions: [Path("/data/input/a.mp4")]
+
+            def fake_plan_review_clips(
+                sources: list[Path],
+                *,
+                target_sec: int,
+                min_sec: int,
+                max_sec: int,
+                seed: str | None = None,
+            ) -> dict[str, object]:
+                captured.update(
+                    {
+                        "target_sec": target_sec,
+                        "min_sec": min_sec,
+                        "max_sec": max_sec,
+                    }
+                )
+                raise StopPlanning
+
+            av1.plan_review_clips = fake_plan_review_clips
+            with tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaises(StopPlanning):
+                    av1.run_qcut_video(
+                        Path(tmp) / "input",
+                        Path(tmp) / "review",
+                        archive=None,
+                        dry_run=True,
+                        clip_plan=av1.ReviewClipPlanConfig(
+                            target_seconds=90,
+                            min_seconds=4,
+                            max_seconds=7,
+                        ),
+                    )
+        finally:
+            av1.iter_files = original_iter_files
+            av1.plan_review_clips = original_plan_review_clips
+
+        self.assertEqual(captured, {"target_sec": 90, "min_sec": 4, "max_sec": 7})
 
     def test_clip_progress_payload_reports_review_clip_progress(self) -> None:
         payload = av1.clip_progress_payload(

@@ -289,6 +289,9 @@ CollectionArchiveDestination = Literal["target", "riverhog"]
 TaskName = Literal["archive_video", "archive_audio", "qcut_video", "audio_review"]
 DEFAULT_TASKS: tuple[TaskName, ...] = ("archive_video", "qcut_video", "audio_review")
 DEFAULT_AUDIO_TASKS: tuple[TaskName, ...] = ("archive_audio",)
+DEFAULT_REVIEW_CLIP_TARGET_SECONDS = 180
+DEFAULT_REVIEW_CLIP_MIN_SECONDS = 6
+DEFAULT_REVIEW_CLIP_MAX_SECONDS = 9
 GPU_TARGET_TASKS = frozenset({"archive_video", "qcut_video", "audio_review"})
 AUDIO_ARCHIVE_MAX_PARALLEL = max(1, int(os.getenv("MUNCHY_RUNNER_AUDIO_ARCHIVE_WORKERS", "2")))
 ARCHIVE_AUDIO_BITRATE = os.getenv("MUNCHY_AUDIO_BITRATE", "128k")
@@ -585,6 +588,20 @@ class CollectionArchiveConfig(BaseModel):
     riverhog: RiverhogConfig = Field(default_factory=RiverhogConfig)
 
 
+class ReviewClipPlanConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_seconds: int = Field(default=DEFAULT_REVIEW_CLIP_TARGET_SECONDS, ge=1)
+    min_seconds: int = Field(default=DEFAULT_REVIEW_CLIP_MIN_SECONDS, ge=1)
+    max_seconds: int = Field(default=DEFAULT_REVIEW_CLIP_MAX_SECONDS, ge=1)
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> "ReviewClipPlanConfig":
+        if self.min_seconds > self.max_seconds:
+            raise ValueError("clip_plan.min_seconds must be <= max_seconds")
+        return self
+
+
 class ReviewConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -592,6 +609,7 @@ class ReviewConfig(BaseModel):
     route_id: str = Field(min_length=1, max_length=180)
     profile_id: str = Field(min_length=1, max_length=180)
     target: TargetUploadConfig = Field(default_factory=TargetUploadConfig)
+    clip_plan: ReviewClipPlanConfig | None = None
 
 
 class NotifyConfig(BaseModel):
@@ -8773,6 +8791,7 @@ def run_job(job_id: str) -> None:
         group_results = job.setdefault("group_results", {})
         gpu_payloads = job.setdefault("gpu_payloads", {})
         gpu_results = job.setdefault("gpu_results", {})
+        review_clip_plan = dict_or_empty(dict_or_empty(job.get("review")).get("clip_plan"))
 
         eager_groups = eager_archive_group_names(groups)
         if eager_groups:
@@ -8937,6 +8956,10 @@ def run_job(job_id: str) -> None:
                     }
                     if group_config.get("encode_profile") is not None:
                         gpu_payload["encode_profile"] = group_config["encode_profile"]
+                    if review_clip_plan and any(
+                        task in tasks for task in ("qcut_video", "audio_review")
+                    ):
+                        gpu_payload["review_clip_plan"] = copy.deepcopy(review_clip_plan)
                     if container_metadata:
                         gpu_payload["container_metadata"] = container_metadata
                     source_artifacts_sidecars = source_artifacts_sidecar_entries(
@@ -9224,6 +9247,11 @@ def capabilities() -> dict[str, Any]:
             "methods": ["rclone", "command"],
             "modes": ["copy", "sync"],
             "template_fields": ["job_id", "device_id", "route_id", "profile_id", "run_id"],
+            "clip_plan": {
+                "target_seconds": DEFAULT_REVIEW_CLIP_TARGET_SECONDS,
+                "min_seconds": DEFAULT_REVIEW_CLIP_MIN_SECONDS,
+                "max_seconds": DEFAULT_REVIEW_CLIP_MAX_SECONDS,
+            },
         },
         "target_upload": {
             "methods": ["rclone", "command"],

@@ -210,6 +210,44 @@ def test_preserve_profile_groups_are_copy_only(
     assert storage_group.tasks == []
 
 
+def test_review_job_request_accepts_clip_plan_config(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+
+    req = runner.CreateJobRequest(
+        workflow_mode="review",
+        tasks=["qcut_video"],
+        review={
+            "device_id": "camera",
+            "route_id": "camera-main-video",
+            "profile_id": "webm-q42",
+            "target": {"enabled": True, "destination": "clover:reviews"},
+            "clip_plan": {"target_seconds": 90},
+        },
+    )
+
+    assert req.review is not None
+    assert req.review.clip_plan is not None
+    assert req.review.clip_plan.target_seconds == 90
+    assert req.review.clip_plan.min_seconds == 6
+    assert req.review.clip_plan.max_seconds == 9
+
+    with pytest.raises(ValueError, match="min_seconds"):
+        runner.CreateJobRequest(
+            workflow_mode="review",
+            tasks=["qcut_video"],
+            review={
+                "device_id": "camera",
+                "route_id": "camera-main-video",
+                "profile_id": "webm-q42",
+                "target": {"enabled": True, "destination": "clover:reviews"},
+                "clip_plan": {"min_seconds": 10, "max_seconds": 9},
+            },
+        )
+
+
 def test_create_job_request_accepts_full_metadata_projection_config(
     tmp_path: Path,
     monkeypatch,
@@ -6343,6 +6381,11 @@ def test_run_job_reuses_stored_shared_review_plan(
                 "route_id": "camera",
                 "profile_id": "webm-q43",
                 "target": {"enabled": False},
+                "clip_plan": {
+                    "target_seconds": 90,
+                    "min_seconds": 4,
+                    "max_seconds": 7,
+                },
             },
             "groups": {
                 "camera": {
@@ -6370,6 +6413,11 @@ def test_run_job_reuses_stored_shared_review_plan(
 
     assert payloads[0]["review_plans"]["qcut_video"]["kind"] == "munchy.qcut-plan"  # type: ignore[index]
     assert payloads[0]["review_plans"]["qcut_video"]["shared_plan"]["upload_id"] == "upload-1"  # type: ignore[index]
+    assert payloads[0]["review_clip_plan"] == {
+        "target_seconds": 90,
+        "min_seconds": 4,
+        "max_seconds": 7,
+    }
 
 
 def test_preflight_issue_notification_error_keeps_truncated_filename_at_end(

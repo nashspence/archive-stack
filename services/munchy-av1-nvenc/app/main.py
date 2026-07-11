@@ -23,7 +23,7 @@ from typing import Any, Literal, cast
 
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from munchy.filesystem_metadata import load_filesystem_metadata_map
 from munchy.metadata_projection import ProjectionMetadata, ffmpeg_container_metadata_args
@@ -81,7 +81,7 @@ ARCHIVE_LOOKAHEAD_LEVEL = os.getenv("MUNCHY_AV1_LOOKAHEAD_LEVEL", "3")
 ARCHIVE_SPLIT_ENCODE_MODE = os.getenv("MUNCHY_AV1_SPLIT_ENCODE_MODE", "disabled")
 ARCHIVE_PIX_FMT = os.getenv("MUNCHY_AV1_PIX_FMT", "p010le")
 ARCHIVE_AUDIO_BITRATE = os.getenv("MUNCHY_AUDIO_BITRATE", "128k")
-QCUT_TARGET_SECONDS = int(os.getenv("MUNCHY_QCUT_TARGET_SECONDS", "600"))
+QCUT_TARGET_SECONDS = int(os.getenv("MUNCHY_QCUT_TARGET_SECONDS", "180"))
 QCUT_MIN_SECONDS = int(os.getenv("MUNCHY_QCUT_MIN_SECONDS", "6"))
 QCUT_MAX_SECONDS = int(os.getenv("MUNCHY_QCUT_MAX_SECONDS", "9"))
 QCUT_CQ = os.getenv("MUNCHY_QCUT_CQ", "30")
@@ -164,6 +164,18 @@ class ReviewUploadConfig(BaseModel):
     enabled: bool = False
 
 
+class ReviewClipPlanConfig(BaseModel):
+    target_seconds: int = Field(default=QCUT_TARGET_SECONDS, ge=1)
+    min_seconds: int = Field(default=QCUT_MIN_SECONDS, ge=1)
+    max_seconds: int = Field(default=QCUT_MAX_SECONDS, ge=1)
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> "ReviewClipPlanConfig":
+        if self.min_seconds > self.max_seconds:
+            raise ValueError("review_clip_plan.min_seconds must be <= max_seconds")
+        return self
+
+
 def default_tasks() -> list[TaskName]:
     return ["archive_video"]
 
@@ -180,6 +192,7 @@ class JobRequest(BaseModel):
     collection_timestamp: str | None = None
     riverhog: RiverhogConfig = Field(default_factory=RiverhogConfig)
     review_upload: ReviewUploadConfig = Field(default_factory=ReviewUploadConfig)
+    review_clip_plan: ReviewClipPlanConfig = Field(default_factory=ReviewClipPlanConfig)
     review_plans: dict[str, dict[str, Any]] = Field(default_factory=dict)
     container_metadata: dict[str, dict[str, Any]] = Field(default_factory=dict)
     container_metadata_required: bool = True
@@ -1477,6 +1490,7 @@ def run_qcut_video(
     archive: ArchiveEncodeProfile,
     dry_run: bool,
     review_plan: dict[str, Any] | None = None,
+    clip_plan: ReviewClipPlanConfig | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     sources = iter_files(input_dir, VIDEO_EXTENSIONS)
@@ -1484,14 +1498,15 @@ def run_qcut_video(
         return {"status": "skipped", "reason": "no video sources"}
     work_dir = review_dir / ".qcut_work" / "video"
     work_dir.mkdir(parents=True, exist_ok=True)
+    resolved_clip_plan = clip_plan or ReviewClipPlanConfig()
     plan = (
         normalize_supplied_review_plan(review_plan, input_dir=input_dir)
         if review_plan is not None
         else plan_review_clips(
             sources,
-            target_sec=QCUT_TARGET_SECONDS,
-            min_sec=QCUT_MIN_SECONDS,
-            max_sec=QCUT_MAX_SECONDS,
+            target_sec=resolved_clip_plan.target_seconds,
+            min_sec=resolved_clip_plan.min_seconds,
+            max_sec=resolved_clip_plan.max_seconds,
         )
     )
     clip_outputs: list[Path] = []
@@ -1639,6 +1654,7 @@ def run_audio_review(
     archive: ArchiveEncodeProfile,
     dry_run: bool,
     review_plan: dict[str, Any] | None = None,
+    clip_plan: ReviewClipPlanConfig | None = None,
 ) -> dict[str, Any]:
     sources = iter_files(input_dir, AUDIO_EXTENSIONS)
     if not sources:
@@ -1649,14 +1665,15 @@ def run_audio_review(
         return {"status": "skipped", "reason": "no audio sources"}
     work_dir = review_dir / ".qcut_work" / "audio"
     work_dir.mkdir(parents=True, exist_ok=True)
+    resolved_clip_plan = clip_plan or ReviewClipPlanConfig()
     plan = (
         normalize_supplied_review_plan(review_plan, input_dir=input_dir)
         if review_plan is not None
         else plan_review_clips(
             sources,
-            target_sec=QCUT_TARGET_SECONDS,
-            min_sec=QCUT_MIN_SECONDS,
-            max_sec=QCUT_MAX_SECONDS,
+            target_sec=resolved_clip_plan.target_seconds,
+            min_sec=resolved_clip_plan.min_seconds,
+            max_sec=resolved_clip_plan.max_seconds,
         )
     )
     clip_outputs: list[Path] = []
@@ -1828,6 +1845,7 @@ def run_job(job_id: str, req: JobRequest) -> None:
                 archive=archive_profile,
                 dry_run=req.dry_run,
                 review_plan=req.review_plans.get("qcut_video"),
+                clip_plan=req.review_clip_plan,
                 progress_callback=lambda progress: update_task_progress(
                     "qcut_video",
                     progress,
@@ -1843,6 +1861,7 @@ def run_job(job_id: str, req: JobRequest) -> None:
                 archive=archive_profile,
                 dry_run=req.dry_run,
                 review_plan=req.review_plans.get("audio_review"),
+                clip_plan=req.review_clip_plan,
             )
             write_status(job_id, status)
         status["riverhog_upload"] = maybe_upload_riverhog(req)
