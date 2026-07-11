@@ -71,15 +71,6 @@ TaskName = Literal["archive_video", "qcut_video", "audio_review"]
 DATA_DIR = Path(os.getenv("MUNCHY_DATA_DIR", "/data")).resolve()
 SOURCE_ARTIFACTS_SUFFIX = ".source-artifacts.tar.zst"
 MAX_PARALLEL_ENCODES = max(1, int(os.getenv("MUNCHY_MAX_PARALLEL_ENCODES", "4")))
-QCUT_VIDEO_MAX_PARALLEL_ENCODES = max(
-    1,
-    int(
-        os.getenv(
-            "MUNCHY_QCUT_VIDEO_MAX_PARALLEL_ENCODES",
-            str(min(MAX_PARALLEL_ENCODES, 4)),
-        )
-    ),
-)
 FFMPEG_TIMEOUT_SECONDS = float(os.getenv("MUNCHY_FFMPEG_TIMEOUT_SECONDS", "0"))
 VIDEO_DECODE_MODE = os.getenv("MUNCHY_VIDEO_DECODE_MODE", "cuvid").strip().lower()
 VIDEO_SCALE_MODE = os.getenv("MUNCHY_VIDEO_SCALE_MODE", "software").strip().lower()
@@ -195,6 +186,7 @@ class JobRequest(BaseModel):
     review_dir: Path | None = None
     profile: str = "av1-nvenc-high"
     encode_profile: EncodeProfile | None = None
+    max_parallel_encodes: int | None = Field(default=None, ge=1, le=64)
     tasks: list[TaskName] = Field(default_factory=default_tasks)
     collection_slug: str | None = None
     collection_timestamp: str | None = None
@@ -336,6 +328,12 @@ def tail_binary_file(file_obj: Any, limit: int) -> str:
     size = file_obj.tell()
     file_obj.seek(max(0, size - limit))
     return file_obj.read().decode("utf-8", errors="replace")
+
+
+def resolve_max_parallel_encodes(value: int | None) -> int:
+    if value is None:
+        return MAX_PARALLEL_ENCODES
+    return max(1, min(int(value), MAX_PARALLEL_ENCODES))
 
 
 def file_sha256(path: Path) -> str:
@@ -1325,6 +1323,7 @@ def run_batch(
     source_artifacts_sidecars: Mapping[str, list[dict[str, Any]]] | None = None,
     container_metadata: Mapping[str, dict[str, Any]] | None = None,
     container_metadata_required: bool = True,
+    max_parallel_encodes: int | None = None,
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     filesystem_metadata = load_filesystem_metadata_map(input_root)
@@ -1341,7 +1340,8 @@ def run_batch(
             raise RuntimeError(
                 f"unresumable: source filesystem metadata sidecar is missing entries for {sample}"
             )
-    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_ENCODES) as pool:
+    worker_count = resolve_max_parallel_encodes(max_parallel_encodes)
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
         futures = {}
         for source in sources:
             dest = output_for(source, input_root, output_root, suffix)
@@ -1532,6 +1532,7 @@ def run_qcut_video(
     dry_run: bool,
     review_plan: dict[str, Any] | None = None,
     clip_plan: ReviewClipPlanConfig | None = None,
+    max_parallel_encodes: int | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     sources = iter_files(input_dir, VIDEO_EXTENSIONS)
@@ -1630,7 +1631,8 @@ def run_qcut_video(
         mark_finished(output, item)
         return item
 
-    with ThreadPoolExecutor(max_workers=QCUT_VIDEO_MAX_PARALLEL_ENCODES) as pool:
+    worker_count = resolve_max_parallel_encodes(max_parallel_encodes)
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
         futures = {}
         for clip in plan["clips"]:
             output = work_dir / f"clip{int(clip['index']):03d}{archive_container_suffix(archive)}"
@@ -1699,6 +1701,7 @@ def run_audio_review(
     dry_run: bool,
     review_plan: dict[str, Any] | None = None,
     clip_plan: ReviewClipPlanConfig | None = None,
+    max_parallel_encodes: int | None = None,
 ) -> dict[str, Any]:
     sources = iter_files(input_dir, AUDIO_EXTENSIONS)
     if not sources:
@@ -1722,7 +1725,8 @@ def run_audio_review(
     )
     clip_outputs: list[Path] = []
     clip_results: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_ENCODES) as pool:
+    worker_count = resolve_max_parallel_encodes(max_parallel_encodes)
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
         futures = {}
         for clip in plan["clips"]:
             output = work_dir / f"clip{int(clip['index']):03d}.opus"
@@ -1829,11 +1833,13 @@ def run_job(job_id: str, req: JobRequest) -> None:
     encode_profile_dump = (
         req.encode_profile.runner_payload() if req.encode_profile is not None else None
     )
+    max_parallel_encodes = resolve_max_parallel_encodes(req.max_parallel_encodes)
     status: dict[str, Any] = {
         "job_id": job_id,
         "state": "running",
         "profile": req.profile,
         "encode_profile": encode_profile_dump,
+        "max_parallel_encodes": max_parallel_encodes,
         "tasks": req.tasks,
         "started_at": now_iso(),
         "input_dir": str(req.input_dir),
@@ -1875,6 +1881,7 @@ def run_job(job_id: str, req: JobRequest) -> None:
                 source_artifacts_sidecars=req.source_artifacts_sidecars,
                 container_metadata=req.container_metadata,
                 container_metadata_required=req.container_metadata_required,
+                max_parallel_encodes=max_parallel_encodes,
             )
             write_status(job_id, status)
         if "qcut_video" in req.tasks:
@@ -1887,6 +1894,7 @@ def run_job(job_id: str, req: JobRequest) -> None:
                 dry_run=req.dry_run,
                 review_plan=req.review_plans.get("qcut_video"),
                 clip_plan=req.review_clip_plan,
+                max_parallel_encodes=max_parallel_encodes,
                 progress_callback=lambda progress: update_task_progress(
                     "qcut_video",
                     progress,
@@ -1903,6 +1911,7 @@ def run_job(job_id: str, req: JobRequest) -> None:
                 dry_run=req.dry_run,
                 review_plan=req.review_plans.get("audio_review"),
                 clip_plan=req.review_clip_plan,
+                max_parallel_encodes=max_parallel_encodes,
             )
             write_status(job_id, status)
         status["riverhog_upload"] = maybe_upload_riverhog(req)
@@ -1936,7 +1945,6 @@ def health_ready() -> dict[str, Any]:
         "status": "ok",
         "data_dir": str(DATA_DIR),
         "max_parallel_encodes": MAX_PARALLEL_ENCODES,
-        "qcut_video_max_parallel_encodes": QCUT_VIDEO_MAX_PARALLEL_ENCODES,
         "video_decode_mode": VIDEO_DECODE_MODE,
         "video_scale_mode": VIDEO_SCALE_MODE,
         "scale_cuda": ffmpeg_filter_available("scale_cuda"),
@@ -1995,6 +2003,11 @@ def capabilities() -> dict[str, Any]:
             ],
         },
         "tasks": ["archive_video", "qcut_video", "audio_review"],
+        "job_payload": {
+            "max_parallel_encodes": {
+                "max": MAX_PARALLEL_ENCODES,
+            },
+        },
         "ffmpeg": {
             "av1_nvenc": "av1_nvenc" in encoders,
             "libopus": "libopus" in encoders,
@@ -2032,7 +2045,6 @@ def capabilities() -> dict[str, Any]:
         "qcut": {
             "decode_mode": VIDEO_DECODE_MODE,
             "encode_profile_source": "archive",
-            "video_max_parallel_encodes": QCUT_VIDEO_MAX_PARALLEL_ENCODES,
             "target_seconds": QCUT_TARGET_SECONDS,
             "min_seconds": QCUT_MIN_SECONDS,
             "max_seconds": QCUT_MAX_SECONDS,

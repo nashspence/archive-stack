@@ -262,6 +262,7 @@ def test_review_job_storage_hint_uses_review_target_destination(
             "camera-main-video": {
                 "archive_mode": "av1_nvenc",
                 "tasks": ["qcut_video"],
+                "max_parallel_encodes": 4,
             }
         },
         review={
@@ -272,6 +273,7 @@ def test_review_job_storage_hint_uses_review_target_destination(
         },
     )
 
+    assert req.groups["camera-main-video"].max_parallel_encodes == 4
     hint = runner.storage_hint_for_job_request(req).model_dump(exclude_none=True)
 
     assert hint == {
@@ -1435,6 +1437,7 @@ def test_gpu_payload_carries_required_projected_container_metadata(
     group_config = {
         "archive_mode": "av1_nvenc",
         "tasks": ["archive_video"],
+        "max_parallel_encodes": 3,
         "metadata_projection": {
             "device": {"make": "Apple", "model": "iPhone SE (2nd generation)"},
             "creators": ["Nash Spence"],
@@ -1473,6 +1476,7 @@ def test_gpu_payload_carries_required_projected_container_metadata(
     )
 
     assert changed is False
+    assert payload["max_parallel_encodes"] == 3
     assert payload["container_metadata_required"] is True
     assert payload["container_metadata"]["IMG_0001.MOV"]["device"] == {
         "make": "Apple",
@@ -4875,6 +4879,7 @@ def test_run_job_points_gpu_payload_at_shared_input_tree(
                     "archive_mode": "av1_nvenc",
                     "tasks": ["qcut_video"],
                     "profile": "profile",
+                    "max_parallel_encodes": 4,
                 }
             },
         }
@@ -4896,6 +4901,7 @@ def test_run_job_points_gpu_payload_at_shared_input_tree(
     runner.run_job("job-1")
 
     assert len(payloads) == 1
+    assert payloads[0]["max_parallel_encodes"] == 4
     assert str(payloads[0]["input_dir"]).startswith("/data/input-uploads/")
     assert str(payloads[0]["input_dir"]).endswith("/camera")
     assert "/jobs/job-1/input" not in str(payloads[0]["input_dir"])

@@ -137,7 +137,7 @@ class QcutPlannerTests(unittest.TestCase):
 
         self.assertEqual(captured, {"target_sec": 90, "min_sec": 4, "max_sec": 7})
 
-    def test_run_qcut_video_uses_qcut_video_concurrency_cap(self) -> None:
+    def test_run_qcut_video_uses_job_concurrency_cap(self) -> None:
         captured_workers: list[int] = []
 
         class ImmediateFuture:
@@ -160,7 +160,6 @@ class QcutPlannerTests(unittest.TestCase):
             def submit(self, fn: object, clip: dict[str, object]) -> ImmediateFuture:
                 return ImmediateFuture(fn(clip))  # type: ignore[operator]
 
-        original_qcut_video_max_parallel_encodes = av1.QCUT_VIDEO_MAX_PARALLEL_ENCODES
         original_max_parallel_encodes = av1.MAX_PARALLEL_ENCODES
         original_thread_pool_executor = av1.ThreadPoolExecutor
         original_as_completed = av1.as_completed
@@ -168,7 +167,6 @@ class QcutPlannerTests(unittest.TestCase):
         original_plan_review_clips = av1.plan_review_clips
         original_qcut_video_command = av1.qcut_video_command
         try:
-            av1.QCUT_VIDEO_MAX_PARALLEL_ENCODES = 2
             av1.MAX_PARALLEL_ENCODES = 9
             av1.ThreadPoolExecutor = CapturingExecutor
             av1.as_completed = lambda futures: list(futures)
@@ -212,9 +210,9 @@ class QcutPlannerTests(unittest.TestCase):
                     Path(tmp) / "review",
                     archive=av1.ArchiveEncodeProfile(),
                     dry_run=True,
+                    max_parallel_encodes=2,
                 )
         finally:
-            av1.QCUT_VIDEO_MAX_PARALLEL_ENCODES = original_qcut_video_max_parallel_encodes
             av1.MAX_PARALLEL_ENCODES = original_max_parallel_encodes
             av1.ThreadPoolExecutor = original_thread_pool_executor
             av1.as_completed = original_as_completed
@@ -223,6 +221,17 @@ class QcutPlannerTests(unittest.TestCase):
             av1.qcut_video_command = original_qcut_video_command
 
         self.assertEqual(captured_workers, [2])
+
+    def test_job_concurrency_cap_cannot_exceed_target_limit(self) -> None:
+        original_max_parallel_encodes = av1.MAX_PARALLEL_ENCODES
+        try:
+            av1.MAX_PARALLEL_ENCODES = 4
+
+            self.assertEqual(av1.resolve_max_parallel_encodes(None), 4)
+            self.assertEqual(av1.resolve_max_parallel_encodes(2), 2)
+            self.assertEqual(av1.resolve_max_parallel_encodes(8), 4)
+        finally:
+            av1.MAX_PARALLEL_ENCODES = original_max_parallel_encodes
 
     def test_qcut_video_command_uses_cuda_format_filter_without_timestamp_overlay(self) -> None:
         original_video_scale_mode = av1.VIDEO_SCALE_MODE

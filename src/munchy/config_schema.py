@@ -164,6 +164,7 @@ GROUP_SCHEMA: dict[str, Any] = {
         "archive_mode": {"enum": ["av1_nvenc", "audio", "preserve"]},
         "tasks": STRING_LIST,
         "encode_profile": {"type": "object"},
+        "max_parallel_encodes": {"type": "integer", "minimum": 1},
         "metadata_projection": {
             "oneOf": [{"type": "boolean", "const": False}, {"type": "object"}],
         },

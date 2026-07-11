@@ -46,7 +46,6 @@ Important environment variables:
 
 - `MUNCHY_DATA_DIR`
 - `MUNCHY_MAX_PARALLEL_ENCODES`
-- `MUNCHY_QCUT_VIDEO_MAX_PARALLEL_ENCODES`
 - `MUNCHY_VIDEO_DECODE_MODE`
 - `MUNCHY_VIDEO_SCALE_MODE`
 - `MUNCHY_AV1_CQ`
@@ -64,7 +63,3 @@ interpolation when an archive encode only needs scaling and the source is using 
 CUVID decoder. Private deployments can use this for high-quality GPU Lanczos
 downscaling after verifying the source class. Review/qcut video clips use the
 same hardware-frame path when their encode settings and source geometry allow it.
-
-`MUNCHY_QCUT_VIDEO_MAX_PARALLEL_ENCODES` caps video review clip fanout without
-reducing archive batch concurrency. If unset, it defaults to the smaller of
-`MUNCHY_MAX_PARALLEL_ENCODES` and `4`.

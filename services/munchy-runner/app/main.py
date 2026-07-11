@@ -802,6 +802,7 @@ class ProfileGroupConfig(BaseModel):
     archive_mode: ArchiveMode = "av1_nvenc"
     tasks: list[TaskName] = Field(default_factory=default_tasks)
     encode_profile: EncodeProfile | None = None
+    max_parallel_encodes: int | None = Field(default=None, ge=1, le=64)
     metadata_projection: MetadataProjectionSetting = Field(default_factory=MetadataProjectionConfig)
 
     @field_validator("tasks")
@@ -3529,13 +3530,16 @@ def profile_group_dump(group: ProfileGroupConfig) -> dict[str, Any]:
         metadata_projection = False
     else:
         metadata_projection = group.metadata_projection.model_dump(exclude_none=True)
-    return {
+    payload = {
         "archive_mode": group.archive_mode,
         "tasks": group.tasks,
         "profile": profile_name_for(encode_profile),
         "encode_profile": encode_profile,
         "metadata_projection": metadata_projection,
     }
+    if group.max_parallel_encodes is not None:
+        payload["max_parallel_encodes"] = group.max_parallel_encodes
+    return payload
 
 
 def default_profile_group(req: CreateJobRequest) -> ProfileGroupConfig:
@@ -8364,6 +8368,8 @@ def build_eager_gpu_payload(
     }
     if group_config.get("encode_profile") is not None:
         payload["encode_profile"] = group_config["encode_profile"]
+    if group_config.get("max_parallel_encodes") is not None:
+        payload["max_parallel_encodes"] = group_config["max_parallel_encodes"]
     if container_metadata:
         payload["container_metadata"] = container_metadata
     if source_artifacts_sidecars:
@@ -8969,6 +8975,10 @@ def run_job(job_id: str) -> None:
                     }
                     if group_config.get("encode_profile") is not None:
                         gpu_payload["encode_profile"] = group_config["encode_profile"]
+                    if group_config.get("max_parallel_encodes") is not None:
+                        gpu_payload["max_parallel_encodes"] = group_config[
+                            "max_parallel_encodes"
+                        ]
                     if review_clip_plan and any(
                         task in tasks for task in ("qcut_video", "audio_review")
                     ):
