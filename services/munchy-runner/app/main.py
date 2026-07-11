@@ -3554,9 +3554,13 @@ def storage_hint_for_job_request(req: CreateJobRequest) -> InputUploadStorageHin
         )
         for name, group in req.groups.items()
     }
+    if req.workflow_mode == "collection_archive":
+        collection_archive_destination = req.collection_archive.destination
+    else:
+        collection_archive_destination = "target"
     return InputUploadStorageHint(
         workflow_mode=req.workflow_mode,
-        collection_archive_destination=req.collection_archive.destination,
+        collection_archive_destination=collection_archive_destination,
         archive_mode=req.archive_mode,
         tasks=req.tasks,
         groups=groups,

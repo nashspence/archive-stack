@@ -248,6 +248,47 @@ def test_review_job_request_accepts_clip_plan_config(
         )
 
 
+def test_review_job_storage_hint_uses_review_target_destination(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+
+    req = runner.CreateJobRequest(
+        workflow_mode="review",
+        archive_mode="av1_nvenc",
+        tasks=["qcut_video"],
+        groups={
+            "camera-main-video": {
+                "archive_mode": "av1_nvenc",
+                "tasks": ["qcut_video"],
+            }
+        },
+        review={
+            "device_id": "camera",
+            "route_id": "camera-main-video",
+            "profile_id": "webm-q42",
+            "target": {"enabled": True, "destination": "clover:reviews"},
+        },
+    )
+
+    hint = runner.storage_hint_for_job_request(req).model_dump(exclude_none=True)
+
+    assert hint == {
+        "workflow_mode": "review",
+        "collection_archive_destination": "target",
+        "archive_mode": "av1_nvenc",
+        "tasks": ["qcut_video"],
+        "groups": {
+            "camera-main-video": {
+                "archive_mode": "av1_nvenc",
+                "tasks": ["qcut_video"],
+            }
+        },
+        "structured_routing": False,
+    }
+
+
 def test_create_job_request_accepts_full_metadata_projection_config(
     tmp_path: Path,
     monkeypatch,
