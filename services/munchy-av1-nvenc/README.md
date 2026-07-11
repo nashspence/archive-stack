@@ -51,7 +51,6 @@ Important environment variables:
 - `MUNCHY_AV1_CQ`
 - `MUNCHY_AV1_PRESET`
 - `MUNCHY_AV1_TUNE`
-- `MUNCHY_REVIEW_FONT`
 - `MUNCHY_RIVERHOG_UPLOAD_ENABLED`
 - `MUNCHY_REVIEW_UPLOAD_ENABLED`
 
@@ -62,5 +61,5 @@ prefer predictable output over theoretical throughput.
 `MUNCHY_VIDEO_SCALE_MODE=cuda` uses `scale_cuda` with the profile's requested
 interpolation when an archive encode only needs scaling and the source is using a
 CUVID decoder. Private deployments can use this for high-quality GPU Lanczos
-downscaling after verifying the source class. Review/qcut timestamp clips keep
-the software filter path because they burn timestamps with `drawtext`.
+downscaling after verifying the source class. Review/qcut video clips use the
+same hardware-frame path when their encode settings and source geometry allow it.

@@ -137,6 +137,58 @@ class QcutPlannerTests(unittest.TestCase):
 
         self.assertEqual(captured, {"target_sec": 90, "min_sec": 4, "max_sec": 7})
 
+    def test_qcut_video_command_uses_cuda_format_filter_without_timestamp_overlay(self) -> None:
+        original_video_scale_mode = av1.VIDEO_SCALE_MODE
+        original_archive_decoder_args = av1.archive_decoder_args
+        original_archive_scale_target = av1.archive_scale_target
+        original_archive_frame_rate_filters = av1.archive_frame_rate_filters
+        original_ffmpeg_filter_available = av1.ffmpeg_filter_available
+        try:
+            av1.VIDEO_SCALE_MODE = "cuda"
+            av1.archive_decoder_args = lambda source: ["-c:v", "h264_cuvid"]
+            av1.archive_scale_target = lambda source, archive: None
+            av1.archive_frame_rate_filters = lambda source, archive: []
+            av1.ffmpeg_filter_available = lambda name: name == "scale_cuda"
+
+            with tempfile.TemporaryDirectory() as tmp:
+                cmd = av1.qcut_video_command(
+                    Path("/data/input/source.mp4"),
+                    Path(tmp) / "output" / "review.webm",
+                    start=1.25,
+                    length=6.0,
+                    archive=av1.ArchiveEncodeProfile(pix_fmt="p010le", scale_flags="lanczos"),
+                )
+        finally:
+            av1.VIDEO_SCALE_MODE = original_video_scale_mode
+            av1.archive_decoder_args = original_archive_decoder_args
+            av1.archive_scale_target = original_archive_scale_target
+            av1.archive_frame_rate_filters = original_archive_frame_rate_filters
+            av1.ffmpeg_filter_available = original_ffmpeg_filter_available
+
+        rendered = " ".join(cmd)
+        self.assertNotIn("drawtext", rendered)
+        self.assertIn("-hwaccel", cmd)
+        self.assertIn("-hwaccel_output_format", cmd)
+        self.assertIn("scale_cuda=format=p010le", cmd)
+        self.assertNotIn("-pix_fmt", cmd)
+
+    def test_run_command_keeps_only_output_tails(self) -> None:
+        result = av1.run_command(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; "
+                    "sys.stdout.buffer.write(b'a' * 5001); "
+                    "sys.stderr.buffer.write(b'b' * 5002)"
+                ),
+            ],
+            action="tail test",
+        )
+
+        self.assertEqual(result["stdout"], "a" * 4000)
+        self.assertEqual(result["stderr"], "b" * 4000)
+
     def test_clip_progress_payload_reports_review_clip_progress(self) -> None:
         payload = av1.clip_progress_payload(
             task="qcut_video",

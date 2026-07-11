@@ -11,13 +11,13 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
-from functools import partial
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -89,7 +89,6 @@ QCUT_TUNE = os.getenv("MUNCHY_QCUT_TUNE", ARCHIVE_TUNE)
 QCUT_LOOKAHEAD_LEVEL = os.getenv("MUNCHY_QCUT_LOOKAHEAD_LEVEL", ARCHIVE_LOOKAHEAD_LEVEL)
 QCUT_SPLIT_ENCODE_MODE = os.getenv("MUNCHY_QCUT_SPLIT_ENCODE_MODE", ARCHIVE_SPLIT_ENCODE_MODE)
 QCUT_TRUE_PEAK = os.getenv("MUNCHY_QCUT_TRUE_PEAK", "").strip()
-REVIEW_FONT = os.getenv("MUNCHY_REVIEW_FONT", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf")
 REVIEW_AUDIO_BITRATE = os.getenv("MUNCHY_REVIEW_AUDIO_BITRATE", "96k")
 RIVERHOG_UPLOAD_ENABLED = os.getenv("MUNCHY_RIVERHOG_UPLOAD_ENABLED", "0").lower() in {
     "1",
@@ -272,7 +271,13 @@ def recover_interrupted_jobs() -> None:
     mark_interrupted_jobs_on_startup()
 
 
-def run_command(cmd: list[str], *, action: str, dry_run: bool = False) -> dict[str, Any]:
+def run_command(
+    cmd: list[str],
+    *,
+    action: str,
+    dry_run: bool = False,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     rendered = shlex.join(cmd)
     log.info("%s: %s", action, rendered)
     started = time.monotonic()
@@ -286,27 +291,42 @@ def run_command(cmd: list[str], *, action: str, dry_run: bool = False) -> dict[s
             "dry_run": True,
         }
     timeout = None if FFMPEG_TIMEOUT_SECONDS <= 0 else FFMPEG_TIMEOUT_SECONDS
-    try:
-        proc = subprocess.run(
-            cmd,
-            check=False,
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"{action} timed out after {timeout}s: {rendered}") from exc
+    with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
+        try:
+            proc = subprocess.run(
+                cmd,
+                check=False,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                timeout=timeout,
+                env=dict(env) if env is not None else None,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout_tail = tail_binary_file(stdout_file, 4000)
+            stderr_tail = tail_binary_file(stderr_file, 4000)
+            detail = (stderr_tail or stdout_tail or rendered)[-2000:]
+            raise RuntimeError(f"{action} timed out after {timeout}s: {detail}") from exc
+        stdout_tail = tail_binary_file(stdout_file, 4000)
+        stderr_tail = tail_binary_file(stderr_file, 4000)
     result = {
         "command": cmd,
         "returncode": proc.returncode,
         "duration_s": round(time.monotonic() - started, 3),
-        "stdout": proc.stdout[-4000:],
-        "stderr": proc.stderr[-4000:],
+        "stdout": stdout_tail,
+        "stderr": stderr_tail,
     }
     if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or rendered)[-2000:]
+        detail = (stderr_tail or stdout_tail or rendered)[-2000:]
         raise RuntimeError(f"{action} failed with {proc.returncode}: {detail}")
     return result
+
+
+def tail_binary_file(file_obj: Any, limit: int) -> str:
+    file_obj.flush()
+    file_obj.seek(0, os.SEEK_END)
+    size = file_obj.tell()
+    file_obj.seek(max(0, size - limit))
+    return file_obj.read().decode("utf-8", errors="replace")
 
 
 def file_sha256(path: Path) -> str:
@@ -606,12 +626,14 @@ def archive_hardware_scale_filter(
     source: Path,
     archive: ArchiveEncodeProfile,
     decoder_args: list[str],
+    *,
+    allow_format_only: bool = False,
 ) -> str | None:
     mode, required = hardware_scale_mode()
     if mode == "software":
         return None
     scale_target = archive_scale_target(source, archive)
-    if scale_target is None:
+    if scale_target is None and not allow_format_only:
         return None
 
     def fallback(reason: str) -> None:
@@ -626,13 +648,14 @@ def archive_hardware_scale_filter(
     if not any(arg.endswith("_cuvid") for arg in decoder_args):
         fallback("source is not using a CUVID decoder")
         return None
-    details, target = scale_target
-    if any(
-        details[key] != 0
-        for key in ("crop_top", "crop_bottom", "crop_left", "crop_right", "rotation")
-    ):
-        fallback("cropped or rotated display geometry requires the software filter path")
-        return None
+    if scale_target is not None:
+        details, target = scale_target
+        if any(
+            details[key] != 0
+            for key in ("crop_top", "crop_bottom", "crop_left", "crop_right", "rotation")
+        ):
+            fallback("cropped or rotated display geometry requires the software filter path")
+            return None
     filter_name = "scale_npp" if mode == "npp" else "scale_cuda"
     if not ffmpeg_filter_available(filter_name):
         fallback(f"ffmpeg filter {filter_name!r} is not available in this image")
@@ -641,8 +664,10 @@ def archive_hardware_scale_filter(
     if interp is None:
         fallback(f"{filter_name} does not support scale_flags={archive.scale_flags!r}")
         return None
-    width, height = target
     pix_fmt = archive.pix_fmt or ARCHIVE_PIX_FMT
+    if scale_target is None:
+        return f"{filter_name}=format={pix_fmt}"
+    width, height = target
     return f"{filter_name}=w={width}:h={height}:format={pix_fmt}:interp_algo={interp}"
 
 
@@ -990,16 +1015,6 @@ def plan_review_clips(
     }
 
 
-def drawtext_filter(epoch_int: int) -> str:
-    # Modern pts/localtime expansion avoids ffmpeg's deprecated expansion=strftime path.
-    return (
-        f"drawtext=fontfile={REVIEW_FONT}"
-        f":fontcolor=white:fontsize=h/40:box=1:boxcolor=black@1:boxborderw=6"
-        f":text='%{{pts\\:localtime\\:{int(epoch_int)}\\:%m/%d/%Y %H\\\\\\:%M\\\\\\:%S}}'"
-        f":x=24:y=24"
-    )
-
-
 def archive_video_encode_args(
     archive: ArchiveEncodeProfile,
     *,
@@ -1126,11 +1141,28 @@ def qcut_video_command(
     *,
     start: float,
     length: float,
-    epoch: int,
     archive: ArchiveEncodeProfile,
 ) -> list[str]:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    filters = [*archive_video_filters(source, archive), drawtext_filter(epoch)]
+    decoder_args = archive_decoder_args(source)
+    hardware_scale_filter = archive_hardware_scale_filter(
+        source,
+        archive,
+        decoder_args,
+        allow_format_only=True,
+    )
+    filters = (
+        [hardware_scale_filter] if hardware_scale_filter else archive_video_filters(source, archive)
+    )
+    hardware_frames = hardware_scale_filter is not None
+    if hardware_frames:
+        decoder_args = [
+            "-hwaccel",
+            "cuda",
+            "-hwaccel_output_format",
+            "cuda",
+            *decoder_args,
+        ]
     cmd = [
         "ffmpeg",
         "-hide_banner",
@@ -1141,7 +1173,7 @@ def qcut_video_command(
         f"{start:.6f}",
         "-t",
         f"{length:.6f}",
-        *archive_decoder_args(source),
+        *decoder_args,
         "-i",
         str(source),
         "-map",
@@ -1150,7 +1182,7 @@ def qcut_video_command(
         "0:a?",
         "-map_metadata",
         "0",
-        *archive_video_encode_args(archive),
+        *archive_video_encode_args(archive, hardware_frames=hardware_frames),
         "-c:a",
         "libopus",
         *archive_audio_encode_args(archive.audio),
@@ -1563,41 +1595,44 @@ def run_qcut_video(
             emit_progress("encoding_clips")
 
     emit_progress("planning")
+
+    def encode_clip(clip: dict[str, Any]) -> dict[str, Any]:
+        output = work_dir / f"clip{int(clip['index']):03d}{archive_container_suffix(archive)}"
+        source = Path(str(clip["source"]))
+        cmd = qcut_video_command(
+            source,
+            output,
+            start=float(clip["start"]),
+            length=float(clip["length"]),
+            archive=archive,
+        )
+        mark_started(output)
+        try:
+            item = run_encode_item(
+                cmd,
+                output_path=output,
+                action="qcut video clip",
+                dry_run=dry_run,
+            )
+        except Exception:
+            mark_finished(output, None, failed=True)
+            raise
+        item["clip"] = clip
+        mark_finished(output, item)
+        return item
+
     with ThreadPoolExecutor(max_workers=MAX_PARALLEL_ENCODES) as pool:
         futures = {}
         for clip in plan["clips"]:
             output = work_dir / f"clip{int(clip['index']):03d}{archive_container_suffix(archive)}"
             clip_outputs.append(output)
-            source = Path(str(clip["source"]))
-            cmd = qcut_video_command(
-                source,
-                output,
-                start=float(clip["start"]),
-                length=float(clip["length"]),
-                epoch=int(clip["epoch"]),
-                archive=archive,
-            )
-            futures[
-                pool.submit(
-                    run_encode_item,
-                    cmd,
-                    output_path=output,
-                    action="qcut video clip",
-                    dry_run=dry_run,
-                    on_start=partial(mark_started, output),
-                )
-            ] = clip
+            futures[pool.submit(encode_clip, clip)] = clip
         for future in as_completed(futures):
-            clip = futures[future]
-            output = work_dir / f"clip{int(clip['index']):03d}{archive_container_suffix(archive)}"
             try:
                 item = future.result()
             except Exception:
-                mark_finished(output, None, failed=True)
                 raise
-            item["clip"] = clip
             clip_results.append(item)
-            mark_finished(output, item)
 
     files_span = plan["files"]
     start_epoch = min(int(file["base_epoch"]) for file in files_span)
@@ -1770,14 +1805,11 @@ def maybe_upload_review(req: JobRequest) -> dict[str, Any] | None:
     log.info("review upload: %s", REVIEW_UPLOAD_COMMAND)
     if req.dry_run:
         return {"command": REVIEW_UPLOAD_COMMAND, "dry_run": True}
-    proc = subprocess.run(cmd, text=True, capture_output=True, env=env)
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or REVIEW_UPLOAD_COMMAND)[-2000:]
-        raise RuntimeError(f"review upload failed with {proc.returncode}: {detail}")
+    result = run_command(cmd, action="review upload", env=env)
     return {
         "command": REVIEW_UPLOAD_COMMAND,
-        "stdout": proc.stdout[-4000:],
-        "stderr": proc.stderr[-4000:],
+        "stdout": result["stdout"],
+        "stderr": result["stderr"],
     }
 
 
@@ -1956,7 +1988,6 @@ def capabilities() -> dict[str, Any]:
         "ffmpeg": {
             "av1_nvenc": "av1_nvenc" in encoders,
             "libopus": "libopus" in encoders,
-            "drawtext": "drawtext" in filters,
             "scale_cuda": "scale_cuda" in filters,
             "scale_npp": "scale_npp" in filters,
             "av1_nvenc_uhq": "uhq" in av1_help,
