@@ -6976,6 +6976,48 @@ def test_eager_group_pipeline_capacity_counts_mixed_executors_globally(
     )
 
 
+def test_eager_archive_pipeline_phase_uses_single_group_limit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    monkeypatch.setattr(runner, "EAGER_ARCHIVE_PIPELINE_BATCHES", 3)
+    job = {
+        "job_id": "job-1",
+        "eager_archive": {
+            "batches": {
+                "batch-1": {"state": "running", "executor": "gpu", "group": "camera"},
+            }
+        },
+    }
+
+    assert runner.eager_archive_pipeline_phase(
+        job,
+        {"camera": {"eager_pipeline_batches": 1}},
+    ) == "eager_archive:camera:pipeline=1/1"
+
+
+def test_eager_archive_pipeline_phase_uses_global_limit_for_mixed_groups(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    monkeypatch.setattr(runner, "EAGER_ARCHIVE_PIPELINE_BATCHES", 3)
+    job = {
+        "job_id": "job-1",
+        "eager_archive": {
+            "batches": {
+                "batch-1": {"state": "running", "executor": "gpu", "group": "camera"},
+                "batch-2": {"state": "running", "executor": "local_audio", "group": "voice"},
+            }
+        },
+    }
+
+    assert runner.eager_archive_pipeline_phase(job, {"camera": {}, "voice": {}}) == (
+        "eager_archive:pipeline=2/3"
+    )
+
+
 def test_ready_eager_files_limits_audio_batches_to_worker_count(
     tmp_path: Path,
     monkeypatch,

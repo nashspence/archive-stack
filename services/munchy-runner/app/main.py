@@ -8871,6 +8871,26 @@ def eager_group_has_pipeline_capacity(
     return len(group_running) < eager_archive_pipeline_limit(group_config)
 
 
+def eager_archive_pipeline_phase(
+    job: dict[str, Any],
+    groups: dict[str, dict[str, Any]],
+) -> str:
+    running = running_eager_batches(job)
+    running_count = len(running)
+    if running_count == 0:
+        return "eager_archive:pipeline=0/0"
+    running_groups = {str(batch.get("group") or "") for batch in running}
+    if len(running_groups) == 1:
+        group_name = next(iter(running_groups))
+        group_config = groups.get(group_name)
+        if isinstance(group_config, dict):
+            return (
+                f"eager_archive:{group_name}:pipeline="
+                f"{running_count}/{eager_archive_pipeline_limit(group_config)}"
+            )
+    return f"eager_archive:pipeline={running_count}/{EAGER_ARCHIVE_PIPELINE_BATCHES}"
+
+
 def next_eager_batch_id(job: dict[str, Any], group_name: str, paths: list[str]) -> str:
     eager = eager_archive_state(job)
     batch_number = int(eager.get("next_batch_number") or 1)
@@ -9317,9 +9337,7 @@ def run_eager_archive_groups(
 
             running = running_eager_batches(job)
             if running:
-                job["phase"] = (
-                    f"eager_archive:pipeline={len(running)}/{EAGER_ARCHIVE_PIPELINE_BATCHES}"
-                )
+                job["phase"] = eager_archive_pipeline_phase(job, groups)
                 save_job(job)
                 retry_sleep(EAGER_ARCHIVE_WAIT_SECONDS, job_id=job_id)
                 continue
