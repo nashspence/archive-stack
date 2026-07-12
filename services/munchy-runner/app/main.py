@@ -82,6 +82,11 @@ from munchy.profiles import (
     ArchiveContainer,
     EncodeProfile,
 )
+from munchy.review_sweep import (
+    default_encode_profile_for_archive_mode,
+    ensure_review_sweep_has_variants,
+    review_sweep_variants,
+)
 from munchy.source_artifact_bridge import (
     build_preserve_source_artifacts,
     build_strict_source_artifacts,
@@ -602,14 +607,67 @@ class ReviewClipPlanConfig(BaseModel):
         return self
 
 
+class ReviewSweepConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    quality: Any = None
+    max_height: Any = None
+    audio_bitrate: Any = None
+    axes: dict[str, Any] | list[dict[str, Any]] | None = None
+    variants: list[dict[str, Any]] = Field(default_factory=list)
+    profile_id_template: str | None = Field(default=None, min_length=1, max_length=180)
+    route_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("profile_id_template")
+    @classmethod
+    def validate_profile_id_template(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = value.strip()
+        if not text:
+            raise ValueError("review.sweep.profile_id_template must not be blank")
+        return text
+
+    @field_validator("route_ids")
+    @classmethod
+    def normalize_route_ids(cls, value: list[str]) -> list[str]:
+        route_ids: list[str] = []
+        for item in value:
+            route_id = str(item).strip()
+            if not route_id:
+                raise ValueError("review.sweep.route_ids must not contain blanks")
+            if route_id not in route_ids:
+                route_ids.append(route_id)
+        return route_ids
+
+    @model_validator(mode="after")
+    def validate_sweep(self) -> "ReviewSweepConfig":
+        try:
+            ensure_review_sweep_has_variants(self.model_dump(exclude_none=True))
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
+
+
 class ReviewConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     device_id: str = Field(min_length=1, max_length=180)
-    route_id: str = Field(min_length=1, max_length=180)
-    profile_id: str = Field(min_length=1, max_length=180)
+    route_id: str | None = Field(default=None, min_length=1, max_length=180)
+    profile_id: str | None = Field(default=None, min_length=1, max_length=180)
     target: TargetUploadConfig = Field(default_factory=TargetUploadConfig)
     clip_plan: ReviewClipPlanConfig | None = None
+    sweep: ReviewSweepConfig | None = None
+
+    @model_validator(mode="after")
+    def validate_review_shape(self) -> "ReviewConfig":
+        if self.sweep is None:
+            if not self.route_id or not self.profile_id:
+                raise ValueError("review jobs require route_id and profile_id unless sweep is set")
+            return self
+        if self.route_id or self.profile_id:
+            raise ValueError("review sweep jobs must not set top-level route_id or profile_id")
+        return self
 
 
 class NotifyConfig(BaseModel):
@@ -1248,21 +1306,29 @@ class CreateJobRequest(BaseModel):
                     f"audio group {name!r} cannot run archive_video or qcut_video"
                 )
         if self.workflow_mode == "review":
-            for name, _archive_mode, tasks in task_lists:
+            if self.review is None:
+                raise ValueError("review jobs require review config")
+            if not self.review.target.enabled:
+                raise ValueError("review jobs require review.target.enabled")
+            reviewable_group_found = False
+            for name, archive_mode, tasks in task_lists:
                 if any(
                     task in tasks for task in ("archive_video", "archive_audio")
                 ):
                     raise ValueError(
                         f"review group {name!r} cannot run archive_video or archive_audio"
                     )
-                if not any(task in tasks for task in ("qcut_video", "audio_review")):
+                has_review_task = any(task in tasks for task in ("qcut_video", "audio_review"))
+                if has_review_task:
+                    reviewable_group_found = True
+                if archive_mode == "preserve":
+                    continue
+                if not has_review_task:
                     raise ValueError(
                         f"review group {name!r} requires qcut_video or audio_review"
                     )
-            if self.review is None:
-                raise ValueError("review jobs require review config")
-            if not self.review.target.enabled:
-                raise ValueError("review jobs require review.target.enabled")
+            if not reviewable_group_found:
+                raise ValueError("review jobs require at least one reviewable group")
             if self.cleanup_local_on_success:
                 raise ValueError("review jobs cannot cleanup local work on success")
             return self
@@ -5425,6 +5491,7 @@ RESUMABLE_RUNTIME_JOB_KEYS = (
     "input_upload_progress",
     "profile_routing_result",
     "review_handoff_result",
+    "review_sweep_result",
     "riverhog_handoff_metrics",
     "riverhog_session_upload",
     "riverhog_upload_result",
@@ -7373,7 +7440,12 @@ def cancel_riverhog_upload_session(job: dict[str, Any], *, reason: str) -> None:
         save_job(job)
 
 
-def render_job_template(value: str, job: dict[str, Any]) -> str:
+def render_job_template(
+    value: str,
+    job: dict[str, Any],
+    *,
+    context: Mapping[str, str] | None = None,
+) -> str:
     review = dict_or_empty(job.get("review"))
     mapping = {
         "job_id": str(job.get("job_id") or ""),
@@ -7384,6 +7456,8 @@ def render_job_template(value: str, job: dict[str, Any]) -> str:
         "collection_slug": str(job.get("collection_slug") or ""),
         "collection_timestamp": str(job.get("collection_timestamp") or ""),
     }
+    if context is not None:
+        mapping.update({str(key): str(value) for key, value in context.items()})
     try:
         return value.format(**mapping)
     except KeyError as exc:
@@ -7448,6 +7522,8 @@ def upload_target(
     component: str = "review_handoff",
     event: NotifyEvent = "review.handoff",
     allow_empty: bool = True,
+    emit_notification: bool = True,
+    template_context: Mapping[str, str] | None = None,
 ) -> dict[str, Any] | None:
     if config is None:
         config = dict_or_empty(dict_or_empty(job.get("review")).get("target"))
@@ -7466,22 +7542,27 @@ def upload_target(
             "source": str(source_dir),
         }
     method = str(config.get("method") or "command")
-    notify_job_event(
-        job,
-        event,
-        f"{source_label.title()} artifacts are complete; handing off for upload.",
-        extra={
-            "source_dir": str(source_dir),
-            "source_label": source_label,
-            "method": method,
-            "artifact_count": artifact_count,
-        },
-    )
+    if emit_notification:
+        notify_job_event(
+            job,
+            event,
+            f"{source_label.title()} artifacts are complete; handing off for upload.",
+            extra={
+                "source_dir": str(source_dir),
+                "source_label": source_label,
+                "method": method,
+                "artifact_count": artifact_count,
+            },
+        )
     if method == "rclone":
         destination = str(config.get("destination") or "").strip()
         if not destination:
             raise RuntimeError("target upload destination is required for rclone")
-        rendered_destination = render_job_template(destination, job)
+        rendered_destination = render_job_template(
+            destination,
+            job,
+            context=template_context,
+        )
         mode = str(config.get("mode") or "copy")
         if mode not in {"copy", "sync"}:
             raise RuntimeError(f"unsupported target upload rclone mode: {mode}")
@@ -7530,9 +7611,16 @@ def upload_target(
     env["MUNCHY_COLLECTION_SLUG"] = str(job.get("collection_slug") or "")
     env["MUNCHY_COLLECTION_TIMESTAMP"] = str(job.get("collection_timestamp") or "")
     review = dict_or_empty(job.get("review"))
-    env["MUNCHY_REVIEW_DEVICE_ID"] = str(review.get("device_id") or "")
-    env["MUNCHY_REVIEW_ROUTE_ID"] = str(review.get("route_id") or "")
-    env["MUNCHY_REVIEW_PROFILE_ID"] = str(review.get("profile_id") or "")
+    review_context = {
+        "device_id": str(review.get("device_id") or ""),
+        "route_id": str(review.get("route_id") or ""),
+        "profile_id": str(review.get("profile_id") or ""),
+    }
+    if template_context is not None:
+        review_context.update({str(key): str(value) for key, value in template_context.items()})
+    env["MUNCHY_REVIEW_DEVICE_ID"] = review_context["device_id"]
+    env["MUNCHY_REVIEW_ROUTE_ID"] = review_context["route_id"]
+    env["MUNCHY_REVIEW_PROFILE_ID"] = review_context["profile_id"]
 
     def command_operation() -> dict[str, Any]:
         result = run_target_command(
@@ -7554,6 +7642,339 @@ def upload_target(
         component=component,
         operation=command_operation,
     )
+
+
+def review_sweep_config(job: Mapping[str, Any]) -> dict[str, Any] | None:
+    if str(job.get("workflow_mode") or "") != "review":
+        return None
+    review = job.get("review")
+    if not isinstance(review, Mapping):
+        return None
+    sweep = review.get("sweep")
+    return dict(sweep) if isinstance(sweep, Mapping) else None
+
+
+def is_review_sweep_job(job: Mapping[str, Any]) -> bool:
+    return review_sweep_config(job) is not None
+
+
+def review_tasks_for_group(group_config: Mapping[str, Any]) -> list[TaskName]:
+    return [
+        cast(TaskName, str(task))
+        for task in group_config.get("tasks") or []
+        if str(task) in {"qcut_video", "audio_review"}
+    ]
+
+
+def group_base_encode_profile(group_config: Mapping[str, Any]) -> dict[str, Any]:
+    profile = group_config.get("encode_profile")
+    if isinstance(profile, Mapping):
+        return copy.deepcopy(dict(profile))
+    archive_mode = normalize_archive_mode(str(group_config.get("archive_mode") or "av1_nvenc"))
+    return default_encode_profile_for_archive_mode(archive_mode)
+
+
+def review_sweep_route_file_states(
+    upload: dict[str, Any],
+    groups: dict[str, dict[str, Any]],
+    *,
+    requested_route_ids: set[str],
+) -> dict[str, dict[str, Any]]:
+    routes: dict[str, dict[str, Any]] = {}
+    selected_groups = set(groups)
+    for file_state in mutable_primary_upload_files_for_groups(upload, selected_groups):
+        group_name = upload_file_resolved_group(file_state)
+        if not group_name or group_name not in groups:
+            continue
+        group_config = groups[group_name]
+        tasks = review_tasks_for_group(group_config)
+        if not tasks:
+            continue
+        route_id = str(file_state.get("profile_route_id") or group_name).strip()
+        if not route_id:
+            continue
+        if requested_route_ids and route_id not in requested_route_ids:
+            continue
+        route = routes.setdefault(
+            route_id,
+            {
+                "route_id": route_id,
+                "group_name": group_name,
+                "tasks": tasks,
+                "file_states": [],
+            },
+        )
+        if route["group_name"] != group_name:
+            raise RuntimeError(
+                f"review sweep route {route_id!r} resolved to multiple groups: "
+                f"{route['group_name']}, {group_name}"
+            )
+        route["file_states"].append(file_state)
+    if requested_route_ids:
+        missing = sorted(requested_route_ids - set(routes))
+        if missing:
+            raise RuntimeError(
+                "review sweep route(s) had no reviewable files: " + ", ".join(missing)
+            )
+    if not routes:
+        raise RuntimeError("review sweep found no reviewable routes")
+    return routes
+
+
+def prepare_review_sweep_route_input(
+    *,
+    upload: dict[str, Any],
+    input_dir: Path,
+    route_input_root: Path,
+    group_name: str,
+    file_states: list[dict[str, Any]],
+) -> None:
+    if route_input_root.exists():
+        shutil.rmtree(route_input_root)
+    route_input_root.mkdir(parents=True, exist_ok=True)
+    all_file_states = [*file_states, *sidecar_evidence_files_for_primaries(upload, file_states)]
+    for file_state in all_file_states:
+        rel_path = upload_file_group_rel_for_state(file_state, group_name)
+        source = input_dir / group_name / rel_path
+        if not source.is_file():
+            raise RuntimeError(f"review sweep source file is missing: {source}")
+        link_or_copy(source, route_input_root / group_name / rel_path)
+    write_group_filesystem_metadata(route_input_root, group_name, all_file_states)
+
+
+def review_sweep_result_state(job: dict[str, Any]) -> dict[str, Any]:
+    result = job.setdefault(
+        "review_sweep_result",
+        {
+            "kind": "munchy.review-sweep",
+            "schema_version": 1,
+            "started_at": now_iso(),
+            "routes": {},
+            "variants": [],
+        },
+    )
+    if not isinstance(result, dict):
+        result = {
+            "kind": "munchy.review-sweep",
+            "schema_version": 1,
+            "started_at": now_iso(),
+            "routes": {},
+            "variants": [],
+        }
+        job["review_sweep_result"] = result
+    return result
+
+
+def clear_handoff_attempt_state(job: dict[str, Any], result_key: str) -> None:
+    job.pop(result_key, None)
+    attempts = job.get("handoff_attempts")
+    if not isinstance(attempts, dict):
+        return
+    for key in (
+        result_key,
+        f"{result_key}_last_attempt_at",
+        f"{result_key}_succeeded_at",
+        f"{result_key}_next_retry_at",
+        f"{result_key}_last_error",
+    ):
+        attempts.pop(key, None)
+    if not attempts:
+        job.pop("handoff_attempts", None)
+
+
+def run_review_sweep_job(
+    job: dict[str, Any],
+    *,
+    input_upload: dict[str, Any],
+    groups: dict[str, dict[str, Any]],
+    input_dir: Path,
+    gpu_job_root: Path,
+    review_dir: Path,
+) -> None:
+    sweep = review_sweep_config(job)
+    if sweep is None:
+        raise RuntimeError("job is not a review sweep")
+    job_id = str(job["job_id"])
+    requested_route_ids = {
+        str(route_id).strip()
+        for route_id in sweep.get("route_ids") or []
+        if str(route_id).strip()
+    }
+    routes = review_sweep_route_file_states(
+        input_upload,
+        groups,
+        requested_route_ids=requested_route_ids,
+    )
+    route_variants: dict[str, list[dict[str, Any]]] = {}
+    total_variants = 0
+    for route_id, route in sorted(routes.items()):
+        group_name = str(route["group_name"])
+        group_config = groups[group_name]
+        variants = review_sweep_variants(
+            sweep,
+            base_profile=group_base_encode_profile(group_config),
+            route_id=route_id,
+        )
+        if not variants:
+            raise RuntimeError(f"review sweep route {route_id!r} produced no variants")
+        route_variants[route_id] = variants
+        total_variants += len(variants)
+
+    result = review_sweep_result_state(job)
+    result["routes"] = {
+        route_id: {
+            "route_id": route_id,
+            "group": route["group_name"],
+            "tasks": route["tasks"],
+            "files": len(route["file_states"]),
+            "variants": [variant["profile_id"] for variant in route_variants[route_id]],
+        }
+        for route_id, route in sorted(routes.items())
+    }
+    result["variants_total"] = total_variants
+    result["variants_completed"] = len(result.get("variants") or [])
+    job["phase"] = "review_sweep"
+    save_job(job)
+
+    token = acquire_job_gpu(job)
+    notified_handoff = False
+    completed = len(result.get("variants") or [])
+    try:
+        for route_id, route in sorted(routes.items()):
+            group_name = str(route["group_name"])
+            group_config = groups[group_name]
+            tasks = cast(list[TaskName], list(route["tasks"]))
+            route_input_root = gpu_job_root / "review-sweep-input" / safe_local_id(route_id)
+            prepare_review_sweep_route_input(
+                upload=input_upload,
+                input_dir=input_dir,
+                route_input_root=route_input_root,
+                group_name=group_name,
+                file_states=cast(list[dict[str, Any]], route["file_states"]),
+            )
+            for variant in route_variants[route_id]:
+                raise_if_job_cancelled(job_id)
+                profile_id = validate_profile_group_name(str(variant["profile_id"]))
+                variant_key = f"{route_id}/{profile_id}"
+                if any(
+                    isinstance(item, dict) and item.get("variant") == variant_key
+                    for item in result.get("variants") or []
+                ):
+                    continue
+                variant_archive_dir = (
+                    gpu_job_root
+                    / "review-sweep-archive"
+                    / safe_local_id(route_id)
+                    / safe_local_id(profile_id)
+                )
+                variant_review_dir = (
+                    review_dir / safe_local_id(route_id) / safe_local_id(profile_id)
+                )
+                gpu_job_id = gpu_group_job_id(job_id, f"{route_id}-{profile_id}")
+                gpu_payload = {
+                    "job_id": gpu_job_id,
+                    "input_dir": gpu_runtime_container_path(route_input_root / group_name),
+                    "archive_dir": gpu_runtime_container_path(variant_archive_dir),
+                    "review_dir": gpu_runtime_container_path(variant_review_dir),
+                    "profile": profile_id,
+                    "tasks": tasks,
+                    "collection_slug": str(job.get("collection_slug") or ""),
+                    "collection_timestamp": job.get("collection_timestamp"),
+                    "riverhog": {"enabled": False},
+                    "review_upload": {"enabled": False},
+                    "container_metadata_required": gpu_tasks_require_container_metadata(
+                        tasks,
+                        group_config,
+                    ),
+                    "encode_profile": variant["encode_profile"],
+                }
+                if group_config.get("max_parallel_encodes") is not None:
+                    gpu_payload["max_parallel_encodes"] = group_config["max_parallel_encodes"]
+                review_clip_plan = dict_or_empty(dict_or_empty(job.get("review")).get("clip_plan"))
+                if review_clip_plan:
+                    gpu_payload["review_clip_plan"] = copy.deepcopy(review_clip_plan)
+                for task_name in ("qcut_video", "audio_review"):
+                    if task_name not in tasks:
+                        continue
+                    review_plan = load_shared_review_plan(
+                        str(job["input_upload_id"]),
+                        route_id,
+                        task_name,
+                    )
+                    if review_plan is not None:
+                        gpu_payload.setdefault("review_plans", {})[task_name] = review_plan
+                job["phase"] = f"review_sweep:{route_id}:{profile_id}"
+                job.setdefault("gpu_payloads", {})[variant_key] = gpu_payload
+                save_job(job)
+                start_gpu_job(gpu_payload)
+                gpu_result = wait_gpu_job(gpu_job_id, gpu_payload=gpu_payload, job=job)
+                job.setdefault("gpu_results", {})[variant_key] = gpu_result
+                remember_review_plans_from_gpu_result(job, route_id, gpu_result)
+                save_job(job)
+
+                if not notified_handoff:
+                    notify_job_event(
+                        job,
+                        "review.handoff",
+                        "Review sweep artifacts are complete; handing off for upload.",
+                        extra={
+                            "component": "review_sweep",
+                            "routes_total": len(routes),
+                            "variants_total": total_variants,
+                        },
+                    )
+                    notified_handoff = True
+                result_key = f"review_sweep_upload_{safe_local_id(variant_key)}"
+                upload_result = upload_target(
+                    job,
+                    variant_review_dir,
+                    config=dict_or_empty(dict_or_empty(job.get("review")).get("target")),
+                    source_label="review sweep",
+                    result_key=result_key,
+                    phase="review_sweep_handoff",
+                    component="review_sweep_handoff",
+                    event="review.handoff",
+                    allow_empty=False,
+                    emit_notification=False,
+                    template_context={
+                        "route_id": route_id,
+                        "profile_id": profile_id,
+                    },
+                )
+                latest = read_state("job", job_id)
+                if isinstance(latest, dict):
+                    job.clear()
+                    job.update(latest)
+                clear_handoff_attempt_state(job, result_key)
+                result = review_sweep_result_state(job)
+                result.setdefault("variants", []).append(
+                    {
+                        "variant": variant_key,
+                        "route_id": route_id,
+                        "profile_id": profile_id,
+                        "tasks": tasks,
+                        "encode_settings": variant.get("encode_settings") or {},
+                        "axis_values": variant.get("axis_values") or {},
+                        "upload_result": upload_result,
+                        "completed_at": now_iso(),
+                    }
+                )
+                completed += 1
+                result["variants_completed"] = completed
+                job["phase"] = (
+                    f"review_sweep:{completed}/{total_variants}"
+                )
+                save_job(job)
+    finally:
+        release_job_gpu(job, token)
+
+    result = review_sweep_result_state(job)
+    result["finished_at"] = now_iso()
+    result["variants_completed"] = len(result.get("variants") or [])
+    job["review_handoff_result"] = result
+    job["collection_archive_target_upload_result"] = None
+    job["riverhog_upload_result"] = None
+    save_job(job)
 
 
 def ensure_job_groups(job: dict[str, Any], input_upload: dict[str, Any]) -> dict[str, Any]:
@@ -8299,6 +8720,7 @@ def compact_job_response(job: dict[str, Any], *, include_queue: bool = True) -> 
         "encode_progress",
         "riverhog_upload_progress",
         "riverhog_handoff_metrics",
+        "review_sweep_result",
         "review_handoff_result",
         "collection_archive_target_upload_result",
         "riverhog_upload_result",
@@ -8939,6 +9361,27 @@ def run_job(job_id: str) -> None:
             )
             raise_if_job_cancelled(job_id)
 
+        if is_review_sweep_job(job):
+            run_review_sweep_job(
+                job,
+                input_upload=input_upload,
+                groups=groups,
+                input_dir=input_dir,
+                gpu_job_root=gpu_job_root,
+                review_dir=review_dir,
+            )
+            raise_if_job_cancelled(job_id)
+            job["phase"] = "done"
+            job["state"] = "succeeded"
+            job["finished_at"] = now_iso()
+            save_job(job)
+            if should_cleanup_local_work_on_success(job):
+                cleanup_terminal_job(job)
+            compact_terminal_job_state(job)
+            save_job(job)
+            notify_job_event(job, "job.succeeded", "Munchy job completed successfully.")
+            return
+
         gpu_work: list[tuple[str, dict[str, Any], list[TaskName]]] = []
         for group_name, group_config in groups.items():
             if str(group_name) in eager_groups:
@@ -9355,6 +9798,12 @@ def capabilities() -> dict[str, Any]:
             "methods": ["rclone", "command"],
             "modes": ["copy", "sync"],
             "template_fields": ["job_id", "device_id", "route_id", "profile_id", "run_id"],
+            "sweep": {
+                "axes": ["quality", "max_height", "audio_bitrate"],
+                "custom_axes": "encode-profile dotted paths",
+                "variants": True,
+                "single_runner_job": True,
+            },
             "clip_plan": {
                 "target_seconds": DEFAULT_REVIEW_CLIP_TARGET_SECONDS,
                 "min_seconds": DEFAULT_REVIEW_CLIP_MIN_SECONDS,
@@ -9609,36 +10058,47 @@ async def tusd_hooks(request: Request) -> JSONResponse:
 @app.post("/v1/input-uploads", status_code=201)
 def create_input_upload(req: CreateInputUploadRequest) -> dict[str, Any]:
     with state_lock:
-        upload_id = req.upload_id or uuid.uuid4().hex
-        if state_exists("input-upload", upload_id):
-            raise HTTPException(status_code=409, detail=f"input upload already exists: {upload_id}")
-        require_input_upload_capacity(req.files, req.storage_hint)
-        sum(item.bytes for item in req.files)
-        files = []
-        for item in req.files:
-            target_path = target_path_for(upload_id, item.path)
-            files.append(
-                {
-                    "path": item.path,
-                    "bytes": item.bytes,
-                    "sha256": item.sha256,
-                    "filesystem_metadata": item.filesystem_metadata,
-                    "target_path": target_path,
-                    "input_upload_id": upload_id,
-                    "upload_id": tusd_upload_id_for_target_path(target_path),
-                    "upload_url": None,
-                    "structured_routing": req.storage_hint.structured_routing,
-                }
-            )
-        upload = {
-            "upload_id": upload_id,
-            "state": "uploading",
-            "created_at": now_iso(),
-            "files": files,
-            "storage_hint": req.storage_hint.model_dump(exclude_none=True),
-            "tusd_creation_url": TUSD_PUBLIC_BASE_URL,
-        }
-        return save_input_upload(upload)
+        return create_input_upload_state(
+            upload_id=req.upload_id or uuid.uuid4().hex,
+            files=req.files,
+            storage_hint=req.storage_hint,
+        )
+
+
+def create_input_upload_state(
+    *,
+    upload_id: str,
+    files: list[InputFileSpec],
+    storage_hint: InputUploadStorageHint,
+) -> dict[str, Any]:
+    if state_exists("input-upload", upload_id):
+        raise HTTPException(status_code=409, detail=f"input upload already exists: {upload_id}")
+    require_input_upload_capacity(files, storage_hint)
+    file_states = []
+    for item in files:
+        target_path = target_path_for(upload_id, item.path)
+        file_states.append(
+            {
+                "path": item.path,
+                "bytes": item.bytes,
+                "sha256": item.sha256,
+                "filesystem_metadata": item.filesystem_metadata,
+                "target_path": target_path,
+                "input_upload_id": upload_id,
+                "upload_id": tusd_upload_id_for_target_path(target_path),
+                "upload_url": None,
+                "structured_routing": storage_hint.structured_routing,
+            }
+        )
+    upload = {
+        "upload_id": upload_id,
+        "state": "uploading",
+        "created_at": now_iso(),
+        "files": file_states,
+        "storage_hint": storage_hint.model_dump(exclude_none=True),
+        "tusd_creation_url": TUSD_PUBLIC_BASE_URL,
+    }
+    return save_input_upload(upload)
 
 
 @app.get("/v1/input-uploads/{upload_id}")
@@ -9767,59 +10227,63 @@ def _create_or_resume_input_file_upload(upload_id: str, rel_path: str) -> dict[s
     )
 
 
-@app.post("/v1/jobs", status_code=202)
-def create_job(req: CreateJobRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
+def create_job_state_from_request(req: CreateJobRequest) -> dict[str, Any]:
     if req.input_upload_id is None:
         raise HTTPException(status_code=400, detail="input_upload_id is required")
+    input_upload = load_input_upload(req.input_upload_id)
+    validate_job_storage_hint(input_upload, req)
+    groups = resolve_job_groups(input_upload, req)
+    job_id = req.job_id or uuid.uuid4().hex
+    if state_exists("job", job_id):
+        raise HTTPException(status_code=409, detail=f"job already exists: {job_id}")
+    collection_archive = req.collection_archive.model_dump()
+    riverhog = {
+        **req.collection_archive.riverhog.model_dump(),
+        "enabled": req.workflow_mode == "collection_archive"
+        and req.collection_archive.destination == "riverhog",
+    }
+    job = {
+        "job_id": job_id,
+        "state": "queued",
+        "phase": "queued",
+        "created_at": now_iso(),
+        "input_upload_id": req.input_upload_id,
+        "run_id": req.run_id or req.collection_timestamp or "",
+        "collection_slug": req.collection_slug or "",
+        "collection_timestamp": req.collection_timestamp or "",
+        "workflow_mode": req.workflow_mode,
+        "archive_mode": req.archive_mode,
+        "tasks": grouped_task_union(groups) if req.groups else req.tasks,
+        "profile": req.encode_profile.name
+        if req.encode_profile and req.encode_profile.name
+        else "av1-nvenc-high",
+        "encode_profile": req.encode_profile.runner_payload()
+        if req.encode_profile is not None
+        else None,
+        "groups": groups,
+        "profile_routing": req.profile_routing.model_dump(exclude_none=True)
+        if req.profile_routing is not None
+        else None,
+        "riverhog_expected_primary_files_total": 0
+        if req.profile_routing is not None
+        else (
+            expected_riverhog_primary_files_total(input_upload, groups)
+            if riverhog["enabled"]
+            else 0
+        ),
+        "collection_archive": collection_archive,
+        "riverhog": riverhog,
+        "review": req.review.model_dump(exclude_none=True) if req.review is not None else None,
+        "notify": req.notify.model_dump(),
+        "cleanup_local_on_success": req.cleanup_local_on_success,
+    }
+    return save_job(job)
+
+
+@app.post("/v1/jobs", status_code=202)
+def create_job(req: CreateJobRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
     with state_lock:
-        input_upload = load_input_upload(req.input_upload_id)
-        validate_job_storage_hint(input_upload, req)
-        groups = resolve_job_groups(input_upload, req)
-        job_id = req.job_id or uuid.uuid4().hex
-        if state_exists("job", job_id):
-            raise HTTPException(status_code=409, detail=f"job already exists: {job_id}")
-        collection_archive = req.collection_archive.model_dump()
-        riverhog = {
-            **req.collection_archive.riverhog.model_dump(),
-            "enabled": req.workflow_mode == "collection_archive"
-            and req.collection_archive.destination == "riverhog",
-        }
-        job = {
-            "job_id": job_id,
-            "state": "queued",
-            "phase": "queued",
-            "created_at": now_iso(),
-            "input_upload_id": req.input_upload_id,
-            "run_id": req.run_id or req.collection_timestamp or "",
-            "collection_slug": req.collection_slug or "",
-            "collection_timestamp": req.collection_timestamp or "",
-            "workflow_mode": req.workflow_mode,
-            "archive_mode": req.archive_mode,
-            "tasks": grouped_task_union(groups) if req.groups else req.tasks,
-            "profile": req.encode_profile.name
-            if req.encode_profile and req.encode_profile.name
-            else "av1-nvenc-high",
-            "encode_profile": req.encode_profile.runner_payload()
-            if req.encode_profile is not None
-            else None,
-            "groups": groups,
-            "profile_routing": req.profile_routing.model_dump(exclude_none=True)
-            if req.profile_routing is not None
-            else None,
-            "riverhog_expected_primary_files_total": 0
-            if req.profile_routing is not None
-            else (
-                expected_riverhog_primary_files_total(input_upload, groups)
-                if riverhog["enabled"]
-                else 0
-            ),
-            "collection_archive": collection_archive,
-            "riverhog": riverhog,
-            "review": req.review.model_dump() if req.review is not None else None,
-            "notify": req.notify.model_dump(),
-            "cleanup_local_on_success": req.cleanup_local_on_success,
-        }
-        save_job(job)
+        job = create_job_state_from_request(req)
     notify_job_event(job, "job.received", "Munchy job received.")
     schedule_pending_jobs(background_tasks)
     return job

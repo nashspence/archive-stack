@@ -21,6 +21,7 @@ from munchy.profile_routing import (
     profile_routing_plan,
 )
 from munchy.profiles import EncodeProfile, ProfileError, load_encode_profiles
+from munchy.review_sweep import review_archive_mode_for_profile, review_tasks_for_archive_mode
 from munchy.runner_client import (
     ATTENTION_STYLE,
     DEFAULT_UPLOAD_CHUNK_MIB,
@@ -497,6 +498,46 @@ def _storage_groups(groups: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[s
     }
 
 
+def _review_group_payloads(
+    groups: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for name, group in groups.items():
+        payload = deepcopy(dict(group))
+        archive_mode = _normalize_mode(
+            str(payload.get("archive_mode") or "av1_nvenc"),
+            default="av1_nvenc",
+            allowed=ARCHIVE_MODES,
+            label=f"group {name} archive_mode",
+        )
+        profile = payload.get("encode_profile")
+        if isinstance(profile, Mapping):
+            archive_mode = review_archive_mode_for_profile(profile)
+        if archive_mode == "preserve":
+            review_tasks: list[str] = []
+        else:
+            configured_review_tasks = [
+                str(task)
+                for task in _sequence(payload.get("tasks"))
+                if str(task) in {"qcut_video", "audio_review"}
+            ]
+            review_tasks = configured_review_tasks or review_tasks_for_archive_mode(archive_mode)
+        payload["archive_mode"] = archive_mode
+        payload["tasks"] = review_tasks
+        out[str(name)] = payload
+    return out
+
+
+def _grouped_tasks(groups: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    tasks: list[str] = []
+    for group in groups.values():
+        for task in _sequence(group.get("tasks")):
+            text = str(task)
+            if text not in tasks:
+                tasks.append(text)
+    return tasks
+
+
 def _effective_group(
     *,
     group: str | None,
@@ -715,6 +756,10 @@ def _job_request(
     tasks = (
         list(default_tasks) if raw_tasks is None else [str(task) for task in _sequence(raw_tasks)]
     )
+    if workflow == "review":
+        groups = _review_group_payloads(groups)
+        grouped_tasks = _grouped_tasks(groups)
+        tasks = grouped_tasks or [task for task in tasks if task in {"qcut_video", "audio_review"}]
     generated_job_id = _safe_id(f"{collection_slug or workflow}-{timestamp}")
     final_job_id = str(job_id or defaults.get("job_id") or generated_job_id).strip()
     final_upload_id = str(

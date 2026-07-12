@@ -248,6 +248,46 @@ def test_review_job_request_accepts_clip_plan_config(
         )
 
 
+def test_review_job_request_accepts_general_sweep_config(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+
+    req = runner.CreateJobRequest(
+        workflow_mode="review",
+        groups={
+            "video": {"archive_mode": "av1_nvenc", "tasks": ["qcut_video"]},
+            "photo": {"archive_mode": "preserve", "tasks": []},
+        },
+        review={
+            "device_id": "camera",
+            "target": {"enabled": True, "destination": "clover:reviews/{route_id}/{profile_id}"},
+            "sweep": {
+                "axes": {
+                    "archive.max_height": [720, 1080],
+                    "archive.audio.bitrate": ["64k", "96k"],
+                },
+                "variants": [
+                    {
+                        "profile_id": "q40",
+                        "encode_settings": {"archive": {"quality": 40}},
+                    }
+                ],
+            },
+        },
+    )
+
+    assert req.review is not None
+    assert req.review.route_id is None
+    assert req.review.profile_id is None
+    assert req.review.sweep is not None
+    assert req.review.sweep.axes == {
+        "archive.max_height": [720, 1080],
+        "archive.audio.bitrate": ["64k", "96k"],
+    }
+
+
 def test_review_job_storage_hint_uses_review_target_destination(
     tmp_path: Path,
     monkeypatch,
@@ -6645,6 +6685,145 @@ def test_run_job_reuses_stored_shared_review_plan(
         "min_seconds": 4,
         "max_seconds": 7,
     }
+
+
+def test_run_job_runs_review_sweep_as_one_job(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    data_path = runner.tusd_data_path("upload-a")
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.write_bytes(b"video")
+    runner.save_input_upload(
+        {
+            "upload_id": "upload-1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "storage_hint": {
+                "workflow_mode": "review",
+                "archive_mode": "av1_nvenc",
+                "tasks": ["qcut_video"],
+                "groups": {
+                    "video": {"archive_mode": "av1_nvenc", "tasks": ["qcut_video"]},
+                    "photo": {"archive_mode": "preserve", "tasks": []},
+                },
+                "structured_routing": True,
+            },
+            "files": [
+                {
+                    "path": "DCIM/a.mp4",
+                    "bytes": 5,
+                    "upload_id": "upload-a",
+                    "resolved_group": "video",
+                    "resolved_group_rel": "a.mp4",
+                    "profile_route_id": "video-4k",
+                    "profile_route_action": "upload",
+                    "profile_routed_at": "2026-01-01T00:00:00Z",
+                }
+            ],
+        }
+    )
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "queued",
+            "phase": "queued",
+            "workflow_mode": "review",
+            "input_upload_id": "upload-1",
+            "review": {
+                "device_id": "camera",
+                "target": {
+                    "enabled": True,
+                    "destination": "clover:reviews/{route_id}/{profile_id}",
+                },
+                "sweep": {"quality": [24, 28], "route_ids": ["video-4k"]},
+            },
+            "groups": {
+                "video": {
+                    "archive_mode": "av1_nvenc",
+                    "tasks": ["qcut_video"],
+                    "profile": "profile",
+                    "encode_profile": {
+                        "schema_version": 1,
+                        "target": "munchy-av1-nvenc",
+                        "name": "base",
+                        "archive": {
+                            "codec": "av1_nvenc",
+                            "container": "webm",
+                            "quality": 40,
+                        },
+                    },
+                },
+                "photo": {"archive_mode": "preserve", "tasks": []},
+            },
+        }
+    )
+    payloads: list[dict[str, object]] = []
+    uploads: list[tuple[str, str, bool]] = []
+    events: list[str] = []
+    monkeypatch.setattr(runner, "acquire_job_gpu", lambda job: "token")
+    monkeypatch.setattr(runner, "release_job_gpu", lambda job, token: None)
+    monkeypatch.setattr(runner, "start_gpu_job", lambda payload: payloads.append(payload))
+
+    def fake_wait_gpu_job(gpu_job_id, *, gpu_payload, job):  # type: ignore[no-untyped-def]
+        return {
+            "state": "succeeded",
+            "items": {
+                "qcut_video": {
+                    "plan": {
+                        "kind": "munchy.qcut-plan",
+                        "files": [{"path": gpu_payload["input_dir"]}],
+                    }
+                }
+            },
+        }
+
+    def fake_upload_target(job, source_dir, **kwargs):  # type: ignore[no-untyped-def]
+        review = job["review"]
+        template_context = kwargs["template_context"]
+        assert "route_id" not in review
+        assert "profile_id" not in review
+        uploads.append(
+            (
+                template_context["route_id"],
+                template_context["profile_id"],
+                bool(kwargs.get("emit_notification", True)),
+            )
+        )
+        return {"status": "uploaded", "source": str(source_dir)}
+
+    monkeypatch.setattr(runner, "wait_gpu_job", fake_wait_gpu_job)
+    monkeypatch.setattr(runner, "upload_target", fake_upload_target)
+    monkeypatch.setattr(
+        runner,
+        "notify_job_event",
+        lambda job, event, message, **kwargs: events.append(event),
+    )
+    monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
+
+    runner.run_job("job-1")
+
+    assert len(payloads) == 2
+    assert [payload["encode_profile"]["archive"]["quality"] for payload in payloads] == [24, 28]
+    assert "review_plans" not in payloads[0]
+    second_plan = payloads[1]["review_plans"]["qcut_video"]  # type: ignore[index]
+    assert second_plan["kind"] == "munchy.qcut-plan"
+    assert uploads == [
+        ("video-4k", "q24", False),
+        ("video-4k", "q28", False),
+    ]
+    assert events.count("review.handoff") == 1
+    assert events.count("job.succeeded") == 1
+    job = runner.load_job("job-1")
+    assert job["state"] == "succeeded"
+    assert "route_id" not in job["review"]
+    assert "profile_id" not in job["review"]
+    assert job["review_sweep_result"]["variants_total"] == 2
+    assert job["review_sweep_result"]["variants_completed"] == 2
+    assert not any(key.startswith("review_sweep_upload_") for key in job)
+    assert runner.read_state("input-upload", "upload-1") is None
 
 
 def test_preflight_issue_notification_error_keeps_truncated_filename_at_end(

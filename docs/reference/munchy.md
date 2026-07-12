@@ -361,6 +361,60 @@ stream transforms, and source metadata. Rebuild support is represented in
 `inventory/source-inventory.json`; operator-facing rebuild guidance can be
 derived from source inventory plus `encoding/stream-transforms.json`.
 
+## Review Sweeps
+
+Review sweeps are normal runner review jobs with multiple internal review
+variants. They use one input upload, one job id, one cancel/success/failure
+lifecycle, and one operator notification stream. Each variant still uploads to a
+route/profile-specific destination by rendering `{route_id}` and `{profile_id}`
+from the variant context.
+
+```yaml
+job:
+  workflow_mode: review
+  review:
+    device_id: example-camera
+    target:
+      enabled: true
+      method: rclone
+      destination: "clover:munchy/reviews/{device_id}/{route_id}/{profile_id}/{run_id}"
+    sweep:
+      route_ids:
+        - example-camera-video
+      quality: 24..36:4
+      max_height:
+        - 720
+        - 1080
+```
+
+`quality`, `max_height`, and `audio_bitrate` are shorthand axes for common
+encode settings. General axes use encode-profile dotted paths:
+
+```yaml
+job:
+  review:
+    sweep:
+      axes:
+        archive.audio.bitrate:
+          - 48k
+          - 64k
+```
+
+Explicit variants are also supported when a sweep needs named settings that do
+not fit a simple axis:
+
+```yaml
+job:
+  review:
+    sweep:
+      variants:
+        - profile_id: speech-64k
+          encode_settings:
+            archive:
+              audio:
+                bitrate: 64k
+```
+
 ## Review Uploads
 
 Collection-archive target and review uploads can be handed off through rclone. Munchy

@@ -589,6 +589,115 @@ groups:
     assert seen["requested_containers"] == ["webm"]
 
 
+def test_munchy_job_start_uses_review_sweep_config(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    source_dir = tmp_path / "camera"
+    source_dir.mkdir()
+    (source_dir / "clip.mp4").write_bytes(b"video")
+    config = tmp_path / "munchy-review.yaml"
+    config.write_text(
+        """
+job:
+  workflow_mode: review
+  review:
+    device_id: camera
+    target:
+      enabled: true
+      destination: clover:reviews/{route_id}/{profile_id}
+    sweep:
+      quality: 24..28:4
+      max_height:
+        - 720
+        - 1080
+  routing:
+    routes:
+      - id: camera-video
+        group: video
+        when:
+          path:
+            suffix: .mp4
+
+profiles:
+  camera:
+    schema_version: 1
+    target: munchy-av1-nvenc
+    name: camera
+    archive:
+      codec: av1_nvenc
+      container: webm
+      quality: 38
+
+groups:
+  video:
+    profile: camera
+    archive_mode: av1_nvenc
+    tasks:
+      - archive_video
+  preserve:
+    archive_mode: preserve
+    tasks: []
+""".strip(),
+        encoding="utf-8",
+    )
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, base_url: str) -> None:
+            self.base_url = base_url
+
+        def check_ready(
+            self,
+            workflow_mode: str | None = None,
+            *,
+            requested_containers: list[str] | None = None,
+        ) -> None:
+            seen["workflow_mode"] = workflow_mode
+            seen["requested_containers"] = requested_containers
+
+        def create_or_get_input_upload(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
+            seen["request"] = request
+            return {"upload_id": request.upload_id}
+
+        def create_job(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
+            seen["job_payload"] = request.job_payload
+            return {"job_id": request.job_id, "state": "queued"}
+
+        def upload_files(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
+            return {"upload_id": request.upload_id, "state": "uploaded"}
+
+    monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
+
+    result = runner.invoke(
+        app,
+        [
+            "job",
+            "start",
+            str(source_dir),
+            "--runner-url",
+            "http://runner",
+            "--config",
+            str(config),
+            "--timestamp",
+            "20260621T120000Z",
+            "--no-hash-cache",
+            "--no-wait",
+        ],
+    )
+
+    assert result.exit_code == 0
+    request = seen["request"]
+    assert request.storage_hint["workflow_mode"] == "review"
+    assert request.storage_hint["groups"]["video"]["tasks"] == ["qcut_video"]
+    assert request.storage_hint["groups"]["preserve"]["tasks"] == []
+    assert request.job_payload["groups"]["video"]["tasks"] == ["qcut_video"]
+    assert request.job_payload["review"]["sweep"] == {
+        "quality": "24..28:4",
+        "max_height": [720, 1080],
+    }
+    assert "collection_slug" not in request.job_payload
+    assert seen["workflow_mode"] == "review"
+    assert seen["requested_containers"] == ["webm"]
+
+
 def test_munchy_job_start_defaults_audio_mode_to_archive_audio(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
     source_dir = tmp_path / "voice"
     source_dir.mkdir()
