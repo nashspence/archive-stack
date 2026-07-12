@@ -846,6 +846,27 @@ def test_routing_exiftool_summary_exposes_generic_camera_fields() -> None:
     assert facts["exif.rotation"] == 180
 
 
+def test_routing_exiftool_summary_preserves_grouped_tag_facts() -> None:
+    summary = routing_exiftool_summary(
+        {
+            "QuickTime:ChromaFormat": "4:2:2",
+            "QuickTime:Copy1:ChromaFormat": "4:2:2",
+            "QuickTime:Copy2:ChromaFormat": "4:2:0",
+        }
+    )
+    facts = routing_file_facts(
+        "camera/DSC0001.HIF",
+        routing_facts=exiftool_routing_facts(summary),
+    )
+
+    assert summary["tags"]["chroma_format"] == ["4:2:2", "4:2:2", "4:2:0"]
+    assert summary["tags"]["quick_time_chroma_format"] == "4:2:2"
+    assert facts["exiftool.tags.chroma_format"] == ["4:2:2", "4:2:2", "4:2:0"]
+    assert facts["exiftool.tags.quick_time_chroma_format"] == "4:2:2"
+    assert facts["exiftool.tags.quick_time_copy1_chroma_format"] == "4:2:2"
+    assert facts["exiftool.tags.quick_time_copy2_chroma_format"] == "4:2:0"
+
+
 def test_routing_exiftool_camera_direction_prefers_lens_over_camera_type() -> None:
     rear_facts = routing_file_facts(
         "phone/IMG_0001.JPG",

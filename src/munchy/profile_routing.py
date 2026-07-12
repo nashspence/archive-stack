@@ -1135,9 +1135,13 @@ def routing_exiftool_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
     for key, value in payload.items():
         if key == "SourceFile":
             continue
-        tag_key = normalize_tag_key(str(key).split(":")[-1])
+        raw_key = str(key)
+        tag_key = normalize_tag_key(raw_key.split(":")[-1])
         if tag_key:
             add_routing_exiftool_summary_tag(tags, tag_key, value)
+        grouped_tag_key = normalize_tag_key(raw_key)
+        if grouped_tag_key and grouped_tag_key != tag_key:
+            add_routing_exiftool_summary_tag(tags, grouped_tag_key, value)
     return {
         "tags": tags,
         **{key: value for key, value in tags.items() if key in EXIFTOOL_FACT_KEYS},
