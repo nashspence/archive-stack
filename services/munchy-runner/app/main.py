@@ -7964,7 +7964,7 @@ def encode_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
 
     upload_files: list[dict[str, Any]] = []
     if upload is not None:
-        upload_files = upload_files_for_groups(upload, eager_groups)
+        upload_files = primary_upload_files_for_groups(upload, eager_groups)
     by_path = {str(item.get("path")): item for item in upload_files}
     known_paths = set(by_path) | {
         str(path)

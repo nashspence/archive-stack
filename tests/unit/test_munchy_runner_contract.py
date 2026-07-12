@@ -6929,6 +6929,71 @@ def test_job_response_includes_eager_encode_progress(
     assert progress["started_at"] == "2026-06-04T00:00:00Z"
 
 
+def test_eager_encode_progress_ignores_sidecar_evidence_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    archive_dir = tmp_path / "archive"
+    encoded_output = archive_dir / "camera" / "a.webm"
+    encoded_output.parent.mkdir(parents=True)
+    encoded_output.write_bytes(b"encoded")
+    runner.save_input_upload(
+        {
+            "upload_id": "upload-1",
+            "files": [
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 1024,
+                    "upload_id": "upload-a",
+                    "consumed_at": "2026-06-05T00:00:00Z",
+                },
+                {
+                    "path": "camera/a.xml",
+                    "bytes": 12,
+                    "upload_id": "upload-a-xml",
+                    "profile_route_action": "evidence",
+                    "profile_sidecar_for": "camera/a.mp4",
+                },
+            ],
+        }
+    )
+    job = {
+        "job_id": "job-1",
+        "input_upload_id": "upload-1",
+        "groups": {
+            "camera": {
+                "archive_mode": "av1_nvenc",
+                "tasks": ["archive_video"],
+            }
+        },
+        "eager_archive": {
+            "files": {
+                "camera/a.mp4": {
+                    "state": "encoded",
+                    "group": "camera",
+                    "input_bytes": 1024,
+                    "output": str(encoded_output),
+                    "output_bytes": 7,
+                    "started_at": "2026-06-05T00:00:00Z",
+                    "encoded_at": "2026-06-05T00:00:10Z",
+                },
+            },
+            "batches": {},
+        },
+    }
+
+    progress = runner.job_response(job)["encode_progress"]
+
+    assert progress["files_total"] == 1
+    assert progress["files_encoded"] == 1
+    assert progress["input_bytes_total"] == 1024
+    assert progress["input_bytes_encoded"] == 1024
+    assert progress["completed"] is True
+
+
 def test_job_response_includes_review_clip_progress_from_gpu_status(
     tmp_path: Path,
     monkeypatch,
