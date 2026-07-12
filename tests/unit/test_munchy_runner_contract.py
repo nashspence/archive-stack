@@ -6924,7 +6924,6 @@ def test_eager_group_pipeline_capacity_respects_group_limit(
             job,
             "camera",
             {"eager_pipeline_batches": 1},
-            executor="gpu",
         )
         is False
     )
@@ -6933,7 +6932,6 @@ def test_eager_group_pipeline_capacity_respects_group_limit(
             job,
             "front-door",
             {"eager_pipeline_batches": 1},
-            executor="gpu",
         )
         is True
     )
@@ -6942,9 +6940,39 @@ def test_eager_group_pipeline_capacity_respects_group_limit(
             job,
             "camera",
             {"eager_pipeline_batches": 2},
-            executor="gpu",
         )
         is True
+    )
+
+
+def test_eager_group_pipeline_capacity_counts_mixed_executors_globally(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    monkeypatch.setattr(runner, "EAGER_ARCHIVE_PIPELINE_BATCHES", 3)
+    job = {
+        "job_id": "job-1",
+        "eager_archive": {
+            "batches": {
+                "batch-1": {"state": "running", "executor": "gpu", "group": "camera"},
+                "batch-2": {"state": "running", "executor": "gpu", "group": "camera"},
+                "batch-3": {
+                    "state": "running",
+                    "executor": "local_audio",
+                    "group": "voice",
+                },
+            }
+        },
+    }
+
+    assert (
+        runner.eager_group_has_pipeline_capacity(
+            job,
+            "front-door",
+            {"eager_pipeline_batches": 3},
+        )
+        is False
     )
 
 

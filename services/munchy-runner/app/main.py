@@ -8863,13 +8863,11 @@ def eager_group_has_pipeline_capacity(
     job: dict[str, Any],
     group_name: str,
     group_config: dict[str, Any],
-    *,
-    executor: str,
 ) -> bool:
-    global_running = running_eager_batches(job, executor=executor)
+    global_running = running_eager_batches(job)
     if len(global_running) >= EAGER_ARCHIVE_PIPELINE_BATCHES:
         return False
-    group_running = running_eager_batches(job, executor=executor, group_name=group_name)
+    group_running = running_eager_batches(job, group_name=group_name)
     return len(group_running) < eager_archive_pipeline_limit(group_config)
 
 
@@ -9067,7 +9065,7 @@ def start_eager_gpu_batch(
         )
     job["phase"] = (
         f"eager_archive:{group_name}:pipeline="
-        f"{len(running_eager_batches(job, executor='gpu', group_name=group_name))}/"
+        f"{len(running_eager_batches(job, group_name=group_name))}/"
         f"{eager_archive_pipeline_limit(group_config)}"
     )
     save_job(job)
@@ -9249,7 +9247,7 @@ def run_eager_archive_groups(
                 save_job(job)
                 return upload
 
-            while len(running_eager_batches(job, executor="gpu")) < EAGER_ARCHIVE_PIPELINE_BATCHES:
+            while len(running_eager_batches(job)) < EAGER_ARCHIVE_PIPELINE_BATCHES:
                 eligible_eager_groups = {
                     group_name
                     for group_name in eager_groups
@@ -9257,7 +9255,6 @@ def run_eager_archive_groups(
                         job,
                         group_name,
                         groups[group_name],
-                        executor=eager_archive_executor(groups[group_name]) or "",
                     )
                 }
                 if not eligible_eager_groups:
