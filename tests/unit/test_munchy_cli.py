@@ -508,6 +508,7 @@ groups:
   video:
     profile: camera
     archive_mode: av1_nvenc
+    eager_pipeline_batches: 1
     tasks:
       - archive_video
     metadata_projection:
@@ -576,12 +577,14 @@ groups:
     assert request.files[0].rel_path == "clip.mp4"
     assert request.storage_hint["structured_routing"] is True
     assert request.storage_hint["groups"]["video"]["tasks"] == ["archive_video"]
+    assert request.storage_hint["groups"]["video"]["eager_pipeline_batches"] == 1
     assert request.storage_hint["groups"]["preserve"]["tasks"] == []
     assert request.job_payload["collection_archive"]["destination"] == "riverhog"
     assert request.job_payload["profile_routing"]["routes"][0]["group"] == "video"
     assert (
         request.job_payload["groups"]["video"]["encode_profile"]["archive"]["container"] == "webm"
     )
+    assert request.job_payload["groups"]["video"]["eager_pipeline_batches"] == 1
     assert request.job_payload["groups"]["video"]["metadata_projection"] == {
         "creators": ["Example Operator"],
         "device": {"make": "Example", "model": "Camera"},

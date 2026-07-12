@@ -117,6 +117,14 @@ evidence for a preserve output, Munchy writes the visible output XMP by merging
 the normalized projected metadata into that existing XMP. Scalar conflicts fail
 the job instead of overwriting operator or source-provided metadata.
 
+## Eager Archive Tuning
+
+AV1 archive groups may set `max_parallel_encodes` to cap concurrent encodes
+inside one GPU job and `eager_pipeline_batches` to cap how many eager GPU jobs
+that group may keep in flight at once. Use `eager_pipeline_batches` for
+device-specific pressure tuning when a camera's files are too heavy for the
+global eager pipeline depth.
+
 ## Metadata Projection
 
 Metadata projection is enabled by default for groups that produce primary

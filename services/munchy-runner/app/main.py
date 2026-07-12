@@ -861,6 +861,7 @@ class ProfileGroupConfig(BaseModel):
     tasks: list[TaskName] = Field(default_factory=default_tasks)
     encode_profile: EncodeProfile | None = None
     max_parallel_encodes: int | None = Field(default=None, ge=1, le=64)
+    eager_pipeline_batches: int | None = Field(default=None, ge=1, le=64)
     metadata_projection: MetadataProjectionSetting = Field(default_factory=MetadataProjectionConfig)
 
     @field_validator("tasks")
@@ -888,6 +889,7 @@ class StorageGroupHint(BaseModel):
 
     archive_mode: ArchiveMode = "av1_nvenc"
     tasks: list[TaskName] = Field(default_factory=list)
+    eager_pipeline_batches: int | None = Field(default=None, ge=1, le=64)
 
     @field_validator("tasks")
     @classmethod
@@ -3605,6 +3607,8 @@ def profile_group_dump(group: ProfileGroupConfig) -> dict[str, Any]:
     }
     if group.max_parallel_encodes is not None:
         payload["max_parallel_encodes"] = group.max_parallel_encodes
+    if group.eager_pipeline_batches is not None:
+        payload["eager_pipeline_batches"] = group.eager_pipeline_batches
     return payload
 
 
@@ -3621,6 +3625,7 @@ def storage_hint_for_job_request(req: CreateJobRequest) -> InputUploadStorageHin
         name: StorageGroupHint(
             archive_mode=group.archive_mode,
             tasks=group.tasks,
+            eager_pipeline_batches=group.eager_pipeline_batches,
         )
         for name, group in req.groups.items()
     }
@@ -5345,6 +5350,17 @@ def eager_archive_batch_limit(group_config: dict[str, Any]) -> int:
     if executor == "local_audio":
         return AUDIO_ARCHIVE_MAX_PARALLEL
     return EAGER_ARCHIVE_BATCH_FILES
+
+
+def eager_archive_pipeline_limit(group_config: dict[str, Any]) -> int:
+    configured = group_config.get("eager_pipeline_batches")
+    if configured is None:
+        return EAGER_ARCHIVE_PIPELINE_BATCHES
+    try:
+        value = int(configured)
+    except (TypeError, ValueError):
+        return EAGER_ARCHIVE_PIPELINE_BATCHES
+    return max(1, min(value, EAGER_ARCHIVE_PIPELINE_BATCHES))
 
 
 def remove_job_local_work(job: dict[str, Any]) -> list[str]:
@@ -8454,6 +8470,12 @@ def encode_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
         for batch in batches.values()
         if isinstance(batch, dict) and batch.get("state") == "running"
     )
+    pipeline_batches = EAGER_ARCHIVE_PIPELINE_BATCHES
+    if isinstance(groups, dict) and len(eager_groups) == 1:
+        group_name = next(iter(eager_groups))
+        group_config = groups.get(group_name)
+        if isinstance(group_config, dict):
+            pipeline_batches = eager_archive_pipeline_limit(group_config)
     return {
         "mode": "eager_archive",
         "groups": sorted(eager_groups),
@@ -8475,7 +8497,7 @@ def encode_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
         "input_rate_bytes_per_second": int(input_rate),
         "output_rate_bytes_per_second": int(output_rate),
         "running_batches": running_batches,
-        "pipeline_batches": EAGER_ARCHIVE_PIPELINE_BATCHES,
+        "pipeline_batches": pipeline_batches,
         "started_at": started_at.isoformat().replace("+00:00", "Z") if started_at else None,
         "finished_at": finished_at.isoformat().replace("+00:00", "Z") if finished_at else None,
         "completed": files_encoded == files_total and files_total > 0,
@@ -8824,6 +8846,7 @@ def running_eager_batches(
     job: dict[str, Any],
     *,
     executor: str | None = None,
+    group_name: str | None = None,
 ) -> list[dict[str, Any]]:
     batches = eager_archive_state(job).setdefault("batches", {})
     running = [
@@ -8831,8 +8854,23 @@ def running_eager_batches(
         for batch in batches.values()
         if isinstance(batch, dict) and batch.get("state") == "running"
         and (executor is None or eager_batch_executor(batch) == executor)
+        and (group_name is None or str(batch.get("group") or "") == group_name)
     ]
     return sorted(running, key=lambda batch: str(batch.get("started_at") or ""))
+
+
+def eager_group_has_pipeline_capacity(
+    job: dict[str, Any],
+    group_name: str,
+    group_config: dict[str, Any],
+    *,
+    executor: str,
+) -> bool:
+    global_running = running_eager_batches(job, executor=executor)
+    if len(global_running) >= EAGER_ARCHIVE_PIPELINE_BATCHES:
+        return False
+    group_running = running_eager_batches(job, executor=executor, group_name=group_name)
+    return len(group_running) < eager_archive_pipeline_limit(group_config)
 
 
 def next_eager_batch_id(job: dict[str, Any], group_name: str, paths: list[str]) -> str:
@@ -9028,8 +9066,9 @@ def start_eager_gpu_batch(
             batch_id=batch_id,
         )
     job["phase"] = (
-        f"eager_archive:{group_name}:pipeline={len(running_eager_batches(job, executor='gpu'))}/"
-        f"{EAGER_ARCHIVE_PIPELINE_BATCHES}"
+        f"eager_archive:{group_name}:pipeline="
+        f"{len(running_eager_batches(job, executor='gpu', group_name=group_name))}/"
+        f"{eager_archive_pipeline_limit(group_config)}"
     )
     save_job(job)
 
@@ -9211,11 +9250,23 @@ def run_eager_archive_groups(
                 return upload
 
             while len(running_eager_batches(job, executor="gpu")) < EAGER_ARCHIVE_PIPELINE_BATCHES:
+                eligible_eager_groups = {
+                    group_name
+                    for group_name in eager_groups
+                    if eager_group_has_pipeline_capacity(
+                        job,
+                        group_name,
+                        groups[group_name],
+                        executor=eager_archive_executor(groups[group_name]) or "",
+                    )
+                }
+                if not eligible_eager_groups:
+                    break
                 ready = ready_eager_files(
                     job,
                     upload,
                     groups,
-                    eager_groups,
+                    eligible_eager_groups,
                     archive_dir,
                 )
                 if ready is None:

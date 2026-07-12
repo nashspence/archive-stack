@@ -303,6 +303,7 @@ def test_review_job_storage_hint_uses_review_target_destination(
                 "archive_mode": "av1_nvenc",
                 "tasks": ["qcut_video"],
                 "max_parallel_encodes": 4,
+                "eager_pipeline_batches": 1,
             }
         },
         review={
@@ -314,6 +315,7 @@ def test_review_job_storage_hint_uses_review_target_destination(
     )
 
     assert req.groups["camera-main-video"].max_parallel_encodes == 4
+    assert req.groups["camera-main-video"].eager_pipeline_batches == 1
     hint = runner.storage_hint_for_job_request(req).model_dump(exclude_none=True)
 
     assert hint == {
@@ -325,6 +327,7 @@ def test_review_job_storage_hint_uses_review_target_destination(
             "camera-main-video": {
                 "archive_mode": "av1_nvenc",
                 "tasks": ["qcut_video"],
+                "eager_pipeline_batches": 1,
             }
         },
         "structured_routing": False,
@@ -6896,6 +6899,55 @@ def test_ready_eager_files_skips_claimed_encoding_files(
     assert [file_state["path"] for file_state in files] == ["camera/b.mp4"]
 
 
+def test_eager_group_pipeline_capacity_respects_group_limit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    monkeypatch.setattr(runner, "EAGER_ARCHIVE_PIPELINE_BATCHES", 3)
+    job = {
+        "job_id": "job-1",
+        "eager_archive": {
+            "batches": {
+                "batch-1": {
+                    "state": "running",
+                    "executor": "gpu",
+                    "group": "camera",
+                    "started_at": "2026-06-05T00:00:00Z",
+                }
+            }
+        },
+    }
+
+    assert (
+        runner.eager_group_has_pipeline_capacity(
+            job,
+            "camera",
+            {"eager_pipeline_batches": 1},
+            executor="gpu",
+        )
+        is False
+    )
+    assert (
+        runner.eager_group_has_pipeline_capacity(
+            job,
+            "front-door",
+            {"eager_pipeline_batches": 1},
+            executor="gpu",
+        )
+        is True
+    )
+    assert (
+        runner.eager_group_has_pipeline_capacity(
+            job,
+            "camera",
+            {"eager_pipeline_batches": 2},
+            executor="gpu",
+        )
+        is True
+    )
+
+
 def test_ready_eager_files_limits_audio_batches_to_worker_count(
     tmp_path: Path,
     monkeypatch,
@@ -7055,6 +7107,7 @@ def test_job_response_includes_eager_encode_progress(
             "camera": {
                 "archive_mode": "av1_nvenc",
                 "tasks": ["archive_video"],
+                "eager_pipeline_batches": 1,
             }
         },
         "eager_archive": {
@@ -7104,7 +7157,7 @@ def test_job_response_includes_eager_encode_progress(
     assert progress["output_bytes"] == 7
     assert progress["active_output_bytes"] == 6
     assert progress["running_batches"] == 1
-    assert progress["pipeline_batches"] == 3
+    assert progress["pipeline_batches"] == 1
     assert progress["started_at"] == "2026-06-04T00:00:00Z"
 
 

@@ -193,6 +193,9 @@ def normalize_group_payload(
     max_parallel_encodes = group.get("max_parallel_encodes")
     if max_parallel_encodes is not None:
         payload["max_parallel_encodes"] = max_parallel_encodes
+    eager_pipeline_batches = group.get("eager_pipeline_batches")
+    if eager_pipeline_batches is not None:
+        payload["eager_pipeline_batches"] = eager_pipeline_batches
     return payload
 
 
@@ -206,8 +209,9 @@ def default_group_payload(group_name: str) -> dict[str, dict[str, Any]]:
 
 
 def storage_groups(groups: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
-    return {
-        name: {
+    out: dict[str, dict[str, Any]] = {}
+    for name, group in groups.items():
+        payload: dict[str, Any] = {
             "archive_mode": normalize_mode(
                 str(group.get("archive_mode") or "av1_nvenc"),
                 default="av1_nvenc",
@@ -216,8 +220,11 @@ def storage_groups(groups: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[st
             ),
             "tasks": [str(task) for task in _sequence(group.get("tasks"))],
         }
-        for name, group in groups.items()
-    }
+        eager_pipeline_batches = group.get("eager_pipeline_batches")
+        if eager_pipeline_batches is not None:
+            payload["eager_pipeline_batches"] = eager_pipeline_batches
+        out[name] = payload
+    return out
 
 
 def review_group_payloads(
