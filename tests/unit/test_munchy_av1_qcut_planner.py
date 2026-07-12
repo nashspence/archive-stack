@@ -151,7 +151,7 @@ class QcutPlannerTests(unittest.TestCase):
             def __init__(self, *, max_workers: int) -> None:
                 captured_workers.append(max_workers)
 
-            def __enter__(self) -> "CapturingExecutor":
+            def __enter__(self) -> CapturingExecutor:
                 return self
 
             def __exit__(self, *args: object) -> None:

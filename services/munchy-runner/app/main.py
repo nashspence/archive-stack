@@ -601,7 +601,7 @@ class ReviewClipPlanConfig(BaseModel):
     max_seconds: int = Field(default=DEFAULT_REVIEW_CLIP_MAX_SECONDS, ge=1)
 
     @model_validator(mode="after")
-    def validate_bounds(self) -> "ReviewClipPlanConfig":
+    def validate_bounds(self) -> ReviewClipPlanConfig:
         if self.min_seconds > self.max_seconds:
             raise ValueError("clip_plan.min_seconds must be <= max_seconds")
         return self
@@ -641,7 +641,7 @@ class ReviewSweepConfig(BaseModel):
         return route_ids
 
     @model_validator(mode="after")
-    def validate_sweep(self) -> "ReviewSweepConfig":
+    def validate_sweep(self) -> ReviewSweepConfig:
         try:
             ensure_review_sweep_has_variants(self.model_dump(exclude_none=True))
         except ValueError as exc:
@@ -660,7 +660,7 @@ class ReviewConfig(BaseModel):
     sweep: ReviewSweepConfig | None = None
 
     @model_validator(mode="after")
-    def validate_review_shape(self) -> "ReviewConfig":
+    def validate_review_shape(self) -> ReviewConfig:
         if self.sweep is None:
             if not self.route_id or not self.profile_id:
                 raise ValueError("review jobs require route_id and profile_id unless sweep is set")
@@ -3596,7 +3596,7 @@ def profile_group_dump(group: ProfileGroupConfig) -> dict[str, Any]:
         metadata_projection = False
     else:
         metadata_projection = group.metadata_projection.model_dump(exclude_none=True)
-    payload = {
+    payload: dict[str, Any] = {
         "archive_mode": group.archive_mode,
         "tasks": group.tasks,
         "profile": profile_name_for(encode_profile),

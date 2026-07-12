@@ -19,7 +19,7 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, BinaryIO, Literal, cast
 
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException
@@ -169,7 +169,7 @@ class ReviewClipPlanConfig(BaseModel):
     max_seconds: int = Field(default=QCUT_MAX_SECONDS, ge=1)
 
     @model_validator(mode="after")
-    def validate_bounds(self) -> "ReviewClipPlanConfig":
+    def validate_bounds(self) -> ReviewClipPlanConfig:
         if self.min_seconds > self.max_seconds:
             raise ValueError("review_clip_plan.min_seconds must be <= max_seconds")
         return self
@@ -322,7 +322,7 @@ def run_command(
     return result
 
 
-def tail_binary_file(file_obj: Any, limit: int) -> str:
+def tail_binary_file(file_obj: BinaryIO, limit: int) -> str:
     file_obj.flush()
     file_obj.seek(0, os.SEEK_END)
     size = file_obj.tell()

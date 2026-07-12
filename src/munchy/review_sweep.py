@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from copy import deepcopy
 from itertools import product
-import re
-from typing import Any, Mapping
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -360,7 +361,7 @@ def review_sweep_variants(
     for explicit in explicit_variants:
         settings = explicit["encode_settings"]
         variant_index = len(variants) + 1
-        profile_id = explicit.get("profile_id")
+        profile_id = str(explicit.get("profile_id") or "")
         if not profile_id:
             profile_id = (
                 render_profile_id_template(

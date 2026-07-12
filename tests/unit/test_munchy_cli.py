@@ -29,13 +29,15 @@ def test_munchy_command_help_has_summaries() -> None:
     job = runner.invoke(app, ["job", "--help"])
     assert job.exit_code == 0
     for summary in (
+        "Dry-run the configured routed review sweep.",
         "Upload local media and start a runner job.",
         "List runner jobs.",
         "Show runner job details.",
-        "Watch a runner job until it is safe to delete local sources.",
         "Cancel a runner job.",
     ):
         assert summary in job.stdout
+    assert "Watch a runner job until it is safe to delete local" in job.stdout
+    assert "sources." in job.stdout
 
     routing = runner.invoke(app, ["routing", "--help"])
     assert routing.exit_code == 0
@@ -696,6 +698,93 @@ groups:
     assert "collection_slug" not in request.job_payload
     assert seen["workflow_mode"] == "review"
     assert seen["requested_containers"] == ["webm"]
+
+
+def test_munchy_job_plan_review_sweep_reports_routes(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    source_dir = tmp_path / "camera"
+    source_dir.mkdir()
+    (source_dir / "clip.mp4").write_bytes(b"video")
+    (source_dir / "photo.jpg").write_bytes(b"photo")
+    config = tmp_path / "munchy-review.yaml"
+    config.write_text(
+        """
+job:
+  workflow_mode: review
+  collection_timestamp: 20260712T120000Z
+  review:
+    device_id: camera
+    target:
+      enabled: true
+      method: rclone
+      destination: clover:reviews/{device_id}/{route_id}/{profile_id}/{run_id}
+    sweep:
+      route_ids:
+        - camera-video
+      quality: 24..28:4
+  routing:
+    routes:
+      - id: camera-video
+        group: video
+        when:
+          path:
+            suffix: .mp4
+      - id: camera-photo
+        group: preserve
+        when:
+          path:
+            suffix: .jpg
+
+profiles:
+  video:
+    schema_version: 1
+    target: munchy-av1-nvenc
+    name: video
+    archive:
+      codec: av1_nvenc
+      container: webm
+      quality: 40
+
+groups:
+  video:
+    profile: video
+    archive_mode: av1_nvenc
+    tasks:
+      - archive_video
+      - qcut_video
+  preserve:
+    archive_mode: preserve
+    tasks: []
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "job",
+            "plan-review-sweep",
+            str(source_dir),
+            "--config",
+            str(config),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "munchy.review-sweep-plan"
+    assert payload["ok"] is True
+    assert payload["requested_route_ids"] == ["camera-video"]
+    assert payload["routes_total"] == 1
+    assert payload["files_total"] == 1
+    assert payload["routing"]["matched_files"] == 2
+    route = payload["routes"][0]
+    assert route["route_id"] == "camera-video"
+    assert route["tasks"] == ["qcut_video"]
+    assert [variant["profile_id"] for variant in route["variants"]] == ["q24", "q28"]
+    assert route["variants"][1]["destination"] == (
+        "clover:reviews/camera/camera-video/q28/20260712T120000Z"
+    )
 
 
 def test_munchy_job_start_defaults_audio_mode_to_archive_audio(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]

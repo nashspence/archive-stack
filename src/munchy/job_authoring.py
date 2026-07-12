@@ -12,9 +12,16 @@ from pydantic import ValidationError
 
 from munchy.config_schema import MUNCHY_CONFIG_SCHEMA
 from munchy.local_files import FileHashCache, LocalFileCandidate, hash_local_file_candidates
+from munchy.local_routing import routing_plan_files
 from munchy.platform_files import is_platform_cruft_path
+from munchy.profile_routing import profile_routing_plan
 from munchy.profiles import EncodeProfile
-from munchy.review_sweep import review_archive_mode_for_profile, review_tasks_for_archive_mode
+from munchy.review_sweep import (
+    default_encode_profile_for_archive_mode,
+    review_archive_mode_for_profile,
+    review_sweep_variants,
+    review_tasks_for_archive_mode,
+)
 from munchy.runner_client import (
     DEFAULT_UPLOAD_CHUNK_MIB,
     DEFAULT_UPLOAD_WORKERS,
@@ -23,7 +30,6 @@ from munchy.runner_client import (
     make_progress_renderer,
 )
 from riverhog_core.config_yaml import (
-    ConfigError,
     load_yaml_config,
     normalize_munchy_job_authoring,
     validate_json_schema,
@@ -70,9 +76,7 @@ def utc_timestamp() -> str:
 def normalize_mode(value: str | None, *, default: str, allowed: set[str], label: str) -> str:
     mode = (value or default).strip().casefold().replace("-", "_")
     if mode not in allowed:
-        raise MunchyJobAuthoringError(
-            f"{label} must be one of: " + ", ".join(sorted(allowed))
-        )
+        raise MunchyJobAuthoringError(f"{label} must be one of: " + ", ".join(sorted(allowed)))
     return mode
 
 
@@ -273,6 +277,45 @@ def effective_group(
     if not groups:
         return DEFAULT_GROUP
     raise MunchyJobAuthoringError("--group is required when multiple configured groups exist")
+
+
+def group_base_encode_profile(group: Mapping[str, Any]) -> dict[str, Any]:
+    profile = group.get("encode_profile")
+    if isinstance(profile, Mapping):
+        return deepcopy(dict(profile))
+    archive_mode = normalize_mode(
+        str(group.get("archive_mode") or "av1_nvenc"),
+        default="av1_nvenc",
+        allowed=ARCHIVE_MODES,
+        label="archive_mode",
+    )
+    return default_encode_profile_for_archive_mode(archive_mode)
+
+
+def render_job_template(
+    value: str,
+    *,
+    job: Mapping[str, Any],
+    context: Mapping[str, str] | None = None,
+) -> str:
+    review = mapping(job.get("review"), label="review")
+    values = {
+        "job_id": str(job.get("job_id") or ""),
+        "run_id": str(job.get("run_id") or job.get("collection_timestamp") or ""),
+        "device_id": str(review.get("device_id") or ""),
+        "route_id": str(review.get("route_id") or ""),
+        "profile_id": str(review.get("profile_id") or ""),
+        "collection_slug": str(job.get("collection_slug") or ""),
+        "collection_timestamp": str(job.get("collection_timestamp") or ""),
+    }
+    if context is not None:
+        values.update({str(key): str(value) for key, value in context.items()})
+    try:
+        return value.format(**values)
+    except KeyError as exc:
+        raise MunchyJobAuthoringError(
+            f"unknown target upload template field: {exc.args[0]}"
+        ) from exc
 
 
 def discover_local_candidates(
@@ -526,6 +569,208 @@ def build_runner_upload_request(
     )
 
 
+def _configured_target_prefix(defaults: Mapping[str, Any], override: str | None) -> str | None:
+    if override is not None:
+        return override
+    raw_prefix = defaults.get("target_prefix") or defaults.get("upload_prefix")
+    return str(raw_prefix) if raw_prefix else None
+
+
+def build_review_sweep_plan(
+    *,
+    source: Path,
+    config_path: Path | None = None,
+    config: Mapping[str, Any] | None = None,
+    target_prefix: str | None = None,
+) -> dict[str, Any]:
+    if config_path is not None and config is not None:
+        raise MunchyJobAuthoringError("config_path and config are mutually exclusive")
+    loaded_config = load_munchy_job_config(config_path) if config_path is not None else config or {}
+    normalized_config = normalize_munchy_config(loaded_config)
+    defaults = configured_job_defaults(normalized_config)
+    workflow = normalize_mode(
+        str(defaults.get("workflow_mode") or "collection_archive"),
+        default="collection_archive",
+        allowed=WORKFLOW_MODES,
+        label="workflow_mode",
+    )
+    if workflow != "review":
+        raise MunchyJobAuthoringError("review sweep plans require job.workflow_mode: review")
+    review = mapping(defaults.get("review"), label="review")
+    sweep = mapping(review.get("sweep"), label="review.sweep")
+    if not sweep:
+        raise MunchyJobAuthoringError("review sweep plans require job.review.sweep")
+    profile_routing = defaults.get("profile_routing")
+    if not isinstance(profile_routing, Mapping):
+        raise MunchyJobAuthoringError("review sweep plans require job.routing")
+
+    profiles = configured_profiles(normalized_config)
+    raw_groups = configured_groups(normalized_config)
+    if not raw_groups:
+        raise MunchyJobAuthoringError("review sweep plans require explicit groups")
+    groups = {
+        str(name): normalize_group_payload(str(name), raw_group, profiles=profiles)
+        for name, raw_group in raw_groups.items()
+    }
+    review_groups = review_group_payloads(groups)
+    prefix = _configured_target_prefix(defaults, target_prefix)
+    candidates = discover_local_candidates(source, target_prefix=prefix, group=None)
+    routed_files = routing_plan_files(candidates, profile_routing=profile_routing)
+    routing_plan = profile_routing_plan(
+        profile_routing,
+        routed_files,
+        group_names=set(groups),
+    ).as_dict()
+
+    timestamp = str(defaults.get("collection_timestamp") or utc_timestamp()).strip()
+    run_id = str(defaults.get("run_id") or timestamp).strip()
+    collection_slug = str(defaults.get("collection_slug") or "").strip()
+    job_id = str(defaults.get("job_id") or safe_id(f"review-{timestamp}")).strip()
+    job_context = {
+        "job_id": job_id,
+        "run_id": run_id,
+        "collection_slug": collection_slug,
+        "collection_timestamp": timestamp,
+        "review": review,
+    }
+
+    route_totals: dict[str, dict[str, Any]] = {}
+    for match in routing_plan.get("matches") or []:
+        if not isinstance(match, Mapping):
+            continue
+        action = str(match.get("action") or "upload")
+        route_id = str(match.get("route_id") or "").strip()
+        group_name = str(match.get("group") or "").strip()
+        if not route_id or not group_name:
+            continue
+        route = route_totals.setdefault(
+            route_id,
+            {
+                "route_id": route_id,
+                "group": group_name,
+                "files": 0,
+                "bytes": 0,
+                "evidence_files": 0,
+                "evidence_bytes": 0,
+            },
+        )
+        if route["group"] != group_name:
+            raise MunchyJobAuthoringError(
+                f"review sweep route {route_id!r} resolved to multiple groups: "
+                f"{route['group']}, {group_name}"
+            )
+        bytes_count = int(match.get("bytes") or 0)
+        if action == "evidence":
+            route["evidence_files"] += 1
+            route["evidence_bytes"] += bytes_count
+        else:
+            route["files"] += 1
+            route["bytes"] += bytes_count
+
+    requested_route_ids = [
+        str(route_id).strip()
+        for route_id in _sequence(sweep.get("route_ids"))
+        if str(route_id).strip()
+    ]
+    requested_route_id_set = set(requested_route_ids)
+    target = mapping(review.get("target"), label="review.target")
+    destination_template = str(target.get("destination") or "").strip()
+    errors: list[str] = []
+    routes: list[dict[str, Any]] = []
+    for route_id, route in sorted(route_totals.items()):
+        if requested_route_id_set and route_id not in requested_route_id_set:
+            continue
+        group_name = str(route["group"])
+        group = review_groups[group_name]
+        tasks = [str(task) for task in _sequence(group.get("tasks"))]
+        if not tasks or int(route["files"]) <= 0:
+            continue
+        variants = review_sweep_variants(
+            sweep,
+            base_profile=group_base_encode_profile(group),
+            route_id=route_id,
+        )
+        planned_variants: list[dict[str, Any]] = []
+        for variant in variants:
+            profile_id = str(variant["profile_id"])
+            destination = None
+            if destination_template:
+                destination = render_job_template(
+                    destination_template,
+                    job=job_context,
+                    context={"route_id": route_id, "profile_id": profile_id},
+                )
+            encode_profile = mapping(variant.get("encode_profile"), label="encode_profile")
+            planned_variants.append(
+                {
+                    "profile_id": profile_id,
+                    "destination": destination,
+                    "encode_settings": deepcopy(variant.get("encode_settings") or {}),
+                    "axis_values": deepcopy(variant.get("axis_values") or {}),
+                    "archive": deepcopy(encode_profile.get("archive") or {}),
+                }
+            )
+        routes.append(
+            {
+                "route_id": route_id,
+                "group": group_name,
+                "tasks": tasks,
+                "files": int(route["files"]),
+                "bytes": int(route["bytes"]),
+                "evidence_files": int(route["evidence_files"]),
+                "evidence_bytes": int(route["evidence_bytes"]),
+                "variants": planned_variants,
+                "variants_total": len(planned_variants),
+            }
+        )
+
+    if requested_route_id_set:
+        missing = sorted(requested_route_id_set - {route["route_id"] for route in routes})
+        if missing:
+            errors.append("review sweep route(s) had no reviewable files: " + ", ".join(missing))
+    if not routes:
+        errors.append("review sweep found no reviewable routes")
+    if not routing_plan.get("ok"):
+        errors.append(
+            "routing did not classify all files: "
+            f"unmatched={routing_plan.get('unmatched_files', 0)}"
+        )
+
+    variants_total = sum(int(route["variants_total"]) for route in routes)
+    files_total = sum(int(route["files"]) for route in routes)
+    bytes_total = sum(int(route["bytes"]) for route in routes)
+    return {
+        "kind": "munchy.review-sweep-plan",
+        "schema_version": 1,
+        "ok": not errors,
+        "source": str(source),
+        "target_prefix": prefix,
+        "workflow_mode": "review",
+        "job_id": job_id,
+        "run_id": run_id,
+        "device_id": str(review.get("device_id") or ""),
+        "target": {
+            "enabled": bool(target.get("enabled", False)),
+            "method": str(target.get("method") or "command"),
+            "destination_template": destination_template or None,
+        },
+        "requested_route_ids": requested_route_ids,
+        "routes": routes,
+        "routes_total": len(routes),
+        "files_total": files_total,
+        "bytes_total": bytes_total,
+        "variants_total": variants_total,
+        "routing": {
+            "ok": bool(routing_plan.get("ok")),
+            "files_total": int(routing_plan.get("files_total") or 0),
+            "matched_files": int(routing_plan.get("matched_files") or 0),
+            "left_files": int(routing_plan.get("left_files") or 0),
+            "unmatched_files": int(routing_plan.get("unmatched_files") or 0),
+        },
+        "errors": errors,
+    }
+
+
 def requested_archive_containers(request: RunnerUploadRequest) -> list[str]:
     containers: list[str] = []
     groups = request.job_payload.get("groups")
@@ -613,6 +858,7 @@ __all__ = [
     "WORKFLOW_MODES",
     "build_runner_upload_request",
     "build_runner_upload_request_from_files",
+    "build_review_sweep_plan",
     "configured_groups",
     "configured_job_defaults",
     "configured_profiles",

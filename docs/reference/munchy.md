@@ -387,6 +387,17 @@ job:
         - 1080
 ```
 
+Use the configured plan command to dry-run route selection, variant expansion,
+and rendered destinations before uploading anything:
+
+```bash
+munchy job plan-review-sweep /path/to/source --config munchy.yaml
+```
+
+The plan command is read-only. It does not create runner jobs, upload files,
+hash sources, encode media, or override sweep settings; routes, review
+destinations, notifications, and sweep axes stay in config.
+
 `quality`, `max_height`, and `audio_bitrate` are shorthand axes for common
 encode settings. General axes use encode-profile dotted paths:
 

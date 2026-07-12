@@ -10,13 +10,13 @@ from typing import Annotated, Any, NoReturn
 import typer
 from pydantic import ValidationError
 
-from munchy.local_routing import routing_plan_files
 from munchy.job_authoring import (
     COLLECTION_ARCHIVE_DESTINATIONS,
     HASH_CACHE_ENV,
     MUNCHY_CONFIG_ENV,
     WORKFLOW_MODES,
     MunchyJobAuthoringError,
+    build_review_sweep_plan,
     build_runner_upload_request,
     configured_groups,
     configured_job_defaults,
@@ -27,6 +27,7 @@ from munchy.job_authoring import (
     requested_archive_containers,
     routing_report_text,
 )
+from munchy.local_routing import routing_plan_files
 from munchy.profile_routing import (
     profile_routing_plan,
 )
@@ -432,6 +433,86 @@ def _start_summary(request: RunnerUploadRequest, job: Mapping[str, Any]) -> Any:
     return RichGroup(title, table)
 
 
+def _plain_review_sweep_plan(plan: Mapping[str, Any]) -> str:
+    state = "ok" if plan.get("ok") else "failed"
+    lines = [
+        (
+            f"review sweep plan: {state} "
+            f"routes={plan.get('routes_total', 0)} "
+            f"files={plan.get('files_total', 0)} "
+            f"variants={plan.get('variants_total', 0)}"
+        )
+    ]
+    target = _mapping(plan.get("target"), label="target")
+    if target.get("destination_template"):
+        lines.append(
+            f"target: {target.get('method', 'command')} {target.get('destination_template')}"
+        )
+    for error in _sequence(plan.get("errors")):
+        lines.append(f"error: {error}")
+    for route in _sequence(plan.get("routes")):
+        if not isinstance(route, Mapping):
+            continue
+        lines.append(
+            "- "
+            f"{route.get('route_id')} "
+            f"group={route.get('group')} "
+            f"files={route.get('files', 0)} "
+            f"variants={route.get('variants_total', 0)}"
+        )
+        for variant in _sequence(route.get("variants")):
+            if not isinstance(variant, Mapping):
+                continue
+            suffix = ""
+            if variant.get("destination"):
+                suffix = f" -> {variant.get('destination')}"
+            lines.append(f"  {variant.get('profile_id')}{suffix}")
+    return "\n".join(lines)
+
+
+def format_review_sweep_plan(plan: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        return _plain_review_sweep_plan(plan)
+
+    state = "ok" if plan.get("ok") else "failed"
+    detail = _detail_table()
+    detail.add_row("state", _attention_text(state))
+    detail.add_row("routes", str(plan.get("routes_total", 0)))
+    detail.add_row("files", str(plan.get("files_total", 0)))
+    detail.add_row("variants", str(plan.get("variants_total", 0)))
+    detail.add_row("run", _entity_text(plan.get("run_id", "")))
+    target = _mapping(plan.get("target"), label="target")
+    if target.get("destination_template"):
+        detail.add_row("target", str(target.get("destination_template")))
+    if plan.get("errors"):
+        detail.add_row("errors", "; ".join(str(item) for item in _sequence(plan.get("errors"))))
+
+    routes_table = _quiet_table("Route", "Group", "Files", "Variants", "Destinations")
+    for route in _sequence(plan.get("routes")):
+        if not isinstance(route, Mapping):
+            continue
+        destinations = [
+            str(variant.get("destination") or "")
+            for variant in _sequence(route.get("variants"))
+            if isinstance(variant, Mapping) and variant.get("destination")
+        ]
+        destination_text = "\n".join(destinations[:3])
+        if len(destinations) > 3:
+            destination_text += f"\n... {len(destinations) - 3} more"
+        routes_table.add_row(
+            _entity_text(route.get("route_id", "")),
+            str(route.get("group") or ""),
+            str(route.get("files", 0)),
+            str(route.get("variants_total", 0)),
+            destination_text,
+        )
+    if not routes_table.rows:
+        routes_table.add_row("none", "", "", "", "")
+    title = RichText("review sweep plan ", style="bold")
+    title.append(state, style=ATTENTION_STYLE if state != "ok" else ENTITY_ID_STYLE)
+    return RichGroup(title, detail, routes_table)
+
+
 @profile_app.command("validate")
 def validate_profile(
     path: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
@@ -474,6 +555,59 @@ def show_profile(
         "profiles": {name: profile.runner_payload() for name, profile in profiles.items()},
     }
     emit(payload if json_mode else format_profiles(path, profiles), json_mode=json_mode)
+
+
+@job_app.command("plan-review-sweep")
+def plan_review_sweep(
+    source: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            readable=True,
+            help="Local file or directory to dry-run against the configured review sweep",
+        ),
+    ],
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            "-c",
+            exists=True,
+            dir_okay=False,
+            readable=True,
+            help=f"Munchy job YAML config; defaults to {MUNCHY_CONFIG_ENV}",
+        ),
+    ] = None,
+    target_prefix: Annotated[
+        str | None,
+        typer.Option(
+            "--target-prefix",
+            help="Optional upload-path prefix to apply before routing.",
+        ),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Dry-run the configured routed review sweep."""
+
+    config_path = config or (
+        Path(os.environ[MUNCHY_CONFIG_ENV]) if os.getenv(MUNCHY_CONFIG_ENV) else None
+    )
+    if config_path is None:
+        raise typer.BadParameter(
+            f"--config is required unless {MUNCHY_CONFIG_ENV} is set",
+            param_hint="--config",
+        )
+    try:
+        plan = build_review_sweep_plan(
+            source=source,
+            config_path=config_path,
+            target_prefix=target_prefix,
+        )
+    except (ConfigError, MunchyJobAuthoringError) as exc:
+        raise typer.BadParameter(str(exc), param_hint="--config") from exc
+    emit(plan if json_mode else format_review_sweep_plan(plan), json_mode=json_mode)
+    if not plan.get("ok"):
+        raise typer.Exit(1)
 
 
 @job_app.command("start")
