@@ -415,6 +415,14 @@ job:
                 bitrate: 64k
 ```
 
+## Job Authoring
+
+`munchy.job_authoring` is the reusable Python authoring layer behind
+`munchy job start`. Use it when another client already has local files and
+generic Munchy job config but should not reimplement runner payload shape,
+storage hints, group/profile normalization, review sweep expansion, hashing, or
+requested-container discovery.
+
 ## Review Uploads
 
 Collection-archive target and review uploads can be handed off through rclone. Munchy
