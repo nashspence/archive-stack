@@ -3891,6 +3891,84 @@ def route_completed_file(
     )
 
 
+def predicate_requires_non_path_facts(predicate: Mapping[str, Any]) -> bool:
+    if not predicate:
+        return False
+    fact = predicate.get("fact")
+    if isinstance(fact, str) and not fact.startswith("path."):
+        return True
+    for key in ("all", "any"):
+        items = predicate.get(key)
+        if isinstance(items, list) and any(
+            isinstance(item, Mapping) and predicate_requires_non_path_facts(item)
+            for item in items
+        ):
+            return True
+    not_item = predicate.get("not")
+    if isinstance(not_item, Mapping) and predicate_requires_non_path_facts(not_item):
+        return True
+    return bool(predicate.get("gate"))
+
+
+def sidecar_rules_are_path_resolvable(profile_routing: Mapping[str, Any]) -> bool:
+    for rule in profile_sidecar_rules(profile_routing):
+        for key in ("primary", "sidecar"):
+            predicate = rule.get(key)
+            if isinstance(predicate, Mapping) and predicate_requires_non_path_facts(predicate):
+                return False
+    return True
+
+
+def completed_profile_routing_files_to_route(
+    profile_routing: Mapping[str, Any],
+    pending_files: Sequence[dict[str, Any]],
+    complete_files: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not profile_routing.get("pairings") and not profile_routing.get("sidecars"):
+        return list(complete_files)
+    if profile_routing.get("pairings"):
+        return list(pending_files) if len(complete_files) == len(pending_files) else []
+    if not sidecar_rules_are_path_resolvable(profile_routing):
+        return list(pending_files) if len(complete_files) == len(pending_files) else []
+
+    complete_paths = {str(file_state["path"]) for file_state in complete_files}
+    pending_by_path = {str(file_state["path"]): file_state for file_state in pending_files}
+    path_facts_by_path = {
+        path: routing_file_facts(path)
+        for path in pending_by_path
+    }
+    sidecar_marked_facts = apply_sidecar_rules(
+        profile_routing,
+        path_facts_by_path,
+        require_configured_facts=False,
+    )
+    evidence_by_primary: dict[str, set[str]] = {}
+    for path, facts in sidecar_marked_facts.items():
+        if facts.get("sidecar.role") != "evidence":
+            continue
+        primary_path = str(facts.get("sidecar.for") or "")
+        if primary_path:
+            evidence_by_primary.setdefault(primary_path, set()).add(path)
+
+    selected_paths: set[str] = set()
+    for file_state in complete_files:
+        path = str(file_state["path"])
+        facts = sidecar_marked_facts.get(path, {})
+        if facts.get("sidecar.role") == "evidence":
+            continue
+        evidence_paths = evidence_by_primary.get(path, set())
+        if any(evidence_path not in complete_paths for evidence_path in evidence_paths):
+            continue
+        selected_paths.add(path)
+        selected_paths.update(evidence_paths)
+
+    return [
+        pending_by_path[path]
+        for path in pending_by_path
+        if path in selected_paths
+    ]
+
+
 def route_completed_input_files(
     job: dict[str, Any],
     upload: dict[str, Any],
@@ -3913,10 +3991,12 @@ def route_completed_input_files(
     ]
     if not complete_files:
         return upload
-    files_to_route = (
-        pending_files if routing.get("pairings") or routing.get("sidecars") else complete_files
+    files_to_route = completed_profile_routing_files_to_route(
+        routing,
+        pending_files,
+        complete_files,
     )
-    if len(files_to_route) != len(complete_files):
+    if not files_to_route:
         return upload
     path_facts_by_path = {
         str(file_state["path"]): routing_file_facts(str(file_state["path"]))
@@ -8006,6 +8086,11 @@ def upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
         shared_tree_groups = group_names
     if shared_tree_groups:
         tree_progress = shared_input_tree_progress(upload, shared_tree_groups)
+        shared_tree_files = upload_files_for_groups(upload, shared_tree_groups)
+        tree_progress["input_tree_files_total"] = len(shared_tree_files)
+        tree_progress["input_tree_bytes_total"] = sum(
+            int(file_state["bytes"]) for file_state in shared_tree_files
+        )
     return {
         "files_total": files_total,
         "files_uploaded": files_uploaded,

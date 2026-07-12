@@ -1772,6 +1772,111 @@ def test_sidecar_evidence_is_not_probed_during_runner_routing(
     )
 
 
+def test_sidecar_routing_can_progress_by_complete_primary_sidecar_pair(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    shared_root = runner.shared_input_upload_root("upload-1") / "camera"
+    shared_root.mkdir(parents=True, exist_ok=True)
+    (shared_root / "C0001.MP4").write_bytes(b"video")
+    (shared_root / "C0001M01.XML").write_text("<metadata />", encoding="utf-8")
+    (shared_root / "C0002.MP4").write_bytes(b"video")
+    upload = runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "state": "uploading",
+            "storage_hint": {
+                "workflow_mode": "collection_archive",
+                "structured_routing": True,
+                "groups": {"video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]}},
+            },
+            "files": [
+                {
+                    "path": "camera/C0001.MP4",
+                    "bytes": 5,
+                    "upload_id": "camera-video-1",
+                    "input_upload_id": "upload-1",
+                    "structured_routing": True,
+                },
+                {
+                    "path": "camera/C0001M01.XML",
+                    "bytes": 12,
+                    "upload_id": "camera-xml-1",
+                    "input_upload_id": "upload-1",
+                    "structured_routing": True,
+                },
+                {
+                    "path": "camera/C0002.MP4",
+                    "bytes": 5,
+                    "upload_id": "camera-video-2",
+                    "input_upload_id": "upload-1",
+                    "structured_routing": True,
+                },
+                {
+                    "path": "camera/C0002M01.XML",
+                    "bytes": 12,
+                    "upload_id": "camera-xml-2",
+                    "input_upload_id": "upload-1",
+                    "structured_routing": True,
+                },
+            ],
+        }
+    )
+    job = {
+        "job_id": "job-1",
+        "input_upload_id": "upload-1",
+        "profile_routing": {
+            "sidecars": [
+                {
+                    "id": "camera_xml",
+                    "format": "xml",
+                    "path": "{parent}/{stem}M01.XML",
+                    "primary": {"path": {"suffix": ".mp4"}},
+                }
+            ],
+            "routes": [
+                {
+                    "id": "camera-video",
+                    "group": "video",
+                    "when": {"path": {"suffix": ".mp4"}},
+                }
+            ],
+        },
+    }
+    groups = {
+        "video": {
+            "archive_mode": "av1_nvenc",
+            "tasks": ["archive_video"],
+            "encode_profile": {"archive": {"container": "webm"}},
+        }
+    }
+
+    routed = runner.route_completed_input_files(job, upload, groups)
+
+    files_by_path = {item["path"]: item for item in routed["files"]}
+    assert files_by_path["camera/C0001.MP4"]["profile_route_id"] == "camera-video"
+    assert files_by_path["camera/C0001M01.XML"]["profile_route_action"] == "evidence"
+    assert "profile_route_id" not in files_by_path["camera/C0002.MP4"]
+    assert "profile_route_action" not in files_by_path["camera/C0002M01.XML"]
+
+    ready = runner.ready_eager_files(
+        job,
+        routed,
+        groups,
+        {"video"},
+        tmp_path / "archive",
+        limit=32,
+    )
+
+    assert ready is not None
+    group_name, file_states = ready
+    assert group_name == "video"
+    assert [item["path"] for item in file_states] == ["camera/C0001.MP4"]
+
+
 def test_sidecar_facts_are_bounded_during_runner_routing(
     tmp_path: Path,
     monkeypatch,
@@ -4240,6 +4345,58 @@ def test_eager_archive_upload_progress_does_not_report_shared_input_tree(
     assert progress["files_uploaded"] == 1
     assert "input_tree_files_ready" not in progress
     assert "input_tree_bytes_ready" not in progress
+
+
+def test_mixed_eager_archive_upload_progress_scopes_shared_input_tree_totals(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "files": [
+                {
+                    "path": "camera/photo.jpg",
+                    "bytes": 3,
+                    "upload_id": "upload-photo",
+                    "input_upload_id": "upload-1",
+                    "resolved_group": "preserve",
+                    "resolved_group_rel": "photo.jpg",
+                },
+                {
+                    "path": "camera/video.mp4",
+                    "bytes": 5,
+                    "upload_id": "upload-video",
+                    "input_upload_id": "upload-1",
+                    "resolved_group": "video",
+                    "resolved_group_rel": "video.mp4",
+                },
+            ],
+        }
+    )
+    runner.tusd_data_path("upload-photo").parent.mkdir(parents=True, exist_ok=True)
+    runner.tusd_data_path("upload-photo").write_bytes(b"jpg")
+    runner.tusd_data_path("upload-video").write_bytes(b"video")
+
+    progress = runner.upload_progress_for_job(
+        {
+            "input_upload_id": "upload-1",
+            "groups": {
+                "preserve": {"archive_mode": "preserve", "tasks": []},
+                "video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]},
+            },
+        }
+    )
+
+    assert progress is not None
+    assert progress["files_total"] == 2
+    assert progress["files_uploaded"] == 2
+    assert progress["input_tree_files_ready"] == 0
+    assert progress["input_tree_files_total"] == 1
+    assert progress["input_tree_bytes_total"] == 3
 
 
 def test_structured_unrouted_upload_progress_does_not_require_groups(

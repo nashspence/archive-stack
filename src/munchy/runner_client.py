@@ -623,8 +623,16 @@ def input_tree_progress(upload_progress: dict[str, Any]) -> dict[str, Any] | Non
         and "input_tree_bytes_ready" not in upload_progress
     ):
         return None
-    files_total = int(upload_progress.get("files_total") or 0)
-    bytes_total = int(upload_progress.get("bytes_total") or 0)
+    files_total = int(
+        upload_progress.get("input_tree_files_total")
+        or upload_progress.get("files_total")
+        or 0
+    )
+    bytes_total = int(
+        upload_progress.get("input_tree_bytes_total")
+        or upload_progress.get("bytes_total")
+        or 0
+    )
     files_done = min(int(upload_progress.get("input_tree_files_ready") or 0), files_total)
     bytes_done = min(int(upload_progress.get("input_tree_bytes_ready") or 0), bytes_total)
     if files_total <= 0 and bytes_total <= 0:

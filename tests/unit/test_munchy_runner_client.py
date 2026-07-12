@@ -441,6 +441,38 @@ def test_format_progress_status_line_shows_input_tree_when_it_lags_upload() -> N
     assert "remote input tree 5/10 files" in line
 
 
+def test_format_progress_status_line_uses_scoped_input_tree_totals() -> None:
+    line = format_progress_status_line(
+        {
+            "upload_progress": {
+                "files_uploaded": 475,
+                "files_total": 475,
+                "uploaded_bytes": 1000,
+                "bytes_total": 1000,
+                "percent_bytes": 100.0,
+                "input_tree_files_ready": 0,
+                "input_tree_files_total": 194,
+                "input_tree_bytes_ready": 0,
+                "input_tree_bytes_total": 400,
+            },
+            "encode_progress": {
+                "mode": "eager_archive",
+                "files_total": 68,
+                "files_encoding": 4,
+                "input_bytes_total": 600,
+                "input_bytes_encoding": 100,
+                "running_batches": 1,
+                "pipeline_batches": 3,
+            },
+        }
+    )
+
+    assert "remote upload 475/475 files" in line
+    assert "remote input tree 0/194 files" in line
+    assert "remote input tree 0/475 files" not in line
+    assert "remote encode 0/68 files" in line
+
+
 def test_progress_percent_uses_uploaded_bytes_when_payload_percent_is_stale() -> None:
     progress = {
         "files_uploaded": 147,
