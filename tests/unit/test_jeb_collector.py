@@ -404,6 +404,40 @@ def test_munchy_payload_uses_per_account_job_defaults(
     }
 
 
+def test_archive_now_rediscovers_stale_failed_batch_when_upload_prefix_changes(
+    tmp_path: Path,
+) -> None:
+    write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4")
+    old_config = config_from_env(env_for(tmp_path, accounts="camera"))
+    old_collector = Collector(old_config)
+    old_collector.init_db()
+    old_batch_id = old_collector.archive_now(source_id="camera", process=False)
+    assert old_batch_id is not None
+    old_collector.set_batch_state(old_batch_id, "failed", "old config failed")
+
+    new_config = config_from_env(
+        {
+            **env_for(tmp_path, accounts="camera"),
+            "JEB_ACCOUNT_CAMERA_UPLOAD_PREFIX": "camera-video",
+        }
+    )
+    new_collector = Collector(new_config)
+    new_collector.init_db()
+    new_batch_id = new_collector.archive_now(source_id="camera", process=False)
+
+    assert new_batch_id is not None
+    assert new_batch_id != f"{old_batch_id}-r2"
+    request = munchy_upload_request(new_collector, new_batch_id, new_config.targets["munchy"])
+    assert [item.rel_path for item in request.files] == ["camera-video/clip.mp4"]
+    with new_collector.connect() as conn:
+        row = conn.execute(
+            "SELECT state FROM batch_attempts WHERE id = ?",
+            (old_batch_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["state"] == "superseded"
+
+
 def test_jeb_batch_alerts_use_account_notify_recipients(tmp_path: Path) -> None:
     config = config_from_env(
         {

@@ -1531,7 +1531,26 @@ class Collector:
         failed_attempt = self.latest_failed_attempt_for_collection(collection.id)
         batch_id: str | None
         if failed_attempt is not None:
-            batch_id = self.create_retry_attempt(str(failed_attempt["id"]))
+            if self.failed_attempt_target_paths_match_current_config(
+                failed_attempt,
+                collection,
+            ):
+                batch_id = self.create_retry_attempt(str(failed_attempt["id"]))
+            else:
+                LOG.info(
+                    "failed attempt %s target paths no longer match current source "
+                    "config; rediscovering collection %s",
+                    failed_attempt["id"],
+                    collection.id,
+                )
+                batch_id = self.discover_collection(
+                    collection,
+                    only_source_ids=(source_id,),
+                    force=True,
+                    allow_preflight_retry=True,
+                )
+                if batch_id is not None:
+                    self.supersede_batch_attempt(str(failed_attempt["id"]))
         else:
             batch_id = self.discover_collection(
                 collection,
@@ -1558,6 +1577,55 @@ class Collector:
                 (collection_id,),
             ).fetchone()
         return cast(sqlite3.Row | None, row)
+
+    def failed_attempt_target_paths_match_current_config(
+        self,
+        failed_attempt: sqlite3.Row,
+        collection: CollectionConfig,
+    ) -> bool:
+        sources = [self.source_by_id(source_id) for source_id in collection.source_ids]
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT source_path, target_path FROM files WHERE batch_id = ?",
+                (failed_attempt["batch_id"],),
+            ).fetchall()
+        current_target_paths: list[str] = []
+        for row in rows:
+            current_target_path = self.current_target_path_for_source_path(
+                Path(str(row["source_path"])),
+                sources,
+            )
+            if current_target_path is None:
+                return False
+            current_target_paths.append(current_target_path)
+        if len(current_target_paths) != len(set(current_target_paths)):
+            return False
+        stored_target_paths = [str(row["target_path"]) for row in rows]
+        return sorted(stored_target_paths) == sorted(current_target_paths)
+
+    def current_target_path_for_source_path(
+        self,
+        source_path: Path,
+        sources: Sequence[SourceConfig],
+    ) -> str | None:
+        for source in sources:
+            try:
+                rel = source_path.relative_to(source.path)
+            except ValueError:
+                continue
+            return normalize_posix(PurePosixPath(source.upload_prefix, *rel.parts))
+        return None
+
+    def supersede_batch_attempt(self, attempt_id: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE batch_attempts
+                SET state = 'superseded', updated_at = ?
+                WHERE id = ?
+                """,
+                (iso(), attempt_id),
+            )
 
     def create_retry_attempt(self, failed_attempt_id: str) -> str:
         failed_attempt = self.load_batch(failed_attempt_id)
