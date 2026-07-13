@@ -828,6 +828,51 @@ def test_jeb_routing_preflight_alerts_use_account_notify_recipients(tmp_path: Pa
     assert notifier.calls[0]["notify"] == {"enabled": True, "recipients": ["nash", "katie"]}
 
 
+def test_jeb_status_only_marks_sources_with_failed_routing_preflight(
+    tmp_path: Path,
+) -> None:
+    config = config_from_env(env_for(tmp_path, accounts="camera,phone"))
+    collector = Collector(config)
+    collector.init_db()
+
+    clean_statuses = {
+        item["id"]: item for item in collector.status_summary(include_backlog=False)["sources"]
+    }
+
+    assert clean_statuses["camera"]["routing_preflight_failed"] is False
+    assert clean_statuses["phone"]["routing_preflight_failed"] is False
+
+    source = config.sources[0]
+    collection = config.collections[0]
+    file = EligibleFile(
+        path=source.path / "clip.txt",
+        rel=Path("clip.txt"),
+        target_path="camera/clip.txt",
+        bytes=4,
+        mtime=1.0,
+        mtime_ns=1,
+    )
+    collector.store_routing_preflight_failure(
+        collection=collection,
+        source=source,
+        files=[file],
+        failure_kind="profile_routing",
+        failure_payload={"ok": False},
+        fingerprint_payload={"source_id": "camera", "error": "no route"},
+        message="no route",
+        file_count=1,
+        total_bytes=4,
+        unmatched_count=1,
+    )
+
+    failed_statuses = {
+        item["id"]: item for item in collector.status_summary(include_backlog=False)["sources"]
+    }
+
+    assert failed_statuses["camera"]["routing_preflight_failed"] is True
+    assert failed_statuses["phone"]["routing_preflight_failed"] is False
+
+
 def test_jeb_webhook_notifier_routes_named_recipients_to_webhook_map(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1180,7 +1180,7 @@ class Collector:
         return {str(row["state"]): int(row["count"]) for row in rows}
 
     def source_statuses(self, *, include_backlog: bool = True) -> list[dict[str, Any]]:
-        active_preflight_source_ids = self.active_routing_preflight_source_ids()
+        failed_preflight_source_ids = self.failed_routing_preflight_source_ids()
         collections_by_source: dict[str, list[str]] = defaultdict(list)
         for collection in self.config.collections:
             for source_id in collection.source_ids:
@@ -1197,7 +1197,7 @@ class Collector:
                 "stable_seconds": source.stable_seconds,
                 "include_extensions": sorted(source.include_extensions),
                 "collections": sorted(collections_by_source.get(source.id, ())),
-                "routing_preflight_failed": source.id in active_preflight_source_ids,
+                "routing_preflight_failed": source.id in failed_preflight_source_ids,
             }
             if include_backlog:
                 try:
@@ -2014,6 +2014,16 @@ class Collector:
                 (source_id,),
             ).fetchone()
         return row is not None
+
+    def failed_routing_preflight_source_ids(self) -> set[str]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT source_id FROM routing_preflight_failures
+                WHERE state = 'failed'
+                """
+            ).fetchall()
+        return {str(row["source_id"]) for row in rows}
 
     def active_routing_preflight_source_ids(self) -> set[str]:
         enabled_sources = {source.id for source in self.config.sources if source.enabled}
