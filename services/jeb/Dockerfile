@@ -14,6 +14,7 @@ COPY requirements-service.txt /tmp/requirements-service.txt
 RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements-service.txt
 
 COPY contracts /riverhog/contracts
+COPY config /riverhog/config
 COPY src /riverhog/src
 
 EXPOSE 8081

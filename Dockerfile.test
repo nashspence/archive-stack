@@ -36,6 +36,7 @@ RUN uv sync --locked --no-default-groups --group dev --extra db --extra planner 
 
 COPY src ./src
 COPY contracts ./contracts
+COPY config ./config
 COPY services/munchy-av1-nvenc/app ./services/munchy-av1-nvenc/app
 COPY services/munchy-runner/app ./services/munchy-runner/app
 COPY tests ./tests

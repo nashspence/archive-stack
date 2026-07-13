@@ -261,6 +261,9 @@ def test_dockerfiles_keep_dependency_layers_independent_of_docs_and_tests() -> N
     assert app_dockerfile.index(
         "pip install --no-cache-dir --require-hashes -r requirements-runtime.txt"
     ) < app_dockerfile.index("COPY src ./src")
+    assert app_dockerfile.index(
+        "pip install --no-cache-dir --require-hashes -r requirements-runtime.txt"
+    ) < app_dockerfile.index("COPY config ./config")
     assert test_dockerfile.index(
         "COPY pyproject.toml uv.lock ./"
     ) < test_dockerfile.index("COPY src ./src")
@@ -277,6 +280,8 @@ def test_dockerfiles_keep_dependency_layers_independent_of_docs_and_tests() -> N
     assert "COPY services/munchy-runner/app ./services/munchy-runner/app" in test_dockerfile
     assert "COPY tests ./tests" in test_dockerfile
     assert "COPY contracts ./contracts" in test_dockerfile
+    assert "COPY config ./config" in app_dockerfile
+    assert "COPY config ./config" in test_dockerfile
     assert "docs/" in dockerignore
 
 
@@ -317,6 +322,8 @@ def test_deployed_service_dockerfiles_use_locked_service_dependencies() -> None:
         assert "pip install -r requirements.txt" not in dockerfile
         assert dockerfile.index("COPY requirements-service.txt") < dockerfile.index("COPY src")
         assert dockerfile.index("--require-hashes -r") < dockerfile.index("COPY src")
+        assert "COPY config /riverhog/config" in dockerfile
+        assert dockerfile.index("--require-hashes -r") < dockerfile.index("COPY config")
 
 
 def test_munchy_runner_image_includes_source_artifact_runtime_tools() -> None:
