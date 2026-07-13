@@ -269,7 +269,8 @@ Request body:
 ```json
 {
   "account": "example-camera",
-  "process": true
+  "process": true,
+  "dry_run": false
 }
 ```
 
@@ -278,6 +279,9 @@ Required behavior:
 - `account` is the Jeb account/source slug
 - `process` defaults to `true`; when false, Jeb creates the eligible batch but
   does not process it immediately
+- `dry_run` defaults to `false`; when true, Jeb returns a non-mutating plan
+  without creating a batch, uploading files, starting a runner job, or recording
+  routing preflight failures
 - Jeb sends complete eligible account batches to Munchy; Munchy owns routing,
   profile selection, archive/leave/cull behavior, and Riverhog archive contents
 

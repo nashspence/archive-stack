@@ -527,6 +527,84 @@ def test_manual_cadence_only_runs_with_archive_now(tmp_path: Path) -> None:
     assert len(active_batch_ids(collector)) == 1
 
 
+def test_archive_plan_reports_batch_without_creating_it(tmp_path: Path) -> None:
+    config = config_from_env(env_for(tmp_path, accounts="camera"))
+    write_stable_file(tmp_path / "landing" / "camera" / "clip.txt", b"camera")
+    collector = Collector(config)
+    collector.init_db()
+
+    plan = collector.archive_plan(source_id="camera")
+
+    assert plan["status"] == "would_process"
+    assert plan["dry_run"] is True
+    assert plan["account"] == "camera"
+    assert plan["collection_id"] == "camera"
+    assert plan["target_name"] == "munchy"
+    assert plan["file_count"] == 1
+    assert plan["total_bytes"] == 6
+    assert plan["batch_id"]
+    assert plan["job_id"]
+    assert active_batch_ids(collector) == []
+
+
+def test_archive_plan_routing_preflight_does_not_record_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    munchy_config = {
+        "schema_version": 1,
+        "kind": "munchy.job",
+        "job": {
+            "archive_mode": "av1_nvenc",
+            "tasks": ["archive_video"],
+            "routing": {
+                "routes": [
+                    {
+                        "id": "main-video",
+                        "group": "camera-video",
+                        "when": {"path": {"prefix": "camera"}},
+                    }
+                ]
+            },
+        },
+        "groups": {
+            "camera-video": {
+                "archive_mode": "av1_nvenc",
+                "tasks": ["archive_video"],
+            }
+        },
+    }
+    config = config_from_env(
+        {
+            **env_for(tmp_path, accounts="camera"),
+            "JEB_ACCOUNT_CAMERA_MUNCHY_CONFIG": write_munchy_config(tmp_path, munchy_config),
+        }
+    )
+    write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4")
+    collector = Collector(config)
+    collector.init_db()
+
+    class FakeMunchyRunnerClient:
+        def __init__(self, url: str) -> None:
+            self.url = url
+
+        def profile_routing_preflight(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "ok": False,
+                "matches": [],
+                "unmatched": [{"path": "camera/clip.mp4", "reason": "no_matching_route"}],
+            }
+
+    monkeypatch.setattr(collector_module, "MunchyRunnerClient", FakeMunchyRunnerClient)
+
+    plan = collector.archive_plan(source_id="camera")
+
+    assert plan["status"] == "routing_preflight_failed"
+    assert plan["routing_preflight"]["unmatched_count"] == 1
+    assert active_batch_ids(collector) == []
+    assert collector.routing_preflight_failures(state="failed") == []
+
+
 def test_monthly_cadence_uses_first_scheduled_run_after_month_boundary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

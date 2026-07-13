@@ -1586,6 +1586,11 @@ paths:
             schema:
               $ref: "#/components/schemas/JebArchiveNowRequest"
       responses:
+        "200":
+          description: Dry-run archive plan returned without mutating Jeb state
+          content:
+            application/json:
+              schema: { type: object }
         "202":
           description: Archive batch accepted; processing continues on the Jeb service
           content:
@@ -1621,6 +1626,9 @@ components:
         process:
           type: boolean
           default: true
+        dry_run:
+          type: boolean
+          default: false
     PhysicalProtectionState:
       type: string
       enum: [unprotected, partially_protected, protected]

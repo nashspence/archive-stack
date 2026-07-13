@@ -51,6 +51,29 @@ def test_jeb_archive_now_starts_batch_without_processing(
     assert [row["target_path"] for row in collector.batch_files(batch_id)] == ["phone/note.txt"]
 
 
+def test_jeb_archive_now_dry_run_reports_plan_without_batch(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    env = jeb_env(tmp_path)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
+    write_stable_file(tmp_path / "landing" / "phone" / "note.txt")
+
+    assert jeb_main(["archive-now", "--account", "phone", "--dry-run"]) == 0
+
+    output = capsys.readouterr().out
+    assert "jeb archive dry-run" in output
+    assert "status: would_process" in output
+    assert "account: phone" in output
+    collector = Collector(config_from_env(env))
+    collector.init_db()
+    assert collector.active_batch_ids() == []
+    assert collector.list_batches(terminal="all")["total"] == 0
+
+
 def test_jeb_archive_now_reports_removed_account_without_traceback(
     tmp_path: Path,
     capsys,

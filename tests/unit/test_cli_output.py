@@ -16,6 +16,7 @@ from riverhog_cli.output import (
     format_hot_evict,
     format_image,
     format_images,
+    format_jeb_archive_plan,
     format_jeb_batches,
     format_jeb_status,
     format_recovery_session,
@@ -585,6 +586,41 @@ def test_format_jeb_status_uses_summary_sources_and_batches(
     assert "archive-now" in rendered
     assert "camera" in rendered
     assert "munchy_uploaded" in rendered
+
+
+def test_format_jeb_archive_plan_can_fall_back_to_plain_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
+
+    rendered = format_jeb_archive_plan(
+        {
+            "status": "would_process",
+            "account": "camera",
+            "collection_id": "camera",
+            "target_name": "munchy",
+            "upload_root": "camera",
+            "file_count": 1,
+            "total_bytes": 42,
+            "cleanup": "delete",
+            "process": True,
+            "batch_id": "batch-plan",
+            "job_id": "job-plan",
+            "routing_preflight": {
+                "configured": False,
+                "ok": True,
+                "status": "not_configured",
+                "unmatched_count": 0,
+                "left_count": 0,
+            },
+        }
+    )
+
+    assert "jeb archive dry-run" in rendered
+    assert "status: would_process" in rendered
+    assert "account: camera" in rendered
+    assert "bytes: 42 B" in rendered
+    assert "routing preflight: not_configured ok=true unmatched=0 left=0" in rendered
 
 
 def test_format_jeb_batches_can_fall_back_to_plain_text(

@@ -325,7 +325,15 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                     if not account:
                         raise ValueError("account is required")
                     process = _payload_bool(payload, "process", True)
+                    dry_run = _payload_bool(payload, "dry_run", False)
                     state.collector.init_db()
+                    if dry_run:
+                        _response(
+                            self,
+                            HTTPStatus.OK,
+                            state.collector.archive_plan(source_id=account, process=process),
+                        )
+                        return
                     archive_operation: dict[str, Any] | None = None
                     if process:
                         batch_id, archive_operation = state.operations.prepare_and_start(

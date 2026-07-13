@@ -1639,13 +1639,44 @@ class Collector:
         source: SourceConfig,
         files: Sequence[EligibleFile],
     ) -> list[EligibleFile] | None:
+        routed, _summary = self.preflight_source_routes_with_summary(
+            collection,
+            source,
+            files,
+            record_failures=True,
+        )
+        return routed
+
+    def preflight_source_routes_with_summary(
+        self,
+        collection: CollectionConfig,
+        source: SourceConfig,
+        files: Sequence[EligibleFile],
+        *,
+        record_failures: bool,
+    ) -> tuple[list[EligibleFile] | None, dict[str, Any]]:
         if not files:
-            return []
+            return [], {
+                "configured": False,
+                "ok": True,
+                "status": "no_files",
+                "file_count": 0,
+                "unmatched_count": 0,
+                "left_count": 0,
+            }
         munchy_job_defaults = collection_munchy_job_defaults(self.config, collection)
         profile_routing = mapping(munchy_job_defaults.get("profile_routing"))
         if not profile_routing:
-            self.clear_routing_preflight_failure(source.id)
-            return list(files)
+            if record_failures:
+                self.clear_routing_preflight_failure(source.id)
+            return list(files), {
+                "configured": False,
+                "ok": True,
+                "status": "not_configured",
+                "file_count": len(files),
+                "unmatched_count": 0,
+                "left_count": 0,
+            }
         target = self.target_by_name(collection.target)
         groups = munchy_groups_from_defaults(munchy_job_defaults)
         path_facts_by_path = {
@@ -1711,26 +1742,58 @@ class Collector:
                     source.id,
                     exc,
                 )
-                return None
-            self.record_munchy_preflight_failure(
+                return None, {
+                    "configured": True,
+                    "ok": False,
+                    "status": "transient_error",
+                    "file_count": len(files),
+                    "unmatched_count": len(files),
+                    "left_count": 0,
+                    "error": str(exc),
+                }
+            if record_failures:
+                self.record_munchy_preflight_failure(
+                    collection=collection,
+                    source=source,
+                    files=files,
+                    error=exc,
+                )
+                self.notify_routing_preflight_failures(source_id=source.id)
+            return None, {
+                "configured": True,
+                "ok": False,
+                "status": "munchy_preflight_failed",
+                "file_count": len(files),
+                "unmatched_count": len(files),
+                "left_count": 0,
+                "error": str(exc),
+            }
+        unmatched = result.get("unmatched")
+        unmatched_count = len(unmatched) if isinstance(unmatched, Sequence) else 0
+        left = result.get("left")
+        left_count = len(left) if isinstance(left, Sequence) else 0
+        summary = {
+            "configured": True,
+            "ok": bool(result.get("ok")),
+            "status": "ok" if result.get("ok") else "failed",
+            "file_count": len(files),
+            "unmatched_count": unmatched_count,
+            "left_count": left_count,
+            "result": result,
+        }
+        if result.get("ok"):
+            if record_failures:
+                self.clear_routing_preflight_failure(source.id)
+            return list(files), summary
+        if record_failures:
+            self.record_routing_preflight_failure(
                 collection=collection,
                 source=source,
                 files=files,
-                error=exc,
+                result=result,
             )
             self.notify_routing_preflight_failures(source_id=source.id)
-            return None
-        if result.get("ok"):
-            self.clear_routing_preflight_failure(source.id)
-            return list(files)
-        self.record_routing_preflight_failure(
-            collection=collection,
-            source=source,
-            files=files,
-            result=result,
-        )
-        self.notify_routing_preflight_failures(source_id=source.id)
-        return None
+        return None, summary
 
     def routing_preflight_file(
         self,
@@ -2196,6 +2259,142 @@ class Collector:
             if batch_id is not None and process:
                 self.process_batch(batch_id)
             return batch_id
+
+    def archive_plan(
+        self,
+        *,
+        source_id: str,
+        process: bool = True,
+    ) -> dict[str, Any]:
+        with self.operation_lock:
+            try:
+                source = self.source_by_id(source_id)
+            except KeyError as exc:
+                raise UnrecoverableJebError(
+                    f"account {source_id!r} is not in the active Jeb env"
+                ) from exc
+            if not source.enabled:
+                raise UnrecoverableJebError(
+                    f"account {source_id!r} is disabled in the active Jeb env"
+                )
+            collections = [
+                collection
+                for collection in self.config.collections
+                if collection.enabled and source_id in collection.source_ids
+            ]
+            if not collections:
+                raise UnrecoverableJebError(
+                    f"account {source_id!r} is not included in the active Jeb schedule"
+                )
+            if len(collections) > 1:
+                raise UnrecoverableJebError(
+                    f"account {source_id!r} is in multiple scheduled collections"
+                )
+            collection = collections[0]
+            target = self.target_by_name(collection.target)
+            base_payload: dict[str, Any] = {
+                "account": source.id,
+                "collection_id": collection.id,
+                "collection_slug": collection.collection_slug,
+                "target_name": target.name,
+                "upload_root": source.upload_root,
+                "cleanup": collection.cleanup,
+                "cadence": collection.cadence,
+                "threshold_bytes": collection.threshold_bytes,
+                "process": process,
+                "dry_run": True,
+            }
+
+            failed_attempt = self.latest_failed_attempt_for_collection(collection.id)
+            if failed_attempt is not None and self.failed_attempt_target_paths_match_current_config(
+                failed_attempt,
+                collection,
+            ):
+                batch_id = str(failed_attempt["batch_id"])
+                rows = self.batch_files(batch_id)
+                return {
+                    **base_payload,
+                    "status": "would_retry_process" if process else "would_retry_stage",
+                    "mode": "retry_failed_attempt",
+                    "failed_attempt_id": str(failed_attempt["id"]),
+                    "batch_id": batch_id,
+                    "attempt_id": str(failed_attempt["id"]),
+                    "file_count": len(rows),
+                    "total_bytes": sum(int(row["bytes"] or 0) for row in rows),
+                    "routing_preflight": {
+                        "configured": None,
+                        "ok": True,
+                        "status": "not_rerun_for_retry",
+                    },
+                }
+
+            period = now()
+            source_files = self.eligible_files(source)
+            if not source_files:
+                return {
+                    **base_payload,
+                    "status": "no_eligible_files",
+                    "mode": "discover",
+                    "file_count": 0,
+                    "total_bytes": 0,
+                    "routing_preflight": {
+                        "configured": None,
+                        "ok": True,
+                        "status": "not_needed",
+                    },
+                }
+
+            routed_files, preflight = self.preflight_source_routes_with_summary(
+                collection,
+                source,
+                source_files,
+                record_failures=False,
+            )
+            if routed_files is None:
+                return {
+                    **base_payload,
+                    "status": "routing_preflight_failed",
+                    "mode": "discover",
+                    "file_count": len(source_files),
+                    "total_bytes": sum(item.bytes for item in source_files),
+                    "routing_preflight": preflight,
+                }
+
+            target_paths = [item.target_path for item in routed_files]
+            duplicates = sorted(path for path in set(target_paths) if target_paths.count(path) > 1)
+            if duplicates:
+                raise UnrecoverableJebError(
+                    f"collection {collection.id} has duplicate upload path(s): "
+                    + ", ".join(duplicates[:5])
+                )
+            total = sum(item.bytes for item in routed_files)
+            if total < collection.threshold_bytes:
+                return {
+                    **base_payload,
+                    "status": "below_threshold",
+                    "mode": "discover",
+                    "file_count": len(routed_files),
+                    "total_bytes": total,
+                    "routing_preflight": preflight,
+                }
+
+            batch_id, digest = self.batch_identity(collection, routed_files, period=period)
+            collection_timestamp = period.strftime("%Y%m%dT%H%M%SZ")
+            input_upload_id = f"jeb-{collection.id}-{collection_timestamp.lower()}-{digest}"
+            return {
+                **base_payload,
+                "status": "would_process" if process else "would_stage",
+                "mode": "discover",
+                "batch_id": batch_id,
+                "attempt_id": batch_id,
+                "manifest_digest": digest,
+                "collection_timestamp": collection_timestamp,
+                "input_upload_id": input_upload_id,
+                "job_id": f"{input_upload_id}-job",
+                "file_count": len(routed_files),
+                "total_bytes": total,
+                "routing_preflight": preflight,
+            }
 
     def latest_failed_attempt_for_collection(self, collection_id: str) -> sqlite3.Row | None:
         with self.connect() as conn:

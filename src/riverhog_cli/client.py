@@ -785,11 +785,17 @@ class ApiClient:
     def run_jeb_once(self) -> dict[str, Any]:
         return self._json("POST", "/v1/jeb/once")
 
-    def archive_jeb_now(self, *, account: str, process: bool = True) -> dict[str, Any]:
+    def archive_jeb_now(
+        self,
+        *,
+        account: str,
+        process: bool = True,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
         return self._json(
             "POST",
             "/v1/jeb/archive-now",
-            json={"account": account, "process": process},
+            json={"account": account, "process": process, "dry_run": dry_run},
         )
 
     def get_file_content(self, target: str, output: Path | None = None) -> bytes:

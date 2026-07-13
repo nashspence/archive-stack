@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from fastapi import Response
 
 from riverhog_api.routers import jeb as jeb_router
 from riverhog_core.domain.errors import BadRequest, InvalidState, ServiceUnavailable
@@ -74,14 +75,51 @@ def test_jeb_api_forwards_action_payloads_to_service(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(jeb_router, "_request_jeb_service", fake_request)
 
     request = jeb_router.JebArchiveNowRequest(account="camera", process=False)
-    assert jeb_router.archive_jeb_now(request) == {"status": "started", "batch_id": "batch-1"}
+    response = Response()
+    assert jeb_router.archive_jeb_now(request, response) == {
+        "status": "started",
+        "batch_id": "batch-1",
+    }
 
     assert captured == [
         (
             "POST",
             "/v1/jeb/archive-now",
             None,
-            {"account": "camera", "process": False},
+            {"account": "camera", "process": False, "dry_run": False},
+        )
+    ]
+
+
+def test_jeb_api_forwards_dry_run_and_returns_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[tuple[str, str, dict[str, Any] | None, dict[str, Any] | None]] = []
+
+    def fake_request(
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        captured.append((method, path, params, json_payload))
+        return {"status": "would_process", "dry_run": True}
+
+    monkeypatch.setattr(jeb_router, "_request_jeb_service", fake_request)
+
+    request = jeb_router.JebArchiveNowRequest(account="camera", dry_run=True)
+    response = Response()
+
+    assert jeb_router.archive_jeb_now(request, response) == {
+        "status": "would_process",
+        "dry_run": True,
+    }
+    assert response.status_code == 200
+    assert captured == [
+        (
+            "POST",
+            "/v1/jeb/archive-now",
+            None,
+            {"account": "camera", "process": True, "dry_run": True},
         )
     ]
 

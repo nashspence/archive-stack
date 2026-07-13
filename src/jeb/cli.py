@@ -14,6 +14,7 @@ from jeb.service_cli import (
 from riverhog_cli.client import ApiClient
 from riverhog_cli.output import (
     emit,
+    format_jeb_archive_plan,
     format_jeb_batches,
     format_jeb_config_check,
     format_jeb_operation,
@@ -65,9 +66,16 @@ def cmd_once(args: argparse.Namespace) -> int:
 
 
 def cmd_archive_now(args: argparse.Namespace) -> int:
-    payload = client().archive_jeb_now(account=args.account, process=not args.no_process)
+    payload = client().archive_jeb_now(
+        account=args.account,
+        process=not args.no_process,
+        dry_run=args.dry_run,
+    )
     if args.json:
         emit(payload, json_mode=True)
+        return 0
+    if args.dry_run:
+        emit(format_jeb_archive_plan(payload), json_mode=False)
         return 0
     if payload.get("status") == "no_eligible_files":
         emit(format_jeb_operation(payload, title="jeb archive"), json_mode=False)
@@ -153,6 +161,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-process",
         action="store_true",
         help="Create an eligible batch but do not process it immediately.",
+    )
+    archive_now.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview the archive action without creating a batch or uploading files.",
     )
     archive_now.add_argument("--json", action="store_true", help="Emit JSON.")
     archive_now.set_defaults(func=cmd_archive_now)

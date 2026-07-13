@@ -99,6 +99,42 @@ def test_jeb_service_api_requires_boolean_archive_now_process_flag(tmp_path: Pat
         server.server_close()
 
 
+def test_jeb_service_api_archive_now_dry_run_does_not_create_batch(tmp_path: Path) -> None:
+    env = jeb_env(tmp_path)
+    write_stable_file(tmp_path / "landing" / "phone" / "note.txt")
+    processed = threading.Event()
+
+    class FailingRunner:
+        def advance(self, collector: Collector, batch_id: str) -> None:
+            processed.set()
+            raise AssertionError("dry-run must not process a batch")
+
+    collector = Collector(config_from_env(env), target_runners={"munchy": FailingRunner()})
+    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
+    try:
+        host, port = server.server_address[:2]
+
+        status, payload = post_json(
+            f"http://{host}:{port}/v1/jeb/archive-now",
+            {"account": "phone", "dry_run": True},
+        )
+
+        assert status == 200
+        assert payload["status"] == "would_process"
+        assert payload["dry_run"] is True
+        assert payload["account"] == "phone"
+        assert payload["file_count"] == 1
+        assert payload["total_bytes"] == 5
+        assert payload["batch_id"]
+        assert payload["job_id"]
+        assert collector.active_batch_ids() == []
+        assert collector.list_batches(terminal="all")["total"] == 0
+        assert not processed.is_set()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_jeb_service_api_archive_now_processes_in_background(tmp_path: Path) -> None:
     env = jeb_env(tmp_path)
     write_stable_file(tmp_path / "landing" / "phone" / "note.txt")

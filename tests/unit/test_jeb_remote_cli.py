@@ -43,8 +43,38 @@ class FakeJebApi:
         self.calls.append(("once", {}))
         return {"status": "started", "operation": {"id": "op-once"}}
 
-    def archive_jeb_now(self, *, account: str, process: bool = True) -> dict[str, Any]:
-        self.calls.append(("archive-now", {"account": account, "process": process}))
+    def archive_jeb_now(
+        self,
+        *,
+        account: str,
+        process: bool = True,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            ("archive-now", {"account": account, "process": process, "dry_run": dry_run})
+        )
+        if dry_run:
+            return {
+                "status": "would_process" if process else "would_stage",
+                "account": account,
+                "collection_id": account,
+                "target_name": "munchy",
+                "upload_root": account,
+                "file_count": 1,
+                "total_bytes": 42,
+                "cleanup": "delete",
+                "process": process,
+                "dry_run": True,
+                "batch_id": "batch-plan",
+                "job_id": "job-plan",
+                "routing_preflight": {
+                    "configured": False,
+                    "ok": True,
+                    "status": "not_configured",
+                    "unmatched_count": 0,
+                    "left_count": 0,
+                },
+            }
         return {
             "status": "started",
             "account": account,
@@ -103,7 +133,7 @@ def test_jeb_remote_cli_calls_api_for_actions(capsys, monkeypatch) -> None:  # t
     assert fake.calls == [
         ("check-config", {}),
         ("once", {}),
-        ("archive-now", {"account": "camera", "process": False}),
+        ("archive-now", {"account": "camera", "process": False, "dry_run": False}),
     ]
     output = capsys.readouterr().out
     assert "jeb config" in output
@@ -122,10 +152,26 @@ def test_jeb_remote_cli_reports_started_archive_operation(capsys, monkeypatch) -
 
     assert jeb_cli.main(["archive-now", "--account", "camera"]) == 0
 
-    assert fake.calls == [("archive-now", {"account": "camera", "process": True})]
+    assert fake.calls == [("archive-now", {"account": "camera", "process": True, "dry_run": False})]
     output = capsys.readouterr().out
     assert "jeb archive" in output
     assert "status: started" in output
     assert "account: camera" in output
     assert "batch: batch-1" in output
     assert "operation id: op-archive" in output
+
+
+def test_jeb_remote_cli_renders_archive_dry_run(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    fake = FakeJebApi()
+    monkeypatch.setattr(jeb_cli, "client", lambda: fake)
+    monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
+
+    assert jeb_cli.main(["archive-now", "--account", "camera", "--dry-run"]) == 0
+
+    assert fake.calls == [("archive-now", {"account": "camera", "process": True, "dry_run": True})]
+    output = capsys.readouterr().out
+    assert "jeb archive dry-run" in output
+    assert "status: would_process" in output
+    assert "account: camera" in output
+    assert "batch: batch-plan" in output
+    assert "routing preflight: not_configured ok=true unmatched=0 left=0" in output

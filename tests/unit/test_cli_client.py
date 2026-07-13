@@ -221,6 +221,7 @@ def test_jeb_client_methods_use_canonical_endpoints(monkeypatch) -> None:
     client.check_jeb_config()
     client.run_jeb_once()
     client.archive_jeb_now(account="camera", process=False)
+    client.archive_jeb_now(account="camera", dry_run=True)
 
     assert captured == [
         ("GET", "https://api.test/v1/jeb/status?include_backlog=false", ""),
@@ -236,7 +237,12 @@ def test_jeb_client_methods_use_canonical_endpoints(monkeypatch) -> None:
         (
             "POST",
             "https://api.test/v1/jeb/archive-now",
-            '{"account":"camera","process":false}',
+            '{"account":"camera","process":false,"dry_run":false}',
+        ),
+        (
+            "POST",
+            "https://api.test/v1/jeb/archive-now",
+            '{"account":"camera","process":true,"dry_run":true}',
         ),
     ]
 

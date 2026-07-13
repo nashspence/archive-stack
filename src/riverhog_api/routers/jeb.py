@@ -4,7 +4,7 @@ import os
 from typing import Annotated, Any, Literal
 
 import httpx
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Response
 from pydantic import BaseModel, Field
 
 from riverhog_core.domain.errors import BadRequest, InvalidState, RiverhogError, ServiceUnavailable
@@ -17,6 +17,7 @@ DEFAULT_JEB_SERVICE_TIMEOUT_SECONDS = 300.0
 class JebArchiveNowRequest(BaseModel):
     account: str = Field(min_length=1)
     process: bool = True
+    dry_run: bool = False
 
 
 def _jeb_service_url() -> str:
@@ -121,10 +122,22 @@ def run_jeb_once() -> dict[str, Any]:
     return _request_jeb_service("POST", "/v1/jeb/once")
 
 
-@router.post("/jeb/archive-now", status_code=202)
-def archive_jeb_now(request: JebArchiveNowRequest) -> dict[str, Any]:
-    return _request_jeb_service(
+@router.post(
+    "/jeb/archive-now",
+    status_code=202,
+    responses={
+        200: {
+            "description": "Dry-run archive plan returned without mutating Jeb state",
+            "content": {"application/json": {"schema": {"type": "object"}}},
+        }
+    },
+)
+def archive_jeb_now(request: JebArchiveNowRequest, response: Response) -> dict[str, Any]:
+    payload = _request_jeb_service(
         "POST",
         "/v1/jeb/archive-now",
         json_payload=request.model_dump(),
     )
+    if request.dry_run:
+        response.status_code = 200
+    return payload

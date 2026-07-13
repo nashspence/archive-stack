@@ -1502,6 +1502,64 @@ def format_jeb_operation(payload: Mapping[str, Any], *, title: str) -> Any:
     return RichGroup(RichText(title, style="bold"), table)
 
 
+def format_jeb_archive_plan(payload: Mapping[str, Any]) -> Any:
+    preflight = _optional_mapping(payload.get("routing_preflight"))
+    if not _rich_enabled():
+        lines = [
+            "jeb archive dry-run",
+            f"status: {payload.get('status', 'unknown')}",
+            f"account: {payload.get('account', 'unknown')}",
+            f"collection: {payload.get('collection_id', 'unknown')}",
+            f"target: {payload.get('target_name', 'unknown')}",
+            f"upload root: {payload.get('upload_root', '-')}",
+            f"files: {payload.get('file_count', 0)}",
+            f"bytes: {_bytes_text(payload.get('total_bytes', 0))}",
+            f"cleanup: {payload.get('cleanup', '-')}",
+            f"process: {str(bool(payload.get('process'))).lower()}",
+        ]
+        if payload.get("batch_id"):
+            lines.append(f"batch: {payload.get('batch_id')}")
+        if payload.get("job_id"):
+            lines.append(f"job: {payload.get('job_id')}")
+        lines.append(
+            "routing preflight: "
+            f"{preflight.get('status', 'unknown')} "
+            f"ok={str(preflight.get('ok')).lower()} "
+            f"unmatched={preflight.get('unmatched_count', 0)} "
+            f"left={preflight.get('left_count', 0)}"
+        )
+        if preflight.get("error"):
+            lines.append(f"preflight error: {_jeb_preview(preflight.get('error'))}")
+        return "\n".join(lines)
+
+    table = _detail_table()
+    table.add_row("status", _attention_text(payload.get("status", "unknown")))
+    table.add_row("account", str(payload.get("account", "unknown")))
+    table.add_row("collection", str(payload.get("collection_id", "unknown")))
+    table.add_row("target", str(payload.get("target_name", "unknown")))
+    table.add_row("upload root", str(payload.get("upload_root", "-")))
+    table.add_row("files", str(payload.get("file_count", 0)))
+    table.add_row("bytes", _bytes_text(payload.get("total_bytes", 0)))
+    table.add_row("cleanup", str(payload.get("cleanup", "-")))
+    table.add_row("process", str(bool(payload.get("process"))).lower())
+    if payload.get("batch_id"):
+        table.add_row("batch", _entity_text(payload.get("batch_id", "unknown")))
+    if payload.get("job_id"):
+        table.add_row("job", _entity_text(payload.get("job_id", "unknown")))
+    table.add_row(
+        "routing preflight",
+        (
+            f"{preflight.get('status', 'unknown')}  "
+            f"ok={str(preflight.get('ok')).lower()}  "
+            f"unmatched={preflight.get('unmatched_count', 0)}  "
+            f"left={preflight.get('left_count', 0)}"
+        ),
+    )
+    if preflight.get("error"):
+        table.add_row("preflight error", _jeb_preview(preflight.get("error")))
+    return RichGroup(RichText("jeb archive dry-run", style="bold"), table)
+
+
 def _format_hot_evict_plain(payload: Mapping[str, Any]) -> str:
     return "\n".join(
         [

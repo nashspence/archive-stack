@@ -14,6 +14,7 @@ from jeb.collector import (
 from jeb.service_api import JebServiceState, start_jeb_service_server
 from riverhog_cli.output import (
     emit,
+    format_jeb_archive_plan,
     format_jeb_batches,
     format_jeb_config_check,
     format_jeb_operation,
@@ -84,6 +85,11 @@ def main(argv: list[str] | None = None) -> int:
         "--no-process",
         action="store_true",
         help="Create an eligible batch but do not process it in this command.",
+    )
+    archive_now.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview the archive action without creating a batch or uploading files.",
     )
     status = sub.add_parser("status", help="show read-only collector status")
     status.add_argument("--json", action="store_true", help="Emit JSON.")
@@ -161,6 +167,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if command == "archive-now":
         collector.init_db()
+        if args.dry_run:
+            try:
+                payload = collector.archive_plan(
+                    source_id=args.account,
+                    process=not args.no_process,
+                )
+            except UnrecoverableJebError as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            emit(format_jeb_archive_plan(payload), json_mode=False)
+            return 0
         try:
             batch_id = collector.archive_now(
                 source_id=args.account,
