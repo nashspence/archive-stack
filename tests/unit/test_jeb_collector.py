@@ -404,6 +404,65 @@ def test_munchy_payload_uses_per_account_job_defaults(
     }
 
 
+def test_jeb_uploads_preflight_left_files_so_munchy_owns_culling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job_config = {
+        "archive_mode": "av1_nvenc",
+        "tasks": ["archive_video"],
+        "groups": {
+            "camera-video": {
+                "archive_mode": "av1_nvenc",
+                "tasks": ["archive_video"],
+            }
+        },
+        "profile_routing": {
+            "routes": [
+                {
+                    "id": "main-video",
+                    "group": "camera-video",
+                    "when": {"path": {"prefix": "camera-video"}},
+                },
+                {
+                    "id": "munchy-left",
+                    "action": "leave",
+                    "when": {"path": {"filename_glob": "left.mp4"}},
+                },
+            ]
+        },
+    }
+    config = config_from_env(
+        {
+            **env_for(tmp_path, accounts="camera"),
+            "JEB_ACCOUNT_CAMERA_UPLOAD_PREFIX": "camera-video",
+            "JEB_ACCOUNT_CAMERA_MUNCHY_JOB_JSON": json.dumps(job_config, separators=(",", ":")),
+        }
+    )
+    write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4")
+    write_stable_file(tmp_path / "landing" / "camera" / "left.mp4")
+    collector = Collector(config)
+    collector.init_db()
+
+    class FakeMunchyRunnerClient:
+        def __init__(self, url: str) -> None:
+            self.url = url
+
+        def profile_routing_preflight(self, **_kwargs: object) -> dict[str, object]:
+            return {"ok": True, "left": [{"path": "camera-video/left.mp4"}]}
+
+    monkeypatch.setattr(collector_module, "MunchyRunnerClient", FakeMunchyRunnerClient)
+
+    batch_id = collector.archive_now(source_id="camera", process=False)
+    assert batch_id is not None
+    request = munchy_upload_request(collector, batch_id, config.targets["munchy"])
+
+    assert [item.rel_path for item in request.files] == [
+        "camera-video/clip.mp4",
+        "camera-video/left.mp4",
+    ]
+
+
 def test_archive_now_rediscovers_stale_failed_batch_when_upload_prefix_changes(
     tmp_path: Path,
 ) -> None:

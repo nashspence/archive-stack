@@ -31,6 +31,22 @@ example-camera/<relative-file>
 The Munchy runner infers the profile group from that first path segment. Jeb
 does not carry device metadata, route tables, or encode profiles.
 
+## Munchy Boundary
+
+Jeb deliberately treats Munchy routing as a target-owned concern. During
+discovery, Jeb may ask Munchy to preflight the complete eligible file set for an
+account. That preflight is only a go/no-go gate: if Munchy reports that the job
+configuration cannot handle the set, Jeb stops before upload and notifies the
+operator. If Munchy accepts the set, Jeb uploads every eligible file in the
+batch.
+
+Jeb must not interpret Munchy's route plan, `leave` results, route ids, profile
+groups, or culling decisions as instructions for which source files to upload or
+delete. Munchy owns routing, metadata projection, preserve/encode/leave/cull
+semantics, and Riverhog archive contents. After Munchy reports the configured
+safe Riverhog success state, Jeb cleanup applies to the complete source batch it
+uploaded.
+
 To add an account, provision the matching drop account/directory, add the slug
 to `JEB_ACCOUNTS`, and make sure Munchy has the expected profile behavior for
 that group.

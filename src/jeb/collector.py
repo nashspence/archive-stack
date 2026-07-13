@@ -1093,12 +1093,7 @@ class Collector:
             return None
         if result.get("ok"):
             self.clear_routing_preflight_failure(source.id)
-            left_paths = {
-                str(item.get("path") or "")
-                for item in sequence(result.get("left"))
-                if isinstance(item, Mapping)
-            }
-            return [item for item in files if item.target_path not in left_paths]
+            return list(files)
         self.record_routing_preflight_failure(
             collection=collection,
             source=source,

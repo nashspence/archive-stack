@@ -105,3 +105,7 @@ tests/
   hostnames, remotes, or deployment overlays.
 - Keep Jeb generic: watched-directory source configs can describe roles and target types, but real
   FTP users, hostnames, webhook URLs, and private source mappings belong outside this repository.
+- Keep the Jeb/Munchy boundary narrow: Jeb can use Munchy preflight as a go/no-go
+  gate, then upload the complete eligible batch and delete that source batch only
+  after safe target success. Munchy owns routing, profile selection, metadata
+  projection, and leave/cull/archive decisions.
