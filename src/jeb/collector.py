@@ -519,6 +519,12 @@ class Collector:
             self.ensure_routing_preflight_schema(conn)
 
     def create_batch_schema(self, conn: sqlite3.Connection) -> None:
+        existing_tables = {
+            str(row["name"])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS batches (
@@ -529,6 +535,8 @@ class Collector:
                 collection_timestamp TEXT NOT NULL,
                 cleanup TEXT NOT NULL,
                 manifest_digest TEXT NOT NULL,
+                file_count INTEGER NOT NULL DEFAULT 0,
+                total_bytes INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
@@ -580,20 +588,249 @@ class Collector:
             """
         )
         conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS batch_sources (
+                batch_id TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                PRIMARY KEY (batch_id, source_id),
+                FOREIGN KEY(batch_id) REFERENCES batches(id)
+            )
+            """
+        )
+        batch_columns = table_columns(conn, "batches")
+        added_batch_summary_columns = False
+        if "file_count" not in batch_columns:
+            conn.execute(
+                "ALTER TABLE batches ADD COLUMN file_count INTEGER NOT NULL DEFAULT 0"
+            )
+            added_batch_summary_columns = True
+        if "total_bytes" not in batch_columns:
+            conn.execute(
+                "ALTER TABLE batches ADD COLUMN total_bytes INTEGER NOT NULL DEFAULT 0"
+            )
+            added_batch_summary_columns = True
+        if added_batch_summary_columns:
+            self.backfill_batch_file_summaries(conn)
+        if "batch_sources" not in existing_tables:
+            self.backfill_batch_sources(conn)
+        self.ensure_batch_file_summary_triggers(conn)
+        self.ensure_batch_source_triggers(conn)
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_jeb_batches_collection_period "
             "ON batches(collection_id, collection_timestamp)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jeb_batches_collection "
+            "ON batches(collection_id, id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jeb_batches_target "
+            "ON batches(target_name, id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jeb_batches_file_count "
+            "ON batches(file_count, id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jeb_batches_total_bytes "
+            "ON batches(total_bytes, id)"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_jeb_batch_attempts_state "
             "ON batch_attempts(state, created_at)"
         )
         conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jeb_batch_attempts_updated "
+            "ON batch_attempts(updated_at, id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jeb_batch_attempts_created "
+            "ON batch_attempts(created_at, id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jeb_batch_attempts_state_updated "
+            "ON batch_attempts(state, updated_at, id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jeb_batch_attempts_job "
+            "ON batch_attempts(job_id, id)"
+        )
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_jeb_batch_attempts_batch_state "
             "ON batch_attempts(batch_id, state)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jeb_batch_sources_source "
+            "ON batch_sources(source_id, batch_id)"
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jeb_files_batch ON files(batch_id)")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_jeb_attempt_files_attempt ON attempt_files(attempt_id)"
+        )
+
+    def backfill_batch_file_summaries(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            UPDATE batches
+            SET
+                file_count = (
+                    SELECT COUNT(*)
+                    FROM files
+                    WHERE files.batch_id = batches.id
+                ),
+                total_bytes = COALESCE((
+                    SELECT SUM(bytes)
+                    FROM files
+                    WHERE files.batch_id = batches.id
+                ), 0)
+            """
+        )
+
+    def backfill_batch_sources(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO batch_sources(batch_id, source_id)
+            SELECT DISTINCT
+                batch_id,
+                CASE
+                    WHEN instr(target_path, '/') = 0 THEN target_path
+                    ELSE substr(target_path, 1, instr(target_path, '/') - 1)
+                END AS source_id
+            FROM files
+            WHERE target_path != ''
+            """
+        )
+
+    def ensure_batch_file_summary_triggers(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_jeb_files_summary_insert
+            AFTER INSERT ON files
+            BEGIN
+                UPDATE batches
+                SET
+                    file_count = file_count + 1,
+                    total_bytes = total_bytes + NEW.bytes
+                WHERE id = NEW.batch_id;
+            END
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_jeb_files_summary_delete
+            AFTER DELETE ON files
+            BEGIN
+                UPDATE batches
+                SET
+                    file_count = file_count - 1,
+                    total_bytes = total_bytes - OLD.bytes
+                WHERE id = OLD.batch_id;
+            END
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_jeb_files_summary_update_same_batch
+            AFTER UPDATE OF batch_id, bytes ON files
+            WHEN OLD.batch_id = NEW.batch_id
+            BEGIN
+                UPDATE batches
+                SET total_bytes = total_bytes - OLD.bytes + NEW.bytes
+                WHERE id = NEW.batch_id;
+            END
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_jeb_files_summary_update_moved_batch
+            AFTER UPDATE OF batch_id, bytes ON files
+            WHEN OLD.batch_id != NEW.batch_id
+            BEGIN
+                UPDATE batches
+                SET
+                    file_count = file_count - 1,
+                    total_bytes = total_bytes - OLD.bytes
+                WHERE id = OLD.batch_id;
+
+                UPDATE batches
+                SET
+                    file_count = file_count + 1,
+                    total_bytes = total_bytes + NEW.bytes
+                WHERE id = NEW.batch_id;
+            END
+            """
+        )
+
+    def ensure_batch_source_triggers(self, conn: sqlite3.Connection) -> None:
+        source_expr_new = (
+            "CASE WHEN instr(NEW.target_path, '/') = 0 THEN NEW.target_path "
+            "ELSE substr(NEW.target_path, 1, instr(NEW.target_path, '/') - 1) END"
+        )
+        source_expr_old = (
+            "CASE WHEN instr(OLD.target_path, '/') = 0 THEN OLD.target_path "
+            "ELSE substr(OLD.target_path, 1, instr(OLD.target_path, '/') - 1) END"
+        )
+        conn.execute(
+            f"""
+            CREATE TRIGGER IF NOT EXISTS trg_jeb_batch_sources_insert
+            AFTER INSERT ON files
+            BEGIN
+                INSERT OR IGNORE INTO batch_sources(batch_id, source_id)
+                VALUES(NEW.batch_id, {source_expr_new});
+            END
+            """
+        )
+        conn.execute(
+            f"""
+            CREATE TRIGGER IF NOT EXISTS trg_jeb_batch_sources_delete
+            AFTER DELETE ON files
+            BEGIN
+                DELETE FROM batch_sources
+                WHERE batch_id = OLD.batch_id
+                  AND source_id = {source_expr_old}
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM files
+                      WHERE files.batch_id = OLD.batch_id
+                        AND (
+                            files.target_path = {source_expr_old}
+                            OR substr(
+                                files.target_path,
+                                1,
+                                length({source_expr_old}) + 1
+                            ) = {source_expr_old} || '/'
+                        )
+                  );
+            END
+            """
+        )
+        conn.execute(
+            f"""
+            CREATE TRIGGER IF NOT EXISTS trg_jeb_batch_sources_update
+            AFTER UPDATE OF batch_id, target_path ON files
+            BEGIN
+                DELETE FROM batch_sources
+                WHERE batch_id = OLD.batch_id
+                  AND source_id = {source_expr_old}
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM files
+                      WHERE files.batch_id = OLD.batch_id
+                        AND files.rowid != NEW.rowid
+                        AND (
+                            files.target_path = {source_expr_old}
+                            OR substr(
+                                files.target_path,
+                                1,
+                                length({source_expr_old}) + 1
+                            ) = {source_expr_old} || '/'
+                        )
+                  );
+
+                INSERT OR IGNORE INTO batch_sources(batch_id, source_id)
+                VALUES(NEW.batch_id, {source_expr_new});
+            END
+            """
         )
 
     def ensure_routing_preflight_schema(self, conn: sqlite3.Connection) -> None:
@@ -734,24 +971,17 @@ class Collector:
             clauses.append(f"a.state IN ({placeholders})")
             values.extend(states_tuple)
         if account:
-            try:
-                account_root = self.source_by_id(account).upload_root
-            except KeyError:
-                account_root = account
             clauses.append(
                 """
                 EXISTS (
                     SELECT 1
-                    FROM files account_files
-                    WHERE account_files.batch_id = b.id
-                      AND (
-                          account_files.target_path = ?
-                          OR account_files.target_path LIKE ? ESCAPE '\\'
-                      )
+                    FROM batch_sources account_sources
+                    WHERE account_sources.batch_id = b.id
+                      AND account_sources.source_id = ?
                 )
                 """
             )
-            values.extend((account_root, f"{sqlite_like_literal(account_root)}/%"))
+            values.append(account)
         if collection:
             clauses.append("b.collection_id = ?")
             values.append(collection)
@@ -779,7 +1009,7 @@ class Collector:
             values.extend((like,) * 10)
 
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
-        grouped_sql = f"""
+        attempts_sql = f"""
             SELECT
                 a.id,
                 a.batch_id,
@@ -797,28 +1027,19 @@ class Collector:
                 a.updated_at,
                 a.last_error,
                 a.notified_error_at,
-                COUNT(f.target_path) AS file_count,
-                COALESCE(SUM(f.bytes), 0) AS total_bytes,
-                COALESCE(
-                    SUM(CASE WHEN af.staged_at IS NOT NULL THEN 1 ELSE 0 END),
-                    0
-                ) AS staged_file_count
+                b.file_count,
+                b.total_bytes
             FROM batch_attempts a
             JOIN batches b ON b.id = a.batch_id
-            LEFT JOIN files f ON f.batch_id = b.id
-            LEFT JOIN attempt_files af
-              ON af.attempt_id = a.id
-             AND af.target_path = f.target_path
             {where}
-            GROUP BY a.id
         """
         sort_sql = {
             "attempt": "a.attempt_number",
-            "bytes": "total_bytes",
+            "bytes": "b.total_bytes",
             "collection": "b.collection_id",
             "collection_timestamp": "b.collection_timestamp",
             "created_at": "a.created_at",
-            "file_count": "file_count",
+            "file_count": "b.file_count",
             "job_id": "a.job_id",
             "state": "a.state",
             "target": "b.target_name",
@@ -828,18 +1049,27 @@ class Collector:
         offset = (page - 1) * per_page
         with self.connect() as conn:
             total_row = conn.execute(
-                f"SELECT COUNT(*) AS total FROM ({grouped_sql}) batch_page",
+                f"SELECT COUNT(*) AS total FROM ({attempts_sql}) batch_page",
                 values,
             ).fetchone()
             total = int(total_row["total"] if total_row is not None else 0)
-            rows = conn.execute(
-                f"""
-                {grouped_sql}
-                ORDER BY {sort_sql} {order_sql}, a.id {order_sql}
-                LIMIT ? OFFSET ?
-                """,
-                [*values, per_page, offset],
-            ).fetchall()
+            rows = [
+                dict(row)
+                for row in conn.execute(
+                    f"""
+                    {attempts_sql}
+                    ORDER BY {sort_sql} {order_sql}, a.id {order_sql}
+                    LIMIT ? OFFSET ?
+                    """,
+                    [*values, per_page, offset],
+                ).fetchall()
+            ]
+            staged_counts = self._staged_file_counts_by_attempt(
+                conn,
+                [str(row["id"]) for row in rows],
+            )
+            for row in rows:
+                row["staged_file_count"] = staged_counts.get(str(row["id"]), 0)
             accounts_by_batch = self._accounts_by_batch(
                 conn,
                 [str(row["batch_id"]) for row in rows],
@@ -867,6 +1097,30 @@ class Collector:
             },
             "batches": batches,
         }
+
+    def _staged_file_counts_by_attempt(
+        self,
+        conn: sqlite3.Connection,
+        attempt_ids: Sequence[str],
+    ) -> dict[str, int]:
+        if not attempt_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in attempt_ids)
+        rows = conn.execute(
+            f"""
+            SELECT
+                attempt_id,
+                COALESCE(
+                    SUM(CASE WHEN staged_at IS NOT NULL THEN 1 ELSE 0 END),
+                    0
+                ) AS staged_file_count
+            FROM attempt_files
+            WHERE attempt_id IN ({placeholders})
+            GROUP BY attempt_id
+            """,
+            tuple(attempt_ids),
+        ).fetchall()
+        return {str(row["attempt_id"]): int(row["staged_file_count"]) for row in rows}
 
     def status_summary(self, *, include_backlog: bool = True) -> dict[str, Any]:
         state_counts = self.batch_state_counts()
@@ -963,38 +1217,22 @@ class Collector:
         placeholders = ", ".join("?" for _ in batch_ids)
         rows = conn.execute(
             f"""
-            SELECT batch_id, target_path
-            FROM files
+            SELECT batch_id, source_id
+            FROM batch_sources
             WHERE batch_id IN ({placeholders})
-            ORDER BY target_path
+            ORDER BY source_id
             """,
             tuple(batch_ids),
         ).fetchall()
-        target_paths_by_batch: dict[str, list[str]] = defaultdict(list)
+        sources_by_batch: dict[str, list[str]] = defaultdict(list)
         for row in rows:
-            target_paths_by_batch[str(row["batch_id"])].append(str(row["target_path"]))
+            sources_by_batch[str(row["batch_id"])].append(str(row["source_id"]))
         return {
-            batch_id: self._account_ids_for_target_paths(paths)
-            for batch_id, paths in target_paths_by_batch.items()
+            batch_id: tuple(sorted(set(source_ids)))
+            for batch_id, source_ids in sources_by_batch.items()
         }
 
-    def _account_ids_for_target_paths(self, paths: Sequence[str]) -> tuple[str, ...]:
-        accounts: set[str] = set()
-        configured_roots = {
-            source.id: source.upload_root.rstrip("/") for source in self.config.sources
-        }
-        for target_path in paths:
-            for source_id, upload_root in configured_roots.items():
-                if target_path == upload_root or target_path.startswith(f"{upload_root}/"):
-                    accounts.add(source_id)
-                    break
-            else:
-                first_part = PurePosixPath(target_path).parts[0]
-                if first_part:
-                    accounts.add(first_part)
-        return tuple(sorted(accounts))
-
-    def _batch_summary(self, row: sqlite3.Row, *, accounts: Sequence[str]) -> dict[str, Any]:
+    def _batch_summary(self, row: Mapping[str, Any], *, accounts: Sequence[str]) -> dict[str, Any]:
         return {
             "id": str(row["id"]),
             "attempt_id": str(row["id"]),

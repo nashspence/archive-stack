@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -126,6 +127,223 @@ def test_env_config_creates_one_account_collection_per_account(tmp_path: Path) -
         ("phone", "phone", ("phone",)),
     ]
     assert config.munchy_job_defaults["tasks"] == ["archive_video"]
+
+
+def test_jeb_schema_indexes_operator_status_and_list_paths(tmp_path: Path) -> None:
+    collector = Collector(config_from_env(env_for(tmp_path)))
+    collector.init_db()
+
+    with collector.connect() as conn:
+        indexes = {
+            table: {str(row["name"]) for row in conn.execute(f"PRAGMA index_list({table})")}
+            for table in (
+                "batches",
+                "batch_attempts",
+                "batch_sources",
+                "files",
+                "attempt_files",
+            )
+        }
+        batch_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(batches)")}
+        triggers = {
+            str(row["name"])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+            )
+        }
+
+    assert {"file_count", "total_bytes"} <= batch_columns
+    assert {
+        "idx_jeb_batches_collection",
+        "idx_jeb_batches_collection_period",
+        "idx_jeb_batches_file_count",
+        "idx_jeb_batches_target",
+        "idx_jeb_batches_total_bytes",
+    } <= indexes["batches"]
+    assert {
+        "idx_jeb_batch_attempts_batch_state",
+        "idx_jeb_batch_attempts_created",
+        "idx_jeb_batch_attempts_job",
+        "idx_jeb_batch_attempts_state",
+        "idx_jeb_batch_attempts_state_updated",
+        "idx_jeb_batch_attempts_updated",
+    } <= indexes["batch_attempts"]
+    assert "idx_jeb_batch_sources_source" in indexes["batch_sources"]
+    assert "idx_jeb_files_batch" in indexes["files"]
+    assert "idx_jeb_attempt_files_attempt" in indexes["attempt_files"]
+    assert {
+        "trg_jeb_batch_sources_delete",
+        "trg_jeb_batch_sources_insert",
+        "trg_jeb_batch_sources_update",
+        "trg_jeb_files_summary_delete",
+        "trg_jeb_files_summary_insert",
+        "trg_jeb_files_summary_update_moved_batch",
+        "trg_jeb_files_summary_update_same_batch",
+    } <= triggers
+
+
+def test_jeb_batch_file_summaries_are_trigger_maintained_transactionally(
+    tmp_path: Path,
+) -> None:
+    env = env_for(tmp_path, accounts="camera")
+    write_stable_file(tmp_path / "landing" / "camera" / "a.txt", b"aaa")
+    write_stable_file(tmp_path / "landing" / "camera" / "b.txt", b"bbbbb")
+    collector = Collector(config_from_env(env))
+    collector.init_db()
+    batch_id = collector.archive_now(source_id="camera", process=False)
+    assert batch_id is not None
+
+    page = collector.list_batches(terminal="all", sort="bytes")
+    assert page["batches"][0]["file_count"] == 2
+    assert page["batches"][0]["total_bytes"] == 8
+
+    with pytest.raises(RuntimeError):
+        with collector.connect() as conn:
+            conn.execute(
+                "UPDATE files SET bytes = 99 WHERE batch_id = ? AND target_path = ?",
+                (batch_id, "camera/a.txt"),
+            )
+            raise RuntimeError("rollback")
+
+    page = collector.list_batches(terminal="all", sort="bytes")
+    assert page["batches"][0]["file_count"] == 2
+    assert page["batches"][0]["total_bytes"] == 8
+
+    with collector.connect() as conn:
+        conn.execute(
+            "UPDATE files SET bytes = 7 WHERE batch_id = ? AND target_path = ?",
+            (batch_id, "camera/a.txt"),
+        )
+
+    page = collector.list_batches(terminal="all", sort="bytes")
+    assert page["batches"][0]["file_count"] == 2
+    assert page["batches"][0]["total_bytes"] == 12
+
+    with collector.connect() as conn:
+        conn.execute(
+            "DELETE FROM files WHERE batch_id = ? AND target_path = ?",
+            (batch_id, "camera/b.txt"),
+        )
+
+    page = collector.list_batches(terminal="all", sort="bytes")
+    assert page["batches"][0]["file_count"] == 1
+    assert page["batches"][0]["total_bytes"] == 7
+
+    assert collector.list_batches(terminal="all", account="camera")["total"] == 1
+
+    with collector.connect() as conn:
+        conn.execute(
+            "DELETE FROM files WHERE batch_id = ? AND target_path = ?",
+            (batch_id, "camera/a.txt"),
+        )
+
+    page = collector.list_batches(terminal="all", sort="bytes")
+    assert page["batches"][0]["accounts"] == []
+    assert page["batches"][0]["file_count"] == 0
+    assert page["batches"][0]["total_bytes"] == 0
+    assert collector.list_batches(terminal="all", account="camera")["total"] == 0
+
+
+def test_jeb_schema_backfills_batch_file_summaries_for_existing_db(tmp_path: Path) -> None:
+    env = env_for(tmp_path, accounts="camera")
+    state_db = Path(env["JEB_STATE_DIR"]) / "jeb.sqlite3"
+    state_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(state_db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE batches (
+                id TEXT PRIMARY KEY,
+                collection_id TEXT NOT NULL,
+                target_name TEXT NOT NULL,
+                collection_slug TEXT NOT NULL,
+                collection_timestamp TEXT NOT NULL,
+                cleanup TEXT NOT NULL,
+                manifest_digest TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE batch_attempts (
+                id TEXT PRIMARY KEY,
+                batch_id TEXT NOT NULL,
+                attempt_number INTEGER NOT NULL,
+                state TEXT NOT NULL,
+                input_upload_id TEXT,
+                job_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_error TEXT,
+                notified_error_fingerprint TEXT,
+                notified_error_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE files (
+                batch_id TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                target_path TEXT NOT NULL,
+                bytes INTEGER NOT NULL,
+                mtime_ns INTEGER NOT NULL,
+                sha256 TEXT,
+                PRIMARY KEY (batch_id, target_path)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE attempt_files (
+                attempt_id TEXT NOT NULL,
+                target_path TEXT NOT NULL,
+                staging_path TEXT NOT NULL,
+                staged_at TEXT,
+                PRIMARY KEY (attempt_id, target_path)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO batches(
+                id, collection_id, target_name, collection_slug,
+                collection_timestamp, cleanup, manifest_digest, created_at, updated_at
+            )
+            VALUES('batch-1', 'camera', 'munchy', 'camera', '20260713T000000Z',
+                   'never', 'digest', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO batch_attempts(
+                id, batch_id, attempt_number, state, input_upload_id, job_id,
+                created_at, updated_at
+            )
+            VALUES('attempt-1', 'batch-1', 1, 'batching', 'upload-1', 'job-1',
+                   '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z')
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO files(batch_id, source_path, target_path, bytes, mtime_ns, sha256)
+            VALUES('batch-1', ?, ?, ?, 1, NULL)
+            """,
+            [
+                ("/landing/camera/a.txt", "camera/a.txt", 3),
+                ("/landing/camera/b.txt", "camera/b.txt", 5),
+            ],
+        )
+
+    collector = Collector(config_from_env(env))
+    collector.init_db()
+
+    page = collector.list_batches(terminal="all", sort="bytes")
+    assert page["batches"][0]["file_count"] == 2
+    assert page["batches"][0]["total_bytes"] == 8
+    assert page["batches"][0]["accounts"] == ["camera"]
+    assert collector.list_batches(terminal="all", account="camera")["total"] == 1
 
 
 def test_env_config_supports_per_account_munchy_config_file(
