@@ -292,6 +292,7 @@ ArchiveMode = Literal["av1_nvenc", "audio", "preserve"]
 WorkflowMode = Literal["collection_archive", "review"]
 CollectionArchiveDestination = Literal["target", "riverhog"]
 TaskName = Literal["archive_video", "archive_audio", "qcut_video", "audio_review"]
+RiverhogUploadSessionFailureAction = Literal["preserve_for_resume", "cancel"]
 DEFAULT_TASKS: tuple[TaskName, ...] = ("archive_video", "qcut_video", "audio_review")
 DEFAULT_AUDIO_TASKS: tuple[TaskName, ...] = ("archive_audio",)
 DEFAULT_REVIEW_CLIP_TARGET_SECONDS = 180
@@ -551,6 +552,8 @@ class InputFileSpec(BaseModel):
 
 
 class RiverhogConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     wait: Literal["staged", "finalized"] = "finalized"
 
 
@@ -1259,6 +1262,9 @@ class CreateJobRequest(BaseModel):
     review: ReviewConfig | None = None
     notify: NotifyConfig = Field(default_factory=NotifyConfig)
     cleanup_local_on_success: bool = False
+    riverhog_upload_session_on_failure: RiverhogUploadSessionFailureAction = (
+        "preserve_for_resume"
+    )
 
     @field_validator("tasks")
     @classmethod
@@ -7180,6 +7186,24 @@ def can_resume_preserving_riverhog_session(job: dict[str, Any]) -> bool:
     return all_riverhog_session_files_uploaded(job)
 
 
+def riverhog_upload_session_on_failure(job: dict[str, Any]) -> str:
+    value = str(
+        dict_or_empty(job.get("riverhog")).get("upload_session_on_failure")
+        or "preserve_for_resume"
+    )
+    if value not in {"preserve_for_resume", "cancel"}:
+        return "preserve_for_resume"
+    return value
+
+
+def should_cancel_riverhog_upload_session_on_failure(job: dict[str, Any], exc: Exception) -> bool:
+    if isinstance(exc, EncodingFailed):
+        return True
+    if riverhog_upload_session_on_failure(job) == "cancel":
+        return True
+    return not can_resume_preserving_riverhog_session(job)
+
+
 def riverhog_session_visible_for_resume(job: dict[str, Any]) -> bool:
     if not RIVERHOG_UPLOAD_ENABLED:
         return True
@@ -9704,7 +9728,7 @@ def run_job(job_id: str) -> None:
             reason="encoding_failed" if isinstance(exc, EncodingFailed) else "job_failed",
             error=exc,
         )
-        if isinstance(exc, EncodingFailed) or not can_resume_preserving_riverhog_session(job):
+        if should_cancel_riverhog_upload_session_on_failure(job, exc):
             cancel_riverhog_upload_session(
                 job,
                 reason="encoding_failed" if isinstance(exc, EncodingFailed) else "job_failed",
@@ -10307,6 +10331,7 @@ def create_job_state_from_request(req: CreateJobRequest) -> dict[str, Any]:
         **req.collection_archive.riverhog.model_dump(),
         "enabled": req.workflow_mode == "collection_archive"
         and req.collection_archive.destination == "riverhog",
+        "upload_session_on_failure": req.riverhog_upload_session_on_failure,
     }
     job = {
         "job_id": job_id,

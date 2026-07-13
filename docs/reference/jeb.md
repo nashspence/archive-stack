@@ -48,6 +48,11 @@ semantics, and Riverhog archive contents. After Munchy reports the configured
 safe Riverhog success state, Jeb cleanup applies to the complete source batch it
 uploaded.
 
+Jeb does own the lifecycle contract for jobs it submits. It starts Munchy jobs
+with `riverhog_upload_session_on_failure: cancel`, so a terminal Munchy failure
+does not leave an open Riverhog upload session behind for an automation attempt
+that Jeb has already marked failed.
+
 This boundary keeps Jeb as a small account scheduler and uploader while keeping
 the media-specific rules in Munchy, where the same routing config can be used by
 other clients. Disk-backed config fits real routing profiles: they are

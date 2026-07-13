@@ -173,6 +173,36 @@ GROUP_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+TARGET_UPLOAD_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "enabled": {"type": "boolean"},
+        "method": {"enum": ["command", "rclone"]},
+        "destination": {"type": "string", "minLength": 1},
+        "mode": {"enum": ["copy", "sync"]},
+        "exclude": STRING_LIST,
+    },
+    "additionalProperties": False,
+}
+
+COLLECTION_ARCHIVE_RIVERHOG_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "wait": {"enum": ["staged", "finalized"]},
+    },
+    "additionalProperties": False,
+}
+
+COLLECTION_ARCHIVE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "destination": {"enum": ["riverhog", "target"]},
+        "target": TARGET_UPLOAD_SCHEMA,
+        "riverhog": COLLECTION_ARCHIVE_RIVERHOG_SCHEMA,
+    },
+    "additionalProperties": False,
+}
+
 JOB_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -187,9 +217,8 @@ JOB_SCHEMA: dict[str, Any] = {
         "archive_mode": {"enum": ["av1_nvenc", "audio", "preserve"]},
         "tasks": STRING_LIST,
         "cleanup_local_on_success": {"type": "boolean"},
-        "collection_archive": {"type": "object"},
+        "collection_archive": COLLECTION_ARCHIVE_SCHEMA,
         "review": {"type": "object"},
-        "riverhog": {"type": "object"},
         "notify": {"type": "object"},
         "routing": ROUTING_SCHEMA,
     },

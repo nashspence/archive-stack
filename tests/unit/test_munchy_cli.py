@@ -567,6 +567,8 @@ groups:
             "camera",
             "--timestamp",
             "20260621T120000Z",
+            "--riverhog-upload-session-on-failure",
+            "cancel",
             "--no-hash-cache",
             "--no-wait",
         ],
@@ -580,6 +582,7 @@ groups:
     assert request.storage_hint["groups"]["video"]["eager_pipeline_batches"] == 1
     assert request.storage_hint["groups"]["preserve"]["tasks"] == []
     assert request.job_payload["collection_archive"]["destination"] == "riverhog"
+    assert request.job_payload["riverhog_upload_session_on_failure"] == "cancel"
     assert request.job_payload["profile_routing"]["routes"][0]["group"] == "video"
     assert (
         request.job_payload["groups"]["video"]["encode_profile"]["archive"]["container"] == "webm"

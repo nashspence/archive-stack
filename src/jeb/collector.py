@@ -2359,6 +2359,7 @@ def munchy_upload_request(
         "cleanup_local_on_success": bool(
             munchy_job_defaults.get("cleanup_local_on_success", False)
         ),
+        "riverhog_upload_session_on_failure": "cancel",
     }
     if profile_routing:
         job_payload["profile_routing"] = dict(profile_routing)

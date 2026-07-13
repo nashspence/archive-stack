@@ -661,6 +661,16 @@ def start_job(
             help="Collection archive destination: target or riverhog",
         ),
     ] = None,
+    riverhog_upload_session_on_failure: Annotated[
+        str | None,
+        typer.Option(
+            "--riverhog-upload-session-on-failure",
+            help=(
+                "Riverhog upload session handling when this job fails: "
+                "preserve-for-resume or cancel"
+            ),
+        ),
+    ] = None,
     job_id: Annotated[str | None, typer.Option("--job-id", help="Runner job id")] = None,
     upload_id: Annotated[
         str | None,
@@ -707,6 +717,7 @@ def start_job(
                 group=group,
                 workflow_mode=workflow_mode,
                 collection_archive_destination=collection_archive_destination,
+                riverhog_upload_session_on_failure=riverhog_upload_session_on_failure,
                 upload_workers=upload_workers,
                 upload_chunk_mib=upload_chunk_mib,
                 hash_cache=hash_cache,

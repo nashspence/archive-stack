@@ -2,13 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from munchy.job_authoring import (
     build_review_sweep_plan,
     build_runner_upload_request_from_files,
+    load_munchy_job_config,
     munchy_job_defaults_from_config,
     requested_archive_containers,
 )
 from munchy.runner_client import RunnerInputFile
+from riverhog_core.config_yaml import ConfigError
 
 
 def test_munchy_job_defaults_from_config_lowers_public_config() -> None:
@@ -53,6 +57,29 @@ def test_munchy_job_defaults_from_config_lowers_public_config() -> None:
     assert defaults["groups"]["video"]["metadata_projection"] == {
         "tags": ["device/example-camera"]
     }
+
+
+def test_munchy_job_config_rejects_runtime_riverhog_failure_policy(tmp_path: Path) -> None:
+    path = tmp_path / "munchy.yaml"
+    path.write_text(
+        """
+schema_version: 1
+kind: munchy.job
+job:
+  collection_archive:
+    destination: riverhog
+    riverhog:
+      wait: finalized
+      upload_session_on_failure: cancel
+groups:
+  video:
+    archive_mode: av1_nvenc
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="upload_session_on_failure"):
+        load_munchy_job_config(path)
 
 
 def test_build_runner_upload_request_from_files_normalizes_review_sweep() -> None:

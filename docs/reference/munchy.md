@@ -442,6 +442,21 @@ generic Munchy job config but should not reimplement runner payload shape,
 storage hints, group/profile normalization, review sweep expansion, hashing, or
 requested-container discovery.
 
+Munchy job config describes media workflow: routes, groups, encode settings,
+metadata projection, review targets, and collection-archive destinations.
+Submit-time lifecycle policy stays out of `munchy.job` YAML. A caller that owns
+automation cleanup can request remote Riverhog session cleanup when starting the
+job:
+
+```bash
+munchy job start ./incoming/camera \
+  --collection example-camera \
+  --riverhog-upload-session-on-failure cancel
+```
+
+Without that runtime option, a failed job may preserve a fully uploaded open
+Riverhog session for an explicit `munchy job resume`.
+
 ## Review Uploads
 
 Collection-archive target and review uploads can be handed off through rclone. Munchy

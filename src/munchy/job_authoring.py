@@ -41,6 +41,7 @@ DEFAULT_GROUP = "video"
 WORKFLOW_MODES = {"collection_archive", "review"}
 COLLECTION_ARCHIVE_DESTINATIONS = {"target", "riverhog"}
 ARCHIVE_MODES = {"av1_nvenc", "audio", "preserve"}
+RIVERHOG_UPLOAD_SESSION_FAILURE_ACTIONS = {"preserve_for_resume", "cancel"}
 MUNCHY_CONFIG_ENV = "MUNCHY_JOB_CONFIG"
 HASH_CACHE_ENV = "MUNCHY_HASH_CACHE"
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -152,9 +153,33 @@ def configured_profiles(config: Mapping[str, Any]) -> dict[str, Any]:
     return profiles
 
 
+def reject_runtime_lifecycle_fields(config: Mapping[str, Any]) -> None:
+    job = config.get("job")
+    if not isinstance(job, Mapping):
+        return
+    if "riverhog_upload_session_on_failure" in job:
+        raise MunchyJobAuthoringError(
+            "riverhog_upload_session_on_failure is a job-start option, not Munchy job config"
+        )
+    if "riverhog" in job:
+        raise MunchyJobAuthoringError(
+            "job.riverhog is not Munchy job config; use job.collection_archive.riverhog"
+        )
+    collection_archive = job.get("collection_archive")
+    if not isinstance(collection_archive, Mapping):
+        return
+    riverhog = collection_archive.get("riverhog")
+    if isinstance(riverhog, Mapping) and "upload_session_on_failure" in riverhog:
+        raise MunchyJobAuthoringError(
+            "collection_archive.riverhog.upload_session_on_failure is a job-start option, "
+            "not Munchy job config"
+        )
+
+
 def munchy_job_defaults_from_config(config: Mapping[str, Any]) -> dict[str, Any]:
     """Lower public Munchy job config into runner/Jeb-ready job defaults."""
 
+    reject_runtime_lifecycle_fields(config)
     normalized_config = normalize_munchy_config(config)
     defaults = configured_job_defaults(normalized_config)
     profiles = configured_profiles(normalized_config)
@@ -423,6 +448,7 @@ def build_runner_upload_request_from_files(
     group: str | None = None,
     workflow_mode: str | None = None,
     collection_archive_destination: str | None = None,
+    riverhog_upload_session_on_failure: str | None = None,
     upload_workers: int = DEFAULT_UPLOAD_WORKERS,
     upload_chunk_mib: int = DEFAULT_UPLOAD_CHUNK_MIB,
 ) -> RunnerUploadRequest:
@@ -522,6 +548,13 @@ def build_runner_upload_request_from_files(
         job_payload["collection_slug"] = collection_slug
         job_payload["collection_timestamp"] = timestamp
         job_payload["collection_archive"] = raw_collection_archive
+    if riverhog_upload_session_on_failure is not None:
+        job_payload["riverhog_upload_session_on_failure"] = normalize_mode(
+            riverhog_upload_session_on_failure,
+            default="preserve_for_resume",
+            allowed=RIVERHOG_UPLOAD_SESSION_FAILURE_ACTIONS,
+            label="riverhog_upload_session_on_failure",
+        )
     if profile_routing_payload is not None:
         job_payload["profile_routing"] = deepcopy(dict(profile_routing_payload))
     return RunnerUploadRequest(
@@ -548,6 +581,7 @@ def build_runner_upload_request(
     group: str | None = None,
     workflow_mode: str | None = None,
     collection_archive_destination: str | None = None,
+    riverhog_upload_session_on_failure: str | None = None,
     upload_workers: int = DEFAULT_UPLOAD_WORKERS,
     upload_chunk_mib: int = DEFAULT_UPLOAD_CHUNK_MIB,
     hash_cache: Path | None = None,
@@ -586,6 +620,7 @@ def build_runner_upload_request(
         group=group,
         workflow_mode=workflow_mode,
         collection_archive_destination=collection_archive_destination,
+        riverhog_upload_session_on_failure=riverhog_upload_session_on_failure,
         upload_workers=upload_workers,
         upload_chunk_mib=upload_chunk_mib,
     )

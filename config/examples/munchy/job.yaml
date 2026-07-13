@@ -1,9 +1,10 @@
 schema_version: 1
 kind: munchy.job
 job:
-  riverhog:
-    enabled: true
-    wait: finalized
+  collection_archive:
+    destination: riverhog
+    riverhog:
+      wait: finalized
   notify:
     enabled: false
     recipients:

@@ -122,7 +122,64 @@ def test_riverhog_handoff_wait_defaults_to_finalized(
     runner = load_runner(tmp_path, monkeypatch)
 
     assert runner.RIVERHOG_WAIT == "finalized"
-    assert runner.RiverhogConfig(enabled=True).wait == "finalized"
+    assert runner.RiverhogConfig().wait == "finalized"
+
+
+def test_riverhog_upload_session_failure_policy_is_runtime_job_option(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    data_path = runner.tusd_data_path("upload-a")
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.write_bytes(b"x")
+    runner.save_input_upload(
+        {
+            "upload_id": "upload-1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "storage_hint": {
+                "workflow_mode": "collection_archive",
+                "collection_archive_destination": "riverhog",
+                "archive_mode": "av1_nvenc",
+                "tasks": ["archive_video"],
+                "groups": {},
+            },
+            "files": [{"path": "video/a.mp4", "bytes": 1, "upload_id": "upload-a"}],
+        }
+    )
+
+    job = runner.create_job_state_from_request(
+        runner.CreateJobRequest(
+            input_upload_id="upload-1",
+            collection_slug="collection",
+            collection_timestamp="20260101T000000Z",
+            tasks=["archive_video"],
+            collection_archive={
+                "destination": "riverhog",
+                "riverhog": {"wait": "staged"},
+            },
+            riverhog_upload_session_on_failure="cancel",
+        )
+    )
+
+    assert job["riverhog"] == {
+        "enabled": True,
+        "wait": "staged",
+        "upload_session_on_failure": "cancel",
+    }
+
+    with pytest.raises(ValueError, match="upload_session_on_failure"):
+        runner.CreateJobRequest(
+            collection_slug="collection",
+            collection_archive={
+                "riverhog": {
+                    "wait": "staged",
+                    "upload_session_on_failure": "cancel",
+                }
+            },
+        )
 
 
 def test_public_tusd_upload_url_signs_nginx_normalized_path(
@@ -6417,6 +6474,146 @@ def test_cancel_riverhog_upload_session_cancels_open_session(
     assert stored["riverhog_session_upload"]["state"] == "canceled"
     assert stored["riverhog_session_upload"]["cancelled_at"]
     assert stored["riverhog_session_upload"]["cancel_reason"] == "test"
+
+
+def test_failed_job_default_policy_preserves_uploaded_riverhog_session(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "storage_hint": {
+                "workflow_mode": "collection_archive",
+                "collection_archive_destination": "riverhog",
+                "archive_mode": "av1_nvenc",
+                "tasks": ["archive_video"],
+                "groups": {},
+            },
+            "files": [],
+        }
+    )
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "queued",
+            "phase": "queued",
+            "workflow_mode": "collection_archive",
+            "input_upload_id": "upload-1",
+            "riverhog": {
+                "enabled": True,
+                "wait": "finalized",
+                "upload_session_on_failure": "preserve_for_resume",
+            },
+            "riverhog_session_upload": {
+                "collection_id": "2026/20260101T000000Z__camera-archive",
+                "state": "open",
+                "files": {
+                    "camera/a.webm": {
+                        "path": "camera/a.webm",
+                        "bytes": 7,
+                        "uploaded_bytes": 7,
+                        "state": "uploaded",
+                    }
+                },
+            },
+        }
+    )
+    monkeypatch.setattr(runner, "ensure_job_groups", lambda _job, _upload: {})
+    monkeypatch.setattr(
+        runner,
+        "write_metadata_projection_sidecars",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("projection failed")),
+    )
+    monkeypatch.setattr(
+        runner,
+        "cancel_riverhog_upload_session",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("default policy should preserve the uploaded session")
+        ),
+    )
+    monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "schedule_pending_jobs", lambda *args, **kwargs: None)
+
+    runner.run_job("job-1")
+
+    stored = runner.load_job("job-1")
+    assert stored["state"] == "failed"
+    assert stored["riverhog_session_upload"]["preserved_after_failure_at"]
+
+
+def test_failed_job_cancel_policy_cancels_uploaded_riverhog_session(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "storage_hint": {
+                "workflow_mode": "collection_archive",
+                "collection_archive_destination": "riverhog",
+                "archive_mode": "av1_nvenc",
+                "tasks": ["archive_video"],
+                "groups": {},
+            },
+            "files": [],
+        }
+    )
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "queued",
+            "phase": "queued",
+            "workflow_mode": "collection_archive",
+            "input_upload_id": "upload-1",
+            "riverhog": {
+                "enabled": True,
+                "wait": "finalized",
+                "upload_session_on_failure": "cancel",
+            },
+            "riverhog_session_upload": {
+                "collection_id": "2026/20260101T000000Z__camera-archive",
+                "state": "open",
+                "files": {
+                    "camera/a.webm": {
+                        "path": "camera/a.webm",
+                        "bytes": 7,
+                        "uploaded_bytes": 7,
+                        "state": "uploaded",
+                    }
+                },
+            },
+        }
+    )
+    cancelled: list[str] = []
+    monkeypatch.setattr(runner, "ensure_job_groups", lambda _job, _upload: {})
+    monkeypatch.setattr(
+        runner,
+        "write_metadata_projection_sidecars",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("projection failed")),
+    )
+    monkeypatch.setattr(
+        runner,
+        "cancel_riverhog_upload_session",
+        lambda _job, *, reason: cancelled.append(reason),
+    )
+    monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "schedule_pending_jobs", lambda *args, **kwargs: None)
+
+    runner.run_job("job-1")
+
+    stored = runner.load_job("job-1")
+    assert stored["state"] == "failed"
+    assert cancelled == ["job_failed"]
+    assert "preserved_after_failure_at" not in stored["riverhog_session_upload"]
 
 
 def test_cancel_riverhog_upload_session_derives_unpersisted_session_id(

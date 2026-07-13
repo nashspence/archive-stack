@@ -386,6 +386,7 @@ def test_munchy_payload_uses_account_group_paths_without_routing(tmp_path: Path)
     assert request.job_payload["tasks"] == ["archive_video"]
     assert request.job_payload["groups"] == {}
     assert request.job_payload["notify"] == {"enabled": True, "recipients": ["nash", "katie"]}
+    assert request.job_payload["riverhog_upload_session_on_failure"] == "cancel"
     assert "profile_routing" not in request.job_payload
 
 
