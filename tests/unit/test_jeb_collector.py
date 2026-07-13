@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import time
 from dataclasses import dataclass, replace
@@ -8,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import yaml
 
 import jeb.collector as collector_module
 from jeb.collector import (
@@ -33,6 +33,12 @@ def env_for(tmp_path: Path, *, accounts: str = "camera,phone") -> dict[str, str]
         "JEB_CADENCE": "weekly",
         "JEB_ARCHIVE_TASKS": "archive_video",
     }
+
+
+def write_munchy_config(tmp_path: Path, config: dict[str, object]) -> str:
+    path = tmp_path / "munchy-job.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=True), encoding="utf-8")
+    return str(path)
 
 
 def write_stable_file(path: Path, content: bytes = b"data") -> None:
@@ -122,7 +128,7 @@ def test_env_config_creates_one_account_collection_per_account(tmp_path: Path) -
     assert config.munchy_job_defaults["tasks"] == ["archive_video"]
 
 
-def test_env_config_supports_per_account_upload_prefix_and_munchy_job(
+def test_env_config_supports_per_account_munchy_config_file(
     tmp_path: Path,
 ) -> None:
     job_config = {
@@ -140,20 +146,19 @@ def test_env_config_supports_per_account_upload_prefix_and_munchy_job(
                 {
                     "id": "main-video",
                     "group": "camera-video",
-                    "when": {"path": {"prefix": "camera-video"}},
+                    "when": {"path": {"prefix": "camera"}},
                 }
             ]
         },
     }
     env = {
         **env_for(tmp_path, accounts="camera"),
-        "JEB_ACCOUNT_CAMERA_UPLOAD_PREFIX": "camera-video",
-        "JEB_ACCOUNT_CAMERA_MUNCHY_JOB_JSON": json.dumps(job_config, separators=(",", ":")),
+        "JEB_ACCOUNT_CAMERA_MUNCHY_CONFIG": write_munchy_config(tmp_path, job_config),
     }
 
     config = config_from_env(env)
 
-    assert config.sources[0].upload_prefix == "camera-video"
+    assert config.sources[0].upload_root == "camera"
     assert dict(config.collections[0].munchy_job_defaults) == job_config
 
 
@@ -366,7 +371,7 @@ def test_munchy_payload_uses_per_account_job_defaults(
                 {
                     "id": "main-video",
                     "group": "camera-video",
-                    "when": {"path": {"prefix": "camera-video"}},
+                    "when": {"path": {"prefix": "camera"}},
                 }
             ]
         },
@@ -374,8 +379,7 @@ def test_munchy_payload_uses_per_account_job_defaults(
     config = config_from_env(
         {
             **env_for(tmp_path, accounts="camera"),
-            "JEB_ACCOUNT_CAMERA_UPLOAD_PREFIX": "camera-video",
-            "JEB_ACCOUNT_CAMERA_MUNCHY_JOB_JSON": json.dumps(job_config, separators=(",", ":")),
+            "JEB_ACCOUNT_CAMERA_MUNCHY_CONFIG": write_munchy_config(tmp_path, job_config),
         }
     )
     write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4")
@@ -395,7 +399,7 @@ def test_munchy_payload_uses_per_account_job_defaults(
     assert batch_id is not None
     request = munchy_upload_request(collector, batch_id, config.targets["munchy"])
 
-    assert [item.rel_path for item in request.files] == ["camera-video/clip.mp4"]
+    assert [item.rel_path for item in request.files] == ["camera/clip.mp4"]
     assert request.job_payload["groups"] == job_config["groups"]
     assert request.job_payload["profile_routing"] == job_config["profile_routing"]
     assert request.storage_hint["structured_routing"] is True
@@ -422,7 +426,7 @@ def test_jeb_uploads_preflight_left_files_so_munchy_owns_culling(
                 {
                     "id": "main-video",
                     "group": "camera-video",
-                    "when": {"path": {"prefix": "camera-video"}},
+                    "when": {"path": {"prefix": "camera"}},
                 },
                 {
                     "id": "munchy-left",
@@ -435,8 +439,7 @@ def test_jeb_uploads_preflight_left_files_so_munchy_owns_culling(
     config = config_from_env(
         {
             **env_for(tmp_path, accounts="camera"),
-            "JEB_ACCOUNT_CAMERA_UPLOAD_PREFIX": "camera-video",
-            "JEB_ACCOUNT_CAMERA_MUNCHY_JOB_JSON": json.dumps(job_config, separators=(",", ":")),
+            "JEB_ACCOUNT_CAMERA_MUNCHY_CONFIG": write_munchy_config(tmp_path, job_config),
         }
     )
     write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4")
@@ -449,7 +452,7 @@ def test_jeb_uploads_preflight_left_files_so_munchy_owns_culling(
             self.url = url
 
         def profile_routing_preflight(self, **_kwargs: object) -> dict[str, object]:
-            return {"ok": True, "left": [{"path": "camera-video/left.mp4"}]}
+            return {"ok": True, "left": [{"path": "camera/left.mp4"}]}
 
     monkeypatch.setattr(collector_module, "MunchyRunnerClient", FakeMunchyRunnerClient)
 
@@ -458,12 +461,12 @@ def test_jeb_uploads_preflight_left_files_so_munchy_owns_culling(
     request = munchy_upload_request(collector, batch_id, config.targets["munchy"])
 
     assert [item.rel_path for item in request.files] == [
-        "camera-video/clip.mp4",
-        "camera-video/left.mp4",
+        "camera/clip.mp4",
+        "camera/left.mp4",
     ]
 
 
-def test_archive_now_rediscovers_stale_failed_batch_when_upload_prefix_changes(
+def test_archive_now_rediscovers_stale_failed_batch_when_upload_root_changes(
     tmp_path: Path,
 ) -> None:
     write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4")
@@ -474,12 +477,8 @@ def test_archive_now_rediscovers_stale_failed_batch_when_upload_prefix_changes(
     assert old_batch_id is not None
     old_collector.set_batch_state(old_batch_id, "failed", "old config failed")
 
-    new_config = config_from_env(
-        {
-            **env_for(tmp_path, accounts="camera"),
-            "JEB_ACCOUNT_CAMERA_UPLOAD_PREFIX": "camera-video",
-        }
-    )
+    new_source = replace(old_config.sources[0], upload_root="camera-v2")
+    new_config = replace(old_config, sources=(new_source,))
     new_collector = Collector(new_config)
     new_collector.init_db()
     new_batch_id = new_collector.archive_now(source_id="camera", process=False)
@@ -487,7 +486,7 @@ def test_archive_now_rediscovers_stale_failed_batch_when_upload_prefix_changes(
     assert new_batch_id is not None
     assert new_batch_id != f"{old_batch_id}-r2"
     request = munchy_upload_request(new_collector, new_batch_id, new_config.targets["munchy"])
-    assert [item.rel_path for item in request.files] == ["camera-video/clip.mp4"]
+    assert [item.rel_path for item in request.files] == ["camera-v2/clip.mp4"]
     with new_collector.connect() as conn:
         row = conn.execute(
             "SELECT state FROM batch_attempts WHERE id = ?",

@@ -49,6 +49,7 @@ from munchy.runner_client import (
 from munchy.runner_client import (
     is_transient_upload_error as munchy_is_transient_upload_error,
 )
+from riverhog_core.config_yaml import ConfigError, load_yaml_config
 from riverhog_core.domain.errors import Conflict, ServiceUnavailable
 from riverhog_core.operator_reminders import (
     normalize_reminder_time,
@@ -277,7 +278,7 @@ class SourceConfig:
     id: str
     enabled: bool
     path: Path
-    upload_prefix: str
+    upload_root: str
     stable_seconds: int
     include_extensions: frozenset[str]
 
@@ -986,7 +987,7 @@ class Collector:
                 continue
             if before_ts is not None and stat.st_mtime >= before_ts:
                 continue
-            target_path = normalize_posix(PurePosixPath(source.upload_prefix, *rel.parts))
+            target_path = normalize_posix(PurePosixPath(source.upload_root, *rel.parts))
             if target_path in seen_target_paths:
                 raise UnrecoverableJebError(
                     f"duplicate target path for source {source.id}: {target_path}"
@@ -1608,7 +1609,7 @@ class Collector:
                 rel = source_path.relative_to(source.path)
             except ValueError:
                 continue
-            return normalize_posix(PurePosixPath(source.upload_prefix, *rel.parts))
+            return normalize_posix(PurePosixPath(source.upload_root, *rel.parts))
         return None
 
     def supersede_batch_attempt(self, attempt_id: str) -> None:
@@ -2605,17 +2606,14 @@ def required_env(env: Mapping[str, str], name: str) -> str:
     return value
 
 
-def env_json_mapping(env: Mapping[str, str], name: str) -> dict[str, Any]:
+def env_yaml_mapping_file(env: Mapping[str, str], name: str) -> dict[str, Any]:
     value = env_value_from(env, name)
     if value is None:
         return {}
     try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{name} must be JSON") from exc
-    if not isinstance(parsed, Mapping):
-        raise ValueError(f"{name} must be a JSON object")
-    return dict(parsed)
+        return load_yaml_config(Path(os.path.expandvars(value)).expanduser())
+    except ConfigError as exc:
+        raise ValueError(f"{name} must point to a readable YAML mapping: {exc}") from exc
 
 
 def env_int(env: Mapping[str, str], name: str, default: int) -> int:
@@ -2645,15 +2643,11 @@ def source_from_account(
     stable_seconds: int,
     include_extensions: frozenset[str],
 ) -> SourceConfig:
-    account_env = account_env_name(account)
-    upload_prefix = normalize_posix(
-        env_value_from(env, f"JEB_ACCOUNT_{account_env}_UPLOAD_PREFIX", account) or account
-    )
     return SourceConfig(
         id=account,
         enabled=True,
         path=landing_dir / account,
-        upload_prefix=upload_prefix,
+        upload_root=normalize_posix(account),
         stable_seconds=stable_seconds,
         include_extensions=include_extensions,
     )
@@ -2821,7 +2815,6 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
         "notify": notify_defaults,
         "cleanup_local_on_success": env_bool(values, "JEB_CLEANUP_LOCAL_ON_SUCCESS", False),
     }
-    munchy_job_defaults.update(env_json_mapping(values, "JEB_MUNCHY_JOB_JSON"))
     return JebConfig(
         collector=collector,
         notify=notify,
@@ -2841,7 +2834,7 @@ def collection_from_account(account: str, env: Mapping[str, str]) -> CollectionC
         env_name="JEB_CADENCE",
     )
     account_cadence_env = f"JEB_ACCOUNT_{account_env_name(account)}_CADENCE"
-    account_munchy_job_env = f"JEB_ACCOUNT_{account_env_name(account)}_MUNCHY_JOB_JSON"
+    account_munchy_config_env = f"JEB_ACCOUNT_{account_env_name(account)}_MUNCHY_CONFIG"
     account_notify_enabled_env = f"JEB_ACCOUNT_{account_env_name(account)}_NOTIFY_ENABLED"
     account_notify_recipients_env = f"JEB_ACCOUNT_{account_env_name(account)}_NOTIFY_RECIPIENTS"
     notify_enabled = env_bool(
@@ -2880,7 +2873,7 @@ def collection_from_account(account: str, env: Mapping[str, str]) -> CollectionC
         weekday=parse_weekday(env_value_from(env, "JEB_WEEKDAY", "monday")),
         hour=hour,
         minute=minute,
-        munchy_job_defaults=env_json_mapping(env, account_munchy_job_env),
+        munchy_job_defaults=env_yaml_mapping_file(env, account_munchy_config_env),
     )
 
 
