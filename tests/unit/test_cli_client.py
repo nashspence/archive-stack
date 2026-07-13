@@ -190,6 +190,57 @@ def test_get_collection_can_request_coverage_path_preview(monkeypatch) -> None:
     assert captured == ["https://api.test/v1/collections/tax/2022%20reports?coverage_path_limit=4"]
 
 
+def test_jeb_client_methods_use_canonical_endpoints(monkeypatch) -> None:
+    captured: list[tuple[str, str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append((request.method, str(request.url), request.read().decode("utf-8")))
+        return httpx.Response(200, json={"status": "ok", "batches": []})
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_client(self: ApiClient) -> httpx.Client:
+        return httpx.Client(base_url=self.base_url, transport=transport)
+
+    monkeypatch.setattr(ApiClient, "_client", fake_client)
+
+    client = ApiClient(base_url="https://api.test")
+    client.get_jeb_status(include_backlog=False)
+    client.list_jeb_batches(
+        page=2,
+        per_page=50,
+        sort="created_at",
+        order="asc",
+        terminal="all",
+        state="failed",
+        account="camera",
+        collection="weekly",
+        target="archive",
+        query="metadata",
+    )
+    client.check_jeb_config()
+    client.run_jeb_once()
+    client.archive_jeb_now(account="camera", process=False)
+
+    assert captured == [
+        ("GET", "https://api.test/v1/jeb/status?include_backlog=false", ""),
+        (
+            "GET",
+            "https://api.test/v1/jeb/batches?"
+            "page=2&per_page=50&sort=created_at&order=asc&terminal=all&"
+            "state=failed&account=camera&collection=weekly&target=archive&q=metadata",
+            "",
+        ),
+        ("GET", "https://api.test/v1/jeb/config/check", ""),
+        ("POST", "https://api.test/v1/jeb/once", ""),
+        (
+            "POST",
+            "https://api.test/v1/jeb/archive-now",
+            '{"account":"camera","process":false}',
+        ),
+    ]
+
+
 def test_recovery_session_client_methods_use_canonical_endpoints(monkeypatch) -> None:
     captured: list[tuple[str, str, str]] = []
 

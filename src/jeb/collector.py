@@ -9,6 +9,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import threading
 import time
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -503,6 +504,7 @@ class Collector:
         }
         if target_runners:
             self.target_runners.update(target_runners)
+        self.operation_lock = threading.RLock()
 
     def connect(self) -> sqlite3.Connection:
         self.config.collector.state_db.parent.mkdir(parents=True, exist_ok=True)
@@ -877,15 +879,16 @@ class Collector:
             self.sleep(self.config.collector.interval_seconds)
 
     def run_once(self) -> None:
-        self.init_db()
-        self.resolve_inactive_routing_preflight_failures()
-        for batch_id in self.active_batch_ids():
-            self.process_batch(batch_id)
-        active_collections = {str(row["collection_id"]) for row in self.active_batches()}
-        for collection in self.config.collections:
-            if collection.enabled and collection.id not in active_collections:
-                self.discover_collection(collection)
-        self.notify_routing_preflight_failures()
+        with self.operation_lock:
+            self.init_db()
+            self.resolve_inactive_routing_preflight_failures()
+            for batch_id in self.active_batch_ids():
+                self.process_batch(batch_id)
+            active_collections = {str(row["collection_id"]) for row in self.active_batches()}
+            for collection in self.config.collections:
+                if collection.enabled and collection.id not in active_collections:
+                    self.discover_collection(collection)
+            self.notify_routing_preflight_failures()
 
     def active_batches(self) -> list[sqlite3.Row]:
         terminal = tuple(sorted(TERMINAL_STATES))
@@ -2125,63 +2128,64 @@ class Collector:
         source_id: str,
         process: bool = True,
     ) -> str | None:
-        try:
-            source = self.source_by_id(source_id)
-        except KeyError as exc:
-            raise UnrecoverableJebError(
-                f"account {source_id!r} is not in the active Jeb env"
-            ) from exc
-        if not source.enabled:
-            raise UnrecoverableJebError(
-                f"account {source_id!r} is disabled in the active Jeb env"
-            )
-        collections = [
-            collection
-            for collection in self.config.collections
-            if collection.enabled and source_id in collection.source_ids
-        ]
-        if not collections:
-            raise UnrecoverableJebError(
-                f"account {source_id!r} is not included in the active Jeb schedule"
-            )
-        if len(collections) > 1:
-            raise UnrecoverableJebError(
-                f"account {source_id!r} is in multiple scheduled collections"
-            )
-        collection = collections[0]
-        failed_attempt = self.latest_failed_attempt_for_collection(collection.id)
-        batch_id: str | None
-        if failed_attempt is not None:
-            if self.failed_attempt_target_paths_match_current_config(
-                failed_attempt,
-                collection,
-            ):
-                batch_id = self.create_retry_attempt(str(failed_attempt["id"]))
-            else:
-                LOG.info(
-                    "failed attempt %s target paths no longer match current source "
-                    "config; rediscovering collection %s",
-                    failed_attempt["id"],
-                    collection.id,
+        with self.operation_lock:
+            try:
+                source = self.source_by_id(source_id)
+            except KeyError as exc:
+                raise UnrecoverableJebError(
+                    f"account {source_id!r} is not in the active Jeb env"
+                ) from exc
+            if not source.enabled:
+                raise UnrecoverableJebError(
+                    f"account {source_id!r} is disabled in the active Jeb env"
                 )
+            collections = [
+                collection
+                for collection in self.config.collections
+                if collection.enabled and source_id in collection.source_ids
+            ]
+            if not collections:
+                raise UnrecoverableJebError(
+                    f"account {source_id!r} is not included in the active Jeb schedule"
+                )
+            if len(collections) > 1:
+                raise UnrecoverableJebError(
+                    f"account {source_id!r} is in multiple scheduled collections"
+                )
+            collection = collections[0]
+            failed_attempt = self.latest_failed_attempt_for_collection(collection.id)
+            batch_id: str | None
+            if failed_attempt is not None:
+                if self.failed_attempt_target_paths_match_current_config(
+                    failed_attempt,
+                    collection,
+                ):
+                    batch_id = self.create_retry_attempt(str(failed_attempt["id"]))
+                else:
+                    LOG.info(
+                        "failed attempt %s target paths no longer match current source "
+                        "config; rediscovering collection %s",
+                        failed_attempt["id"],
+                        collection.id,
+                    )
+                    batch_id = self.discover_collection(
+                        collection,
+                        only_source_ids=(source_id,),
+                        force=True,
+                        allow_preflight_retry=True,
+                    )
+                    if batch_id is not None:
+                        self.supersede_batch_attempt(str(failed_attempt["id"]))
+            else:
                 batch_id = self.discover_collection(
                     collection,
                     only_source_ids=(source_id,),
                     force=True,
                     allow_preflight_retry=True,
                 )
-                if batch_id is not None:
-                    self.supersede_batch_attempt(str(failed_attempt["id"]))
-        else:
-            batch_id = self.discover_collection(
-                collection,
-                only_source_ids=(source_id,),
-                force=True,
-                allow_preflight_retry=True,
-            )
-        if batch_id is not None and process:
-            self.process_batch(batch_id)
-        return batch_id
+            if batch_id is not None and process:
+                self.process_batch(batch_id)
+            return batch_id
 
     def latest_failed_attempt_for_collection(self, collection_id: str) -> sqlite3.Row | None:
         with self.connect() as conn:

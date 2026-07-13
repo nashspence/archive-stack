@@ -6,6 +6,7 @@ from typer.testing import CliRunner
 from djdan.main import app as disc_app
 from gogurt.cli import app as gogurt_app
 from jeb.cli import main as jeb_main
+from jeb.service_cli import main as jeb_service_main
 from munchy_cli.main import app as munchy_app
 from riverhog_cli.main import app as riverhog_app
 
@@ -148,11 +149,23 @@ def test_jeb_help_has_command_summaries(capsys: pytest.CaptureFixture[str]) -> N
 
     assert exc_info.value.code == 0
     stdout = capsys.readouterr().out
-    assert "Weekly collector and automated uploader." in stdout
-    assert "run           run continuously and process eligible batches" in stdout
-    assert "once          discover and process one scheduler pass" in stdout
+    assert "Remote Jeb operator CLI." in stdout
+    assert "status        show read-only collector status" in stdout
+    assert "batches       list batch attempts" in stdout
+    assert "once          request one scheduler pass" in stdout
     assert "archive-now   archive one account immediately" in stdout
-    assert "check-config  validate env configuration and initialize state" in stdout
+    assert "check-config  validate deployed Jeb configuration" in stdout
+
+
+def test_jeb_service_help_has_command_summaries(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        jeb_service_main(["--help"])
+
+    assert exc_info.value.code == 0
+    stdout = capsys.readouterr().out
+    assert "Service-local Jeb collector and uploader." in stdout
+    assert "run           run continuously and process eligible batches" in stdout
+    assert "archive-now   archive one account immediately" in stdout
 
 
 def test_munchy_job_help_has_resume_command() -> None:

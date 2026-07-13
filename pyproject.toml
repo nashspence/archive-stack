@@ -56,6 +56,7 @@ riverhog = "riverhog_cli.main:main"
 munchy = "munchy_cli.main:main"
 djdan = "djdan.main:main"
 jeb = "jeb.cli:main"
+jeb-service = "jeb.service_cli:main"
 gogurt = "gogurt.cli:main"
 
 [tool.hatch.build.targets.wheel]

@@ -1460,6 +1460,139 @@ paths:
                     $ref: "#/components/schemas/HotStatus"
         default:
           $ref: "#/components/responses/Error"
+  /jeb/status:
+    get:
+      summary: Get Jeb collector status
+      operationId: getJebStatus
+      parameters:
+        - in: query
+          name: include_backlog
+          required: false
+          schema: { type: boolean, default: true }
+      responses:
+        "200":
+          description: Jeb status summary
+          content:
+            application/json:
+              schema: { type: object }
+        default:
+          $ref: "#/components/responses/Error"
+  /jeb/batches:
+    get:
+      summary: List Jeb batch attempts
+      operationId: listJebBatches
+      parameters:
+        - in: query
+          name: page
+          required: false
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: per_page
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 500, default: 25 }
+        - in: query
+          name: sort
+          required: false
+          schema: { type: string, default: updated_at }
+        - in: query
+          name: order
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+        - in: query
+          name: terminal
+          required: false
+          schema:
+            type: string
+            enum: [active, terminal, all]
+            default: active
+        - in: query
+          name: state
+          required: false
+          schema:
+            oneOf:
+              - type: string
+              - type: "null"
+        - in: query
+          name: account
+          required: false
+          schema:
+            oneOf:
+              - type: string
+              - type: "null"
+        - in: query
+          name: collection
+          required: false
+          schema:
+            oneOf:
+              - type: string
+              - type: "null"
+        - in: query
+          name: target
+          required: false
+          schema:
+            oneOf:
+              - type: string
+              - type: "null"
+        - in: query
+          name: q
+          required: false
+          schema:
+            oneOf:
+              - type: string
+              - type: "null"
+      responses:
+        "200":
+          description: Paged Jeb batch attempts
+          content:
+            application/json:
+              schema: { type: object }
+        default:
+          $ref: "#/components/responses/Error"
+  /jeb/config/check:
+    get:
+      summary: Check deployed Jeb configuration
+      operationId: checkJebConfig
+      responses:
+        "200":
+          description: Jeb configuration check result
+          content:
+            application/json:
+              schema: { type: object }
+        default:
+          $ref: "#/components/responses/Error"
+  /jeb/once:
+    post:
+      summary: Request one Jeb scheduler pass
+      operationId: runJebOnce
+      responses:
+        "202":
+          description: Scheduler pass completed
+          content:
+            application/json:
+              schema: { type: object }
+        default:
+          $ref: "#/components/responses/Error"
+  /jeb/archive-now:
+    post:
+      summary: Archive one Jeb account immediately
+      operationId: archiveJebNow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JebArchiveNowRequest"
+      responses:
+        "202":
+          description: Archive attempt result
+          content:
+            application/json:
+              schema: { type: object }
+        default:
+          $ref: "#/components/responses/Error"
 components:
   responses:
     Error:
@@ -1478,6 +1611,16 @@ components:
     FetchEntryUploadState:
       type: string
       enum: [pending, partial, byte_complete, uploaded]
+    JebArchiveNowRequest:
+      type: object
+      required: [account]
+      properties:
+        account:
+          type: string
+          minLength: 1
+        process:
+          type: boolean
+          default: true
     PhysicalProtectionState:
       type: string
       enum: [unprotected, partially_protected, protected]

@@ -214,6 +214,70 @@ Required behavior:
 - file results include projected target, collection id, relative path, byte count,
   and current hot/deep-archive state
 
+### Jeb
+
+Riverhog exposes Jeb operator endpoints under `/v1/jeb`. These endpoints proxy
+the service-local Jeb collector API; clients should use these Riverhog API paths
+instead of running the collector CLI remotely.
+
+#### `GET /v1/jeb/status`
+
+Returns collector status, source readiness, active attempts, recent failures,
+and routing preflight failures.
+
+Supported query parameters:
+
+- `include_backlog` — boolean, default `true`; when false, skips source
+  directory eligible-file scans
+
+#### `GET /v1/jeb/batches`
+
+Lists Jeb batch attempts with paged, server-side sort and filter support.
+
+Supported query parameters:
+
+- `page` — 1-based page number, default `1`
+- `per_page` — page size, default `25`, max `500`
+- `sort` — indexed Jeb attempt or batch summary field, default `updated_at`
+- `order` — `asc` or `desc`, default `desc`
+- `terminal` — `active`, `terminal`, or `all`, default `active`
+- `state` — exact batch attempt state filter
+- `account` — exact Jeb account/source slug filter
+- `collection` — exact Jeb collection id filter
+- `target` — exact target filter
+- `q` — case-insensitive search over attempt, batch, job, collection, target,
+  state, timestamp, or error text
+
+#### `GET /v1/jeb/config/check`
+
+Validates the deployed Jeb service configuration and initializes its state store
+if needed.
+
+#### `POST /v1/jeb/once`
+
+Requests one scheduler pass on the deployed Jeb service.
+
+#### `POST /v1/jeb/archive-now`
+
+Requests one immediate archive attempt for a Jeb account.
+
+Request body:
+
+```json
+{
+  "account": "example-camera",
+  "process": true
+}
+```
+
+Required behavior:
+
+- `account` is the Jeb account/source slug
+- `process` defaults to `true`; when false, Jeb creates the eligible batch but
+  does not process it immediately
+- Jeb sends complete eligible account batches to Munchy; Munchy owns routing,
+  profile selection, archive/leave/cull behavior, and Riverhog archive contents
+
 ### Collections summary
 
 #### `GET /v1/collections`

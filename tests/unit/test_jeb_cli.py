@@ -5,8 +5,8 @@ import os
 import time
 from pathlib import Path
 
-from jeb.cli import main as jeb_main
 from jeb.collector import Collector, config_from_env
+from jeb.service_cli import main as jeb_main
 
 
 def jeb_env(tmp_path: Path, *, accounts: str = "phone") -> dict[str, str]:

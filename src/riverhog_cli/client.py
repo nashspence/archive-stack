@@ -740,6 +740,58 @@ class ApiClient:
             params={"target": target, "page": page, "per_page": per_page},
         )
 
+    def get_jeb_status(self, *, include_backlog: bool = True) -> dict[str, Any]:
+        return self._json(
+            "GET",
+            "/v1/jeb/status",
+            params={"include_backlog": str(include_backlog).lower()},
+        )
+
+    def list_jeb_batches(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        sort: str = "updated_at",
+        order: str = "desc",
+        terminal: str = "active",
+        state: str | None = None,
+        account: str | None = None,
+        collection: str | None = None,
+        target: str | None = None,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "page": page,
+            "per_page": per_page,
+            "sort": sort,
+            "order": order,
+            "terminal": terminal,
+        }
+        for key, value in {
+            "state": state,
+            "account": account,
+            "collection": collection,
+            "target": target,
+            "q": query,
+        }.items():
+            if value is not None:
+                params[key] = value
+        return self._json("GET", "/v1/jeb/batches", params=params)
+
+    def check_jeb_config(self) -> dict[str, Any]:
+        return self._json("GET", "/v1/jeb/config/check")
+
+    def run_jeb_once(self) -> dict[str, Any]:
+        return self._json("POST", "/v1/jeb/once")
+
+    def archive_jeb_now(self, *, account: str, process: bool = True) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            "/v1/jeb/archive-now",
+            json={"account": account, "process": process},
+        )
+
     def get_file_content(self, target: str, output: Path | None = None) -> bytes:
         response = self._request("GET", f"/v1/files/{quote(target, safe='/')}/content")
         content = response.content

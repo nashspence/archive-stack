@@ -21,6 +21,7 @@ from riverhog_api.routers.files import router as files_router
 from riverhog_api.routers.glacier import router as glacier_router
 from riverhog_api.routers.images import router as images_router
 from riverhog_api.routers.internal import router as internal_router
+from riverhog_api.routers.jeb import router as jeb_router
 from riverhog_api.routers.plan import router as plan_router
 from riverhog_api.routers.recovery_sessions import router as recovery_sessions_router
 from riverhog_api.routers.search import router as search_router
@@ -383,6 +384,7 @@ def create_app(
     app.include_router(images_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(glacier_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(fetches_router, prefix="/v1", dependencies=auth_deps)
+    app.include_router(jeb_router, prefix="/v1", dependencies=auth_deps)
     return app
 
 

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 import urllib.error
 import urllib.request
+from pathlib import Path
+from typing import Any
 
-from jeb.health import JebHealthState, start_health_server
+from jeb.collector import Collector, config_from_env
+from jeb.service_api import JebServiceState, start_jeb_service_server
 
 
 def read_json(url: str) -> dict[str, object]:
@@ -12,8 +17,45 @@ def read_json(url: str) -> dict[str, object]:
         return json.loads(response.read().decode("utf-8"))
 
 
-def test_jeb_health_endpoints_report_live_and_ready() -> None:
-    server = start_health_server("127.0.0.1", 0, JebHealthState(source_count=3))
+def post_json(url: str, payload: dict[str, Any]) -> tuple[int, dict[str, object]]:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8"))
+
+
+def jeb_env(tmp_path: Path) -> dict[str, str]:
+    return {
+        "JEB_ACCOUNTS": "phone",
+        "JEB_LANDING_DIR": str(tmp_path / "landing"),
+        "JEB_STATE_DIR": str(tmp_path / "state"),
+        "JEB_MUNCHY_URL": "http://munchy.invalid",
+        "JEB_INCLUDE_EXTENSIONS": ".txt",
+        "JEB_STABLE_AGE": "0s",
+        "JEB_CADENCE": "weekly",
+    }
+
+
+def write_stable_file(path: Path, content: bytes = b"notes") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    old = time.time() - 14 * 86_400
+    os.utime(path, (old, old))
+
+
+def test_jeb_service_api_reports_live_ready_and_status(tmp_path: Path) -> None:
+    env = jeb_env(tmp_path)
+    write_stable_file(tmp_path / "landing" / "phone" / "note.txt")
+    collector = Collector(config_from_env(env))
+    collector.init_db()
+    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
     try:
         host, port = server.server_address[:2]
 
@@ -23,16 +65,42 @@ def test_jeb_health_endpoints_report_live_and_ready() -> None:
         }
         assert read_json(f"http://{host}:{port}/health/ready") == {
             "service": "jeb",
-            "source_count": 3,
+            "source_count": 1,
             "status": "ok",
+        }
+        status = read_json(f"http://{host}:{port}/v1/jeb/status")
+        sources = status["sources"]
+        assert isinstance(sources, list)
+        assert sources[0]["id"] == "phone"
+        assert sources[0]["eligible_files"] == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_jeb_service_api_requires_boolean_archive_now_process_flag(tmp_path: Path) -> None:
+    collector = Collector(config_from_env(jeb_env(tmp_path)))
+    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
+    try:
+        host, port = server.server_address[:2]
+
+        status, payload = post_json(
+            f"http://{host}:{port}/v1/jeb/archive-now",
+            {"account": "phone", "process": "false"},
+        )
+
+        assert status == 400
+        assert payload == {
+            "error": {"code": "bad_request", "message": "process must be true or false"}
         }
     finally:
         server.shutdown()
         server.server_close()
 
 
-def test_jeb_health_unknown_paths_are_not_healthy() -> None:
-    server = start_health_server("127.0.0.1", 0, JebHealthState(source_count=0))
+def test_jeb_service_api_unknown_paths_are_not_healthy(tmp_path: Path) -> None:
+    collector = Collector(config_from_env(jeb_env(tmp_path)))
+    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
     try:
         host, port = server.server_address[:2]
 

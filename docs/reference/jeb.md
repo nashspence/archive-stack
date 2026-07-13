@@ -1,9 +1,10 @@
 # Jeb
 
-`jeb` is an env-configured account scheduler for watched-drop archive uploads.
-It watches one landing directory per account, starts one Munchy
+Jeb is an account scheduler for watched-drop archive uploads. The service
+runner watches one landing directory per account, starts one Munchy
 `collection_archive` job per account when files are eligible, and tells Munchy
-to upload the finished archive to Riverhog.
+to upload the finished archive to Riverhog. The public `jeb` command is the
+remote operator CLI; service-local collector execution uses `jeb-service`.
 
 Jeb is generic public code. Real account names, credentials, hostnames, webhook
 URLs, and deployment overlays belong outside this repository.
@@ -114,7 +115,9 @@ Supported cadences are:
   month.
 - `seasonal`: first configured weekday/time on or after Dec 1, Mar 1, Jun 1,
   and Sep 1.
-- `manual`: no scheduled batch; use `jeb archive-now --account <slug>`.
+- `manual`: no scheduled batch; use `jeb archive-now --account <slug>` from an
+  operator client, or `jeb-service archive-now --account <slug>` inside the
+  service environment.
 
 Per-account cadence overrides use the env-safe account slug:
 
@@ -125,14 +128,16 @@ JEB_ACCOUNT_EXAMPLE_PHONE_CADENCE=seasonal
 See [`config/examples/jeb/jeb.env`](../../config/examples/jeb/jeb.env) for a
 complete generic env example.
 
-## Commands
+## Operator CLI
+
+`jeb` talks to the authenticated Riverhog API using the same `RIVERHOG_BASE_URL`,
+`RIVERHOG_TOKEN`, TLS, and host-header conventions as `riverhog`.
 
 ```sh
 jeb check-config
 jeb status
 jeb batches
 jeb once
-jeb run
 jeb archive-now --account example-camera
 ```
 
@@ -159,13 +164,39 @@ Supported batch filters include `--terminal active|terminal|all`, `--state`,
 fields are `updated_at`, `created_at`, `collection`, `collection_timestamp`,
 `target`, `state`, `file_count`, `bytes`, `attempt`, and `job_id`.
 
-## Health
+## Service CLI
 
-`jeb run` exposes HTTP health endpoints for container orchestration:
+`jeb-service` is the env-configured collector CLI used by the long-running Jeb
+service container. It requires the `JEB_*`, notification, Munchy, landing, and
+state environment for that service. Do not deploy it as a normal remote client
+command.
+
+```sh
+jeb-service check-config
+jeb-service status
+jeb-service batches
+jeb-service once
+jeb-service run
+jeb-service archive-now --account example-camera
+```
+
+## API And Health
+
+Riverhog exposes the authenticated remote API under:
+
+- `GET /v1/jeb/status`
+- `GET /v1/jeb/batches`
+- `GET /v1/jeb/config/check`
+- `POST /v1/jeb/once`
+- `POST /v1/jeb/archive-now`
+
+`jeb-service run` exposes internal service endpoints for Riverhog and container
+orchestration:
 
 - `/health/live` reports that the process is serving health requests.
 - `/health/ready` reports readiness after configuration loads and the state
   database initializes.
+- `/v1/jeb/...` is the internal Jeb service API proxied by Riverhog's public API.
 
 ## Webhooks
 

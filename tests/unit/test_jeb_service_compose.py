@@ -21,3 +21,9 @@ def test_jeb_compose_exposes_readiness_healthcheck() -> None:
     assert healthcheck["test"][:3] == ["CMD", "python", "-c"]
     assert "/health/ready" in healthcheck["test"][3]
     assert healthcheck["interval"] == "15s"
+
+
+def test_jeb_service_image_runs_service_entrypoint() -> None:
+    dockerfile = (REPO / "services" / "jeb" / "Dockerfile").read_text()
+
+    assert 'CMD ["python", "-m", "jeb.service_cli", "run"]' in dockerfile

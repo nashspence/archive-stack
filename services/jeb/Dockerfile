@@ -20,4 +20,4 @@ COPY src /riverhog/src
 EXPOSE 8081
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["python", "-m", "jeb.cli", "run"]
+CMD ["python", "-m", "jeb.service_cli", "run"]
