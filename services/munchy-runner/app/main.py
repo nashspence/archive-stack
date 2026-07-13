@@ -6930,6 +6930,16 @@ def uploaded_riverhog_paths(job: dict[str, Any]) -> set[str]:
     return uploaded
 
 
+def zero_riverhog_upload_metrics(started: float | None = None) -> dict[str, int | float]:
+    elapsed = 0.0 if started is None else round(max(0.0, time.monotonic() - started), 6)
+    return {
+        "processed_files": 0,
+        "uploaded_files": 0,
+        "uploaded_bytes": 0,
+        "elapsed_seconds": elapsed,
+    }
+
+
 def path_relative_to_archive(path: Path, archive_dir: Path) -> str | None:
     try:
         return path.relative_to(archive_dir).as_posix()
@@ -6991,15 +7001,17 @@ def upload_riverhog_artifacts(
     max_seconds: float | None = None,
 ) -> dict[str, int | float]:
     if not riverhog_config_enabled(job):
-        return {
-            "processed_files": 0,
-            "uploaded_files": 0,
-            "uploaded_bytes": 0,
-            "elapsed_seconds": 0.0,
-        }
+        return zero_riverhog_upload_metrics()
     job_id = str(job["job_id"])
     lock = riverhog_upload_call_lock(job_id)
     with lock:
+        if not final:
+            current = read_state("job", job_id)
+            if isinstance(current, dict):
+                if not riverhog_eager_upload_allowed(current):
+                    return zero_riverhog_upload_metrics()
+                job.clear()
+                job.update(current)
         return _upload_riverhog_artifacts_unlocked(
             job,
             archive_dir,
@@ -7100,7 +7112,7 @@ def _upload_riverhog_artifacts_unlocked(
                 worker_clients.clear()
             for worker_api in clients:
                 worker_api.close()
-        persist_progress_if_due(force=True)
+            persist_progress_if_due(force=True)
         return {
             "processed_files": processed,
             "uploaded_files": uploaded,
@@ -7123,7 +7135,6 @@ def _upload_riverhog_artifacts_unlocked(
                 uploaded_bytes += source_bytes
             processed += 1
             persist_progress_if_due()
-        persist_progress_if_due(force=True)
         return {
             "processed_files": processed,
             "uploaded_files": uploaded,
@@ -7131,6 +7142,7 @@ def _upload_riverhog_artifacts_unlocked(
             "elapsed_seconds": round(max(0.0, time.monotonic() - started), 6),
         }
     finally:
+        persist_progress_if_due(force=True)
         api.close()
 
 
@@ -7163,6 +7175,28 @@ def maybe_upload_riverhog_artifacts(job: dict[str, Any], archive_dir: Path) -> N
         log.warning("riverhog eager upload failed; will retry later: %s", exc)
     except Exception as exc:
         log.warning("riverhog eager upload issue; will retry later: %s", exc)
+
+
+RIVERHOG_EAGER_UPLOAD_BLOCKED_PHASES = {"metadata_projection", "riverhog_upload"}
+
+
+def riverhog_eager_upload_allowed(job: dict[str, Any]) -> bool:
+    if job.get("state") != "running" or job.get("cancel_requested"):
+        return False
+    if str(job.get("workflow_mode") or "collection_archive") != "collection_archive":
+        return False
+    collection_archive = dict_or_empty(job.get("collection_archive"))
+    if str(collection_archive.get("destination") or "riverhog") != "riverhog":
+        return False
+    if not riverhog_config_enabled(job):
+        return False
+    if str(job.get("phase") or "") in RIVERHOG_EAGER_UPLOAD_BLOCKED_PHASES:
+        return False
+    state = job.get("riverhog_session_upload")
+    return not (
+        isinstance(state, dict)
+        and state.get("state") in {"canceled", "archiving", "finalized"}
+    )
 
 
 def all_riverhog_session_files_uploaded(job: dict[str, Any]) -> bool:
@@ -7389,19 +7423,7 @@ def riverhog_eager_upload_candidate_jobs() -> list[dict[str, Any]]:
         return []
     candidates: list[dict[str, Any]] = []
     for job in job_states():
-        if job.get("state") != "running" or job.get("cancel_requested"):
-            continue
-        if str(job.get("workflow_mode") or "collection_archive") != "collection_archive":
-            continue
-        collection_archive = dict_or_empty(job.get("collection_archive"))
-        if str(collection_archive.get("destination") or "riverhog") != "riverhog":
-            continue
-        if not riverhog_config_enabled(job):
-            continue
-        if str(job.get("phase") or "") == "riverhog_upload":
-            continue
-        state = job.get("riverhog_session_upload")
-        if isinstance(state, dict) and state.get("state") in {"canceled", "archiving", "finalized"}:
+        if not riverhog_eager_upload_allowed(job):
             continue
         if eager_riverhog_artifact_paths(job):
             candidates.append(job)
@@ -7421,6 +7443,16 @@ def riverhog_upload_loop() -> None:
             log.info("riverhog eager upload worker noticed cancellation: %s", exc)
         except Exception:
             log.exception("riverhog eager upload worker failed")
+
+
+def wait_for_riverhog_eager_upload_quiescent(job: dict[str, Any]) -> None:
+    if not riverhog_config_enabled(job):
+        return
+    job_id = str(job.get("job_id") or "")
+    if not job_id:
+        return
+    with riverhog_upload_call_lock(job_id):
+        return
 
 
 def cancel_riverhog_upload_session(job: dict[str, Any], *, reason: str) -> None:
@@ -9646,6 +9678,7 @@ def run_job(job_id: str) -> None:
         input_upload = load_input_upload(str(job["input_upload_id"]))
         job["phase"] = "metadata_projection"
         save_job(job)
+        wait_for_riverhog_eager_upload_quiescent(job)
         input_upload = write_metadata_projection_sidecars(job, input_upload, groups, archive_dir)
         raise_if_job_cancelled(job_id)
         if isinstance(job.get("profile_routing"), dict):

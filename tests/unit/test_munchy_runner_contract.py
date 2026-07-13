@@ -5577,6 +5577,97 @@ def test_eager_riverhog_upload_can_be_bounded_per_tick(
     assert uploaded == ["a.webm"]
 
 
+def test_stale_eager_riverhog_upload_stops_at_metadata_projection(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+
+    archive_dir = tmp_path / "archive"
+    output = archive_dir / "camera" / "a.webm"
+    output.parent.mkdir(parents=True)
+    output.write_bytes(b"a")
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "state": "running",
+            "phase": "metadata_projection",
+            "riverhog": {"enabled": True},
+            "riverhog_session_upload": {
+                "state": "open",
+                "collection_id": "2026/20260101T000000Z__camera-archive",
+                "files": {},
+            },
+            "eager_archive": {
+                "files": {
+                    "camera/a.mp4": {"state": "encoded", "output": str(output)},
+                },
+            },
+        }
+    )
+    stale_worker_job = {
+        "job_id": "job-1",
+        "state": "running",
+        "phase": "eager_archive:pipeline=3/3",
+        "riverhog": {"enabled": True},
+        "riverhog_session_upload": {
+            "state": "open",
+            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "files": {},
+        },
+        "eager_archive": {
+            "files": {
+                "camera/a.mp4": {"state": "encoded", "output": str(output)},
+            },
+        },
+    }
+
+    def fail_api_client() -> object:
+        raise AssertionError("stale eager upload should not create a Riverhog client")
+
+    monkeypatch.setattr(runner, "ApiClient", fail_api_client)
+
+    result = runner.upload_riverhog_artifacts(stale_worker_job, archive_dir, final=False)
+
+    assert result == {
+        "processed_files": 0,
+        "uploaded_files": 0,
+        "uploaded_bytes": 0,
+        "elapsed_seconds": 0.0,
+    }
+    assert output.exists()
+
+
+def test_metadata_projection_waits_for_inflight_eager_riverhog_upload(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    job = {"job_id": "job-1", "riverhog": {"enabled": True}}
+    upload_lock = runner.riverhog_upload_call_lock("job-1")
+    finished = threading.Event()
+
+    upload_lock.acquire()
+    try:
+        waiter = threading.Thread(
+            target=lambda: (
+                runner.wait_for_riverhog_eager_upload_quiescent(job),
+                finished.set(),
+            )
+        )
+        waiter.start()
+        assert not finished.wait(0.05)
+    finally:
+        upload_lock.release()
+    waiter.join(timeout=2)
+
+    assert finished.is_set()
+
+
 def test_eager_riverhog_upload_can_be_bounded_by_bytes(
     tmp_path: Path,
     monkeypatch,
