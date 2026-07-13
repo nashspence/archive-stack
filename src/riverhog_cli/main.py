@@ -27,14 +27,24 @@ from riverhog_cli.output import (
     format_hot_evict,
 )
 from riverhog_cli.upload_progress import CollectionUploadProgress, make_collection_upload_progress
+from riverhog_core.config_yaml import ConfigError
 from riverhog_core.domain.errors import Conflict, NotFound, RiverhogError, ServiceUnavailable
+from riverhog_core.mount_markers import (
+    DEFAULT_MARKER_NAME,
+    DEFAULT_ROUTES_FILENAME,
+    load_mount_marker_actions,
+    render_mount_marker_triggers,
+    write_mount_marker,
+)
 
 app = typer.Typer(help="Riverhog collection and hot-storage CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
 fetch_app = typer.Typer(help="Named fetch manifest operations.")
 hot_app = typer.Typer(help="Hot-storage operations.")
+mount_marker_app = typer.Typer(help="Mount-marker route and marker operations.")
 app.add_typer(collection_app, name="collection")
 app.add_typer(hot_app, name="hot")
+app.add_typer(mount_marker_app, name="mount-marker")
 hot_app.add_typer(fetch_app, name="fetch")
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
@@ -1326,6 +1336,76 @@ def find_cmd(
     emit(payload if json_mode else format_find(payload), json_mode=json_mode)
 
 
+@mount_marker_app.command("list")
+def mount_marker_list_cmd(
+    config: Annotated[
+        Path,
+        typer.Option("--config", help="Mount-marker route YAML file."),
+    ] = Path(DEFAULT_ROUTES_FILENAME),
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """List configured mount-marker routes."""
+
+    actions = load_mount_marker_actions(config)
+    payload = [
+        {"route": action.marker, "script": action.script, "args": list(action.args)}
+        for action in actions
+    ]
+    if json_mode:
+        emit(payload, json_mode=True)
+        return
+    for action in actions:
+        args = " ".join(action.args)
+        suffix = f" {args}" if args else ""
+        typer.echo(f"{action.marker}: {action.script}{suffix}")
+
+
+@mount_marker_app.command("render")
+def mount_marker_render_cmd(
+    config: Annotated[
+        Path,
+        typer.Option("--config", help="Mount-marker route YAML file."),
+    ] = Path(DEFAULT_ROUTES_FILENAME),
+    dest_dir: Annotated[
+        Path,
+        typer.Option("--dest-dir", help="Directory where trigger scripts are written."),
+    ] = Path("mount-triggers"),
+    scripts_dir: Annotated[
+        Path,
+        typer.Option("--scripts-dir", help="Directory containing action scripts."),
+    ] = Path("scripts"),
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Render executable trigger scripts from mount-marker routes."""
+
+    written = render_mount_marker_triggers(config, dest_dir, scripts_dir)
+    payload = [str(path) for path in written]
+    emit(payload if json_mode else "\n".join(payload), json_mode=json_mode)
+
+
+@mount_marker_app.command("write")
+def mount_marker_write_cmd(
+    route: Annotated[str, typer.Argument(help="Configured mount-marker route key.")],
+    mount_point: Annotated[Path, typer.Argument(help="Mounted volume root.")],
+    config: Annotated[
+        Path,
+        typer.Option("--config", help="Mount-marker route YAML file."),
+    ] = Path(DEFAULT_ROUTES_FILENAME),
+    marker_name: Annotated[
+        str,
+        typer.Option("--marker-name", help="Marker file name written at the mount root."),
+    ] = DEFAULT_MARKER_NAME,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Replace a different marker value."),
+    ] = False,
+) -> None:
+    """Write a mount-marker file to a mounted volume."""
+
+    marker = write_mount_marker(config, route, mount_point, marker_name=marker_name, force=force)
+    typer.echo(marker)
+
+
 @collection_app.command("show")
 def show_cmd(
     collection: Annotated[str, typer.Argument(help="Collection id")],
@@ -1535,6 +1615,8 @@ def _error_code(exc: BaseException) -> str:
         return "transport_error"
     if isinstance(exc, RiverhogError):
         return exc.code
+    if isinstance(exc, ConfigError):
+        return "config_error"
     return "error"
 
 
@@ -1563,7 +1645,14 @@ def _emit_cli_error(exc: BaseException, *, json_mode: bool) -> None:
 def main() -> None:
     try:
         app()
-    except (httpx.TransportError, RiverhogError) as exc:
+    except (
+        httpx.TransportError,
+        RiverhogError,
+        ConfigError,
+        FileExistsError,
+        FileNotFoundError,
+        NotADirectoryError,
+    ) as exc:
         _emit_cli_error(exc, json_mode=_json_requested(sys.argv[1:]))
         raise typer.Exit(1) from None
 

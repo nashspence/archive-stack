@@ -18,8 +18,10 @@ def test_riverhog_help() -> None:
     assert "Search collection file targets." in result.stdout
     assert "Collection catalog and upload operations." in result.stdout
     assert "Hot-storage operations." in result.stdout
+    assert "Mount-marker route and marker operations." in result.stdout
     assert "collection" in result.stdout
     assert "hot" in result.stdout
+    assert "mount-marker" in result.stdout
 
 
 def test_riverhog_command_help_has_summaries() -> None:
@@ -56,6 +58,15 @@ def test_riverhog_command_help_has_summaries() -> None:
     ):
         assert summary in fetch.stdout
     assert "cloud-fetch" not in fetch.stdout
+
+    mount_marker = runner.invoke(riverhog_app, ["mount-marker", "--help"])
+    assert mount_marker.exit_code == 0
+    for summary in (
+        "List configured mount-marker routes.",
+        "Render executable trigger scripts from mount-marker routes.",
+        "Write a mount-marker file to a mounted volume.",
+    ):
+        assert summary in mount_marker.stdout
 
 
 def test_djdan_help() -> None:

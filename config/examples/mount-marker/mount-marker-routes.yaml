@@ -1,0 +1,10 @@
+schema_version: 1
+kind: riverhog.mount_marker_routes
+routes:
+  example-camera-card:
+    script: fake-archive-device
+    args:
+      - example-camera
+  disabled-example:
+    enabled: false
+    script: fake-archive-device

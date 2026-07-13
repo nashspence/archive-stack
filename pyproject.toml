@@ -72,6 +72,8 @@ packages = [
 [tool.hatch.build.targets.wheel.force-include]
 "contracts/webhooks/operator-notifications.v1.json" = "riverhog_core/contracts/webhooks/operator-notifications.v1.json"
 "contracts/terminology/user-facing-terms.v1.json" = "riverhog_core/contracts/terminology/user-facing-terms.v1.json"
+"macos/mount-marker/io.github.nashspence.riverhog.mount-marker.plist" = "riverhog_core/macos/mount-marker/io.github.nashspence.riverhog.mount-marker.plist"
+"macos/mount-marker/mount-marker.swift" = "riverhog_core/macos/mount-marker/mount-marker.swift"
 "src/riverhog_core/py.typed" = "riverhog_core/py.typed"
 
 [tool.ruff]
