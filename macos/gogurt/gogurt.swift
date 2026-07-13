@@ -4,14 +4,14 @@ import Foundation
 let env = ProcessInfo.processInfo.environment
 
 let markerName: String = {
-    if let override = env["RIVERHOG_MOUNT_MARKER_NAME"], !override.isEmpty {
+    if let override = env["GOGURT_MARKER_NAME"], !override.isEmpty {
         return override
     }
-    return ".riverhog.mount-marker"
+    return ".gogurt"
 }()
 
 let triggersDir: String = {
-    if let override = env["RIVERHOG_MOUNT_MARKER_TRIGGERS_DIR"], !override.isEmpty {
+    if let override = env["GOGURT_TRIGGERS_DIR"], !override.isEmpty {
         return override
     }
 
@@ -19,8 +19,8 @@ let triggersDir: String = {
     let url = home
         .appendingPathComponent("Library")
         .appendingPathComponent("Application Support")
-        .appendingPathComponent("riverhog")
-        .appendingPathComponent("mount-triggers")
+        .appendingPathComponent("gogurt")
+        .appendingPathComponent("triggers")
     try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url.path
 }()
@@ -49,11 +49,11 @@ func maybeRun(for volumeURL: URL) {
     let scriptURL = URL(fileURLWithPath: triggersDir).appendingPathComponent(name)
     let prog = scriptURL.path
     guard FileManager.default.isExecutableFile(atPath: prog) else {
-        warn("Executable not found: \(prog)")
+        warn("Gogurt trigger is not executable: \(prog)")
         return
     }
 
-    log("Mount: \(volumeURL.path) -> \(prog)")
+    log("🛹 gogurt mount: \(volumeURL.path) -> \(prog)")
 
     let script = """
     tell application \"Terminal\"
@@ -78,12 +78,12 @@ token = nc.addObserver(forName: NSWorkspace.didMountNotification,
     let uAny = note.userInfo?[NSWorkspace.volumeURLUserInfoKey] ??
                note.userInfo?["NSWorkspaceVolumeURLKey"]
     if let url = uAny as? URL {
-        log("DidMount: \(url.path)")
+        log("🛹 gogurt observed mount: \(url.path)")
         maybeRun(for: url)
     } else {
         warn("DidMount without URL in userInfo")
     }
 }
 
-log("mount marker listener started (pid \(getpid())) marker: \(markerName) triggers: \(triggersDir)")
+log("🛹 gogurt listener started (pid \(getpid())) marker: \(markerName) triggers: \(triggersDir)")
 RunLoop.main.run()

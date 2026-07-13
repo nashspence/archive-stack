@@ -4,16 +4,16 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>io.github.nashspence.riverhog.mount-marker</string>
+  <string>io.github.nashspence.gogurt</string>
   <key>ProgramArguments</key>
   <array>
-    <string>__AGENT_ROOT__/bin/mount-marker</string>
+    <string>__AGENT_ROOT__/bin/gogurt-listener</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>RIVERHOG_MOUNT_MARKER_NAME</key>
+    <key>GOGURT_MARKER_NAME</key>
     <string>__MARKER_NAME__</string>
-    <key>RIVERHOG_MOUNT_MARKER_TRIGGERS_DIR</key>
+    <key>GOGURT_TRIGGERS_DIR</key>
     <string>__TRIGGERS_DIR__</string>
   </dict>
   <key>RunAtLoad</key>
@@ -21,8 +21,8 @@
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>__LOG_DIR__/mount-marker.out.log</string>
+  <string>__LOG_DIR__/gogurt.out.log</string>
   <key>StandardErrorPath</key>
-  <string>__LOG_DIR__/mount-marker.err.log</string>
+  <string>__LOG_DIR__/gogurt.err.log</string>
 </dict>
 </plist>

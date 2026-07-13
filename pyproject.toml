@@ -56,11 +56,13 @@ riverhog = "riverhog_cli.main:main"
 munchy = "munchy_cli.main:main"
 djdan = "djdan.main:main"
 jeb = "jeb.cli:main"
+gogurt = "gogurt.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = [
   "src/munchy",
   "src/munchy_cli",
+  "src/gogurt",
   "src/jeb",
   "src/riverhog_age",
   "src/riverhog_api",
@@ -72,8 +74,9 @@ packages = [
 [tool.hatch.build.targets.wheel.force-include]
 "contracts/webhooks/operator-notifications.v1.json" = "riverhog_core/contracts/webhooks/operator-notifications.v1.json"
 "contracts/terminology/user-facing-terms.v1.json" = "riverhog_core/contracts/terminology/user-facing-terms.v1.json"
-"macos/mount-marker/io.github.nashspence.riverhog.mount-marker.plist" = "riverhog_core/macos/mount-marker/io.github.nashspence.riverhog.mount-marker.plist"
-"macos/mount-marker/mount-marker.swift" = "riverhog_core/macos/mount-marker/mount-marker.swift"
+"macos/gogurt/io.github.nashspence.gogurt.plist" = "gogurt/macos/io.github.nashspence.gogurt.plist"
+"macos/gogurt/gogurt.swift" = "gogurt/macos/gogurt.swift"
+"src/gogurt/py.typed" = "gogurt/py.typed"
 "src/riverhog_core/py.typed" = "riverhog_core/py.typed"
 
 [tool.ruff]

@@ -53,8 +53,8 @@ behavior. If the spec lane is running and source must change, run
   `docs/explanation/codebase-layout.md`.
 - API/config/domain references: `docs/reference/api.md`,
   `docs/reference/configuration.md`, and `docs/reference/domain-model.md`.
-- Munchy/Jeb/mount-marker boundaries: `docs/reference/munchy.md`,
-  `docs/reference/jeb.md`, and `docs/reference/mount-markers.md`.
+- Munchy/Jeb/Gogurt boundaries: `docs/reference/munchy.md`,
+  `docs/reference/jeb.md`, and `docs/reference/gogurt.md`.
 - Acceptance and local stack workflows: `docs/how-to/run-acceptance-tests.md`
   and `docs/how-to/run-the-compose-stack.md`.
 - Architecture decisions: `docs/adr/README.md`.

@@ -58,7 +58,7 @@ They are generated deployment exports for Docker image installs.
 Use focused selectors while iterating:
 
 ```bash
-make unit TESTS=tests/unit/test_mount_markers.py
+make unit TESTS=tests/unit/test_gogurt.py
 make unit args='tests/unit/test_jeb_collector.py -k preflight'
 ```
 
@@ -71,6 +71,6 @@ make unit args='tests/unit/test_jeb_collector.py -k preflight'
 | Riverhog API, configuration, and domain model | [docs/reference/api.md](docs/reference/api.md), [docs/reference/configuration.md](docs/reference/configuration.md), [docs/reference/domain-model.md](docs/reference/domain-model.md) |
 | Munchy ingest, reusable device profiles, and review sweeps | [docs/reference/munchy.md](docs/reference/munchy.md) |
 | Jeb watched-drop collection and the Jeb/Munchy boundary | [docs/reference/jeb.md](docs/reference/jeb.md) |
-| Mount-marker route config and macOS listener contract | [docs/reference/mount-markers.md](docs/reference/mount-markers.md) |
+| Gogurt route config and macOS listener contract | [docs/reference/gogurt.md](docs/reference/gogurt.md) |
 | Djdan and optical-media recovery | [docs/reference/disc.md](docs/reference/disc.md), [docs/how-to/run-a-guided-burn-session.md](docs/how-to/run-a-guided-burn-session.md), [docs/how-to/fulfill-a-fetch-from-optical-media.md](docs/how-to/fulfill-a-fetch-from-optical-media.md) |
 | Architecture decisions | [docs/adr/README.md](docs/adr/README.md) |

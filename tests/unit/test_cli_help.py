@@ -4,6 +4,7 @@ import pytest
 from typer.testing import CliRunner
 
 from djdan.main import app as disc_app
+from gogurt.cli import app as gogurt_app
 from jeb.cli import main as jeb_main
 from munchy_cli.main import app as munchy_app
 from riverhog_cli.main import app as riverhog_app
@@ -18,10 +19,8 @@ def test_riverhog_help() -> None:
     assert "Search collection file targets." in result.stdout
     assert "Collection catalog and upload operations." in result.stdout
     assert "Hot-storage operations." in result.stdout
-    assert "Mount-marker route and marker operations." in result.stdout
     assert "collection" in result.stdout
     assert "hot" in result.stdout
-    assert "mount-marker" in result.stdout
 
 
 def test_riverhog_command_help_has_summaries() -> None:
@@ -59,14 +58,29 @@ def test_riverhog_command_help_has_summaries() -> None:
         assert summary in fetch.stdout
     assert "cloud-fetch" not in fetch.stdout
 
-    mount_marker = runner.invoke(riverhog_app, ["mount-marker", "--help"])
-    assert mount_marker.exit_code == 0
+
+def test_gogurt_help() -> None:
+    result = runner.invoke(gogurt_app, ["--help"])
+    assert result.exit_code == 0
+    assert "Gogurt route and trigger utility." in result.stdout
+
     for summary in (
-        "List configured mount-marker routes.",
-        "Render executable trigger scripts from mount-marker routes.",
-        "Write a mount-marker file to a mounted volume.",
+        "List configured Gogurt routes.",
+        "Render executable trigger scripts from Gogurt routes.",
+        "Write a Gogurt marker file to a mounted volume.",
     ):
-        assert summary in mount_marker.stdout
+        assert summary in result.stdout
+
+
+def test_gogurt_command_help_has_summaries() -> None:
+    for command, summary in (
+        ("list", "List configured Gogurt routes."),
+        ("render", "Render executable trigger scripts from Gogurt routes."),
+        ("write", "Write a Gogurt marker file to a mounted volume."),
+    ):
+        command_help = runner.invoke(gogurt_app, [command, "--help"])
+        assert command_help.exit_code == 0
+        assert summary in command_help.stdout
 
 
 def test_djdan_help() -> None:
