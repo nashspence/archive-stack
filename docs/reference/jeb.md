@@ -129,6 +129,8 @@ complete generic env example.
 
 ```sh
 jeb check-config
+jeb status
+jeb batches
 jeb once
 jeb run
 jeb archive-now --account example-camera
@@ -136,6 +138,26 @@ jeb archive-now --account example-camera
 
 `archive-now` starts an immediate account batch for currently eligible files.
 Use `--no-process` to create the batch without processing it in the same command.
+
+`status` is read-only and summarizes configured accounts, eligible source
+backlog, batch state counts, active attempts, recent failures, and routing
+preflight failures. Use `--json` for compact machine-readable output, or
+`--no-backlog` to skip source directory scans.
+
+`batches` is read-only and lists batch attempts, which are the operational
+records that move through active, retry, failure, and cleanup states. It follows
+the Riverhog CLI family paging shape:
+
+```sh
+jeb batches --page 1 --per-page 25 --sort updated_at --order desc
+jeb batches --terminal all --account example-camera --json
+jeb batches --state cleanup_failed --query failed
+```
+
+Supported batch filters include `--terminal active|terminal|all`, `--state`,
+`--account`, `--collection`, `--target`, and `--query`/`-q`. Supported sort
+fields are `updated_at`, `created_at`, `collection`, `collection_timestamp`,
+`target`, `state`, `file_count`, `bytes`, `attempt`, and `job_id`.
 
 ## Health
 

@@ -10,6 +10,7 @@ import shutil
 import sqlite3
 import subprocess
 import time
+from collections import defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -72,6 +73,20 @@ from riverhog_core.webhooks import (
 LOG = logging.getLogger("jeb")
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 TERMINAL_STATES = {"target_succeeded", "cleanup_done", "superseded"}
+BATCH_LIST_SORT_FIELDS = frozenset(
+    {
+        "attempt",
+        "bytes",
+        "collection",
+        "collection_timestamp",
+        "created_at",
+        "file_count",
+        "job_id",
+        "state",
+        "target",
+        "updated_at",
+    }
+)
 TRANSIENT_RETRY_INITIAL_SECONDS = 1.0
 TRANSIENT_RETRY_MAX_SECONDS = 300.0
 PREFLIGHT_MEDIA_EXTENSIONS = frozenset(MP4_LIKE_EXTENSIONS | {".mkv", ".webm"})
@@ -204,6 +219,10 @@ def normalize_posix(path: str | PurePosixPath) -> str:
     if rel.is_absolute() or any(part in {"", ".", ".."} for part in rel.parts):
         raise ValueError(f"path is not normalized relative POSIX: {path}")
     return rel.as_posix()
+
+
+def sqlite_like_literal(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -665,6 +684,369 @@ class Collector:
 
     def active_batch_ids(self) -> list[str]:
         return [str(row["id"]) for row in self.active_batches()]
+
+    def list_batches(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        sort: str = "updated_at",
+        order: str = "desc",
+        query: str | None = None,
+        terminal: Literal["active", "terminal", "all"] = "active",
+        state: str | None = None,
+        states: Sequence[str] | None = None,
+        account: str | None = None,
+        collection: str | None = None,
+        target: str | None = None,
+    ) -> dict[str, Any]:
+        if page < 1:
+            raise ValueError("page must be >= 1")
+        if not 1 <= per_page <= 500:
+            raise ValueError("per_page must be between 1 and 500")
+        if sort not in BATCH_LIST_SORT_FIELDS:
+            raise ValueError(
+                "sort must be one of: " + ", ".join(sorted(BATCH_LIST_SORT_FIELDS))
+            )
+        if order not in {"asc", "desc"}:
+            raise ValueError("order must be asc or desc")
+        if terminal not in {"active", "terminal", "all"}:
+            raise ValueError("terminal must be active, terminal, or all")
+        if state is not None and states is not None:
+            raise ValueError("state and states are mutually exclusive")
+
+        clauses: list[str] = []
+        values: list[object] = []
+        if terminal != "all":
+            terminal_placeholders = ", ".join("?" for _ in TERMINAL_STATES)
+            terminal_values = tuple(sorted(TERMINAL_STATES))
+            if terminal == "terminal":
+                clauses.append(f"a.state IN ({terminal_placeholders})")
+            else:
+                clauses.append(f"a.state NOT IN ({terminal_placeholders})")
+            values.extend(terminal_values)
+        if state:
+            clauses.append("a.state = ?")
+            values.append(state)
+        if states:
+            states_tuple = tuple(str(item) for item in states)
+            placeholders = ", ".join("?" for _ in states_tuple)
+            clauses.append(f"a.state IN ({placeholders})")
+            values.extend(states_tuple)
+        if account:
+            try:
+                account_root = self.source_by_id(account).upload_root
+            except KeyError:
+                account_root = account
+            clauses.append(
+                """
+                EXISTS (
+                    SELECT 1
+                    FROM files account_files
+                    WHERE account_files.batch_id = b.id
+                      AND (
+                          account_files.target_path = ?
+                          OR account_files.target_path LIKE ? ESCAPE '\\'
+                      )
+                )
+                """
+            )
+            values.extend((account_root, f"{sqlite_like_literal(account_root)}/%"))
+        if collection:
+            clauses.append("b.collection_id = ?")
+            values.append(collection)
+        if target:
+            clauses.append("b.target_name = ?")
+            values.append(target)
+        if query:
+            like = f"%{sqlite_like_literal(query)}%"
+            clauses.append(
+                """
+                (
+                    a.id LIKE ? ESCAPE '\\'
+                    OR a.batch_id LIKE ? ESCAPE '\\'
+                    OR a.state LIKE ? ESCAPE '\\'
+                    OR a.input_upload_id LIKE ? ESCAPE '\\'
+                    OR a.job_id LIKE ? ESCAPE '\\'
+                    OR b.collection_id LIKE ? ESCAPE '\\'
+                    OR b.collection_slug LIKE ? ESCAPE '\\'
+                    OR b.target_name LIKE ? ESCAPE '\\'
+                    OR b.collection_timestamp LIKE ? ESCAPE '\\'
+                    OR a.last_error LIKE ? ESCAPE '\\'
+                )
+                """
+            )
+            values.extend((like,) * 10)
+
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        grouped_sql = f"""
+            SELECT
+                a.id,
+                a.batch_id,
+                a.attempt_number,
+                a.state,
+                b.collection_id,
+                b.target_name,
+                b.collection_slug,
+                b.collection_timestamp,
+                b.cleanup,
+                b.manifest_digest,
+                a.input_upload_id,
+                a.job_id,
+                a.created_at,
+                a.updated_at,
+                a.last_error,
+                a.notified_error_at,
+                COUNT(f.target_path) AS file_count,
+                COALESCE(SUM(f.bytes), 0) AS total_bytes,
+                COALESCE(
+                    SUM(CASE WHEN af.staged_at IS NOT NULL THEN 1 ELSE 0 END),
+                    0
+                ) AS staged_file_count
+            FROM batch_attempts a
+            JOIN batches b ON b.id = a.batch_id
+            LEFT JOIN files f ON f.batch_id = b.id
+            LEFT JOIN attempt_files af
+              ON af.attempt_id = a.id
+             AND af.target_path = f.target_path
+            {where}
+            GROUP BY a.id
+        """
+        sort_sql = {
+            "attempt": "a.attempt_number",
+            "bytes": "total_bytes",
+            "collection": "b.collection_id",
+            "collection_timestamp": "b.collection_timestamp",
+            "created_at": "a.created_at",
+            "file_count": "file_count",
+            "job_id": "a.job_id",
+            "state": "a.state",
+            "target": "b.target_name",
+            "updated_at": "a.updated_at",
+        }[sort]
+        order_sql = order.upper()
+        offset = (page - 1) * per_page
+        with self.connect() as conn:
+            total_row = conn.execute(
+                f"SELECT COUNT(*) AS total FROM ({grouped_sql}) batch_page",
+                values,
+            ).fetchone()
+            total = int(total_row["total"] if total_row is not None else 0)
+            rows = conn.execute(
+                f"""
+                {grouped_sql}
+                ORDER BY {sort_sql} {order_sql}, a.id {order_sql}
+                LIMIT ? OFFSET ?
+                """,
+                [*values, per_page, offset],
+            ).fetchall()
+            accounts_by_batch = self._accounts_by_batch(
+                conn,
+                [str(row["batch_id"]) for row in rows],
+            )
+
+        batches = [
+            self._batch_summary(row, accounts=accounts_by_batch.get(str(row["batch_id"]), ()))
+            for row in rows
+        ]
+        return {
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "pages": (total + per_page - 1) // per_page if total else 0,
+            "sort": sort,
+            "order": order,
+            "terminal": terminal,
+            "query": query,
+            "filters": {
+                "account": account,
+                "collection": collection,
+                "state": state,
+                "states": list(states) if states is not None else None,
+                "target": target,
+            },
+            "batches": batches,
+        }
+
+    def status_summary(self, *, include_backlog: bool = True) -> dict[str, Any]:
+        state_counts = self.batch_state_counts()
+        total_batches = sum(state_counts.values())
+        terminal_count = sum(
+            count for state, count in state_counts.items() if state in TERMINAL_STATES
+        )
+        active_preflight_failures = [
+            self._routing_preflight_failure_summary(row)
+            for row in self.routing_preflight_failures(state="failed")
+        ]
+        return {
+            "sources": self.source_statuses(include_backlog=include_backlog),
+            "collections": [
+                self._collection_summary(collection) for collection in self.config.collections
+            ],
+            "batches": {
+                "total": total_batches,
+                "active": total_batches - terminal_count,
+                "terminal": terminal_count,
+                "states": state_counts,
+            },
+            "active_attempts": self.list_batches(
+                terminal="active",
+                sort="updated_at",
+                order="desc",
+                page=1,
+                per_page=10,
+            ),
+            "recent_failures": self.list_batches(
+                terminal="all",
+                states=("failed", "failed_notified", "cleanup_failed"),
+                sort="updated_at",
+                order="desc",
+                page=1,
+                per_page=5,
+            ),
+            "routing_preflight_failures": {
+                "total": len(active_preflight_failures),
+                "failures": active_preflight_failures,
+            },
+        }
+
+    def batch_state_counts(self) -> dict[str, int]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT state, COUNT(*) AS count
+                FROM batch_attempts
+                GROUP BY state
+                ORDER BY state
+                """
+            ).fetchall()
+        return {str(row["state"]): int(row["count"]) for row in rows}
+
+    def source_statuses(self, *, include_backlog: bool = True) -> list[dict[str, Any]]:
+        active_preflight_source_ids = self.active_routing_preflight_source_ids()
+        collections_by_source: dict[str, list[str]] = defaultdict(list)
+        for collection in self.config.collections:
+            for source_id in collection.source_ids:
+                collections_by_source[source_id].append(collection.id)
+
+        statuses: list[dict[str, Any]] = []
+        for source in self.config.sources:
+            payload: dict[str, Any] = {
+                "id": source.id,
+                "enabled": source.enabled,
+                "path": str(source.path),
+                "path_exists": source.path.exists(),
+                "upload_root": source.upload_root,
+                "stable_seconds": source.stable_seconds,
+                "include_extensions": sorted(source.include_extensions),
+                "collections": sorted(collections_by_source.get(source.id, ())),
+                "routing_preflight_failed": source.id in active_preflight_source_ids,
+            }
+            if include_backlog:
+                try:
+                    eligible = self.eligible_files(source)
+                except Exception as exc:
+                    payload["eligible_error"] = str(exc)
+                else:
+                    payload["eligible_files"] = len(eligible)
+                    payload["eligible_bytes"] = sum(item.bytes for item in eligible)
+            statuses.append(payload)
+        return statuses
+
+    def _accounts_by_batch(
+        self,
+        conn: sqlite3.Connection,
+        batch_ids: Sequence[str],
+    ) -> dict[str, tuple[str, ...]]:
+        if not batch_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in batch_ids)
+        rows = conn.execute(
+            f"""
+            SELECT batch_id, target_path
+            FROM files
+            WHERE batch_id IN ({placeholders})
+            ORDER BY target_path
+            """,
+            tuple(batch_ids),
+        ).fetchall()
+        target_paths_by_batch: dict[str, list[str]] = defaultdict(list)
+        for row in rows:
+            target_paths_by_batch[str(row["batch_id"])].append(str(row["target_path"]))
+        return {
+            batch_id: self._account_ids_for_target_paths(paths)
+            for batch_id, paths in target_paths_by_batch.items()
+        }
+
+    def _account_ids_for_target_paths(self, paths: Sequence[str]) -> tuple[str, ...]:
+        accounts: set[str] = set()
+        configured_roots = {
+            source.id: source.upload_root.rstrip("/") for source in self.config.sources
+        }
+        for target_path in paths:
+            for source_id, upload_root in configured_roots.items():
+                if target_path == upload_root or target_path.startswith(f"{upload_root}/"):
+                    accounts.add(source_id)
+                    break
+            else:
+                first_part = PurePosixPath(target_path).parts[0]
+                if first_part:
+                    accounts.add(first_part)
+        return tuple(sorted(accounts))
+
+    def _batch_summary(self, row: sqlite3.Row, *, accounts: Sequence[str]) -> dict[str, Any]:
+        return {
+            "id": str(row["id"]),
+            "attempt_id": str(row["id"]),
+            "batch_id": str(row["batch_id"]),
+            "attempt_number": int(row["attempt_number"]),
+            "state": str(row["state"]),
+            "accounts": list(accounts),
+            "collection_id": str(row["collection_id"]),
+            "target_name": str(row["target_name"]),
+            "collection_slug": str(row["collection_slug"]),
+            "collection_timestamp": str(row["collection_timestamp"]),
+            "cleanup": str(row["cleanup"]),
+            "manifest_digest": str(row["manifest_digest"]),
+            "input_upload_id": row["input_upload_id"],
+            "job_id": row["job_id"],
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+            "last_error": row["last_error"],
+            "notified_error_at": row["notified_error_at"],
+            "file_count": int(row["file_count"]),
+            "total_bytes": int(row["total_bytes"]),
+            "staged_file_count": int(row["staged_file_count"]),
+        }
+
+    def _collection_summary(self, collection: CollectionConfig) -> dict[str, Any]:
+        return {
+            "id": collection.id,
+            "enabled": collection.enabled,
+            "collection_slug": collection.collection_slug,
+            "target": collection.target,
+            "cleanup": collection.cleanup,
+            "cadence": collection.cadence,
+            "source_ids": list(collection.source_ids),
+            "threshold_bytes": collection.threshold_bytes,
+        }
+
+    def _routing_preflight_failure_summary(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "source_id": str(row["source_id"]),
+            "state": str(row["state"]),
+            "failure_kind": str(row["failure_kind"]),
+            "collection_id": str(row["collection_id"]),
+            "collection_slug": str(row["collection_slug"]),
+            "target_name": str(row["target_name"]),
+            "file_count": int(row["file_count"]),
+            "total_bytes": int(row["total_bytes"]),
+            "unmatched_count": int(row["unmatched_count"]),
+            "first_seen_at": str(row["first_seen_at"]),
+            "last_seen_at": str(row["last_seen_at"]),
+            "updated_at": str(row["updated_at"]),
+            "message": str(row["message"]),
+        }
 
     def source_by_id(self, source_id: str) -> SourceConfig:
         for source in self.config.sources:
