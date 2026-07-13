@@ -16,6 +16,8 @@ from riverhog_cli.output import (
     format_hot_evict,
     format_image,
     format_images,
+    format_jeb_batches,
+    format_jeb_status,
     format_recovery_session,
     format_recovery_sessions,
 )
@@ -484,6 +486,130 @@ def test_format_fetches_uses_compact_fetch_table(monkeypatch: pytest.MonkeyPatch
     row_line = next(line for line in rendered.splitlines() if "fx-1" in line)
     assert header_line.index("Fetch") < header_line.index("Targets")
     assert row_line.index("fx-1") < row_line.index("docs/tax/2022/invoice-123.pdf")
+
+
+def test_format_jeb_batches_uses_compact_operator_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    rendered = _render_styled(
+        format_jeb_batches(
+            {
+                "page": 1,
+                "pages": 3,
+                "per_page": 25,
+                "total": 51,
+                "sort": "updated_at",
+                "order": "desc",
+                "terminal": "all",
+                "filters": {"account": "camera"},
+                "batches": [
+                    {
+                        "attempt_id": "20260713T010203Z__camera__abc123",
+                        "accounts": ["camera"],
+                        "collection_id": "camera",
+                        "state": "cleanup_done",
+                        "file_count": 8,
+                        "total_bytes": 1200,
+                        "cleanup": "after_target_success",
+                        "updated_at": "2026-07-13T01:10:00Z",
+                    }
+                ],
+            }
+        )
+    )
+
+    assert "jeb batches page 1/3" in rendered
+    assert "20260713T010203Z__camera__abc123" in rendered
+    assert "cleanup_done" in rendered
+    assert "38;2;142;201;204" in rendered
+
+
+def test_format_jeb_status_uses_summary_sources_and_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    rendered = _render(
+        format_jeb_status(
+            {
+                "sources": [
+                    {
+                        "id": "camera",
+                        "enabled": True,
+                        "path_exists": True,
+                        "routing_preflight_failed": False,
+                        "eligible_files": 2,
+                        "eligible_bytes": 2048,
+                        "collections": ["camera"],
+                    }
+                ],
+                "collections": [{"id": "camera", "enabled": True}],
+                "batches": {
+                    "total": 4,
+                    "active": 1,
+                    "terminal": 3,
+                    "states": {"munchy_uploaded": 1, "cleanup_done": 3},
+                },
+                "active_operation": {
+                    "id": "op-1",
+                    "operation": "archive-now",
+                    "account": "camera",
+                    "batch_id": "batch-1",
+                },
+                "active_attempts": {
+                    "total": 1,
+                    "batches": [
+                        {
+                            "attempt_id": "batch-1",
+                            "accounts": ["camera"],
+                            "collection_id": "camera",
+                            "state": "munchy_uploaded",
+                            "file_count": 2,
+                            "total_bytes": 2048,
+                            "updated_at": "2026-07-13T01:10:00Z",
+                        }
+                    ],
+                },
+                "recent_failures": {"total": 0, "batches": []},
+                "routing_preflight_failures": {"total": 0, "failures": []},
+            }
+        )
+    )
+
+    assert "jeb status" in rendered
+    assert "active operation" in rendered
+    assert "archive-now" in rendered
+    assert "camera" in rendered
+    assert "munchy_uploaded" in rendered
+
+
+def test_format_jeb_batches_can_fall_back_to_plain_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
+
+    rendered = format_jeb_batches(
+        {
+            "page": 1,
+            "pages": 0,
+            "per_page": 25,
+            "total": 0,
+            "sort": "updated_at",
+            "order": "desc",
+            "terminal": "active",
+            "filters": {},
+            "batches": [],
+        }
+    )
+
+    assert rendered == (
+        "jeb batches: page 1/0 per_page=25 total=0 "
+        "sort=updated_at order=desc terminal=active\n- none"
+    )
 
 
 def test_format_discs_uses_compact_disc_table(monkeypatch: pytest.MonkeyPatch) -> None:

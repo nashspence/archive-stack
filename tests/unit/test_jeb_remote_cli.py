@@ -67,6 +67,7 @@ def test_jeb_remote_cli_calls_api_for_status(capsys, monkeypatch) -> None:  # ty
 def test_jeb_remote_cli_calls_api_for_batches(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     fake = FakeJebApi()
     monkeypatch.setattr(jeb_cli, "client", lambda: fake)
+    monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
 
     assert jeb_cli.main(["batches", "--terminal", "all", "--account", "camera"]) == 0
 
@@ -87,12 +88,13 @@ def test_jeb_remote_cli_calls_api_for_batches(capsys, monkeypatch) -> None:  # t
             },
         )
     ]
-    assert "batches page 1/0" in capsys.readouterr().out
+    assert "jeb batches: page 1/0" in capsys.readouterr().out
 
 
 def test_jeb_remote_cli_calls_api_for_actions(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     fake = FakeJebApi()
     monkeypatch.setattr(jeb_cli, "client", lambda: fake)
+    monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
 
     assert jeb_cli.main(["check-config"]) == 0
     assert jeb_cli.main(["once"]) == 0
@@ -104,19 +106,26 @@ def test_jeb_remote_cli_calls_api_for_actions(capsys, monkeypatch) -> None:  # t
         ("archive-now", {"account": "camera", "process": False}),
     ]
     output = capsys.readouterr().out
-    assert "ok: 2 sources" in output
-    assert "ok: scheduler pass started: op-once" in output
-    assert "archive batch staged for account camera: batch-1" in output
+    assert "jeb config" in output
+    assert "sources: 2" in output
+    assert "jeb scheduler pass" in output
+    assert "operation id: op-once" in output
+    assert "jeb archive" in output
+    assert "account: camera" in output
+    assert "batch: batch-1" in output
 
 
 def test_jeb_remote_cli_reports_started_archive_operation(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     fake = FakeJebApi()
     monkeypatch.setattr(jeb_cli, "client", lambda: fake)
+    monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
 
     assert jeb_cli.main(["archive-now", "--account", "camera"]) == 0
 
     assert fake.calls == [("archive-now", {"account": "camera", "process": True})]
-    assert (
-        "archive operation started for account camera: batch batch-1 operation op-archive"
-        in capsys.readouterr().out
-    )
+    output = capsys.readouterr().out
+    assert "jeb archive" in output
+    assert "status: started" in output
+    assert "account: camera" in output
+    assert "batch: batch-1" in output
+    assert "operation id: op-archive" in output

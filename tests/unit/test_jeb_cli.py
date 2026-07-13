@@ -36,11 +36,15 @@ def test_jeb_archive_now_starts_batch_without_processing(
     env = jeb_env(tmp_path)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
+    monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
     write_stable_file(tmp_path / "landing" / "phone" / "note.txt")
 
     assert jeb_main(["archive-now", "--account", "phone", "--no-process"]) == 0
 
-    assert "archive attempt started for account phone" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "jeb archive" in output
+    assert "status: staged" in output
+    assert "account: phone" in output
     collector = Collector(config_from_env(env))
     collector.init_db()
     [batch_id] = collector.active_batch_ids()
@@ -67,10 +71,13 @@ def test_jeb_check_config_reads_env(tmp_path: Path, capsys, monkeypatch) -> None
     env = jeb_env(tmp_path)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
+    monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
 
     assert jeb_main(["check-config"]) == 0
 
-    assert "ok: 1 sources" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "jeb config" in output
+    assert "sources: 1" in output
 
 
 def test_jeb_batches_json_pages_sorts_and_filters(

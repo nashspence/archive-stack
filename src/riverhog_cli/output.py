@@ -4,7 +4,7 @@ import json
 import os
 import sys
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import typer
 
@@ -1131,6 +1131,375 @@ def format_fetches(payload: Mapping[str, Any]) -> Any:
     if not table.rows:
         table.add_row("none", "", "", "", "", "", "")
     return RichGroup(_page_text("fetches", payload), table)
+
+
+def _jeb_preview(value: object, *, limit: int = 160) -> str:
+    text = str(value or "").replace("\n", " ").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
+def _mapping_items(value: object) -> list[Mapping[str, Any]]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return [cast(Mapping[str, Any], item) for item in value if isinstance(item, Mapping)]
+
+
+def _optional_mapping(value: object) -> Mapping[str, Any]:
+    return cast(Mapping[str, Any], value) if isinstance(value, Mapping) else {}
+
+
+def _jeb_account_text(batch: Mapping[str, Any]) -> str:
+    accounts = _string_items(batch.get("accounts"))
+    return ",".join(accounts) if accounts else "-"
+
+
+def _jeb_state_counts_text(counts: Mapping[str, Any]) -> str:
+    if not counts:
+        return "none"
+    return ", ".join(f"{state}={counts[state]}" for state in sorted(counts))
+
+
+def _jeb_filters_text(payload: Mapping[str, Any]) -> str:
+    filters = _optional_mapping(payload.get("filters"))
+    active_filters = [
+        f"{key}={value}" for key, value in filters.items() if value not in (None, [], "")
+    ]
+    return "  ".join(active_filters)
+
+
+def _jeb_batch_plain_line(batch: Mapping[str, Any]) -> str:
+    parts = [
+        str(batch.get("attempt_id") or batch.get("id") or "unknown"),
+        f"account={_jeb_account_text(batch)}",
+        f"collection={batch.get('collection_id') or '-'}",
+        f"state={batch.get('state') or 'unknown'}",
+        f"files={batch.get('file_count', 0)}",
+        f"bytes={_bytes_text(batch.get('total_bytes', 0))}",
+        f"cleanup={batch.get('cleanup') or '-'}",
+    ]
+    if batch.get("job_id"):
+        parts.append(f"job={batch.get('job_id')}")
+    if batch.get("updated_at"):
+        parts.append(f"updated={batch.get('updated_at')}")
+    if batch.get("last_error"):
+        parts.append(f"error={_jeb_preview(batch.get('last_error'))}")
+    return "  ".join(parts)
+
+
+def _format_jeb_batches_plain(payload: Mapping[str, Any]) -> str:
+    header = (
+        f"jeb batches: page {payload.get('page', 1)}/{payload.get('pages', 0)} "
+        f"per_page={payload.get('per_page', 25)} "
+        f"total={payload.get('total', 0)} "
+        f"sort={payload.get('sort', 'updated_at')} "
+        f"order={payload.get('order', 'desc')} "
+        f"terminal={payload.get('terminal', 'active')}"
+    )
+    if payload.get("query"):
+        header += f" query={payload.get('query')}"
+    filters_text = _jeb_filters_text(payload)
+    if filters_text:
+        header += f" {filters_text}"
+    lines = [header]
+    batches = _mapping_items(payload.get("batches"))
+    if not batches:
+        lines.append("- none")
+        return "\n".join(lines)
+    lines.extend(f"- {_jeb_batch_plain_line(batch)}" for batch in batches)
+    return "\n".join(lines)
+
+
+def format_jeb_batches(payload: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        return _format_jeb_batches_plain(payload)
+    renderables: list[Any] = [_page_text("jeb batches", payload)]
+    scope_items = [
+        f"sort={payload.get('sort', 'updated_at')}",
+        f"order={payload.get('order', 'desc')}",
+        f"terminal={payload.get('terminal', 'active')}",
+    ]
+    if payload.get("query"):
+        scope_items.append(f"query={payload.get('query')}")
+    filters_text = _jeb_filters_text(payload)
+    if filters_text:
+        scope_items.append(filters_text)
+    renderables.append("  ".join(scope_items))
+
+    table = _quiet_table(
+        "Attempt",
+        "Account",
+        "Collection",
+        "State",
+        "Files",
+        "Bytes",
+        "Cleanup",
+        "Updated",
+    )
+    for batch in _mapping_items(payload.get("batches")):
+        table.add_row(
+            _entity_text(batch.get("attempt_id") or batch.get("id") or "unknown"),
+            _jeb_account_text(batch),
+            str(batch.get("collection_id") or "-"),
+            _attention_text(batch.get("state") or "unknown"),
+            str(batch.get("file_count", 0)),
+            _bytes_text(batch.get("total_bytes", 0)),
+            str(batch.get("cleanup") or "-"),
+            str(batch.get("updated_at") or "-"),
+        )
+    if not table.rows:
+        table.add_row("none", "", "", "", "", "", "", "")
+    renderables.append(table)
+    return RichGroup(*renderables)
+
+
+def _jeb_source_plain_line(source: Mapping[str, Any]) -> str:
+    enabled = "enabled" if source.get("enabled") else "disabled"
+    path_state = "present" if source.get("path_exists") else "missing"
+    routing = "failed" if source.get("routing_preflight_failed") else "ok"
+    parts = [
+        str(source.get("id") or "unknown"),
+        enabled,
+        f"path={path_state}",
+        f"routing_preflight={routing}",
+    ]
+    if "eligible_files" in source:
+        parts.append(f"eligible={source.get('eligible_files')} files")
+        parts.append(f"bytes={_bytes_text(source.get('eligible_bytes', 0))}")
+    if source.get("eligible_error"):
+        parts.append(f"eligible_error={_jeb_preview(source.get('eligible_error'))}")
+    collections = _string_items(source.get("collections"))
+    if collections:
+        parts.append(f"collections={','.join(collections)}")
+    return "  ".join(parts)
+
+
+def _format_jeb_status_plain(payload: Mapping[str, Any]) -> str:
+    sources = _mapping_items(payload.get("sources"))
+    collections = _mapping_items(payload.get("collections"))
+    batch_counts = _optional_mapping(payload.get("batches"))
+    preflight = _optional_mapping(payload.get("routing_preflight_failures"))
+    lines = [
+        "jeb status",
+        f"sources: {sum(1 for source in sources if source.get('enabled'))}/{len(sources)} enabled",
+        (
+            "collections: "
+            f"{sum(1 for item in collections if item.get('enabled'))}/{len(collections)} enabled"
+        ),
+        (
+            f"batches: total={batch_counts.get('total', 0)} "
+            f"active={batch_counts.get('active', 0)} "
+            f"terminal={batch_counts.get('terminal', 0)}"
+        ),
+        f"states: {_jeb_state_counts_text(_optional_mapping(batch_counts.get('states')))}",
+        f"routing preflight failures: {preflight.get('total', 0)}",
+    ]
+    active_operation = _optional_mapping(payload.get("active_operation"))
+    if active_operation:
+        lines.append(
+            "active operation: "
+            f"{active_operation.get('operation', 'unknown')} "
+            f"id={active_operation.get('id', 'unknown')} "
+            f"account={active_operation.get('account') or '-'} "
+            f"batch={active_operation.get('batch_id') or '-'}"
+        )
+
+    lines.append("sources:")
+    if sources:
+        lines.extend(f"- {_jeb_source_plain_line(source)}" for source in sources)
+    else:
+        lines.append("- none")
+
+    active_attempts = _optional_mapping(payload.get("active_attempts"))
+    active_batches = _mapping_items(active_attempts.get("batches"))
+    lines.append("active batches:")
+    if active_batches:
+        lines.extend(f"- {_jeb_batch_plain_line(batch)}" for batch in active_batches)
+        total_active_listed = _int_value(active_attempts.get("total", 0))
+        if total_active_listed > len(active_batches):
+            lines.append(f"- ... {total_active_listed - len(active_batches)} more")
+    else:
+        lines.append("- none")
+
+    recent_failures = _optional_mapping(payload.get("recent_failures"))
+    failure_batches = _mapping_items(recent_failures.get("batches"))
+    lines.append("recent failures:")
+    if failure_batches:
+        lines.extend(f"- {_jeb_batch_plain_line(batch)}" for batch in failure_batches)
+    else:
+        lines.append("- none")
+
+    failures = _mapping_items(preflight.get("failures"))
+    if failures:
+        lines.append("routing preflight:")
+        lines.extend(
+            (
+                f"- {failure.get('source_id')} "
+                f"kind={failure.get('failure_kind')} "
+                f"unmatched={failure.get('unmatched_count')}/{failure.get('file_count')} "
+                f"updated={failure.get('updated_at')} "
+                f"message={_jeb_preview(failure.get('message'))}"
+            )
+            for failure in failures
+        )
+    return "\n".join(lines)
+
+
+def _jeb_batch_table(title: str, batches: Sequence[Mapping[str, Any]]) -> Any:
+    table = _quiet_table("Attempt", "Account", "Collection", "State", "Files", "Bytes", "Updated")
+    for batch in batches:
+        table.add_row(
+            _entity_text(batch.get("attempt_id") or batch.get("id") or "unknown"),
+            _jeb_account_text(batch),
+            str(batch.get("collection_id") or "-"),
+            _attention_text(batch.get("state") or "unknown"),
+            str(batch.get("file_count", 0)),
+            _bytes_text(batch.get("total_bytes", 0)),
+            str(batch.get("updated_at") or "-"),
+        )
+    if not table.rows:
+        table.add_row("none", "", "", "", "", "", "")
+    return RichGroup(RichText(title, style="bold"), table)
+
+
+def format_jeb_status(payload: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        return _format_jeb_status_plain(payload)
+    sources = _mapping_items(payload.get("sources"))
+    collections = _mapping_items(payload.get("collections"))
+    batch_counts = _optional_mapping(payload.get("batches"))
+    preflight = _optional_mapping(payload.get("routing_preflight_failures"))
+
+    summary = _detail_table()
+    summary.add_row(
+        "sources",
+        f"{sum(1 for source in sources if source.get('enabled'))}/{len(sources)} enabled",
+    )
+    summary.add_row(
+        "collections",
+        f"{sum(1 for item in collections if item.get('enabled'))}/{len(collections)} enabled",
+    )
+    summary.add_row(
+        "batches",
+        (
+            f"total={batch_counts.get('total', 0)}  "
+            f"active={batch_counts.get('active', 0)}  "
+            f"terminal={batch_counts.get('terminal', 0)}"
+        ),
+    )
+    summary.add_row("states", _jeb_state_counts_text(_optional_mapping(batch_counts.get("states"))))
+    summary.add_row("routing preflight failures", str(preflight.get("total", 0)))
+    active_operation = _optional_mapping(payload.get("active_operation"))
+    if active_operation:
+        summary.add_row(
+            "active operation",
+            (
+                f"{active_operation.get('operation', 'unknown')}  "
+                f"id={active_operation.get('id', 'unknown')}  "
+                f"account={active_operation.get('account') or '-'}  "
+                f"batch={active_operation.get('batch_id') or '-'}"
+            ),
+        )
+
+    source_table = _quiet_table(
+        "Source",
+        "Enabled",
+        "Path",
+        "Routing",
+        "Backlog",
+        "Bytes",
+        "Collections",
+    )
+    for source in sources:
+        source_table.add_row(
+            _entity_text(source.get("id") or "unknown"),
+            str(bool(source.get("enabled"))).lower(),
+            "present" if source.get("path_exists") else _attention_text("missing"),
+            _attention_text("failed") if source.get("routing_preflight_failed") else "ok",
+            str(source.get("eligible_files", "-")),
+            _bytes_text(source.get("eligible_bytes", 0)) if "eligible_bytes" in source else "-",
+            _preview_lines(_string_items(source.get("collections")), limit=3),
+        )
+    if not source_table.rows:
+        source_table.add_row("none", "", "", "", "", "", "")
+
+    renderables: list[Any] = [RichText("jeb status", style="bold"), summary, source_table]
+    active_batches = _mapping_items(
+        _optional_mapping(payload.get("active_attempts")).get("batches")
+    )
+    renderables.append(_jeb_batch_table("active batches", active_batches))
+    failure_batches = _mapping_items(
+        _optional_mapping(payload.get("recent_failures")).get("batches")
+    )
+    renderables.append(_jeb_batch_table("recent failures", failure_batches))
+
+    failures = _mapping_items(preflight.get("failures"))
+    if failures:
+        preflight_table = _quiet_table("Source", "Kind", "Unmatched", "Updated", "Message")
+        for failure in failures:
+            preflight_table.add_row(
+                _entity_text(failure.get("source_id") or "unknown"),
+                str(failure.get("failure_kind") or "unknown"),
+                f"{failure.get('unmatched_count', 0)}/{failure.get('file_count', 0)}",
+                str(failure.get("updated_at") or "-"),
+                _jeb_preview(failure.get("message")),
+            )
+        renderables.extend([RichText("routing preflight", style="bold"), preflight_table])
+    return RichGroup(*renderables)
+
+
+def format_jeb_config_check(payload: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        sources = _string_items(payload.get("sources"))
+        lines = [
+            "jeb config",
+            f"status: {payload.get('status', 'unknown')}",
+            f"sources: {payload.get('source_count', 0)}",
+        ]
+        if sources:
+            lines.append("source ids:")
+            lines.extend(f"- {source}" for source in sources)
+        return "\n".join(lines)
+    table = _detail_table()
+    table.add_row("status", _attention_text(payload.get("status", "unknown")))
+    table.add_row("sources", str(payload.get("source_count", 0)))
+    table.add_row("source ids", _preview_lines(_string_items(payload.get("sources")), limit=8))
+    return RichGroup(RichText("jeb config", style="bold"), table)
+
+
+def _operation_summary(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    return _optional_mapping(payload.get("operation"))
+
+
+def format_jeb_operation(payload: Mapping[str, Any], *, title: str) -> Any:
+    operation = _operation_summary(payload)
+    if not _rich_enabled():
+        lines = [title, f"status: {payload.get('status', 'unknown')}"]
+        if payload.get("account"):
+            lines.append(f"account: {payload.get('account')}")
+        if payload.get("batch_id"):
+            lines.append(f"batch: {payload.get('batch_id')}")
+        if operation:
+            lines.append(f"operation: {operation.get('operation', 'unknown')}")
+            if operation.get("id"):
+                lines.append(f"operation id: {operation.get('id')}")
+            if operation.get("started_at"):
+                lines.append(f"started: {operation.get('started_at')}")
+        return "\n".join(lines)
+    table = _detail_table()
+    table.add_row("status", _attention_text(payload.get("status", "unknown")))
+    if payload.get("account"):
+        table.add_row("account", str(payload.get("account")))
+    if payload.get("batch_id"):
+        table.add_row("batch", _entity_text(payload.get("batch_id", "unknown")))
+    if operation:
+        table.add_row("operation", str(operation.get("operation", "unknown")))
+        if operation.get("id"):
+            table.add_row("operation id", _entity_text(operation.get("id", "unknown")))
+        if operation.get("started_at"):
+            table.add_row("started", str(operation.get("started_at")))
+    return RichGroup(RichText(title, style="bold"), table)
 
 
 def _format_hot_evict_plain(payload: Mapping[str, Any]) -> str:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 
 import httpx
@@ -9,12 +8,17 @@ import httpx
 from jeb.collector import BATCH_LIST_SORT_FIELDS
 from jeb.service_cli import (
     MAX_PER_PAGE,
-    format_batches,
-    format_status,
     per_page_value,
     positive_int,
 )
 from riverhog_cli.client import ApiClient
+from riverhog_cli.output import (
+    emit,
+    format_jeb_batches,
+    format_jeb_config_check,
+    format_jeb_operation,
+    format_jeb_status,
+)
 from riverhog_core.domain.errors import RiverhogError
 
 
@@ -22,16 +26,9 @@ def client() -> ApiClient:
     return ApiClient()
 
 
-def emit(payload: object, *, json_mode: bool) -> None:
-    if json_mode:
-        print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
-        return
-    print(str(payload))
-
-
 def cmd_status(args: argparse.Namespace) -> int:
     payload = client().get_jeb_status(include_backlog=not args.no_backlog)
-    emit(payload if args.json else format_status(payload), json_mode=args.json)
+    emit(payload if args.json else format_jeb_status(payload), json_mode=args.json)
     return 0
 
 
@@ -48,16 +45,13 @@ def cmd_batches(args: argparse.Namespace) -> int:
         target=args.target,
         query=args.query,
     )
-    emit(payload if args.json else format_batches(payload), json_mode=args.json)
+    emit(payload if args.json else format_jeb_batches(payload), json_mode=args.json)
     return 0
 
 
 def cmd_check_config(args: argparse.Namespace) -> int:
     payload = client().check_jeb_config()
-    if args.json:
-        emit(payload, json_mode=True)
-        return 0
-    print(f"ok: {payload.get('source_count', 0)} sources")
+    emit(payload if args.json else format_jeb_config_check(payload), json_mode=args.json)
     return 0
 
 
@@ -66,10 +60,7 @@ def cmd_once(args: argparse.Namespace) -> int:
     if args.json:
         emit(payload, json_mode=True)
         return 0
-    operation = payload.get("operation")
-    operation_id = operation.get("id") if isinstance(operation, dict) else None
-    suffix = f": {operation_id}" if operation_id else ""
-    print(f"ok: scheduler pass started{suffix}")
+    emit(format_jeb_operation(payload, title="jeb scheduler pass"), json_mode=False)
     return 0
 
 
@@ -79,17 +70,9 @@ def cmd_archive_now(args: argparse.Namespace) -> int:
         emit(payload, json_mode=True)
         return 0
     if payload.get("status") == "no_eligible_files":
-        print(f"no eligible files for account {args.account}")
+        emit(format_jeb_operation(payload, title="jeb archive"), json_mode=False)
         return 1
-    operation = payload.get("operation")
-    operation_id = operation.get("id") if isinstance(operation, dict) else None
-    if operation_id:
-        print(
-            f"archive operation started for account {args.account}: "
-            f"batch {payload.get('batch_id')} operation {operation_id}"
-        )
-    else:
-        print(f"archive batch staged for account {args.account}: {payload.get('batch_id')}")
+    emit(format_jeb_operation(payload, title="jeb archive"), json_mode=False)
     return 0
 
 
