@@ -1569,7 +1569,7 @@ paths:
       operationId: runJebOnce
       responses:
         "202":
-          description: Scheduler pass completed
+          description: Scheduler pass accepted and started by the Jeb service
           content:
             application/json:
               schema: { type: object }
@@ -1587,7 +1587,7 @@ paths:
               $ref: "#/components/schemas/JebArchiveNowRequest"
       responses:
         "202":
-          description: Archive attempt result
+          description: Archive batch accepted; processing continues on the Jeb service
           content:
             application/json:
               schema: { type: object }

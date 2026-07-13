@@ -66,7 +66,10 @@ def cmd_once(args: argparse.Namespace) -> int:
     if args.json:
         emit(payload, json_mode=True)
         return 0
-    print("ok: scheduler pass completed")
+    operation = payload.get("operation")
+    operation_id = operation.get("id") if isinstance(operation, dict) else None
+    suffix = f": {operation_id}" if operation_id else ""
+    print(f"ok: scheduler pass started{suffix}")
     return 0
 
 
@@ -78,7 +81,15 @@ def cmd_archive_now(args: argparse.Namespace) -> int:
     if payload.get("status") == "no_eligible_files":
         print(f"no eligible files for account {args.account}")
         return 1
-    print(f"archive attempt started for account {args.account}: {payload.get('batch_id')}")
+    operation = payload.get("operation")
+    operation_id = operation.get("id") if isinstance(operation, dict) else None
+    if operation_id:
+        print(
+            f"archive operation started for account {args.account}: "
+            f"batch {payload.get('batch_id')} operation {operation_id}"
+        )
+    else:
+        print(f"archive batch staged for account {args.account}: {payload.get('batch_id')}")
     return 0
 
 

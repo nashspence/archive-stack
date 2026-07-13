@@ -1,21 +1,154 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
-from dataclasses import dataclass
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Literal, cast
 from urllib.parse import parse_qs, urlsplit
 
-from jeb.collector import BATCH_LIST_SORT_FIELDS, Collector, UnrecoverableJebError
+from jeb.collector import BATCH_LIST_SORT_FIELDS, Collector, UnrecoverableJebError, iso
 
 TerminalFilter = Literal["active", "terminal", "all"]
+LOG = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class JebServiceOperation:
+    id: str
+    operation: str
+    started_at: str
+    account: str | None
+    batch_id: str | None
+    thread: threading.Thread
+
+    def summary(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "id": self.id,
+            "operation": self.operation,
+            "started_at": self.started_at,
+        }
+        if self.account is not None:
+            payload["account"] = self.account
+        if self.batch_id is not None:
+            payload["batch_id"] = self.batch_id
+        return payload
+
+
+class JebServiceOperations:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active: JebServiceOperation | None = None
+
+    def _prune_locked(self) -> None:
+        if self._active is not None and not self._active.thread.is_alive():
+            self._active = None
+
+    def active_summary(self) -> dict[str, Any] | None:
+        with self._lock:
+            self._prune_locked()
+            return None if self._active is None else self._active.summary()
+
+    def start(
+        self,
+        *,
+        operation: str,
+        run: Callable[[], None],
+        account: str | None = None,
+        batch_id: str | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            self._prune_locked()
+            if self._active is not None:
+                active_summary = self._active.summary()
+                raise UnrecoverableJebError(
+                    "Jeb operation already running: "
+                    f"{active_summary['operation']} {active_summary['id']}"
+                )
+            operation_id = uuid.uuid4().hex[:12]
+
+            def target() -> None:
+                try:
+                    run()
+                except Exception:
+                    LOG.exception(
+                        "Jeb service operation failed",
+                        extra={"operation": operation, "operation_id": operation_id},
+                    )
+
+            thread = threading.Thread(
+                target=target,
+                name=f"jeb-{operation}-{operation_id}",
+                daemon=True,
+            )
+            active_operation = JebServiceOperation(
+                id=operation_id,
+                operation=operation,
+                started_at=iso(),
+                account=account,
+                batch_id=batch_id,
+                thread=thread,
+            )
+            self._active = active_operation
+            thread.start()
+            return active_operation.summary()
+
+    def prepare_and_start(
+        self,
+        *,
+        operation: str,
+        prepare: Callable[[], str | None],
+        run: Callable[[str], None],
+        account: str | None = None,
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        with self._lock:
+            self._prune_locked()
+            if self._active is not None:
+                active_summary = self._active.summary()
+                raise UnrecoverableJebError(
+                    "Jeb operation already running: "
+                    f"{active_summary['operation']} {active_summary['id']}"
+                )
+            batch_id = prepare()
+            if batch_id is None:
+                return None, None
+            operation_id = uuid.uuid4().hex[:12]
+
+            def target() -> None:
+                try:
+                    run(batch_id)
+                except Exception:
+                    LOG.exception(
+                        "Jeb service operation failed",
+                        extra={"operation": operation, "operation_id": operation_id},
+                    )
+
+            thread = threading.Thread(
+                target=target,
+                name=f"jeb-{operation}-{operation_id}",
+                daemon=True,
+            )
+            active_operation = JebServiceOperation(
+                id=operation_id,
+                operation=operation,
+                started_at=iso(),
+                account=account,
+                batch_id=batch_id,
+                thread=thread,
+            )
+            self._active = active_operation
+            thread.start()
+            return batch_id, active_operation.summary()
 
 
 @dataclass(frozen=True)
 class JebServiceState:
     collector: Collector
+    operations: JebServiceOperations = field(default_factory=JebServiceOperations)
 
 
 def _response(handler: BaseHTTPRequestHandler, status: HTTPStatus, payload: dict[str, Any]) -> None:
@@ -137,13 +270,11 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                     return
                 if split.path == "/v1/jeb/status":
                     state.collector.init_db()
-                    _response(
-                        self,
-                        HTTPStatus.OK,
-                        state.collector.status_summary(
-                            include_backlog=_bool(params, "include_backlog", True)
-                        ),
+                    payload = state.collector.status_summary(
+                        include_backlog=_bool(params, "include_backlog", True)
                     )
+                    payload["active_operation"] = state.operations.active_summary()
+                    _response(self, HTTPStatus.OK, payload)
                     return
                 if split.path == "/v1/jeb/batches":
                     sort = _first(params, "sort", "updated_at") or "updated_at"
@@ -177,8 +308,16 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
             split = urlsplit(self.path)
             try:
                 if split.path == "/v1/jeb/once":
-                    state.collector.run_once()
-                    _response(self, HTTPStatus.ACCEPTED, {"status": "ok"})
+                    state.collector.init_db()
+                    operation_summary = state.operations.start(
+                        operation="once",
+                        run=state.collector.run_once,
+                    )
+                    _response(
+                        self,
+                        HTTPStatus.ACCEPTED,
+                        {"status": "started", "operation": operation_summary},
+                    )
                     return
                 if split.path == "/v1/jeb/archive-now":
                     payload = _json_body(self)
@@ -186,7 +325,20 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                     if not account:
                         raise ValueError("account is required")
                     process = _payload_bool(payload, "process", True)
-                    batch_id = state.collector.archive_now(source_id=account, process=process)
+                    state.collector.init_db()
+                    archive_operation: dict[str, Any] | None = None
+                    if process:
+                        batch_id, archive_operation = state.operations.prepare_and_start(
+                            operation="archive-now",
+                            account=account,
+                            prepare=lambda: state.collector.archive_now(
+                                source_id=account,
+                                process=False,
+                            ),
+                            run=state.collector.process_batch,
+                        )
+                    else:
+                        batch_id = state.collector.archive_now(source_id=account, process=False)
                     if batch_id is None:
                         _response(
                             self,
@@ -197,7 +349,12 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                     _response(
                         self,
                         HTTPStatus.ACCEPTED,
-                        {"status": "started", "account": account, "batch_id": batch_id},
+                        {
+                            "status": "started",
+                            "account": account,
+                            "batch_id": batch_id,
+                            "operation": archive_operation,
+                        },
                     )
                     return
                 _response(self, HTTPStatus.NOT_FOUND, {"service": "jeb", "status": "not_found"})

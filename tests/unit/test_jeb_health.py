@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -93,6 +94,44 @@ def test_jeb_service_api_requires_boolean_archive_now_process_flag(tmp_path: Pat
         assert payload == {
             "error": {"code": "bad_request", "message": "process must be true or false"}
         }
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_jeb_service_api_archive_now_processes_in_background(tmp_path: Path) -> None:
+    env = jeb_env(tmp_path)
+    write_stable_file(tmp_path / "landing" / "phone" / "note.txt")
+    processed = threading.Event()
+    processed_batch_ids: list[str] = []
+
+    class CompleteRunner:
+        def advance(self, collector: Collector, batch_id: str) -> None:
+            processed_batch_ids.append(batch_id)
+            collector.set_batch_state(batch_id, "target_complete")
+            processed.set()
+
+    collector = Collector(config_from_env(env), target_runners={"munchy": CompleteRunner()})
+    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
+    try:
+        host, port = server.server_address[:2]
+
+        status, payload = post_json(
+            f"http://{host}:{port}/v1/jeb/archive-now",
+            {"account": "phone"},
+        )
+
+        assert status == 202
+        assert payload["status"] == "started"
+        assert payload["account"] == "phone"
+        assert payload["batch_id"]
+        operation = payload["operation"]
+        assert isinstance(operation, dict)
+        assert operation["operation"] == "archive-now"
+        assert operation["account"] == "phone"
+        assert operation["batch_id"] == payload["batch_id"]
+        assert processed.wait(timeout=5)
+        assert processed_batch_ids == [payload["batch_id"]]
     finally:
         server.shutdown()
         server.server_close()

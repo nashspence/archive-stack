@@ -41,11 +41,16 @@ class FakeJebApi:
 
     def run_jeb_once(self) -> dict[str, Any]:
         self.calls.append(("once", {}))
-        return {"status": "ok"}
+        return {"status": "started", "operation": {"id": "op-once"}}
 
     def archive_jeb_now(self, *, account: str, process: bool = True) -> dict[str, Any]:
         self.calls.append(("archive-now", {"account": account, "process": process}))
-        return {"status": "started", "account": account, "batch_id": "batch-1"}
+        return {
+            "status": "started",
+            "account": account,
+            "batch_id": "batch-1",
+            "operation": None if not process else {"id": "op-archive"},
+        }
 
 
 def test_jeb_remote_cli_calls_api_for_status(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -100,5 +105,18 @@ def test_jeb_remote_cli_calls_api_for_actions(capsys, monkeypatch) -> None:  # t
     ]
     output = capsys.readouterr().out
     assert "ok: 2 sources" in output
-    assert "ok: scheduler pass completed" in output
-    assert "archive attempt started for account camera: batch-1" in output
+    assert "ok: scheduler pass started: op-once" in output
+    assert "archive batch staged for account camera: batch-1" in output
+
+
+def test_jeb_remote_cli_reports_started_archive_operation(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    fake = FakeJebApi()
+    monkeypatch.setattr(jeb_cli, "client", lambda: fake)
+
+    assert jeb_cli.main(["archive-now", "--account", "camera"]) == 0
+
+    assert fake.calls == [("archive-now", {"account": "camera", "process": True})]
+    assert (
+        "archive operation started for account camera: batch batch-1 operation op-archive"
+        in capsys.readouterr().out
+    )

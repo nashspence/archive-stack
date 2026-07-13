@@ -255,11 +255,14 @@ if needed.
 
 #### `POST /v1/jeb/once`
 
-Requests one scheduler pass on the deployed Jeb service.
+Requests one scheduler pass on the deployed Jeb service. The API returns after
+the service accepts the operation; use `GET /v1/jeb/status` or
+`GET /v1/jeb/batches` to follow the resulting work.
 
 #### `POST /v1/jeb/archive-now`
 
-Requests one immediate archive attempt for a Jeb account.
+Requests one immediate archive attempt for a Jeb account. The service stages the
+batch, returns its id, and processes the batch asynchronously.
 
 Request body:
 

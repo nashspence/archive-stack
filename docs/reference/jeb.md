@@ -141,8 +141,10 @@ jeb once
 jeb archive-now --account example-camera
 ```
 
-`archive-now` starts an immediate account batch for currently eligible files.
-Use `--no-process` to create the batch without processing it in the same command.
+`archive-now` starts an immediate account batch for currently eligible files and
+returns after the deployed Jeb service accepts the operation. Use `batches` or
+`status` to follow the resulting work. Use `--no-process` to create the batch
+without processing it in the same command.
 
 `status` is read-only and summarizes configured accounts, eligible source
 backlog, batch state counts, active attempts, recent failures, and routing
