@@ -201,6 +201,8 @@ MUNCHY_CONFIG_SCHEMA: dict[str, Any] = {
     "$defs": {"predicate": PREDICATE_SCHEMA},
     "type": "object",
     "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "kind": {"type": "string", "const": "munchy.job"},
         "job": JOB_SCHEMA,
         "profiles": {"type": "object", "additionalProperties": {"type": "object"}},
         "groups": {"type": "object", "additionalProperties": GROUP_SCHEMA},

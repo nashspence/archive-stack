@@ -20,6 +20,11 @@ from typing import Any, Literal, Protocol, cast
 import httpx
 
 from munchy.filesystem_metadata import collect_filesystem_metadata
+from munchy.job_authoring import (
+    MunchyJobAuthoringError,
+    load_munchy_job_config,
+    munchy_job_defaults_from_config,
+)
 from munchy.preflight import (
     MP4_LIKE_EXTENSIONS,
     MediaPreflightFile,
@@ -49,7 +54,7 @@ from munchy.runner_client import (
 from munchy.runner_client import (
     is_transient_upload_error as munchy_is_transient_upload_error,
 )
-from riverhog_core.config_yaml import ConfigError, load_yaml_config
+from riverhog_core.config_yaml import ConfigError
 from riverhog_core.domain.errors import Conflict, ServiceUnavailable
 from riverhog_core.operator_reminders import (
     normalize_reminder_time,
@@ -2606,14 +2611,29 @@ def required_env(env: Mapping[str, str], name: str) -> str:
     return value
 
 
-def env_yaml_mapping_file(env: Mapping[str, str], name: str) -> dict[str, Any]:
-    value = env_value_from(env, name)
-    if value is None:
+def account_munchy_config_path(account: str, env: Mapping[str, str]) -> tuple[str, Path] | None:
+    account_env = f"JEB_ACCOUNT_{account_env_name(account)}_MUNCHY_CONFIG"
+    explicit = env_value_from(env, account_env)
+    if explicit is not None:
+        return account_env, Path(os.path.expandvars(explicit)).expanduser()
+    config_dir = env_value_from(env, "JEB_MUNCHY_CONFIG_DIR")
+    if config_dir is None:
+        return None
+    return (
+        "JEB_MUNCHY_CONFIG_DIR",
+        Path(os.path.expandvars(config_dir)).expanduser() / f"{account}.munchy.yaml",
+    )
+
+
+def load_account_munchy_job_defaults(account: str, env: Mapping[str, str]) -> dict[str, Any]:
+    located = account_munchy_config_path(account, env)
+    if located is None:
         return {}
+    label, path = located
     try:
-        return load_yaml_config(Path(os.path.expandvars(value)).expanduser())
-    except ConfigError as exc:
-        raise ValueError(f"{name} must point to a readable YAML mapping: {exc}") from exc
+        return munchy_job_defaults_from_config(load_munchy_job_config(path))
+    except (ConfigError, MunchyJobAuthoringError) as exc:
+        raise ValueError(f"{label} must point to a valid Munchy job config: {exc}") from exc
 
 
 def env_int(env: Mapping[str, str], name: str, default: int) -> int:
@@ -2834,7 +2854,6 @@ def collection_from_account(account: str, env: Mapping[str, str]) -> CollectionC
         env_name="JEB_CADENCE",
     )
     account_cadence_env = f"JEB_ACCOUNT_{account_env_name(account)}_CADENCE"
-    account_munchy_config_env = f"JEB_ACCOUNT_{account_env_name(account)}_MUNCHY_CONFIG"
     account_notify_enabled_env = f"JEB_ACCOUNT_{account_env_name(account)}_NOTIFY_ENABLED"
     account_notify_recipients_env = f"JEB_ACCOUNT_{account_env_name(account)}_NOTIFY_RECIPIENTS"
     notify_enabled = env_bool(
@@ -2873,7 +2892,7 @@ def collection_from_account(account: str, env: Mapping[str, str]) -> CollectionC
         weekday=parse_weekday(env_value_from(env, "JEB_WEEKDAY", "monday")),
         hour=hour,
         minute=minute,
-        munchy_job_defaults=env_yaml_mapping_file(env, account_munchy_config_env),
+        munchy_job_defaults=load_account_munchy_job_defaults(account, env),
     )
 
 

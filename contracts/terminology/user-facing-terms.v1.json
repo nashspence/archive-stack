@@ -939,6 +939,39 @@
       ]
     },
     {
+      "id": "munchy_job_config",
+      "label": "Munchy job config",
+      "term_type": "policy",
+      "audiences": [
+        "operator",
+        "config_author",
+        "developer"
+      ],
+      "definition": "Public YAML configuration that describes one runnable Munchy workflow, including job settings, profiles, groups, and optional routing.",
+      "exposed_as": [
+        {
+          "surface": "config:munchy",
+          "spelling": "kind: munchy.job",
+          "context": "Munchy job config identity"
+        },
+        {
+          "surface": "cli:munchy",
+          "spelling": "MUNCHY_JOB_CONFIG",
+          "context": "default job config path environment variable"
+        },
+        {
+          "surface": "config:jeb",
+          "spelling": "JEB_MUNCHY_CONFIG_DIR",
+          "context": "per-account Munchy job config directory"
+        },
+        {
+          "surface": "config:jeb",
+          "spelling": "JEB_ACCOUNT_<ACCOUNT>_MUNCHY_CONFIG",
+          "context": "per-account Munchy job config path override"
+        }
+      ]
+    },
+    {
       "id": "physical_coverage",
       "label": "physical coverage",
       "term_type": "state",

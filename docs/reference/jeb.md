@@ -25,10 +25,12 @@ example-camera/<relative-file>
 
 That upload root is intentionally not configurable. If a device needs richer
 routing, route ids, groups, encode profiles, metadata projection, or culling
-behavior, those details live in an optional per-account Munchy config file
-referenced by `JEB_ACCOUNT_<ACCOUNT>_MUNCHY_CONFIG`. The file is a Munchy job
-configuration; Jeb loads and forwards it as target configuration and does not
-treat it as Jeb routing policy.
+behavior, those details live in a Munchy job config file. Jeb can load one
+explicit file from `JEB_ACCOUNT_<ACCOUNT>_MUNCHY_CONFIG`, or one mounted config
+directory from `JEB_MUNCHY_CONFIG_DIR` where each account has
+`<account>.munchy.yaml`. The file uses the same public `munchy.job` schema as
+`munchy job start --config`; Jeb lowers it through Munchy authoring code and
+does not treat it as Jeb routing policy.
 
 ## Munchy Boundary
 
@@ -53,7 +55,8 @@ structured, reviewed as files, mounted read-only, and validated with normal YAML
 config errors.
 
 To add an account, provision the matching drop account/directory, add the slug
-to `JEB_ACCOUNTS`, and point `JEB_ACCOUNT_<ACCOUNT>_MUNCHY_CONFIG` at the
+to `JEB_ACCOUNTS`, and either add `<account>.munchy.yaml` under
+`JEB_MUNCHY_CONFIG_DIR` or point `JEB_ACCOUNT_<ACCOUNT>_MUNCHY_CONFIG` at the
 account's Munchy config when the default collection-archive job is not precise
 enough.
 
@@ -95,6 +98,7 @@ JEB_INCLUDE_EXTENSIONS=.mp4,.mov,.mkv,.webm,.xml,.json,.txt
 JEB_ARCHIVE_TASKS=archive_video
 JEB_CLEANUP=after_target_success
 JEB_RIVERHOG_WAIT=finalized
+JEB_MUNCHY_CONFIG_DIR=/config/jeb
 ```
 
 Supported cadences are:

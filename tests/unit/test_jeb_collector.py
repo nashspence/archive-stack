@@ -131,7 +131,21 @@ def test_env_config_creates_one_account_collection_per_account(tmp_path: Path) -
 def test_env_config_supports_per_account_munchy_config_file(
     tmp_path: Path,
 ) -> None:
-    job_config = {
+    munchy_config = {
+        "schema_version": 1,
+        "kind": "munchy.job",
+        "job": {
+            "workflow_mode": "collection_archive",
+            "routing": {
+                "routes": [
+                    {
+                        "id": "main-video",
+                        "group": "camera-video",
+                        "when": {"path": {"prefix": "camera"}},
+                    }
+                ]
+            },
+        },
         "groups": {
             "camera-video": {
                 "archive_mode": "av1_nvenc",
@@ -141,25 +155,50 @@ def test_env_config_supports_per_account_munchy_config_file(
                 },
             }
         },
-        "profile_routing": {
-            "routes": [
-                {
-                    "id": "main-video",
-                    "group": "camera-video",
-                    "when": {"path": {"prefix": "camera"}},
-                }
-            ]
-        },
     }
     env = {
         **env_for(tmp_path, accounts="camera"),
-        "JEB_ACCOUNT_CAMERA_MUNCHY_CONFIG": write_munchy_config(tmp_path, job_config),
+        "JEB_ACCOUNT_CAMERA_MUNCHY_CONFIG": write_munchy_config(tmp_path, munchy_config),
     }
 
     config = config_from_env(env)
 
     assert config.sources[0].upload_root == "camera"
-    assert dict(config.collections[0].munchy_job_defaults) == job_config
+    defaults = dict(config.collections[0].munchy_job_defaults)
+    assert defaults["workflow_mode"] == "collection_archive"
+    assert defaults["groups"] == munchy_config["groups"]
+    assert defaults["profile_routing"]["routes"][0]["group"] == "camera-video"
+
+
+def test_env_config_supports_account_munchy_config_dir(
+    tmp_path: Path,
+) -> None:
+    config_dir = tmp_path / "munchy"
+    config_dir.mkdir()
+    write_munchy_config(
+        config_dir,
+        {
+            "schema_version": 1,
+            "kind": "munchy.job",
+            "job": {"workflow_mode": "collection_archive"},
+            "groups": {"camera-video": {"archive_mode": "av1_nvenc"}},
+        },
+    )
+    (config_dir / "munchy-job.yaml").rename(config_dir / "camera.munchy.yaml")
+
+    config = config_from_env(
+        {
+            **env_for(tmp_path, accounts="camera"),
+            "JEB_MUNCHY_CONFIG_DIR": str(config_dir),
+        }
+    )
+
+    assert config.collections[0].munchy_job_defaults["groups"] == {
+        "camera-video": {
+            "archive_mode": "av1_nvenc",
+            "tasks": ["archive_video", "qcut_video", "audio_review"],
+        }
+    }
 
 
 def test_env_config_supports_per_account_cadence(tmp_path: Path) -> None:
@@ -354,9 +393,22 @@ def test_munchy_payload_uses_per_account_job_defaults(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    job_config = {
-        "archive_mode": "av1_nvenc",
-        "tasks": ["archive_video"],
+    munchy_config = {
+        "schema_version": 1,
+        "kind": "munchy.job",
+        "job": {
+            "archive_mode": "av1_nvenc",
+            "tasks": ["archive_video"],
+            "routing": {
+                "routes": [
+                    {
+                        "id": "main-video",
+                        "group": "camera-video",
+                        "when": {"path": {"prefix": "camera"}},
+                    }
+                ]
+            },
+        },
         "groups": {
             "camera-video": {
                 "archive_mode": "av1_nvenc",
@@ -366,20 +418,11 @@ def test_munchy_payload_uses_per_account_job_defaults(
                 },
             }
         },
-        "profile_routing": {
-            "routes": [
-                {
-                    "id": "main-video",
-                    "group": "camera-video",
-                    "when": {"path": {"prefix": "camera"}},
-                }
-            ]
-        },
     }
     config = config_from_env(
         {
             **env_for(tmp_path, accounts="camera"),
-            "JEB_ACCOUNT_CAMERA_MUNCHY_CONFIG": write_munchy_config(tmp_path, job_config),
+            "JEB_ACCOUNT_CAMERA_MUNCHY_CONFIG": write_munchy_config(tmp_path, munchy_config),
         }
     )
     write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4")
@@ -400,8 +443,10 @@ def test_munchy_payload_uses_per_account_job_defaults(
     request = munchy_upload_request(collector, batch_id, config.targets["munchy"])
 
     assert [item.rel_path for item in request.files] == ["camera/clip.mp4"]
-    assert request.job_payload["groups"] == job_config["groups"]
-    assert request.job_payload["profile_routing"] == job_config["profile_routing"]
+    assert request.job_payload["groups"] == munchy_config["groups"]
+    assert request.job_payload["profile_routing"]["routes"] == munchy_config["job"]["routing"][
+        "routes"
+    ]
     assert request.storage_hint["structured_routing"] is True
     assert request.storage_hint["groups"] == {
         "camera-video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]}
@@ -412,34 +457,38 @@ def test_jeb_uploads_preflight_left_files_so_munchy_owns_culling(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    job_config = {
-        "archive_mode": "av1_nvenc",
-        "tasks": ["archive_video"],
+    munchy_config = {
+        "schema_version": 1,
+        "kind": "munchy.job",
+        "job": {
+            "archive_mode": "av1_nvenc",
+            "tasks": ["archive_video"],
+            "routing": {
+                "routes": [
+                    {
+                        "id": "main-video",
+                        "group": "camera-video",
+                        "when": {"path": {"prefix": "camera"}},
+                    },
+                    {
+                        "id": "munchy-left",
+                        "action": "leave",
+                        "when": {"path": {"filename_glob": "left.mp4"}},
+                    },
+                ]
+            },
+        },
         "groups": {
             "camera-video": {
                 "archive_mode": "av1_nvenc",
                 "tasks": ["archive_video"],
             }
         },
-        "profile_routing": {
-            "routes": [
-                {
-                    "id": "main-video",
-                    "group": "camera-video",
-                    "when": {"path": {"prefix": "camera"}},
-                },
-                {
-                    "id": "munchy-left",
-                    "action": "leave",
-                    "when": {"path": {"filename_glob": "left.mp4"}},
-                },
-            ]
-        },
     }
     config = config_from_env(
         {
             **env_for(tmp_path, accounts="camera"),
-            "JEB_ACCOUNT_CAMERA_MUNCHY_CONFIG": write_munchy_config(tmp_path, job_config),
+            "JEB_ACCOUNT_CAMERA_MUNCHY_CONFIG": write_munchy_config(tmp_path, munchy_config),
         }
     )
     write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4")

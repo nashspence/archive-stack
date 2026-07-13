@@ -5,9 +5,54 @@ from pathlib import Path
 from munchy.job_authoring import (
     build_review_sweep_plan,
     build_runner_upload_request_from_files,
+    munchy_job_defaults_from_config,
     requested_archive_containers,
 )
 from munchy.runner_client import RunnerInputFile
+
+
+def test_munchy_job_defaults_from_config_lowers_public_config() -> None:
+    defaults = munchy_job_defaults_from_config(
+        {
+            "schema_version": 1,
+            "kind": "munchy.job",
+            "job": {
+                "workflow_mode": "collection_archive",
+                "routing": {
+                    "routes": [
+                        {
+                            "id": "camera-video",
+                            "group": "video",
+                            "when": {"path": {"suffix": ".mp4"}},
+                        }
+                    ]
+                },
+            },
+            "profiles": {
+                "camera": {
+                    "schema_version": 1,
+                    "target": "munchy-av1-nvenc",
+                    "name": "camera",
+                    "archive": {"codec": "av1_nvenc", "container": "webm", "quality": 36},
+                }
+            },
+            "groups": {
+                "video": {
+                    "profile": "camera",
+                    "archive_mode": "av1_nvenc",
+                    "metadata_projection": {"tags": ["device/example-camera"]},
+                }
+            },
+        }
+    )
+
+    assert defaults["workflow_mode"] == "collection_archive"
+    assert defaults["profile_routing"]["routes"][0]["id"] == "camera-video"
+    assert defaults["groups"]["video"]["tasks"] == ["archive_video", "qcut_video", "audio_review"]
+    assert defaults["groups"]["video"]["encode_profile"]["archive"]["container"] == "webm"
+    assert defaults["groups"]["video"]["metadata_projection"] == {
+        "tags": ["device/example-camera"]
+    }
 
 
 def test_build_runner_upload_request_from_files_normalizes_review_sweep() -> None:

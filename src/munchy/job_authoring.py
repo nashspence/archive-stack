@@ -152,6 +152,21 @@ def configured_profiles(config: Mapping[str, Any]) -> dict[str, Any]:
     return profiles
 
 
+def munchy_job_defaults_from_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Lower public Munchy job config into runner/Jeb-ready job defaults."""
+
+    normalized_config = normalize_munchy_config(config)
+    defaults = configured_job_defaults(normalized_config)
+    profiles = configured_profiles(normalized_config)
+    raw_groups = configured_groups(normalized_config)
+    if raw_groups:
+        defaults["groups"] = {
+            str(name): normalize_group_payload(str(name), raw_group, profiles=profiles)
+            for name, raw_group in raw_groups.items()
+        }
+    return defaults
+
+
 def normalize_group_payload(
     name: str,
     raw_group: object,
@@ -879,6 +894,7 @@ __all__ = [
     "join_rel_path",
     "load_munchy_job_config",
     "mapping",
+    "munchy_job_defaults_from_config",
     "normalize_group_payload",
     "normalize_mode",
     "normalize_munchy_config",
