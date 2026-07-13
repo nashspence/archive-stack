@@ -1,0 +1,422 @@
+schema_version: 1
+kind: munchy.device_profile
+id: gopro-hero-11-black
+parameters:
+  device_id:
+    required: true
+section:
+  file_extensions:
+  - .mp4
+  - .lrv
+  - .thm
+  - .jpg
+  - .jpeg
+  - .gpr
+  - .sav
+  archive_mode: preserve
+  media_preflight: false
+  profile_group: preserve
+  groups:
+    preserve:
+      archive_mode: preserve
+    preserve-no-metadata:
+      archive_mode: preserve
+      metadata_projection: false
+  routing:
+    extra_exiftool_tags:
+    - AutoBoostScore
+    - BitrateSetting
+    - ElectronicImageStabilization
+    - ElectronicStabilizationOn
+    - FieldOfView
+    - HDRSetting
+    - PhotoResolution
+    sidecars:
+      thm:
+        format: thm
+        paths:
+        - '{parent}/{stem}.THM'
+        primary:
+          all:
+          - path:
+              prefix: '{device_id}'
+              basename_regex: ^GX[0-9]{6}\.MP4$
+        sidecar:
+          path:
+            suffix: .thm
+      gpr:
+        format: gpr
+        paths:
+        - '{parent}/{stem}.GPR'
+        primary:
+          all:
+          - path:
+              prefix: '{device_id}'
+              basename_regex: ^GOPR[0-9]{4}\.JPG$
+        sidecar:
+          path:
+            suffix: .gpr
+    gates:
+      gopro-hero11:
+        all:
+        - path:
+            prefix: '{device_id}'
+        - fact: exif.model
+          equals: HERO11 Black
+    routes:
+    - id: lrv-proxy
+      group: preserve
+      into: proxy/lrv
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            suffix: .lrv
+    - id: thm-orphan
+      group: preserve
+      into: sidecar/thm-orphan
+      when:
+        all:
+        - path:
+            prefix: '{device_id}'
+            suffix: .thm
+    - id: gpr-orphan
+      group: preserve
+      into: raw/gpr-orphan
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            suffix: .gpr
+    - id: device-state-sav
+      group: preserve-no-metadata
+      into: device-state/sav
+      when:
+        all:
+        - path:
+            prefix: '{device_id}'
+            basename_regex: ^leinfo\.sav$
+    - id: photo-raw-jpeg-with-gpr
+      group: preserve
+      into: photo/raw/jpeg
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GOPR[0-9]{4}\.(JPG|jpg|JPEG|jpeg)$
+        - fact: sidecar.gpr.path
+          exists: true
+    - id: photo-linear-standard-jpeg
+      group: preserve
+      into: photo/linear/standard-jpeg
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GOPR[0-9]{4}\.(JPG|jpg|JPEG|jpeg)$
+        - fact: exiftool.tags.field_of_view
+          equals: Linear
+        - fact: exiftool.tags.hdr_setting
+          equals: 'OFF'
+    - id: photo-linear-hdr-or-superphoto-jpeg
+      group: preserve
+      into: photo/linear/hdr-or-superphoto-jpeg
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GOPR[0-9]{4}\.(JPG|jpg|JPEG|jpeg)$
+        - fact: exiftool.tags.field_of_view
+          equals: Linear
+        - fact: exiftool.tags.hdr_setting
+          equals: S_STILL
+    - id: photo-wide-standard-jpeg
+      group: preserve
+      into: photo/wide/standard-jpeg
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GOPR[0-9]{4}\.(JPG|jpg|JPEG|jpeg)$
+        - fact: exiftool.tags.field_of_view
+          equals: Wide
+        - fact: exiftool.tags.hdr_setting
+          equals: 'OFF'
+    - id: photo-wide-hdr-or-superphoto-jpeg
+      group: preserve
+      into: photo/wide/hdr-or-superphoto-jpeg
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GOPR[0-9]{4}\.(JPG|jpg|JPEG|jpeg)$
+        - fact: exiftool.tags.field_of_view
+          equals: Wide
+        - fact: exiftool.tags.hdr_setting
+          equals: S_STILL
+    - id: photo-jpeg
+      group: preserve
+      into: photo/jpeg
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GOPR[0-9]{4}\.(JPG|jpg|JPEG|jpeg)$
+    - id: video-1080p24-hevc
+      group: preserve
+      into: video/1080p24-hevc
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GX[0-9]{6}\.MP4$
+        - fact: video.resolution
+          equals: 1080p
+        - fact: video.fps
+          equals: 24
+        - fact: video.codec
+          equals: hevc
+    - id: video-1080p30-hevc
+      group: preserve
+      into: video/1080p30-hevc
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GX[0-9]{6}\.MP4$
+        - fact: video.resolution
+          equals: 1080p
+        - fact: video.fps
+          equals: 30
+        - fact: video.codec
+          equals: hevc
+    - id: video-1080p60-hevc
+      group: preserve
+      into: video/1080p60-hevc
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GX[0-9]{6}\.MP4$
+        - fact: video.resolution
+          equals: 1080p
+        - fact: video.fps
+          equals: 60
+        - fact: video.codec
+          equals: hevc
+    - id: video-1080p120-hevc
+      group: preserve
+      into: video/1080p120-hevc
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GX[0-9]{6}\.MP4$
+        - fact: video.resolution
+          equals: 1080p
+        - fact: video.fps
+          equals: 120
+        - fact: video.codec
+          equals: hevc
+    - id: video-1080p240-hevc
+      group: preserve
+      into: video/1080p240-hevc
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GX[0-9]{6}\.MP4$
+        - fact: video.resolution
+          equals: 1080p
+        - fact: video.fps
+          equals: 240
+        - fact: video.codec
+          equals: hevc
+    - id: video-2704x1520p60-hevc
+      group: preserve
+      into: video/2704x1520p60-hevc
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GX[0-9]{6}\.MP4$
+        - fact: video.resolution
+          equals: 2704x1520
+        - fact: video.fps
+          equals: 60
+        - fact: video.codec
+          equals: hevc
+    - id: video-2704x2028p60-hevc
+      group: preserve
+      into: video/2704x2028p60-hevc
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GX[0-9]{6}\.MP4$
+        - fact: video.resolution
+          equals: 2704x2028
+        - fact: video.fps
+          equals: 60
+        - fact: video.codec
+          equals: hevc
+    - id: video-4k24-hevc
+      group: preserve
+      into: video/4k24-hevc
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GX[0-9]{6}\.MP4$
+        - fact: video.resolution
+          equals: 4k
+        - fact: video.fps
+          equals: 24
+        - fact: video.codec
+          equals: hevc
+    - id: video-4k30-hevc
+      group: preserve
+      into: video/4k30-hevc
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GX[0-9]{6}\.MP4$
+        - fact: video.resolution
+          equals: 4k
+        - fact: video.fps
+          equals: 30
+        - fact: video.codec
+          equals: hevc
+    - id: video-4k60-linear-hypersmooth-autoboost-hevc
+      group: preserve
+      into: video/4k60-linear-hypersmooth-autoboost-hevc
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GX[0-9]{6}\.MP4$
+        - fact: video.resolution
+          equals: 4k
+        - fact: video.fps
+          equals: 60
+        - fact: video.codec
+          equals: hevc
+        - fact: exiftool.tags.field_of_view
+          equals: Linear
+        - fact: exiftool.tags.electronic_image_stabilization
+          equals: HS AutoBoost
+    - id: video-4k60-wide-hypersmooth-autoboost-hevc
+      group: preserve
+      into: video/4k60-wide-hypersmooth-autoboost-hevc
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GX[0-9]{6}\.MP4$
+        - fact: video.resolution
+          equals: 4k
+        - fact: video.fps
+          equals: 60
+        - fact: video.codec
+          equals: hevc
+        - fact: exiftool.tags.field_of_view
+          equals: Wide
+        - fact: exiftool.tags.electronic_image_stabilization
+          equals: HS AutoBoost
+    - id: video-4k60-linear-hypersmooth-boost-hevc
+      group: preserve
+      into: video/4k60-linear-hypersmooth-boost-hevc
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GX[0-9]{6}\.MP4$
+        - fact: video.resolution
+          equals: 4k
+        - fact: video.fps
+          equals: 60
+        - fact: video.codec
+          equals: hevc
+        - fact: exiftool.tags.field_of_view
+          equals: Linear
+        - fact: exiftool.tags.electronic_image_stabilization
+          equals: HS Boost
+    - id: video-4k60-linear-hypersmooth-on-hevc
+      group: preserve
+      into: video/4k60-linear-hypersmooth-on-hevc
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GX[0-9]{6}\.MP4$
+        - fact: video.resolution
+          equals: 4k
+        - fact: video.fps
+          equals: 60
+        - fact: video.codec
+          equals: hevc
+        - fact: exiftool.tags.field_of_view
+          equals: Linear
+        - fact: exiftool.tags.electronic_image_stabilization
+          equals: HS EIS
+    - id: video-4k60-linear-hypersmooth-off-hevc
+      group: preserve
+      into: video/4k60-linear-hypersmooth-off-hevc
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GX[0-9]{6}\.MP4$
+        - fact: video.resolution
+          equals: 4k
+        - fact: video.fps
+          equals: 60
+        - fact: video.codec
+          equals: hevc
+        - fact: exiftool.tags.field_of_view
+          equals: Linear
+        - fact: exiftool.tags.electronic_stabilization_on
+          equals: 'No'
+    - id: video-4k60-hevc
+      group: preserve
+      into: video/4k60-hevc
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GX[0-9]{6}\.MP4$
+        - fact: video.resolution
+          equals: 4k
+        - fact: video.fps
+          equals: 60
+        - fact: video.codec
+          equals: hevc
+    - id: video-5312x2988p24-hevc
+      group: preserve
+      into: video/5312x2988p24-hevc
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GX[0-9]{6}\.MP4$
+        - fact: video.resolution
+          equals: 5312x2988
+        - fact: video.fps
+          equals: 24
+        - fact: video.codec
+          equals: hevc
+    - id: video-5312x2988p30-hevc
+      group: preserve
+      into: video/5312x2988p30-hevc
+      when:
+        all:
+        - gate: gopro-hero11
+        - path:
+            basename_regex: ^GX[0-9]{6}\.MP4$
+        - fact: video.resolution
+          equals: 5312x2988
+        - fact: video.fps
+          equals: 30
+        - fact: video.codec
+          equals: hevc

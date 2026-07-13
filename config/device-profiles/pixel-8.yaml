@@ -1,0 +1,433 @@
+schema_version: 1
+kind: munchy.device_profile
+id: pixel-8
+parameters:
+  device_id:
+    required: true
+section:
+  file_extensions:
+  - .jpg
+  - .jpeg
+  - .mp4
+  archive_mode: preserve
+  media_preflight: false
+  profile_group: preserve
+  groups:
+    preserve:
+      archive_mode: preserve
+  routing:
+    extra_exiftool_tags:
+    - AndroidCaptureFPS
+    - AndroidMake
+    - AndroidModel
+    - SpecialTypeID
+    gates:
+      pixel-8-native:
+        all:
+        - path:
+            prefix: '{device_id}'
+        - any:
+          - fact: exif.make
+            equals: google
+          - fact: exiftool.tags.android_make
+            equals: Google
+        - any:
+          - fact: exif.model
+            equals: Pixel 8
+          - fact: exiftool.tags.android_model
+            equals: Pixel 8
+    routes:
+    - id: action-pan-cover-front-jpeg
+      group: preserve
+      into: action-pan/cover/front-jpeg
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            basename_regex: ^PXL_[0-9]{8}_[0-9]{9}\.ACTION_PAN-01\.COVER\.(jpg|jpeg)$
+        - fact: exif.camera_direction
+          equals: front
+    - id: action-pan-cover-rear-jpeg
+      group: preserve
+      into: action-pan/cover/rear-jpeg
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            basename_regex: ^PXL_[0-9]{8}_[0-9]{9}\.ACTION_PAN-01\.COVER\.(jpg|jpeg)$
+        - fact: exif.camera_direction
+          equals: rear
+    - id: action-pan-original-front-jpeg
+      group: preserve
+      into: action-pan/original/front-jpeg
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            basename_regex: ^PXL_[0-9]{8}_[0-9]{9}\.ACTION_PAN-02\.ORIGINAL\.(jpg|jpeg)$
+        - fact: exif.camera_direction
+          equals: front
+    - id: action-pan-original-rear-jpeg
+      group: preserve
+      into: action-pan/original/rear-jpeg
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            basename_regex: ^PXL_[0-9]{8}_[0-9]{9}\.ACTION_PAN-02\.ORIGINAL\.(jpg|jpeg)$
+        - fact: exif.camera_direction
+          equals: rear
+    - id: long-exposure-cover-front-jpeg
+      group: preserve
+      into: long-exposure/cover/front-jpeg
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            basename_regex: ^PXL_[0-9]{8}_[0-9]{9}\.LONG_EXPOSURE-01\.COVER\.(jpg|jpeg)$
+        - fact: exif.camera_direction
+          equals: front
+    - id: long-exposure-cover-rear-jpeg
+      group: preserve
+      into: long-exposure/cover/rear-jpeg
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            basename_regex: ^PXL_[0-9]{8}_[0-9]{9}\.LONG_EXPOSURE-01\.COVER\.(jpg|jpeg)$
+        - fact: exif.camera_direction
+          equals: rear
+    - id: long-exposure-original-front-jpeg
+      group: preserve
+      into: long-exposure/original/front-jpeg
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            basename_regex: ^PXL_[0-9]{8}_[0-9]{9}\.LONG_EXPOSURE-02\.ORIGINAL\.(jpg|jpeg)$
+        - fact: exif.camera_direction
+          equals: front
+    - id: long-exposure-original-rear-jpeg
+      group: preserve
+      into: long-exposure/original/rear-jpeg
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            basename_regex: ^PXL_[0-9]{8}_[0-9]{9}\.LONG_EXPOSURE-02\.ORIGINAL\.(jpg|jpeg)$
+        - fact: exif.camera_direction
+          equals: rear
+    - id: portrait-front-jpeg
+      group: preserve
+      into: portrait/front-jpeg
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            basename_regex: ^PXL_[0-9]{8}_[0-9]{9}\.PORTRAIT\.(jpg|jpeg)$
+        - fact: exif.camera_direction
+          equals: front
+    - id: portrait-original-rear-jpeg
+      group: preserve
+      into: portrait/original/rear-jpeg
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            basename_regex: ^PXL_[0-9]{8}_[0-9]{9}\.PORTRAIT\.ORIGINAL\.(jpg|jpeg)$
+        - fact: exif.camera_direction
+          equals: rear
+    - id: motion-photo-front-jpeg
+      group: preserve
+      into: motion-photo/front-jpeg
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            basename_regex: ^PXL_[0-9]{8}_[0-9]{9}\.MP\.(jpg|jpeg)$
+        - fact: exif.camera_direction
+          equals: front
+    - id: motion-photo-rear-jpeg
+      group: preserve
+      into: motion-photo/rear-jpeg
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            basename_regex: ^PXL_[0-9]{8}_[0-9]{9}\.MP\.(jpg|jpeg)$
+        - fact: exif.camera_direction
+          equals: rear
+    - id: night-sight-front-jpeg
+      group: preserve
+      into: night-sight/front-jpeg
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            basename_regex: ^PXL_[0-9]{8}_[0-9]{9}\.NIGHT\.(jpg|jpeg)$
+        - fact: exif.camera_direction
+          equals: front
+    - id: night-sight-rear-jpeg
+      group: preserve
+      into: night-sight/rear-jpeg
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            basename_regex: ^PXL_[0-9]{8}_[0-9]{9}\.NIGHT\.(jpg|jpeg)$
+        - fact: exif.camera_direction
+          equals: rear
+    - id: panorama-rear-jpeg
+      group: preserve
+      into: panorama/rear-jpeg
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            basename_regex: ^PXL_[0-9]{8}_[0-9]{9}\.PANO\.(jpg|jpeg)$
+        - fact: exif.camera_direction
+          equals: rear
+    - id: photo-front-jpeg
+      group: preserve
+      into: photo/front-jpeg
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            basename_regex: ^PXL_[0-9]{8}_[0-9]{9}\.(jpg|jpeg)$
+        - fact: exif.camera_direction
+          equals: front
+    - id: photo-rear-jpeg
+      group: preserve
+      into: photo/rear-jpeg
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            basename_regex: ^PXL_[0-9]{8}_[0-9]{9}\.(jpg|jpeg)$
+        - fact: exif.camera_direction
+          equals: rear
+    - id: pan-1080p30-hevc
+      group: preserve
+      into: pan/1080p30-hevc
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            suffix: .mp4
+        - fact: exiftool.tags.special_type_id
+          contains: SpecialType-CINEMATIC
+        - fact: video.resolution
+          equals: 1080p
+        - fact: video.fps
+          equals: 30
+        - fact: video.codec
+          equals: hevc
+    - id: pan-4k30-hevc
+      group: preserve
+      into: pan/4k30-hevc
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            suffix: .mp4
+        - fact: exiftool.tags.special_type_id
+          contains: SpecialType-CINEMATIC
+        - fact: video.resolution
+          equals: 4k
+        - fact: video.fps
+          equals: 30
+        - fact: video.codec
+          equals: hevc
+    - id: blur-1080p24-hevc
+      group: preserve
+      into: blur/1080p24-hevc
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            suffix: .mp4
+        - fact: exiftool.tags.special_type_id
+          contains: SpecialType-AMBER
+        - fact: video.resolution
+          equals: 1080p
+        - fact: video.fps
+          equals: 23
+        - fact: video.codec
+          equals: hevc
+    - id: timelapse-1080p30-hevc
+      group: preserve
+      into: timelapse/1080p30-hevc
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            suffix: .mp4
+        - fact: exiftool.tags.special_type_id
+          contains: SpecialType-TIMELAPSE
+        - fact: video.resolution
+          equals: 1080p
+        - fact: video.codec
+          equals: hevc
+    - id: timelapse-4k30-hevc
+      group: preserve
+      into: timelapse/4k30-hevc
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            suffix: .mp4
+        - fact: exiftool.tags.special_type_id
+          contains: SpecialType-TIMELAPSE
+        - fact: video.resolution
+          equals: 4k
+        - fact: video.codec
+          equals: hevc
+    - id: slow-motion-1080p120-hevc
+      group: preserve
+      into: slow-motion/1080p120-hevc
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            suffix: .mp4
+        - fact: exiftool.tags.android_capture_fps
+          equals: 120
+        - fact: video.resolution
+          equals: 1080p
+        - fact: video.codec
+          equals: hevc
+    - id: video-1080p24-hdr-hevc
+      group: preserve
+      into: video/1080p24-hdr-hevc
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            suffix: .mp4
+        - fact: video.resolution
+          equals: 1080p
+        - fact: video.fps
+          equals: 24
+        - fact: video.codec
+          equals: hevc
+        - fact: ffprobe.video_pix_fmt
+          contains: '10'
+    - id: video-1080p30-hdr-hevc
+      group: preserve
+      into: video/1080p30-hdr-hevc
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            suffix: .mp4
+        - fact: video.resolution
+          equals: 1080p
+        - fact: video.fps
+          equals: 30
+        - fact: video.codec
+          equals: hevc
+        - fact: ffprobe.video_pix_fmt
+          contains: '10'
+    - id: video-1080p30-hevc
+      group: preserve
+      into: video/1080p30-hevc
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            suffix: .mp4
+        - fact: video.resolution
+          equals: 1080p
+        - fact: video.fps
+          equals: 30
+        - fact: video.codec
+          equals: hevc
+    - id: video-1080p60-hevc
+      group: preserve
+      into: video/1080p60-hevc
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            suffix: .mp4
+        - fact: video.resolution
+          equals: 1080p
+        - fact: video.fps
+          equals: 60
+        - fact: video.codec
+          equals: hevc
+    - id: video-4k24-hdr-hevc
+      group: preserve
+      into: video/4k24-hdr-hevc
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            suffix: .mp4
+        - fact: video.resolution
+          equals: 4k
+        - fact: video.fps
+          equals: 24
+        - fact: video.codec
+          equals: hevc
+        - fact: ffprobe.video_pix_fmt
+          contains: '10'
+    - id: video-4k24-hevc
+      group: preserve
+      into: video/4k24-hevc
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            suffix: .mp4
+        - fact: video.resolution
+          equals: 4k
+        - fact: video.fps
+          equals: 24
+        - fact: video.codec
+          equals: hevc
+    - id: video-4k30-hdr-hevc
+      group: preserve
+      into: video/4k30-hdr-hevc
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            suffix: .mp4
+        - fact: video.resolution
+          equals: 4k
+        - fact: video.fps
+          equals: 30
+        - fact: video.codec
+          equals: hevc
+        - fact: ffprobe.video_pix_fmt
+          contains: '10'
+    - id: video-4k30-hevc
+      group: preserve
+      into: video/4k30-hevc
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            suffix: .mp4
+        - fact: video.resolution
+          equals: 4k
+        - fact: video.fps
+          equals: 30
+        - fact: video.codec
+          equals: hevc
+    - id: video-4k60-hevc
+      group: preserve
+      into: video/4k60-hevc
+      when:
+        all:
+        - gate: pixel-8-native
+        - path:
+            suffix: .mp4
+        - fact: video.resolution
+          equals: 4k
+        - fact: video.fps
+          equals: 60
+        - fact: video.codec
+          equals: hevc

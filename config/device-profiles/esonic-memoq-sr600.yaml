@@ -1,0 +1,98 @@
+schema_version: 1
+kind: munchy.device_profile
+id: esonic-memoq-sr600
+parameters:
+  device_id:
+    required: true
+section:
+  upload_prefix: '{device_id}-audio'
+  profile_group: audio-opus
+  archive_mode: audio
+  encode_profile:
+    name: '{device_id}-opus'
+    source:
+      allow_conversion_only_container: true
+    archive:
+      codec: opus
+      audio:
+        codec: opus
+        bitrate: 28k
+        sample_rate: 24000
+        channels: 1
+        application: audio
+        frame_duration: 40
+        cutoff: 12000
+        compression_level: 10
+        vbr: 'on'
+  routing:
+    routes:
+    - id: audio-lp-mp3
+      group: audio-opus
+      into: audio/lp-mp3
+      when:
+        all:
+        - path:
+            prefix: '{device_id}-audio'
+            suffix: .mp3
+        - fact: audio.codec_name
+          equals: mp3
+        - fact: ffprobe.audio_sample_rate
+          equals: 8000
+        - fact: ffprobe.audio_bit_rate
+          equals: 16000
+    - id: audio-sp-mp3
+      group: audio-opus
+      into: audio/sp-mp3
+      when:
+        all:
+        - path:
+            prefix: '{device_id}-audio'
+            suffix: .mp3
+        - fact: audio.codec_name
+          equals: mp3
+        - fact: ffprobe.audio_sample_rate
+          equals: 8000
+        - fact: ffprobe.audio_bit_rate
+          equals: 32000
+    - id: audio-hq-mp3
+      group: audio-opus
+      into: audio/hq-mp3
+      when:
+        all:
+        - path:
+            prefix: '{device_id}-audio'
+            suffix: .mp3
+        - fact: audio.codec_name
+          equals: mp3
+        - fact: ffprobe.audio_sample_rate
+          equals: 16000
+        - fact: ffprobe.audio_bit_rate
+          equals: 64000
+    - id: audio-xhq-mp3
+      group: audio-opus
+      into: audio/xhq-mp3
+      when:
+        all:
+        - path:
+            prefix: '{device_id}-audio'
+            suffix: .mp3
+        - fact: audio.codec_name
+          equals: mp3
+        - fact: ffprobe.audio_sample_rate
+          equals: 32000
+        - fact: ffprobe.audio_bit_rate
+          equals: 128000
+    - id: audio-pcm-wav
+      group: audio-opus
+      into: audio/pcm-wav
+      when:
+        all:
+        - path:
+            prefix: '{device_id}-audio'
+            suffix: .wav
+        - fact: audio.codec_name
+          equals: pcm_s16le
+        - fact: ffprobe.audio_sample_rate
+          between:
+          - 44100
+          - 44130

@@ -173,6 +173,76 @@ GROUP_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+DEVICE_PROFILE_SECTION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "collection_slug": {"type": "string"},
+        "upload_prefix": {"type": "string"},
+        "target_prefix": {"type": "string"},
+        "file_extensions": STRING_LIST,
+        "file_include_globs": STRING_LIST,
+        "video_extensions": STRING_LIST,
+        "archive_mode": {"enum": ["av1_nvenc", "audio", "preserve"]},
+        "tasks": STRING_LIST,
+        "media_preflight": {"type": "boolean"},
+        "profile_group": {"type": "string"},
+        "encode_profile": {"oneOf": [{"type": "boolean"}, {"type": "object"}]},
+        "metadata_projection": {
+            "oneOf": [{"type": "boolean", "const": False}, {"type": "object"}],
+        },
+        "notify": {"type": "object"},
+        "profiles": {"type": "object", "additionalProperties": {"type": "object"}},
+        "groups": {"type": "object", "additionalProperties": GROUP_SCHEMA},
+        "routing": ROUTING_SCHEMA,
+    },
+    "additionalProperties": False,
+}
+
+DEVICE_PROFILE_PARAMETER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "required": {"type": "boolean"},
+        "default": {"oneOf": [{"type": "string"}, {"type": "number"}, {"type": "boolean"}]},
+    },
+    "additionalProperties": False,
+}
+
+DEVICE_PROFILE_VALUE_SCHEMA: dict[str, Any] = {
+    "oneOf": [{"type": "string"}, {"type": "number"}, {"type": "boolean"}],
+}
+
+DEVICE_PROFILE_REF_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "parameters": {
+            "type": "object",
+            "additionalProperties": DEVICE_PROFILE_VALUE_SCHEMA,
+        },
+        "overrides": DEVICE_PROFILE_SECTION_SCHEMA,
+    },
+    "required": ["path"],
+    "additionalProperties": False,
+}
+
+MUNCHY_DEVICE_PROFILE_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$defs": {"predicate": PREDICATE_SCHEMA},
+    "type": "object",
+    "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "kind": {"type": "string", "const": "munchy.device_profile"},
+        "id": {"type": "string", "minLength": 1},
+        "parameters": {
+            "type": "object",
+            "additionalProperties": DEVICE_PROFILE_PARAMETER_SCHEMA,
+        },
+        "section": DEVICE_PROFILE_SECTION_SCHEMA,
+    },
+    "required": ["schema_version", "kind", "id", "section"],
+    "additionalProperties": False,
+}
+
 TARGET_UPLOAD_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -232,6 +302,7 @@ MUNCHY_CONFIG_SCHEMA: dict[str, Any] = {
     "properties": {
         "schema_version": {"type": "integer", "const": 1},
         "kind": {"type": "string", "const": "munchy.job"},
+        "device_profile": DEVICE_PROFILE_REF_SCHEMA,
         "job": JOB_SCHEMA,
         "profiles": {"type": "object", "additionalProperties": {"type": "object"}},
         "groups": {"type": "object", "additionalProperties": GROUP_SCHEMA},

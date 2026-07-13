@@ -55,7 +55,8 @@ that Jeb has already marked failed.
 
 This boundary keeps Jeb as a small account scheduler and uploader while keeping
 the media-specific rules in Munchy, where the same routing config can be used by
-other clients. Disk-backed config fits real routing profiles: they are
+other clients. Disk-backed Munchy config can also instantiate reusable public
+`munchy.device_profile` files; both account configs and device profiles are
 structured, reviewed as files, mounted read-only, and validated with normal YAML
 config errors.
 

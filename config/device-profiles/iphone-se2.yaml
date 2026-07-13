@@ -1,0 +1,452 @@
+schema_version: 1
+kind: munchy.device_profile
+id: iphone-se2
+parameters:
+  device_id:
+    required: true
+section:
+  file_extensions:
+  - .heic
+  - .jpg
+  - .jpeg
+  - .mov
+  archive_mode: preserve
+  media_preflight: false
+  profile_group: preserve
+  profiles:
+    video-av1-webm:
+      name: video-av1-webm
+      archive:
+        codec: av1_nvenc
+        container: webm
+        quality: 36
+        fps_mode: passthrough
+        scale_flags: lanczos
+        pix_fmt: p010le
+        preset: p7
+        tune: uhq
+        audio:
+          codec: opus
+          bitrate: 128k
+          sample_rate: 48000
+          channels: 2
+          application: audio
+          compression_level: 10
+          vbr: 'on'
+  groups:
+    preserve:
+      archive_mode: preserve
+    video-av1-webm:
+      archive_mode: av1_nvenc
+      profile: video-av1-webm
+  routing:
+    gates:
+      iphone-se2-native-camera:
+        all:
+        - path:
+            basename_regex: ^IMG_[0-9]{4}\.(HEIC|heic|JPG|jpg|JPEG|jpeg|MOV|mov)$
+        - fact: exif.make
+          equals: apple
+        - fact: exif.model
+          equals: iPhone SE (2nd generation)
+    pairings:
+    - id: live-photo
+      key: exif.content_identifier
+      prefer_same_stem: true
+      still:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix_in:
+            - .heic
+            - .jpg
+            - .jpeg
+        - fact: exif.content_identifier
+          exists: true
+      movie:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix: .mov
+        - fact: exif.content_identifier
+          exists: true
+    routes:
+    - id: downloads-held
+      action: leave
+      when:
+        path:
+          prefix: '{device_id}/downloads'
+    - id: live-photo-still-rear-heic
+      group: preserve
+      into: live-photo/rear-heic-mov
+      when:
+        all:
+        - pair: live-photo
+        - pair_role: still
+        - fact: exif.camera_direction
+          equals: rear
+    - id: live-photo-movie-rear-mov
+      group: video-av1-webm
+      into: live-photo/rear-heic-mov
+      when:
+        all:
+        - pair: live-photo
+        - pair_role: movie
+        - fact: exif.camera_direction
+          equals: rear
+    - id: live-photo-still-front-heic
+      group: preserve
+      into: live-photo/front-heic-mov
+      when:
+        all:
+        - pair: live-photo
+        - pair_role: still
+        - fact: exif.camera_direction
+          equals: front
+    - id: live-photo-movie-front-mov
+      group: video-av1-webm
+      into: live-photo/front-heic-mov
+      when:
+        all:
+        - pair: live-photo
+        - pair_role: movie
+        - fact: exif.camera_direction
+          equals: front
+    - id: live-photo-unpaired-still-rear-heic
+      group: preserve
+      into: live-photo/unpaired-still/rear-heic
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix: .heic
+        - not_pair: live-photo
+        - fact: exif.content_identifier
+          exists: true
+        - fact: exif.camera_direction
+          equals: rear
+    - id: live-photo-unpaired-still-front-heic
+      group: preserve
+      into: live-photo/unpaired-still/front-heic
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix: .heic
+        - not_pair: live-photo
+        - fact: exif.content_identifier
+          exists: true
+        - fact: exif.camera_direction
+          equals: front
+    - id: live-photo-unpaired-movie-rear-mov
+      group: video-av1-webm
+      into: live-photo/unpaired-movie/rear-mov
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix: .mov
+        - not_pair: live-photo
+        - fact: exif.content_identifier
+          exists: true
+        - fact: exif.camera_direction
+          equals: rear
+    - id: live-photo-unpaired-movie-front-mov
+      group: video-av1-webm
+      into: live-photo/unpaired-movie/front-mov
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix: .mov
+        - not_pair: live-photo
+        - fact: exif.content_identifier
+          exists: true
+        - fact: exif.camera_direction
+          equals: front
+    - id: portrait-front-heic
+      group: preserve
+      into: portrait/front-heic
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix: .heic
+        - fact: exif.camera_direction
+          equals: front
+        - fact: exif.has_depth
+          equals: true
+    - id: portrait-rear-heic
+      group: preserve
+      into: portrait/rear-heic
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix: .heic
+        - fact: exif.camera_direction
+          equals: rear
+        - fact: exif.has_depth
+          equals: true
+    - id: portrait-front-jpeg
+      group: preserve
+      into: portrait/front-jpeg
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix_in:
+            - .jpg
+            - .jpeg
+        - fact: exif.camera_direction
+          equals: front
+        - fact: exif.has_depth
+          equals: true
+    - id: portrait-rear-jpeg
+      group: preserve
+      into: portrait/rear-jpeg
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix_in:
+            - .jpg
+            - .jpeg
+        - fact: exif.camera_direction
+          equals: rear
+        - fact: exif.has_depth
+          equals: true
+    - id: panorama-rear-heic
+      group: preserve
+      into: panorama/rear-heic
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix: .heic
+        - fact: exif.camera_direction
+          equals: rear
+        - fact: exif.long_edge
+          min: 4033
+        - fact: exif.aspect_ratio
+          min: 2.0
+    - id: photo-front-heic
+      group: preserve
+      into: photo/front-heic
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix: .heic
+        - fact: exif.camera_direction
+          equals: front
+    - id: photo-front-jpeg
+      group: preserve
+      into: photo/front-jpeg
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix_in:
+            - .jpg
+            - .jpeg
+        - fact: exif.camera_direction
+          equals: front
+    - id: photo-rear-heic
+      group: preserve
+      into: photo/rear-heic
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix: .heic
+        - fact: exif.camera_direction
+          equals: rear
+    - id: photo-rear-jpeg
+      group: preserve
+      into: photo/rear-jpeg
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix_in:
+            - .jpg
+            - .jpeg
+        - fact: exif.camera_direction
+          equals: rear
+    - id: timelapse-1080p30-hevc
+      group: video-av1-webm
+      into: timelapse/1080p30-hevc
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix: .mov
+        - fact: exif.capture_mode
+          contains: time-lapse
+        - fact: video.resolution
+          equals: 1080p
+        - fact: video.codec
+          equals: hevc
+    - id: slowmo-1080p120-hevc
+      group: video-av1-webm
+      into: slow-motion/1080p120-hevc
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix: .mov
+        - fact: exif.camera_direction
+          equals: rear
+        - fact: exif.full_frame_rate_playback_intent
+          equals: 0
+        - fact: video.resolution
+          equals: 1080p
+        - fact: video.fps
+          equals: 120
+        - fact: video.codec
+          equals: hevc
+    - id: slowmo-1080p240-hevc
+      group: video-av1-webm
+      into: slow-motion/1080p240-hevc
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix: .mov
+        - fact: exif.camera_direction
+          equals: rear
+        - fact: exif.full_frame_rate_playback_intent
+          equals: 0
+        - fact: video.resolution
+          equals: 1080p
+        - fact: video.fps
+          equals: 240
+        - fact: video.codec
+          equals: hevc
+    - id: video-front-1080p30-hevc
+      group: video-av1-webm
+      into: video/front-1080p30-hevc
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix: .mov
+        - fact: exif.camera_direction
+          equals: front
+        - fact: exif.full_frame_rate_playback_intent
+          equals: 1
+        - fact: video.resolution
+          equals: 1080p
+        - fact: video.fps
+          equals: 30
+        - fact: video.codec
+          equals: hevc
+    - id: video-front-720p30-hevc
+      group: video-av1-webm
+      into: video/front-720p30-hevc
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix: .mov
+        - fact: exif.camera_direction
+          equals: front
+        - fact: exif.full_frame_rate_playback_intent
+          equals: 1
+        - fact: video.resolution
+          equals: 720p
+        - fact: video.fps
+          equals: 30
+        - fact: video.codec
+          equals: hevc
+    - id: video-rear-4k24-hevc
+      group: video-av1-webm
+      into: video/rear-4k24-hevc
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix: .mov
+        - fact: exif.camera_direction
+          equals: rear
+        - fact: exif.full_frame_rate_playback_intent
+          equals: 1
+        - fact: video.resolution
+          equals: 4k
+        - fact: video.fps
+          equals: 24
+        - fact: video.codec
+          equals: hevc
+    - id: video-rear-4k30-hevc
+      group: video-av1-webm
+      into: video/rear-4k30-hevc
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix: .mov
+        - fact: exif.camera_direction
+          equals: rear
+        - fact: exif.full_frame_rate_playback_intent
+          equals: 1
+        - fact: video.resolution
+          equals: 4k
+        - fact: video.fps
+          equals: 30
+        - fact: video.codec
+          equals: hevc
+    - id: video-rear-4k60-hevc
+      group: video-av1-webm
+      into: video/rear-4k60-hevc
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix: .mov
+        - fact: exif.camera_direction
+          equals: rear
+        - fact: exif.full_frame_rate_playback_intent
+          equals: 1
+        - fact: video.resolution
+          equals: 4k
+        - fact: video.fps
+          equals: 60
+        - fact: video.codec
+          equals: hevc
+    - id: video-rear-1080p30-hevc
+      group: video-av1-webm
+      into: video/rear-1080p30-hevc
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix: .mov
+        - fact: exif.camera_direction
+          equals: rear
+        - fact: exif.full_frame_rate_playback_intent
+          equals: 1
+        - fact: video.resolution
+          equals: 1080p
+        - fact: video.fps
+          equals: 30
+        - fact: video.codec
+          equals: hevc
+    - id: video-rear-1080p60-hevc
+      group: video-av1-webm
+      into: video/rear-1080p60-hevc
+      when:
+        all:
+        - gate: iphone-se2-native-camera
+        - path:
+            suffix: .mov
+        - fact: exif.camera_direction
+          equals: rear
+        - fact: exif.full_frame_rate_playback_intent
+          equals: 1
+        - fact: video.resolution
+          equals: 1080p
+        - fact: video.fps
+          equals: 60
+        - fact: video.codec
+          equals: hevc

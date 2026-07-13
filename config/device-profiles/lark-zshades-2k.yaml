@@ -1,0 +1,176 @@
+schema_version: 1
+kind: munchy.device_profile
+id: lark-zshades-2k
+parameters:
+  device_id:
+    required: true
+section:
+  upload_prefix: '{device_id}-video'
+  file_extensions:
+  - .mp4
+  - .jpg
+  - .jpeg
+  profile_group: video-av1-webm
+  groups:
+    preserve:
+      archive_mode: preserve
+    video-av1-webm:
+      archive_mode: av1_nvenc
+  routing:
+    routes:
+    - id: video-2k30-hevc
+      group: video-av1-webm
+      into: video/2k30-hevc
+      when:
+        all:
+        - path:
+            prefix: '{device_id}-video'
+            suffix: .mp4
+        - fact: video.width
+          equals: 2560
+        - fact: video.height
+          equals: 1440
+        - fact: video.fps
+          equals: 30
+        - fact: video.codec
+          equals: hevc
+    - id: video-1080p60-hevc
+      group: video-av1-webm
+      into: video/1080p60-hevc
+      when:
+        all:
+        - path:
+            prefix: '{device_id}-video'
+            suffix: .mp4
+        - fact: video.resolution
+          equals: 1080p
+        - fact: video.fps
+          equals: 60
+        - fact: video.codec
+          equals: hevc
+    - id: video-720p60-hevc
+      group: video-av1-webm
+      into: video/720p60-hevc
+      when:
+        all:
+        - path:
+            prefix: '{device_id}-video'
+            suffix: .mp4
+        - fact: video.resolution
+          equals: 720p
+        - fact: video.fps
+          equals: 60
+        - fact: video.codec
+          equals: hevc
+    - id: photo-20mp-5120x3840-jpeg
+      group: preserve
+      into: photo/20mp-5120x3840-jpeg
+      when:
+        all:
+        - path:
+            prefix: '{device_id}-video'
+            suffix_in:
+            - .jpg
+            - .jpeg
+        - fact: exif.image_width
+          equals: 5120
+        - fact: exif.image_height
+          equals: 3840
+    - id: photo-16mp-4608x3456-jpeg
+      group: preserve
+      into: photo/16mp-4608x3456-jpeg
+      when:
+        all:
+        - path:
+            prefix: '{device_id}-video'
+            suffix_in:
+            - .jpg
+            - .jpeg
+        - fact: exif.image_width
+          equals: 4608
+        - fact: exif.image_height
+          equals: 3456
+    - id: photo-12mp-4032x3024-jpeg
+      group: preserve
+      into: photo/12mp-4032x3024-jpeg
+      when:
+        all:
+        - path:
+            prefix: '{device_id}-video'
+            suffix_in:
+            - .jpg
+            - .jpeg
+        - fact: exif.image_width
+          equals: 4032
+        - fact: exif.image_height
+          equals: 3024
+    - id: photo-10mp-3648x2736-jpeg
+      group: preserve
+      into: photo/10mp-3648x2736-jpeg
+      when:
+        all:
+        - path:
+            prefix: '{device_id}-video'
+            suffix_in:
+            - .jpg
+            - .jpeg
+        - fact: exif.image_width
+          equals: 3648
+        - fact: exif.image_height
+          equals: 2736
+    - id: photo-8mp-3264x2448-jpeg
+      group: preserve
+      into: photo/8mp-3264x2448-jpeg
+      when:
+        all:
+        - path:
+            prefix: '{device_id}-video'
+            suffix_in:
+            - .jpg
+            - .jpeg
+        - fact: exif.image_width
+          equals: 3264
+        - fact: exif.image_height
+          equals: 2448
+    - id: photo-5mp-2592x1944-jpeg
+      group: preserve
+      into: photo/5mp-2592x1944-jpeg
+      when:
+        all:
+        - path:
+            prefix: '{device_id}-video'
+            suffix_in:
+            - .jpg
+            - .jpeg
+        - fact: exif.image_width
+          equals: 2592
+        - fact: exif.image_height
+          equals: 1944
+    - id: photo-3mp-2048x1536-jpeg
+      group: preserve
+      into: photo/3mp-2048x1536-jpeg
+      when:
+        all:
+        - path:
+            prefix: '{device_id}-video'
+            suffix_in:
+            - .jpg
+            - .jpeg
+        - fact: exif.image_width
+          equals: 2048
+        - fact: exif.image_height
+          equals: 1536
+    - id: photo-vga-640x480-jpeg
+      group: preserve
+      into: photo/vga-640x480-jpeg
+      when:
+        all:
+        - path:
+            prefix: '{device_id}-video'
+            suffix_in:
+            - .jpg
+            - .jpeg
+        - fact: exif.image_width
+          equals: 640
+        - fact: exif.image_height
+          equals: 480

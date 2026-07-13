@@ -1,0 +1,84 @@
+schema_version: 1
+kind: munchy.device_profile
+id: reolink-trackmix-poe
+parameters:
+  device_id:
+    required: true
+  camera_name:
+    required: true
+  timezone:
+    required: true
+section:
+  video_extensions:
+  - .mp4
+  file_include_globs:
+  - RecM19*.mp4
+  - '{camera_name}_00_*.mp4'
+  - '{camera_name}_01_*.mp4'
+  profile_group: '{device_id}-telephoto-video'
+  archive_mode: av1_nvenc
+  tasks:
+  - archive_video
+  encode_profile:
+    schema_version: 1
+    target: munchy-av1-nvenc
+    name: '{device_id}-collection-archive'
+    archive:
+      codec: av1_nvenc
+      container: webm
+      quality: 38
+      max_height: 720
+      fps_mode: passthrough
+      scale_flags: lanczos
+      pix_fmt: p010le
+      preset: p7
+      tune: uhq
+      audio:
+        codec: opus
+        bitrate: 28k
+        sample_rate: 24000
+        channels: 1
+        application: audio
+        frame_duration: 40
+        cutoff: 12000
+        compression_level: 10
+        vbr: 'on'
+  groups:
+    '{device_id}-telephoto-video':
+      metadata_projection:
+        device:
+          make: Reolink
+          model: TrackMix PoE
+        capture_date_sources:
+        - type: embedded
+        - type: path_regex
+          name: reolink_camera_filename
+          pattern: (?:^|/)[^/]+_[0-9]+_(?P<stamp>[0-9]{14})\.mp4$
+          datetime_group: stamp
+          format: '%Y%m%d%H%M%S'
+          timezone: '{timezone}'
+        - type: path_regex
+          name: reolink_rec_filename
+          pattern: (?:^|/)Rec[MS][0-9A-F]+(?:_DST)?(?P<date>[0-9]{8})_(?P<time>[0-9]{6})_[0-9]{6}_.*\.mp4$
+          template: '{date}{time}'
+          format: '%Y%m%d%H%M%S'
+          timezone: '{timezone}'
+  routing:
+    routes:
+    - id: '{device_id}-wide-video-left'
+      action: leave
+      when:
+        path:
+          prefix: '{device_id}'
+          filename_glob: '{camera_name}_00_*.mp4'
+    - id: '{device_id}-telephoto-video'
+      group: '{device_id}-telephoto-video'
+      into: '{device_id}/video/telephoto'
+      when:
+        any:
+        - path:
+            prefix: '{device_id}'
+            filename_glob: RecM19*.mp4
+        - path:
+            prefix: '{device_id}'
+            filename_glob: '{camera_name}_01_*.mp4'

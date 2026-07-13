@@ -117,6 +117,58 @@ evidence for a preserve output, Munchy writes the visible output XMP by merging
 the normalized projected metadata into that existing XMP. Scalar conflicts fail
 the job instead of overwriting operator or source-provided metadata.
 
+## Device Profiles
+
+Reusable device routing belongs in public `munchy.device_profile` YAML files.
+They are complete typed profile objects, not YAML fragments: a profile declares
+its parameters and a `section` containing reusable groups, profiles, routing,
+and local source-selection hints. A job instantiates one profile by path, passes
+parameter values such as `device_id`, and may override the instantiated section
+before normal Munchy job lowering.
+
+```yaml
+schema_version: 1
+kind: munchy.device_profile
+id: example-camera
+parameters:
+  device_id:
+    required: true
+section:
+  upload_prefix: '{device_id}-media'
+  profile_group: video
+  archive_mode: av1_nvenc
+  routing:
+    routes:
+      - id: video
+        group: video
+        into: video
+        when:
+          path:
+            prefix: '{device_id}-media'
+```
+
+```yaml
+schema_version: 1
+kind: munchy.job
+device_profile:
+  path: ../device-profiles/example-camera.yaml
+  parameters:
+    device_id: patio-camera
+  overrides:
+    groups:
+      video:
+        max_parallel_encodes: 2
+job:
+  workflow_mode: collection_archive
+```
+
+Relative profile paths resolve from the job config file. Instantiation only
+replaces declared profile parameters such as `{device_id}`; Munchy's runtime
+path placeholders such as `{parent}`, `{stem}`, `{date}`, and `{time}` remain
+literal. Private identity, destinations, notification recipients, static GPS,
+and creators should stay in the job config or the operator's private config
+layer and merge over the public device profile.
+
 ## Eager Archive Tuning
 
 AV1 archive groups may set `max_parallel_encodes` to cap concurrent encodes

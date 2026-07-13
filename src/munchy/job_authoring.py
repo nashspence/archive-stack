@@ -11,6 +11,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from munchy.config_schema import MUNCHY_CONFIG_SCHEMA
+from munchy.device_profiles import apply_device_profile_to_munchy_config
 from munchy.local_files import FileHashCache, LocalFileCandidate, hash_local_file_candidates
 from munchy.local_routing import routing_plan_files
 from munchy.platform_files import is_platform_cruft_path
@@ -112,8 +113,12 @@ def join_rel_path(*parts: str | PurePosixPath | None) -> str:
     return normalize_posix_path(out)
 
 
-def normalize_munchy_config(config: Mapping[str, Any]) -> dict[str, Any]:
-    normalized = deepcopy(dict(config))
+def normalize_munchy_config(
+    config: Mapping[str, Any],
+    *,
+    base_path: Path | None = None,
+) -> dict[str, Any]:
+    normalized = apply_device_profile_to_munchy_config(config, base_path=base_path)
     job = normalized.get("job")
     if isinstance(job, Mapping):
         normalized["job"] = normalize_munchy_job_authoring(job, label="job")
@@ -125,7 +130,9 @@ def load_munchy_job_config(path: Path | None) -> dict[str, Any]:
         return {}
     raw = load_yaml_config(path)
     validate_json_schema(raw, MUNCHY_CONFIG_SCHEMA, label=str(path))
-    return normalize_munchy_config(raw)
+    expanded = apply_device_profile_to_munchy_config(raw, base_path=path)
+    validate_json_schema(expanded, MUNCHY_CONFIG_SCHEMA, label=str(path))
+    return normalize_munchy_config(expanded)
 
 
 def configured_job_defaults(config: Mapping[str, Any]) -> dict[str, Any]:

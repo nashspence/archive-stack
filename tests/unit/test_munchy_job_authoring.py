@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from munchy.device_profiles import instantiate_device_profile, load_device_profile
 from munchy.job_authoring import (
     build_review_sweep_plan,
     build_runner_upload_request_from_files,
@@ -57,6 +58,137 @@ def test_munchy_job_defaults_from_config_lowers_public_config() -> None:
     assert defaults["groups"]["video"]["metadata_projection"] == {
         "tags": ["device/example-camera"]
     }
+
+
+def test_munchy_job_config_loads_device_profile_by_relative_path(tmp_path: Path) -> None:
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    (profile_dir / "example-camera.yaml").write_text(
+        """
+schema_version: 1
+kind: munchy.device_profile
+id: example-camera
+parameters:
+  device_id:
+    required: true
+section:
+  upload_prefix: '{device_id}-media'
+  profile_group: video
+  archive_mode: av1_nvenc
+  encode_profile:
+    schema_version: 1
+    target: munchy-av1-nvenc
+    name: '{device_id}-webm'
+    archive:
+      codec: av1_nvenc
+      container: webm
+      quality: 36
+  routing:
+    sidecars:
+      xmp:
+        path: '{parent}/{stem}.xmp'
+        primary:
+          path:
+            suffix: .mp4
+        sidecar:
+          path:
+            suffix: .xmp
+    gates:
+      '{device_id}-native':
+        path:
+          basename_regex: ^CLIP[0-9]{6}\\.MP4$
+    routes:
+      - id: video
+        group: video
+        into: video
+        when:
+          gate: '{device_id}-native'
+""".strip(),
+        encoding="utf-8",
+    )
+    path = tmp_path / "munchy.yaml"
+    path.write_text(
+        """
+schema_version: 1
+kind: munchy.job
+device_profile:
+  path: profiles/example-camera.yaml
+  parameters:
+    device_id: patio-camera
+  overrides:
+    groups:
+      video:
+        max_parallel_encodes: 2
+job:
+  workflow_mode: collection_archive
+""".strip(),
+        encoding="utf-8",
+    )
+
+    config = load_munchy_job_config(path)
+    defaults = munchy_job_defaults_from_config(config)
+
+    assert defaults["upload_prefix"] == "patio-camera-media"
+    assert defaults["profile_routing"]["gates"]["patio-camera-native"] == {
+        "path": {"basename_regex": r"^CLIP[0-9]{6}\.MP4$"}
+    }
+    assert defaults["profile_routing"]["sidecars"][0]["path"] == "{parent}/{stem}.xmp"
+    assert defaults["profile_routing"]["routes"][0]["id"] == "video"
+    assert defaults["groups"]["video"]["max_parallel_encodes"] == 2
+    assert defaults["groups"]["video"]["encode_profile"]["archive"]["quality"] == 36
+
+
+def test_public_device_profiles_validate_and_instantiate() -> None:
+    profile_dir = Path(__file__).parents[2] / "config" / "device-profiles"
+    for path in sorted(profile_dir.glob("*.yaml")):
+        profile = load_device_profile(path)
+        parameters = {
+            str(name): {
+                "device_id": "example-camera",
+                "camera_name": "Example Camera",
+                "timezone": "UTC",
+            }.get(str(name), f"example-{name}")
+            for name in profile.get("parameters", {})
+        }
+        section = instantiate_device_profile(profile, parameters=parameters, label=str(path))
+        assert isinstance(section, dict)
+        assert section
+
+
+def test_munchy_device_profile_requires_declared_parameters(tmp_path: Path) -> None:
+    profile = tmp_path / "example-camera.yaml"
+    profile.write_text(
+        """
+schema_version: 1
+kind: munchy.device_profile
+id: example-camera
+parameters:
+  device_id:
+    required: true
+section:
+  routing:
+    routes:
+      - id: video
+        group: video
+        when:
+          path:
+            prefix: '{device_id}'
+""".strip(),
+        encoding="utf-8",
+    )
+    path = tmp_path / "munchy.yaml"
+    path.write_text(
+        f"""
+schema_version: 1
+kind: munchy.job
+device_profile:
+  path: {profile.name}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="requires device profile parameter 'device_id'"):
+        load_munchy_job_config(path)
 
 
 def test_munchy_job_config_rejects_runtime_riverhog_failure_policy(tmp_path: Path) -> None:

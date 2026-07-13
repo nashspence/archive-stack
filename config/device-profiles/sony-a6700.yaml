@@ -1,0 +1,1153 @@
+schema_version: 1
+kind: munchy.device_profile
+id: sony-a6700
+parameters:
+  device_id:
+    required: true
+section:
+  file_extensions:
+  - .mp4
+  - .xml
+  - .jpg
+  - .jpeg
+  - .hif
+  - .heif
+  - .arw
+  archive_mode: preserve
+  media_preflight: false
+  profile_group: preserve
+  encode_profile: false
+  profiles:
+    video-av1-webm:
+      name: video-av1-webm
+      archive:
+        codec: av1_nvenc
+        container: webm
+        quality: 56
+        preset: p7
+        tune: uhq
+        pix_fmt: p010le
+        fps_mode: passthrough
+        scale_flags: lanczos
+        audio:
+          codec: opus
+          bitrate: 128k
+          sample_rate: 48000
+          channels: 2
+          application: audio
+          compression_level: 10
+          vbr: 'on'
+  groups:
+    preserve:
+      archive_mode: preserve
+    video-av1-webm:
+      archive_mode: av1_nvenc
+      profile: video-av1-webm
+      max_parallel_encodes: 4
+      eager_pipeline_batches: 1
+  routing:
+    sidecars:
+      sony-xml:
+        format: xml
+        paths:
+        - '{parent}/{stem}M01.XML'
+        primary:
+          all:
+          - path:
+              prefix: '{device_id}'
+              basename_regex: ^C[0-9]{4}\.MP4$
+        sidecar:
+          path:
+            suffix: .xml
+        facts:
+          source: exiftool
+          tags:
+          - NonRealTimeMetaCreationDateValue
+          - NonRealTimeMetaDeviceManufacturer
+          - NonRealTimeMetaDeviceModelName
+          - NonRealTimeMetaAcquisitionRecordGroupName
+          - NonRealTimeMetaAcquisitionRecordGroupItemName
+          - NonRealTimeMetaAcquisitionRecordGroupItemValue
+          - NonRealTimeMetaVideoFormatVideoFrameCaptureFps
+          - NonRealTimeMetaVideoFormatVideoFrameVideoCodec
+          extractors:
+          - type: name_value
+            name_tag: NonRealTimeMetaAcquisitionRecordGroupItemName
+            value_tag: NonRealTimeMetaAcquisitionRecordGroupItemValue
+            requires:
+            - tag: NonRealTimeMetaAcquisitionRecordGroupName
+              contains: ExifGPS
+            fields:
+              Latitude: exif.gps_latitude
+              LatitudeRef: exif.gps_latitude_ref
+              Longitude: exif.gps_longitude
+              LongitudeRef: exif.gps_longitude_ref
+    gates:
+      '{device_id}-native':
+        all:
+        - path:
+            prefix: '{device_id}'
+        - any:
+          - fact: exif.model
+            equals: ILCE-6700
+          - path:
+              basename_regex: ^C[0-9]{4}\.MP4$
+      '{device_id}-video-xml-native':
+        all:
+        - path:
+            prefix: '{device_id}'
+        - fact: sidecars.sony-xml.facts.exiftool.tags.non_real_time_meta_device_manufacturer
+          equals: Sony
+        - fact: sidecars.sony-xml.facts.exiftool.tags.non_real_time_meta_device_model_name
+          equals: ILCE-6700
+      '{device_id}-video-xml-4k':
+        all:
+        - fact: sidecars.sony-xml.facts.exiftool.tags.non_real_time_meta_video_format_video_frame_video_codec
+          contains: _3840_2160_
+      '{device_id}-video-xml-1080p':
+        all:
+        - fact: sidecars.sony-xml.facts.exiftool.tags.non_real_time_meta_video_format_video_frame_video_codec
+          contains: _1920_1080_
+      '{device_id}-video-xml-24':
+        all:
+        - fact: sidecars.sony-xml.facts.exiftool.tags.non_real_time_meta_video_format_video_frame_capture_fps
+          equals: 23.98p
+      '{device_id}-video-xml-30':
+        all:
+        - fact: sidecars.sony-xml.facts.exiftool.tags.non_real_time_meta_video_format_video_frame_capture_fps
+          equals: 29.97p
+      '{device_id}-video-xml-60':
+        all:
+        - fact: sidecars.sony-xml.facts.exiftool.tags.non_real_time_meta_video_format_video_frame_capture_fps
+          equals: 59.94p
+      '{device_id}-video-xml-120':
+        all:
+        - fact: sidecars.sony-xml.facts.exiftool.tags.non_real_time_meta_video_format_video_frame_capture_fps
+          equals: 119.88p
+      '{device_id}-video-xml-h264-422-10bit-intra':
+        all:
+        - fact: sidecars.sony-xml.facts.exiftool.tags.non_real_time_meta_video_format_video_frame_video_codec
+          regex: ^AVC[0-9]*_.*_H422IP@
+      '{device_id}-video-xml-h264-422-10bit':
+        all:
+        - fact: sidecars.sony-xml.facts.exiftool.tags.non_real_time_meta_video_format_video_frame_video_codec
+          regex: ^AVC[0-9]*_.*_H422P@
+      '{device_id}-video-xml-h264-420-8bit':
+        all:
+        - fact: sidecars.sony-xml.facts.exiftool.tags.non_real_time_meta_video_format_video_frame_video_codec
+          regex: ^AVC_.*_HP@
+      '{device_id}-video-xml-hevc-422-10bit':
+        all:
+        - fact: sidecars.sony-xml.facts.exiftool.tags.non_real_time_meta_video_format_video_frame_video_codec
+          regex: ^HEVC_.*_M42210P@
+      '{device_id}-video-xml-hevc-420-10bit':
+        all:
+        - fact: sidecars.sony-xml.facts.exiftool.tags.non_real_time_meta_video_format_video_frame_video_codec
+          regex: ^HEVC_.*_M10P@
+      '{device_id}-photo-heif':
+        all:
+        - gate: '{device_id}-native'
+        - path:
+            suffix_in:
+            - .hif
+            - .heif
+        - any:
+          - fact: exiftool.tags.jpeg_heif_switch
+            equals: HEIF
+          - fact: exif.mime_type
+            equals: image/heif
+      '{device_id}-photo-heif-420':
+        all:
+        - gate: '{device_id}-photo-heif'
+        - fact: exiftool.tags.quick_time_chroma_format
+          equals: '4:2:0'
+      '{device_id}-photo-heif-422':
+        all:
+        - gate: '{device_id}-photo-heif'
+        - fact: exiftool.tags.quick_time_chroma_format
+          equals: '4:2:2'
+    routes:
+    - id: sony-thumbnail-held
+      action: leave
+      when:
+        all:
+        - path:
+            prefix: '{device_id}/private/M4ROOT/THMBNL'
+        - path:
+            suffix_in:
+            - .jpg
+            - .jpeg
+            - .JPG
+            - .JPEG
+    - id: sony-media-index-xml-held
+      action: leave
+      when:
+        all:
+        - path:
+            prefix: '{device_id}/private/M4ROOT'
+            basename_regex: ^MEDIAPRO\.XML$
+    - id: sidecar-xml-orphan
+      group: preserve
+      into: sidecar/xml-orphan
+      when:
+        all:
+        - path:
+            prefix: '{device_id}'
+            basename_regex: ^C[0-9]{4}M01\.XML$
+    - id: photo-raw-arw-lossless-compressed
+      group: preserve
+      into: photo/raw-arw/lossless-compressed
+      when:
+        all:
+        - path:
+            prefix: '{device_id}'
+            suffix: .arw
+        - fact: exiftool.tags.raw_file_type
+          equals: Lossless Compressed RAW
+    - id: photo-raw-arw-compressed
+      group: preserve
+      into: photo/raw-arw/compressed
+      when:
+        all:
+        - path:
+            prefix: '{device_id}'
+            suffix: .arw
+        - fact: exiftool.tags.raw_file_type
+          equals: Compressed RAW
+    - id: photo-jpeg-extra-fine
+      group: preserve
+      into: photo/jpeg/extra-fine
+      when:
+        all:
+        - path:
+            prefix: '{device_id}'
+            suffix: .jpg
+        - fact: exiftool.tags.quality
+          equals: Extra Fine
+    - id: photo-jpeg-fine
+      group: preserve
+      into: photo/jpeg/fine
+      when:
+        all:
+        - path:
+            prefix: '{device_id}'
+            suffix: .jpg
+        - fact: exiftool.tags.quality
+          equals: Fine
+    - id: photo-jpeg-standard
+      group: preserve
+      into: photo/jpeg/standard
+      when:
+        all:
+        - path:
+            prefix: '{device_id}'
+            suffix: .jpg
+        - fact: exiftool.tags.quality
+          equals: Standard
+    - id: photo-jpeg-light
+      group: preserve
+      into: photo/jpeg/light
+      when:
+        all:
+        - path:
+            prefix: '{device_id}'
+            suffix: .jpg
+        - fact: exiftool.tags.quality
+          equals: Light
+    - id: photo-heif-420-extra-fine
+      group: preserve
+      into: photo/heif/4-2-0/extra-fine
+      when:
+        all:
+        - gate: '{device_id}-photo-heif-420'
+        - fact: exiftool.tags.quality
+          equals: Extra Fine
+    - id: photo-heif-420-fine
+      group: preserve
+      into: photo/heif/4-2-0/fine
+      when:
+        all:
+        - gate: '{device_id}-photo-heif-420'
+        - fact: exiftool.tags.quality
+          equals: Fine
+    - id: photo-heif-420-standard
+      group: preserve
+      into: photo/heif/4-2-0/standard
+      when:
+        all:
+        - gate: '{device_id}-photo-heif-420'
+        - fact: exiftool.tags.quality
+          equals: Standard
+    - id: photo-heif-420-light
+      group: preserve
+      into: photo/heif/4-2-0/light
+      when:
+        all:
+        - gate: '{device_id}-photo-heif-420'
+        - fact: exiftool.tags.quality
+          equals: Light
+    - id: photo-heif-422-extra-fine
+      group: preserve
+      into: photo/heif/4-2-2/extra-fine
+      when:
+        all:
+        - gate: '{device_id}-photo-heif-422'
+        - fact: exiftool.tags.quality
+          equals: Extra Fine
+    - id: photo-heif-422-fine
+      group: preserve
+      into: photo/heif/4-2-2/fine
+      when:
+        all:
+        - gate: '{device_id}-photo-heif-422'
+        - fact: exiftool.tags.quality
+          equals: Fine
+    - id: photo-heif-422-standard
+      group: preserve
+      into: photo/heif/4-2-2/standard
+      when:
+        all:
+        - gate: '{device_id}-photo-heif-422'
+        - fact: exiftool.tags.quality
+          equals: Standard
+    - id: photo-heif-422-light
+      group: preserve
+      into: photo/heif/4-2-2/light
+      when:
+        all:
+        - gate: '{device_id}-photo-heif-422'
+        - fact: exiftool.tags.quality
+          equals: Light
+    - id: photo-heif-420
+      group: preserve
+      into: photo/heif/4-2-0
+      when:
+        all:
+        - gate: '{device_id}-photo-heif-420'
+    - id: photo-heif-422
+      group: preserve
+      into: photo/heif/4-2-2
+      when:
+        all:
+        - gate: '{device_id}-photo-heif-422'
+    - id: photo-heif
+      group: preserve
+      into: photo/heif
+      when:
+        all:
+        - gate: '{device_id}-photo-heif'
+    - id: photo-raw-arw
+      group: preserve
+      into: photo/raw-arw
+      when:
+        all:
+        - path:
+            prefix: '{device_id}'
+            suffix: .arw
+    - id: photo-jpeg
+      group: preserve
+      into: photo/jpeg
+      when:
+        all:
+        - gate: '{device_id}-native'
+        - path:
+            suffix_in:
+            - .jpg
+            - .jpeg
+    - id: video-hevc-4k60-422-10bit-200m
+      group: video-av1-webm
+      into: video/hevc-4k60-422-10bit/200m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-60'
+        - gate: '{device_id}-video-xml-hevc-422-10bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 200 Mbps
+    - id: video-hevc-4k60-422-10bit-100m
+      group: video-av1-webm
+      into: video/hevc-4k60-422-10bit/100m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-60'
+        - gate: '{device_id}-video-xml-hevc-422-10bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 100 Mbps
+    - id: video-hevc-4k60-420-10bit-150m
+      group: video-av1-webm
+      into: video/hevc-4k60-420-10bit/150m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-60'
+        - gate: '{device_id}-video-xml-hevc-420-10bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 150 Mbps
+    - id: video-hevc-4k60-420-10bit-75m
+      group: video-av1-webm
+      into: video/hevc-4k60-420-10bit/75m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-60'
+        - gate: '{device_id}-video-xml-hevc-420-10bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 75 Mbps
+    - id: video-hevc-4k60-420-10bit-45m
+      group: video-av1-webm
+      into: video/hevc-4k60-420-10bit/45m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-60'
+        - gate: '{device_id}-video-xml-hevc-420-10bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 45 Mbps
+    - id: video-hevc-4k24-422-10bit-100m
+      group: video-av1-webm
+      into: video/hevc-4k24-422-10bit/100m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-24'
+        - gate: '{device_id}-video-xml-hevc-422-10bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 100 Mbps
+    - id: video-hevc-4k24-422-10bit-50m
+      group: video-av1-webm
+      into: video/hevc-4k24-422-10bit/50m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-24'
+        - gate: '{device_id}-video-xml-hevc-422-10bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 50 Mbps
+    - id: video-hevc-4k24-420-10bit-100m
+      group: video-av1-webm
+      into: video/hevc-4k24-420-10bit/100m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-24'
+        - gate: '{device_id}-video-xml-hevc-420-10bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 100 Mbps
+    - id: video-hevc-4k24-420-10bit-50m
+      group: video-av1-webm
+      into: video/hevc-4k24-420-10bit/50m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-24'
+        - gate: '{device_id}-video-xml-hevc-420-10bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 50 Mbps
+    - id: video-hevc-4k24-420-10bit-30m
+      group: video-av1-webm
+      into: video/hevc-4k24-420-10bit/30m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-24'
+        - gate: '{device_id}-video-xml-hevc-420-10bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 30 Mbps
+    - id: video-hevc-4k120-422-10bit-280m
+      group: video-av1-webm
+      into: video/hevc-4k120-422-10bit/280m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-120'
+        - gate: '{device_id}-video-xml-hevc-422-10bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 280 Mbps
+    - id: video-hevc-4k120-420-10bit-200m
+      group: video-av1-webm
+      into: video/hevc-4k120-420-10bit/200m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-120'
+        - gate: '{device_id}-video-xml-hevc-420-10bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 200 Mbps
+    - id: video-h264-4k60-422-10bit-200m
+      group: video-av1-webm
+      into: video/h264-4k60-422-10bit/200m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-60'
+        - gate: '{device_id}-video-xml-h264-422-10bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 200 Mbps
+    - id: video-h264-4k60-420-8bit-150m
+      group: video-av1-webm
+      into: video/h264-4k60-420-8bit/150m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-60'
+        - gate: '{device_id}-video-xml-h264-420-8bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 150 Mbps
+    - id: video-h264-4k30-422-10bit-140m
+      group: video-av1-webm
+      into: video/h264-4k30-422-10bit/140m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-30'
+        - gate: '{device_id}-video-xml-h264-422-10bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 140 Mbps
+    - id: video-h264-4k30-420-8bit-100m
+      group: video-av1-webm
+      into: video/h264-4k30-420-8bit/100m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-30'
+        - gate: '{device_id}-video-xml-h264-420-8bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 100 Mbps
+    - id: video-h264-4k30-420-8bit-60m
+      group: video-av1-webm
+      into: video/h264-4k30-420-8bit/60m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-30'
+        - gate: '{device_id}-video-xml-h264-420-8bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 60 Mbps
+    - id: video-h264-4k24-422-10bit-100m
+      group: video-av1-webm
+      into: video/h264-4k24-422-10bit/100m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-24'
+        - gate: '{device_id}-video-xml-h264-422-10bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 100 Mbps
+    - id: video-h264-4k24-420-8bit-100m
+      group: video-av1-webm
+      into: video/h264-4k24-420-8bit/100m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-24'
+        - gate: '{device_id}-video-xml-h264-420-8bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 100 Mbps
+    - id: video-h264-4k24-420-8bit-60m
+      group: video-av1-webm
+      into: video/h264-4k24-420-8bit/60m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-24'
+        - gate: '{device_id}-video-xml-h264-420-8bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 60 Mbps
+    - id: video-h264-4k120-422-10bit-280m
+      group: video-av1-webm
+      into: video/h264-4k120-422-10bit/280m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-120'
+        - gate: '{device_id}-video-xml-h264-422-10bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 280 Mbps
+    - id: video-h264-4k120-420-8bit-200m
+      group: video-av1-webm
+      into: video/h264-4k120-420-8bit/200m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-120'
+        - gate: '{device_id}-video-xml-h264-420-8bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 200 Mbps
+    - id: video-h264-1080p60-422-10bit-50m
+      group: video-av1-webm
+      into: video/h264-1080p60-422-10bit/50m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-60'
+        - gate: '{device_id}-video-xml-h264-422-10bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 50 Mbps
+    - id: video-h264-1080p60-420-8bit-50m
+      group: video-av1-webm
+      into: video/h264-1080p60-420-8bit/50m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-60'
+        - gate: '{device_id}-video-xml-h264-420-8bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 50 Mbps
+    - id: video-h264-1080p60-420-8bit-25m
+      group: video-av1-webm
+      into: video/h264-1080p60-420-8bit/25m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-60'
+        - gate: '{device_id}-video-xml-h264-420-8bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 25 Mbps
+    - id: video-h264-1080p30-422-10bit-50m
+      group: video-av1-webm
+      into: video/h264-1080p30-422-10bit/50m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-30'
+        - gate: '{device_id}-video-xml-h264-422-10bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 50 Mbps
+    - id: video-h264-1080p30-420-8bit-50m
+      group: video-av1-webm
+      into: video/h264-1080p30-420-8bit/50m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-30'
+        - gate: '{device_id}-video-xml-h264-420-8bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 50 Mbps
+    - id: video-h264-1080p30-420-8bit-16m
+      group: video-av1-webm
+      into: video/h264-1080p30-420-8bit/16m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-30'
+        - gate: '{device_id}-video-xml-h264-420-8bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 16 Mbps
+    - id: video-h264-1080p24-422-10bit-50m
+      group: video-av1-webm
+      into: video/h264-1080p24-422-10bit/50m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-24'
+        - gate: '{device_id}-video-xml-h264-422-10bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 50 Mbps
+    - id: video-h264-1080p24-420-8bit-50m
+      group: video-av1-webm
+      into: video/h264-1080p24-420-8bit/50m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-24'
+        - gate: '{device_id}-video-xml-h264-420-8bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 50 Mbps
+    - id: video-h264-1080p120-420-8bit-100m
+      group: video-av1-webm
+      into: video/h264-1080p120-420-8bit/100m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-120'
+        - gate: '{device_id}-video-xml-h264-420-8bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 100 Mbps
+    - id: video-h264-1080p120-420-8bit-60m
+      group: video-av1-webm
+      into: video/h264-1080p120-420-8bit/60m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-120'
+        - gate: '{device_id}-video-xml-h264-420-8bit'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 60 Mbps
+    - id: video-h264-4k60-422-10bit-intra-600m
+      group: video-av1-webm
+      into: video/h264-4k60-422-10bit-intra/600m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-60'
+        - gate: '{device_id}-video-xml-h264-422-10bit-intra'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 600 Mbps
+    - id: video-h264-4k30-422-10bit-intra-300m
+      group: video-av1-webm
+      into: video/h264-4k30-422-10bit-intra/300m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-30'
+        - gate: '{device_id}-video-xml-h264-422-10bit-intra'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 300 Mbps
+    - id: video-h264-4k24-422-10bit-intra-240m
+      group: video-av1-webm
+      into: video/h264-4k24-422-10bit-intra/240m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-24'
+        - gate: '{device_id}-video-xml-h264-422-10bit-intra'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 240 Mbps
+    - id: video-h264-1080p60-422-10bit-intra-222m
+      group: video-av1-webm
+      into: video/h264-1080p60-422-10bit-intra/222m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-60'
+        - gate: '{device_id}-video-xml-h264-422-10bit-intra'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 222 Mbps
+    - id: video-h264-1080p30-422-10bit-intra-111m
+      group: video-av1-webm
+      into: video/h264-1080p30-422-10bit-intra/111m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-30'
+        - gate: '{device_id}-video-xml-h264-422-10bit-intra'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 111 Mbps
+    - id: video-h264-1080p24-422-10bit-intra-89m
+      group: video-av1-webm
+      into: video/h264-1080p24-422-10bit-intra/89m
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-24'
+        - gate: '{device_id}-video-xml-h264-422-10bit-intra'
+        - fact: exiftool.tags.video_avg_bitrate
+          equals: 89 Mbps
+    - id: video-h264-4k60-422-10bit-intra
+      group: video-av1-webm
+      into: video/h264-4k60-422-10bit-intra
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-60'
+        - gate: '{device_id}-video-xml-h264-422-10bit-intra'
+    - id: video-h264-4k30-422-10bit-intra
+      group: video-av1-webm
+      into: video/h264-4k30-422-10bit-intra
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-30'
+        - gate: '{device_id}-video-xml-h264-422-10bit-intra'
+    - id: video-h264-4k24-422-10bit-intra
+      group: video-av1-webm
+      into: video/h264-4k24-422-10bit-intra
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-24'
+        - gate: '{device_id}-video-xml-h264-422-10bit-intra'
+    - id: video-h264-1080p60-422-10bit-intra
+      group: video-av1-webm
+      into: video/h264-1080p60-422-10bit-intra
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-60'
+        - gate: '{device_id}-video-xml-h264-422-10bit-intra'
+    - id: video-h264-1080p30-422-10bit-intra
+      group: video-av1-webm
+      into: video/h264-1080p30-422-10bit-intra
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-30'
+        - gate: '{device_id}-video-xml-h264-422-10bit-intra'
+    - id: video-h264-1080p24-422-10bit-intra
+      group: video-av1-webm
+      into: video/h264-1080p24-422-10bit-intra
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-24'
+        - gate: '{device_id}-video-xml-h264-422-10bit-intra'
+    - id: video-hevc-4k60-422-10bit
+      group: video-av1-webm
+      into: video/hevc-4k60-422-10bit
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-60'
+        - gate: '{device_id}-video-xml-hevc-422-10bit'
+    - id: video-hevc-4k60-420-10bit
+      group: video-av1-webm
+      into: video/hevc-4k60-420-10bit
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-60'
+        - gate: '{device_id}-video-xml-hevc-420-10bit'
+    - id: video-hevc-4k24-422-10bit
+      group: video-av1-webm
+      into: video/hevc-4k24-422-10bit
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-24'
+        - gate: '{device_id}-video-xml-hevc-422-10bit'
+    - id: video-hevc-4k24-420-10bit
+      group: video-av1-webm
+      into: video/hevc-4k24-420-10bit
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-24'
+        - gate: '{device_id}-video-xml-hevc-420-10bit'
+    - id: video-hevc-4k120-422-10bit
+      group: video-av1-webm
+      into: video/hevc-4k120-422-10bit
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-120'
+        - gate: '{device_id}-video-xml-hevc-422-10bit'
+    - id: video-hevc-4k120-420-10bit
+      group: video-av1-webm
+      into: video/hevc-4k120-420-10bit
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-120'
+        - gate: '{device_id}-video-xml-hevc-420-10bit'
+    - id: video-h264-4k60-422-10bit
+      group: video-av1-webm
+      into: video/h264-4k60-422-10bit
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-60'
+        - gate: '{device_id}-video-xml-h264-422-10bit'
+    - id: video-h264-4k60-420-8bit
+      group: video-av1-webm
+      into: video/h264-4k60-420-8bit
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-60'
+        - gate: '{device_id}-video-xml-h264-420-8bit'
+    - id: video-h264-4k30-422-10bit
+      group: video-av1-webm
+      into: video/h264-4k30-422-10bit
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-30'
+        - gate: '{device_id}-video-xml-h264-422-10bit'
+    - id: video-h264-4k30-420-8bit
+      group: video-av1-webm
+      into: video/h264-4k30-420-8bit
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-30'
+        - gate: '{device_id}-video-xml-h264-420-8bit'
+    - id: video-h264-4k24-422-10bit
+      group: video-av1-webm
+      into: video/h264-4k24-422-10bit
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-24'
+        - gate: '{device_id}-video-xml-h264-422-10bit'
+    - id: video-h264-4k24-420-8bit
+      group: video-av1-webm
+      into: video/h264-4k24-420-8bit
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-24'
+        - gate: '{device_id}-video-xml-h264-420-8bit'
+    - id: video-h264-4k120-422-10bit
+      group: video-av1-webm
+      into: video/h264-4k120-422-10bit
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-120'
+        - gate: '{device_id}-video-xml-h264-422-10bit'
+    - id: video-h264-4k120-420-8bit
+      group: video-av1-webm
+      into: video/h264-4k120-420-8bit
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-4k'
+        - gate: '{device_id}-video-xml-120'
+        - gate: '{device_id}-video-xml-h264-420-8bit'
+    - id: video-h264-1080p60-422-10bit
+      group: video-av1-webm
+      into: video/h264-1080p60-422-10bit
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-60'
+        - gate: '{device_id}-video-xml-h264-422-10bit'
+    - id: video-h264-1080p60-420-8bit
+      group: video-av1-webm
+      into: video/h264-1080p60-420-8bit
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-60'
+        - gate: '{device_id}-video-xml-h264-420-8bit'
+    - id: video-h264-1080p30-422-10bit
+      group: video-av1-webm
+      into: video/h264-1080p30-422-10bit
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-30'
+        - gate: '{device_id}-video-xml-h264-422-10bit'
+    - id: video-h264-1080p30-420-8bit
+      group: video-av1-webm
+      into: video/h264-1080p30-420-8bit
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-30'
+        - gate: '{device_id}-video-xml-h264-420-8bit'
+    - id: video-h264-1080p24-422-10bit
+      group: video-av1-webm
+      into: video/h264-1080p24-422-10bit
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-24'
+        - gate: '{device_id}-video-xml-h264-422-10bit'
+    - id: video-h264-1080p24-420-8bit
+      group: video-av1-webm
+      into: video/h264-1080p24-420-8bit
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-24'
+        - gate: '{device_id}-video-xml-h264-420-8bit'
+    - id: video-h264-1080p120-420-8bit
+      group: video-av1-webm
+      into: video/h264-1080p120-420-8bit
+      when:
+        all:
+        - gate: '{device_id}-video-xml-native'
+        - path:
+            suffix: .mp4
+        - gate: '{device_id}-video-xml-1080p'
+        - gate: '{device_id}-video-xml-120'
+        - gate: '{device_id}-video-xml-h264-420-8bit'
+    extra_exiftool_tags:
+    - Quality
+    - RAWFileType
+    - JPEG-HEIFSwitch
+    - QuickTime:ChromaFormat
+    - VideoAvgBitrate
