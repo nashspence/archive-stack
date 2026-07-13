@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import dataclass, replace
@@ -119,6 +120,41 @@ def test_env_config_creates_one_account_collection_per_account(tmp_path: Path) -
         ("phone", "phone", ("phone",)),
     ]
     assert config.munchy_job_defaults["tasks"] == ["archive_video"]
+
+
+def test_env_config_supports_per_account_upload_prefix_and_munchy_job(
+    tmp_path: Path,
+) -> None:
+    job_config = {
+        "groups": {
+            "camera-video": {
+                "archive_mode": "av1_nvenc",
+                "tasks": ["archive_video"],
+                "metadata_projection": {
+                    "gps": {"latitude": 48.9995, "longitude": -122.7404},
+                },
+            }
+        },
+        "profile_routing": {
+            "routes": [
+                {
+                    "id": "main-video",
+                    "group": "camera-video",
+                    "when": {"path": {"prefix": "camera-video"}},
+                }
+            ]
+        },
+    }
+    env = {
+        **env_for(tmp_path, accounts="camera"),
+        "JEB_ACCOUNT_CAMERA_UPLOAD_PREFIX": "camera-video",
+        "JEB_ACCOUNT_CAMERA_MUNCHY_JOB_JSON": json.dumps(job_config, separators=(",", ":")),
+    }
+
+    config = config_from_env(env)
+
+    assert config.sources[0].upload_prefix == "camera-video"
+    assert dict(config.collections[0].munchy_job_defaults) == job_config
 
 
 def test_env_config_supports_per_account_cadence(tmp_path: Path) -> None:
@@ -307,6 +343,65 @@ def test_munchy_payload_uses_account_group_paths_without_routing(tmp_path: Path)
     assert request.job_payload["groups"] == {}
     assert request.job_payload["notify"] == {"enabled": True, "recipients": ["nash", "katie"]}
     assert "profile_routing" not in request.job_payload
+
+
+def test_munchy_payload_uses_per_account_job_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job_config = {
+        "archive_mode": "av1_nvenc",
+        "tasks": ["archive_video"],
+        "groups": {
+            "camera-video": {
+                "archive_mode": "av1_nvenc",
+                "tasks": ["archive_video"],
+                "metadata_projection": {
+                    "gps": {"latitude": 48.9995, "longitude": -122.7404},
+                },
+            }
+        },
+        "profile_routing": {
+            "routes": [
+                {
+                    "id": "main-video",
+                    "group": "camera-video",
+                    "when": {"path": {"prefix": "camera-video"}},
+                }
+            ]
+        },
+    }
+    config = config_from_env(
+        {
+            **env_for(tmp_path, accounts="camera"),
+            "JEB_ACCOUNT_CAMERA_UPLOAD_PREFIX": "camera-video",
+            "JEB_ACCOUNT_CAMERA_MUNCHY_JOB_JSON": json.dumps(job_config, separators=(",", ":")),
+        }
+    )
+    write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4")
+    collector = Collector(config)
+    collector.init_db()
+
+    class FakeMunchyRunnerClient:
+        def __init__(self, url: str) -> None:
+            self.url = url
+
+        def profile_routing_preflight(self, **_kwargs: object) -> dict[str, object]:
+            return {"ok": True, "left": []}
+
+    monkeypatch.setattr(collector_module, "MunchyRunnerClient", FakeMunchyRunnerClient)
+
+    batch_id = collector.archive_now(source_id="camera", process=False)
+    assert batch_id is not None
+    request = munchy_upload_request(collector, batch_id, config.targets["munchy"])
+
+    assert [item.rel_path for item in request.files] == ["camera-video/clip.mp4"]
+    assert request.job_payload["groups"] == job_config["groups"]
+    assert request.job_payload["profile_routing"] == job_config["profile_routing"]
+    assert request.storage_hint["structured_routing"] is True
+    assert request.storage_hint["groups"] == {
+        "camera-video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]}
+    }
 
 
 def test_jeb_batch_alerts_use_account_notify_recipients(tmp_path: Path) -> None:

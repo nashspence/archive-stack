@@ -296,6 +296,7 @@ class CollectionConfig:
     weekday: int
     hour: int
     minute: int
+    munchy_job_defaults: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1011,12 +1012,13 @@ class Collector:
     ) -> list[EligibleFile] | None:
         if not files:
             return []
-        profile_routing = mapping(self.config.munchy_job_defaults.get("profile_routing"))
+        munchy_job_defaults = collection_munchy_job_defaults(self.config, collection)
+        profile_routing = mapping(munchy_job_defaults.get("profile_routing"))
         if not profile_routing:
             self.clear_routing_preflight_failure(source.id)
             return list(files)
         target = self.target_by_name(collection.target)
-        groups: dict[str, dict[str, Any]] = {}
+        groups = munchy_groups_from_defaults(munchy_job_defaults)
         path_facts_by_path = {
             item.target_path: routing_file_facts(item.target_path) for item in files
         }
@@ -2265,27 +2267,28 @@ def munchy_upload_request(
         )
         for row in rows
     )
-    groups: dict[str, dict[str, Any]] = {}
-    profile_routing = mapping(collector.config.munchy_job_defaults.get("profile_routing"))
+    munchy_job_defaults = collection_munchy_job_defaults(collector.config, collection)
+    groups = munchy_groups_from_defaults(munchy_job_defaults)
+    profile_routing = mapping(munchy_job_defaults.get("profile_routing"))
     job_payload = {
         "job_id": str(batch["job_id"]),
         "input_upload_id": str(batch["input_upload_id"]),
         "collection_slug": str(batch["collection_slug"]),
         "collection_timestamp": str(batch["collection_timestamp"]),
-        "workflow_mode": collector.config.munchy_job_defaults.get(
+        "workflow_mode": munchy_job_defaults.get(
             "workflow_mode",
             "collection_archive",
         ),
-        "archive_mode": collector.config.munchy_job_defaults.get("archive_mode", "av1_nvenc"),
-        "tasks": list(collector.config.munchy_job_defaults.get("tasks") or ["archive_video"]),
+        "archive_mode": munchy_job_defaults.get("archive_mode", "av1_nvenc"),
+        "tasks": list(munchy_job_defaults.get("tasks") or ["archive_video"]),
         "groups": groups,
         "collection_archive": dict(
-            collector.config.munchy_job_defaults.get("collection_archive")
+            munchy_job_defaults.get("collection_archive")
             or {"destination": "riverhog"}
         ),
         "notify": dict(collection.notify),
         "cleanup_local_on_success": bool(
-            collector.config.munchy_job_defaults.get("cleanup_local_on_success", False)
+            munchy_job_defaults.get("cleanup_local_on_success", False)
         ),
     }
     if profile_routing:
@@ -2306,6 +2309,10 @@ def munchy_upload_request(
             for name, group in groups.items()
         },
     }
+    for name, group in groups.items():
+        eager_pipeline_batches = group.get("eager_pipeline_batches")
+        if eager_pipeline_batches is not None:
+            storage_hint["groups"][name]["eager_pipeline_batches"] = eager_pipeline_batches
     return RunnerUploadRequest(
         upload_id=str(batch["input_upload_id"]),
         job_id=str(batch["job_id"]),
@@ -2535,6 +2542,19 @@ def required_env(env: Mapping[str, str], name: str) -> str:
     return value
 
 
+def env_json_mapping(env: Mapping[str, str], name: str) -> dict[str, Any]:
+    value = env_value_from(env, name)
+    if value is None:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{name} must be JSON") from exc
+    if not isinstance(parsed, Mapping):
+        raise ValueError(f"{name} must be a JSON object")
+    return dict(parsed)
+
+
 def env_int(env: Mapping[str, str], name: str, default: int) -> int:
     value = env_value_from(env, name)
     if value is None:
@@ -2552,6 +2572,51 @@ def parse_cadence(value: str | None, *, env_name: str) -> Cadence:
             f"{env_name} must be one of: " + ", ".join(sorted(JEB_CADENCES))
         )
     return cast(Cadence, cadence)
+
+
+def source_from_account(
+    account: str,
+    env: Mapping[str, str],
+    *,
+    landing_dir: Path,
+    stable_seconds: int,
+    include_extensions: frozenset[str],
+) -> SourceConfig:
+    account_env = account_env_name(account)
+    upload_prefix = normalize_posix(
+        env_value_from(env, f"JEB_ACCOUNT_{account_env}_UPLOAD_PREFIX", account) or account
+    )
+    return SourceConfig(
+        id=account,
+        enabled=True,
+        path=landing_dir / account,
+        upload_prefix=upload_prefix,
+        stable_seconds=stable_seconds,
+        include_extensions=include_extensions,
+    )
+
+
+def collection_munchy_job_defaults(
+    config: JebConfig,
+    collection: CollectionConfig,
+) -> dict[str, Any]:
+    defaults = dict(config.munchy_job_defaults)
+    defaults.update(dict(collection.munchy_job_defaults))
+    return defaults
+
+
+def munchy_groups_from_defaults(defaults: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    groups = defaults.get("groups")
+    if groups is None:
+        return {}
+    if not isinstance(groups, Mapping):
+        raise ValueError("munchy job groups must be a JSON object")
+    out: dict[str, dict[str, Any]] = {}
+    for name, group in groups.items():
+        if not isinstance(group, Mapping):
+            raise ValueError(f"munchy job group {name} must be a JSON object")
+        out[str(name)] = dict(group)
+    return out
 
 
 def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
@@ -2665,11 +2730,10 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
     )
     stable_seconds = parse_duration(env_value_from(values, "JEB_STABLE_AGE"), 600)
     sources = tuple(
-        SourceConfig(
-            id=account,
-            enabled=True,
-            path=landing_dir / account,
-            upload_prefix=account,
+        source_from_account(
+            account,
+            values,
+            landing_dir=landing_dir,
             stable_seconds=stable_seconds,
             include_extensions=include_extensions,
         )
@@ -2694,6 +2758,7 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
         "notify": notify_defaults,
         "cleanup_local_on_success": env_bool(values, "JEB_CLEANUP_LOCAL_ON_SUCCESS", False),
     }
+    munchy_job_defaults.update(env_json_mapping(values, "JEB_MUNCHY_JOB_JSON"))
     return JebConfig(
         collector=collector,
         notify=notify,
@@ -2713,6 +2778,7 @@ def collection_from_account(account: str, env: Mapping[str, str]) -> CollectionC
         env_name="JEB_CADENCE",
     )
     account_cadence_env = f"JEB_ACCOUNT_{account_env_name(account)}_CADENCE"
+    account_munchy_job_env = f"JEB_ACCOUNT_{account_env_name(account)}_MUNCHY_JOB_JSON"
     account_notify_enabled_env = f"JEB_ACCOUNT_{account_env_name(account)}_NOTIFY_ENABLED"
     account_notify_recipients_env = f"JEB_ACCOUNT_{account_env_name(account)}_NOTIFY_RECIPIENTS"
     notify_enabled = env_bool(
@@ -2751,6 +2817,7 @@ def collection_from_account(account: str, env: Mapping[str, str]) -> CollectionC
         weekday=parse_weekday(env_value_from(env, "JEB_WEEKDAY", "monday")),
         hour=hour,
         minute=minute,
+        munchy_job_defaults=env_json_mapping(env, account_munchy_job_env),
     )
 
 
