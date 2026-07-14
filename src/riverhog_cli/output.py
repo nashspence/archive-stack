@@ -101,6 +101,54 @@ def format_collection_summary(
     return "\n".join(lines)
 
 
+def format_collection_deletion_plan(payload: Mapping[str, object]) -> str:
+    archive_objects = payload.get("archive_objects")
+    archive_object_count = (
+        len(archive_objects)
+        if isinstance(archive_objects, Sequence) and not isinstance(archive_objects, (str, bytes))
+        else 0
+    )
+    archive_restores = payload.get("archive_restores")
+    archive_restore_count = (
+        len(archive_restores)
+        if isinstance(archive_restores, Sequence)
+        and not isinstance(archive_restores, (str, bytes))
+        else 0
+    )
+    lines = [
+        str(payload.get("warning", "DANGER: This collection deletion is permanent.")),
+        "",
+        f"collection deletion plan: {payload.get('collection_id', 'unknown')}",
+        f"status: {payload.get('status', 'unknown')}",
+        f"files: {payload.get('file_count', 0)} ({_bytes(payload.get('bytes'))})",
+        f"hot: {payload.get('hot_files', 0)} ({_bytes(payload.get('hot_bytes'))})",
+        f"remote storage: {_bytes(payload.get('remote_storage_bytes'))}",
+        f"archive objects: {archive_object_count}",
+        f"archive restores: {archive_restore_count}",
+    ]
+    blockers = payload.get("blockers")
+    if isinstance(blockers, Sequence) and not isinstance(blockers, (str, bytes)):
+        lines.extend(f"blocked: {blocker}" for blocker in blockers)
+    if payload.get("billing_note"):
+        lines.append(f"billing: {payload['billing_note']}")
+    if payload.get("expires_at"):
+        lines.append(f"plan expires: {payload['expires_at']}")
+    if payload.get("challenge"):
+        lines.append(f"confirmation challenge: {payload['challenge']}")
+    return "\n".join(lines)
+
+
+def format_collection_deletion_result(payload: Mapping[str, object]) -> str:
+    return "\n".join(
+        [
+            f"collection deletion: {payload.get('status', 'unknown')}",
+            f"collection: {payload.get('collection_id', 'unknown')}",
+            f"files: {payload.get('files', 0)} ({_bytes(payload.get('bytes'))})",
+            f"remote storage: {_bytes(payload.get('remote_storage_bytes'))}",
+        ]
+    )
+
+
 def format_collection_upload(payload: Mapping[str, object]) -> str:
     lines = [
         f"collection upload {payload.get('collection_id', 'unknown')}",

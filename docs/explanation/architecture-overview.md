@@ -10,13 +10,15 @@ Riverhog accepts immutable logical collections, stores their files in a fast mat
 4. Riverhog builds and encrypts the collection archive, uploads it to remote storage, verifies the remote object, and records the manifest and OpenTimestamps proof.
 5. Verified logical files become available in hot storage and the collection becomes accepted.
 
-A collection is durable only when its archive record is uploaded and verified. The archive package, manifest, digest, encryption parameters, and proof together define the recoverable unit.
+A collection is durable only when its archive record is uploaded and verified. The archive package, manifest, digest, encryption parameters, and proof together define the recoverable unit. A collection is immutable while present; operators can change the retained set by accepting a new collection and deliberately deleting an existing collection as a whole.
 
 ## Remote archive
 
 The remote archive account is the durable storage authority. Operational readiness includes working account recovery, authentication, billing, bucket permissions, object listing, object reads, and restore requests for the configured storage class. These controls should be checked routinely and after credential or provider changes.
 
 Archive object keys are opaque. User-facing identity comes from the catalog and collection manifest, not from bucket paths. Archive credentials have only the permissions required by the configured service role.
+
+Riverhog publishes plaintext `README.md` and `AGENTS.md` guidance at the archive root. Both warn that encrypted collection objects are the sole durable copies Riverhog relies on and that opaque names do not imply unused data.
 
 ## Hot storage
 

@@ -5,7 +5,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app:/app/src \
-    PATH="/app/.venv/bin:${PATH}"
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    PATH="/opt/venv/bin:${PATH}"
 
 ARG AGE_VERSION=v1.3.1
 
@@ -41,5 +42,5 @@ COPY services/munchy-av1-nvenc/app ./services/munchy-av1-nvenc/app
 COPY services/munchy-runner/app ./services/munchy-runner/app
 COPY tests ./tests
 
-ENTRYPOINT ["/app/.venv/bin/python", "-m", "pytest"]
+ENTRYPOINT ["/opt/venv/bin/python", "-m", "pytest"]
 CMD ["-q"]

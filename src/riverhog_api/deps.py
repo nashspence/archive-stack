@@ -12,6 +12,7 @@ from riverhog_core.runtime_config import load_runtime_config
 from riverhog_core.services.archive_reporting import SqlAlchemyArchiveReportingService
 from riverhog_core.services.archive_restores import SqlAlchemyArchiveRestoreService
 from riverhog_core.services.archive_uploads import SqlAlchemyArchiveUploadService
+from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.fetches import SqlAlchemyFetchService
 from riverhog_core.services.files import SqlAlchemyFileService
@@ -19,6 +20,7 @@ from riverhog_core.services.interfaces import (
     ArchiveReportingService,
     ArchiveRestoreService,
     ArchiveUploadService,
+    CollectionDeletionService,
     CollectionService,
     FetchService,
     FileService,
@@ -34,6 +36,7 @@ from riverhog_core.stores.tusd_upload_store import TusdUploadStore
 @dataclass(slots=True)
 class ServiceContainer:
     collections: CollectionService
+    collection_deletions: CollectionDeletionService
     search: SearchService
     archive_uploads: ArchiveUploadService
     archive_reporting: ArchiveReportingService
@@ -54,6 +57,12 @@ def default_container() -> ServiceContainer:
     proof_verifier = CommandProofVerifier(config.ots_verify_command)
     return ServiceContainer(
         collections=SqlAlchemyCollectionService(config, hot_store, upload_store),
+        collection_deletions=SqlAlchemyCollectionDeletionService(
+            config,
+            archive_store,
+            hot_store,
+            upload_store,
+        ),
         search=SqlAlchemySearchService(config),
         archive_uploads=SqlAlchemyArchiveUploadService(
             config,

@@ -277,6 +277,29 @@
       ]
     },
     {
+      "id": "collection_deletion",
+      "label": "collection deletion",
+      "term_type": "activity",
+      "audiences": [
+        "operator",
+        "api_client",
+        "developer"
+      ],
+      "definition": "Guarded removal of one complete accepted collection, including its hot materialization, encrypted remote archive objects, and catalog projections.",
+      "exposed_as": [
+        {
+          "surface": "cli:riverhog",
+          "spelling": "riverhog collection delete",
+          "context": "exact-id deletion planning and execution"
+        },
+        {
+          "surface": "api:riverhog",
+          "spelling": "deletion-plan",
+          "context": "collection deletion warning and challenge endpoint"
+        }
+      ]
+    },
+    {
       "id": "collection_id",
       "label": "collection id",
       "term_type": "identifier",

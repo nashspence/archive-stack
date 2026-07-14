@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -102,6 +102,22 @@ class ArchiveStore(Protocol):
         archive_storage_prefix: str | None = None,
         multipart_tracker: ArchiveMultipartUploadTracker | None = None,
     ) -> CollectionArchiveUploadReceipt: ...
+
+    def delete_collection_archive_package(
+        self,
+        *,
+        collection_id: str,
+        object_path: str,
+        manifest_object_path: str,
+        proof_object_path: str,
+    ) -> None: ...
+
+    def publish_restore_catalog(
+        self,
+        *,
+        entries: Sequence[dict[str, object]],
+        generated_at: str,
+    ) -> None: ...
 
     def request_collection_archive_restore(
         self,

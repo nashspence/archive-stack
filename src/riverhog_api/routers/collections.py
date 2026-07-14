@@ -5,6 +5,8 @@ from fastapi import APIRouter, Query, Request, Response
 from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_collection, map_collection_list_page
 from riverhog_api.schemas.collections import (
+    CollectionDeletionPlanOut,
+    CollectionDeletionResultOut,
     CollectionFileUploadSessionOut,
     CollectionSummaryOut,
     CollectionUploadSessionFileRegistrationOut,
@@ -12,6 +14,7 @@ from riverhog_api.schemas.collections import (
     CollectionUploadSessionOut,
     CreateOrResumeCollectionUploadRequest,
     CreateOrResumeCollectionUploadSessionRequest,
+    DeleteCollectionRequest,
     ListCollectionsResponse,
     RegisterCollectionUploadSessionFileRequest,
 )
@@ -174,4 +177,34 @@ def get_collection(
 ) -> CollectionSummaryOut:
     return CollectionSummaryOut.model_validate(
         map_collection(container.collections.get(collection_id))
+    )
+
+
+@router.post(
+    "/collections/{collection_id:path}/deletion-plan",
+    response_model=CollectionDeletionPlanOut,
+)
+def plan_collection_deletion(
+    collection_id: str,
+    container: ContainerDep,
+) -> CollectionDeletionPlanOut:
+    return CollectionDeletionPlanOut.model_validate(
+        container.collection_deletions.plan(collection_id)
+    )
+
+
+@router.post(
+    "/collections/{collection_id:path}/delete",
+    response_model=CollectionDeletionResultOut,
+)
+def delete_collection(
+    collection_id: str,
+    request: DeleteCollectionRequest,
+    container: ContainerDep,
+) -> CollectionDeletionResultOut:
+    return CollectionDeletionResultOut.model_validate(
+        container.collection_deletions.delete(
+            collection_id,
+            challenge=request.challenge,
+        )
     )

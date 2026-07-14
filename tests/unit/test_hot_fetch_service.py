@@ -9,6 +9,7 @@ import pytest
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveRecord,
+    CollectionDeletionRecord,
     CollectionFileRecord,
     CollectionRecord,
 )
@@ -141,6 +142,28 @@ def test_fetch_start_queues_archive_materialization_for_missing_files(tmp_path: 
 
     assert started.state == FetchState.QUEUED_ARCHIVE
     assert started.missing_files == 1
+
+
+def test_fetch_start_refuses_collection_with_active_deletion(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    hot_store = FakeHotStore()
+    _seed(path, hot_store)
+    service = _service(path, hot_store)
+    fetch = service.create(name="documents", targets=["docs/"])
+    factory = make_session_factory(sqlite_url(path))
+    with session_scope(factory) as session:
+        session.add(
+            CollectionDeletionRecord(
+                collection_id="docs",
+                challenge="delete-test",
+                plan_json="{}",
+                started_at="2026-07-14T00:00:00Z",
+            )
+        )
+
+    with pytest.raises(Conflict, match="deletion is in progress"):
+        service.start(str(fetch.id))
 
 
 def test_hot_eviction_requires_verified_collection_archive(tmp_path: Path) -> None:

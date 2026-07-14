@@ -6,6 +6,8 @@ Riverhog is a generic custody system for collection uploads, encrypted remote ar
 
 - The remote archive account is the durable storage authority. Keep account recovery, authentication, billing, bucket access, and object retrieval healthy and tested.
 - Collection acceptance requires a verified encrypted archive package and manifest proof.
+- Encrypted collection archives are the sole durable copies Riverhog relies on. Delete a
+  collection only through its guarded, exact-id deletion plan after accepting the loss.
 - Keep public code generic. Do not add private deployment details, real deployment identity, credentials, hostnames, device names, or downstream private configuration.
 - Treat catalog and object-store changes as custody operations: verify both state and bytes before declaring success.
 

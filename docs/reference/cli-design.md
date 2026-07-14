@@ -10,13 +10,15 @@ Riverhog-family commands keep product boundaries explicit:
 ## Riverhog command shape
 
 ```text
-riverhog collection upload|watch|cancel|list|show
+riverhog collection upload|watch|cancel|list|show|delete
 riverhog find
 riverhog hot evict
 riverhog hot fetch create|add|remove|list|show|files|start|cancel
 ```
 
 Collection commands use collection ids. Fetch commands use fetch ids. Search, fetch selection, download, and eviction share canonical target selectors.
+
+Collection deletion accepts exactly one collection id. `--dry-run` returns the sole-copy warning and short-lived plan challenge. Interactive deletion requires typing the complete collection id; noninteractive deletion requires `--confirm <plan-challenge>` from a prior plan.
 
 ## Output
 

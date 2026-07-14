@@ -9,7 +9,7 @@ make spec
 make build
 ```
 
-Use `make unit args='-k expression'` for focused iteration. `make spec` runs the assembled FastAPI contract harness. `make compose-smoke` validates the container stack and should run after service, proxy, storage, or runtime configuration changes.
+Use `make unit args='-k expression'` for focused iteration. `make spec` runs the assembled FastAPI contract harness.
 
 The Makefile runs Python through the repository-selected `mise` and locked `uv` environment.
 

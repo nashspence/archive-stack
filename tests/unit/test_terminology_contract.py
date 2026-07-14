@@ -47,6 +47,7 @@ def test_terminology_contract_covers_current_top_level_surfaces() -> None:
         "collection",
         "collection_archive",
         "collection_archive_destination",
+        "collection_deletion",
         "archive_materialization",
         "encode_profile",
         "fetch",

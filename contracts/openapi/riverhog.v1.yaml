@@ -528,6 +528,64 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /v1/collections/{collection_id}/deletion-plan:
+    post:
+      tags:
+      - collections
+      summary: Plan Collection Deletion
+      operationId: plan_collection_deletion_v1_collections__collection_id__deletion_plan_post
+      parameters:
+      - name: collection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Collection Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollectionDeletionPlanOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/collections/{collection_id}/delete:
+    post:
+      tags:
+      - collections
+      summary: Delete Collection
+      operationId: delete_collection_v1_collections__collection_id__delete_post
+      parameters:
+      - name: collection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Collection Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteCollectionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollectionDeletionResultOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /v1/search:
     get:
       tags:
@@ -1606,6 +1664,201 @@ components:
       - uploaded_collections
       - measured_storage_bytes
       title: ArchiveUsageTotalsOut
+    CollectionDeletionFileOut:
+      properties:
+        path:
+          type: string
+          title: Path
+        bytes:
+          type: integer
+          title: Bytes
+        hot:
+          type: boolean
+          title: Hot
+      additionalProperties: false
+      type: object
+      required:
+      - path
+      - bytes
+      - hot
+      title: CollectionDeletionFileOut
+    CollectionDeletionHotObjectOut:
+      properties:
+        path:
+          type: string
+          title: Path
+        bytes:
+          type: integer
+          title: Bytes
+      additionalProperties: false
+      type: object
+      required:
+      - path
+      - bytes
+      title: CollectionDeletionHotObjectOut
+    CollectionDeletionObjectOut:
+      properties:
+        kind:
+          type: string
+          enum:
+          - archive
+          - manifest
+          - proof
+          title: Kind
+        object_path:
+          type: string
+          title: Object Path
+        stored_bytes:
+          type: integer
+          title: Stored Bytes
+      additionalProperties: false
+      type: object
+      required:
+      - kind
+      - object_path
+      - stored_bytes
+      title: CollectionDeletionObjectOut
+    CollectionDeletionPlanOut:
+      properties:
+        status:
+          type: string
+          enum:
+          - ready
+          - blocked
+          - deleting
+          title: Status
+        collection_id:
+          type: string
+          title: Collection Id
+        warning:
+          type: string
+          title: Warning
+        expires_at:
+          type: string
+          title: Expires At
+        challenge:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Challenge
+        files:
+          items:
+            $ref: '#/components/schemas/CollectionDeletionFileOut'
+          type: array
+          title: Files
+        file_count:
+          type: integer
+          title: File Count
+        bytes:
+          type: integer
+          title: Bytes
+        hot_objects:
+          items:
+            $ref: '#/components/schemas/CollectionDeletionHotObjectOut'
+          type: array
+          title: Hot Objects
+        hot_files:
+          type: integer
+          title: Hot Files
+        hot_bytes:
+          type: integer
+          title: Hot Bytes
+        archive_objects:
+          items:
+            $ref: '#/components/schemas/CollectionDeletionObjectOut'
+          type: array
+          title: Archive Objects
+        remote_storage_bytes:
+          type: integer
+          title: Remote Storage Bytes
+        upload_files:
+          items:
+            $ref: '#/components/schemas/CollectionDeletionUploadFileOut'
+          type: array
+          title: Upload Files
+        archive_restores:
+          items:
+            type: string
+          type: array
+          title: Archive Restores
+        metadata_rows:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Metadata Rows
+        blockers:
+          items:
+            type: string
+          type: array
+          title: Blockers
+        billing_note:
+          type: string
+          title: Billing Note
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      - collection_id
+      - warning
+      - expires_at
+      - challenge
+      - files
+      - file_count
+      - bytes
+      - hot_objects
+      - hot_files
+      - hot_bytes
+      - archive_objects
+      - remote_storage_bytes
+      - upload_files
+      - archive_restores
+      - metadata_rows
+      - blockers
+      - billing_note
+      title: CollectionDeletionPlanOut
+    CollectionDeletionResultOut:
+      properties:
+        status:
+          type: string
+          enum:
+          - deleted
+          - already_absent
+          title: Status
+        collection_id:
+          type: string
+          title: Collection Id
+        files:
+          type: integer
+          title: Files
+        bytes:
+          type: integer
+          title: Bytes
+        remote_storage_bytes:
+          type: integer
+          title: Remote Storage Bytes
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      - collection_id
+      - files
+      - bytes
+      - remote_storage_bytes
+      title: CollectionDeletionResultOut
+    CollectionDeletionUploadFileOut:
+      properties:
+        path:
+          type: string
+          title: Path
+        bytes:
+          type: integer
+          title: Bytes
+      additionalProperties: false
+      type: object
+      required:
+      - path
+      - bytes
+      title: CollectionDeletionUploadFileOut
     CollectionFileUploadSessionOut:
       properties:
         path:
@@ -2055,6 +2308,16 @@ components:
       required:
       - slug
       title: CreateOrResumeCollectionUploadSessionRequest
+    DeleteCollectionRequest:
+      properties:
+        challenge:
+          type: string
+          title: Challenge
+      additionalProperties: false
+      type: object
+      required:
+      - challenge
+      title: DeleteCollectionRequest
     FetchFileOut:
       properties:
         target:

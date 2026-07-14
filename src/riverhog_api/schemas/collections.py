@@ -81,6 +81,61 @@ class ListCollectionsResponse(RiverhogModel):
     collections: list[CollectionSummaryOut]
 
 
+class CollectionDeletionFileOut(RiverhogModel):
+    path: str
+    bytes: int
+    hot: bool
+
+
+class CollectionDeletionObjectOut(RiverhogModel):
+    kind: Literal["archive", "manifest", "proof"]
+    object_path: str
+    stored_bytes: int
+
+
+class CollectionDeletionHotObjectOut(RiverhogModel):
+    path: str
+    bytes: int
+
+
+class CollectionDeletionUploadFileOut(RiverhogModel):
+    path: str
+    bytes: int
+
+
+class CollectionDeletionPlanOut(RiverhogModel):
+    status: Literal["ready", "blocked", "deleting"]
+    collection_id: str
+    warning: str
+    expires_at: str
+    challenge: str | None
+    files: list[CollectionDeletionFileOut]
+    file_count: int
+    bytes: int
+    hot_objects: list[CollectionDeletionHotObjectOut]
+    hot_files: int
+    hot_bytes: int
+    archive_objects: list[CollectionDeletionObjectOut]
+    remote_storage_bytes: int
+    upload_files: list[CollectionDeletionUploadFileOut]
+    archive_restores: list[str]
+    metadata_rows: dict[str, int]
+    blockers: list[str]
+    billing_note: str
+
+
+class DeleteCollectionRequest(RiverhogModel):
+    challenge: str
+
+
+class CollectionDeletionResultOut(RiverhogModel):
+    status: Literal["deleted", "already_absent"]
+    collection_id: str
+    files: int
+    bytes: int
+    remote_storage_bytes: int
+
+
 class CollectionUploadFileOut(RiverhogModel):
     path: str
     bytes: int

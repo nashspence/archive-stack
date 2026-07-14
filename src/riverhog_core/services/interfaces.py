@@ -91,6 +91,11 @@ class CollectionService(Protocol):
     ) -> CollectionListPage: ...
 
 
+class CollectionDeletionService(Protocol):
+    def plan(self, collection_id: str) -> JsonObject: ...
+    def delete(self, collection_id: str, *, challenge: str) -> JsonObject: ...
+
+
 class SearchService(Protocol):
     def search(
         self,

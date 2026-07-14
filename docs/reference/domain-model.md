@@ -2,9 +2,15 @@
 
 ## Collection
 
-An immutable logical set of files identified by a server-minted timestamped slug. Each file has a stable relative path, byte length, and SHA-256 digest.
+An immutable-while-present logical set of files identified by a server-minted timestamped slug. Each file has a stable relative path, byte length, and SHA-256 digest.
 
 A collection is accepted after its encrypted archive package is uploaded and verified. The catalog retains the archive format, compression, object identity, stored bytes, digest, encryption metadata, manifest, proof, and verification time.
+
+Deleting a collection removes the complete logical collection, hot materialization, encrypted archive package, manifest, proof, and catalog projections. Deletion is a guarded operation, not a collection lifecycle state.
+
+## Collection deletion
+
+A short-lived deletion plan enumerates the exact collection impact and carries the archive sole-copy warning. Its state-bound challenge must be returned before execution. An active deletion record exists only while Riverhog completes or retries external storage and catalog changes.
 
 ## File
 

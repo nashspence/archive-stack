@@ -13,6 +13,7 @@ CURRENT_TABLES = {
     "archive_restores",
     "archive_usage_snapshots",
     "collection_archives",
+    "collection_deletions",
     "collection_files",
     "collection_upload_files",
     "collection_uploads",

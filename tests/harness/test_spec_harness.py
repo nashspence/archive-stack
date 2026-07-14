@@ -23,6 +23,7 @@ from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_reporting import SqlAlchemyArchiveReportingService
 from riverhog_core.services.archive_restores import SqlAlchemyArchiveRestoreService
 from riverhog_core.services.archive_uploads import SqlAlchemyArchiveUploadService
+from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.fetches import SqlAlchemyFetchService
 from riverhog_core.services.files import SqlAlchemyFileService
@@ -144,6 +145,7 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
             hot_store,
             cast(UploadStore, unused),
         ),
+        collection_deletions=cast(SqlAlchemyCollectionDeletionService, unused),
         search=SqlAlchemySearchService(config),
         archive_uploads=cast(SqlAlchemyArchiveUploadService, IdleArchiveUploadService()),
         archive_reporting=SqlAlchemyArchiveReportingService(config),

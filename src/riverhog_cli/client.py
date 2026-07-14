@@ -285,6 +285,19 @@ class ApiClient:
             f"/v1/collections/{quote(collection_id, safe='/')}",
         )
 
+    def plan_collection_deletion(self, collection_id: str) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/collections/{quote(collection_id, safe='/')}/deletion-plan",
+        )
+
+    def delete_collection(self, collection_id: str, *, challenge: str) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/collections/{quote(collection_id, safe='/')}/delete",
+            json={"challenge": challenge},
+        )
+
     def list_collections(
         self,
         *,

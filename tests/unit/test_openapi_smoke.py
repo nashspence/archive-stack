@@ -13,6 +13,8 @@ def test_openapi_describes_collection_archive_and_fetch_boundaries() -> None:
         "/v1/archive-restores/{archive_restore_id}",
         "/v1/collections",
         "/v1/collections/{collection_id}",
+        "/v1/collections/{collection_id}/deletion-plan",
+        "/v1/collections/{collection_id}/delete",
         "/v1/fetches",
         "/v1/fetches/{fetch_id}/start",
         "/v1/fetches/{fetch_id}/status",

@@ -6,6 +6,8 @@ The FastAPI application exposes its canonical OpenAPI document at `/openapi.json
 
 - `GET /v1/collections` lists collection summaries.
 - `GET /v1/collections/{collection_id}` returns one collection.
+- `POST /v1/collections/{collection_id}/deletion-plan` returns the sole-copy warning, exact impact, blockers, and short-lived confirmation challenge.
+- `POST /v1/collections/{collection_id}/delete` executes the current plan when given its challenge.
 - `POST /v1/collection-uploads` creates or resumes a determinate upload from a complete manifest.
 - `GET /v1/collection-uploads/{collection_id}` returns upload progress.
 - `POST /v1/collection-uploads/{collection_id}/files/{path}/upload` creates or resumes a file upload.

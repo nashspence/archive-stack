@@ -45,6 +45,7 @@ from riverhog_core.ports.archive_store import ArchiveRestoreStatus, ArchiveStore
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.proofs import CommandProofVerifier, ProofVerifier
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.collection_deletions import require_collection_not_deleting
 from riverhog_core.services.target_selection import selected_collection_files
 from riverhog_core.webhooks import (
     WebhookConfig,
@@ -173,6 +174,7 @@ class SqlAlchemyArchiveRestoreService:
         paths: Sequence[str] | None = None,
     ) -> ArchiveRestoreSummary:
         with session_scope(self._session_factory) as session:
+            require_collection_not_deleting(session, collection_id)
             collection = _require_collection(session, collection_id)
             _require_collection_archive_uploaded(collection)
             active = _active_restore_for_collection(session, collection_id)
@@ -241,12 +243,14 @@ class SqlAlchemyArchiveRestoreService:
     def create_or_resume_for_fetch(self, fetch_id: str) -> ArchiveRestoreListPage:
         with session_scope(self._session_factory) as session:
             fetch = _require_fetch(session, fetch_id)
-            if fetch.fetch_state == FetchState.QUEUED_ARCHIVE.value:
-                fetch.fetch_state = FetchState.RESTORING_ARCHIVE.value
             paths_by_collection: dict[str, set[str]] = {}
             for file in _selected_fetch_files(session, fetch_id):
                 if not file.hot:
                     paths_by_collection.setdefault(file.collection_id, set()).add(file.path)
+            for collection_id in sorted(paths_by_collection):
+                require_collection_not_deleting(session, collection_id)
+            if fetch.fetch_state == FetchState.QUEUED_ARCHIVE.value:
+                fetch.fetch_state = FetchState.RESTORING_ARCHIVE.value
 
         for collection_id, paths in sorted(paths_by_collection.items()):
             self.create_or_resume_for_collection(collection_id, paths=sorted(paths))

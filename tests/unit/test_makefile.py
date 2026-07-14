@@ -311,7 +311,8 @@ def test_dockerfiles_keep_dependency_layers_independent_of_docs_and_tests() -> N
         "--no-install-project"
     ) < test_dockerfile.index("COPY src ./src")
     assert "COPY --from=ghcr.io/astral-sh/uv:0.11.24" in test_dockerfile
-    assert 'ENTRYPOINT ["/app/.venv/bin/python", "-m", "pytest"]' in test_dockerfile
+    assert "UV_PROJECT_ENVIRONMENT=/opt/venv" in test_dockerfile
+    assert 'ENTRYPOINT ["/opt/venv/bin/python", "-m", "pytest"]' in test_dockerfile
     assert test_dockerfile.index("COPY pyproject.toml uv.lock ./") < test_dockerfile.index(
         "COPY tests ./tests"
     )

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import BigInteger, Boolean, ForeignKeyConstraint, Index, Integer, String
+from sqlalchemy import BigInteger, Boolean, ForeignKeyConstraint, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from riverhog_core.catalog_db import Base
@@ -21,6 +21,15 @@ class CollectionRecord(Base):
         cascade="all, delete-orphan",
         uselist=False,
     )
+
+
+class CollectionDeletionRecord(Base):
+    __tablename__ = "collection_deletions"
+
+    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    challenge: Mapped[str] = mapped_column(String)
+    plan_json: Mapped[str] = mapped_column(Text)
+    started_at: Mapped[str] = mapped_column(String)
 
 
 class CollectionFileRecord(Base):

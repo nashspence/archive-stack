@@ -21,6 +21,7 @@ from riverhog_age import (
     encrypt_age_scrypt,
     iter_decrypt_age_scrypt,
 )
+from riverhog_core.archive_custody import ARCHIVE_CUSTODY_WARNING, archive_agents_guidance
 from riverhog_core.archive_object_paths import archive_id_from_storage_prefix
 from riverhog_core.collection_archives import CollectionArchivePackage
 from riverhog_core.ports.archive_store import (
@@ -345,13 +346,52 @@ class S3ArchiveStore:
             compression=package.compression,
         )
 
+    def delete_collection_archive_package(
+        self,
+        *,
+        collection_id: str,
+        object_path: str,
+        manifest_object_path: str,
+        proof_object_path: str,
+    ) -> None:
+        _ = collection_id
+        expected_suffixes = {
+            "archive.tar.age",
+            "manifest.yml.age",
+            "manifest.yml.ots.age",
+        }
+        object_paths = (object_path, manifest_object_path, proof_object_path)
+        prefixes = {path.rsplit("/", 1)[0] for path in object_paths}
+        suffixes = {path.rsplit("/", 1)[-1] for path in object_paths}
+        archive_root = f"{self._config.archive_prefix}/archives/"
+        if (
+            len(prefixes) != 1
+            or suffixes != expected_suffixes
+            or any(not path.startswith(archive_root) for path in object_paths)
+        ):
+            raise ValueError(
+                "collection archive package paths are outside one owned archive prefix"
+            )
+        for path in object_paths:
+            self._client.delete_object(Bucket=self._bucket, Key=path)
+        remaining = [
+            path
+            for path in object_paths
+            if self._head_object(object_key=path) is not None
+        ]
+        if remaining:
+            raise RuntimeError(
+                "collection archive package deletion could not be verified: "
+                + ", ".join(remaining)
+            )
+
     def publish_restore_catalog(
         self,
         *,
         entries: Sequence[dict[str, object]],
         generated_at: str,
     ) -> None:
-        self._put_bucket_readme()
+        self._put_archive_root_guidance()
         catalog_key = f"{self._config.archive_prefix}/catalog/collections.yml.age"
         catalog_bytes = yaml.safe_dump(
             {
@@ -396,15 +436,26 @@ class S3ArchiveStore:
             },
         )
 
-    def _put_bucket_readme(self) -> None:
-        content = _bucket_recovery_readme().encode("utf-8")
-        self._client.put_object(
-            Bucket=self._bucket,
-            Key=f"{self._config.archive_prefix}/README.md",
-            Body=content,
-            ContentLength=len(content),
-            Metadata={"archive-readme-format": "encrypted-archive-readme-v1"},
-        )
+    def _put_archive_root_guidance(self) -> None:
+        for filename, content, format_name in (
+            (
+                "README.md",
+                _bucket_recovery_readme().encode("utf-8"),
+                "encrypted-archive-readme-v1",
+            ),
+            (
+                "AGENTS.md",
+                archive_agents_guidance().encode("utf-8"),
+                "encrypted-archive-agents-v1",
+            ),
+        ):
+            self._client.put_object(
+                Bucket=self._bucket,
+                Key=f"{self._config.archive_prefix}/{filename}",
+                Body=content,
+                ContentLength=len(content),
+                Metadata={"archive-guidance-format": format_name},
+            )
 
     def _put_collection_package_object(
         self,
@@ -1396,7 +1447,14 @@ def _combine_fetch_materialization_statuses(
 
 
 def _bucket_recovery_readme() -> str:
-    return """# Encrypted Archive Recovery
+    return f"""# Encrypted Riverhog Archive Recovery
+
+{ARCHIVE_CUSTODY_WARNING}
+
+Listing and reading these objects are safe inspection operations. Deletion,
+movement, overwriting, lifecycle expiration, storage-class changes, and object-
+version removal are mutations. Use Riverhog's guarded collection deletion
+workflow when an accepted collection is intentionally being removed.
 
 This bucket or prefix stores encrypted archive packages. Object paths are opaque
 on purpose so that bucket listings, access logs, and screenshots
@@ -1466,7 +1524,7 @@ class. If the object is not immediately readable, request a restore first:
 aws s3api restore-object \\
   --bucket BUCKET \\
   --key PREFIX/archives/ARCHIVE_ID/archive.tar.age \\
-  --restore-request '{"Days":7,"ArchiveJobParameters":{"Tier":"Bulk"}}'
+  --restore-request '{{"Days":7,"ArchiveJobParameters":{{"Tier":"Bulk"}}}}'
 ```
 
 After the restore is complete, download, decrypt, and extract:

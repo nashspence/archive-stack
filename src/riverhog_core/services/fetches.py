@@ -20,6 +20,7 @@ from riverhog_core.domain.selectors import parse_target
 from riverhog_core.domain.types import FetchId, TargetStr
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.collection_deletions import require_collection_not_deleting
 from riverhog_core.services.target_selection import selected_collection_files
 
 _FETCH_SORT_FIELDS = {"id", "name", "state", "order", "files", "bytes", "missing_bytes"}
@@ -148,6 +149,8 @@ class SqlAlchemyFetchService:
             files = _selected_files_for_fetch(session, fetch_id)
             if not files:
                 raise InvalidState("fetch has no matching files")
+            for collection_id in sorted({file.collection_id for file in files}):
+                require_collection_not_deleting(session, collection_id)
             fetch.fetch_state = (
                 FetchState.DONE.value
                 if all(file.hot for file in files)

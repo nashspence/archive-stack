@@ -18,6 +18,8 @@ import typer
 from riverhog_cli.client import ApiClient
 from riverhog_cli.output import (
     emit,
+    format_collection_deletion_plan,
+    format_collection_deletion_result,
     format_collection_summary,
     format_collection_upload,
     format_collection_upload_plan,
@@ -1376,6 +1378,64 @@ def show_cmd(
     payload = api.get_collection(collection)
     archive_payload = api.get_archive_report(collection=collection)
     emit(format_collection_summary(payload, archive_payload), json_mode=False)
+
+
+@collection_app.command("delete")
+def collection_delete_cmd(
+    collection_id: Annotated[str, typer.Argument(help="Exact accepted collection id")],
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            "--plan",
+            help="Show the deletion plan and confirmation challenge without deleting",
+        ),
+    ] = False,
+    confirm: Annotated[
+        str | None,
+        typer.Option(
+            "--confirm",
+            help="Short-lived confirmation challenge returned by a prior plan",
+        ),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Permanently delete one accepted collection and its remote archive."""
+
+    if dry_run and confirm is not None:
+        raise typer.BadParameter("--dry-run and --confirm cannot be used together")
+    api = client()
+    if dry_run:
+        payload = api.plan_collection_deletion(collection_id)
+        emit(
+            payload if json_mode else format_collection_deletion_plan(payload),
+            json_mode=json_mode,
+        )
+        return
+    if confirm is not None:
+        payload = api.delete_collection(collection_id, challenge=confirm)
+        emit(
+            payload if json_mode else format_collection_deletion_result(payload),
+            json_mode=json_mode,
+        )
+        return
+    if json_mode:
+        raise typer.BadParameter("--json requires --dry-run or --confirm")
+
+    plan = api.plan_collection_deletion(collection_id)
+    emit(format_collection_deletion_plan(plan), json_mode=False)
+    blockers = plan.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        raise typer.Exit(1)
+    challenge = plan.get("challenge")
+    if not isinstance(challenge, str) or not challenge:
+        raise typer.BadParameter("server did not return a collection deletion challenge")
+    typed_id = typer.prompt("Type the complete collection id to delete")
+    if typed_id != collection_id:
+        typer.echo("Collection id did not match; nothing was deleted.", err=True)
+        raise typer.Exit(1)
+    payload = api.delete_collection(collection_id, challenge=challenge)
+    emit(format_collection_deletion_result(payload), json_mode=False)
 
 
 @fetch_app.command("create")

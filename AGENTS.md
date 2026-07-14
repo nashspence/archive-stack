@@ -32,8 +32,6 @@ make spec
 make build
 ```
 
-Run `make compose-smoke` when the service stack or runtime configuration changes. See [the testing guide](docs/how-to/run-acceptance-tests.md).
-
 ## Ownership and Routes
 
 - Custody and storage: [architecture](docs/explanation/architecture-overview.md), [archive operations](docs/reference/archive.md).

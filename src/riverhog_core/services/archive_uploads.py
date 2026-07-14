@@ -41,6 +41,7 @@ from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.proofs import CommandProofStamper, ProofStamper
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.archive_catalog import publish_archive_restore_catalog
 from riverhog_core.services.archive_reporting import record_archive_usage_snapshot
 from riverhog_core.services.collections import _collection_upload_target_path
 from riverhog_core.services.notification_routing import (
@@ -665,46 +666,14 @@ class SqlAlchemyArchiveUploadService:
             upload.archive_failure = None
 
     def _publish_restore_catalog(self) -> int:
-        publish = getattr(self._archive_store, "publish_restore_catalog", None)
-        if not callable(publish):
-            return 0
-        generated_at = _isoformat_z(utcnow())
-        with session_scope(self._session_factory) as session:
-            archives = list(
-                session.scalars(
-                    select(CollectionArchiveRecord)
-                    .where(CollectionArchiveRecord.state == "uploaded")
-                    .where(CollectionArchiveRecord.object_path.is_not(None))
-                    .order_by(CollectionArchiveRecord.collection_id)
-                )
-            )
-            entries = [
-                {
-                    "collection_id": archive.collection_id,
-                    "archive_storage_prefix": archive.archive_storage_prefix
-                    or archive_storage_prefix_from_object_path(archive.object_path),
-                    "archive_key": archive.object_path,
-                    "manifest_key": archive.manifest_object_path,
-                    "proof_key": archive.ots_object_path,
-                    "archive_stored_bytes": archive.stored_bytes,
-                    "archive_plaintext_sha256": archive.sha256,
-                    "manifest_sha256": archive.manifest_sha256,
-                    "proof_sha256": archive.ots_sha256,
-                    "backend": archive.backend,
-                    "archive_storage_class": archive.storage_class,
-                    "archive_format": archive.archive_format,
-                    "compression": archive.compression,
-                    "uploaded_at": archive.last_uploaded_at,
-                    "verified_at": archive.last_verified_at,
-                }
-                for archive in archives
-            ]
         try:
-            publish(entries=entries, generated_at=generated_at)
+            return publish_archive_restore_catalog(
+                archive_store=self._archive_store,
+                session_factory=self._session_factory,
+            )
         except Exception:
             _LOG.warning("failed to publish encrypted archive restore catalog", exc_info=True)
             return 0
-        return len(entries)
 
     def _record_packaged_archive(
         self,

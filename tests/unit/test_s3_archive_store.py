@@ -187,6 +187,10 @@ class _FakeS3Client:
         _ = Bucket
         return {"Body": _FakeBody(cast(bytes, self.objects[Key]["Body"]))}
 
+    def delete_object(self, *, Bucket: str, Key: str) -> None:
+        _ = Bucket
+        self.objects.pop(Key, None)
+
 
 class _FakeMultipartTracker(ArchiveMultipartUploadTracker):
     def __init__(self) -> None:
@@ -439,6 +443,28 @@ def test_encrypted_collection_archive_package_uploads_age_objects_and_restores_p
     )
 
 
+def test_delete_collection_archive_package_removes_and_verifies_owned_objects(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    store = _store_with_client(monkeypatch, tmp_path, client)
+    receipt = store.upload_collection_archive_package(
+        collection_id="docs",
+        package=_package(),
+        archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
+    )
+
+    store.delete_collection_archive_package(
+        collection_id="docs",
+        object_path=receipt.archive.object_path,
+        manifest_object_path=receipt.manifest.object_path,
+        proof_object_path=receipt.proof.object_path,
+    )
+
+    assert client.objects == {}
+
+
 def test_publish_restore_catalog_writes_generic_readme_and_encrypted_catalog(
     monkeypatch,
     tmp_path: Path,
@@ -471,13 +497,21 @@ def test_publish_restore_catalog_writes_generic_readme_and_encrypted_catalog(
     )
 
     readme = client.objects["archive/README.md"]["Body"].decode("utf-8")
-    assert "Riverhog" not in readme
+    agents = client.objects["archive/AGENTS.md"]["Body"].decode("utf-8")
+    assert "sole durable copies" in readme
+    assert "permanently destroy the only recoverable copy" in readme
+    assert "guarded collection deletion" in readme
     assert "S3 credentials, token, or S3 login/session" in readme
     assert "will fail until the CLI is authenticated" in readme
     assert "AWS_SESSION_TOKEN" in readme
     assert "archive passphrase" in readme
     assert "age --decrypt -o collections.yml collections.yml.age" in readme
     assert "Enter the archive passphrase when age prompts." in readme
+    assert "sole durable copies" in agents
+    assert "Treat this archive root as read-only" in agents
+    assert "Never infer cleanup from object age" in agents
+    assert "catalog/collections.yml.age" in agents
+    assert "private-family-photos" not in agents
     catalog_object = client.objects["archive/catalog/collections.yml.age"]
     assert b"private-family-photos" not in catalog_object["Body"]
     assert catalog_object["Metadata"][ENCRYPTION_METADATA] == AGE_SCRYPT_ENCRYPTION

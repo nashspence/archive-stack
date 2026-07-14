@@ -4,9 +4,12 @@ import hashlib
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
+import pytest
+
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveRecord,
+    CollectionDeletionRecord,
     CollectionFileRecord,
     CollectionRecord,
 )
@@ -15,6 +18,7 @@ from riverhog_core.collection_archives import (
     build_collection_archive_package,
 )
 from riverhog_core.domain.enums import ArchiveRestoreState
+from riverhog_core.domain.errors import Conflict
 from riverhog_core.ports.archive_store import ArchiveRestoreStatus
 from riverhog_core.ports.hot_store import HotFileStat
 from riverhog_core.runtime_config import RuntimeConfig
@@ -167,3 +171,24 @@ def test_archive_restore_can_be_canceled_while_retrieval_is_pending(tmp_path: Pa
     assert pending.state == ArchiveRestoreState.REQUESTED
     assert canceled.state == ArchiveRestoreState.CANCELED
     assert archive_store.cleaned == 1
+
+
+def test_archive_restore_refuses_collection_with_active_deletion(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    archive_store = FakeArchiveStore()
+    hot_store = FakeHotStore()
+    _seed(path, archive_store)
+    factory = make_session_factory(sqlite_url(path))
+    with session_scope(factory) as session:
+        session.add(
+            CollectionDeletionRecord(
+                collection_id="docs",
+                challenge="delete-test",
+                plan_json="{}",
+                started_at="2026-07-14T00:00:00Z",
+            )
+        )
+
+    with pytest.raises(Conflict, match="deletion is in progress"):
+        _service(path, archive_store, hot_store).create_or_resume_for_collection("docs")
