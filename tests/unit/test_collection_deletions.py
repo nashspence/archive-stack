@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import Literal
 
 import pytest
+from sqlalchemy import event
+from sqlalchemy.orm import Session
 
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
@@ -23,10 +26,36 @@ from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
 from tests.unit.db_helpers import sqlite_url
 
+FailurePoint = Literal[
+    "hot_object",
+    "upload_resource",
+    "upload_target",
+    "archive_package",
+    "recovery_catalog",
+]
+
+
+class SyntheticBoundaryFailure(RuntimeError):
+    pass
+
+
+class FailOnce:
+    def __init__(self, point: FailurePoint | None = None) -> None:
+        self.point = point
+
+    def after(self, point: FailurePoint) -> None:
+        if self.point != point:
+            return
+        self.point = None
+        raise SyntheticBoundaryFailure(f"synthetic deletion boundary failure: {point}")
+
 
 class FakeHotStore:
-    def __init__(self) -> None:
+    def __init__(self, failures: FailOnce, *, include_unrelated: bool = False) -> None:
+        self._failures = failures
         self.files = {("docs", "readme.txt"): b"sole durable copy\n"}
+        if include_unrelated:
+            self.files[("other", "keep.txt")] = b"unrelated durable copy\n"
 
     def list_collection_files(self, collection_id: str) -> list[tuple[str, int]]:
         return [
@@ -37,17 +66,26 @@ class FakeHotStore:
 
     def delete_collection_file(self, collection_id: str, path: str) -> None:
         self.files.pop((collection_id, path), None)
+        self._failures.after("hot_object")
 
 
 class FakeArchiveStore:
-    def __init__(self) -> None:
+    def __init__(self, failures: FailOnce, *, include_unrelated: bool = False) -> None:
+        self._failures = failures
         self.objects = {
             "archive/archives/opaque-docs/archive.tar.age",
             "archive/archives/opaque-docs/manifest.yml.age",
             "archive/archives/opaque-docs/manifest.yml.ots.age",
         }
+        if include_unrelated:
+            self.objects.update(
+                {
+                    "archive/archives/opaque-other/archive.tar.age",
+                    "archive/archives/opaque-other/manifest.yml.age",
+                    "archive/archives/opaque-other/manifest.yml.ots.age",
+                }
+            )
         self.catalog_entries: list[dict[str, object]] | None = None
-        self.fail_publish_once = False
 
     def delete_collection_archive_package(
         self,
@@ -58,8 +96,10 @@ class FakeArchiveStore:
         proof_object_path: str,
     ) -> None:
         assert collection_id == "docs"
-        for path in (object_path, manifest_object_path, proof_object_path):
+        for index, path in enumerate((object_path, manifest_object_path, proof_object_path)):
             self.objects.discard(path)
+            if index == 0:
+                self._failures.after("archive_package")
 
     def publish_restore_catalog(
         self,
@@ -68,25 +108,32 @@ class FakeArchiveStore:
         generated_at: str,
     ) -> None:
         assert generated_at.endswith("Z")
-        if self.fail_publish_once:
-            self.fail_publish_once = False
-            raise RuntimeError("synthetic catalog publication failure")
         self.catalog_entries = entries
+        self._failures.after("recovery_catalog")
 
 
 class FakeUploadStore:
-    def __init__(self) -> None:
+    def __init__(self, failures: FailOnce) -> None:
+        self._failures = failures
         self.canceled: list[str] = []
         self.deleted: list[str] = []
 
     def cancel_upload(self, tus_url: str) -> None:
         self.canceled.append(tus_url)
+        self._failures.after("upload_resource")
 
     def delete_target(self, target_path: str) -> None:
         self.deleted.append(target_path)
+        self._failures.after("upload_target")
 
 
-def _seed(path: Path, *, active_restore: bool = False, active_fetch: bool = False) -> None:
+def _seed(
+    path: Path,
+    *,
+    active_restore: bool = False,
+    active_fetch: bool = False,
+    include_unrelated: bool = False,
+) -> None:
     content = b"sole durable copy\n"
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
@@ -168,6 +215,35 @@ def _seed(path: Path, *, active_restore: bool = False, active_fetch: bool = Fals
                     selector_order=0,
                 )
             )
+        if include_unrelated:
+            other_content = b"unrelated durable copy\n"
+            session.add(CollectionRecord(id="other"))
+            session.add(
+                CollectionFileRecord(
+                    collection_id="other",
+                    path="keep.txt",
+                    bytes=len(other_content),
+                    sha256=hashlib.sha256(other_content).hexdigest(),
+                    hot=True,
+                )
+            )
+            session.add(
+                CollectionArchiveRecord(
+                    collection_id="other",
+                    state="uploaded",
+                    archive_storage_prefix="archive/archives/opaque-other",
+                    object_path="archive/archives/opaque-other/archive.tar.age",
+                    stored_bytes=200,
+                    sha256="d" * 64,
+                    manifest_object_path="archive/archives/opaque-other/manifest.yml.age",
+                    manifest_sha256="e" * 64,
+                    manifest_stored_bytes=30,
+                    ots_object_path="archive/archives/opaque-other/manifest.yml.ots.age",
+                    ots_sha256="f" * 64,
+                    ots_stored_bytes=10,
+                    last_verified_at="2026-07-14T00:00:00Z",
+                )
+            )
 
 
 def _service(
@@ -189,6 +265,8 @@ def _setup(
     *,
     active_restore: bool = False,
     active_fetch: bool = False,
+    include_unrelated: bool = False,
+    failure_point: FailurePoint | None = None,
 ) -> tuple[
     Path,
     SqlAlchemyCollectionDeletionService,
@@ -198,10 +276,16 @@ def _setup(
 ]:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
-    _seed(path, active_restore=active_restore, active_fetch=active_fetch)
-    archive_store = FakeArchiveStore()
-    hot_store = FakeHotStore()
-    upload_store = FakeUploadStore()
+    _seed(
+        path,
+        active_restore=active_restore,
+        active_fetch=active_fetch,
+        include_unrelated=include_unrelated,
+    )
+    failures = FailOnce(failure_point)
+    archive_store = FakeArchiveStore(failures, include_unrelated=include_unrelated)
+    hot_store = FakeHotStore(failures, include_unrelated=include_unrelated)
+    upload_store = FakeUploadStore(failures)
     return (
         path,
         _service(path, archive_store, hot_store, upload_store),
@@ -280,25 +364,93 @@ def test_delete_removes_collection_objects_and_dependent_state(tmp_path: Path) -
         assert session.get(CollectionDeletionRecord, "docs") is None
 
 
-def test_delete_retries_after_catalog_publication_failure(tmp_path: Path) -> None:
-    path, service, archive_store, _, _ = _setup(tmp_path)
-    archive_store.fail_publish_once = True
+@pytest.mark.parametrize(
+    "failure_point",
+    [
+        "hot_object",
+        "upload_resource",
+        "upload_target",
+        "archive_package",
+        "recovery_catalog",
+    ],
+)
+def test_delete_retries_after_each_external_boundary_failure(
+    tmp_path: Path,
+    failure_point: FailurePoint,
+) -> None:
+    path, service, archive_store, hot_store, _ = _setup(
+        tmp_path,
+        include_unrelated=True,
+        failure_point=failure_point,
+    )
     plan = service.plan("docs")
     challenge = str(plan["challenge"])
 
-    with pytest.raises(RuntimeError, match="synthetic catalog"):
+    with pytest.raises(SyntheticBoundaryFailure, match=failure_point):
         service.delete("docs", challenge=challenge)
 
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
         assert session.get(CollectionRecord, "docs") is not None
+        assert session.get(CollectionRecord, "other") is not None
         assert session.get(CollectionDeletionRecord, "docs") is not None
-    assert archive_store.objects == set()
     assert service.plan("docs")["challenge"] == challenge
+
+    result = service.delete("docs", challenge=challenge)
+
+    assert result["status"] == "deleted"
+    assert hot_store.files == {("other", "keep.txt"): b"unrelated durable copy\n"}
+    assert archive_store.objects == {
+        "archive/archives/opaque-other/archive.tar.age",
+        "archive/archives/opaque-other/manifest.yml.age",
+        "archive/archives/opaque-other/manifest.yml.ots.age",
+    }
+    assert archive_store.catalog_entries is not None
+    assert [entry["collection_id"] for entry in archive_store.catalog_entries] == ["other"]
+    with session_scope(factory) as session:
+        assert session.get(CollectionRecord, "docs") is None
+        assert session.get(CollectionRecord, "other") is not None
+        assert session.get(CollectionDeletionRecord, "docs") is None
+
+
+def test_delete_retries_after_final_database_cleanup_failure(tmp_path: Path) -> None:
+    path, service, archive_store, hot_store, _ = _setup(
+        tmp_path,
+        include_unrelated=True,
+    )
+    plan = service.plan("docs")
+    challenge = str(plan["challenge"])
+    fail_once = True
+
+    def fail_after_cleanup_flush(session: Session, _: object) -> None:
+        nonlocal fail_once
+        if not fail_once or not any(
+            isinstance(record, CollectionDeletionRecord) for record in session.deleted
+        ):
+            return
+        fail_once = False
+        raise SyntheticBoundaryFailure("synthetic deletion boundary failure: database_cleanup")
+
+    event.listen(Session, "after_flush", fail_after_cleanup_flush)
+    try:
+        with pytest.raises(SyntheticBoundaryFailure, match="database_cleanup"):
+            service.delete("docs", challenge=challenge)
+    finally:
+        event.remove(Session, "after_flush", fail_after_cleanup_flush)
+
+    factory = make_session_factory(sqlite_url(path))
+    with session_scope(factory) as session:
+        assert session.get(CollectionRecord, "docs") is not None
+        assert session.get(CollectionRecord, "other") is not None
+        assert session.get(CollectionDeletionRecord, "docs") is not None
+    assert hot_store.files == {("other", "keep.txt"): b"unrelated durable copy\n"}
+    assert archive_store.catalog_entries is not None
+    assert [entry["collection_id"] for entry in archive_store.catalog_entries] == ["other"]
 
     result = service.delete("docs", challenge=challenge)
 
     assert result["status"] == "deleted"
     with session_scope(factory) as session:
         assert session.get(CollectionRecord, "docs") is None
+        assert session.get(CollectionRecord, "other") is not None
         assert session.get(CollectionDeletionRecord, "docs") is None

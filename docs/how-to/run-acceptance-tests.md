@@ -11,6 +11,11 @@ make build
 
 Use `make unit args='-k expression'` for focused iteration. `make spec` runs the assembled FastAPI contract harness.
 
+Use `make postgres-concurrency` after changing collection deletion, fetch-start,
+archive-restore-start, or their locking contracts. The target runs the focused
+race suite against a disposable PostgreSQL sidecar and removes its database and
+network when the suite exits.
+
 The Makefile runs Python through the repository-selected `mise` and locked `uv` environment.
 
 ## Test layout

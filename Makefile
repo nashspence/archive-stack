@@ -5,11 +5,12 @@ MISE_BIN ?= mise
 FILES ?= .
 TESTS ?= tests/unit
 SPEC_TESTS ?= tests/harness/test_spec_harness.py
+POSTGRES_TESTS ?= tests/integration/test_collection_deletion_concurrency.py
 UV_RUN = "$(MISE_BIN)" x -- uv run --locked --no-default-groups --group dev --extra db
 MYPY_FLAGS = --show-error-codes --hide-error-context --no-error-summary --no-color-output
 args ?=
 
-.PHONY: help ruff ruff-fix format fix mypy lint unit spec openapi stop-spec build build-app build-test bootstrap-garage down test
+.PHONY: help ruff ruff-fix format fix mypy lint unit spec postgres-concurrency openapi stop-spec build build-app build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -31,6 +32,7 @@ help:
 		'  make lint              Run ruff, then mypy.' \
 		'  make unit              Run the unit test lane locally.' \
 		'  make spec              Run the fixture-backed spec harness locally.' \
+		'  make postgres-concurrency Run collection deletion race tests against disposable Postgres.' \
 		'  make openapi           Regenerate the checked OpenAPI contract.' \
 		'  make stop-spec         Stop any in-flight local spec harness process.' \
 		'  make build-app         Build the app image.' \
@@ -45,6 +47,7 @@ help:
 		"  FILES='...'            Narrow ruff, ruff-fix, or format to specific files." \
 		"  TESTS='...'            Narrow the unit test lane to specific tests." \
 		"  SPEC_TESTS='...'       Narrow the spec lane to specific tests." \
+		"  POSTGRES_TESTS='...'   Select the disposable Postgres test file." \
 		'  MISE_BIN=/abs/path/to/mise Use a specific mise binary instead of mise on PATH.' \
 		'  COMPOSE_ENV_FILE=/abs/path/to/.env.compose' \
 		'  TEST_COMPOSE_PROJECT_NAME=riverhog-shared'
@@ -72,6 +75,9 @@ unit:
 
 spec:
 	$(call UV_CMD,python -m pytest -q $(SPEC_TESTS) $(args))
+
+postgres-concurrency:
+	@POSTGRES_TESTS="$(POSTGRES_TESTS)" ./scripts/test_postgres_collection_deletion_concurrency.sh
 
 openapi:
 	$(call UV_CMD,python scripts/generate_openapi.py)

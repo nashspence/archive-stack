@@ -89,6 +89,7 @@ def _run_make(
     env.pop("MAKEFLAGS", None)
     env.pop("MFLAGS", None)
     env.pop("SPEC_TESTS", None)
+    env.pop("POSTGRES_TESTS", None)
     env.pop("TESTS", None)
     env.pop("MISE_BIN", None)
     if extra_env:
@@ -189,9 +190,7 @@ def test_atomic_local_targets_run_in_locked_uv_environment(
 
     uv_log_lines = _read_log_lines(uv_log_path)
     assert len(uv_log_lines) == 1
-    assert (
-        "run --locked --no-default-groups --group dev --extra db "
-    ) in uv_log_lines[0]
+    assert ("run --locked --no-default-groups --group dev --extra db ") in uv_log_lines[0]
     assert expected_command in uv_log_lines[0]
 
 
@@ -283,6 +282,22 @@ def test_bootstrap_garage_is_available_as_a_standalone_target(tmp_path: Path) ->
     assert "tests/harness/configure_garage.py" in docker_log
 
 
+def test_postgres_concurrency_target_uses_disposable_postgres(tmp_path: Path) -> None:
+    completed, docker_log_path, uv_log_path = _run_make(
+        tmp_path,
+        "postgres-concurrency",
+        extra_env={"FAKE_DOCKER_HAVE_IMAGES": "1"},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert _read_log_lines(uv_log_path) == []
+    docker_log = "\n".join(_read_log_lines(docker_log_path))
+    assert " up --detach --wait postgres" in docker_log
+    assert "RIVERHOG_TEST_POSTGRES_URL=postgresql+psycopg://" in docker_log
+    assert "tests/integration/test_collection_deletion_concurrency.py" in docker_log
+    assert " down --volumes --remove-orphans" in docker_log
+
+
 def test_dockerfiles_keep_dependency_layers_independent_of_docs_and_tests() -> None:
     app_dockerfile = (REPO_ROOT / "Dockerfile.app").read_text()
     test_dockerfile = (REPO_ROOT / "Dockerfile.test").read_text()
@@ -307,8 +322,7 @@ def test_dockerfiles_keep_dependency_layers_independent_of_docs_and_tests() -> N
         "COPY src ./src"
     )
     assert test_dockerfile.index(
-        "uv sync --locked --no-default-groups --group dev --extra db "
-        "--no-install-project"
+        "uv sync --locked --no-default-groups --group dev --extra db --no-install-project"
     ) < test_dockerfile.index("COPY src ./src")
     assert "COPY --from=ghcr.io/astral-sh/uv:0.11.24" in test_dockerfile
     assert "UV_PROJECT_ENVIRONMENT=/opt/venv" in test_dockerfile
