@@ -29,7 +29,7 @@ from riverhog_core.collection_archives import (
     build_collection_archive_package,
 )
 from riverhog_core.domain.enums import FetchState, RecoverySessionState
-from riverhog_core.domain.errors import InvalidState, NotFound
+from riverhog_core.domain.errors import BadRequest, InvalidState, NotFound
 from riverhog_core.finalized_image_coverage import (
     read_finalized_image_collection_artifacts,
     read_finalized_image_coverage_parts,
@@ -484,6 +484,42 @@ def test_recovery_sessions_can_be_listed_and_filtered(tmp_path: Path) -> None:
     assert restore_page.collection == "docs"
     assert rebuild_page.total == 1
     assert [session.id for session in rebuild_page.sessions] == ["rs-20260420T040001Z-rebuild-1"]
+
+    with session_scope(make_session_factory(sqlite_url(sqlite_path))) as session:
+        completed = session.get(GlacierRecoverySessionRecord, "rs-docs-restore-1")
+        assert completed is not None
+        completed.state = RecoverySessionState.COMPLETED.value
+
+    active_page = recovery_service.list(
+        page=1,
+        per_page=25,
+        sort="created_at",
+        order="desc",
+        terminal="active",
+    )
+    terminal_page = recovery_service.list(
+        page=1,
+        per_page=25,
+        sort="created_at",
+        order="desc",
+        terminal="terminal",
+    )
+
+    assert active_page.terminal == "active"
+    assert [session.id for session in active_page.sessions] == [
+        "rs-20260420T040001Z-rebuild-1"
+    ]
+    assert terminal_page.terminal == "terminal"
+    assert [session.id for session in terminal_page.sessions] == ["rs-docs-restore-1"]
+
+    with pytest.raises(BadRequest, match="terminal must be active, terminal, or all"):
+        recovery_service.list(
+            page=1,
+            per_page=25,
+            sort="created_at",
+            order="desc",
+            terminal="unknown",
+        )
 
 
 def test_recovery_ready_ttl_rounds_up_to_restore_hold_days(tmp_path: Path) -> None:

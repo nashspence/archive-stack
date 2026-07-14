@@ -163,6 +163,7 @@ class RecoverySessionListPage:
     pages: int
     sort: str
     order: str
+    terminal: str
     type: str | None
     state: str | None
     collection: str | None

@@ -56,6 +56,17 @@ Feature: Recovery sessions API
     And the response recovery session collections include "docs"
     And the response recovery session images contain only "20260420T040001Z"
     And the response recovery session image "20260420T040001Z" rebuild_state is "restoring_collections"
+  Scenario: Active recovery inventory is filtered and paged by the API
+    Given candidate "img_2026-04-20_01" is finalized
+    And the client posts to "/v1/images/20260420T040001Z/copies" with id "20260420T040001Z-1" and location "Shelf A1"
+    And the client posts to "/v1/images/20260420T040001Z/copies" with id "20260420T040001Z-2" and location "Shelf B1"
+    When the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-1" with state "lost"
+    And the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-2" with state "damaged"
+    And the client gets "/v1/recovery-sessions?terminal=active&type=image_rebuild&page=1&per_page=1"
+    Then the response status is 200
+    And the response recovery session list terminal is "active"
+    And the response recovery session list contains only "rs-20260420T040001Z-rebuild-1"
+    And the response pagination is page 1 with per_page 1 and total 1 and pages 1
   Scenario: Image rebuild stages a rebuilt ISO from restored collection archives
     Given candidate "img_2026-04-20_01" is finalized
     And the client posts to "/v1/images/20260420T040001Z/copies" with id "20260420T040001Z-1" and location "Shelf A1"

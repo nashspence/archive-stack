@@ -401,6 +401,7 @@ class ApiClient:
         per_page: int = 25,
         sort: str = "created_at",
         order: str = "desc",
+        terminal: str = "all",
         recovery_type: str | None = None,
         state: str | None = None,
         collection: str | None = None,
@@ -411,6 +412,7 @@ class ApiClient:
             "per_page": per_page,
             "sort": sort,
             "order": order,
+            "terminal": terminal,
         }
         if recovery_type is not None:
             params["type"] = recovery_type

@@ -77,6 +77,7 @@ def test_initialize_db_creates_current_baseline_schema(tmp_path: Path) -> None:
             "fetch_operator_files",
             "finalized_image_covered_paths",
             "finalized_image_coverage_parts",
+            "glacier_recovery_sessions",
         )
         for index in inspector.get_indexes(table)
     }
@@ -87,6 +88,8 @@ def test_initialize_db_creates_current_baseline_schema(tmp_path: Path) -> None:
         "ix_fetch_operator_files_path",
         "ix_finalized_image_covered_paths_collection_path",
         "ix_finalized_image_coverage_parts_collection_path",
+        "ix_glacier_recovery_sessions_state_created",
+        "ix_glacier_recovery_sessions_type_state_created",
     }.issubset(index_names)
 
     with engine.begin() as conn:

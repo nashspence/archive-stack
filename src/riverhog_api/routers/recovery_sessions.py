@@ -38,6 +38,7 @@ def list_recovery_sessions(
         "restore_expires_at",
     ] = Query("created_at"),
     order: Literal["asc", "desc"] = Query("desc"),
+    terminal: Literal["active", "terminal", "all"] = Query("all"),
     recovery_type: Annotated[
         Literal["collection_restore", "image_rebuild"] | None,
         Query(alias="type"),
@@ -60,6 +61,7 @@ def list_recovery_sessions(
         per_page=per_page,
         sort=sort,
         order=order,
+        terminal=terminal,
         recovery_type=recovery_type,
         state=state,
         collection=collection,

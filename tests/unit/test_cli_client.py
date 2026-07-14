@@ -267,6 +267,7 @@ def test_recovery_session_client_methods_use_canonical_endpoints(monkeypatch) ->
         per_page=10,
         sort="state",
         order="asc",
+        terminal="active",
         recovery_type="collection_restore",
         state="ready",
         collection="tax/2022 reports",
@@ -284,7 +285,8 @@ def test_recovery_session_client_methods_use_canonical_endpoints(monkeypatch) ->
     assert captured[0][0] == "GET"
     assert captured[0][1] == (
         "https://api.test/v1/recovery-sessions?page=2&per_page=10&sort=state&"
-        "order=asc&type=collection_restore&state=ready&collection=tax%2F2022+reports"
+        "order=asc&terminal=active&type=collection_restore&state=ready&"
+        "collection=tax%2F2022+reports"
     )
     assert captured[1] == (
         "POST",

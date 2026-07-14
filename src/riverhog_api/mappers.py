@@ -270,6 +270,7 @@ def map_recovery_session_list(summary: RecoverySessionListPage) -> dict[str, obj
         "pages": summary.pages,
         "sort": summary.sort,
         "order": summary.order,
+        "terminal": summary.terminal,
         "type": summary.type,
         "state": summary.state,
         "collection": summary.collection,

@@ -170,6 +170,7 @@ class RecoverySessionService(Protocol):
         per_page: int,
         sort: str,
         order: str,
+        terminal: str = "all",
         recovery_type: str | None = None,
         state: str | None = None,
         collection: str | None = None,

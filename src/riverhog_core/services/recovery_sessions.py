@@ -108,6 +108,8 @@ _PUBLIC_RECOVERY_STATES = {
     RecoverySessionState.FAILED.value,
     RecoverySessionState.CANCELED.value,
 }
+_TERMINAL_RECOVERY_STATES = _PUBLIC_RECOVERY_STATES - _ACTIVE_RECOVERY_STATES
+_RECOVERY_SESSION_TERMINAL_FILTERS = {"active", "terminal", "all"}
 _RECOVERY_SESSION_SORT_FIELDS = {
     "created_at",
     "id",
@@ -167,6 +169,7 @@ class SqlAlchemyRecoverySessionService:
         per_page: int,
         sort: str,
         order: str,
+        terminal: str = "all",
         recovery_type: str | None = None,
         state: str | None = None,
         collection: str | None = None,
@@ -182,6 +185,8 @@ class SqlAlchemyRecoverySessionService:
             )
         if order not in {"asc", "desc"}:
             raise BadRequest("order must be asc or desc")
+        if terminal not in _RECOVERY_SESSION_TERMINAL_FILTERS:
+            raise BadRequest("terminal must be active, terminal, or all")
         if recovery_type is not None and recovery_type not in _RECOVERY_SESSION_TYPES:
             raise BadRequest(f"type must be one of {', '.join(sorted(_RECOVERY_SESSION_TYPES))}")
         if state is not None and state not in _PUBLIC_RECOVERY_STATES:
@@ -189,8 +194,19 @@ class SqlAlchemyRecoverySessionService:
 
         type_expr = func.coalesce(GlacierRecoverySessionRecord.type, "image_rebuild")
         stmt = select(GlacierRecoverySessionRecord)
-        if recovery_type is not None:
-            stmt = stmt.where(type_expr == recovery_type)
+        if recovery_type == "image_rebuild":
+            stmt = stmt.where(
+                or_(
+                    GlacierRecoverySessionRecord.type == "image_rebuild",
+                    GlacierRecoverySessionRecord.type.is_(None),
+                )
+            )
+        elif recovery_type is not None:
+            stmt = stmt.where(GlacierRecoverySessionRecord.type == recovery_type)
+        if terminal == "active":
+            stmt = stmt.where(GlacierRecoverySessionRecord.state.in_(_ACTIVE_RECOVERY_STATES))
+        elif terminal == "terminal":
+            stmt = stmt.where(GlacierRecoverySessionRecord.state.in_(_TERMINAL_RECOVERY_STATES))
         if state is not None:
             stmt = stmt.where(GlacierRecoverySessionRecord.state == state)
         if collection is not None:
@@ -231,6 +247,7 @@ class SqlAlchemyRecoverySessionService:
                 pages=ceil(total / per_page) if total else 0,
                 sort=sort,
                 order=order,
+                terminal=terminal,
                 type=recovery_type,
                 state=state,
                 collection=collection,
@@ -333,6 +350,7 @@ class SqlAlchemyRecoverySessionService:
                 pages=ceil(total / per_page) if total else 0,
                 sort=sort,
                 order=order,
+                terminal="all",
                 type="collection_restore",
                 state=state,
                 collection=None,

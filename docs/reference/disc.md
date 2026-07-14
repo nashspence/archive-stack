@@ -275,7 +275,9 @@ Expected multipart flow:
 - `djdan disc rebuild start COPY_ID --reason lost|damaged` marks a burned disc
   lost or damaged and shows the rebuild work needed to restore coverage
 - `djdan disc rebuild list` lists active image-rebuild recovery sessions and
-  the finalized images attached to each one
+  the finalized images attached to each one through the API's indexed,
+  server-paged active-session view; `--all` includes terminal history and
+  `--state` selects one exact state
 - `djdan disc rebuild show SESSION` shows restore readiness, attached images,
   and latest operator message
 - `djdan disc rebuild pause SESSION` pauses active restore work when the

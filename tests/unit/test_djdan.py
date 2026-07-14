@@ -1427,7 +1427,9 @@ def test_discover_recovery_handoffs_for_images_that_require_recovery() -> None:
     ]
 
 
-def test_list_disc_rebuild_sessions_defaults_to_active_states() -> None:
+def test_list_disc_rebuild_sessions_delegates_scope_and_paging_to_api() -> None:
+    calls: list[dict[str, object]] = []
+
     class FakeClient:
         def list_recovery_sessions(
             self,
@@ -1436,20 +1438,29 @@ def test_list_disc_rebuild_sessions_defaults_to_active_states() -> None:
             per_page: int,
             sort: str,
             order: str,
+            terminal: str,
             recovery_type: str,
             state: str | None = None,
         ) -> dict[str, object]:
-            assert (per_page, sort, order, recovery_type) == (
-                100,
-                "created_at",
-                "desc",
-                "image_rebuild",
+            calls.append(
+                {
+                    "page": page,
+                    "per_page": per_page,
+                    "sort": sort,
+                    "order": order,
+                    "terminal": terminal,
+                    "recovery_type": recovery_type,
+                    "state": state,
+                }
             )
-            if state != "restore_requested":
-                return {"page": page, "pages": 0, "sessions": []}
             return {
                 "page": page,
+                "per_page": per_page,
+                "total": 1,
                 "pages": 1,
+                "sort": sort,
+                "order": order,
+                "terminal": terminal,
                 "sessions": [
                     {
                         "id": "rs-20260420T040001Z-1",
@@ -1490,6 +1501,57 @@ def test_list_disc_rebuild_sessions_defaults_to_active_states() -> None:
                 {"id": "20260420T040003Z", "filename": "20260420T040003Z.iso"},
             ],
         }
+    ]
+    assert calls == [
+        {
+            "page": 1,
+            "per_page": 25,
+            "sort": "created_at",
+            "order": "desc",
+            "terminal": "active",
+            "recovery_type": "image_rebuild",
+            "state": None,
+        }
+    ]
+
+    djdan_main._list_disc_rebuild_sessions(
+        FakeClient(),
+        page=2,
+        per_page=10,
+        sort="state",
+        order="asc",
+        state="failed",
+        include_all=False,
+    )
+    djdan_main._list_disc_rebuild_sessions(
+        FakeClient(),
+        page=3,
+        per_page=5,
+        sort="id",
+        order="desc",
+        state=None,
+        include_all=True,
+    )
+
+    assert calls[1:] == [
+        {
+            "page": 2,
+            "per_page": 10,
+            "sort": "state",
+            "order": "asc",
+            "terminal": "all",
+            "recovery_type": "image_rebuild",
+            "state": "failed",
+        },
+        {
+            "page": 3,
+            "per_page": 5,
+            "sort": "id",
+            "order": "desc",
+            "terminal": "all",
+            "recovery_type": "image_rebuild",
+            "state": None,
+        },
     ]
 
 
@@ -1652,15 +1714,21 @@ def test_djdan_recover_lists_active_sessions(monkeypatch) -> None:
             per_page: int,
             sort: str,
             order: str,
+            terminal: str,
             recovery_type: str,
             state: str | None = None,
         ) -> dict[str, object]:
             assert recovery_type == "image_rebuild"
-            if state not in {"restore_requested", "ready"}:
-                return {"page": page, "pages": 0, "sessions": []}
+            assert terminal == "active"
+            assert state is None
             return {
                 "page": page,
+                "per_page": per_page,
+                "total": 1,
                 "pages": 1,
+                "sort": sort,
+                "order": order,
+                "terminal": terminal,
                 "sessions": [
                     {
                         "id": "rs-20260420T040001Z-1",
@@ -1673,9 +1741,7 @@ def test_djdan_recover_lists_active_sessions(monkeypatch) -> None:
                             {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"},
                         ],
                     }
-                ]
-                if state == "restore_requested"
-                else [],
+                ],
             }
 
     monkeypatch.setattr(djdan_main, "ApiClient", FakeClient)

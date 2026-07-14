@@ -287,7 +287,6 @@ class DiscPromptState:
 
 _PENDING_BURN_STATES = {"needed", "burning"}
 _PROTECTED_COPY_STATES = {"registered", "verified"}
-_ACTIVE_RECOVERY_SESSION_STATES = {"restore_requested", "ready", "paused"}
 
 
 @dataclass(slots=True)
@@ -2641,66 +2640,15 @@ def _list_disc_rebuild_sessions(
     state: str | None,
     include_all: bool,
 ) -> dict[str, Any]:
-    if state is not None or include_all:
-        return client.list_recovery_sessions(
-            page=page,
-            per_page=per_page,
-            sort=sort,
-            order=order,
-            recovery_type="image_rebuild",
-            state=state,
-        )
-
-    sessions: list[dict[str, Any]] = []
-    for active_state in sorted(_ACTIVE_RECOVERY_SESSION_STATES):
-        active_page = 1
-        while True:
-            payload = client.list_recovery_sessions(
-                page=active_page,
-                per_page=100,
-                sort=sort,
-                order=order,
-                recovery_type="image_rebuild",
-                state=active_state,
-            )
-            active_sessions = payload.get("sessions", [])
-            if isinstance(active_sessions, list):
-                sessions.extend(session for session in active_sessions if isinstance(session, dict))
-            if active_page >= int(payload.get("pages", 0) or 0):
-                break
-            active_page += 1
-
-    reverse = order == "desc"
-
-    def sort_value(session: dict[str, Any]) -> object:
-        if sort == "id":
-            return str(session.get("id", "")).casefold()
-        if sort == "type":
-            return str(session.get("type", "")).casefold()
-        if sort == "state":
-            return str(session.get("state", "")).casefold()
-        return str(session.get(sort) or "")
-
-    sessions.sort(key=lambda session: (sort_value(session), str(session.get("id", ""))))
-    if reverse:
-        sessions.reverse()
-
-    total = len(sessions)
-    pages = (total + per_page - 1) // per_page if total else 0
-    start = (page - 1) * per_page
-    return {
-        "page": page,
-        "per_page": per_page,
-        "total": total,
-        "pages": pages,
-        "sort": sort,
-        "order": order,
-        "type": "image_rebuild",
-        "state": "active",
-        "collection": None,
-        "image": None,
-        "sessions": sessions[start : start + per_page],
-    }
+    return client.list_recovery_sessions(
+        page=page,
+        per_page=per_page,
+        sort=sort,
+        order=order,
+        terminal="all" if state is not None or include_all else "active",
+        recovery_type="image_rebuild",
+        state=state,
+    )
 
 
 def _require_disc_rebuild_session(payload: dict[str, Any]) -> None:

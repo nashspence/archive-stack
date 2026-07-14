@@ -589,7 +589,7 @@ paths:
   /recovery-sessions:
     get:
       summary: List recovery sessions
-      description: Returns a paged inventory of Glacier-backed cloud-fetch and image rebuild sessions, with filters for type, state, collection, and image.
+      description: Returns a paged inventory of Glacier-backed cloud-fetch and image rebuild sessions, with filters for lifecycle scope, type, state, collection, and image.
       operationId: listRecoverySessions
       parameters:
         - in: query
@@ -622,6 +622,13 @@ paths:
             type: string
             enum: [asc, desc]
             default: desc
+        - in: query
+          name: terminal
+          required: false
+          schema:
+            type: string
+            enum: [active, terminal, all]
+            default: all
         - in: query
           name: type
           required: false
@@ -2439,7 +2446,7 @@ components:
     RecoverySessionList:
       type: object
       required:
-        [page, per_page, total, pages, sort, order, type, state, collection, image, sessions]
+        [page, per_page, total, pages, sort, order, terminal, type, state, collection, image, sessions]
       properties:
         page:
           type: integer
@@ -2459,6 +2466,9 @@ components:
         order:
           type: string
           enum: [asc, desc]
+        terminal:
+          type: string
+          enum: [active, terminal, all]
         type:
           oneOf:
             - type: string

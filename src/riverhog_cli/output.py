@@ -764,7 +764,7 @@ def _format_recovery_sessions_plain(payload: Mapping[str, Any]) -> str:
         f"sort={payload.get('sort', 'created_at')} "
         f"order={payload.get('order', 'desc')}",
     ]
-    for label in ("type", "state", "collection", "image"):
+    for label in ("terminal", "type", "state", "collection", "image"):
         if payload.get(label) is not None:
             lines.append(f"{label}: {payload.get(label)}")
     sessions = payload.get("sessions")
@@ -795,7 +795,7 @@ def _recovery_scope_text(payload: Mapping[str, Any]) -> Any:
     fields: list[tuple[str, object]] = [
         ("sort", f"{payload.get('sort', 'created_at')} {payload.get('order', 'desc')}")
     ]
-    for label in ("type", "state", "collection", "image"):
+    for label in ("terminal", "type", "state", "collection", "image"):
         if payload.get(label) is not None:
             fields.append((label, payload.get(label)))
     for index, (label, value) in enumerate(fields):

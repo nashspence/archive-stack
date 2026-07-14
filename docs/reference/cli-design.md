@@ -63,6 +63,33 @@ Visual emphasis should be sparse and role-based:
 - Keep progress, prompts, and warnings on stderr.
 - Do not include Rich formatting, table labels, or human summary text.
 
+## Process Audit Views
+
+Read-only process views must make active work, failures, and terminal cleanup or
+result state visible without loading unbounded history in a CLI process.
+Paging, filtering, and sorting belong to the service or API that owns the
+durable state. Aggregate fields used for list sorting or filtering come from
+transactionally maintained summary data rather than read-time scans.
+
+The public CLI family uses these owning views:
+
+- `riverhog hot fetch list|show|files` reads fetch-keyed summary and file
+  projections; `show` returns bounded entry and recovery-session previews.
+- `munchy job list` pages indexed runner job summaries; `job show` is keyed by
+  one exact job id.
+- `jeb status` uses bounded active-attempt and recent-failure pages plus state
+  counts; `jeb batches` pages indexed batch-attempt summaries. Source backlog
+  inspection is current filesystem state, not history, and can be skipped with
+  `--no-backlog`.
+- `djdan image plan|list` and `djdan disc list` use server-paged planner, image,
+  and disc projections. `djdan disc rebuild list` uses the recovery-session
+  API's `terminal=active` database filter by default and never composes active
+  history by fetching state pages in the CLI.
+
+Use the shared `terminal=active|terminal|all` vocabulary where a process list
+needs lifecycle scope. An exact state filter remains available for targeted
+audit work.
+
 ## Dry Runs
 
 Mutating commands must provide `--dry-run` when the action is bulk,

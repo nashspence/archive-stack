@@ -502,8 +502,10 @@ Supported query parameters:
 - `sort`: `created_at`, `id`, `type`, `state`, `restore_ready_at`, or
   `restore_expires_at`
 - `order`: `asc` or `desc`
+- `terminal`: `active`, `terminal`, or `all`; defaults to `all`
 - `type`: `collection_restore` or `image_rebuild`
-- `state`: `restore_requested`, `ready`, `expired`, or `completed`
+- `state`: `restore_requested`, `ready`, `paused`, `expired`, `completed`,
+  `failed`, or `canceled`
 - `collection`: restricts results to sessions attached to one collection id
 - `image`: restricts results to sessions attached to one finalized image id
 
@@ -511,6 +513,11 @@ Required behavior:
 
 - list views are bounded database lookups and do not scan archive objects or hot
   storage
+- `terminal=active` selects `restore_requested`, `ready`, and `paused` in one
+  indexed, paged database query; `terminal=terminal` selects the remaining
+  completed, expired, failed, or canceled history
+- exact `state` filters combine with `terminal`; clients selecting one exact
+  state normally leave `terminal=all`
 - cloud-fetch operator views filter with `type=collection_restore`
 - image rebuild operator views filter with `type=image_rebuild`
 

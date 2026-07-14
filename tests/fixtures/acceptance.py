@@ -2367,6 +2367,7 @@ class AcceptanceRecoverySessionService:
         per_page: int,
         sort: str,
         order: str,
+        terminal: str = "all",
         recovery_type: str | None = None,
         state: str | None = None,
         collection: str | None = None,
@@ -2378,6 +2379,13 @@ class AcceptanceRecoverySessionService:
             raise BadRequest("per_page must be between 1 and 100")
         if order not in {"asc", "desc"}:
             raise BadRequest("order must be asc or desc")
+        if terminal not in {"active", "terminal", "all"}:
+            raise BadRequest("terminal must be active, terminal, or all")
+        active_states = {
+            RecoverySessionState.RESTORE_REQUESTED,
+            RecoverySessionState.READY,
+            RecoverySessionState.PAUSED,
+        }
         normalized_collection = (
             CollectionId(normalize_collection_id(collection)) if collection else None
         )
@@ -2386,6 +2394,11 @@ class AcceptanceRecoverySessionService:
             record
             for record in self.state.recovery_sessions_by_id.values()
             if (recovery_type is None or record.type == recovery_type)
+            and (
+                terminal == "all"
+                or (terminal == "active" and record.state in active_states)
+                or (terminal == "terminal" and record.state not in active_states)
+            )
             and (state is None or record.state.value == state)
             and (normalized_collection is None or normalized_collection in record.collection_ids)
             and (image_id is None or image_id in self.state._record_image_ids(record))
@@ -2422,6 +2435,7 @@ class AcceptanceRecoverySessionService:
             pages=pages,
             sort=sort,
             order=order,
+            terminal=terminal,
             type=recovery_type,
             state=state,
             collection=str(normalized_collection) if normalized_collection else None,
@@ -2553,6 +2567,7 @@ class AcceptanceRecoverySessionService:
             pages=pages,
             sort=sort,
             order=order,
+            terminal="all",
             type="collection_restore",
             state=state,
             collection=None,

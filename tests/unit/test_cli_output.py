@@ -130,8 +130,9 @@ def test_format_recovery_sessions_use_session_as_primary_id(
         "total": 1,
         "sort": "created_at",
         "order": "desc",
+        "terminal": "active",
         "type": "image_rebuild",
-        "state": "active",
+        "state": None,
         "collection": None,
         "image": None,
         "sessions": [
@@ -151,6 +152,7 @@ def test_format_recovery_sessions_use_session_as_primary_id(
 
     assert "rs-20260420T040001Z-rebuild-1" in rendered
     assert "restore_requested" in rendered
+    assert "active" in rendered
     assert rendered.count("38;2;142;201;204") == 1
     assert "38;2;192;173;108" in rendered
 

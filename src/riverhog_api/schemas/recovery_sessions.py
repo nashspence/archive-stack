@@ -93,6 +93,7 @@ class RecoverySessionListOut(RiverhogModel):
         "restore_expires_at",
     ]
     order: Literal["asc", "desc"]
+    terminal: Literal["active", "terminal", "all"] = "all"
     type: Literal["collection_restore", "image_rebuild"] | None
     state: (
         Literal[

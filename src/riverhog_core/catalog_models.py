@@ -453,6 +453,22 @@ class GlacierRecoverySessionRecord(Base):
     )
     restore_paths_json: Mapped[str | None] = mapped_column(String, nullable=True)
 
+    __table_args__ = (
+        Index(
+            "ix_glacier_recovery_sessions_state_created",
+            "state",
+            "created_at",
+            "session_id",
+        ),
+        Index(
+            "ix_glacier_recovery_sessions_type_state_created",
+            "type",
+            "state",
+            "created_at",
+            "session_id",
+        ),
+    )
+
     images: Mapped[list[GlacierRecoverySessionImageRecord]] = relationship(
         back_populates="session",
         cascade="all, delete-orphan",

@@ -304,6 +304,18 @@ def _ensure_schema_indexes(engine: Engine) -> None:
                 "ON collection_image_operator_summaries (image_id, collection_id)"
             )
         )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_glacier_recovery_sessions_state_created "
+                "ON glacier_recovery_sessions (state, created_at, session_id)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_glacier_recovery_sessions_type_state_created "
+                "ON glacier_recovery_sessions (type, state, created_at, session_id)"
+            )
+        )
 
 
 def _ensure_schema_columns(engine: Engine) -> None:

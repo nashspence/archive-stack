@@ -3623,6 +3623,24 @@ def then_response_cloud_fetch_sessions_contain_recovery_session(
     assert session_id in {session["id"] for session in sessions_payload["sessions"]}
 
 
+@then(parsers.parse('the response recovery session list terminal is "{terminal}"'))
+def then_response_recovery_session_list_terminal_is(
+    acceptance_context: AcceptanceScenarioContext,
+    terminal: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert payload["terminal"] == terminal
+
+
+@then(parsers.parse('the response recovery session list contains only "{session_id}"'))
+def then_response_recovery_session_list_contains_only(
+    acceptance_context: AcceptanceScenarioContext,
+    session_id: str,
+) -> None:
+    payload = _json_payload(_require_response(acceptance_context))
+    assert [session["id"] for session in payload["sessions"]] == [session_id]
+
+
 @then(parsers.parse('the response recovery session images contain only "{image_id}"'))
 def then_response_recovery_session_images_contain_only(
     acceptance_context: AcceptanceScenarioContext,
