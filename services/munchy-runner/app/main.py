@@ -5343,6 +5343,71 @@ def expected_riverhog_primary_files_total(
     )
 
 
+def profile_routing_path_resolvable(profile_routing: Mapping[str, Any]) -> bool:
+    for gate in dict_or_empty(profile_routing.get("gates")).values():
+        if isinstance(gate, Mapping) and predicate_requires_non_path_facts(gate):
+            return False
+    pairings = profile_routing.get("pairings")
+    if isinstance(pairings, list):
+        for pairing in pairings:
+            if not isinstance(pairing, Mapping):
+                return False
+            key = str(pairing.get("key") or "exif.content_identifier")
+            if not key.startswith("path."):
+                return False
+            for predicate_name in ("still", "movie"):
+                predicate = pairing.get(predicate_name)
+                if not isinstance(predicate, Mapping):
+                    return False
+                if predicate_requires_non_path_facts(predicate):
+                    return False
+    for rule in profile_sidecar_rules(profile_routing):
+        if isinstance(rule.get("facts"), Mapping):
+            return False
+    if not sidecar_rules_are_path_resolvable(profile_routing):
+        return False
+    for route in profile_routing.get("routes") or []:
+        if not isinstance(route, Mapping):
+            return False
+        when = route.get("when")
+        if isinstance(when, Mapping) and predicate_requires_non_path_facts(when):
+            return False
+    return True
+
+
+def expected_riverhog_primary_files_total_from_path_routing(
+    input_upload: dict[str, Any],
+    groups: dict[str, dict[str, Any]],
+    profile_routing: Mapping[str, Any],
+) -> int | None:
+    if not profile_routing_path_resolvable(profile_routing):
+        return None
+    files = [
+        ProfileRoutingFile(
+            path=str(file_state.get("path") or ""),
+            bytes=int(file_state.get("bytes") or 0),
+            routing_facts=routing_file_facts(str(file_state.get("path") or "")),
+        )
+        for file_state in input_upload.get("files", [])
+        if isinstance(file_state, Mapping) and str(file_state.get("path") or "")
+    ]
+    if not files:
+        return None
+    plan = profile_routing_plan(profile_routing, files, group_names=set(groups))
+    if not plan.ok:
+        return None
+    primary_groups = {
+        str(group_name)
+        for group_name, group_config in groups.items()
+        if group_produces_primary_archive_output(group_config)
+    }
+    return sum(
+        1
+        for match in plan.matches
+        if match.get("action") == "upload" and str(match.get("group") or "") in primary_groups
+    )
+
+
 def eager_archive_group_names(groups: dict[str, dict[str, Any]]) -> set[str]:
     return {
         str(group_name)
@@ -10356,6 +10421,11 @@ def create_job_state_from_request(req: CreateJobRequest) -> dict[str, Any]:
     input_upload = load_input_upload(req.input_upload_id)
     validate_job_storage_hint(input_upload, req)
     groups = resolve_job_groups(input_upload, req)
+    profile_routing = (
+        req.profile_routing.model_dump(exclude_none=True)
+        if req.profile_routing is not None
+        else None
+    )
     job_id = req.job_id or uuid.uuid4().hex
     if state_exists("job", job_id):
         raise HTTPException(status_code=409, detail=f"job already exists: {job_id}")
@@ -10385,16 +10455,21 @@ def create_job_state_from_request(req: CreateJobRequest) -> dict[str, Any]:
         if req.encode_profile is not None
         else None,
         "groups": groups,
-        "profile_routing": req.profile_routing.model_dump(exclude_none=True)
-        if req.profile_routing is not None
-        else None,
-        "riverhog_expected_primary_files_total": 0
-        if req.profile_routing is not None
-        else (
-            expected_riverhog_primary_files_total(input_upload, groups)
-            if riverhog["enabled"]
-            else 0
-        ),
+        "profile_routing": profile_routing,
+        "riverhog_expected_primary_files_total": (
+            expected_riverhog_primary_files_total_from_path_routing(
+                input_upload,
+                groups,
+                profile_routing,
+            )
+            if riverhog["enabled"] and profile_routing is not None
+            else (
+                expected_riverhog_primary_files_total(input_upload, groups)
+                if riverhog["enabled"]
+                else 0
+            )
+        )
+        or 0,
         "collection_archive": collection_archive,
         "riverhog": riverhog,
         "review": req.review.model_dump(exclude_none=True) if req.review is not None else None,

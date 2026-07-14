@@ -5522,6 +5522,54 @@ def test_expected_riverhog_primary_files_total_counts_archive_outputs(
     assert runner.expected_riverhog_primary_files_total(upload, groups) == 2
 
 
+def test_profile_routed_riverhog_job_plans_path_only_primary_count(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    runner.save_input_upload_raw(
+        {
+            "upload_id": "upload-1",
+            "state": "uploading",
+            "storage_hint": {
+                "workflow_mode": "collection_archive",
+                "collection_archive_destination": "riverhog",
+                "tasks": ["archive_video"],
+                "structured_routing": True,
+                "groups": {"video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]}},
+            },
+            "files": [
+                {"path": "camera/a.mp4", "bytes": 1, "upload_id": "a"},
+                {"path": "camera/b.mp4", "bytes": 1, "upload_id": "b"},
+            ],
+        }
+    )
+
+    job = runner.create_job_state_from_request(
+        runner.CreateJobRequest(
+            input_upload_id="upload-1",
+            collection_slug="camera",
+            collection_timestamp="20260101T000000Z",
+            tasks=["archive_video"],
+            groups={"video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]}},
+            profile_routing={
+                "routes": [
+                    {
+                        "id": "camera-video",
+                        "group": "video",
+                        "when": {"path": {"suffix": ".mp4"}},
+                    }
+                ]
+            },
+            collection_archive={"destination": "riverhog"},
+        )
+    )
+
+    assert job["riverhog_expected_primary_files_total"] == 2
+
+
 def test_eager_riverhog_upload_can_be_bounded_per_tick(
     tmp_path: Path,
     monkeypatch,
