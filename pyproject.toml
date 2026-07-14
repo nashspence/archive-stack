@@ -66,7 +66,6 @@ packages = [
 
 [tool.hatch.build.targets.wheel.force-include]
 "contracts/webhooks/operator-notifications.v1.json" = "riverhog_core/contracts/webhooks/operator-notifications.v1.json"
-"contracts/terminology/user-facing-terms.v1.json" = "riverhog_core/contracts/terminology/user-facing-terms.v1.json"
 "macos/gogurt/io.github.nashspence.gogurt.plist" = "gogurt/macos/io.github.nashspence.gogurt.plist"
 "macos/gogurt/gogurt.swift" = "gogurt/macos/gogurt.swift"
 "src/gogurt/py.typed" = "gogurt/py.typed"
@@ -83,11 +82,7 @@ select = ["E", "F", "I", "UP", "B"]
 addopts = "-ra --strict-markers"
 testpaths = ["tests"]
 markers = [
-  "acceptance: executable contract scenarios loaded from Gherkin features",
-  "api: API-focused contract coverage",
-  "cli: CLI-focused contract coverage",
   "integration: non-contract regression coverage",
-  "mvp: MVP contract coverage",
 ]
 
 [tool.mypy]

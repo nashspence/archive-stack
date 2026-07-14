@@ -1,29 +1,46 @@
 # AGENTS.md
 
-## Identity
+Read [README.md](README.md) for the product entrypoint.
 
-Riverhog owns generic collection custody, encrypted remote archives, hot-cache materialization, fetches, and search. Munchy owns generic media ingest, Jeb owns generic watched-drop collection, and Gogurt owns the web interface.
+## Boundaries
 
-## Critical Risks
+Riverhog owns generic collection custody, encrypted remote archives, hot-cache
+materialization, fetches, and search. Munchy owns generic media ingest, Jeb owns generic
+watched-drop collection, and Gogurt owns mounted-volume actions. Keep public code generic;
+real identity and deployment topology belong downstream.
 
-- The remote archive account is the durable authority. Protect account recovery, credentials, billing, bucket access, and tested retrieval.
-- Collection acceptance must preserve verified archive bytes, a manifest, and its proof.
-- Keep public code generic. Do not add private deployment details, real deployment identity, or downstream private configuration.
-- Never expose secrets in code, fixtures, logs, examples, or generated contracts.
-- Make catalog and object-store changes together and verify the resulting custody state.
+## Safety
 
-## Normal Work
+- Treat the remote archive account as the durable authority.
+- Preserve verified archive bytes, the encrypted manifest, and its proof together.
+- Treat catalog and object-store mutations as one custody operation.
+- Never expose secrets or private deployment identity in public code, fixtures, logs,
+  examples, or generated contracts.
 
-- Read the relevant docs, tests, and contracts before editing.
-- Use `rg` for discovery, `uv` through the repository-selected `mise` toolchain, and `make` for standard gates.
-- Use canonical current names. Do not add aliases, migrations, or compatibility shims without a verified supported dependency.
-- Keep Riverhog, Munchy, Jeb, and Gogurt responsibilities separate.
-- Put only generic behavior and fake examples here; private identity belongs in downstream private configuration.
-- Keep docs and tests focused on present behavior.
+## Sources of truth
+
+Exact behavior belongs in code and tests. Current API shape comes from the running
+application's OpenAPI document, command syntax comes from `--help`, and configuration
+shape comes from real parsers and checked executable examples. Do not add hand-maintained
+inventories of those surfaces to `main`; release reference is generated from a tag.
+
+Manual documentation is limited to:
+
+- [architecture](docs/architecture.md) for the current mental model and boundaries;
+- [archive operations](docs/archive-operations.md) for human custody judgment;
+- [selector grammar](docs/selector-grammar.md) for the shared tested syntax.
+
+## Work
+
+- Read the relevant implementation, tests, and executable contracts before editing.
+- Use canonical current names without aliases, migrations, or compatibility shims unless
+  a verified supported dependency requires one.
+- Keep domain behavior in services, external effects behind ports, and HTTP or CLI
+  formatting in adapters.
 
 ## Validation
 
-Run focused tests during implementation. Before delivery run:
+Run focused tests while iterating, then:
 
 ```bash
 make lint
@@ -31,11 +48,3 @@ make unit
 make spec
 make build
 ```
-
-## Ownership and Routes
-
-- Custody and storage: [architecture](docs/explanation/architecture-overview.md), [archive operations](docs/reference/archive.md).
-- API and data model: [API](docs/reference/api.md), [domain model](docs/reference/domain-model.md).
-- Commands: [CLI design](docs/reference/cli-design.md).
-- Configuration and transport: [configuration](docs/reference/configuration.md), [upload transport](docs/reference/upload-transport.md).
-- Media ingest: [Munchy](docs/reference/munchy.md), [Jeb](docs/reference/jeb.md), [Gogurt](docs/reference/gogurt.md).

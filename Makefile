@@ -10,7 +10,7 @@ UV_RUN = "$(MISE_BIN)" x -- uv run --locked --no-default-groups --group dev --ex
 MYPY_FLAGS = --show-error-codes --hide-error-context --no-error-summary --no-color-output
 args ?=
 
-.PHONY: help ruff ruff-fix format fix mypy lint unit spec postgres-concurrency openapi stop-spec build build-app build-test bootstrap-garage down test
+.PHONY: help ruff ruff-fix format fix mypy lint unit spec postgres-concurrency stop-spec build build-app build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -33,7 +33,6 @@ help:
 		'  make unit              Run the unit test lane locally.' \
 		'  make spec              Run the fixture-backed spec harness locally.' \
 		'  make postgres-concurrency Run collection deletion race tests against disposable Postgres.' \
-		'  make openapi           Regenerate the checked OpenAPI contract.' \
 		'  make stop-spec         Stop any in-flight local spec harness process.' \
 		'  make build-app         Build the app image.' \
 		'  make build-test        Build the test image.' \
@@ -78,9 +77,6 @@ spec:
 
 postgres-concurrency:
 	@POSTGRES_TESTS="$(POSTGRES_TESTS)" ./scripts/test_postgres_collection_deletion_concurrency.sh
-
-openapi:
-	$(call UV_CMD,python scripts/generate_openapi.py)
 
 stop-spec:
 	@./scripts/stop_spec.sh

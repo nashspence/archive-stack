@@ -1,46 +1,32 @@
 # riverhog
 
-Riverhog is a generic custody system for collection uploads, encrypted remote archives, a materialized hot cache, search, fetches, and read-only browsing. Munchy handles media ingest, Jeb handles watched-drop collection, and Gogurt provides the web interface.
+Riverhog is a generic custody system for encrypted remote collection archives and a
+materialized hot cache. Munchy prepares media, Jeb collects watched drops, and Gogurt
+connects mounted volumes to configured operator actions.
 
-## Critical Risks
+## Custody
 
-- The remote archive account is the durable storage authority. Keep account recovery, authentication, billing, bucket access, and object retrieval healthy and tested.
-- Collection acceptance requires a verified encrypted archive package and manifest proof.
-- Encrypted collection archives are the sole durable copies Riverhog relies on. Delete a
-  collection only through its guarded, exact-id deletion plan after accepting the loss.
-- Keep public code generic. Do not add private deployment details, real deployment identity, credentials, hostnames, device names, or downstream private configuration.
-- Treat catalog and object-store changes as custody operations: verify both state and bytes before declaring success.
+The remote archive account is the durable storage authority. Its encrypted collection
+objects are the sole durable copies Riverhog relies on. Protect account recovery,
+credentials, billing, bucket access, and tested retrieval. Delete a collection only
+through Riverhog's guarded exact-id operation after accepting the loss.
 
-## Normal Work
+## Start here
 
-- Read the current contracts and tests before changing behavior.
-- Use canonical names directly; avoid aliases and compatibility shims unless a current supported dependency requires one.
-- Keep the collection, archive, hot-cache, fetch, Munchy, Jeb, and Gogurt boundaries distinct.
-- Put generic behavior and fake examples here. Keep deployment-specific values in downstream private configuration.
-- Prefer focused services behind ports, with the HTTP API and CLIs as adapters.
+Use `make help` for development and validation commands. Use each installed command's
+`--help` output for its current interface. A running API publishes its current OpenAPI
+document at `/openapi.json`.
 
-## Validation
+The checked [Compose environment](.env.compose.example) and
+[example configurations](config/examples/) are fake, executable starting points.
 
-Run the scoped checks while iterating, then the full gates before delivery:
+## Context
 
-```bash
-make lint
-make unit
-make spec
-make build
-```
+- [Architecture](docs/architecture.md) explains custody and component boundaries.
+- [Archive operations](docs/archive-operations.md) covers the human checks around
+  durable storage, recovery, and deletion.
+- [Selector grammar](docs/selector-grammar.md) defines the shared logical-path syntax.
 
-See [the testing guide](docs/how-to/run-acceptance-tests.md) for test layers and [the Compose guide](docs/how-to/run-the-compose-stack.md) for the local stack.
-
-`requirements-runtime.txt` and `requirements-service.txt` are generated deployment exports from the locked project environment.
-
-## Ownership and Routes
-
-| Area | Route |
-| --- | --- |
-| Architecture and custody model | [architecture overview](docs/explanation/architecture-overview.md), [archive operations](docs/reference/archive.md) |
-| API and domain vocabulary | [API reference](docs/reference/api.md), [domain model](docs/reference/domain-model.md), [terminology](docs/reference/terminology.md) |
-| Operator commands | [CLI design](docs/reference/cli-design.md), [fetch and eviction guide](docs/how-to/create-fetches-and-evict-hot-files.md) |
-| Runtime settings and uploads | [configuration](docs/reference/configuration.md), [resumable uploads](docs/reference/resumable-uploads.md) |
-| Media ingest | [Munchy](docs/reference/munchy.md), [Jeb](docs/reference/jeb.md), [Gogurt](docs/reference/gogurt.md) |
-| Public/private boundary | [ADR 0043](docs/adr/0043-add-munchy-as-generic-ingest-layer.md) |
+Release-level reference documentation belongs to tagged releases. The documentation on
+`main` is intentionally limited to current context that cannot be recovered quickly from
+the executable contracts.

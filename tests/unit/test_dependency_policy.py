@@ -10,7 +10,6 @@ def test_repo_owns_toolchain_python_lock_and_runtime_exports() -> None:
     mise = tomllib.loads((REPO_ROOT / "mise.toml").read_text(encoding="utf-8"))
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
-    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
     assert mise["tools"]["python"] == "3.12.3"
     assert mise["tools"]["uv"] == "0.11.24"
@@ -22,8 +21,6 @@ def test_repo_owns_toolchain_python_lock_and_runtime_exports() -> None:
     assert (REPO_ROOT / "uv.lock").is_file()
     assert "mise.local.toml" in gitignore
     assert "mise.local.lock" in gitignore
-    assert "generated deployment exports" in readme
-
     for name in [
         "requirements-runtime.txt",
         "requirements-service.txt",
